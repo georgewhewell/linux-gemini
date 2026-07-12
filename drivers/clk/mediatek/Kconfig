@@ -358,6 +358,13 @@ config COMMON_CLK_MT6797_CAMSYS
 	  camera SMI local arbiter used for DMA traffic through the
 	  multimedia IOMMU.
 
+config COMMON_CLK_MT6797_MFGSYS
+	tristate "Clock driver for MediaTek MT6797 MFGSYS"
+	depends on COMMON_CLK_MT6797
+	help
+	  This driver supports the MFG gate clock used by the Mali block
+	  on MediaTek MT6797.
+
 config COMMON_CLK_MT6797_MMSYS
 	tristate "Clock driver for MediaTek MT6797 mmsys"
 	depends on COMMON_CLK_MT6797

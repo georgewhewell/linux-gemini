@@ -275,6 +275,10 @@
 #define CLK_MJC_LARB4_ASIF			6
 #define CLK_MJC_NR				7
 
+/* MFG_SYS */
+#define CLK_MFG_BG3D				1
+#define CLK_MFG_NR				2
+
 /* VDEC_SYS */
 #define	CLK_VDEC_CKEN_ENG			1
 #define	CLK_VDEC_ACTIVE				2

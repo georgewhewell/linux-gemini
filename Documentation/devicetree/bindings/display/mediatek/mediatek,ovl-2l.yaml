@@ -22,6 +22,7 @@ properties:
   compatible:
     oneOf:
       - enum:
+          - mediatek,mt6797-disp-ovl-2l
           - mediatek,mt8183-disp-ovl-2l
           - mediatek,mt8192-disp-ovl-2l
       - items:

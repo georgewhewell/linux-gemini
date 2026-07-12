@@ -937,6 +937,15 @@ config REGULATOR_MT6332
 	  This driver supports the control of different power rails of device
 	  through regulator interface
 
+config REGULATOR_MT6351
+	tristate "MediaTek MT6351 PMIC"
+	depends on MFD_MT6397
+	help
+	  Say y here to select this option to enable the power regulators of
+	  the MediaTek MT6351 PMIC.
+	  This driver supports the control of the buck and LDO rails through
+	  the regulator interface.
+
 config REGULATOR_MT6357
 	tristate "MediaTek MT6357 PMIC"
 	depends on MFD_MT6397

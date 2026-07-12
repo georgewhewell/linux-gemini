@@ -252,6 +252,10 @@
 			interrupts = <176 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-controller;
 			#interrupt-cells = <2>;
+
+			mt6351regulator: regulators {
+				compatible = "mediatek,mt6351-regulator";
+			};
 		};
 	};
 

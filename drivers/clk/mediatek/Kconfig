@@ -349,6 +349,15 @@ config COMMON_CLK_MT6797
 	help
 	  This driver supports MediaTek MT6797 basic clocks.
 
+config COMMON_CLK_MT6797_CAMSYS
+	tristate "Clock driver for MediaTek MT6797 camsys"
+	depends on COMMON_CLK_MT6797
+	help
+	  This driver supports the gate clocks in the camera subsystem on
+	  MediaTek MT6797. These clocks feed the camera engines and the
+	  camera SMI local arbiter used for DMA traffic through the
+	  multimedia IOMMU.
+
 config COMMON_CLK_MT6797_MMSYS
 	tristate "Clock driver for MediaTek MT6797 mmsys"
 	depends on COMMON_CLK_MT6797
@@ -360,6 +369,15 @@ config COMMON_CLK_MT6797_IMGSYS
 	depends on COMMON_CLK_MT6797
 	help
 	  This driver supports MediaTek MT6797 imgsys clocks.
+
+config COMMON_CLK_MT6797_MJCSYS
+	tristate "Clock driver for MediaTek MT6797 mjcsys"
+	depends on COMMON_CLK_MT6797
+	help
+	  This driver supports the gate clocks in the motion judder
+	  compensation subsystem on MediaTek MT6797. These clocks feed the
+	  MJC engines and SMI local arbiter used for DMA traffic through the
+	  multimedia IOMMU.
 
 config COMMON_CLK_MT6797_VDECSYS
 	tristate "Clock driver for MediaTek MT6797 vdecsys"

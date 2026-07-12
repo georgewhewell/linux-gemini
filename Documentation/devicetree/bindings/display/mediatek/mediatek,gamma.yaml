@@ -22,6 +22,7 @@ properties:
   compatible:
     oneOf:
       - enum:
+          - mediatek,mt6797-disp-gamma
           - mediatek,mt8173-disp-gamma
           - mediatek,mt8183-disp-gamma
           - mediatek,mt8195-disp-gamma

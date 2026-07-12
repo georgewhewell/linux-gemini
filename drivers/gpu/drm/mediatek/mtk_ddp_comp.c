@@ -60,10 +60,19 @@
 #define DISP_REG_UFO_START			0x0000
 #define UFO_BYPASS				BIT(2)
 
+struct mtk_ddp_comp_data {
+	bool no_od_dither;
+};
+
 struct mtk_ddp_comp_dev {
 	struct clk *clk;
 	void __iomem *regs;
 	struct cmdq_client_reg cmdq_reg;
+	const struct mtk_ddp_comp_data *data;
+};
+
+static const struct mtk_ddp_comp_data mt6797_od_data = {
+	.no_od_dither = true,
 };
 
 void mtk_ddp_write(struct cmdq_pkt *cmdq_pkt, unsigned int value,
@@ -225,7 +234,8 @@ static void mtk_od_config(struct device *dev, unsigned int w,
 
 	mtk_ddp_write(cmdq_pkt, w << 16 | h, &priv->cmdq_reg, priv->regs, DISP_REG_OD_SIZE);
 	mtk_ddp_write(cmdq_pkt, OD_RELAYMODE, &priv->cmdq_reg, priv->regs, DISP_REG_OD_CFG);
-	mtk_dither_set(dev, bpc, DISP_REG_OD_CFG, cmdq_pkt);
+	if (!priv->data || !priv->data->no_od_dither)
+		mtk_dither_set(dev, bpc, DISP_REG_OD_CFG, cmdq_pkt);
 }
 
 static void mtk_od_start(struct device *dev)
@@ -422,6 +432,11 @@ static const struct mtk_ddp_comp_funcs ddp_ovl_adaptor = {
 	.get_formats = mtk_ovl_adaptor_get_formats,
 	.get_num_formats = mtk_ovl_adaptor_get_num_formats,
 	.mode_valid = mtk_ovl_adaptor_mode_valid,
+};
+
+static const struct of_device_id mtk_ddp_comp_dt_ids[] = {
+	{ .compatible = "mediatek,mt6797-disp-od", .data = &mt6797_od_data },
+	{ /* sentinel */ }
 };
 
 static const char * const mtk_ddp_comp_stem[MTK_DDP_COMP_TYPE_MAX] = {
@@ -641,6 +656,7 @@ int mtk_ddp_comp_init(struct device *dev, struct device_node *node, struct mtk_d
 	struct platform_device *comp_pdev;
 	enum mtk_ddp_comp_type type;
 	struct mtk_ddp_comp_dev *priv;
+	const struct of_device_id *match;
 	int ret;
 
 	if (comp_id >= DDP_COMPONENT_DRM_ID_MAX)
@@ -685,6 +701,10 @@ int mtk_ddp_comp_init(struct device *dev, struct device_node *node, struct mtk_d
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
+
+	match = of_match_node(mtk_ddp_comp_dt_ids, node);
+	if (match)
+		priv->data = match->data;
 
 	priv->regs = devm_of_iomap(dev, node, 0, NULL);
 	if (IS_ERR(priv->regs))

@@ -232,6 +232,13 @@
 		infracfg = <&infrasys>;
 	};
 
+	mfgsys: syscon@13000000 {
+		compatible = "mediatek,mt6797-mfgsys", "syscon";
+		reg = <0 0x13000000 0 0x1000>;
+		#clock-cells = <1>;
+		status = "disabled";
+	};
+
 	watchdog: watchdog@10007000 {
 		compatible = "mediatek,mt6797-wdt", "mediatek,mt6589-wdt";
 		reg = <0 0x10007000 0 0x100>;

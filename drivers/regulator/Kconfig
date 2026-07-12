@@ -1371,6 +1371,14 @@ config REGULATOR_RT5739
 	  This driver can also be built as a module. If so, the module
 	  will be called rt5739.
 
+config REGULATOR_RT5735
+	tristate "Richtek RT5735 regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver supports the VSEL0 output of the Richtek RT5735
+	  regulator used by the MT6797 Gemini GPU.
+
 config REGULATOR_RT5759
 	tristate "Richtek RT5759 Regulator"
 	depends on I2C

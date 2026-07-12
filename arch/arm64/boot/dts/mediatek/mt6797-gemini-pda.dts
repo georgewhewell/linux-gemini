@@ -120,7 +120,7 @@
 	};
 };
 
-&mt6351regulator {
+&pmic {
 	mt6351_vemc_reg: ldo-vemc {
 		regulator-name = "vemc_3v3";
 		regulator-min-microvolt = <3000000>;
@@ -191,4 +191,23 @@
 	no-sd;
 	no-sdio;
 	status = "okay";
+};
+
+&i2c7 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c7_pins_a>;
+
+	/*
+	 * Live Gemian identifies the external GPU buck as RT5735 at 0x1c.
+	 * Keep the provider disabled until the board rail and OPP sequence
+	 * have a recovery-tested runtime bring-up plan.
+	 */
+	rt5735_vgpu: regulator@1c {
+		compatible = "richtek,rt5735";
+		reg = <0x1c>;
+		regulator-name = "vgpu";
+		regulator-min-microvolt = <600000>;
+		regulator-max-microvolt = <1393750>;
+		status = "disabled";
+	};
 };

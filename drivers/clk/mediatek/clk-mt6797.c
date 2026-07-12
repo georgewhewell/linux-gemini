@@ -10,6 +10,7 @@
 #include "clk-gate.h"
 #include "clk-mtk.h"
 #include "clk-pll.h"
+#include "reset.h"
 
 #include <dt-bindings/clock/mt6797-clk.h>
 
@@ -539,6 +540,18 @@ static const struct mtk_fixed_factor infra_fixed_divs[] = {
 	FACTOR(CLK_INFRA_13M, "clk13m", "clk26m", 1, 2),
 };
 
+static u16 infra_rst_ofs[] = {
+	0x120,
+	0x124,
+	0x128,
+};
+
+static const struct mtk_clk_rst_desc infra_rst_desc = {
+	.version = MTK_RST_SIMPLE,
+	.rst_bank_ofs = infra_rst_ofs,
+	.rst_bank_nr = ARRAY_SIZE(infra_rst_ofs),
+};
+
 static struct clk_hw_onecell_data *infra_clk_data;
 
 static void mtk_infrasys_init_early(struct device_node *node)
@@ -570,6 +583,7 @@ CLK_OF_DECLARE_DRIVER(mtk_infra, "mediatek,mt6797-infracfg",
 static int mtk_infrasys_init(struct platform_device *pdev)
 {
 	int i;
+	int ret;
 	struct device_node *node = pdev->dev.of_node;
 
 	if (!infra_clk_data) {
@@ -587,6 +601,10 @@ static int mtk_infrasys_init(struct platform_device *pdev)
 			       ARRAY_SIZE(infra_clks), infra_clk_data);
 	mtk_clk_register_factors(infra_fixed_divs, ARRAY_SIZE(infra_fixed_divs),
 				 infra_clk_data);
+
+	ret = mtk_register_reset_controller_with_dev(&pdev->dev, &infra_rst_desc);
+	if (ret)
+		return ret;
 
 	return of_clk_add_hw_provider(node, of_clk_hw_onecell_get,
 				      infra_clk_data);

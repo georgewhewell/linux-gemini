@@ -211,3 +211,19 @@
 		status = "disabled";
 	};
 };
+
+&i2c1 {
+	/*
+	 * Keep this candidate disabled until the physical ID, rails, and
+	 * interrupt/polling contract are verified on a recoverable image.
+	 * The vendor's logical 0x68 client is rewritten to 0x69 in probe.
+	 */
+	bmi160_candidate: bmi160@69 {
+		compatible = "bosch,bmi160";
+		reg = <0x69>;
+		mount-matrix = "0", "-1", "0",
+				       "-1", "0", "0",
+				       "0", "0", "-1";
+		status = "disabled";
+	};
+};

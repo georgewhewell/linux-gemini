@@ -227,3 +227,7 @@
 		status = "disabled";
 	};
 };
+
+&watchdog {
+	interrupts = <GIC_SPI 137 IRQ_TYPE_EDGE_FALLING>;
+};

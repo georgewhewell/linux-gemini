@@ -558,6 +558,16 @@
 		mediatek,gce-client-reg = <&gce SUBSYS_1400XXXX 0 0x1000>;
 	};
 
+	disp_pwm: pwm@1100f000 {
+		compatible = "mediatek,mt6797-disp-pwm";
+		reg = <0 0x1100f000 0 0x1000>;
+		#pwm-cells = <2>;
+		clocks = <&infrasys CLK_INFRA_DISP_PWM>;
+		clock-names = "main";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		status = "disabled";
+	};
+
 	ovl0: ovl@1400b000 {
 		compatible = "mediatek,mt6797-disp-ovl";
 		reg = <0 0x1400b000 0 0x1000>;

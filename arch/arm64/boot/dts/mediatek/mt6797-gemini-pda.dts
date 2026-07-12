@@ -343,3 +343,20 @@
 		status = "disabled";
 	};
 };
+
+&i2c0 {
+	/* FAN49101 is populated, but keep the regulator and consumer disabled. */
+	fan49101: regulator@70 {
+		compatible = "onsemi,fan49101";
+		reg = <0x70>;
+		status = "disabled";
+
+		regulators {
+			fan49101_vout: vout {
+				regulator-name = "fan49101-vout";
+				regulator-min-microvolt = <603000>;
+				regulator-max-microvolt = <1413000>;
+			};
+		};
+	};
+};

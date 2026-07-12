@@ -1906,3 +1906,11 @@ config REGULATOR_QCOM_LABIBB
 	  for LCD display panel.
 
 endif
+config REGULATOR_FAN49101
+	tristate "onsemi FAN49101 buck-boost regulator"
+	depends on I2C && OF
+	select REGMAP_I2C
+	help
+	  This driver supports the onsemi FAN49101 I2C buck-boost regulator.
+	  It has a register protocol distinct from the FAN53555 family and
+	  provides one standard regulator output.

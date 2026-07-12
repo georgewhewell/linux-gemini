@@ -8,6 +8,7 @@
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/pinctrl/mt6797-pinfunc.h>
+#include <dt-bindings/reset/mt6797-resets.h>
 
 / {
 	compatible = "mediatek,mt6797";
@@ -232,6 +233,26 @@
 		compatible = "mediatek,mt6797-apmixedsys";
 		reg = <0 0x1000c000 0 0x1000>;
 		#clock-cells = <1>;
+	};
+
+	pwrap: pwrap@1000d000 {
+		compatible = "mediatek,mt6797-pwrap";
+		reg = <0 0x1000d000 0 0x1000>;
+		reg-names = "pwrap";
+		interrupts = <GIC_SPI 178 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&topckgen CLK_TOP_MUX_PMICSPI>,
+			 <&infrasys CLK_INFRA_PMIC_AP>;
+		clock-names = "spi", "wrap";
+		resets = <&infrasys MT6797_INFRA_PMIC_WRAP_RST>;
+		reset-names = "pwrap";
+
+		pmic: pmic {
+			compatible = "mediatek,mt6351";
+			interrupt-parent = <&pio>;
+			interrupts = <176 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
 	};
 
 	sysirq: interrupt-controller@10200620 {

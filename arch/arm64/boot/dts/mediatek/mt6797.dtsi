@@ -296,6 +296,17 @@
 		#mbox-cells = <2>;
 	};
 
+	mipi_tx0: dsi-phy@10215000 {
+		compatible = "mediatek,mt6797-mipi-tx";
+		reg = <0 0x10215000 0 0x1000>;
+		clocks = <&clk26m>;
+		clock-output-names = "mipi_tx0_pll";
+		#clock-cells = <0>;
+		#phy-cells = <0>;
+
+		status = "disabled";
+	};
+
 	uart0: serial@11002000 {
 		compatible = "mediatek,mt6797-uart",
 			     "mediatek,mt6577-uart";
@@ -539,6 +550,34 @@
 		#clock-cells = <1>;
 		#reset-cells = <1>;
 		mediatek,gce-client-reg = <&gce SUBSYS_1400XXXX 0 0x1000>;
+	};
+
+	dsi0: dsi@1401c000 {
+		compatible = "mediatek,mt6797-dsi";
+		reg = <0 0x1401c000 0 0x1000>;
+		interrupts = <GIC_SPI 229 IRQ_TYPE_LEVEL_LOW>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		clocks = <&mmsys CLK_MM_DSI0_MM_CLOCK>,
+			 <&mmsys CLK_MM_DSI0_INTERFACE_CLOCK>,
+			 <&mipi_tx0>;
+		clock-names = "engine", "digital", "hs";
+		phys = <&mipi_tx0>;
+		phy-names = "dphy";
+
+		status = "disabled";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			dsi0_in: port@0 {
+				reg = <0>;
+			};
+
+			dsi0_out: port@1 {
+				reg = <1>;
+			};
+		};
 	};
 
 	mutex: mutex@1401f000 {

@@ -15,6 +15,7 @@ enum chip_id {
 	MT6328_CHIP_ID = 0x28,
 	MT6331_CHIP_ID = 0x31,
 	MT6332_CHIP_ID = 0x32,
+	MT6351_CHIP_ID = 0x51,
 	MT6357_CHIP_ID = 0x57,
 	MT6358_CHIP_ID = 0x58,
 	MT6359_CHIP_ID = 0x59,
@@ -66,11 +67,12 @@ struct mt6397_chip {
 	int irq;
 	struct irq_domain *irq_domain;
 	struct mutex irqlock;
-	u16 wake_mask[3];
-	u16 irq_masks_cur[3];
-	u16 irq_masks_cache[3];
-	u16 int_con[3];
-	u16 int_status[3];
+	u16 wake_mask[4];
+	u16 irq_masks_cur[4];
+	u16 irq_masks_cache[4];
+	u16 int_con[4];
+	u16 int_status[4];
+	u8 num_irq_regs;
 	u16 chip_id;
 	void *irq_data;
 };

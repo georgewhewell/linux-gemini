@@ -5,6 +5,7 @@
  */
 
 #include <dt-bindings/clock/mt6797-clk.h>
+#include <dt-bindings/gce/mediatek,mt6797-gce.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/pinctrl/mt6797-pinfunc.h>
@@ -283,6 +284,16 @@
 				 <&larb4>, <&larb5>, <&larb6>;
 		#iommu-cells = <1>;
 		status = "disabled";
+	};
+
+	gce: mailbox@10212000 {
+		compatible = "mediatek,mt6797-gce",
+			     "mediatek,mt8173-gce";
+		reg = <0 0x10212000 0 0x1000>;
+		interrupts = <GIC_SPI 152 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infrasys CLK_INFRA_GCE>;
+		clock-names = "gce";
+		#mbox-cells = <2>;
 	};
 
 	uart0: serial@11002000 {

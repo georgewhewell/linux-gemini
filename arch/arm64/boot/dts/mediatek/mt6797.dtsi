@@ -130,11 +130,16 @@
 		      <0 0x10002000 0 0x400>,
 		      <0 0x10002400 0 0x400>,
 		      <0 0x10002800 0 0x400>,
-		      <0 0x10002C00 0 0x400>;
+		      <0 0x10002c00 0 0x400>,
+		      <0 0x1000b000 0 0x1000>;
 		reg-names = "gpio", "iocfgl", "iocfgb",
-			    "iocfgr", "iocfgt";
+			    "iocfgr", "iocfgt", "eint";
 		gpio-controller;
 		#gpio-cells = <2>;
+		gpio-ranges = <&pio 0 0 262>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		interrupts = <GIC_SPI 170 IRQ_TYPE_LEVEL_HIGH>;
 
 		uart0_pins_a: uart0-pins {
 			pins-bus {

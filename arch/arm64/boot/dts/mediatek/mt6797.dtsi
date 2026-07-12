@@ -539,6 +539,16 @@
 		#clock-cells = <1>;
 	};
 
+	mutex: mutex@1401f000 {
+		compatible = "mediatek,mt6797-disp-mutex";
+		reg = <0 0x1401f000 0 0x1000>;
+		interrupts = <GIC_SPI 202 IRQ_TYPE_LEVEL_LOW>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		mediatek,gce-events = <CMDQ_EVENT_MUTEX0_STREAM_EOF>,
+				      <CMDQ_EVENT_MUTEX1_STREAM_EOF>;
+		mediatek,gce-client-reg = <&gce SUBSYS_1401XXXX 0xf000 0x1000>;
+	};
+
 	larb0: larb@14020000 {
 		compatible = "mediatek,mt6797-smi-larb";
 		reg = <0 0x14020000 0 0x1000>;

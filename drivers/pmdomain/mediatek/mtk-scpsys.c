@@ -82,6 +82,7 @@ enum clk_id {
 	CLK_NONE,
 	CLK_MM,
 	CLK_MFG,
+	CLK_MFG_52M,
 	CLK_VENC,
 	CLK_VENC_LT,
 	CLK_ETHIF,
@@ -96,6 +97,7 @@ static const char * const clk_names[] = {
 	NULL,
 	"mm",
 	"mfg",
+	"mfg_52m",
 	"venc",
 	"venc_lt",
 	"ethif",
@@ -816,7 +818,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.ctl_offs = 0x334,
 		.sram_pdn_bits = 0,
 		.sram_pdn_ack_bits = 0,
-		.clk_id = {CLK_MFG},
+		.clk_id = {CLK_MFG_52M},
 	},
 	[MT6797_POWER_DOMAIN_MFG] = {
 		.name = "mfg",
@@ -826,7 +828,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_ack_offs = SPM_MFG_SRAM_CON_MT6797,
 		.sram_pdn_bits = GENMASK(1, 0),
 		.sram_pdn_ack_bits = GENMASK(17, 16),
-		.clk_id = {CLK_NONE},
+		.clk_id = {CLK_MFG_52M},
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE0] = {
 		.name = "mfg_core0",
@@ -836,7 +838,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_ack_offs = SPM_MFG_SRAM_CON_MT6797,
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(20),
-		.clk_id = {CLK_NONE},
+		.clk_id = {CLK_MFG_52M},
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE1] = {
 		.name = "mfg_core1",
@@ -846,7 +848,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_ack_offs = SPM_MFG_SRAM_CON_MT6797,
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(21),
-		.clk_id = {CLK_NONE},
+		.clk_id = {CLK_MFG_52M},
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE2] = {
 		.name = "mfg_core2",
@@ -856,7 +858,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_ack_offs = SPM_MFG_SRAM_CON_MT6797,
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(22),
-		.clk_id = {CLK_NONE},
+		.clk_id = {CLK_MFG_52M},
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE3] = {
 		.name = "mfg_core3",
@@ -866,7 +868,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_ack_offs = SPM_MFG_SRAM_CON_MT6797,
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(23),
-		.clk_id = {CLK_NONE},
+		.clk_id = {CLK_MFG_52M},
 	},
 	[MT6797_POWER_DOMAIN_MJC] = {
 		.name = "mjc",

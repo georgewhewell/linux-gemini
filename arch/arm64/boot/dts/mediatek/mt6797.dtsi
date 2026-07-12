@@ -226,9 +226,10 @@
 		#power-domain-cells = <1>;
 		reg = <0 0x10006000 0 0x1000>;
 		clocks = <&topckgen CLK_TOP_MUX_MFG>,
+			 <&topckgen CLK_TOP_MUX_MFG_52M>,
 			 <&topckgen CLK_TOP_MUX_MM>,
 			 <&topckgen CLK_TOP_MUX_VDEC>;
-		clock-names = "mfg", "mm", "vdec";
+		clock-names = "mfg", "mfg_52m", "mm", "vdec";
 		infracfg = <&infrasys>;
 	};
 

@@ -256,6 +256,10 @@
 			mt6351regulator: regulators {
 				compatible = "mediatek,mt6351-regulator";
 			};
+
+			rtc {
+				compatible = "mediatek,mt6351-rtc";
+			};
 		};
 	};
 

@@ -211,6 +211,16 @@
 #define	CLK_IMG_LARB6				4
 #define	CLK_IMG_NR				5
 
+/* CAM_SYS */
+#define CLK_CAM_CAMSV2				1
+#define CLK_CAM_CAMSV1				2
+#define CLK_CAM_CAMSV0				3
+#define CLK_CAM_SENINF				4
+#define CLK_CAM_CAMTG				5
+#define CLK_CAM_CAMSYS				6
+#define CLK_CAM_LARB2				7
+#define CLK_CAM_NR				8
+
 /* MM_SYS */
 #define	CLK_MM_SMI_COMMON			1
 #define	CLK_MM_SMI_LARB0			2
@@ -255,6 +265,15 @@
 #define	CLK_MM_DSI0_INTERFACE_CLOCK		41
 #define	CLK_MM_DSI1_INTERFACE_CLOCK		42
 #define	CLK_MM_NR				43
+
+/* MJC_SYS */
+#define CLK_MJC_SMI_LARB			1
+#define CLK_MJC_TOP_CLK_0			2
+#define CLK_MJC_TOP_CLK_1			3
+#define CLK_MJC_TOP_CLK_2			4
+#define CLK_MJC_FAKE_ENGINE			5
+#define CLK_MJC_LARB4_ASIF			6
+#define CLK_MJC_NR				7
 
 /* VDEC_SYS */
 #define	CLK_VDEC_CKEN_ENG			1

@@ -137,6 +137,37 @@
 		};
 	};
 
+	usb11_tphy: t-phy@11210000 {
+		compatible = "mediatek,mt6797-tphy", "mediatek,generic-tphy-v1";
+		reg = <0 0x11210000 0 0x1000>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		status = "disabled";
+
+		usb11_u2: usb-phy@11210800 {
+			reg = <0 0x11210800 0 0x100>;
+			clocks = <&infrasys CLK_INFRA_SSUSB_REF>;
+			clock-names = "ref";
+			mediatek,eye-src = <4>;
+			#phy-cells = <1>;
+			status = "disabled";
+		};
+	};
+
+	usb11: usb@11200000 {
+		compatible = "mediatek,mt6797-usb11", "mediatek,mtk-musb";
+		reg = <0 0x11200000 0 0x1000>;
+		interrupts = <GIC_SPI 73 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "mc";
+		clocks = <&infrasys CLK_INFRA_ICUSB>,
+				 <&infrasys CLK_INFRA_SSUSB_REF>;
+		clock-names = "infra_icusb", "sssub_ref_clk";
+		phys = <&usb11_u2 PHY_TYPE_USB2>;
+		dr_mode = "host";
+		status = "disabled";
+	};
+
 	ssusb: usb@11271000 {
 		compatible = "mediatek,mt6797-mtu3", "mediatek,mtu3";
 		reg = <0 0x11271000 0 0x3000>,

@@ -133,7 +133,7 @@
 	};
 };
 
-&pmic {
+&mt6351regulator {
 	mt6351_vemc_reg: ldo-vemc {
 		regulator-name = "vemc_3v3";
 		regulator-min-microvolt = <3000000>;

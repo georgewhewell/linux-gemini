@@ -150,6 +150,11 @@
 };
 
 &pio {
+	/*
+	 * MT6797 pinctrl currently supports pinmux only for these pads:
+	 * its descriptor has no pull, IES, or drive-strength register maps.
+	 * Keep boot-firmware pad configuration until those maps are recovered.
+	 */
 	mmc0_pins_default: mmc0-default-pins {
 		pins-cmd-dat {
 			pinmux = <MT6797_GPIO114__FUNC_MSDC0_DAT0>,
@@ -161,27 +166,18 @@
 				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
 				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
 				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
-			input-enable;
-			drive-strength = <4>;
-			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
 		};
 
 		pins-clk {
 			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
-			drive-strength = <4>;
-			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
 		};
 
 		pins-ds {
 			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
-			drive-strength = <4>;
-			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
 		};
 
 		pins-rst {
 			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
-			drive-strength = <4>;
-			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
 		};
 	};
 };

@@ -845,6 +845,7 @@ static const struct dev_pm_ops xhci_mtk_pm_ops = {
 static const struct of_device_id mtk_xhci_of_match[] = {
 	{ .compatible = "mediatek,mt8173-xhci"},
 	{ .compatible = "mediatek,mt8195-xhci"},
+	{ .compatible = "mediatek,mt6797-xhci"},
 	{ .compatible = "mediatek,mtk-xhci"},
 	{ },
 };

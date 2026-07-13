@@ -29,6 +29,7 @@ properties:
           - mediatek,mt8192-mtu3
           - mediatek,mt8195-mtu3
           - mediatek,mt8365-mtu3
+          - mediatek,mt6797-mtu3
       - const: mediatek,mtu3
 
   reg:
@@ -51,6 +52,7 @@ properties:
       - description: optional, wakeup interrupt used to support runtime PM
 
   interrupt-names:
+    minItems: 1
     items:
       - const: device
       - const: wakeup

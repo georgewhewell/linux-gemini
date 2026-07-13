@@ -378,3 +378,8 @@
 		};
 	};
 };
+
+/* The RT5735 VGPU rail remains disabled until a fixed OPP is validated. */
+&gpu {
+	mali-supply = <&rt5735_vgpu>;
+};

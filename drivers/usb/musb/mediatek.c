@@ -39,8 +39,15 @@
 
 #define MTK_MUSB_CLKS_NUM	3
 
+struct mtk_musb_data {
+	const char *const *clock_names;
+	unsigned int num_clocks;
+	const struct musb_hdrc_config *hdrc_config;
+};
+
 struct mtk_glue {
 	struct device *dev;
+	const struct mtk_musb_data *data;
 	struct musb *musb;
 	struct platform_device *musb_pdev;
 	struct platform_device *usb_phy;
@@ -55,12 +62,15 @@ struct mtk_glue {
 static int mtk_musb_clks_get(struct mtk_glue *glue)
 {
 	struct device *dev = glue->dev;
+	unsigned int i;
 
-	glue->clks[0].id = "main";
-	glue->clks[1].id = "mcu";
-	glue->clks[2].id = "univpll";
+	if (glue->data->num_clocks > ARRAY_SIZE(glue->clks))
+		return -EINVAL;
 
-	return devm_clk_bulk_get(dev, MTK_MUSB_CLKS_NUM, glue->clks);
+	for (i = 0; i < glue->data->num_clocks; i++)
+		glue->clks[i].id = glue->data->clock_names[i];
+
+	return devm_clk_bulk_get(dev, glue->data->num_clocks, glue->clks);
 }
 
 static int mtk_otg_switch_set(struct mtk_glue *glue, enum usb_role role)
@@ -339,7 +349,7 @@ static int mtk_musb_exit(struct musb *musb)
 	mtk_otg_switch_exit(glue);
 	phy_power_off(glue->phy);
 	phy_exit(glue->phy);
-	clk_bulk_disable_unprepare(MTK_MUSB_CLKS_NUM, glue->clks);
+	clk_bulk_disable_unprepare(glue->data->num_clocks, glue->clks);
 
 	pm_runtime_put_sync(dev);
 	pm_runtime_disable(dev);
@@ -391,6 +401,48 @@ static const struct musb_hdrc_config mtk_musb_hdrc_config = {
 	.ram_bits = MTK_MUSB_RAM_BITS,
 };
 
+static const struct musb_fifo_cfg mt6797_usb11_mode_cfg[] = {
+	{ .hw_ep_num = 1, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 1, .style = FIFO_RX, .maxpacket = 512, },
+	{ .hw_ep_num = 2, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 2, .style = FIFO_RX, .maxpacket = 512, },
+	{ .hw_ep_num = 3, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 3, .style = FIFO_RX, .maxpacket = 512, },
+	{ .hw_ep_num = 4, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 4, .style = FIFO_RX, .maxpacket = 512, },
+	{ .hw_ep_num = 5, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 5, .style = FIFO_RX, .maxpacket = 512, },
+};
+
+static const struct musb_hdrc_config mt6797_usb11_hdrc_config = {
+	.fifo_cfg = mt6797_usb11_mode_cfg,
+	.fifo_cfg_size = ARRAY_SIZE(mt6797_usb11_mode_cfg),
+	.multipoint = false,
+	.dyn_fifo = true,
+	.num_eps = 6,
+	.ram_bits = MTK_MUSB_RAM_BITS,
+};
+
+static const char *const mtk_musb_clock_names[] = {
+	"main", "mcu", "univpll",
+};
+
+static const char *const mt6797_usb11_clock_names[] = {
+	"infra_icusb", "sssub_ref_clk",
+};
+
+static const struct mtk_musb_data mtk_musb_data = {
+	.clock_names = mtk_musb_clock_names,
+	.num_clocks = ARRAY_SIZE(mtk_musb_clock_names),
+	.hdrc_config = &mtk_musb_hdrc_config,
+};
+
+static const struct mtk_musb_data mt6797_usb11_data = {
+	.clock_names = mt6797_usb11_clock_names,
+	.num_clocks = ARRAY_SIZE(mt6797_usb11_clock_names),
+	.hdrc_config = &mt6797_usb11_hdrc_config,
+};
+
 static const struct platform_device_info mtk_dev_info = {
 	.name = "musb-hdrc",
 	.id = PLATFORM_DEVID_AUTO,
@@ -411,6 +463,10 @@ static int mtk_musb_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	glue->dev = dev;
+	glue->data = device_get_match_data(dev);
+	if (!glue->data)
+		glue->data = &mtk_musb_data;
+
 	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
@@ -424,7 +480,7 @@ static int mtk_musb_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	pdata->config = &mtk_musb_hdrc_config;
+	pdata->config = glue->data->hdrc_config;
 	pdata->platform_ops = &mtk_musb_ops;
 	pdata->mode = usb_get_dr_mode(dev);
 
@@ -472,7 +528,7 @@ static int mtk_musb_probe(struct platform_device *pdev)
 	pm_runtime_enable(dev);
 	pm_runtime_get_sync(dev);
 
-	ret = clk_bulk_prepare_enable(MTK_MUSB_CLKS_NUM, glue->clks);
+	ret = clk_bulk_prepare_enable(glue->data->num_clocks, glue->clks);
 	if (ret)
 		goto err_enable_clk;
 
@@ -495,7 +551,7 @@ static int mtk_musb_probe(struct platform_device *pdev)
 	return 0;
 
 err_device_register:
-	clk_bulk_disable_unprepare(MTK_MUSB_CLKS_NUM, glue->clks);
+	clk_bulk_disable_unprepare(glue->data->num_clocks, glue->clks);
 err_enable_clk:
 	pm_runtime_put_sync(dev);
 	pm_runtime_disable(dev);
@@ -515,7 +571,8 @@ static void mtk_musb_remove(struct platform_device *pdev)
 
 #ifdef CONFIG_OF
 static const struct of_device_id mtk_musb_match[] = {
-	{.compatible = "mediatek,mtk-musb",},
+	{ .compatible = "mediatek,mt6797-usb11", .data = &mt6797_usb11_data },
+	{ .compatible = "mediatek,mtk-musb", .data = &mtk_musb_data },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_musb_match);

@@ -15,12 +15,16 @@ properties:
     pattern: '^usb@[0-9a-f]+$'
 
   compatible:
-    items:
-      - enum:
-          - mediatek,mt8516-musb
-          - mediatek,mt2701-musb
-          - mediatek,mt7623-musb
-      - const: mediatek,mtk-musb
+    oneOf:
+      - items:
+          - enum:
+              - mediatek,mt8516-musb
+              - mediatek,mt2701-musb
+              - mediatek,mt7623-musb
+          - const: mediatek,mtk-musb
+      - items:
+          - const: mediatek,mt6797-usb11
+          - const: mediatek,mtk-musb
 
   reg:
     maxItems: 1
@@ -33,16 +37,21 @@ properties:
       - const: mc
 
   clocks:
+    minItems: 2
     items:
       - description: The main/core clock
       - description: The system bus clock
       - description: The 48Mhz clock
 
   clock-names:
-    items:
-      - const: main
-      - const: mcu
-      - const: univpll
+    oneOf:
+      - items:
+          - const: main
+          - const: mcu
+          - const: univpll
+      - items:
+          - const: infra_icusb
+          - const: sssub_ref_clk
 
   phys:
     maxItems: 1
@@ -66,6 +75,21 @@ properties:
     $ref: /schemas/connector/usb-connector.yaml#
     description: Connector for dual role switch
     type: object
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: mediatek,mt6797-usb11
+    then:
+      properties:
+        clocks:
+          minItems: 2
+          maxItems: 2
+        clock-names:
+          minItems: 2
+          maxItems: 2
 
 dependencies:
   usb-role-switch: [ connector ]

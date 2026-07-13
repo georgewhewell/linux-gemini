@@ -567,16 +567,6 @@
 		status = "disabled";
 	};
 
-	dvfsp: dvfsp@11015000 {
-		compatible = "mediatek,mt6797-dvfsp";
-		reg = <0 0x11015000 0 0x1000>,
-		      <0 0x0012a000 0 0x3000>;
-		interrupts = <GIC_SPI 161 IRQ_TYPE_LEVEL_LOW>;
-		clocks = <&infrasys CLK_INFRA_I2C_APPM>;
-		clock-names = "i2c";
-		status = "disabled";
-	};
-
 	i2c5: i2c@1101c000 {
 		compatible = "mediatek,mt6797-i2c",
 			     "mediatek,mt6577-i2c";

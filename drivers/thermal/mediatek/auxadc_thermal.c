@@ -182,6 +182,7 @@ enum mtk_thermal_version {
 	MTK_THERMAL_V1 = 1,
 	MTK_THERMAL_V2,
 	MTK_THERMAL_V3,
+	MTK_THERMAL_V4,
 };
 
 /* MT2701 thermal sensors */
@@ -296,6 +297,18 @@ enum mtk_thermal_version {
 #define MT8365_TS2 1
 #define MT8365_TS3 2
 
+/* MT6797 thermal sensors */
+#define MT6797_TS_MCU1		0
+#define MT6797_TS_MCU2		1
+#define MT6797_TS_MCU3		2
+#define MT6797_TS_MCU4		3
+#define MT6797_TS_ABB		4
+#define MT6797_TEMP_AUXADC_CHANNEL	11
+#define MT6797_NUM_SENSORS	5
+#define MT6797_NUM_ZONES		6
+#define MT6797_NUM_SENSORS_PER_ZONE	2
+#define MT6797_NUM_CONTROLLER	1
+
 struct mtk_thermal;
 
 struct thermal_bank_cfg {
@@ -325,6 +338,9 @@ struct mtk_thermal_data {
 	u32 apmixed_buffer_ctl_reg;
 	u32 apmixed_buffer_ctl_mask;
 	u32 apmixed_buffer_ctl_set;
+	u32 temp_ahbpoll;
+	u32 temp_msrctl0;
+	u32 temp_adcvalidmask;
 };
 
 struct mtk_thermal {
@@ -576,6 +592,61 @@ static const struct mtk_thermal_data mt8365_thermal_data = {
 	.apmixed_buffer_ctl_set = 0,
 };
 
+static const int mt6797_bank_data[MT6797_NUM_ZONES][MT6797_NUM_SENSORS_PER_ZONE] = {
+	{ MT6797_TS_MCU1 },
+	{ MT6797_TS_MCU4 },
+	{ MT6797_TS_MCU2, MT6797_TS_MCU3 },
+	{ MT6797_TS_MCU2 },
+	{ MT6797_TS_MCU2 },
+	{ MT6797_TS_MCU2 },
+};
+
+static const int mt6797_msr[MT6797_NUM_SENSORS_PER_ZONE] = {
+	TEMP_MSR0, TEMP_MSR1,
+};
+
+static const int mt6797_adcpnp[MT6797_NUM_SENSORS_PER_ZONE] = {
+	TEMP_ADCPNP0, TEMP_ADCPNP1,
+};
+
+static const int mt6797_mux_values[MT6797_NUM_SENSORS] = {
+	0, 1, 2, 3, 0,
+};
+
+static const int mt6797_vts_index[MT6797_NUM_SENSORS] = {
+	VTS1, VTS2, VTS3, VTS4, VTSABB,
+};
+
+static const int mt6797_tc_offset[MT6797_NUM_CONTROLLER] = { 0x0 };
+
+static const struct mtk_thermal_data mt6797_thermal_data = {
+	.num_banks = MT6797_NUM_ZONES,
+	.num_sensors = MT6797_NUM_SENSORS,
+	.auxadc_channel = MT6797_TEMP_AUXADC_CHANNEL,
+	.vts_index = mt6797_vts_index,
+	.num_controller = MT6797_NUM_CONTROLLER,
+	.controller_offset = mt6797_tc_offset,
+	.need_switch_bank = true,
+	.bank_data = {
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[0] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[1] },
+		{ .num_sensors = 2, .sensors = mt6797_bank_data[2] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[3] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[4] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[5] },
+	},
+	.msr = mt6797_msr,
+	.adcpnp = mt6797_adcpnp,
+	.sensor_mux_values = mt6797_mux_values,
+	.version = MTK_THERMAL_V4,
+	.apmixed_buffer_ctl_reg = APMIXED_SYS_TS_CON1,
+	.apmixed_buffer_ctl_mask = GENMASK(31, 6) | BIT(3),
+	.apmixed_buffer_ctl_set = BIT(0),
+	.temp_ahbpoll = 0x30d,
+	.temp_msrctl0 = 0x492,
+	.temp_adcvalidmask = 0x2c,
+};
+
 /*
  * The MT2712 thermal controller has one bank, which can read up to
  * four temperature sensors simultaneously. The MT2712 has a total of 4
@@ -770,6 +841,34 @@ static int raw_to_mcelsius_v3(struct mtk_thermal *mt, int sensno, s32 raw)
 	return mt->degc_cali * 500 - tmp;
 }
 
+static int raw_to_mcelsius_v4(struct mtk_thermal *mt, int sensno, s32 raw)
+{
+	s64 gain, x_roomt, measured, delta, slope_denominator;
+
+	if (raw == 0)
+		return 0;
+
+	raw &= 0xfff;
+	gain = 10000 + ((s64)(mt->adc_ge - 512) * 10000) / 4096;
+	if (gain <= 0)
+		return THERMAL_TEMP_INVALID;
+
+	x_roomt = (((((s64)mt->vts[sensno] + 3350 - mt->adc_oe) *
+		      10000) >> 12) * 10000) / gain;
+	measured = (((((s64)raw - mt->adc_oe) * 10000) >> 12) *
+		    10000) / gain;
+	delta = (measured - x_roomt) * 15 / 18;
+	slope_denominator = 1663 +
+		(mt->o_slope_sign ? -1 : 1) * (s64)mt->o_slope * 10;
+	if (slope_denominator <= 0)
+		return THERMAL_TEMP_INVALID;
+
+	delta = (delta * 1000) / slope_denominator;
+
+	/* Vendor result is in 0.1 degrees C; return milli-degrees C. */
+	return (int)(((s64)(mt->degc_cali * 10 / 2) - delta) * 100);
+}
+
 /**
  * mtk_thermal_get_bank - get bank
  * @bank:	The bank
@@ -898,11 +997,12 @@ static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 			controller_base + TEMP_MONCTL2);
 
 	/* poll is set to 10u */
-	writel(TEMP_AHBPOLL_ADC_POLL_INTERVAL(768),
+	writel(TEMP_AHBPOLL_ADC_POLL_INTERVAL(mt->conf->temp_ahbpoll ?
+					     mt->conf->temp_ahbpoll : 768),
 	       controller_base + TEMP_AHBPOLL);
 
 	/* temperature sampling control, 1 sample */
-	writel(0x0, controller_base + TEMP_MSRCTL0);
+	writel(mt->conf->temp_msrctl0, controller_base + TEMP_MSRCTL0);
 
 	/* exceed this polling time, IRQ would be inserted */
 	writel(0xffffffff, controller_base + TEMP_AHBTO);
@@ -955,7 +1055,9 @@ static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 	writel(0x0, controller_base + TEMP_RDCTRL);
 
 	/* indicate where the valid bit is */
-	writel(TEMP_ADCVALIDMASK_VALID_HIGH | TEMP_ADCVALIDMASK_VALID_POS(12),
+	writel(mt->conf->temp_adcvalidmask ?
+	       mt->conf->temp_adcvalidmask :
+	       TEMP_ADCVALIDMASK_VALID_HIGH | TEMP_ADCVALIDMASK_VALID_POS(12),
 	       controller_base + TEMP_ADCVALIDMASK);
 
 	/* no shift */
@@ -1070,6 +1172,41 @@ static int mtk_thermal_extract_efuse_v3(struct mtk_thermal *mt, u32 *buf)
 	return 0;
 }
 
+static int mtk_thermal_extract_efuse_v4(struct mtk_thermal *mt, u32 *buf)
+{
+	int i;
+
+	/* MT6797 calibration-enable is bit 0 of efuse word 0x10206180. */
+	if (!(buf[1] & BIT(0)))
+		return -EINVAL;
+
+	mt->adc_ge = (buf[0] >> 22) & 0x3ff;
+	mt->adc_oe = (buf[0] >> 12) & 0x3ff;
+	mt->degc_cali = (buf[1] >> 1) & 0x3f;
+	mt->o_slope = (buf[1] >> 26) & 0x3f;
+	mt->o_slope_sign = (buf[1] >> 7) & 0x1;
+	mt->vts[VTS1] = (buf[1] >> 17) & 0x1ff;
+	mt->vts[VTS2] = (buf[1] >> 8) & 0x1ff;
+	mt->vts[VTS3] = buf[0] & 0x1ff;
+	mt->vts[VTS4] = (buf[2] >> 23) & 0x1ff;
+	mt->vts[VTSABB] = (buf[2] >> 14) & 0x1ff;
+
+	/* ID=0 samples ignore the slope fuse in the vendor contract. */
+	if (!((buf[0] >> 9) & 0x1))
+		mt->o_slope = 0;
+
+	if (mt->adc_ge < 265 || mt->adc_ge > 758 ||
+	    mt->adc_oe < 265 || mt->adc_oe > 758 ||
+	    mt->degc_cali < 1 || mt->degc_cali > 63)
+		return -EINVAL;
+
+	for (i = 0; i < mt->conf->num_sensors; i++)
+		if (mt->vts[mt->conf->vts_index[i]] > 484)
+			return -EINVAL;
+
+	return 0;
+}
+
 static int mtk_thermal_get_calibration_data(struct device *dev,
 					    struct mtk_thermal *mt)
 {
@@ -1081,7 +1218,7 @@ static int mtk_thermal_get_calibration_data(struct device *dev,
 	/* Start with default values */
 	mt->adc_ge = 512;
 	mt->adc_oe = 512;
-	for (i = 0; i < mt->conf->num_sensors; i++)
+	for (i = 0; i < MAX_NUM_VTS; i++)
 		mt->vts[i] = 260;
 	mt->degc_cali = 40;
 	mt->o_slope = 0;
@@ -1115,6 +1252,9 @@ static int mtk_thermal_get_calibration_data(struct device *dev,
 		break;
 	case MTK_THERMAL_V3:
 		ret = mtk_thermal_extract_efuse_v3(mt, buf);
+		break;
+	case MTK_THERMAL_V4:
+		ret = mtk_thermal_extract_efuse_v4(mt, buf);
 		break;
 	default:
 		ret = -EINVAL;
@@ -1161,7 +1301,13 @@ static const struct of_device_id mtk_thermal_of_match[] = {
 		.compatible = "mediatek,mt8365-thermal",
 		.data = (void *)&mt8365_thermal_data,
 	}, {
+		.compatible = "mediatek,mt6797-thermal",
+		.data = (void *)&mt6797_thermal_data,
+	}, {
+		.compatible = "mediatek,mt6797-therm_ctrl",
+		.data = (void *)&mt6797_thermal_data,
 	},
+	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, mtk_thermal_of_match);
 
@@ -1277,6 +1423,8 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 		mt->raw_to_mcelsius = raw_to_mcelsius_v1;
 	else if (mt->conf->version == MTK_THERMAL_V2)
 		mt->raw_to_mcelsius = raw_to_mcelsius_v2;
+	else if (mt->conf->version == MTK_THERMAL_V4)
+		mt->raw_to_mcelsius = raw_to_mcelsius_v4;
 	else
 		mt->raw_to_mcelsius = raw_to_mcelsius_v3;
 

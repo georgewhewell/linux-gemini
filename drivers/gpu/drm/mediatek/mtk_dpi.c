@@ -1113,6 +1113,10 @@ static const struct mtk_dpi_factor dpi_factor_mt8173[] = {
 	{ 27000, 48 }, { 84000, 24 }, { 167000, 12 }, { U32_MAX, 6 }
 };
 
+static const struct mtk_dpi_factor dpi_factor_mt6797[] = {
+	{ 27000, 48 }, { 84000, 24 }, { 167000, 12 }, { U32_MAX, 6 }
+};
+
 static const struct mtk_dpi_factor dpi_factor_mt8183[] = {
 	{ 27000, 8 }, { 167000, 4 }, { U32_MAX, 2 }
 };
@@ -1125,6 +1129,23 @@ static const struct mtk_dpi_conf mt8173_conf = {
 	.dpi_factor = dpi_factor_mt8173,
 	.num_dpi_factor = ARRAY_SIZE(dpi_factor_mt8173),
 	.reg_h_fre_con = 0xe0,
+	.max_clock_khz = 300000,
+	.output_fmts = mt8173_output_fmts,
+	.num_output_fmts = ARRAY_SIZE(mt8173_output_fmts),
+	.pixels_per_iter = 1,
+	.is_ck_de_pol = true,
+	.swap_input_support = true,
+	.support_direct_pin = true,
+	.dimension_mask = HPW_MASK,
+	.hvsize_mask = HSIZE_MASK,
+	.channel_swap_shift = CH_SWAP,
+	.yuv422_en_bit = YUV422_EN,
+	.csc_enable_bit = CSC_ENABLE,
+};
+
+static const struct mtk_dpi_conf mt6797_conf = {
+	.dpi_factor = dpi_factor_mt6797,
+	.num_dpi_factor = ARRAY_SIZE(dpi_factor_mt6797),
 	.max_clock_khz = 300000,
 	.output_fmts = mt8173_output_fmts,
 	.num_output_fmts = ARRAY_SIZE(mt8173_output_fmts),
@@ -1338,6 +1359,7 @@ static void mtk_dpi_remove(struct platform_device *pdev)
 static const struct of_device_id mtk_dpi_of_ids[] = {
 	{ .compatible = "mediatek,mt2701-dpi", .data = &mt2701_conf },
 	{ .compatible = "mediatek,mt8173-dpi", .data = &mt8173_conf },
+	{ .compatible = "mediatek,mt6797-dpi", .data = &mt6797_conf },
 	{ .compatible = "mediatek,mt8183-dpi", .data = &mt8183_conf },
 	{ .compatible = "mediatek,mt8186-dpi", .data = &mt8186_conf },
 	{ .compatible = "mediatek,mt8188-dp-intf", .data = &mt8195_dpintf_conf },

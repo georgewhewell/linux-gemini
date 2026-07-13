@@ -22,6 +22,7 @@ properties:
           - mediatek,mt2701-dpi
           - mediatek,mt7623-dpi
           - mediatek,mt8173-dpi
+          - mediatek,mt6797-dpi
           - mediatek,mt8183-dpi
           - mediatek,mt8186-dpi
           - mediatek,mt8188-dp-intf

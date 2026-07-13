@@ -57,6 +57,9 @@ properties:
           - enum:
               - samsung,exynos8890-mali
           - const: arm,mali-t880
+      - items:
+          - const: mediatek,mt6797-mali
+          - const: arm,mali-t880
 
   reg:
     maxItems: 1
@@ -88,7 +91,10 @@ properties:
     type: object
 
   power-domains:
-    maxItems: 1
+    minItems: 1
+    maxItems: 5
+
+  power-domain-names: true
 
   resets:
     minItems: 1

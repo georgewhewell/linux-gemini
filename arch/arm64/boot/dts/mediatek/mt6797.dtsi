@@ -790,6 +790,31 @@
 		};
 	};
 
+	dpi0: dpi@1401e000 {
+		compatible = "mediatek,mt6797-dpi";
+		reg = <0 0x1401e000 0 0x1000>;
+		interrupts = <GIC_SPI 231 IRQ_TYPE_LEVEL_LOW>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		clocks = <&mmsys CLK_MM_DPI_INTERFACE_CLOCK>,
+			 <&mmsys CLK_MM_DPI_MM_CLOCK>,
+			 <&topckgen CLK_TOP_TVDPLL_CK>;
+		clock-names = "pixel", "engine", "pll";
+		status = "disabled";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			dpi0_in: port@0 {
+				reg = <0>;
+			};
+
+			dpi0_out: port@1 {
+				reg = <1>;
+			};
+		};
+	};
+
 	mutex: mutex@1401f000 {
 		compatible = "mediatek,mt6797-disp-mutex";
 		reg = <0 0x1401f000 0 0x1000>;

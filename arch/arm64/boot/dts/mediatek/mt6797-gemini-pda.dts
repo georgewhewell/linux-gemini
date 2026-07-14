@@ -23,6 +23,19 @@
 		stdout-path = "serial0:921600n8";
 	};
 
+	firmware {
+		mt6797_atag_devinfo: atag-devinfo {
+			compatible = "mediatek,mt6797-atag-devinfo";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			read-only;
+
+			mt6797_thermal_calibration: calibration-data@0 {
+				reg = <0 12>;
+			};
+		};
+	};
+
 	memory@40000000 {
 		device_type = "memory";
 		reg = <0 0x40000000 1 0>;
@@ -342,6 +355,11 @@
 			MATRIX_KEY(6, 6, KEY_0)>;
 		status = "disabled";
 	};
+};
+
+&thermal {
+	nvmem-cells = <&mt6797_thermal_calibration>;
+	nvmem-cell-names = "calibration-data";
 };
 
 &i2c0 {

@@ -180,6 +180,12 @@
 			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
 		};
 	};
+
+	hall_pins: hall-pins {
+		pins-hall {
+			pinmux = <MT6797_GPIO66__FUNC_GPIO66>;
+		};
+	};
 };
 
 &uart0 {
@@ -378,4 +384,22 @@
 /* The RT5735 VGPU rail remains disabled until a fixed OPP is validated. */
 &gpu {
 	mali-supply = <&rt5735_vgpu>;
+};
+
+&{/} {
+	hall_gpio_keys: gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&hall_pins>;
+		status = "disabled";
+
+		hall-switch {
+			/* Vendor hall.c maps raw low to FCOVER_CLOSE/SW_LID=1. */
+			label = "Hall lid";
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			gpios = <&pio 66 GPIO_ACTIVE_LOW>;
+			debounce-interval = <64>;
+		};
+	};
 };

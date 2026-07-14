@@ -285,6 +285,8 @@
 	keyboard-matrix {
 		compatible = "gpio-matrix-keypad";
 		pinctrl-names = "default";
+		gpio-activelow;
+		drive-inactive-cols;
 		pinctrl-0 = <&keyboard_matrix_row_pins
 				     &keyboard_matrix_col_pins>;
 		row-gpios = <&aw9523 0 GPIO_ACTIVE_HIGH>,

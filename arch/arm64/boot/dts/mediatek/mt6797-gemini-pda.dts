@@ -361,6 +361,24 @@
 	};
 };
 
+/*
+ * The left USB-C connector is wired to the MTU3 device controller. Keep the
+ * controller disabled in the normal board description; a bounded diagnostic
+ * overlay may enable these already-described resources for bring-up.
+ */
+&u2port0 {
+	clocks = <&clk26m>;
+	mediatek,force-b-session-valid;
+};
+
+&ssusb {
+	assigned-clocks = <&topckgen CLK_TOP_MUX_SSUSB_TOP_SYS>;
+	assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL3_D2>;
+	phys = <&u2port0 PHY_TYPE_USB2>;
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+};
+
 &thermal {
 	nvmem-cells = <&mt6797_thermal_calibration>;
 	nvmem-cell-names = "calibration-data";

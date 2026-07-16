@@ -248,6 +248,13 @@ patternProperties:
           Specify the flag to enable BC1.2 if support it
         type: boolean
 
+      mediatek,force-b-session-valid:
+        description:
+          Force the USB2 PHY session signals to a valid B-device state. This
+          is required on platforms where VBUS and session state are supplied
+          by platform firmware rather than sensed by the PHY hardware.
+        type: boolean
+
       mediatek,force-mode:
         description:
           The force mode is used to manually switch the shared phy mode between

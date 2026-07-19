@@ -284,7 +284,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&keyboard_soc_pins>;
 		interrupt-parent = <&pio>;
-		interrupts = <87 IRQ_TYPE_LEVEL_LOW>;
+		interrupts = <10 IRQ_TYPE_LEVEL_LOW>;
 		gpio-controller;
 		#gpio-cells = <2>;
 		gpio-ranges = <&aw9523 0 0 16>;

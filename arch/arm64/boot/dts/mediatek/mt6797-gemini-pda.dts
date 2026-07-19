@@ -260,16 +260,34 @@
 	interrupts = <GIC_SPI 137 IRQ_TYPE_EDGE_FALLING>;
 };
 
+&pio {
+	keyboard_soc_pins: keyboard-soc-pins {
+		pins-reset {
+			pinmux = <MT6797_GPIO58__FUNC_GPIO58>;
+			output-high;
+		};
+
+		pins-irq {
+			pinmux = <MT6797_GPIO87__FUNC_EINT10>;
+		};
+	};
+};
+
 &i2c5 {
 	/* Keep the bus and both consumers disabled until a safe keyboard test. */
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c5_pins_a>;
+
 	aw9523: gpio-expander@5b {
 		compatible = "awinic,aw9523-pinctrl";
 		reg = <0x5b>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&keyboard_soc_pins>;
 		interrupt-parent = <&pio>;
 		interrupts = <87 IRQ_TYPE_LEVEL_LOW>;
 		gpio-controller;
 		#gpio-cells = <2>;
-		gpio-ranges = <&pio 0 0 16>;
+		gpio-ranges = <&aw9523 0 0 16>;
 		interrupt-controller;
 		#interrupt-cells = <2>;
 		reset-gpios = <&pio 58 GPIO_ACTIVE_HIGH>;

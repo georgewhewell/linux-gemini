@@ -84,6 +84,7 @@ struct mtk_wdt_data {
 	int toprgu_sw_rst_num;
 	bool has_swsysrst_en;
 	bool use_auto_restart;
+	unsigned int restart_priority;
 };
 
 static const struct mtk_wdt_data mt2712_data = {
@@ -100,6 +101,7 @@ static const struct mtk_wdt_data mt6795_data = {
 
 static const struct mtk_wdt_data mt6797_data = {
 	.use_auto_restart = true,
+	.restart_priority = 255,
 };
 
 static const struct mtk_wdt_data mt7986_data = {
@@ -460,7 +462,9 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 
 	watchdog_init_timeout(&mtk_wdt->wdt_dev, timeout, dev);
 	watchdog_set_nowayout(&mtk_wdt->wdt_dev, nowayout);
-	watchdog_set_restart_priority(&mtk_wdt->wdt_dev, 128);
+	watchdog_set_restart_priority(&mtk_wdt->wdt_dev,
+				      wdt_data && wdt_data->restart_priority ?
+				      wdt_data->restart_priority : 128);
 
 	watchdog_set_drvdata(&mtk_wdt->wdt_dev, mtk_wdt);
 

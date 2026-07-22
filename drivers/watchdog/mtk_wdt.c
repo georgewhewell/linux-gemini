@@ -12,6 +12,7 @@
 #include <dt-bindings/reset/mt2712-resets.h>
 #include <dt-bindings/reset/mediatek,mt6735-wdt.h>
 #include <dt-bindings/reset/mediatek,mt6795-resets.h>
+#include <dt-bindings/reset/mt6797-resets.h>
 #include <dt-bindings/reset/mt7986-resets.h>
 #include <dt-bindings/reset/mt8183-resets.h>
 #include <dt-bindings/reset/mt8186-resets.h>
@@ -100,6 +101,7 @@ static const struct mtk_wdt_data mt6795_data = {
 };
 
 static const struct mtk_wdt_data mt6797_data = {
+	.toprgu_sw_rst_num = MT6797_TOPRGU_SW_RST_NUM,
 	.use_auto_restart = true,
 	.restart_priority = 255,
 };

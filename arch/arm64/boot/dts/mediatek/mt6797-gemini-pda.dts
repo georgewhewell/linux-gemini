@@ -221,6 +221,29 @@
 	status = "okay";
 };
 
+&i2c6 {
+	clock-frequency = <3400000>;
+	mediatek,use-push-pull;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c6_pins_a>;
+	status = "okay";
+
+	da9214: regulator@68 {
+		compatible = "dlg,da9214";
+		reg = <0x68>;
+
+		regulators {
+			da9214_bucka: BUCKA {
+				regulator-name = "da9214-bucka";
+			};
+
+			da9214_buckb: BUCKB {
+				regulator-name = "vproc-big";
+			};
+		};
+	};
+};
+
 &i2c7 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c7_pins_a>;

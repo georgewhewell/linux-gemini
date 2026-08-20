@@ -383,6 +383,7 @@ static int da9213_legacy_provider_release(void *context,
 
 static const struct mt6797_a72_provider_ops da9213_legacy_provider_ops = {
 	.acquire = da9213_legacy_provider_acquire,
+	.release = da9213_legacy_provider_release,
 };
 
 static void da9213_legacy_provider_unregister(void *context)

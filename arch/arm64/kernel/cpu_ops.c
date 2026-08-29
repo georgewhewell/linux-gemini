@@ -19,12 +19,18 @@ extern const struct cpu_operations smp_spin_table_ops;
 extern const struct cpu_operations acpi_parking_protocol_ops;
 #endif
 extern const struct cpu_operations cpu_psci_ops;
+#ifdef CONFIG_ARCH_MEDIATEK
+extern const struct cpu_operations mt6797_psci_ops;
+#endif
 
 static const struct cpu_operations *cpu_ops[NR_CPUS] __ro_after_init;
 
 static const struct cpu_operations *const dt_supported_cpu_ops[] __initconst = {
 	&smp_spin_table_ops,
 	&cpu_psci_ops,
+#ifdef CONFIG_ARCH_MEDIATEK
+	&mt6797_psci_ops,
+#endif
 	NULL,
 };
 
@@ -98,7 +104,13 @@ static const char *__init cpu_read_enable_method(int cpu)
  */
 int __init init_cpu_ops(int cpu)
 {
-	const char *enable_method = cpu_read_enable_method(cpu);
+	const char *enable_method;
+
+#ifdef CONFIG_ARM64_MT6797_A72_CAPABILITY_PROFILE
+	if (!cpu)
+		mt6797_activate_a72_capability_profile();
+#endif
+	enable_method = cpu_read_enable_method(cpu);
 
 	if (!enable_method)
 		return -ENODEV;

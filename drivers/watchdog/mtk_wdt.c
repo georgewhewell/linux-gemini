@@ -12,6 +12,7 @@
 #include <dt-bindings/reset/mt2712-resets.h>
 #include <dt-bindings/reset/mediatek,mt6735-wdt.h>
 #include <dt-bindings/reset/mediatek,mt6795-resets.h>
+#include <dt-bindings/reset/mt6797-resets.h>
 #include <dt-bindings/reset/mt7986-resets.h>
 #include <dt-bindings/reset/mt8183-resets.h>
 #include <dt-bindings/reset/mt8186-resets.h>
@@ -77,11 +78,14 @@ struct mtk_wdt_dev {
 	bool disable_wdt_extrst;
 	bool reset_by_toprgu;
 	bool has_swsysrst_en;
+	bool use_auto_restart;
 };
 
 struct mtk_wdt_data {
 	int toprgu_sw_rst_num;
 	bool has_swsysrst_en;
+	bool use_auto_restart;
+	unsigned int restart_priority;
 };
 
 static const struct mtk_wdt_data mt2712_data = {
@@ -94,6 +98,12 @@ static const struct mtk_wdt_data mt6735_data = {
 
 static const struct mtk_wdt_data mt6795_data = {
 	.toprgu_sw_rst_num = MT6795_TOPRGU_SW_RST_NUM,
+};
+
+static const struct mtk_wdt_data mt6797_data = {
+	.toprgu_sw_rst_num = MT6797_TOPRGU_SW_RST_NUM,
+	.use_auto_restart = true,
+	.restart_priority = 255,
 };
 
 static const struct mtk_wdt_data mt7986_data = {
@@ -237,6 +247,8 @@ static int mtk_wdt_restart(struct watchdog_device *wdt_dev,
 	/* Enable reset in order to issue a system reset instead of an IRQ */
 	reg = readl(wdt_base + WDT_MODE);
 	reg &= ~WDT_MODE_IRQ_EN;
+	if (mtk_wdt->use_auto_restart)
+		reg |= WDT_MODE_AUTO_START;
 	writel(reg | WDT_MODE_KEY, wdt_base + WDT_MODE);
 
 	while (1) {
@@ -289,10 +301,20 @@ static void mtk_wdt_init(struct watchdog_device *wdt_dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
 	void __iomem *wdt_base;
+	u32 reg;
 
 	wdt_base = mtk_wdt->wdt_base;
 
-	if (readl(wdt_base + WDT_MODE) & WDT_MODE_EN) {
+	reg = readl(wdt_base + WDT_MODE);
+	if (reg & WDT_MODE_EN) {
+		if (mtk_wdt->use_auto_restart) {
+			if (wdt_dev->pretimeout)
+				reg |= WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN;
+			else
+				reg &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
+			writel(reg | WDT_MODE_AUTO_START | WDT_MODE_KEY,
+			       wdt_base + WDT_MODE);
+		}
 		set_bit(WDOG_HW_RUNNING, &wdt_dev->status);
 		mtk_wdt_set_timeout(wdt_dev, wdt_dev->timeout);
 	}
@@ -332,6 +354,8 @@ static int mtk_wdt_start(struct watchdog_device *wdt_dev)
 		reg &= ~WDT_MODE_EXRST_EN;
 	if (mtk_wdt->reset_by_toprgu)
 		reg |= WDT_MODE_CNT_SEL;
+	if (mtk_wdt->use_auto_restart)
+		reg |= WDT_MODE_AUTO_START;
 	reg |= (WDT_MODE_EN | WDT_MODE_KEY);
 	iowrite32(reg, wdt_base + WDT_MODE);
 
@@ -408,6 +432,10 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, mtk_wdt);
 
+	wdt_data = of_device_get_match_data(dev);
+	if (wdt_data)
+		mtk_wdt->use_auto_restart = wdt_data->use_auto_restart;
+
 	mtk_wdt->wdt_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(mtk_wdt->wdt_base))
 		return PTR_ERR(mtk_wdt->wdt_base);
@@ -436,7 +464,9 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 
 	watchdog_init_timeout(&mtk_wdt->wdt_dev, timeout, dev);
 	watchdog_set_nowayout(&mtk_wdt->wdt_dev, nowayout);
-	watchdog_set_restart_priority(&mtk_wdt->wdt_dev, 128);
+	watchdog_set_restart_priority(&mtk_wdt->wdt_dev,
+				      wdt_data && wdt_data->restart_priority ?
+				      wdt_data->restart_priority : 128);
 
 	watchdog_set_drvdata(&mtk_wdt->wdt_dev, mtk_wdt);
 
@@ -450,8 +480,7 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	dev_info(dev, "Watchdog enabled (timeout=%d sec, nowayout=%d)\n",
 		 mtk_wdt->wdt_dev.timeout, nowayout);
 
-	wdt_data = of_device_get_match_data(dev);
-	if (wdt_data) {
+	if (wdt_data && wdt_data->toprgu_sw_rst_num) {
 		err = toprgu_register_reset_controller(pdev,
 						       wdt_data->toprgu_sw_rst_num);
 		if (err)
@@ -493,6 +522,7 @@ static int mtk_wdt_resume(struct device *dev)
 
 static const struct of_device_id mtk_wdt_dt_ids[] = {
 	{ .compatible = "mediatek,mt2712-wdt", .data = &mt2712_data },
+	{ .compatible = "mediatek,mt6797-wdt", .data = &mt6797_data },
 	{ .compatible = "mediatek,mt6589-wdt" },
 	{ .compatible = "mediatek,mt6735-wdt", .data = &mt6735_data },
 	{ .compatible = "mediatek,mt6795-wdt", .data = &mt6795_data },

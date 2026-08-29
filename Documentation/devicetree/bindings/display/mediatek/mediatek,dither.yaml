@@ -23,6 +23,7 @@ properties:
   compatible:
     oneOf:
       - enum:
+          - mediatek,mt6797-disp-dither
           - mediatek,mt8183-disp-dither
       - items:
           - enum:

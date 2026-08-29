@@ -118,6 +118,90 @@ extern bool cpuhp_tasks_frozen;
 int add_cpu(unsigned int cpu);
 int cpu_device_up(struct device *dev);
 void notify_cpu_starting(unsigned int cpu);
+int arch_cpu_up_preflight(unsigned int cpu, enum cpuhp_state target);
+int arch_cpu_up_validate(unsigned int cpu, int tasks_frozen,
+			 enum cpuhp_state target);
+#define CPU_UP_ROLLBACK_MAX_EVENTS 256U
+#define CPU_UP_ROLLBACK_EVENT_WARNING BIT(0)
+
+struct cpu_up_rollback_event {
+	u32 direction;
+	u32 state;
+	u32 instance;
+	s32 result;
+	u32 flags;
+};
+#define CPU_UP_ROLLBACK_MAX_EFFECTS 32U
+#define CPU_UP_ROLLBACK_EFFECT_BEGIN 1U
+#define CPU_UP_ROLLBACK_EFFECT_COMPLETE 2U
+#define CPU_UP_ROLLBACK_EFFECT_BLOCKED 3U
+
+enum cpu_up_rollback_effect {
+	CPU_UP_ROLLBACK_EFFECT_CPU_OFF_ATTEMPT,
+	CPU_UP_ROLLBACK_EFFECT_TOPOLOGY_REMOVE,
+	CPU_UP_ROLLBACK_EFFECT_NUMA_REMOVE,
+	CPU_UP_ROLLBACK_EFFECT_ONLINE_CLEAR,
+	CPU_UP_ROLLBACK_EFFECT_IPI_TEARDOWN,
+	CPU_UP_ROLLBACK_EFFECT_IRQ_MIGRATE,
+	CPU_UP_ROLLBACK_EFFECT_DEAD_PUBLISH,
+	CPU_UP_ROLLBACK_EFFECT_PARK,
+	CPU_UP_ROLLBACK_EFFECT_RCU_DEAD,
+	CPU_UP_ROLLBACK_EFFECT_RCU_MIGRATE,
+	CPU_UP_ROLLBACK_EFFECT_LOCKDEP_CLEANUP,
+	CPU_UP_ROLLBACK_EFFECT_KILL_OBSERVED,
+	CPU_UP_ROLLBACK_EFFECT_PRESENT_CLEAR,
+	CPU_UP_ROLLBACK_EFFECT_NO_AFFINITY,
+	CPU_UP_ROLLBACK_EFFECT_AFFINITY_INFO_ATTEMPT,
+	CPU_UP_ROLLBACK_EFFECT_UNKNOWN,
+	CPU_UP_ROLLBACK_EFFECT_GUARD,
+	CPU_UP_ROLLBACK_EFFECT_COUNT,
+};
+
+#define CPU_UP_ROLLBACK_EFFECT_FORBIDDEN_MASK \
+	(BIT(CPU_UP_ROLLBACK_EFFECT_CPU_OFF_ATTEMPT) | \
+	 BIT(CPU_UP_ROLLBACK_EFFECT_AFFINITY_INFO_ATTEMPT) | \
+	 BIT(CPU_UP_ROLLBACK_EFFECT_UNKNOWN))
+
+struct cpu_up_rollback_effect_event {
+	u32 effect;
+	u32 phase;
+	s32 result;
+};
+
+
+struct cpu_up_rollback_trace {
+	u32 event_count;
+	u32 overflow;
+	u32 nested_valid;
+	u32 nested_prev_state;
+	u32 nested_state;
+	s32 nested_result;
+	u32 outer_reset;
+	u32 reverse_complete;
+	u32 callback_complete;
+	u32 callback_unknown;
+	u32 callback_capacity;
+	u32 callback_inventory;
+	u32 rollback_armed;
+	struct cpu_up_rollback_event event[CPU_UP_ROLLBACK_MAX_EVENTS];
+	u32 effect_count;
+	u32 effect_overflow;
+	u32 effect_unknown;
+	u32 effect_complete;
+	u32 effect_required_mask;
+	u32 effect_seen_mask;
+	u32 effect_missing_mask;
+	u32 effect_forbidden_mask;
+	struct cpu_up_rollback_effect_event effect[CPU_UP_ROLLBACK_MAX_EFFECTS];
+};
+
+void arch_cpu_up_rollback_effect(unsigned int cpu,
+				 enum cpu_up_rollback_effect effect,
+				 u32 phase, int result);
+int arch_cpu_up_rollback(unsigned int cpu, enum cpuhp_state state, int error,
+			 const struct cpu_up_rollback_trace *trace);
+int arch_cpu_up_rollback_complete(unsigned int cpu, int error,
+					 const struct cpu_up_rollback_trace *trace);
 extern void cpu_maps_update_begin(void);
 extern void cpu_maps_update_done(void);
 int bringup_hibernate_cpu(unsigned int sleep_cpu);

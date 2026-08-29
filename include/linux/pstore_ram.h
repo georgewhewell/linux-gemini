@@ -39,4 +39,20 @@ struct ramoops_platform_data {
 	struct persistent_ram_ecc_info ecc_info;
 };
 
+#ifdef CONFIG_PSTORE_GEMINI_PRE_RAMOOPS_LEDGER
+void gemini_pre_ramoops_ledger_setup_checkpoint(void);
+#else
+static inline void gemini_pre_ramoops_ledger_setup_checkpoint(void) { }
+#endif
+
+#ifdef CONFIG_PSTORE_GEMINI_ARM64_ENTRY_LEDGER
+void gemini_arm64_entry_ledger_post_mmu_checkpoint(void);
+void gemini_arm64_entry_ledger_post_reserved_checkpoint(void);
+#else
+static inline void gemini_arm64_entry_ledger_post_mmu_checkpoint(void) { }
+static inline void gemini_arm64_entry_ledger_post_reserved_checkpoint(void)
+{
+}
+#endif
+
 #endif

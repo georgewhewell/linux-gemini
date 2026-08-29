@@ -36,6 +36,340 @@ config ACPI_I2C_OPREGION
 
 if I2C
 
+config I2C_GEMINI_DA921X_OF_MODALIAS_DIAGNOSTIC
+	bool "Gemini DA921x OF modalias discriminator"
+	depends on OF && ARCH_MEDIATEK
+	help
+	  Preserve an OF-created I2C client with compatible
+	  "dlg,da9214-legacy", but omit its OF modalias from the device
+	  uevent and use the normal I2C modalias fallback instead.
+
+	  This is an experiment-only serviceability discriminator. It does
+	  not suppress client creation or OF-node attachment and does not add
+	  a driver or transfer path.
+
+	  Say N outside the named Gemini OF-modalias isolation experiment.
+
+config I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_GENERATION_DIAGNOSTIC
+	bool "Gemini DA921x private OF modalias generation discriminator"
+	depends on OF && ARCH_MEDIATEK
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_DIAGNOSTIC
+	help
+	  Compute the OF modalias for an OF-created I2C client with compatible
+	  "dlg,da9214-legacy" into a bounded private buffer, validate the exact
+	  result, discard it, and use the normal I2C modalias fallback for the
+	  device uevent.
+
+	  This is an experiment-only serviceability discriminator. It does not
+	  suppress client creation or OF-node attachment and does not add a
+	  driver or transfer path.
+
+	  Say N outside the named Gemini private-generation experiment.
+
+config I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_INSERTION_DIAGNOSTIC
+	bool "Gemini DA921x private uevent insertion discriminator"
+	depends on OF && ARCH_MEDIATEK
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_DIAGNOSTIC
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_GENERATION_DIAGNOSTIC
+	help
+	  Compute the OF modalias for an OF-created I2C client with compatible
+	  "dlg,da9214-legacy", add the exact MODALIAS entry to a bounded private
+	  uevent environment, validate the result, discard it, and use the normal
+	  I2C modalias fallback for the real device uevent.
+
+	  This is an experiment-only serviceability discriminator. It does not
+	  suppress client creation or OF-node attachment and does not add a
+	  driver or transfer path.
+
+	  Say N outside the named Gemini private-insertion experiment.
+
+config I2C_GEMINI_DA921X_OF_MODALIAS_REAL_ENV_ROLLBACK_DIAGNOSTIC
+	bool "Gemini DA921x real uevent insertion rollback discriminator"
+	depends on OF && ARCH_MEDIATEK
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_DIAGNOSTIC
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_GENERATION_DIAGNOSTIC
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_INSERTION_DIAGNOSTIC
+	help
+	  Compute the OF modalias for an OF-created I2C client with compatible
+	  "dlg,da9214-legacy", insert the exact MODALIAS entry into the real
+	  uevent environment, validate it, and restore the original environment
+	  state byte-for-byte before adding the normal I2C modalias fallback.
+
+	  This is an experiment-only serviceability discriminator. It does not
+	  emit the OF modalias, suppress client creation or OF-node attachment,
+	  or add a driver or transfer path.
+
+	  Say N outside the named real-environment rollback experiment.
+
+config I2C_GEMINI_DA921X_OF_MODALIAS_PRE_DISPATCH_SUPPRESSION_DIAGNOSTIC
+	bool "Gemini DA921x complete OF uevent pre-dispatch discriminator"
+	depends on OF && ARCH_MEDIATEK
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_DIAGNOSTIC
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_GENERATION_DIAGNOSTIC
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_INSERTION_DIAGNOSTIC
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_REAL_ENV_ROLLBACK_DIAGNOSTIC
+	help
+	  Build the complete add-event for the OF-created I2C client with
+	  compatible "dlg,da9214-legacy", including its exact OF MODALIAS and
+	  sequence number, validate its ordered environment, and suppress only
+	  transport before netlink broadcast.
+
+	  This is an experiment-only serviceability discriminator. It preserves
+	  normal event assembly and environment cleanup, but does not dispatch
+	  the target event, suppress client creation or OF-node attachment, or
+	  add a driver or transfer path.
+
+	  Say N outside the named pre-dispatch suppression experiment.
+
+config I2C_GEMINI_DA921X_DUAL_MODALIAS_STATE_DIAGNOSTIC
+	bool "Gemini DA921x complete uevent read-only state discriminator"
+	depends on OF && ARCH_MEDIATEK
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_DIAGNOSTIC
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_GENERATION_DIAGNOSTIC
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_INSERTION_DIAGNOSTIC
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_REAL_ENV_ROLLBACK_DIAGNOSTIC
+	depends on !I2C_GEMINI_DA921X_OF_MODALIAS_PRE_DISPATCH_SUPPRESSION_DIAGNOSTIC
+	help
+	  Build and validate the complete ten-entry add-event for the OF-created
+	  Gemini legacy DA921x I2C client, then suppress transport and expose
+	  successful validation through the read-only
+	  /sys/kernel/gemini_da921x_dual_modalias_state attribute.
+
+	  This experiment emits no validation printk. It does not dispatch the
+	  target event, suppress client creation or OF-node attachment, or add a
+	  driver, provider, transfer, register access, or storage path.
+
+	  Say N outside the named read-only state experiment.
+
+config I2C_GEMINI_DA921X_ROOT_PATH_CORRECTION_DIAGNOSTIC
+	bool "Gemini DA921x root-level path correction discriminator"
+	depends on I2C_GEMINI_DA921X_DUAL_MODALIAS_STATE_DIAGNOSTIC
+	help
+	  Correct the experiment validator's device path and OF fullname to
+	  the root-level I2C topology observed on the named Gemini candidate.
+
+	  This changes only the two expected path strings. It retains the exact
+	  ordered ten-entry validation, read-only state observation, target
+	  transport suppression, normal cleanup, and the absence of a driver,
+	  provider, transfer, register access, or storage path.
+
+	  Say N outside the named root-path correction experiment.
+
+config I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC
+	bool "Gemini DA921x ordered validation stage discriminator"
+	depends on I2C_GEMINI_DA921X_ROOT_PATH_CORRECTION_DIAGNOSTIC
+	help
+	  Record the last successful comparison in the experiment-only exact
+	  Gemini DA921x add-event validator and expose the integer stage through
+	  /sys/kernel/gemini_da921x_dual_modalias_stage.
+
+	  This retains the existing no-printk state observation, target transport
+	  suppression, and normal cleanup. It does not add a driver, provider,
+	  transfer, register access, or storage path.
+
+	  Say N outside the named ordered-stage experiment.
+
+config I2C_GEMINI_DA921X_ENVELOPE_STATE_DIAGNOSTIC
+	bool "Gemini DA921x event-envelope state discriminator"
+	depends on I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC
+	help
+	  Record the individual operands of the experiment-only exact Gemini
+	  DA921x event-envelope check and expose them read-only through
+	  /sys/kernel/gemini_da921x_dual_modalias_envelope.
+
+	  This does not alter the event, validator, target transport suppression,
+	  or cleanup. It adds no driver, provider, transfer, register access, or
+	  storage path.
+
+	  Say N outside the named event-envelope experiment.
+
+config I2C_GEMINI_DA921X_ENTRY_CLASSIFICATION_DIAGNOSTIC
+	bool "Gemini DA921x event-entry classification discriminator"
+	depends on I2C_GEMINI_DA921X_ENVELOPE_STATE_DIAGNOSTIC
+	help
+	  Classify the expected fixed entries, sequence-number entry, ordering,
+	  duplicates, and unexpected entries in the experiment-only Gemini
+	  DA921x event. Expose only bounded integer results read-only through
+	  /sys/kernel/gemini_da921x_dual_modalias_entry_classification.
+
+	  This does not expose arbitrary event text or alter the event, validator,
+	  target transport suppression, or cleanup. It adds no driver, provider,
+	  transfer, register access, or storage path.
+
+	  Say N outside the named event-entry classification experiment.
+
+config I2C_GEMINI_DA921X_OF_EVENT_LAYOUT_CORRECTION_DIAGNOSTIC
+	bool "Gemini DA921x OF event-layout correction discriminator"
+	depends on I2C_GEMINI_DA921X_ENTRY_CLASSIFICATION_DIAGNOSTIC
+	help
+	  Correct the experiment-only ordered validator to expect the eight fixed
+	  entries proven by bounded runtime classification, followed by SEQNUM.
+	  A successful OF modalias is terminal in i2c_device_uevent(), so the I2C
+	  fallback modalias is not a second entry.
+
+	  This changes only the validator expectation. It preserves the real event,
+	  target transport suppression, read-only state, cleanup, and module-free
+	  unbound client. It adds no driver, provider, transfer, register access, or
+	  storage path.
+
+	  Say N outside the named OF event-layout correction experiment.
+
+config I2C_GEMINI_DA921X_NETLINK_SERIALIZATION_DIAGNOSTIC
+	bool "Gemini DA921x netlink serialization discriminator"
+	depends on I2C_GEMINI_DA921X_OF_EVENT_LAYOUT_CORRECTION_DIAGNOSTIC
+	depends on NET
+	help
+	  Serialize the exact validated Gemini DA921x add-event through the
+	  normal netlink skb allocator, validate its header, environment copy,
+	  length, and metadata, then consume it before listener traversal or
+	  multicast. Successful validation advances the read-only stage to 18.
+
+	  This preserves the module-free unbound client and zero-I2C baseline. It
+	  adds no driver, provider, transfer, register access, printk, storage
+	  path, socket traversal, or event delivery.
+
+	  Say N outside the named netlink serialization experiment.
+
+config I2C_GEMINI_DA921X_UEVENT_LISTENER_DISCOVERY_DIAGNOSTIC
+	bool "Gemini DA921x uevent listener-discovery discriminator"
+	depends on I2C_GEMINI_DA921X_NETLINK_SERIALIZATION_DIAGNOSTIC
+	help
+	  Traverse the normal uevent socket list under its mutex, record bounded
+	  socket and group-1 listener counts, and expose them read-only through
+	  /sys/kernel/gemini_da921x_uevent_listener_state. Successful traversal
+	  advances the read-only stage to 19.
+
+	  This preserves the already consumed skb, module-free unbound client, and
+	  zero-I2C baseline. It adds no driver, provider, transfer, register access,
+	  printk, storage path, or netlink multicast.
+
+	  Say N outside the named uevent listener-discovery experiment.
+
+config I2C_GEMINI_DA921X_UEVENT_NO_LISTENER_DELIVERY_DIAGNOSTIC
+	bool "Gemini DA921x no-listener delivery discriminator"
+	depends on I2C_GEMINI_DA921X_UEVENT_LISTENER_DISCOVERY_DIAGNOSTIC
+	help
+	  Exercise the normal untagged uevent broadcast loop only while it has no
+	  group-1 listener. Record bounded socket, listener, allocation, broadcast,
+	  and return state through
+	  /sys/kernel/gemini_da921x_uevent_no_listener_state. A zero return with no
+	  allocation or broadcast advances the read-only stage to 20.
+
+	  The observation fails closed before allocation or netlink_broadcast() if
+	  any listener appears. It preserves the module-free unbound client and
+	  zero-I2C baseline and adds no driver, provider, transfer, register access,
+	  printk, storage path, or event delivery.
+
+	  Say N outside the named no-listener delivery experiment.
+
+config I2C_GEMINI_DA921X_UEVENT_BOUNDED_LISTENER_DIAGNOSTIC
+	bool "Gemini DA921x bounded uevent-listener discriminator"
+	depends on I2C_GEMINI_DA921X_UEVENT_NO_LISTENER_DELIVERY_DIAGNOSTIC
+	help
+	  Retain the exact target after stage 20 and expose a one-shot trigger at
+	  /sys/kernel/gemini_da921x_uevent_bounded_listener. With one temporary
+	  userspace group-1 listener already bound, replay and revalidate the same
+	  add-event, traverse the normal socket list, and advance to stage 21 only
+	  for exactly one listener on the runtime-proven one-socket topology.
+
+	  The serialized skb remains consumed before broadcast. The trigger fails
+	  closed unless the exact stage-20 target is retained and accepts only the
+	  exact token "probe". It adds no driver, provider, transfer, register
+	  access, printk, storage path, or multicast delivery.
+
+	  Say N outside the named bounded-listener experiment.
+
+config I2C_GEMINI_DA921X_UEVENT_SINGLE_MULTICAST_DIAGNOSTIC
+	bool "Gemini DA921x single uevent-multicast discriminator"
+	depends on I2C_GEMINI_DA921X_UEVENT_BOUNDED_LISTENER_DIAGNOSTIC
+	help
+	  Retain the exact target after stage 21 and expose a separate one-shot
+	  trigger at /sys/kernel/gemini_da921x_uevent_single_multicast. With the
+	  independently validated group-1 listener already bound, replay and
+	  revalidate the same add-event and runtime-proven one-socket, one-listener
+	  topology under the socket-list mutex, then make exactly one multicast.
+
+	  Successful kernel-side allocation and broadcast observation advances the
+	  read-only stage to 22. A separate userspace helper must validate one exact
+	  datagram and no duplicate. The trigger accepts only the exact token
+	  "probe" and adds no driver, provider, transfer, register access, printk,
+	  or storage path.
+
+	  Say N outside the named single-multicast experiment.
+
+config I2C_GEMINI_DA921X_UEVENT_UNTAGGED_DISPATCH_DIAGNOSTIC
+	bool "Gemini DA921x untagged uevent-dispatch discriminator"
+	depends on I2C_GEMINI_DA921X_UEVENT_SINGLE_MULTICAST_DIAGNOSTIC
+	help
+	  Retain the exact target after stage 22 and expose a separate one-shot
+	  trigger at /sys/kernel/gemini_da921x_uevent_untagged_dispatch. With the
+	  independently validated group-1 listener already bound, replay and
+	  revalidate the same add-event, then call the original untagged delivery
+	  function with its bounded observation structure.
+
+	  Exactly one function entry and return, socket, listener, allocation, and
+	  broadcast with normalized return zero advances the read-only stage to 23.
+	  A separate userspace helper must validate one exact datagram and no
+	  duplicate. The exact-token trigger adds no driver, provider, transfer,
+	  register access, printk, or storage path.
+
+	  Say N outside the named untagged-dispatch experiment.
+
+config I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC
+	bool "Gemini DA921x kobject net-broadcast discriminator"
+	depends on NET && I2C_GEMINI_DA921X_UEVENT_UNTAGGED_DISPATCH_DIAGNOSTIC
+	help
+	  Retain the exact target after stage 23 and expose a separate one-shot
+	  trigger at /sys/kernel/gemini_da921x_uevent_net_broadcast. With the
+	  independently validated group-1 listener already bound, replay and
+	  revalidate the same add-event, then call the original surrounding
+	  kobject namespace-routing and network-broadcast wrapper.
+
+	  Exactly one wrapper entry and return, one namespace check, one untagged
+	  route, zero tagged routes, one socket, listener, allocation, and broadcast,
+	  and normalized return zero advances the read-only stage to 24. A separate
+	  userspace helper must validate one exact datagram and no duplicate. The
+	  exact-token trigger adds no driver, provider, transfer, register access,
+	  printk, or storage path.
+
+	  Say N outside the named net-broadcast experiment.
+
+config I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC
+	bool "Gemini DA921x normal uevent-fallthrough discriminator"
+	depends on NET && I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC
+	help
+	  Retain the exact target after stage 24 and expose a separate one-shot
+	  trigger at /sys/kernel/gemini_da921x_uevent_normal_fallthrough. With
+	  the independently validated group-1 listener already bound, replay and
+	  revalidate the same add-event, then leave the experiment branch through
+	  the ordinary kobject_uevent_env() network-broadcast call site and return.
+
+	  Exactly one call-site entry and return, one public uevent return, normalized
+	  return zero, one exact userspace receipt, and no duplicate advances the
+	  read-only stage to 25. The exact-token trigger adds no driver, provider,
+	  transfer, register access, printk, usermode helper, or storage path.
+
+	  Say N outside the named normal-fallthrough experiment.
+
+config I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC
+	bool "Gemini DA921x natural device-add discriminator"
+	depends on I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC
+	help
+	  Observe the exact OF-created legacy DA921x client from immediately
+	  before its boot-time device_register() call through the natural add
+	  uevent and the return from device registration. Leave the exact event
+	  through the ordinary namespace and network-broadcast call site after
+	  the proven zero-listener preflight.
+
+	  Exactly one device-register entry and return, one uevent call-site entry
+	  and return, one public return, one namespace check, one untagged route,
+	  one socket, zero listeners, allocations, and broadcasts, and return zero
+	  throughout advances the read-only validation stage to 26.
+
+	  This experiment adds no trigger, replay, driver, provider, transfer,
+	  register access, printk, usermode helper, or storage path. Say N outside
+	  the named natural device-add experiment.
+
 config I2C_BOARDINFO
 	bool
 	default y

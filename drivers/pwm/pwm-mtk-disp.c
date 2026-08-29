@@ -80,7 +80,8 @@ static int mtk_disp_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	if (!state->enabled && mdp->enabled) {
 		mtk_disp_pwm_update_bits(mdp, DISP_PWM_EN,
 					 mdp->data->enable_mask, 0x0);
-		clk_disable_unprepare(mdp->clk_mm);
+		if (mdp->clk_mm)
+			clk_disable_unprepare(mdp->clk_mm);
 		clk_disable_unprepare(mdp->clk_main);
 
 		mdp->enabled = false;
@@ -95,12 +96,14 @@ static int mtk_disp_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 			return err;
 		}
 
-		err = clk_prepare_enable(mdp->clk_mm);
-		if (err < 0) {
-			dev_err(pwmchip_parent(chip), "Can't enable mdp->clk_mm: %pe\n",
-				ERR_PTR(err));
-			clk_disable_unprepare(mdp->clk_main);
-			return err;
+		if (mdp->clk_mm) {
+			err = clk_prepare_enable(mdp->clk_mm);
+			if (err < 0) {
+				dev_err(pwmchip_parent(chip),
+					"Can't enable mdp->clk_mm: %pe\n", ERR_PTR(err));
+				clk_disable_unprepare(mdp->clk_main);
+				return err;
+			}
 		}
 	}
 
@@ -119,7 +122,8 @@ static int mtk_disp_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 			  PWM_PERIOD_BIT_WIDTH;
 	if (clk_div > PWM_CLKDIV_MAX) {
 		if (!mdp->enabled) {
-			clk_disable_unprepare(mdp->clk_mm);
+			if (mdp->clk_mm)
+				clk_disable_unprepare(mdp->clk_mm);
 			clk_disable_unprepare(mdp->clk_main);
 		}
 		return -EINVAL;
@@ -184,11 +188,14 @@ static int mtk_disp_pwm_get_state(struct pwm_chip *chip,
 		return err;
 	}
 
-	err = clk_prepare_enable(mdp->clk_mm);
-	if (err < 0) {
-		dev_err(pwmchip_parent(chip), "Can't enable mdp->clk_mm: %pe\n", ERR_PTR(err));
-		clk_disable_unprepare(mdp->clk_main);
-		return err;
+	if (mdp->clk_mm) {
+		err = clk_prepare_enable(mdp->clk_mm);
+		if (err < 0) {
+			dev_err(pwmchip_parent(chip),
+				"Can't enable mdp->clk_mm: %pe\n", ERR_PTR(err));
+			clk_disable_unprepare(mdp->clk_main);
+			return err;
+		}
 	}
 
 	/*
@@ -217,7 +224,8 @@ static int mtk_disp_pwm_get_state(struct pwm_chip *chip,
 	state->duty_cycle = DIV64_U64_ROUND_UP(high_width * (clk_div + 1) * NSEC_PER_SEC,
 					       rate);
 	state->polarity = PWM_POLARITY_NORMAL;
-	clk_disable_unprepare(mdp->clk_mm);
+	if (mdp->clk_mm)
+		clk_disable_unprepare(mdp->clk_mm);
 	clk_disable_unprepare(mdp->clk_main);
 
 	return 0;
@@ -250,7 +258,7 @@ static int mtk_disp_pwm_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, PTR_ERR(mdp->clk_main),
 				     "Failed to get main clock\n");
 
-	mdp->clk_mm = devm_clk_get(&pdev->dev, "mm");
+	mdp->clk_mm = devm_clk_get_optional(&pdev->dev, "mm");
 	if (IS_ERR(mdp->clk_mm))
 		return dev_err_probe(&pdev->dev, PTR_ERR(mdp->clk_mm),
 				     "Failed to get mm clock\n");
@@ -284,6 +292,17 @@ static const struct mtk_pwm_data mt8173_pwm_data = {
 	.commit_mask = 0x1,
 };
 
+/* MT6797 uses the MT8173 register layout with one INFRA_DISP_PWM clock. */
+static const struct mtk_pwm_data mt6797_pwm_data = {
+	.enable_mask = BIT(0),
+	.con0 = 0x10,
+	.con0_sel = 0x0,
+	.con1 = 0x14,
+	.has_commit = true,
+	.commit = 0x8,
+	.commit_mask = 0x1,
+};
+
 static const struct mtk_pwm_data mt8183_pwm_data = {
 	.enable_mask = BIT(0),
 	.con0 = 0x18,
@@ -298,6 +317,7 @@ static const struct of_device_id mtk_disp_pwm_of_match[] = {
 	{ .compatible = "mediatek,mt2701-disp-pwm", .data = &mt2701_pwm_data},
 	{ .compatible = "mediatek,mt6595-disp-pwm", .data = &mt8173_pwm_data},
 	{ .compatible = "mediatek,mt8173-disp-pwm", .data = &mt8173_pwm_data},
+	{ .compatible = "mediatek,mt6797-disp-pwm", .data = &mt6797_pwm_data},
 	{ .compatible = "mediatek,mt8183-disp-pwm", .data = &mt8183_pwm_data},
 	{ }
 };

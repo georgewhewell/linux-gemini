@@ -81,6 +81,64 @@ config PSTORE_RAM
 
 	  For more information, see Documentation/admin-guide/ramoops.rst.
 
+config PSTORE_GEMINI_PRE_RAMOOPS_LEDGER
+	bool "Gemini pre-ramoops retained stage ledger"
+	depends on PSTORE_RAM=y
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	default n
+	help
+	  Write four short experiment records into four exact, otherwise unused
+	  dmesg zones in the existing Gemini ramoops reservation.  The records
+	  distinguish completion of the reserved-memory scan and the early,
+	  core, and postcore initcall levels before normal ramoops registration.
+
+	  The writer requires the exact Gemini DT reservation and four valid,
+	  empty persistent-RAM headers before its first write.  Any mismatch
+	  disarms later stages.  Normal ramoops registration is skipped only on
+	  the Gemini while this diagnostic is selected so a subsequent known-good
+	  boot can recover the records.
+
+	  This experiment-only option does not access device storage, regulators,
+	  CPU admission, timers, or restart controls.  If unsure, say N.
+
+config PSTORE_GEMINI_ARM64_ENTRY_LEDGER
+	bool "Gemini arm64 entry retained stage ledger"
+	depends on PSTORE_RAM=y
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on !PSTORE_GEMINI_PRE_RAMOOPS_LEDGER
+	default n
+	help
+	  Write four short experiment records into exact dmesg zones in the
+	  existing Gemini ramoops reservation.  Two call-free checkpoints run
+	  in the arm64 primary path before the MMU is enabled, followed by one
+	  after early ioremap setup and one after the reserved-memory scan.
+
+	  The MMU-off checkpoints accept only EL1 or EL2 with both translation
+	  and data caching disabled.  They require the exact four persistent-RAM
+	  headers and preserve every boot-path register outside x9 through x15.
+	  Later checkpoints accept each earlier slot only when empty or byte-
+	  exact.  Every writer commits data before length fields and performs a
+	  complete ordered readback.
+
+	  Normal ramoops registration is skipped only on the Gemini while this
+	  isolated diagnostic is selected, so a subsequent known-good boot can
+	  recover the records.  This option does not access storage, regulators,
+	  clocks, I2C, CPU admission, timers, watchdogs, or restart controls.
+	  If unsure, say N.
+
+config PSTORE_GEMINI_POST_RAMOOPS_CHECKPOINT
+	bool "Gemini post-ramoops retained checkpoint"
+	depends on PSTORE_RAM=y
+	depends on PSTORE_CONSOLE && ARM64 && ARCH_MEDIATEK
+	default n
+	help
+	  Emit one attributable persistent-console marker immediately after a
+	  built-in ramoops backend with console storage registers successfully.
+	  This experiment-only diagnostic does not access device storage, read or
+	  write a regulator, change a transition owner, or admit CPU8 or CPU9.
+
+	  If unsure, say N.
+
 config PSTORE_ZONE
 	tristate
 	depends on PSTORE

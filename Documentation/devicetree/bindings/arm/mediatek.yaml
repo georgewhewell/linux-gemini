@@ -71,6 +71,7 @@ properties:
           - enum:
               - archermind,mt6797-x20-dev
               - mediatek,mt6797-evb
+              - planet,gemini-pda
           - const: mediatek,mt6797
       - items:
           - enum:

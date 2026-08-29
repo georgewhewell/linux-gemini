@@ -31,6 +31,7 @@
 
 struct mtk_disp_ccorr_data {
 	u32 matrix_bits;
+	bool default_relay;
 };
 
 struct mtk_disp_ccorr {
@@ -59,10 +60,14 @@ void mtk_ccorr_config(struct device *dev, unsigned int w,
 			     unsigned int bpc, struct cmdq_pkt *cmdq_pkt)
 {
 	struct mtk_disp_ccorr *ccorr = dev_get_drvdata(dev);
+	u32 cfg = CCORR_ENGINE_EN;
+
+	if (ccorr->data->default_relay)
+		cfg = CCORR_RELAY_MODE;
 
 	mtk_ddp_write(cmdq_pkt, w << 16 | h, &ccorr->cmdq_reg, ccorr->regs,
 		      DISP_CCORR_SIZE);
-	mtk_ddp_write(cmdq_pkt, CCORR_ENGINE_EN, &ccorr->cmdq_reg, ccorr->regs,
+	mtk_ddp_write(cmdq_pkt, cfg, &ccorr->cmdq_reg, ccorr->regs,
 		      DISP_CCORR_CFG);
 }
 
@@ -91,8 +96,11 @@ void mtk_ccorr_ctm_set(struct device *dev, struct drm_crtc_state *state)
 	struct cmdq_pkt *cmdq_pkt = NULL;
 	u32 matrix_bits = ccorr->data->matrix_bits;
 
-	if (!blob)
+	if (!blob) {
+		if (ccorr->data->default_relay)
+			writel(CCORR_RELAY_MODE, ccorr->regs + DISP_CCORR_CFG);
 		return;
+	}
 
 	ctm = (struct drm_color_ctm *)blob->data;
 	input = ctm->matrix;
@@ -110,6 +118,9 @@ void mtk_ccorr_ctm_set(struct device *dev, struct drm_crtc_state *state)
 		      &ccorr->cmdq_reg, ccorr->regs, DISP_CCORR_COEF_3);
 	mtk_ddp_write(cmdq_pkt, coeffs[8] << 16,
 		      &ccorr->cmdq_reg, ccorr->regs, DISP_CCORR_COEF_4);
+
+	if (ccorr->data->default_relay)
+		writel(CCORR_ENGINE_EN, ccorr->regs + DISP_CCORR_CFG);
 }
 
 static int mtk_disp_ccorr_bind(struct device *dev, struct device *master,
@@ -173,6 +184,11 @@ static const struct mtk_disp_ccorr_data mt8183_ccorr_driver_data = {
 	.matrix_bits = 10,
 };
 
+static const struct mtk_disp_ccorr_data mt6797_ccorr_driver_data = {
+	.matrix_bits = 10,
+	.default_relay = true,
+};
+
 static const struct mtk_disp_ccorr_data mt8192_ccorr_driver_data = {
 	.matrix_bits = 11,
 };
@@ -180,6 +196,8 @@ static const struct mtk_disp_ccorr_data mt8192_ccorr_driver_data = {
 static const struct of_device_id mtk_disp_ccorr_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt8183-disp-ccorr",
 	  .data = &mt8183_ccorr_driver_data},
+	{ .compatible = "mediatek,mt6797-disp-ccorr",
+	  .data = &mt6797_ccorr_driver_data},
 	{ .compatible = "mediatek,mt8192-disp-ccorr",
 	  .data = &mt8192_ccorr_driver_data},
 	{},

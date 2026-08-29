@@ -48,6 +48,7 @@ struct mtk_disp_gamma_data {
 	u16 lut_bank_size;
 	u16 lut_size;
 	u8 lut_bits;
+	bool default_relay;
 };
 
 /**
@@ -217,6 +218,10 @@ void mtk_gamma_config(struct device *dev, unsigned int w,
 	sz |= FIELD_PREP(DISP_GAMMA_SIZE_VSIZE, h);
 
 	mtk_ddp_write(cmdq_pkt, sz, &gamma->cmdq_reg, gamma->regs, DISP_GAMMA_SIZE);
+	if (gamma->data && gamma->data->default_relay)
+		mtk_ddp_write(cmdq_pkt, GAMMA_RELAY_MODE, &gamma->cmdq_reg,
+			      gamma->regs, DISP_GAMMA_CFG);
+
 	if (gamma->data && gamma->data->has_dither)
 		mtk_dither_set_common(gamma->regs, &gamma->cmdq_reg, bpc,
 				      DISP_GAMMA_CFG, GAMMA_DITHERING, cmdq_pkt);
@@ -300,6 +305,13 @@ static const struct mtk_disp_gamma_data mt8173_gamma_driver_data = {
 	.lut_size = 512,
 };
 
+static const struct mtk_disp_gamma_data mt6797_gamma_driver_data = {
+	.lut_bank_size = 512,
+	.lut_bits = 10,
+	.lut_size = 512,
+	.default_relay = true,
+};
+
 static const struct mtk_disp_gamma_data mt8183_gamma_driver_data = {
 	.lut_bank_size = 512,
 	.lut_bits = 10,
@@ -317,6 +329,8 @@ static const struct mtk_disp_gamma_data mt8195_gamma_driver_data = {
 static const struct of_device_id mtk_disp_gamma_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt8173-disp-gamma",
 	  .data = &mt8173_gamma_driver_data},
+	{ .compatible = "mediatek,mt6797-disp-gamma",
+	  .data = &mt6797_gamma_driver_data},
 	{ .compatible = "mediatek,mt8183-disp-gamma",
 	  .data = &mt8183_gamma_driver_data},
 	{ .compatible = "mediatek,mt8195-disp-gamma",

@@ -16,6 +16,7 @@
 #include "mtk-mmsys.h"
 #include "mt8167-mmsys.h"
 #include "mt8173-mmsys.h"
+#include "mt6797-mmsys.h"
 #include "mt8183-mmsys.h"
 #include "mt8186-mmsys.h"
 #include "mt8188-mmsys.h"
@@ -51,6 +52,10 @@ static const struct mtk_mmsys_driver_data mt6795_mmsys_driver_data = {
 
 static const struct mtk_mmsys_driver_data mt6797_mmsys_driver_data = {
 	.clk_driver = "clk-mt6797-mm",
+	.routes = mt6797_mmsys_routing_table,
+	.num_routes = ARRAY_SIZE(mt6797_mmsys_routing_table),
+	.sw0_rst_offset = MT6797_MMSYS_SW0_RST_B,
+	.num_resets = 64,
 };
 
 static const struct mtk_mmsys_driver_data mt8167_mmsys_driver_data = {

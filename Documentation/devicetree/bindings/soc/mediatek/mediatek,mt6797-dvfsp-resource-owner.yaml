@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-dvfsp-resource-owner.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 DVFSP resource-only owner
+
+maintainers:
+  - Gemini Mainline Experiment <gemini-mainline@example.invalid>
+
+description: |
+  This optional node binds only the resource-lifetime owner for a future
+  MT6797 DVFSP state provider. It retains the four referenced device objects,
+  serializes a future transition, and tracks a monotonic generation. It does
+  not read clocks, rails, EEM, PTP, or PPM state; it does not access registers,
+  call firmware, change clocks or rails, or register a DVFSP state owner.
+  Keep the node disabled until every referenced backend has an independently
+  reviewed provider contract.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-dvfsp-resource-owner
+
+  mediatek,clock-backend:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Protected CPU clock resource object.
+
+  mediatek,bigidvfs-backend:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: BigiDVFS resource object.
+
+  mediatek,thermal:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: EEM/thermal resource object.
+
+  mediatek,calibration-source:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Read-only calibration source resource object.
+
+  status:
+    enum: [ disabled, okay ]
+
+required:
+  - compatible
+  - mediatek,clock-backend
+  - mediatek,bigidvfs-backend
+  - mediatek,thermal
+  - mediatek,calibration-source
+
+additionalProperties: false
+
+examples:
+  - |
+    soc {
+      dvfsp_resource_owner: dvfsp-resource-owner {
+        compatible = "mediatek,mt6797-dvfsp-resource-owner";
+        mediatek,clock-backend = <&dvfsp_clock_backend>;
+        mediatek,bigidvfs-backend = <&dvfsp_bigidvfs_backend>;
+        mediatek,thermal = <&thermal>;
+        mediatek,calibration-source = <&dvfsp_handoff>;
+        status = "disabled";
+      };
+    };

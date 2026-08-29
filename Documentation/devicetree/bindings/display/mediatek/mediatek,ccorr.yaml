@@ -22,6 +22,7 @@ properties:
   compatible:
     oneOf:
       - enum:
+          - mediatek,mt6797-disp-ccorr
           - mediatek,mt8183-disp-ccorr
           - mediatek,mt8192-disp-ccorr
       - items:

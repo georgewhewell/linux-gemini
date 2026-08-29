@@ -20,7 +20,11 @@
 #include <linux/io.h>
 #include <linux/thermal.h>
 #include <linux/reset.h>
+#include <linux/math64.h>
 #include <linux/types.h>
+
+#include <linux/soc/mediatek/mt6797-eem-calibration.h>
+#include <linux/soc/mediatek/mt6797-eem-readback.h>
 
 #include "../thermal_hwmon.h"
 
@@ -76,6 +80,23 @@
 #define TEMP_MSR3_1             0x1B8
 
 #define PTPCORESEL		0x400
+
+/* MT6797 EEM/PTP registers share thermal_base and PTPCORESEL. */
+#define MT6797_EEM_FREQPCT30		0x218
+#define MT6797_EEM_FREQPCT74		0x21c
+#define MT6797_EEM_DCVALUES		0x240
+#define MT6797_EEM_AGEVALUES		0x244
+#define MT6797_EEM_VOP30		0x248
+#define MT6797_EEM_VOP74		0x24c
+#define MT6797_EEM_TEMP		0x250
+#define MT6797_EEM_INTSTS		0x254
+#define MT6797_EEM_INTSTS_RAW		0x258
+#define MT6797_EEM_INTEN		0x25c
+#define MT6797_EEM_THERM_INTSTS	0x404
+#define MT6797_EEM_MOD_INTSTS		0x408
+#define MT6797_EEMCORESEL_MASK		GENMASK(2, 0)
+
+#define MT6797_EEM_EEMEN		0x238
 
 #define TEMP_MONCTL1_PERIOD_UNIT(x)	((x) & 0x3ff)
 
@@ -182,6 +203,7 @@ enum mtk_thermal_version {
 	MTK_THERMAL_V1 = 1,
 	MTK_THERMAL_V2,
 	MTK_THERMAL_V3,
+	MTK_THERMAL_V4,
 };
 
 /* MT2701 thermal sensors */
@@ -296,6 +318,18 @@ enum mtk_thermal_version {
 #define MT8365_TS2 1
 #define MT8365_TS3 2
 
+/* MT6797 thermal sensors */
+#define MT6797_TS_MCU1		0
+#define MT6797_TS_MCU2		1
+#define MT6797_TS_MCU3		2
+#define MT6797_TS_MCU4		3
+#define MT6797_TS_ABB		4
+#define MT6797_TEMP_AUXADC_CHANNEL	11
+#define MT6797_NUM_SENSORS	5
+#define MT6797_NUM_ZONES		6
+#define MT6797_NUM_SENSORS_PER_ZONE	2
+#define MT6797_NUM_CONTROLLER	1
+
 struct mtk_thermal;
 
 struct thermal_bank_cfg {
@@ -325,6 +359,9 @@ struct mtk_thermal_data {
 	u32 apmixed_buffer_ctl_reg;
 	u32 apmixed_buffer_ctl_mask;
 	u32 apmixed_buffer_ctl_set;
+	u32 temp_ahbpoll;
+	u32 temp_msrctl0;
+	u32 temp_adcvalidmask;
 };
 
 struct mtk_thermal {
@@ -576,6 +613,61 @@ static const struct mtk_thermal_data mt8365_thermal_data = {
 	.apmixed_buffer_ctl_set = 0,
 };
 
+static const int mt6797_bank_data[MT6797_NUM_ZONES][MT6797_NUM_SENSORS_PER_ZONE] = {
+	{ MT6797_TS_MCU1 },
+	{ MT6797_TS_MCU4 },
+	{ MT6797_TS_MCU2, MT6797_TS_MCU3 },
+	{ MT6797_TS_MCU2 },
+	{ MT6797_TS_MCU2 },
+	{ MT6797_TS_MCU2 },
+};
+
+static const int mt6797_msr[MT6797_NUM_SENSORS_PER_ZONE] = {
+	TEMP_MSR0, TEMP_MSR1,
+};
+
+static const int mt6797_adcpnp[MT6797_NUM_SENSORS_PER_ZONE] = {
+	TEMP_ADCPNP0, TEMP_ADCPNP1,
+};
+
+static const int mt6797_mux_values[MT6797_NUM_SENSORS] = {
+	0, 1, 2, 3, 0,
+};
+
+static const int mt6797_vts_index[MT6797_NUM_SENSORS] = {
+	VTS1, VTS2, VTS3, VTS4, VTSABB,
+};
+
+static const int mt6797_tc_offset[MT6797_NUM_CONTROLLER] = { 0x0 };
+
+static const struct mtk_thermal_data mt6797_thermal_data = {
+	.num_banks = MT6797_NUM_ZONES,
+	.num_sensors = MT6797_NUM_SENSORS,
+	.auxadc_channel = MT6797_TEMP_AUXADC_CHANNEL,
+	.vts_index = mt6797_vts_index,
+	.num_controller = MT6797_NUM_CONTROLLER,
+	.controller_offset = mt6797_tc_offset,
+	.need_switch_bank = true,
+	.bank_data = {
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[0] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[1] },
+		{ .num_sensors = 2, .sensors = mt6797_bank_data[2] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[3] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[4] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[5] },
+	},
+	.msr = mt6797_msr,
+	.adcpnp = mt6797_adcpnp,
+	.sensor_mux_values = mt6797_mux_values,
+	.version = MTK_THERMAL_V4,
+	.apmixed_buffer_ctl_reg = APMIXED_SYS_TS_CON1,
+	.apmixed_buffer_ctl_mask = GENMASK(31, 6) | BIT(3),
+	.apmixed_buffer_ctl_set = BIT(0),
+	.temp_ahbpoll = 0x30d,
+	.temp_msrctl0 = 0x492,
+	.temp_adcvalidmask = 0x2c,
+};
+
 /*
  * The MT2712 thermal controller has one bank, which can read up to
  * four temperature sensors simultaneously. The MT2712 has a total of 4
@@ -770,6 +862,34 @@ static int raw_to_mcelsius_v3(struct mtk_thermal *mt, int sensno, s32 raw)
 	return mt->degc_cali * 500 - tmp;
 }
 
+static int raw_to_mcelsius_v4(struct mtk_thermal *mt, int sensno, s32 raw)
+{
+	s64 gain, x_roomt, measured, delta, slope_denominator;
+
+	if (raw == 0)
+		return 0;
+
+	raw &= 0xfff;
+	gain = 10000 + ((s64)(mt->adc_ge - 512) * 10000) / 4096;
+	if (gain <= 0)
+		return THERMAL_TEMP_INVALID;
+
+	x_roomt = (((((s64)mt->vts[sensno] + 3350 - mt->adc_oe) *
+		      10000) >> 12) * 10000) / gain;
+	measured = (((((s64)raw - mt->adc_oe) * 10000) >> 12) *
+		    10000) / gain;
+	delta = (measured - x_roomt) * 15 / 18;
+	slope_denominator = 1663 +
+		(mt->o_slope_sign ? -1 : 1) * (s64)mt->o_slope * 10;
+	if (slope_denominator <= 0)
+		return THERMAL_TEMP_INVALID;
+
+	delta = (delta * 1000) / slope_denominator;
+
+	/* Vendor result is in 0.1 degrees C; return milli-degrees C. */
+	return (int)(((s64)(mt->degc_cali * 10 / 2) - delta) * 100);
+}
+
 /**
  * mtk_thermal_get_bank - get bank
  * @bank:	The bank
@@ -845,6 +965,432 @@ static int mtk_thermal_bank_temperature(struct mtk_thermal_bank *bank)
 	return max;
 }
 
+static void mt6797_eem_unpack_anchors(u32 packed, u8 *anchors)
+{
+	unsigned int i;
+
+	for (i = 0; i < MT6797_EEM_READBACK_ANCHORS / 2; i++)
+		anchors[i] = (packed >> (i * 8)) & 0xff;
+}
+
+static int mt6797_thermal_temperature_locked(struct mtk_thermal *mt,
+						      u32 selector)
+{
+	int i;
+	int maximum = INT_MIN;
+
+	for (i = 0; i < mt->conf->num_banks; i++) {
+		struct mtk_thermal_bank *bank = &mt->banks[i];
+		u32 value;
+		int temperature;
+
+		value = (selector & ~GENMASK(3, 0)) |
+			(bank->id & GENMASK(3, 0));
+		writel(value, mt->thermal_base + PTPCORESEL);
+		readl(mt->thermal_base + PTPCORESEL);
+
+		temperature = mtk_thermal_bank_temperature(bank);
+		maximum = max(maximum, temperature);
+	}
+
+	return maximum;
+}
+
+int mt6797_thermal_eem_readback(struct device *dev,
+				 struct mt6797_eem_readback *readback)
+{
+	static const u8 bank_ids[MT6797_EEM_READBACK_BANK_COUNT] = {
+		MT6797_EEM_READBACK_BANK_BIG,
+		MT6797_EEM_READBACK_BANK_L,
+		MT6797_EEM_READBACK_BANK_2L,
+		MT6797_EEM_READBACK_BANK_CCI,
+	};
+	struct mtk_thermal *mt;
+	u32 selector;
+	u32 restored_selector;
+	unsigned int i;
+
+	if (!dev || !readback)
+		return -EINVAL;
+
+	mt = dev_get_drvdata(dev);
+	if (!mt)
+		return -EPROBE_DEFER;
+	if (!mt->conf || mt->conf->version != MTK_THERMAL_V4)
+		return -EOPNOTSUPP;
+
+	memset(readback, 0, sizeof(*readback));
+	readback->abi = MT6797_EEM_READBACK_ABI;
+
+	/* The thermal lock also serializes PTPCORESEL bank ownership. */
+	mutex_lock(&mt->lock);
+	selector = readl(mt->thermal_base + PTPCORESEL);
+	readback->selector_before = selector;
+	readback->thermal_interrupt_status =
+		readl(mt->thermal_base + MT6797_EEM_THERM_INTSTS);
+	readback->modulation_interrupt_status =
+		readl(mt->thermal_base + MT6797_EEM_MOD_INTSTS);
+
+	for (i = 0; i < ARRAY_SIZE(bank_ids); i++) {
+		struct mt6797_eem_readback_bank *bank = &readback->bank[i];
+		u32 value;
+
+		value = (selector & ~MT6797_EEMCORESEL_MASK) | bank_ids[i];
+		writel(value, mt->thermal_base + PTPCORESEL);
+		readl(mt->thermal_base + PTPCORESEL);
+
+		bank->bank = bank_ids[i];
+		bank->eem_enable = readl(mt->thermal_base + MT6797_EEM_EEMEN);
+		bank->interrupt_status = readl(mt->thermal_base +
+						MT6797_EEM_INTSTS);
+		bank->interrupt_raw = readl(mt->thermal_base +
+						MT6797_EEM_INTSTS_RAW);
+		bank->interrupt_enable = readl(mt->thermal_base +
+						MT6797_EEM_INTEN);
+		bank->dc_values = readl(mt->thermal_base +
+						MT6797_EEM_DCVALUES);
+		bank->age_values = readl(mt->thermal_base +
+						MT6797_EEM_AGEVALUES);
+		bank->temperature = readl(mt->thermal_base + MT6797_EEM_TEMP);
+
+		value = readl(mt->thermal_base + MT6797_EEM_FREQPCT30);
+		mt6797_eem_unpack_anchors(value, bank->frequency_pct);
+		value = readl(mt->thermal_base + MT6797_EEM_VOP30);
+		mt6797_eem_unpack_anchors(value, bank->vop);
+		value = readl(mt->thermal_base + MT6797_EEM_FREQPCT74);
+		mt6797_eem_unpack_anchors(value,
+					 &bank->frequency_pct[4]);
+		value = readl(mt->thermal_base + MT6797_EEM_VOP74);
+		mt6797_eem_unpack_anchors(value, &bank->vop[4]);
+		readback->bank_mask |= BIT(bank_ids[i]);
+	}
+
+	readback->temperature_millic =
+		mt6797_thermal_temperature_locked(mt, selector);
+
+	/* Restore the exact selector word, including unrelated control bits. */
+	writel(selector, mt->thermal_base + PTPCORESEL);
+	readl(mt->thermal_base + PTPCORESEL);
+	restored_selector = readl(mt->thermal_base + PTPCORESEL);
+	readback->selector_after = restored_selector;
+	mutex_unlock(&mt->lock);
+
+	if (restored_selector != selector ||
+	    readback->bank_mask != (BIT(MT6797_EEM_READBACK_BANK_BIG) |
+					BIT(MT6797_EEM_READBACK_BANK_L) |
+					BIT(MT6797_EEM_READBACK_BANK_2L) |
+					BIT(MT6797_EEM_READBACK_BANK_CCI)))
+		return -EIO;
+	if (readback->temperature_millic == INT_MIN)
+		return -EAGAIN;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_thermal_eem_readback);
+
+#define MT6797_EEM_CALIBRATION_EEM_BASE_UV	700000
+#define MT6797_EEM_CALIBRATION_EEM_STEP_UV	6250
+#define MT6797_EEM_CALIBRATION_BIG_BASE_UV	300000
+#define MT6797_EEM_CALIBRATION_BIG_STEP_UV	10000
+
+static int mt6797_eem_calibration_provenance_check(
+	const struct mt6797_dvfsp_state_provenance *provenance)
+{
+	if (!provenance ||
+	    provenance->abi != MT6797_DVFSP_STATE_PROVENANCE_ABI ||
+	    provenance->source_mask != MT6797_DVFSP_STATE_PROVENANCE_SOURCE_ALL ||
+	    !provenance->variant_id || !provenance->table_epoch ||
+	    !provenance->calibration_handle)
+		return -EPROTO;
+
+	return 0;
+}
+
+static int mt6797_eem_calibration_ptp_state_check(
+	const struct mt6797_dvfsp_ptp_state *state)
+{
+	static const u32 expected_banks[MT6797_EEM_CALIBRATION_BANKS] = {
+		MT6797_DVFSP_PTP_BANK_BIG,
+		MT6797_DVFSP_PTP_BANK_L,
+		MT6797_DVFSP_PTP_BANK_2L,
+		MT6797_DVFSP_PTP_BANK_CCI,
+	};
+	unsigned int i;
+
+	if (!state || state->abi != MT6797_DVFSP_PTP_STATE_ABI ||
+	    state->bank_mask != MT6797_DVFSP_PTP_BANK_MASK_ALL)
+		return -EPROTO;
+
+	for (i = 0; i < MT6797_EEM_CALIBRATION_BANKS; i++) {
+		const struct mt6797_dvfsp_ptp_bank_state *bank = &state->bank[i];
+
+		if (bank->bank != expected_banks[i] ||
+		    bank->init_enable != 1 || bank->mon_enable != 1 ||
+		    bank->dvfs_level > 3 || bank->bin_spec > 7)
+			return -EPROTO;
+	}
+
+	return 0;
+}
+
+static u32 mt6797_eem_calibration_code_to_uv(unsigned int bank, u8 code)
+{
+	if (bank == MT6797_EEM_READBACK_BANK_BIG)
+		return MT6797_EEM_CALIBRATION_BIG_BASE_UV +
+			(unsigned int)code * MT6797_EEM_CALIBRATION_BIG_STEP_UV;
+
+	return MT6797_EEM_CALIBRATION_EEM_BASE_UV +
+		(unsigned int)code * MT6797_EEM_CALIBRATION_EEM_STEP_UV;
+}
+
+static int mt6797_eem_calibration_interpolate(u8 target, u8 x0, u8 x1,
+						 u32 y0, u32 y1, u32 *result)
+{
+	s64 numerator;
+	s64 denominator;
+	s64 value;
+
+	if (!result)
+		return -EINVAL;
+	if (x0 == x1) {
+		if (y0 != y1)
+			return -EPROTO;
+		*result = y0;
+		return 0;
+	}
+
+	numerator = ((s64)y1 - (s64)y0) * ((s64)target - (s64)x0);
+	denominator = (s64)x1 - (s64)x0;
+	value = (s64)y0 + div_s64(numerator, denominator);
+	if (value < 0 || value > U32_MAX)
+		return -ERANGE;
+	*result = (u32)value;
+
+	return 0;
+}
+
+static int mt6797_eem_calibration_ppm_check(
+	const struct mt6797_eem_calibration_input *input)
+{
+	static const u32 ppm_clusters[MT6797_DVFSP_PPM_CLUSTER_COUNT] = {
+		MT6797_DVFSP_PPM_CLUSTER_B,
+		MT6797_DVFSP_PPM_CLUSTER_L,
+		MT6797_DVFSP_PPM_CLUSTER_LL,
+	};
+	unsigned int bank_index;
+	int ret;
+
+	if (!input || !input->ppm_snapshot || !input->ppm_policy)
+		return -EINVAL;
+	ret = mt6797_dvfsp_ppm_snapshot_validate(input->ppm_snapshot);
+	if (ret)
+		return ret;
+	if (input->provenance.table_epoch !=
+	    input->ppm_snapshot->table_epoch)
+		return -EAGAIN;
+	ret = mt6797_dvfsp_ppm_policy_validate(input->ppm_policy);
+	if (ret)
+		return ret;
+	if (input->provenance.table_epoch != input->ppm_policy->table_epoch)
+		return -EAGAIN;
+	for (bank_index = 0;
+	     bank_index < MT6797_DVFSP_PPM_POLICY_BANK_COUNT; bank_index++) {
+		unsigned int row;
+
+		for (row = 0; row < MT6797_DVFSP_PPM_POLICY_TABLE_ENTRIES; row++)
+			if (input->frequency_khz[bank_index][row] !=
+				    input->ppm_policy->frequency_khz[bank_index][row] ||
+			    input->ppm_limit_khz[bank_index][row] !=
+				    input->ppm_policy->limit_khz[bank_index][row])
+				return -EAGAIN;
+	}
+
+	for (bank_index = 0;
+	     bank_index < MT6797_DVFSP_PPM_CLUSTER_COUNT; bank_index++) {
+		const struct mt6797_dvfsp_ppm_cluster_snapshot *cluster =
+			&input->ppm_snapshot->cluster[ppm_clusters[bank_index]];
+		unsigned int row;
+
+		for (row = 0; row < MT6797_DVFSP_PPM_TABLE_ENTRIES; row++) {
+			if (input->frequency_khz[bank_index][row] !=
+			    cluster->frequency_khz[row])
+				return -EAGAIN;
+		}
+	}
+
+	return 0;
+}
+
+static int mt6797_eem_calibration_row_voltage(
+	const struct mt6797_eem_calibration_input *input,
+	const struct mt6797_eem_readback_bank *bank,
+	unsigned int bank_index, unsigned int row, u32 *vproc_uv)
+{
+	u32 raw_uv;
+	int ret;
+
+	if (row % 2 == 0) {
+		raw_uv = mt6797_eem_calibration_code_to_uv(
+			bank->bank, bank->vop[row / 2]);
+	} else if (row + 1 < MT6797_EEM_CALIBRATION_ROWS) {
+		ret = mt6797_eem_calibration_interpolate(
+			input->frequency_pct[bank_index][row],
+			input->frequency_pct[bank_index][row - 1],
+			input->frequency_pct[bank_index][row + 1],
+			mt6797_eem_calibration_code_to_uv(
+				bank->bank, bank->vop[(row - 1) / 2]),
+			mt6797_eem_calibration_code_to_uv(
+				bank->bank, bank->vop[(row + 1) / 2]),
+			&raw_uv);
+		if (ret)
+			return ret;
+	} else {
+		ret = mt6797_eem_calibration_interpolate(
+			input->frequency_pct[bank_index][row],
+			input->frequency_pct[bank_index][row - 3],
+			input->frequency_pct[bank_index][row - 1],
+			mt6797_eem_calibration_code_to_uv(
+				bank->bank, bank->vop[(row - 3) / 2]),
+			mt6797_eem_calibration_code_to_uv(
+				bank->bank, bank->vop[(row - 1) / 2]),
+			&raw_uv);
+		if (ret)
+			return ret;
+	}
+
+	if (input->temperature_millic <= 33000)
+		raw_uv += MT6797_EEM_CALIBRATION_TEMP_OFFSET_UV;
+	*vproc_uv = clamp_t(u32, raw_uv, input->vmin_uv[bank_index],
+				     input->vmax_uv[bank_index]);
+	if (*vproc_uv > input->record_vproc_uv[bank_index][row])
+		*vproc_uv = input->record_vproc_uv[bank_index][row];
+	if (*vproc_uv < input->vmin_uv[bank_index])
+		return -EPROTO;
+
+	return 0;
+}
+
+int mt6797_eem_calibration_build(
+	const struct mt6797_eem_calibration_input *input,
+	struct mt6797_dvfsp_calibration_state *state)
+{
+	static const u32 bank_ids[MT6797_EEM_CALIBRATION_BANKS] = {
+		MT6797_EEM_READBACK_BANK_BIG,
+		MT6797_EEM_READBACK_BANK_L,
+		MT6797_EEM_READBACK_BANK_2L,
+		MT6797_EEM_READBACK_BANK_CCI,
+	};
+	static const u32 cluster_ids[MT6797_EEM_CALIBRATION_BANKS] = {
+		MT6797_DVFSP_STATE_CLUSTER_B,
+		MT6797_DVFSP_STATE_CLUSTER_L,
+		MT6797_DVFSP_STATE_CLUSTER_LL,
+		MT6797_DVFSP_STATE_CLUSTER_CCI,
+	};
+	unsigned int bank_index;
+	int ret;
+
+	if (!input || !state || !input->readback ||
+	    !input->ptp_state ||
+	    !input->ppm_snapshot ||
+	    mt6797_eem_calibration_ptp_state_check(input->ptp_state) ||
+	    input->temperature_millic < -40000 ||
+	    input->temperature_millic > 150000 ||
+	    !input->thermal_generation || !input->clock_owner_generation ||
+	    !input->rail_owner_generation ||
+	    !input->source_generation ||
+	    mt6797_eem_calibration_provenance_check(&input->provenance))
+		return -EPROTO;
+	ret = mt6797_eem_calibration_ppm_check(input);
+	if (ret)
+		return ret;
+	if (input->readback->abi != MT6797_EEM_READBACK_ABI ||
+	    input->readback->bank_mask !=
+		(BIT(MT6797_EEM_READBACK_BANK_BIG) |
+		 BIT(MT6797_EEM_READBACK_BANK_L) |
+		 BIT(MT6797_EEM_READBACK_BANK_2L) |
+		 BIT(MT6797_EEM_READBACK_BANK_CCI)) ||
+	    input->readback->selector_before != input->readback->selector_after ||
+	    input->temperature_millic != input->readback->temperature_millic)
+		return -EAGAIN;
+
+	memset(state, 0, sizeof(*state));
+	state->abi = MT6797_DVFSP_CALIBRATION_STATE_ABI;
+	state->phase = MT6797_DVFSP_CALIBRATION_STATE_PHASE_MON;
+	state->bank_mask = MT6797_DVFSP_CALIBRATION_STATE_BANK_ALL;
+	state->temperature_millic = input->temperature_millic;
+	state->thermal_generation = input->thermal_generation;
+	state->clock_owner_generation = input->clock_owner_generation;
+	state->rail_owner_generation = input->rail_owner_generation;
+	state->source_generation = input->source_generation;
+	state->provenance = input->provenance;
+
+	for (bank_index = 0; bank_index < MT6797_EEM_CALIBRATION_BANKS;
+	     bank_index++) {
+		const struct mt6797_eem_readback_bank *bank =
+			&input->readback->bank[bank_index];
+		struct mt6797_dvfsp_calibration_cluster *cluster;
+		unsigned int row;
+
+		if (bank->bank != bank_ids[bank_index] ||
+		    (bank->eem_enable & MT6797_EEM_CALIBRATION_ENABLE_MASK) !=
+			MT6797_EEM_CALIBRATION_MON_ENABLE ||
+		    bank->interrupt_status &
+			~MT6797_EEM_CALIBRATION_MON_STATUS_MASK)
+			return -EAGAIN;
+		if (input->vmin_uv[bank_index] >= input->vmax_uv[bank_index])
+			return -EPROTO;
+
+		for (row = 0; row < MT6797_EEM_CALIBRATION_ROWS; row++) {
+			u32 vsram_uv = input->vsram_uv[bank_index][row];
+
+			if (!input->frequency_pct[bank_index][row] ||
+			    !input->frequency_khz[bank_index][row] ||
+			    !input->record_vproc_uv[bank_index][row] ||
+			    !input->ppm_limit_khz[bank_index][row] ||
+			    !vsram_uv ||
+			    (row && input->frequency_khz[bank_index][row] >=
+				input->frequency_khz[bank_index][row - 1]) ||
+			    (row && input->frequency_pct[bank_index][row] >
+				input->frequency_pct[bank_index][row - 1]) ||
+			    input->record_vproc_uv[bank_index][row] <
+				input->vmin_uv[bank_index] ||
+			    vsram_uv < MT6797_EEM_CALIBRATION_VSRAM_MIN_UV ||
+			    vsram_uv > MT6797_EEM_CALIBRATION_VSRAM_MAX_UV)
+				return -EPROTO;
+			if (row % 2 == 0 &&
+			    input->frequency_pct[bank_index][row] !=
+				bank->frequency_pct[row / 2])
+				return -EAGAIN;
+		}
+
+		cluster = &state->cluster[cluster_ids[bank_index]];
+		cluster->table_count = MT6797_EEM_CALIBRATION_ROWS;
+		for (row = 0; row < MT6797_EEM_CALIBRATION_ROWS; row++) {
+			struct mt6797_dvfsp_calibration_table_entry *entry =
+				&cluster->table[MT6797_EEM_CALIBRATION_ROWS - 1 - row];
+			u32 vsram_uv = input->vsram_uv[bank_index][row];
+			int ret;
+
+			ret = mt6797_eem_calibration_row_voltage(
+				input, bank, bank_index, row, &entry->vproc_uv);
+			if (ret)
+				return ret;
+			if (vsram_uv < entry->vproc_uv +
+				MT6797_EEM_CALIBRATION_VSRAM_DELTA_MIN_UV ||
+			    vsram_uv > entry->vproc_uv +
+				MT6797_EEM_CALIBRATION_VSRAM_DELTA_MAX_UV)
+				return -EPROTO;
+			entry->frequency_khz = input->frequency_khz[bank_index][row];
+			entry->vsram_uv = vsram_uv;
+			entry->ppm_limit_khz =
+				input->ppm_limit_khz[bank_index][row];
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_eem_calibration_build);
+
 static int mtk_read_temp(struct thermal_zone_device *tz, int *temperature)
 {
 	struct mtk_thermal *mt = thermal_zone_device_priv(tz);
@@ -898,11 +1444,12 @@ static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 			controller_base + TEMP_MONCTL2);
 
 	/* poll is set to 10u */
-	writel(TEMP_AHBPOLL_ADC_POLL_INTERVAL(768),
+	writel(TEMP_AHBPOLL_ADC_POLL_INTERVAL(mt->conf->temp_ahbpoll ?
+					     mt->conf->temp_ahbpoll : 768),
 	       controller_base + TEMP_AHBPOLL);
 
 	/* temperature sampling control, 1 sample */
-	writel(0x0, controller_base + TEMP_MSRCTL0);
+	writel(mt->conf->temp_msrctl0, controller_base + TEMP_MSRCTL0);
 
 	/* exceed this polling time, IRQ would be inserted */
 	writel(0xffffffff, controller_base + TEMP_AHBTO);
@@ -955,7 +1502,9 @@ static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 	writel(0x0, controller_base + TEMP_RDCTRL);
 
 	/* indicate where the valid bit is */
-	writel(TEMP_ADCVALIDMASK_VALID_HIGH | TEMP_ADCVALIDMASK_VALID_POS(12),
+	writel(mt->conf->temp_adcvalidmask ?
+	       mt->conf->temp_adcvalidmask :
+	       TEMP_ADCVALIDMASK_VALID_HIGH | TEMP_ADCVALIDMASK_VALID_POS(12),
 	       controller_base + TEMP_ADCVALIDMASK);
 
 	/* no shift */
@@ -1070,6 +1619,41 @@ static int mtk_thermal_extract_efuse_v3(struct mtk_thermal *mt, u32 *buf)
 	return 0;
 }
 
+static int mtk_thermal_extract_efuse_v4(struct mtk_thermal *mt, u32 *buf)
+{
+	int i;
+
+	/* MT6797 calibration-enable is bit 0 of efuse word 0x10206180. */
+	if (!(buf[1] & BIT(0)))
+		return -EINVAL;
+
+	mt->adc_ge = (buf[0] >> 22) & 0x3ff;
+	mt->adc_oe = (buf[0] >> 12) & 0x3ff;
+	mt->degc_cali = (buf[1] >> 1) & 0x3f;
+	mt->o_slope = (buf[1] >> 26) & 0x3f;
+	mt->o_slope_sign = (buf[1] >> 7) & 0x1;
+	mt->vts[VTS1] = (buf[1] >> 17) & 0x1ff;
+	mt->vts[VTS2] = (buf[1] >> 8) & 0x1ff;
+	mt->vts[VTS3] = buf[0] & 0x1ff;
+	mt->vts[VTS4] = (buf[2] >> 23) & 0x1ff;
+	mt->vts[VTSABB] = (buf[2] >> 14) & 0x1ff;
+
+	/* ID=0 samples ignore the slope fuse in the vendor contract. */
+	if (!((buf[0] >> 9) & 0x1))
+		mt->o_slope = 0;
+
+	if (mt->adc_ge < 265 || mt->adc_ge > 758 ||
+	    mt->adc_oe < 265 || mt->adc_oe > 758 ||
+	    mt->degc_cali < 1 || mt->degc_cali > 63)
+		return -EINVAL;
+
+	for (i = 0; i < mt->conf->num_sensors; i++)
+		if (mt->vts[mt->conf->vts_index[i]] > 484)
+			return -EINVAL;
+
+	return 0;
+}
+
 static int mtk_thermal_get_calibration_data(struct device *dev,
 					    struct mtk_thermal *mt)
 {
@@ -1081,7 +1665,7 @@ static int mtk_thermal_get_calibration_data(struct device *dev,
 	/* Start with default values */
 	mt->adc_ge = 512;
 	mt->adc_oe = 512;
-	for (i = 0; i < mt->conf->num_sensors; i++)
+	for (i = 0; i < MAX_NUM_VTS; i++)
 		mt->vts[i] = 260;
 	mt->degc_cali = 40;
 	mt->o_slope = 0;
@@ -1115,6 +1699,9 @@ static int mtk_thermal_get_calibration_data(struct device *dev,
 		break;
 	case MTK_THERMAL_V3:
 		ret = mtk_thermal_extract_efuse_v3(mt, buf);
+		break;
+	case MTK_THERMAL_V4:
+		ret = mtk_thermal_extract_efuse_v4(mt, buf);
 		break;
 	default:
 		ret = -EINVAL;
@@ -1161,7 +1748,13 @@ static const struct of_device_id mtk_thermal_of_match[] = {
 		.compatible = "mediatek,mt8365-thermal",
 		.data = (void *)&mt8365_thermal_data,
 	}, {
+		.compatible = "mediatek,mt6797-thermal",
+		.data = (void *)&mt6797_thermal_data,
+	}, {
+		.compatible = "mediatek,mt6797-therm_ctrl",
+		.data = (void *)&mt6797_thermal_data,
 	},
+	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, mtk_thermal_of_match);
 
@@ -1217,6 +1810,7 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	mutex_init(&mt->lock);
 
 	mt->dev = &pdev->dev;
+	platform_set_drvdata(pdev, mt);
 
 	auxadc = of_parse_phandle(np, "mediatek,auxadc", 0);
 	if (!auxadc) {
@@ -1277,6 +1871,8 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 		mt->raw_to_mcelsius = raw_to_mcelsius_v1;
 	else if (mt->conf->version == MTK_THERMAL_V2)
 		mt->raw_to_mcelsius = raw_to_mcelsius_v2;
+	else if (mt->conf->version == MTK_THERMAL_V4)
+		mt->raw_to_mcelsius = raw_to_mcelsius_v4;
 	else
 		mt->raw_to_mcelsius = raw_to_mcelsius_v3;
 

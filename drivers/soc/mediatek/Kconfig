@@ -45,6 +45,186 @@ config MTK_INFRACFG
 	  INFRACFG controller contains various infrastructure registers not
 	  directly associated to any device.
 
+config MTK_MT6797_A72_POWER
+	bool "MediaTek MT6797 Cortex-A72 power resource observer"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on REGULATOR && RESET_CONTROLLER
+	select MFD_SYSCON
+	help
+	  Build the resource observer for the MT6797 Cortex-A72 cluster power
+	  path.  It verifies that the external processor regulator, TOPRGU
+	  reset, SPM syscon, and MCUCFG resources are available and publishes
+	  a read-only snapshot in sysfs.
+
+	  This initial implementation never changes power state and never
+	  authorizes CPU_ON.  It is groundwork for a later provider that can
+	  reproduce the hardware power sequence.
+
+config MTK_MT6797_DVFSP_HANDOFF
+	bool "MediaTek MT6797 stopped DVFSP firmware handoff"
+	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK
+	select MFD_SYSCON
+	help
+	  Build a one-way receiver for an MT6797 CPU-DVFS firmware instance
+	  which the preceding software has already stopped and reset. It
+	  validates the exact retained CSPM signature observed by the preceding
+	  read-only experiment, balances one temporary I2C_APPM clock reference
+	  through the common clock framework, verifies the physical gate
+	  independently, and repeats the read-only validation after 45 seconds.
+
+	  Any observed mismatch is sticky until reboot. An already-gated
+	  initial clock is reported as inconclusive without changing clock
+	  state. The receiver never writes CSPM or infracfg directly, starts,
+	  resets, pauses, or loads firmware, touches an I2C controller or
+	  regulator, or exposes a writable userspace control.
+
+	  This option does not implement per-transfer DVFSP coordination and
+	  does not authorize I2C6 by itself. Keep every dependent consumer
+	  disabled until a separate experiment establishes the handoff.
+
+	  This option is for bounded Gemini PDA bring-up experiments only.
+
+config MTK_MT6797_DVFSP_RESOURCE_OWNER
+	bool "MediaTek MT6797 DVFSP resource-only owner"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on MTK_MT6797_DVFSP_HANDOFF
+	help
+	  Bind only the MT6797 DVFSP resource-lifetime owner. The provider
+	  resolves four Device Tree resources, retains their device references,
+	  and exposes no readback, hardware operation, firmware call, secure
+	  service, clock or regulator operation, state-owner registration, or
+	  CPU admission. Keep its Device Tree node disabled until a calibrated
+	  provider contract exists.
+
+config MTK_MT6797_DVFSP_OWNER_KUNIT_TEST
+	bool "KUnit tests for the MT6797 DVFSP resource owner"
+	depends on KUNIT=y
+	depends on MTK_MT6797_DVFSP_RESOURCE_OWNER
+	help
+	  Exercise the hardware-free lifecycle and arbitration contract of the
+	  MT6797 DVFSP resource owner. The fixture uses fake device references
+	  and performs no hardware, firmware, provider, or CPU operation.
+
+config MTK_MT6797_DVFSP_PROVIDER_KUNIT_TEST
+	bool "KUnit tests for the MT6797 calibrated provider bridge"
+	depends on KUNIT=y
+	depends on MTK_MT6797_DVFSP_RESOURCE_OWNER
+	help
+	  Exercise the hardware-free source binding and exit contract of the
+	  dormant MT6797 calibrated provider.
+
+config MTK_MT6797_DVFSP_VENDOR_OWNER
+	bool "MediaTek MT6797 cooperative vendor owner adapter"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on MTK_MT6797_DVFSP_RESOURCE_OWNER
+	help
+	  Compose explicit vendor identity, PPM, live-state, and calibration
+	  callbacks around the dormant calibrated provider. This adapter does
+	  not call single-slot vendor registration setters, register a handoff
+	  owner, perform hardware or firmware operations, or admit a CPU. The
+	  vendor-aware driver must supply callbacks that preserve existing
+	  policy writers and one transition generation.
+
+config MTK_MT6797_DVFSP_VENDOR_OWNER_KUNIT_TEST
+	bool "KUnit tests for the MT6797 cooperative vendor owner adapter"
+	depends on KUNIT=y
+	depends on MTK_MT6797_DVFSP_VENDOR_OWNER
+	help
+	  Exercise the hardware-free cooperative callback binding and unbind
+	  lifecycle. The fixture invokes no vendor callback or registration API.
+
+config MTK_MT6797_DVFSP_VENDOR_PROVIDER_BRIDGE_KUNIT_TEST
+	bool "KUnit tests for the MT6797 vendor provider field bridge"
+	depends on KUNIT=y
+	depends on MTK_MT6797_DVFSP_VENDOR_OWNER
+	help
+	  Exercise the hardware-free vendor-to-provider field and identity mapping.
+	  The bridge retains raw EEM/CSPM values and reports unsupported provider
+	  conversions explicitly; it never registers a provider or touches hardware.
+
+config MTK_MT6797_DVFSP_VENDOR_WRITER
+	bool "MediaTek MT6797 vendor writer transition owner"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on MTK_MT6797_DVFSP_VENDOR_OWNER
+	help
+	  Provide one explicit transition mutex and monotonic generation for a
+	  vendor-aware writer that chains its existing PTP, voltage, and PPM
+	  callback slots. The integration must supply provenance and must call
+	  begin/commit or begin/abort around its existing writer path.
+
+config MTK_MT6797_DVFSP_VENDOR_WRITER_KUNIT_TEST
+	bool "KUnit tests for the MT6797 vendor writer transition owner"
+	depends on KUNIT=y
+	depends on MTK_MT6797_DVFSP_VENDOR_WRITER
+	help
+	  Exercise generation, abort, overflow, and provenance validation using
+	  fake callbacks and a fake mutex. No vendor callback or registration API
+	  is invoked.
+
+config MTK_MT6797_DVFSP_VENDOR_WRITER_BRIDGE
+	bool "MediaTek MT6797 vendor writer owner bridge"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on MTK_MT6797_DVFSP_VENDOR_WRITER
+	help
+	  Export the exact callback table consumed by a separately reviewed
+	  vendor-side writer binding. The adapter shares the writer's owner,
+	  transition handle, mutex, and generation and is dormant by default.
+
+config MTK_MT6797_DVFSP_VENDOR_WRITER_BRIDGE_KUNIT_TEST
+	bool "KUnit tests for the MT6797 vendor writer owner bridge"
+	depends on KUNIT=y
+	depends on MTK_MT6797_DVFSP_VENDOR_WRITER_BRIDGE
+	default n
+
+config MTK_MT6797_DVFSP_VENDOR_WRITER_COORDINATOR
+	bool "MediaTek MT6797 vendor writer coordinator"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on MTK_MT6797_DVFSP_VENDOR_OWNER
+	depends on MTK_MT6797_DVFSP_VENDOR_WRITER_BRIDGE
+	default n
+	help
+	  Provide the explicit mainline caller boundary for a vendor writer
+	  integration.  The caller must start it before vendor probe and stop it
+	  after vendor remove; this option performs no hardware operation.
+
+config MTK_MT6797_DVFSP_STATE_DECODERS
+	bool
+	default y if MTK_MT6797_DVFSP_HANDOFF || MTK_MT6797_DVFSP_CLOCK_BACKEND
+	help
+	  Build the pure MT6797 clock and CSPM state conversion helpers when
+	  either the handoff source pipeline or the protected-clock transport
+	  needs them. This internal gate performs no I/O and does not enable the
+	  optional hardware transport.
+
+config MTK_MT6797_DVFSP_CLOCK_BACKEND
+	bool "MediaTek MT6797 protected CPU clock readback transport"
+	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK
+	help
+	  Build the disabled-only MCUMIXED/DVFSP transport used to read the
+	  MT6797 LL/L/CCI CPU clock window under its documented CSPM hardware
+	  semaphore. The helper has a bounded acquire/release path and turns
+	  a timeout or release failure into a sticky fault.
+
+	  This transport does not write a CPU PLL, divider, regulator, or
+	  SRAM-LDO; it does not call the secure monitor, load firmware, or
+	  register a DVFSP state owner or clock provider. Its Device Tree
+	  node is disabled by default and the B-cluster BigiDVFS path remains
+	  separate.
+
+config MTK_MT6797_DVFSP_BIGIDVFS_BACKEND
+	bool "MediaTek MT6797 BigiDVFS secure readback transport"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	help
+	  Build the disabled-only BigiDVFS transport that reads the four exact
+	  secure register addresses through the documented REG_READ service.
+	  The target firmware variant and return contract remain unvalidated;
+	  unknown or sign-extended results become a sticky fault.
+
+	  This transport never calls a secure write or a state-changing FID,
+	  never derives an OPP or voltage table, and never registers a DVFSP
+	  state owner or clock provider. Its Device Tree node is disabled by
+	  default.
+
 config MTK_PMIC_WRAP
 	tristate "MediaTek PMIC Wrapper Support"
 	depends on RESET_CONTROLLER

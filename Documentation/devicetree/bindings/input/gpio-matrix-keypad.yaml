@@ -14,12 +14,19 @@ description:
   GPIO driven matrix keypad is used to interface a SoC with a matrix keypad.
   The matrix keypad supports multiple row and column lines, a key can be
   placed at each intersection of a unique row and a unique column. The matrix
-  keypad can sense a key-press and key-release by means of GPIO lines and
-  report the event using GPIO interrupts to the cpu.
+  keypad senses key press and release through the row and column GPIO lines,
+  then reports events using interrupts or periodic polling.
 
 allOf:
   - $ref: input.yaml#
   - $ref: /schemas/input/matrix-keymap.yaml#
+
+  - if:
+      required:
+        - poll-interval
+    then:
+      properties:
+        wakeup-source: false
 
 properties:
   compatible:
@@ -60,6 +67,14 @@ properties:
       Delay, measured in microseconds, that is needed
       after activating all column gpios.
     default: 0
+
+  poll-interval:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+    description:
+      Poll interval in milliseconds. When present, scan the matrix at this
+      interval instead of requesting interrupts for the row GPIOs. Polling
+      cannot wake a suspended system.
 
   drive-inactive-cols:
     type: boolean

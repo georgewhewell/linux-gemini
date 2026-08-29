@@ -343,6 +343,31 @@ SECTIONS
 		*(.mmuoff.data.read)
 		__mmuoff_data_end = .;
 	}
+	. = ALIGN(SZ_2K);
+	.mmuoff.data.bidirectional : {
+		__mmuoff_data_bidirectional_start = .;
+		KEEP(*(.mmuoff.data.bidirectional))
+		__mmuoff_data_bidirectional_end = .;
+	}
+
+#ifdef CONFIG_ARM64_MT6797_A72_P30E_WIRE
+	ASSERT(__mmuoff_data_bidirectional_start >= __mmuoff_data_end,
+	       "P30E section overlaps an MMU-off directional section")
+	ASSERT((__mmuoff_data_bidirectional_start & (SZ_2K - 1)) == 0,
+	       "P30E section is not 2 KiB aligned")
+	ASSERT(__mmuoff_data_bidirectional_end -
+	       __mmuoff_data_bidirectional_start == 2 * SZ_2K,
+	       "P30E section must contain exactly two 2 KiB slots")
+	ASSERT(__mmuoff_data_bidirectional_start >= _text &&
+	       __mmuoff_data_bidirectional_end <= _end,
+	       "P30E section must remain inside the reserved kernel image")
+	ASSERT(arm64_mt6797_a72_p30e_cpu8_slot ==
+	       __mmuoff_data_bidirectional_start,
+	       "P30E CPU8 slot is not the section start")
+	ASSERT(arm64_mt6797_a72_p30e_cpu9_slot ==
+	       arm64_mt6797_a72_p30e_cpu8_slot + SZ_2K,
+	       "P30E CPU9 slot is not the second 2 KiB slot")
+#endif
 
 	PECOFF_EDATA_PADDING
 	__pecoff_data_rawsize = ABSOLUTE(. - __initdata_begin);

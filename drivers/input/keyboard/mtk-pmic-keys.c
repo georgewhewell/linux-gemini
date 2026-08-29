@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/mfd/mt6323/registers.h>
 #include <linux/mfd/mt6331/registers.h>
+#include <linux/mfd/mt6351/registers.h>
 #include <linux/mfd/mt6357/registers.h>
 #include <linux/mfd/mt6358/registers.h>
 #include <linux/mfd/mt6359/registers.h>
@@ -91,6 +92,20 @@ static const struct mtk_pmic_regs mt6331_regs = {
 				   MTK_PMIC_MT6331_HOMEKEY_RST),
 	.pmic_rst_reg = MT6331_TOP_RST_MISC,
 	.rst_lprst_mask = MTK_PMIC_MT6331_RST_DU_MASK,
+};
+
+static const struct mtk_pmic_regs mt6351_regs = {
+	.keys_regs[MTK_PMIC_PWRKEY_INDEX] =
+		MTK_PMIC_KEYS_REGS(MT6351_TOPSTATUS, 0x2,
+				   MT6351_INT_MISC_CON, 0x4,
+				   MTK_PMIC_MT6331_PWRKEY_RST),
+	.keys_regs[MTK_PMIC_HOMEKEY_INDEX] =
+		MTK_PMIC_KEYS_REGS(MT6351_TOPSTATUS, 0x4,
+				   MT6351_INT_MISC_CON, 0x2,
+				   MTK_PMIC_MT6331_HOMEKEY_RST),
+	.pmic_rst_reg = MT6351_TOP_RST_MISC,
+	.rst_lprst_mask = MTK_PMIC_MT6331_RST_DU_MASK,
+	.key_release_irq = true,
 };
 
 static const struct mtk_pmic_regs mt6357_regs = {
@@ -307,6 +322,9 @@ static const struct of_device_id of_mtk_pmic_keys_match_tbl[] = {
 	}, {
 		.compatible = "mediatek,mt6331-keys",
 		.data = &mt6331_regs,
+	}, {
+		.compatible = "mediatek,mt6351-keys",
+		.data = &mt6351_regs,
 	}, {
 		.compatible = "mediatek,mt6357-keys",
 		.data = &mt6357_regs,

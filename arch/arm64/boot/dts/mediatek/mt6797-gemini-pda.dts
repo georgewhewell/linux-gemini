@@ -1,0 +1,533 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2026 Julien Etienne
+ */
+
+/dts-v1/;
+
+#include "mt6797.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	model = "Planet Computers Gemini PDA";
+	chassis-type = "handset";
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:921600n8";
+	};
+
+	firmware {
+		mt6797_atag_devinfo: atag-devinfo {
+			compatible = "mediatek,mt6797-atag-devinfo";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			read-only;
+
+			mt6797_thermal_calibration: calibration-data@0 {
+				reg = <0 12>;
+			};
+
+			mt6797_ptp_calibration: ptp-calibration-data@c {
+				reg = <12 76>;
+			};
+
+			mt6797_cpu_efuse_identity: cpu-efuse-identity@58 {
+				reg = <88 12>;
+			};
+		};
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 1 0>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		memory@40000000 {
+			reg = <0 0x40000000 0 0x1000>;
+			no-map;
+		};
+
+		memory@44400000 {
+			reg = <0 0x44400000 0 0x10000>;
+			no-map;
+		};
+
+		ramoops@44410000 {
+			compatible = "ramoops";
+			reg = <0 0x44410000 0 0xe0000>;
+			record-size = <0x1000>;
+			console-size = <0x10000>;
+			ftrace-size = <0x1000>;
+			pmsg-size = <0x20000>;
+			mem-type = <0>;
+			no-map;
+		};
+
+		memory@444f0000 {
+			reg = <0 0x444f0000 0 0x10000>;
+			no-map;
+		};
+
+		memory@44600000 {
+			reg = <0 0x44600000 0 0x10000>;
+			no-map;
+		};
+
+		memory@44610000 {
+			reg = <0 0x44610000 0 0x30000>;
+			no-map;
+		};
+
+		memory@44640000 {
+			reg = <0 0x44640000 0 0x30000>;
+			no-map;
+		};
+
+		memory@44800000 {
+			reg = <0 0x44800000 0 0x100000>;
+			no-map;
+		};
+
+		memory@46000000 {
+			reg = <0 0x46000000 0 0x400000>;
+			no-map;
+		};
+
+		reserve-memory-ccci_md1 {
+			compatible = "mediatek,reserve-memory-ccci_md1";
+			no-map;
+			size = <0 0xa100000>;
+			alignment = <0 0x2000000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
+
+		reserve-memory-ccci_share {
+			compatible = "mediatek,reserve-memory-ccci_share";
+			no-map;
+			size = <0 0x600000>;
+			alignment = <0 0x4000000>;
+			alloc-ranges = <0 0x40000000 0 0x50000000>;
+		};
+
+		consys-reserve-memory {
+			compatible = "mediatek,consys-reserve-memory";
+			no-map;
+			size = <0 0x200000>;
+			alignment = <0 0x200000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
+
+		spm-reserve-memory {
+			compatible = "mediatek,spm-reserve-memory";
+			no-map;
+			size = <0 0x16000>;
+			alignment = <0 0x10000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
+
+		reserve-memory-scp_share {
+			compatible = "mediatek,reserve-memory-scp_share";
+			no-map;
+			size = <0 0x1000000>;
+			alignment = <0 0x1000000>;
+			alloc-ranges = <0 0x40000000 0 0x50000000>;
+		};
+	};
+};
+
+&cpu0 {
+	clock-frequency = <1391000000>;
+};
+
+&cpu1 {
+	clock-frequency = <1391000000>;
+};
+
+&cpu2 {
+	clock-frequency = <1391000000>;
+};
+
+&cpu3 {
+	clock-frequency = <1391000000>;
+};
+
+&cpu4 {
+	clock-frequency = <1950000000>;
+};
+
+&cpu5 {
+	clock-frequency = <1950000000>;
+};
+
+&cpu6 {
+	clock-frequency = <1950000000>;
+};
+
+&cpu7 {
+	clock-frequency = <1950000000>;
+};
+
+&cpu8 {
+	clock-frequency = <2288000000>;
+};
+
+&cpu9 {
+	clock-frequency = <2288000000>;
+};
+
+&mt6351regulator {
+	mt6351_vemc_reg: ldo-vemc {
+		regulator-name = "vemc_3v3";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-boot-on;
+	};
+
+	mt6351_vio18_reg: ldo-vio18 {
+		regulator-name = "vio18";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+	};
+};
+
+&pio {
+	/*
+	 * MT6797 pinctrl currently supports pinmux only for these pads:
+	 * its descriptor has no pull, IES, or drive-strength register maps.
+	 * Keep boot-firmware pad configuration until those maps are recovered.
+	 */
+	uart0_gemini_pins: uart0-gemini-pins {
+		pins-rx-tx {
+			pinmux = <MT6797_GPIO97__FUNC_URXD0>,
+				 <MT6797_GPIO98__FUNC_UTXD0>;
+		};
+	};
+
+	mmc0_pins_default: mmc0-default-pins {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO114__FUNC_MSDC0_DAT0>,
+				 <MT6797_GPIO115__FUNC_MSDC0_DAT1>,
+				 <MT6797_GPIO116__FUNC_MSDC0_DAT2>,
+				 <MT6797_GPIO117__FUNC_MSDC0_DAT3>,
+				 <MT6797_GPIO118__FUNC_MSDC0_DAT4>,
+				 <MT6797_GPIO119__FUNC_MSDC0_DAT5>,
+				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
+				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
+				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
+		};
+
+		pins-ds {
+			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
+		};
+
+		pins-rst {
+			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
+		};
+	};
+
+	hall_pins: hall-pins {
+		pins-hall {
+			pinmux = <MT6797_GPIO66__FUNC_GPIO66>;
+		};
+	};
+};
+
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_gemini_pins>;
+	status = "okay";
+};
+
+&mmc0 {
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc0_pins_default>;
+	pinctrl-1 = <&mmc0_pins_default>;
+	bus-width = <8>;
+	max-frequency = <25000000>;
+	vmmc-supply = <&mt6351_vemc_reg>;
+	vqmmc-supply = <&mt6351_vio18_reg>;
+	non-removable;
+	no-sd;
+	no-sdio;
+	status = "okay";
+};
+
+&i2c6 {
+	compatible = "mediatek,mt6797-idvfs-i2c";
+	access-controllers = <&dvfsp_handoff>;
+	clock-frequency = <3400000>;
+	mediatek,use-push-pull;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c6_pins_a>;
+	status = "okay";
+
+	da9214: regulator@68 {
+		compatible = "dlg,da9214-legacy";
+		reg = <0x68>, <0x69>;
+		reg-names = "primary", "page2";
+	};
+};
+
+/delete-node/ &a72_power;
+
+&dvfsp_handoff {
+	#access-controller-cells = <0>;
+	status = "okay";
+};
+
+&i2c7 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c7_pins_a>;
+
+	/*
+	 * Live Gemian identifies the external GPU buck as RT5735 at 0x1c.
+	 * Keep the provider disabled until the board rail and OPP sequence
+	 * have a recovery-tested runtime bring-up plan.
+	 */
+	rt5735_vgpu: regulator@1c {
+		compatible = "richtek,rt5735";
+		reg = <0x1c>;
+		regulator-name = "vgpu";
+		regulator-min-microvolt = <600000>;
+		regulator-max-microvolt = <1393750>;
+		status = "disabled";
+	};
+};
+
+&i2c1 {
+	/*
+	 * Keep this candidate disabled until the physical ID, rails, and
+	 * interrupt/polling contract are verified on a recoverable image.
+	 * The vendor's logical 0x68 client is rewritten to 0x69 in probe.
+	 */
+	bmi160_candidate: bmi160@69 {
+		compatible = "bosch,bmi160";
+		reg = <0x69>;
+		mount-matrix = "0", "-1", "0",
+				       "-1", "0", "0",
+				       "0", "0", "-1";
+		status = "disabled";
+	};
+};
+
+&watchdog {
+	interrupts = <GIC_SPI 137 IRQ_TYPE_EDGE_FALLING>;
+};
+
+&pio {
+	keyboard_soc_pins: keyboard-soc-pins {
+		pins-reset {
+			pinmux = <MT6797_GPIO58__FUNC_GPIO58>;
+			output-high;
+		};
+
+		pins-irq {
+			pinmux = <MT6797_GPIO87__FUNC_EINT10>;
+		};
+	};
+};
+
+&i2c5 {
+	/* Keep the bus and both consumers disabled until a safe keyboard test. */
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c5_pins_a>;
+
+	aw9523: gpio-expander@5b {
+		compatible = "awinic,aw9523-pinctrl";
+		reg = <0x5b>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&keyboard_soc_pins>;
+		interrupt-parent = <&pio>;
+		interrupts = <10 IRQ_TYPE_LEVEL_LOW>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		gpio-ranges = <&aw9523 0 0 16>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		reset-gpios = <&pio 58 GPIO_ACTIVE_HIGH>;
+		status = "disabled";
+
+		keyboard_matrix_row_pins: keyboard-matrix-row-pins {
+			pins = "gpio0", "gpio1", "gpio2", "gpio3",
+			       "gpio4", "gpio5", "gpio6", "gpio7";
+			function = "gpio";
+			bias-pull-up;
+			drive-open-drain;
+			input-enable;
+		};
+
+		keyboard_matrix_col_pins: keyboard-matrix-col-pins {
+			pins = "gpio8", "gpio9", "gpio10", "gpio11",
+			       "gpio12", "gpio13", "gpio14";
+			function = "gpio";
+			input-disable;
+			output-low;
+		};
+	};
+};
+
+&{/} {
+	keyboard-matrix {
+		compatible = "gpio-matrix-keypad";
+		pinctrl-names = "default";
+		gpio-activelow;
+		drive-inactive-cols;
+		pinctrl-0 = <&keyboard_matrix_row_pins
+				     &keyboard_matrix_col_pins>;
+		row-gpios = <&aw9523 0 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 1 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 2 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 3 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 4 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 5 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 6 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 7 GPIO_ACTIVE_HIGH>;
+		col-gpios = <&aw9523 8 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 9 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 10 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 11 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 12 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 13 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 14 GPIO_ACTIVE_HIGH>;
+		linux,keymap = <
+			MATRIX_KEY(0, 0, KEY_1)
+			MATRIX_KEY(1, 0, KEY_U)
+			MATRIX_KEY(2, 0, KEY_S)
+			MATRIX_KEY(3, 0, KEY_Z)
+			MATRIX_KEY(4, 0, KEY_COMMA)
+			MATRIX_KEY(5, 0, KEY_APOSTROPHE)
+			MATRIX_KEY(6, 0, KEY_8)
+			MATRIX_KEY(7, 0, KEY_J)
+			MATRIX_KEY(0, 1, KEY_2)
+			MATRIX_KEY(1, 1, KEY_W)
+			MATRIX_KEY(2, 1, KEY_D)
+			MATRIX_KEY(3, 1, KEY_C)
+			MATRIX_KEY(4, 1, KEY_LEFTALT)
+			MATRIX_KEY(5, 1, KEY_LEFT)
+			MATRIX_KEY(6, 1, KEY_9)
+			MATRIX_KEY(7, 1, KEY_K)
+			MATRIX_KEY(0, 2, KEY_3)
+			MATRIX_KEY(1, 2, KEY_Y)
+			MATRIX_KEY(2, 2, KEY_TAB)
+			MATRIX_KEY(3, 2, KEY_N)
+			MATRIX_KEY(4, 2, KEY_M)
+			MATRIX_KEY(5, 2, KEY_DOWN)
+			MATRIX_KEY(6, 2, KEY_BACKSPACE)
+			MATRIX_KEY(7, 2, KEY_I)
+			MATRIX_KEY(0, 3, KEY_4)
+			MATRIX_KEY(1, 3, KEY_T)
+			MATRIX_KEY(2, 3, KEY_F)
+			MATRIX_KEY(3, 3, KEY_X)
+			MATRIX_KEY(4, 3, KEY_LEFTMETA)
+			MATRIX_KEY(5, 3, KEY_RIGHTSHIFT)
+			MATRIX_KEY(6, 3, KEY_P)
+			MATRIX_KEY(0, 4, KEY_5)
+			MATRIX_KEY(1, 4, KEY_E)
+			MATRIX_KEY(2, 4, KEY_G)
+			MATRIX_KEY(3, 4, KEY_V)
+			MATRIX_KEY(4, 4, KEY_SPACE)
+			MATRIX_KEY(5, 4, KEY_UP)
+			MATRIX_KEY(6, 4, KEY_O)
+			MATRIX_KEY(0, 5, KEY_6)
+			MATRIX_KEY(1, 5, KEY_Q)
+			MATRIX_KEY(2, 5, KEY_A)
+			MATRIX_KEY(3, 5, KEY_B)
+			MATRIX_KEY(4, 5, KEY_DOT)
+			MATRIX_KEY(5, 5, KEY_RIGHT)
+			MATRIX_KEY(6, 5, KEY_ENTER)
+			MATRIX_KEY(0, 6, KEY_7)
+			MATRIX_KEY(1, 6, KEY_R)
+			MATRIX_KEY(2, 6, KEY_H)
+			MATRIX_KEY(3, 6, KEY_LEFTSHIFT)
+			MATRIX_KEY(4, 6, KEY_LEFTCTRL)
+			MATRIX_KEY(5, 6, KEY_L)
+			MATRIX_KEY(6, 6, KEY_0)>;
+		status = "disabled";
+	};
+};
+
+/*
+ * The left USB-C connector is wired to the MTU3 device controller. Keep the
+ * controller disabled in the normal board description; a bounded diagnostic
+ * overlay may enable these already-described resources for bring-up.
+ */
+&u2port0 {
+	clocks = <&clk26m>;
+	mediatek,force-b-session-valid;
+};
+
+&ssusb {
+	assigned-clocks = <&topckgen CLK_TOP_MUX_SSUSB_TOP_SYS>;
+	assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL3_D2>;
+	phys = <&u2port0 PHY_TYPE_USB2>;
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+};
+
+&thermal {
+	nvmem-cells = <&mt6797_thermal_calibration>;
+	nvmem-cell-names = "calibration-data";
+};
+
+&dvfsp_handoff {
+	nvmem-cells = <&mt6797_ptp_calibration>,
+		<&mt6797_cpu_efuse_identity>;
+	nvmem-cell-names = "ptp-calibration-data", "cpu-efuse-identity";
+};
+
+&i2c0 {
+	/* FAN49101 is populated, but keep the regulator and consumer disabled. */
+	fan49101: regulator@70 {
+		compatible = "onsemi,fan49101";
+		reg = <0x70>;
+		status = "disabled";
+
+		regulators {
+			fan49101_vout: vout {
+				regulator-name = "fan49101-vout";
+				regulator-min-microvolt = <603000>;
+				regulator-max-microvolt = <1413000>;
+			};
+		};
+	};
+};
+
+/* The RT5735 VGPU rail remains disabled until a fixed OPP is validated. */
+&gpu {
+	mali-supply = <&rt5735_vgpu>;
+};
+
+&{/} {
+	hall_gpio_keys: gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&hall_pins>;
+		status = "disabled";
+
+		hall-switch {
+			/* Vendor hall.c maps raw low to FCOVER_CLOSE/SW_LID=1. */
+			label = "Hall lid";
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			gpios = <&pio 66 GPIO_ACTIVE_LOW>;
+			debounce-interval = <64>;
+		};
+	};
+};

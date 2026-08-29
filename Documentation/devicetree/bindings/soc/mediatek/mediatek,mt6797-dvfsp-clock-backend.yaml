@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-dvfsp-clock-backend.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 protected CPU clock readback transport
+
+description: |
+  The MT6797 LL/L/CCI CPU PLL and divider window is shared by Linux, SPM,
+  and ATF. This optional transport describes the MCUMIXED and CSPM windows
+  plus the I2C_APPM clock needed by the documented hardware semaphore. The
+  node is disabled unless a separately reviewed experiment enables it. The
+  transport is read-only with respect to CPU clock state and is not a clock
+  provider, DVFSP state owner, regulator, or B-cluster secure backend.
+
+maintainers:
+  - Julien Etienne <julien.etienne@gmail.com>
+
+properties:
+  compatible:
+    const: mediatek,mt6797-dvfsp-clock-backend
+
+  reg:
+    items:
+      - description: MCUMIXED CPU PLL and divider window
+      - description: CSPM semaphore and internal clock window
+
+  reg-names:
+    items:
+      - const: mcumixed
+      - const: cspm
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    items:
+      - const: i2c
+
+  status:
+    enum: [ disabled, okay ]
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    soc {
+      dvfsp_clock_backend: dvfsp-clock-backend@1001a000 {
+        compatible = "mediatek,mt6797-dvfsp-clock-backend";
+        reg = <0 0x1001a000 0 0x1000>,
+              <0 0x11015000 0 0x1000>;
+        reg-names = "mcumixed", "cspm";
+        clocks = <&infrasys CLK_INFRA_I2C_APPM>;
+        clock-names = "i2c";
+        status = "disabled";
+      };
+    };

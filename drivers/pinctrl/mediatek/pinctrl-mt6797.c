@@ -47,11 +47,24 @@ static const char * const mt6797_pinctrl_register_base_names[] = {
 	"gpio", "iocfgl", "iocfgb", "iocfgr", "iocfgt",
 };
 
+static const unsigned int mt6797_debounce_time[] = {
+	128, 256, 512, 1024, 16384, 32768, 65536, 131072, 262144, 524288, 0
+};
+
+static const struct mtk_eint_hw mt6797_eint_hw = {
+	.port_mask = 7,
+	.ports = 6,
+	.ap_num = 192,
+	.db_cnt = 16,
+	.db_time = mt6797_debounce_time,
+};
+
 static const struct mtk_pin_soc mt6797_data = {
 	.reg_cal = mt6797_reg_cals,
 	.pins = mtk_pins_mt6797,
 	.npins = ARRAY_SIZE(mtk_pins_mt6797),
 	.ngrps = ARRAY_SIZE(mtk_pins_mt6797),
+	.eint_hw = &mt6797_eint_hw,
 	.gpio_m = 0,
 	.base_names = mt6797_pinctrl_register_base_names,
 	.nbase_names = ARRAY_SIZE(mt6797_pinctrl_register_base_names),
@@ -66,6 +79,7 @@ static struct platform_driver mt6797_pinctrl_driver = {
 	.driver = {
 		.name = "mt6797-pinctrl",
 		.of_match_table = mt6797_pinctrl_of_match,
+		.pm = pm_sleep_ptr(&mtk_paris_pinctrl_pm_ops),
 	},
 	.probe = mtk_paris_pinctrl_probe,
 };

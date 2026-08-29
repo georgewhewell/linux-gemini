@@ -34,6 +34,8 @@
 
 struct mtk_disp_aal_data {
 	bool has_gamma;
+	bool skip_output_size;
+	bool default_relay;
 };
 
  /**
@@ -75,7 +77,13 @@ void mtk_aal_config(struct device *dev, unsigned int w,
 	sz |= FIELD_PREP(DISP_AAL_SIZE_VSIZE, h);
 
 	mtk_ddp_write(cmdq_pkt, sz, &aal->cmdq_reg, aal->regs, DISP_AAL_SIZE);
-	mtk_ddp_write(cmdq_pkt, sz, &aal->cmdq_reg, aal->regs, DISP_AAL_OUTPUT_SIZE);
+	if (!(aal->data && aal->data->skip_output_size))
+		mtk_ddp_write(cmdq_pkt, sz, &aal->cmdq_reg, aal->regs,
+			      DISP_AAL_OUTPUT_SIZE);
+
+	if (aal->data && aal->data->default_relay)
+		mtk_ddp_write(cmdq_pkt, AAL_RELAY_MODE, &aal->cmdq_reg,
+			      aal->regs, DISP_AAL_CFG);
 }
 
 /**
@@ -209,8 +217,14 @@ static const struct mtk_disp_aal_data mt8173_aal_driver_data = {
 	.has_gamma = true,
 };
 
+static const struct mtk_disp_aal_data mt6797_aal_driver_data = {
+	.skip_output_size = true,
+	.default_relay = true,
+};
+
 static const struct of_device_id mtk_disp_aal_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt8173-disp-aal", .data = &mt8173_aal_driver_data },
+	{ .compatible = "mediatek,mt6797-disp-aal", .data = &mt6797_aal_driver_data },
 	{ .compatible = "mediatek,mt8183-disp-aal" },
 	{ /* sentinel */ }
 };

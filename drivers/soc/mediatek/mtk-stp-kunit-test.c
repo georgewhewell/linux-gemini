@@ -167,6 +167,62 @@ static void mtk_stp_test_integrity_and_length(struct kunit *test)
 			-EMSGSIZE);
 }
 
+static void mtk_stp_test_error_then_valid_frame(struct kunit *test)
+{
+	static const u8 bad_then_valid[] = {
+		0x9d, 0x20, 0x03, 0xc0, 0x01, 0x02, 0x03, 0x10, 0xa0,
+		0x9d, 0x20, 0x03, 0xc0, 0x01, 0x02, 0x03, 0x10, 0xa1,
+	};
+	static const u8 payload[] = { 0x01, 0x02, 0x03 };
+	struct mtk_stp *stp;
+	struct mtk_stp_test_rx *rx;
+
+	stp = kunit_kzalloc(test, sizeof(*stp), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, stp);
+	rx = kunit_kzalloc(test, sizeof(*rx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, rx);
+	mtk_stp_init(stp, MTK_STP_MODE_FULL);
+	KUNIT_ASSERT_EQ(test,
+			mtk_stp_register_client(stp, MTK_STP_GNSS,
+						mtk_stp_test_receive, rx), 0);
+	KUNIT_EXPECT_EQ(test,
+			mtk_stp_rx(stp, bad_then_valid, sizeof(bad_then_valid)),
+			-EBADMSG);
+	KUNIT_EXPECT_EQ(test, stp->rx_phase, MTK_STP_RX_HEADER);
+	KUNIT_EXPECT_EQ(test, stp->header_len, 0);
+	KUNIT_EXPECT_EQ(test, stp->payload_pos, 0);
+	KUNIT_EXPECT_EQ(test, rx->calls, 0U);
+	KUNIT_EXPECT_EQ(test,
+			mtk_stp_rx(stp, bad_then_valid + 9, 9), 0);
+	KUNIT_EXPECT_EQ(test, rx->calls, 1U);
+	KUNIT_EXPECT_MEMEQ(test, rx->payload, payload, sizeof(payload));
+}
+
+static void mtk_stp_test_zero_payload_is_unsupported(struct kunit *test)
+{
+	static const u8 full_header[] = { 0x80, 0x20, 0x00, 0xa0 };
+	u8 frame[MTK_STP_HEADER_SIZE + MTK_STP_TRAILER_SIZE];
+	size_t frame_len = 0;
+	struct mtk_stp *stp;
+
+	KUNIT_EXPECT_EQ(test,
+			mtk_stp_encode(MTK_STP_MODE_FULL, MTK_STP_GNSS, 0, 0,
+				       NULL, 0, frame, sizeof(frame), &frame_len),
+			-EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test,
+			mtk_stp_encode(MTK_STP_MODE_MANDATORY, MTK_STP_WMT, 0,
+				       0, NULL, 0, frame, sizeof(frame), &frame_len),
+			-EOPNOTSUPP);
+
+	stp = kunit_kzalloc(test, sizeof(*stp), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, stp);
+	mtk_stp_init(stp, MTK_STP_MODE_FULL);
+	KUNIT_EXPECT_EQ(test,
+			mtk_stp_rx(stp, full_header, sizeof(full_header)), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, stp->rx_phase, MTK_STP_RX_HEADER);
+	KUNIT_EXPECT_EQ(test, stp->header_len, 0);
+}
+
 static void mtk_stp_test_mandatory_is_permissive(struct kunit *test)
 {
 	static const u8 frame[] = {
@@ -216,6 +272,8 @@ static struct kunit_case mtk_stp_test_cases[] = {
 	KUNIT_CASE(mtk_stp_test_fragmented_full_rx),
 	KUNIT_CASE(mtk_stp_test_channel_isolation),
 	KUNIT_CASE(mtk_stp_test_integrity_and_length),
+	KUNIT_CASE(mtk_stp_test_error_then_valid_frame),
+	KUNIT_CASE(mtk_stp_test_zero_payload_is_unsupported),
 	KUNIT_CASE(mtk_stp_test_mandatory_is_permissive),
 	KUNIT_CASE(mtk_stp_test_client_registration),
 	{ }

@@ -99,6 +99,8 @@ int mtk_stp_encode(enum mtk_stp_mode mode, enum mtk_stp_channel channel,
 		return -EINVAL;
 	if (mode != MTK_STP_MODE_MANDATORY && mode != MTK_STP_MODE_FULL)
 		return -EINVAL;
+	if (!payload_len)
+		return -EOPNOTSUPP;
 	if (payload_len > mtk_stp_max_payload(mode) || payload_len > 0x0fff)
 		return -EMSGSIZE;
 
@@ -148,13 +150,15 @@ static int mtk_stp_parse_header(struct mtk_stp *stp)
 	if (channel > MTK_STP_MAX_CHANNEL ||
 	    payload_len > mtk_stp_max_payload(stp->mode))
 		return -EMSGSIZE;
+	if (!payload_len)
+		return -EOPNOTSUPP;
 
 	stp->channel = channel;
 	stp->sequence = (stp->header[0] >> 3) & 0x7;
 	stp->ack = stp->header[0] & 0x7;
 	stp->payload_len = payload_len;
 	stp->payload_pos = 0;
-	stp->rx_phase = payload_len ? MTK_STP_RX_PAYLOAD : MTK_STP_RX_TRAILER;
+	stp->rx_phase = MTK_STP_RX_PAYLOAD;
 
 	return 0;
 }
@@ -182,7 +186,6 @@ static int mtk_stp_finish_frame(struct mtk_stp *stp)
 
 int mtk_stp_rx(struct mtk_stp *stp, const u8 *data, size_t length)
 {
-	int ret = 0;
 	size_t i;
 
 	if (!stp || (!data && length))
@@ -212,15 +215,16 @@ int mtk_stp_rx(struct mtk_stp *stp, const u8 *data, size_t length)
 			break;
 		}
 
-		if (frame_ret || (stp->rx_phase == MTK_STP_RX_TRAILER &&
-				  stp->trailer_len == MTK_STP_TRAILER_SIZE)) {
+		if (frame_ret) {
 			mtk_stp_reset_frame(stp);
-			if (!ret && frame_ret)
-				ret = frame_ret;
+			return frame_ret;
 		}
+		if (stp->rx_phase == MTK_STP_RX_TRAILER &&
+		    stp->trailer_len == MTK_STP_TRAILER_SIZE)
+			mtk_stp_reset_frame(stp);
 	}
 
-	return ret;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(mtk_stp_rx);
 

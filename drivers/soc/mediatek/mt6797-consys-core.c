@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Hardware-neutral MT6797 CONSYS lifecycle core.
+ * Hardware-neutral MT6797 CONSYS identity transaction core.
  *
  * This intentionally has no platform backend.  In particular, the disabled
  * inventory driver's resources are not mapped here.  A later backend must
@@ -11,13 +11,11 @@
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/overflow.h>
-
 #include <linux/soc/mediatek/mt6797-consys.h>
 
-static void mt6797_consys_delay(struct mt6797_consys_lifecycle *lifecycle)
+static void mt6797_consys_delay(struct mt6797_consys_lifecycle *lifecycle,
+				 u32 interval)
 {
-	u32 interval = lifecycle->timeouts.poll_interval_us;
 	u32 slack = min(interval / 4, 50U);
 
 	if (interval > U32_MAX - slack)
@@ -33,30 +31,30 @@ static int mt6797_consys_wait(
 	struct mt6797_consys_lifecycle *lifecycle,
 	enum mt6797_consys_poll poll, u32 timeout_us)
 {
-	u32 attempt;
 	u32 interval = lifecycle->timeouts.poll_interval_us;
-	u32 attempts = timeout_us / interval;
+	u32 remaining_us = timeout_us;
+	u32 delay_us;
 	int ret;
 
-	if (timeout_us % interval)
-		attempts++;
-
-	for (attempt = 0; attempt < attempts; attempt++) {
+	for (;;) {
 		ret = lifecycle->ops->poll(lifecycle->context, poll);
 		if (!ret)
 			return 0;
 		if (ret != -EAGAIN)
 			return ret;
-		if (attempt + 1 < attempts)
-			mt6797_consys_delay(lifecycle);
-	}
+		if (!remaining_us)
+			return -ETIMEDOUT;
 
-	return -ETIMEDOUT;
+		delay_us = min(interval, remaining_us);
+		mt6797_consys_delay(lifecycle, delay_us);
+		remaining_us -= delay_us;
+	}
 }
 
 /* Execute every applicable inverse operation, preserving the first failure. */
-static int mt6797_consys_power_down(struct mt6797_consys_lifecycle *lifecycle,
-				    bool reset, bool power, bool clock, bool supplies)
+static int mt6797_consys_identity_unwind(
+	struct mt6797_consys_lifecycle *lifecycle, bool reset, bool domain_clock,
+	bool prepared, bool supplies)
 {
 	int ret;
 	int first_error = 0;
@@ -67,22 +65,14 @@ static int mt6797_consys_power_down(struct mt6797_consys_lifecycle *lifecycle,
 			first_error = ret;
 	}
 
-	if (power) {
-		ret = lifecycle->ops->power_off(lifecycle->context);
-		if (ret) {
-			if (!first_error)
-				first_error = ret;
-		} else {
-			ret = mt6797_consys_wait(lifecycle,
-						 MT6797_CONSYS_POLL_POWER_OFF,
-						 lifecycle->timeouts.power_off_timeout_us);
-			if (ret && !first_error)
-				first_error = ret;
-		}
+	if (domain_clock) {
+		ret = lifecycle->ops->disable_domain_clock(lifecycle->context);
+		if (ret && !first_error)
+			first_error = ret;
 	}
 
-	if (clock) {
-		ret = lifecycle->ops->disable_clock(lifecycle->context);
+	if (prepared) {
+		ret = lifecycle->ops->unprepare_identity(lifecycle->context);
 		if (ret && !first_error)
 			first_error = ret;
 	}
@@ -96,11 +86,12 @@ static int mt6797_consys_power_down(struct mt6797_consys_lifecycle *lifecycle,
 	return first_error;
 }
 
-static int mt6797_consys_power_up(struct mt6797_consys_lifecycle *lifecycle)
+static int
+mt6797_consys_identity_acquire(struct mt6797_consys_lifecycle *lifecycle)
 {
 	bool supplies = false;
-	bool clock = false;
-	bool power = false;
+	bool domain_clock = false;
+	bool prepared = false;
 	bool reset = false;
 	int ret;
 
@@ -109,37 +100,40 @@ static int mt6797_consys_power_up(struct mt6797_consys_lifecycle *lifecycle)
 	if (ret)
 		goto unwind;
 
-	clock = true;
-	ret = lifecycle->ops->enable_clock(lifecycle->context);
-	if (ret)
-		goto unwind;
+	mt6797_consys_delay(lifecycle, MT6797_CONSYS_VCN18_SETTLE_US);
 
-	power = true;
-	ret = lifecycle->ops->power_on(lifecycle->context);
-	if (ret)
-		goto unwind;
-
-	ret = mt6797_consys_wait(lifecycle,
-				 MT6797_CONSYS_POLL_POWER_ON,
-				 lifecycle->timeouts.power_on_timeout_us);
+	prepared = true;
+	ret = lifecycle->ops->prepare_identity(lifecycle->context);
 	if (ret)
 		goto unwind;
 
 	reset = true;
-	ret = lifecycle->ops->release_reset(lifecycle->context);
+	ret = lifecycle->ops->assert_reset(lifecycle->context);
+	if (ret)
+		goto unwind;
+
+	domain_clock = true;
+	ret = lifecycle->ops->enable_domain_clock(lifecycle->context);
 	if (ret)
 		goto unwind;
 
 	ret = mt6797_consys_wait(lifecycle,
-				 MT6797_CONSYS_POLL_MCU_READY,
-				 lifecycle->timeouts.mcu_ready_timeout_us);
+				 MT6797_CONSYS_POLL_POWER_READY,
+				 lifecycle->timeouts.power_ready_timeout_us);
+	if (ret)
+		goto unwind;
+
+	ret = mt6797_consys_wait(lifecycle,
+				 MT6797_CONSYS_POLL_CHIP_READY,
+				 lifecycle->timeouts.chip_ready_timeout_us);
 	if (ret)
 		goto unwind;
 
 	return 0;
 
 unwind:
-	if (mt6797_consys_power_down(lifecycle, reset, power, clock, supplies))
+	if (mt6797_consys_identity_unwind(lifecycle, reset, domain_clock,
+					   prepared, supplies))
 		lifecycle->state = MT6797_CONSYS_ERROR;
 	return ret;
 }
@@ -148,18 +142,17 @@ static bool mt6797_consys_ops_valid(const struct mt6797_consys_ops *ops)
 {
 	return ops && ops->abi == MT6797_CONSYS_LIFECYCLE_ABI &&
 		ops->enable_supplies && ops->disable_supplies &&
-		ops->enable_clock && ops->disable_clock && ops->power_on &&
-		ops->power_off && ops->release_reset && ops->assert_reset &&
-		ops->poll;
+		ops->prepare_identity && ops->unprepare_identity &&
+		ops->enable_domain_clock && ops->disable_domain_clock &&
+		ops->assert_reset && ops->poll;
 }
 
 static bool
 mt6797_consys_timeouts_valid(const struct mt6797_consys_timeouts *timeouts)
 {
 	return timeouts && timeouts->poll_interval_us &&
-		timeouts->power_on_timeout_us >= timeouts->poll_interval_us &&
-		timeouts->mcu_ready_timeout_us >= timeouts->poll_interval_us &&
-		timeouts->power_off_timeout_us >= timeouts->poll_interval_us;
+		timeouts->power_ready_timeout_us >= timeouts->poll_interval_us &&
+		timeouts->chip_ready_timeout_us >= timeouts->poll_interval_us;
 }
 
 int mt6797_consys_lifecycle_init(
@@ -182,7 +175,7 @@ int mt6797_consys_lifecycle_init(
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_lifecycle_init);
 
-int mt6797_consys_get(struct mt6797_consys_lifecycle *lifecycle)
+int mt6797_consys_identity_get(struct mt6797_consys_lifecycle *lifecycle)
 {
 	int ret = 0;
 
@@ -192,15 +185,15 @@ int mt6797_consys_get(struct mt6797_consys_lifecycle *lifecycle)
 	mutex_lock(&lifecycle->lock);
 	if (lifecycle->state == MT6797_CONSYS_ERROR) {
 		ret = -EIO;
-	} else if (lifecycle->state == MT6797_CONSYS_ON) {
+	} else if (lifecycle->state == MT6797_CONSYS_IDENTITY_HELD) {
 		if (lifecycle->users == U32_MAX)
 			ret = -EOVERFLOW;
 		else
 			lifecycle->users++;
 	} else {
-		ret = mt6797_consys_power_up(lifecycle);
+		ret = mt6797_consys_identity_acquire(lifecycle);
 		if (!ret) {
-			lifecycle->state = MT6797_CONSYS_ON;
+			lifecycle->state = MT6797_CONSYS_IDENTITY_HELD;
 			lifecycle->users = 1;
 		} else if (lifecycle->state != MT6797_CONSYS_ERROR) {
 			lifecycle->state = MT6797_CONSYS_OFF;
@@ -210,9 +203,9 @@ int mt6797_consys_get(struct mt6797_consys_lifecycle *lifecycle)
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(mt6797_consys_get);
+EXPORT_SYMBOL_GPL(mt6797_consys_identity_get);
 
-int mt6797_consys_put(struct mt6797_consys_lifecycle *lifecycle)
+int mt6797_consys_identity_put(struct mt6797_consys_lifecycle *lifecycle)
 {
 	int ret = 0;
 
@@ -222,19 +215,21 @@ int mt6797_consys_put(struct mt6797_consys_lifecycle *lifecycle)
 	mutex_lock(&lifecycle->lock);
 	if (lifecycle->state == MT6797_CONSYS_ERROR) {
 		ret = -EIO;
-	} else if (lifecycle->state != MT6797_CONSYS_ON || !lifecycle->users) {
+	} else if (lifecycle->state != MT6797_CONSYS_IDENTITY_HELD ||
+		   !lifecycle->users) {
 		ret = -EINVAL;
 	} else if (--lifecycle->users) {
-		/* The final voter owns the physical shutdown. */
+		/* The final voter owns the physical identity cleanup. */
 	} else {
-		ret = mt6797_consys_power_down(lifecycle, true, true, true, true);
+		ret = mt6797_consys_identity_unwind(lifecycle, true, true, true,
+						    true);
 		lifecycle->state = ret ? MT6797_CONSYS_ERROR : MT6797_CONSYS_OFF;
 	}
 	mutex_unlock(&lifecycle->lock);
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(mt6797_consys_put);
+EXPORT_SYMBOL_GPL(mt6797_consys_identity_put);
 
 enum mt6797_consys_state
 mt6797_consys_lifecycle_state(struct mt6797_consys_lifecycle *lifecycle)
@@ -267,5 +262,5 @@ u32 mt6797_consys_lifecycle_users(struct mt6797_consys_lifecycle *lifecycle)
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_lifecycle_users);
 
-MODULE_DESCRIPTION("MT6797 CONSYS hardware-neutral lifecycle core");
+MODULE_DESCRIPTION("MT6797 CONSYS hardware-neutral identity transaction core");
 MODULE_LICENSE("GPL");

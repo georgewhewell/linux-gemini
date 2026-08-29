@@ -78,15 +78,17 @@ void mtk_stp_unregister_client(struct mtk_stp *stp,
  * 0x80 prefix and zero integrity fields used by stp_send_data_no_ps().
  * FULL mode does not implement windowing,
  * acknowledgment scheduling or retransmission; sequence and ack are caller
- * supplied protocol fields.
+ * supplied protocol fields.  Zero-length frames return -EOPNOTSUPP: full-mode
+ * header-only control packets require separate protocol handling.
  */
 int mtk_stp_encode(enum mtk_stp_mode mode, enum mtk_stp_channel channel,
 		   u8 sequence, u8 ack, const u8 *payload, size_t payload_len,
 		   u8 *frame, size_t frame_size, size_t *frame_len);
 
 /*
- * Feed an arbitrary byte fragment.  A malformed complete frame returns an
- * error after resetting parser state; partial frames return zero.
+ * Feed an arbitrary byte fragment.  A malformed or unsupported complete
+ * frame returns an error immediately after resetting parser state; partial
+ * frames return zero.
  */
 int mtk_stp_rx(struct mtk_stp *stp, const u8 *data, size_t length);
 

@@ -159,14 +159,182 @@ static int i2c_device_match(struct device *dev, const struct device_driver *drv)
 	return 0;
 }
 
+static bool i2c_device_suppress_of_modalias(const struct device *dev)
+{
+	if (!IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_OF_MODALIAS_DIAGNOSTIC))
+		return false;
+
+	return dev->of_node &&
+	       of_device_is_compatible(dev->of_node, "dlg,da9214-legacy");
+}
+
+static int i2c_device_generate_of_modalias_privately(const struct device *dev)
+{
+	static const char expected[] =
+		"of:NregulatorT(null)Cdlg,da9214-legacy";
+	char modalias[sizeof(expected)];
+	ssize_t len;
+
+#if !IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_GENERATION_DIAGNOSTIC)
+	return -ENODEV;
+#endif
+	if (!dev->of_node ||
+	    !of_device_is_compatible(dev->of_node, "dlg,da9214-legacy"))
+		return -ENODEV;
+
+	len = of_modalias(dev->of_node, modalias, sizeof(modalias));
+	if (len < 0)
+		return len;
+	if (len != sizeof(expected) - 1 ||
+	    memcmp(modalias, expected, sizeof(expected)))
+		return -EINVAL;
+
+	dev_info(dev,
+		 "GEMINI_DA921X_OF_MODALIAS_PRIVATE_GENERATION length=%zd fallback=i2c\n",
+		 len);
+
+	return 0;
+}
+
+static int i2c_device_insert_of_modalias_privately(const struct device *dev)
+{
+	static const char expected_alias[] =
+		"of:NregulatorT(null)Cdlg,da9214-legacy";
+	static const char expected_entry[] =
+		"MODALIAS=of:NregulatorT(null)Cdlg,da9214-legacy";
+	struct kobj_uevent_env *private_env;
+	char modalias[sizeof(expected_alias)];
+	ssize_t len;
+	int rc;
+
+#if !IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_OF_MODALIAS_PRIVATE_INSERTION_DIAGNOSTIC)
+	return -ENODEV;
+#endif
+	if (!dev->of_node ||
+	    !of_device_is_compatible(dev->of_node, "dlg,da9214-legacy"))
+		return -ENODEV;
+
+	len = of_modalias(dev->of_node, modalias, sizeof(modalias));
+	if (len < 0)
+		return len;
+	if (len != sizeof(expected_alias) - 1 ||
+	    memcmp(modalias, expected_alias, sizeof(expected_alias)))
+		return -EINVAL;
+
+	private_env = kzalloc_obj(*private_env, GFP_KERNEL);
+	if (!private_env)
+		return -ENOMEM;
+
+	rc = add_uevent_var(private_env, "MODALIAS=%s", modalias);
+	if (rc)
+		goto out;
+	if (private_env->envp_idx != 1 ||
+	    private_env->buflen != sizeof(expected_entry) ||
+	    private_env->envp[0] != private_env->buf ||
+	    private_env->envp[1] ||
+	    memcmp(private_env->envp[0], expected_entry,
+		   sizeof(expected_entry))) {
+		rc = -EINVAL;
+		goto out;
+	}
+
+	dev_info(dev,
+		 "GEMINI_DA921X_OF_MODALIAS_PRIVATE_INSERTION alias_length=%zd entry_length=%zu buflen=%d envp_idx=%d fallback=i2c\n",
+		 len, sizeof(expected_entry) - 1, private_env->buflen,
+		 private_env->envp_idx);
+out:
+	kfree(private_env);
+	return rc;
+}
+
+static int i2c_device_rollback_of_modalias(const struct device *dev, struct kobj_uevent_env *env)
+{
+	static const char expected_alias[] =
+		"of:NregulatorT(null)Cdlg,da9214-legacy";
+	static const char expected_entry[] =
+		"MODALIAS=of:NregulatorT(null)Cdlg,da9214-legacy";
+	char saved_buf[sizeof(expected_entry)];
+	char modalias[sizeof(expected_alias)];
+	char *saved_envp;
+	ssize_t len;
+	int start_buflen;
+	int start_envp_idx;
+	int rc;
+
+#if !IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_OF_MODALIAS_REAL_ENV_ROLLBACK_DIAGNOSTIC)
+	return -ENODEV;
+#endif
+	if (!dev->of_node ||
+	    !of_device_is_compatible(dev->of_node, "dlg,da9214-legacy"))
+		return -ENODEV;
+
+	len = of_modalias(dev->of_node, modalias, sizeof(modalias));
+	if (len < 0)
+		return len;
+	if (len != sizeof(expected_alias) - 1 ||
+	    memcmp(modalias, expected_alias, sizeof(expected_alias)))
+		return -EINVAL;
+
+	start_envp_idx = env->envp_idx;
+	start_buflen = env->buflen;
+	if (start_envp_idx < 0 || start_buflen < 0 ||
+	    start_envp_idx >= ARRAY_SIZE(env->envp) ||
+	    start_buflen > sizeof(env->buf) - sizeof(expected_entry))
+		return -EINVAL;
+
+	saved_envp = env->envp[start_envp_idx];
+	memcpy(saved_buf, &env->buf[start_buflen], sizeof(saved_buf));
+	rc = add_uevent_var(env, "MODALIAS=%s", modalias);
+	if (rc)
+		goto rollback;
+	if (env->envp_idx != start_envp_idx + 1 ||
+	    env->buflen != start_buflen + sizeof(expected_entry) ||
+	    env->envp[start_envp_idx] != &env->buf[start_buflen] ||
+	    memcmp(env->envp[start_envp_idx], expected_entry,
+		   sizeof(expected_entry)))
+		rc = -EINVAL;
+
+rollback:
+	memcpy(&env->buf[start_buflen], saved_buf, sizeof(saved_buf));
+	env->envp[start_envp_idx] = saved_envp;
+	env->envp_idx = start_envp_idx;
+	env->buflen = start_buflen;
+	if (env->envp_idx != start_envp_idx ||
+	    env->buflen != start_buflen ||
+	    env->envp[start_envp_idx] != saved_envp ||
+	    memcmp(&env->buf[start_buflen], saved_buf, sizeof(saved_buf)))
+		return -EINVAL;
+	if (rc)
+		return rc;
+
+	dev_info(dev,
+		 "GEMINI_DA921X_OF_MODALIAS_REAL_ENV_ROLLBACK alias_length=%zd entry_length=%zu rollback_bytes=%zu envp_delta=0 buflen_delta=0 fallback=i2c\n",
+		 len, sizeof(expected_entry) - 1, sizeof(expected_entry));
+	return 0;
+}
+
 static int i2c_device_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
 	const struct i2c_client *client = to_i2c_client(dev);
 	int rc;
 
-	rc = of_device_uevent_modalias(dev, env);
-	if (rc != -ENODEV)
+	rc = i2c_device_rollback_of_modalias(dev, env);
+	if (rc == -ENODEV)
+		rc = i2c_device_insert_of_modalias_privately(dev);
+	if (rc == -ENODEV)
+		rc = i2c_device_generate_of_modalias_privately(dev);
+	if (!rc) {
+		/* The validated private value is intentionally discarded. */
+	} else if (rc != -ENODEV) {
 		return rc;
+	} else if (i2c_device_suppress_of_modalias(dev)) {
+		dev_info(dev,
+			 "GEMINI_DA921X_OF_MODALIAS_SUPPRESS fallback=i2c\n");
+	} else {
+		rc = of_device_uevent_modalias(dev, env);
+		if (rc != -ENODEV)
+			return rc;
+	}
 
 	rc = acpi_device_uevent_modalias(dev, env);
 	if (rc != -ENODEV)
@@ -962,6 +1130,9 @@ i2c_new_client_device(struct i2c_adapter *adap, struct i2c_board_info const *inf
 	struct i2c_client *client;
 	bool need_put = false;
 	int status;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+	bool gemini_da921x_natural_device_add = false;
+#endif
 
 	client = kzalloc_obj(*client);
 	if (!client)
@@ -1015,7 +1186,19 @@ i2c_new_client_device(struct i2c_adapter *adap, struct i2c_board_info const *inf
 	}
 
 	i2c_dev_set_name(adap, client, info);
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+	if (adap->nr == 1 && client->addr == 0x68 &&
+	    !strcmp(client->name, "da9214-legacy") && client->dev.of_node &&
+	    of_device_is_compatible(client->dev.of_node,
+				    "dlg,da9214-legacy"))
+		gemini_da921x_natural_device_add =
+			gemini_da921x_natural_device_add_begin(&client->dev.kobj);
+#endif
 	status = device_register(&client->dev);
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+	if (gemini_da921x_natural_device_add)
+		gemini_da921x_natural_device_add_end(&client->dev.kobj, status);
+#endif
 	if (status)
 		goto out_remove_swnode;
 

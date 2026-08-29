@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-bigidvfs-backend.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 BigiDVFS secure readback transport
+
+description: |
+  The MT6797 B-cluster clock and rail state is owned by a secure BigiDVFS
+  service. This optional transport exposes only the documented read-only
+  secure-register service and remains disabled until its target firmware
+  variant and return contract are independently validated. It is not a
+  regulator, clock provider, DVFSP state owner, or writable secure backend.
+
+maintainers:
+  - Julien Etienne <julien.etienne@gmail.com>
+
+properties:
+  compatible:
+    const: mediatek,mt6797-bigidvfs-backend
+
+  method:
+    const: smc
+
+  status:
+    enum: [ disabled, okay ]
+
+required:
+  - compatible
+  - method
+
+additionalProperties: false
+
+examples:
+  - |
+    soc {
+      dvfsp_bigidvfs_backend: dvfsp-bigidvfs-backend {
+        compatible = "mediatek,mt6797-bigidvfs-backend";
+        method = "smc";
+        status = "disabled";
+      };
+    };

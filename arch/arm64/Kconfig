@@ -2513,6 +2513,76 @@ endmenu # "CPU Power Management"
 
 source "drivers/acpi/Kconfig"
 
+config ARM64_LATE_CPU_PROFILE
+	bool
+	help
+	  Internal support for a platform to describe CPUs which are expected to
+	  remain offline until after arm64 capability finalization. The evidence
+	  lifecycle is fail closed; it is neither a CPU boot nor admission
+	  mechanism.
+
+config ARM64_LATE_CPU_RUNTIME_IDENTITY
+	bool
+	depends on ARM64_LATE_CPU_PROFILE && OF && CMDLINE_FORCE
+	select CRYPTO_LIB_SHA256
+	select IKCONFIG
+	help
+	  Build the architecture-owned, pre-finalization runtime identity
+	  producer for a late-CPU profile. The producer verifies an exact static
+	  /chosen provenance record against the embedded IKCONFIG payload, the
+	  running vmlinux GNU build ID, and the forced command line. It does not
+	  collect target-CPU evidence or make a late CPU admissible.
+
+config ARM64_LATE_CPU_STARTUP_FAILSTOP
+	bool
+	help
+	  Internal protocol model for a future generation-scoped late-CPU
+	  startup controller. The model has no production caller and does not
+	  issue or authorize CPU_ON.
+
+config ARM64_LATE_CPU_STARTUP_KUNIT_TEST
+	bool "KUnit tests for the late-CPU startup protocol model"
+	depends on KUNIT=y
+	select ARM64_LATE_CPU_STARTUP_FAILSTOP
+	help
+	  Exercise the dormant protocol model's legal state transitions, exact
+	  token matching, completion ownership, terminal records, non-reuse,
+	  and sticky quarantine contract.
+
+config ARM64_MT6797_A72_P24_OWNER_KUNIT_TEST
+	bool "KUnit tests for the closed MT6797 A72 transaction owner"
+	depends on KUNIT=y
+	depends on ARM64_MT6797_A72_P30_PROTOCOL_MODEL
+	select ARM64_MT6797_A72_P24_TRANSACTION_OWNER_MODEL
+	select ARM64_MT6797_A72_P24_ADMISSION_HOOKS
+	help
+	  Exercise the lifecycle-closed owner boundary. The tests verify that
+	  CPU8 and CPU9 probes cannot consume an attempt, allocate a token,
+	  publish or mutate P30, or make a CPU_ON transaction reachable. They
+	  also cover the read-only public and internal admission checks.
+
+config ARM64_MT6797_A72_PROVIDER_OWNER
+	bool "MT6797 A72 provider-owner callback boundary"
+	depends on ARM64_MT6797_A72_P24_TRANSACTION_OWNER_MODEL
+	depends on REGULATOR_DA9213_LEGACY_PROVIDER
+	help
+	  Enable the explicitly isolated provider-owner callback boundary for the
+	  dormant MT6797 A72 transaction. The current legacy provider is
+	  read-only and therefore returns a clean pre-vote refusal; this option
+	  does not connect CPU_ON or authorize regulator writes.
+
+config ARM64_MT6797_A72_P30E_WIRE
+	bool "Build the dormant MT6797 A72 P30E MMU-off wire object"
+	depends on ARM64_MT6797_A72_P30_PROTOCOL_MODEL
+	depends on !CPU_BIG_ENDIAN
+	help
+	  Build the default-off P30E wire object and MMU-off target primitives
+	  selected by the source-only implementation profile. The object uses
+	  two retained 2 KiB slots, validates the fixed token and CRC, and
+	  performs full-range cache maintenance. It has no production caller,
+	  does not modify secondary_entry, and cannot issue CPU_ON/OFF or make
+	  a Linux membership result reachable.
+
 source "arch/arm64/kvm/Kconfig"
 
 source "kernel/livepatch/Kconfig"

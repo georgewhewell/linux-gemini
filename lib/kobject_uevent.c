@@ -31,6 +31,135 @@
 
 
 atomic64_t uevent_seqnum;
+#ifdef CONFIG_I2C_GEMINI_DA921X_DUAL_MODALIAS_STATE_DIAGNOSTIC
+atomic_t gemini_da921x_dual_modalias_state = ATOMIC_INIT(0);
+#endif
+#ifdef CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC
+atomic_t gemini_da921x_dual_modalias_stage = ATOMIC_INIT(0);
+#endif
+#ifdef CONFIG_I2C_GEMINI_DA921X_ENVELOPE_STATE_DIAGNOSTIC
+atomic_t gemini_da921x_dual_modalias_envp_idx = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_dual_modalias_envp_capacity = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_dual_modalias_terminator_null = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_dual_modalias_buflen = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_dual_modalias_buf_capacity = ATOMIC_INIT(-1);
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_ENTRY_CLASSIFICATION_DIAGNOSTIC
+atomic_t gemini_da921x_dual_modalias_present_mask = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_dual_modalias_duplicate_mask = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_dual_modalias_ordered_prefix = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_dual_modalias_seqnum_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_dual_modalias_seqnum_index = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_dual_modalias_unexpected_count = ATOMIC_INIT(-1);
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_LISTENER_DISCOVERY_DIAGNOSTIC
+atomic_t gemini_da921x_uevent_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_uevent_listener_count = ATOMIC_INIT(-1);
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_NO_LISTENER_DELIVERY_DIAGNOSTIC
+atomic_t gemini_da921x_no_listener_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_no_listener_listener_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_no_listener_allocation_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_no_listener_broadcast_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_no_listener_retval = ATOMIC_INIT(-1);
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_BOUNDED_LISTENER_DIAGNOSTIC
+atomic_t gemini_da921x_bounded_listener_attempts = ATOMIC_INIT(0);
+atomic_t gemini_da921x_bounded_listener_baseline_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_bounded_listener_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_bounded_listener_listener_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_bounded_listener_broadcast_count = ATOMIC_INIT(-1);
+
+static DEFINE_MUTEX(gemini_da921x_bounded_listener_lock);
+static struct kobject *gemini_da921x_bounded_listener_target;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_SINGLE_MULTICAST_DIAGNOSTIC
+atomic_t gemini_da921x_single_multicast_attempts = ATOMIC_INIT(0);
+atomic_t gemini_da921x_single_multicast_baseline_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_single_multicast_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_single_multicast_listener_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_single_multicast_allocation_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_single_multicast_broadcast_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_single_multicast_retval = ATOMIC_INIT(-1);
+
+static DEFINE_MUTEX(gemini_da921x_single_multicast_lock);
+static struct kobject *gemini_da921x_single_multicast_target;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_UNTAGGED_DISPATCH_DIAGNOSTIC
+atomic_t gemini_da921x_untagged_dispatch_attempts = ATOMIC_INIT(0);
+atomic_t gemini_da921x_untagged_dispatch_entries = ATOMIC_INIT(0);
+atomic_t gemini_da921x_untagged_dispatch_returns = ATOMIC_INIT(0);
+atomic_t gemini_da921x_untagged_dispatch_baseline_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_untagged_dispatch_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_untagged_dispatch_listener_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_untagged_dispatch_allocation_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_untagged_dispatch_broadcast_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_untagged_dispatch_retval = ATOMIC_INIT(-1);
+
+static DEFINE_MUTEX(gemini_da921x_untagged_dispatch_lock);
+static struct kobject *gemini_da921x_untagged_dispatch_target;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC
+atomic_t gemini_da921x_net_broadcast_attempts = ATOMIC_INIT(0);
+atomic_t gemini_da921x_net_broadcast_entries = ATOMIC_INIT(0);
+atomic_t gemini_da921x_net_broadcast_returns = ATOMIC_INIT(0);
+atomic_t gemini_da921x_net_broadcast_namespace_checks = ATOMIC_INIT(0);
+atomic_t gemini_da921x_net_broadcast_untagged_routes = ATOMIC_INIT(0);
+atomic_t gemini_da921x_net_broadcast_tagged_routes = ATOMIC_INIT(0);
+atomic_t gemini_da921x_net_broadcast_baseline_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_net_broadcast_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_net_broadcast_listener_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_net_broadcast_allocation_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_net_broadcast_broadcast_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_net_broadcast_retval = ATOMIC_INIT(-1);
+
+static DEFINE_MUTEX(gemini_da921x_net_broadcast_lock);
+static struct kobject *gemini_da921x_net_broadcast_target;
+static struct kobject *gemini_da921x_net_broadcast_active_target;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC
+atomic_t gemini_da921x_normal_fallthrough_attempts = ATOMIC_INIT(0);
+atomic_t gemini_da921x_normal_fallthrough_callsite_entries = ATOMIC_INIT(0);
+atomic_t gemini_da921x_normal_fallthrough_callsite_returns = ATOMIC_INIT(0);
+atomic_t gemini_da921x_normal_fallthrough_public_returns = ATOMIC_INIT(0);
+atomic_t gemini_da921x_normal_fallthrough_retval = ATOMIC_INIT(-1);
+
+static DEFINE_MUTEX(gemini_da921x_normal_fallthrough_lock);
+static struct kobject *gemini_da921x_normal_fallthrough_target;
+static struct kobject *gemini_da921x_normal_fallthrough_active_target;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC
+atomic_t gemini_da921x_natural_device_add_attempts = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_register_entries = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_register_returns = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_register_retval = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_natural_device_add_callsite_entries = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_callsite_returns = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_public_returns = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_wrapper_entries = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_wrapper_returns = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_namespace_checks = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_untagged_routes = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_tagged_routes = ATOMIC_INIT(0);
+atomic_t gemini_da921x_natural_device_add_socket_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_natural_device_add_listener_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_natural_device_add_allocation_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_natural_device_add_broadcast_count = ATOMIC_INIT(-1);
+atomic_t gemini_da921x_natural_device_add_uevent_retval = ATOMIC_INIT(-1);
+
+static DEFINE_MUTEX(gemini_da921x_natural_device_add_lock);
+static struct kobject *gemini_da921x_natural_device_add_active_target;
+#endif
+
 #ifdef CONFIG_UEVENT_HELPER
 char uevent_helper[UEVENT_HELPER_PATH_LEN] = CONFIG_UEVENT_HELPER_PATH;
 #endif
@@ -305,9 +434,90 @@ static struct sk_buff *alloc_uevent_skb(struct kobj_uevent_env *env,
 	return skb;
 }
 
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NETLINK_SERIALIZATION_DIAGNOSTIC)
+static int gemini_da921x_serialize_uevent(struct kobj_uevent_env *env,
+					  const char *action_string,
+					  const char *devpath)
+{
+	struct netlink_skb_parms *parms;
+	struct sk_buff *skb;
+	size_t action_len = strlen(action_string);
+	size_t devpath_len = strlen(devpath);
+	size_t header_len = action_len + devpath_len + 2;
+	int ret = -EINVAL;
+
+	skb = alloc_uevent_skb(env, action_string, devpath);
+	if (!skb)
+		return -ENOMEM;
+
+	if (skb->len != header_len + env->buflen)
+		goto out;
+	if (memcmp(skb->data, action_string, action_len))
+		goto out;
+	if (skb->data[action_len] != '@')
+		goto out;
+	if (memcmp(skb->data + action_len + 1, devpath, devpath_len))
+		goto out;
+	if (skb->data[header_len - 1] != '\0')
+		goto out;
+	if (memcmp(skb->data + header_len, env->buf, env->buflen))
+		goto out;
+
+	parms = &NETLINK_CB(skb);
+	if (!uid_eq(parms->creds.uid, GLOBAL_ROOT_UID) ||
+	    !gid_eq(parms->creds.gid, GLOBAL_ROOT_GID) ||
+	    parms->dst_group != 1 || parms->portid)
+		goto out;
+
+	atomic_set(&gemini_da921x_dual_modalias_stage, 18);
+	ret = 0;
+out:
+	consume_skb(skb);
+	return ret;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_LISTENER_DISCOVERY_DIAGNOSTIC)
+static int gemini_da921x_discover_uevent_listeners(void)
+{
+	struct uevent_sock *ue_sk;
+	int listener_count = 0;
+	int socket_count = 0;
+	int ret = 0;
+
+	mutex_lock(&uevent_sock_mutex);
+	list_for_each_entry(ue_sk, &uevent_sock_list, list) {
+		if (socket_count == 1024) {
+			ret = -E2BIG;
+			break;
+		}
+		socket_count++;
+		if (netlink_has_listeners(ue_sk->sk, 1))
+			listener_count++;
+	}
+	mutex_unlock(&uevent_sock_mutex);
+	if (ret)
+		return ret;
+
+	atomic_set(&gemini_da921x_uevent_socket_count, socket_count);
+	atomic_set(&gemini_da921x_uevent_listener_count, listener_count);
+	atomic_set(&gemini_da921x_dual_modalias_stage, 19);
+	return 0;
+}
+#endif
+
+struct gemini_da921x_broadcast_observation {
+	bool reject_listeners;
+	int sockets;
+	int listeners;
+	int allocations;
+	int broadcasts;
+};
+
 static int uevent_net_broadcast_untagged(struct kobj_uevent_env *env,
 					 const char *action_string,
-					 const char *devpath)
+					 const char *devpath,
+					 struct gemini_da921x_broadcast_observation *observation)
 {
 	struct sk_buff *skb = NULL;
 	struct uevent_sock *ue_sk;
@@ -318,16 +528,34 @@ static int uevent_net_broadcast_untagged(struct kobj_uevent_env *env,
 	list_for_each_entry(ue_sk, &uevent_sock_list, list) {
 		struct sock *uevent_sock = ue_sk->sk;
 
+		if (observation) {
+			if (observation->sockets == 1024) {
+				retval = -E2BIG;
+				break;
+			}
+			observation->sockets++;
+		}
 		if (!netlink_has_listeners(uevent_sock, 1))
 			continue;
 
+		if (observation) {
+			observation->listeners++;
+			if (observation->reject_listeners) {
+				retval = -EADDRINUSE;
+				break;
+			}
+		}
 		if (!skb) {
 			retval = -ENOMEM;
 			skb = alloc_uevent_skb(env, action_string, devpath);
 			if (!skb)
 				continue;
+			if (observation)
+				observation->allocations++;
 		}
 
+		if (observation)
+			observation->broadcasts++;
 		retval = netlink_broadcast(uevent_sock, skb_get(skb), 0, 1,
 					   GFP_KERNEL);
 		/* ENOBUFS should be handled in userspace */
@@ -339,6 +567,447 @@ static int uevent_net_broadcast_untagged(struct kobj_uevent_env *env,
 
 	return retval;
 }
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NO_LISTENER_DELIVERY_DIAGNOSTIC)
+static int
+gemini_da921x_no_listener(struct kobj_uevent_env *env,
+			  const char *action_string,
+			  const char *devpath)
+{
+	struct gemini_da921x_broadcast_observation observation = {
+		.reject_listeners = true,
+	};
+	int retval;
+
+	retval = uevent_net_broadcast_untagged(env, action_string, devpath,
+					       &observation);
+	if (retval || observation.listeners || observation.allocations ||
+	    observation.broadcasts ||
+	    observation.sockets != atomic_read(&gemini_da921x_uevent_socket_count))
+		return retval ?: -EINVAL;
+
+	atomic_set(&gemini_da921x_no_listener_socket_count,
+		   observation.sockets);
+	atomic_set(&gemini_da921x_no_listener_listener_count,
+		   observation.listeners);
+	atomic_set(&gemini_da921x_no_listener_allocation_count,
+		   observation.allocations);
+	atomic_set(&gemini_da921x_no_listener_broadcast_count,
+		   observation.broadcasts);
+	atomic_set(&gemini_da921x_no_listener_retval, retval);
+	atomic_set(&gemini_da921x_dual_modalias_stage, 20);
+	return 0;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_BOUNDED_LISTENER_DIAGNOSTIC)
+static int gemini_da921x_arm_bounded_listener(struct kobject *kobj)
+{
+	int ret = 0;
+
+	mutex_lock(&gemini_da921x_bounded_listener_lock);
+	if (gemini_da921x_bounded_listener_target ||
+	    atomic_read(&gemini_da921x_bounded_listener_attempts))
+		ret = -EALREADY;
+	else
+		gemini_da921x_bounded_listener_target = kobject_get(kobj);
+	mutex_unlock(&gemini_da921x_bounded_listener_lock);
+	return ret;
+}
+
+static int gemini_da921x_validate_bounded_listener(void)
+{
+	int baseline_sockets =
+		atomic_read(&gemini_da921x_no_listener_socket_count);
+	int sockets = atomic_read(&gemini_da921x_uevent_socket_count);
+	int listeners = atomic_read(&gemini_da921x_uevent_listener_count);
+
+	if (atomic_read(&gemini_da921x_bounded_listener_attempts) != 1 ||
+	    baseline_sockets != 1 ||
+	    atomic_read(&gemini_da921x_no_listener_listener_count) ||
+	    atomic_read(&gemini_da921x_no_listener_allocation_count) ||
+	    atomic_read(&gemini_da921x_no_listener_broadcast_count) ||
+	    atomic_read(&gemini_da921x_no_listener_retval) ||
+	    sockets != baseline_sockets || listeners != 1)
+		return -EINVAL;
+
+	atomic_set(&gemini_da921x_bounded_listener_baseline_socket_count,
+		   baseline_sockets);
+	atomic_set(&gemini_da921x_bounded_listener_socket_count, sockets);
+	atomic_set(&gemini_da921x_bounded_listener_listener_count, listeners);
+	atomic_set(&gemini_da921x_bounded_listener_broadcast_count, 0);
+	atomic_set(&gemini_da921x_dual_modalias_stage, 21);
+	return 0;
+}
+
+int gemini_da921x_trigger_bounded_listener(void)
+{
+	struct kobject *kobj;
+	int ret;
+
+	if (atomic_read(&gemini_da921x_dual_modalias_stage) != 20)
+		return -EAGAIN;
+	if (atomic_cmpxchg(&gemini_da921x_bounded_listener_attempts, 0, 1))
+		return -EALREADY;
+
+	mutex_lock(&gemini_da921x_bounded_listener_lock);
+	kobj = gemini_da921x_bounded_listener_target;
+	gemini_da921x_bounded_listener_target = NULL;
+	mutex_unlock(&gemini_da921x_bounded_listener_lock);
+	if (!kobj)
+		return -ENODEV;
+
+	ret = kobject_uevent(kobj, KOBJ_ADD);
+	kobject_put(kobj);
+	return ret;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_SINGLE_MULTICAST_DIAGNOSTIC)
+static int gemini_da921x_arm_single_multicast(struct kobject *kobj)
+{
+	int ret = 0;
+
+	mutex_lock(&gemini_da921x_single_multicast_lock);
+	if (gemini_da921x_single_multicast_target ||
+	    atomic_read(&gemini_da921x_single_multicast_attempts))
+		ret = -EALREADY;
+	else
+		gemini_da921x_single_multicast_target = kobject_get(kobj);
+	mutex_unlock(&gemini_da921x_single_multicast_lock);
+	return ret;
+}
+
+static int gemini_da921x_single_multicast(struct kobj_uevent_env *env,
+					  const char *action_string,
+					  const char *devpath)
+{
+	struct gemini_da921x_broadcast_observation observation = { };
+	struct sk_buff *skb = NULL;
+	struct uevent_sock *ue_sk;
+	int baseline_sockets =
+		atomic_read(&gemini_da921x_bounded_listener_socket_count);
+	int retval = 0;
+
+	mutex_lock(&uevent_sock_mutex);
+	list_for_each_entry(ue_sk, &uevent_sock_list, list) {
+		if (observation.sockets == 1024) {
+			retval = -E2BIG;
+			goto out_unlock;
+		}
+		observation.sockets++;
+		if (netlink_has_listeners(ue_sk->sk, 1))
+			observation.listeners++;
+	}
+	if (baseline_sockets != 1 || observation.sockets != baseline_sockets ||
+	    observation.listeners != 1) {
+		retval = -EINVAL;
+		goto out_unlock;
+	}
+
+	list_for_each_entry(ue_sk, &uevent_sock_list, list) {
+		if (!netlink_has_listeners(ue_sk->sk, 1))
+			continue;
+		skb = alloc_uevent_skb(env, action_string, devpath);
+		if (!skb) {
+			retval = -ENOMEM;
+			goto out_unlock;
+		}
+		observation.allocations++;
+		observation.broadcasts++;
+		retval = netlink_broadcast(ue_sk->sk, skb_get(skb), 0, 1,
+					   GFP_KERNEL);
+		if (retval == -ENOBUFS || retval == -ESRCH)
+			retval = 0;
+		break;
+	}
+
+out_unlock:
+	mutex_unlock(&uevent_sock_mutex);
+	consume_skb(skb);
+	atomic_set(&gemini_da921x_single_multicast_baseline_socket_count,
+		   baseline_sockets);
+	atomic_set(&gemini_da921x_single_multicast_socket_count,
+		   observation.sockets);
+	atomic_set(&gemini_da921x_single_multicast_listener_count,
+		   observation.listeners);
+	atomic_set(&gemini_da921x_single_multicast_allocation_count,
+		   observation.allocations);
+	atomic_set(&gemini_da921x_single_multicast_broadcast_count,
+		   observation.broadcasts);
+	atomic_set(&gemini_da921x_single_multicast_retval, retval);
+	if (retval || observation.allocations != 1 ||
+	    observation.broadcasts != 1)
+		return retval ?: -EINVAL;
+
+	atomic_set(&gemini_da921x_dual_modalias_stage, 22);
+	return 0;
+}
+
+int gemini_da921x_trigger_single_multicast(void)
+{
+	struct kobject *kobj;
+	int ret;
+
+	if (atomic_read(&gemini_da921x_dual_modalias_stage) != 21)
+		return -EAGAIN;
+	if (atomic_cmpxchg(&gemini_da921x_single_multicast_attempts, 0, 1))
+		return -EALREADY;
+
+	mutex_lock(&gemini_da921x_single_multicast_lock);
+	kobj = gemini_da921x_single_multicast_target;
+	gemini_da921x_single_multicast_target = NULL;
+	mutex_unlock(&gemini_da921x_single_multicast_lock);
+	if (!kobj)
+		return -ENODEV;
+
+	ret = kobject_uevent(kobj, KOBJ_ADD);
+	kobject_put(kobj);
+	return ret;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_UNTAGGED_DISPATCH_DIAGNOSTIC)
+static int gemini_da921x_arm_untagged_dispatch(struct kobject *kobj)
+{
+	int ret = 0;
+
+	mutex_lock(&gemini_da921x_untagged_dispatch_lock);
+	if (gemini_da921x_untagged_dispatch_target ||
+	    atomic_read(&gemini_da921x_untagged_dispatch_attempts))
+		ret = -EALREADY;
+	else
+		gemini_da921x_untagged_dispatch_target = kobject_get(kobj);
+	mutex_unlock(&gemini_da921x_untagged_dispatch_lock);
+	return ret;
+}
+
+static int gemini_da921x_untagged_dispatch(struct kobj_uevent_env *env,
+					   const char *action_string,
+					  const char *devpath)
+{
+	struct gemini_da921x_broadcast_observation observation = { };
+	int baseline_sockets =
+		atomic_read(&gemini_da921x_single_multicast_socket_count);
+	int retval;
+
+	atomic_inc(&gemini_da921x_untagged_dispatch_entries);
+	retval = uevent_net_broadcast_untagged(env, action_string, devpath,
+					       &observation);
+	atomic_inc(&gemini_da921x_untagged_dispatch_returns);
+	atomic_set(&gemini_da921x_untagged_dispatch_baseline_socket_count,
+		   baseline_sockets);
+	atomic_set(&gemini_da921x_untagged_dispatch_socket_count,
+		   observation.sockets);
+	atomic_set(&gemini_da921x_untagged_dispatch_listener_count,
+		   observation.listeners);
+	atomic_set(&gemini_da921x_untagged_dispatch_allocation_count,
+		   observation.allocations);
+	atomic_set(&gemini_da921x_untagged_dispatch_broadcast_count,
+		   observation.broadcasts);
+	atomic_set(&gemini_da921x_untagged_dispatch_retval, retval);
+	if (retval || baseline_sockets != 1 || observation.sockets != 1 ||
+	    observation.listeners != 1 || observation.allocations != 1 ||
+	    observation.broadcasts != 1 ||
+	    atomic_read(&gemini_da921x_untagged_dispatch_entries) != 1 ||
+	    atomic_read(&gemini_da921x_untagged_dispatch_returns) != 1)
+		return retval ?: -EINVAL;
+
+	atomic_set(&gemini_da921x_dual_modalias_stage, 23);
+	return 0;
+}
+
+int gemini_da921x_trigger_untagged_dispatch(void)
+{
+	struct kobject *kobj;
+	int ret;
+
+	if (atomic_read(&gemini_da921x_dual_modalias_stage) != 22)
+		return -EAGAIN;
+	if (atomic_cmpxchg(&gemini_da921x_untagged_dispatch_attempts, 0, 1))
+		return -EALREADY;
+
+	mutex_lock(&gemini_da921x_untagged_dispatch_lock);
+	kobj = gemini_da921x_untagged_dispatch_target;
+	gemini_da921x_untagged_dispatch_target = NULL;
+	mutex_unlock(&gemini_da921x_untagged_dispatch_lock);
+	if (!kobj)
+		return -ENODEV;
+
+	ret = kobject_uevent(kobj, KOBJ_ADD);
+	kobject_put(kobj);
+	return ret;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC)
+static int gemini_da921x_arm_net_broadcast(struct kobject *kobj)
+{
+	int ret = 0;
+
+	mutex_lock(&gemini_da921x_net_broadcast_lock);
+	if (gemini_da921x_net_broadcast_target ||
+	    gemini_da921x_net_broadcast_active_target ||
+	    atomic_read(&gemini_da921x_net_broadcast_attempts))
+		ret = -EALREADY;
+	else
+		gemini_da921x_net_broadcast_target = kobject_get(kobj);
+	mutex_unlock(&gemini_da921x_net_broadcast_lock);
+	return ret;
+}
+
+int gemini_da921x_trigger_net_broadcast(void)
+{
+	struct kobject *kobj;
+	int ret;
+
+	if (atomic_read(&gemini_da921x_dual_modalias_stage) != 23)
+		return -EAGAIN;
+	if (atomic_cmpxchg(&gemini_da921x_net_broadcast_attempts, 0, 1))
+		return -EALREADY;
+
+	mutex_lock(&gemini_da921x_net_broadcast_lock);
+	kobj = gemini_da921x_net_broadcast_target;
+	gemini_da921x_net_broadcast_target = NULL;
+	mutex_unlock(&gemini_da921x_net_broadcast_lock);
+	if (!kobj)
+		return -ENODEV;
+
+	ret = kobject_uevent(kobj, KOBJ_ADD);
+	kobject_put(kobj);
+	return ret;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC)
+static int gemini_da921x_arm_normal_fallthrough(struct kobject *kobj)
+{
+	int ret = 0;
+
+	mutex_lock(&gemini_da921x_normal_fallthrough_lock);
+	if (gemini_da921x_normal_fallthrough_target ||
+	    gemini_da921x_normal_fallthrough_active_target ||
+	    atomic_read(&gemini_da921x_normal_fallthrough_attempts))
+		ret = -EALREADY;
+	else
+		gemini_da921x_normal_fallthrough_target = kobject_get(kobj);
+	mutex_unlock(&gemini_da921x_normal_fallthrough_lock);
+	return ret;
+}
+
+static bool gemini_da921x_prepare_normal_fallthrough(struct kobject *kobj)
+{
+	bool active;
+
+	mutex_lock(&gemini_da921x_normal_fallthrough_lock);
+	active = gemini_da921x_normal_fallthrough_active_target == kobj;
+	mutex_unlock(&gemini_da921x_normal_fallthrough_lock);
+	return active;
+}
+
+int gemini_da921x_trigger_normal_fallthrough(void)
+{
+	struct kobject *kobj;
+	int ret;
+
+	if (atomic_read(&gemini_da921x_dual_modalias_stage) != 24)
+		return -EAGAIN;
+	if (atomic_cmpxchg(&gemini_da921x_normal_fallthrough_attempts, 0, 1))
+		return -EALREADY;
+
+	mutex_lock(&gemini_da921x_normal_fallthrough_lock);
+	kobj = gemini_da921x_normal_fallthrough_target;
+	gemini_da921x_normal_fallthrough_target = NULL;
+	gemini_da921x_normal_fallthrough_active_target = kobj;
+	mutex_unlock(&gemini_da921x_normal_fallthrough_lock);
+	if (!kobj)
+		return -ENODEV;
+
+	ret = kobject_uevent(kobj, KOBJ_ADD);
+	mutex_lock(&gemini_da921x_normal_fallthrough_lock);
+	gemini_da921x_normal_fallthrough_active_target = NULL;
+	mutex_unlock(&gemini_da921x_normal_fallthrough_lock);
+	atomic_inc(&gemini_da921x_normal_fallthrough_public_returns);
+	if (!ret &&
+	    (atomic_read(&gemini_da921x_normal_fallthrough_callsite_entries) != 1 ||
+	     atomic_read(&gemini_da921x_normal_fallthrough_callsite_returns) != 1 ||
+	     atomic_read(&gemini_da921x_dual_modalias_stage) != 25))
+		ret = -EINVAL;
+	atomic_set(&gemini_da921x_normal_fallthrough_retval, ret);
+	kobject_put(kobj);
+	return ret;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+static bool gemini_da921x_natural_device_add_active(struct kobject *kobj)
+{
+	bool active;
+
+	mutex_lock(&gemini_da921x_natural_device_add_lock);
+	active = gemini_da921x_natural_device_add_active_target == kobj;
+	mutex_unlock(&gemini_da921x_natural_device_add_lock);
+	return active;
+}
+
+bool gemini_da921x_natural_device_add_begin(struct kobject *kobj)
+{
+	bool armed = false;
+
+	mutex_lock(&gemini_da921x_natural_device_add_lock);
+	if (!gemini_da921x_natural_device_add_active_target &&
+	    !atomic_read(&gemini_da921x_natural_device_add_attempts) &&
+	    !atomic_read(&gemini_da921x_dual_modalias_stage)) {
+		gemini_da921x_natural_device_add_active_target = kobj;
+		atomic_set(&gemini_da921x_natural_device_add_attempts, 1);
+		atomic_set(&gemini_da921x_natural_device_add_register_entries, 1);
+		armed = true;
+	}
+	mutex_unlock(&gemini_da921x_natural_device_add_lock);
+	return armed;
+}
+
+void gemini_da921x_natural_device_add_end(struct kobject *kobj, int retval)
+{
+	bool active;
+
+	mutex_lock(&gemini_da921x_natural_device_add_lock);
+	active = gemini_da921x_natural_device_add_active_target == kobj;
+	if (active)
+		gemini_da921x_natural_device_add_active_target = NULL;
+	mutex_unlock(&gemini_da921x_natural_device_add_lock);
+	if (!active)
+		return;
+
+	atomic_inc(&gemini_da921x_natural_device_add_register_returns);
+	atomic_set(&gemini_da921x_natural_device_add_register_retval, retval);
+	if (retval || atomic_read(&gemini_da921x_dual_modalias_stage) != 20 ||
+	    atomic_read(&gemini_da921x_no_listener_socket_count) != 1 ||
+	    atomic_read(&gemini_da921x_no_listener_listener_count) ||
+	    atomic_read(&gemini_da921x_no_listener_allocation_count) ||
+	    atomic_read(&gemini_da921x_no_listener_broadcast_count) ||
+	    atomic_read(&gemini_da921x_no_listener_retval) ||
+	    atomic_read(&gemini_da921x_natural_device_add_attempts) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_register_entries) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_register_returns) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_callsite_entries) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_callsite_returns) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_public_returns) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_wrapper_entries) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_wrapper_returns) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_namespace_checks) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_untagged_routes) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_tagged_routes) ||
+	    atomic_read(&gemini_da921x_natural_device_add_socket_count) != 1 ||
+	    atomic_read(&gemini_da921x_natural_device_add_listener_count) ||
+	    atomic_read(&gemini_da921x_natural_device_add_allocation_count) ||
+	    atomic_read(&gemini_da921x_natural_device_add_broadcast_count) ||
+	    atomic_read(&gemini_da921x_natural_device_add_uevent_retval))
+		return;
+
+	atomic_set(&gemini_da921x_dual_modalias_stage, 26);
+}
+#endif
 
 static int uevent_net_broadcast_tagged(struct sock *usk,
 				       struct kobj_uevent_env *env,
@@ -385,10 +1054,28 @@ static int kobject_uevent_net_broadcast(struct kobject *kobj,
 					const char *devpath)
 {
 	int ret = 0;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC)
+	struct gemini_da921x_broadcast_observation observation = { };
+	bool observe;
+
+	mutex_lock(&gemini_da921x_net_broadcast_lock);
+	observe = gemini_da921x_net_broadcast_active_target == kobj;
+	mutex_unlock(&gemini_da921x_net_broadcast_lock);
+	if (observe)
+		atomic_inc(&gemini_da921x_net_broadcast_entries);
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+	bool observe_natural =
+		gemini_da921x_natural_device_add_active(kobj);
+
+	if (observe_natural)
+		atomic_inc(&gemini_da921x_natural_device_add_wrapper_entries);
+#endif
 
 #ifdef CONFIG_NET
 	const struct kobj_ns_type_operations *ops;
 	const struct ns_common *ns = NULL;
+	struct gemini_da921x_broadcast_observation *observation_ptr = NULL;
 
 	ops = kobj_ns_ops(kobj);
 	if (!ops && kobj->kset) {
@@ -406,19 +1093,117 @@ static int kobject_uevent_net_broadcast(struct kobject *kobj,
 		if (ops->type == KOBJ_NS_TYPE_NET)
 			ns = kobj->ktype->namespace(kobj);
 
-	if (!ns)
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC)
+	if (observe) {
+		atomic_inc(&gemini_da921x_net_broadcast_namespace_checks);
+		observation_ptr = &observation;
+	}
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+	if (observe_natural) {
+		atomic_inc(&gemini_da921x_natural_device_add_namespace_checks);
+		observation_ptr = &observation;
+	}
+#endif
+	if (!ns) {
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC)
+		if (observe)
+			atomic_inc(&gemini_da921x_net_broadcast_untagged_routes);
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+		if (observe_natural)
+			atomic_inc(&gemini_da921x_natural_device_add_untagged_routes);
+#endif
 		ret = uevent_net_broadcast_untagged(env, action_string,
-						    devpath);
-	else {
+						    devpath, observation_ptr);
+	} else {
 		const struct net *net = container_of(ns, struct net, ns);
 
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC)
+		if (observe)
+			atomic_inc(&gemini_da921x_net_broadcast_tagged_routes);
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+		if (observe_natural)
+			atomic_inc(&gemini_da921x_natural_device_add_tagged_routes);
+#endif
 		ret = uevent_net_broadcast_tagged(net->uevent_sock->sk, env,
 						  action_string, devpath);
 	}
 #endif
 
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC)
+	if (observe) {
+		atomic_inc(&gemini_da921x_net_broadcast_returns);
+		atomic_set(&gemini_da921x_net_broadcast_socket_count,
+			   observation.sockets);
+		atomic_set(&gemini_da921x_net_broadcast_listener_count,
+			   observation.listeners);
+		atomic_set(&gemini_da921x_net_broadcast_allocation_count,
+			   observation.allocations);
+		atomic_set(&gemini_da921x_net_broadcast_broadcast_count,
+			   observation.broadcasts);
+		atomic_set(&gemini_da921x_net_broadcast_retval, ret);
+	}
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+	if (observe_natural) {
+		atomic_inc(&gemini_da921x_natural_device_add_wrapper_returns);
+		atomic_set(&gemini_da921x_natural_device_add_socket_count,
+			   observation.sockets);
+		atomic_set(&gemini_da921x_natural_device_add_listener_count,
+			   observation.listeners);
+		atomic_set(&gemini_da921x_natural_device_add_allocation_count,
+			   observation.allocations);
+		atomic_set(&gemini_da921x_natural_device_add_broadcast_count,
+			   observation.broadcasts);
+	}
+#endif
 	return ret;
 }
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC)
+static int gemini_da921x_net_broadcast(struct kobject *kobj,
+				       struct kobj_uevent_env *env,
+				       const char *action_string,
+				       const char *devpath)
+{
+	int baseline_sockets =
+		atomic_read(&gemini_da921x_untagged_dispatch_socket_count);
+	int retval;
+
+	atomic_set(&gemini_da921x_net_broadcast_baseline_socket_count,
+		   baseline_sockets);
+	mutex_lock(&gemini_da921x_net_broadcast_lock);
+	gemini_da921x_net_broadcast_active_target = kobj;
+	mutex_unlock(&gemini_da921x_net_broadcast_lock);
+	retval = kobject_uevent_net_broadcast(kobj, env, action_string, devpath);
+	mutex_lock(&gemini_da921x_net_broadcast_lock);
+	gemini_da921x_net_broadcast_active_target = NULL;
+	mutex_unlock(&gemini_da921x_net_broadcast_lock);
+
+	if (retval || baseline_sockets != 1 ||
+	    atomic_read(&gemini_da921x_net_broadcast_entries) != 1 ||
+	    atomic_read(&gemini_da921x_net_broadcast_returns) != 1 ||
+	    atomic_read(&gemini_da921x_net_broadcast_namespace_checks) != 1 ||
+	    atomic_read(&gemini_da921x_net_broadcast_untagged_routes) != 1 ||
+	    atomic_read(&gemini_da921x_net_broadcast_tagged_routes) != 0 ||
+	    atomic_read(&gemini_da921x_net_broadcast_socket_count) != 1 ||
+	    atomic_read(&gemini_da921x_net_broadcast_listener_count) != 1 ||
+	    atomic_read(&gemini_da921x_net_broadcast_allocation_count) != 1 ||
+	    atomic_read(&gemini_da921x_net_broadcast_broadcast_count) != 1)
+		return retval ?: -EINVAL;
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC)
+	retval = gemini_da921x_arm_normal_fallthrough(kobj);
+	if (retval)
+		return retval;
+#endif
+
+	atomic_set(&gemini_da921x_dual_modalias_stage, 24);
+	return 0;
+}
+#endif
 
 static void zap_modalias_env(struct kobj_uevent_env *env)
 {
@@ -463,6 +1248,205 @@ static void zap_modalias_env(struct kobj_uevent_env *env)
 	}
 }
 
+static int gemini_da921x_pre_dispatch(struct kobject *kobj,
+				      enum kobject_action action,
+				      const char *subsystem,
+				      const char *devpath,
+				      struct kobj_uevent_env *env)
+{
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_OF_MODALIAS_PRE_DISPATCH_SUPPRESSION_DIAGNOSTIC) || \
+	IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_DUAL_MODALIAS_STATE_DIAGNOSTIC)
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_ROOT_PATH_CORRECTION_DIAGNOSTIC)
+#define GEMINI_DA921X_EXPECTED_DEVPATH \
+	"/devices/platform/1100e000.i2c/i2c-1/1-0068"
+#define GEMINI_DA921X_EXPECTED_OF_FULLNAME \
+	"OF_FULLNAME=/i2c@1100e000/regulator@68"
+#else
+#define GEMINI_DA921X_EXPECTED_DEVPATH \
+	"/devices/platform/soc/1100e000.i2c/i2c-1/1-0068"
+#define GEMINI_DA921X_EXPECTED_OF_FULLNAME \
+	"OF_FULLNAME=/soc/i2c@1100e000/regulator@68"
+#endif
+	static const char expected_devpath[] =
+		GEMINI_DA921X_EXPECTED_DEVPATH;
+	static const char * const expected[] = {
+		"ACTION=add",
+		"DEVPATH=" GEMINI_DA921X_EXPECTED_DEVPATH,
+		"SUBSYSTEM=i2c",
+		"OF_NAME=regulator",
+		GEMINI_DA921X_EXPECTED_OF_FULLNAME,
+		"OF_COMPATIBLE_0=dlg,da9214-legacy",
+		"OF_COMPATIBLE_N=1",
+		"MODALIAS=of:NregulatorT(null)Cdlg,da9214-legacy",
+#if !IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_OF_EVENT_LAYOUT_CORRECTION_DIAGNOSTIC)
+		"MODALIAS=i2c:da9214-legacy",
+#endif
+	};
+	const char *seqnum = NULL;
+	const char *entry;
+	int i;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_ENTRY_CLASSIFICATION_DIAGNOSTIC)
+	unsigned int duplicate_mask = 0;
+	unsigned int present_mask = 0;
+	bool ordered = true;
+	int ordered_prefix = 0;
+	int seqnum_count = 0;
+	int seqnum_index = -1;
+	int unexpected_count = 0;
+	int scan_count;
+	int j;
+#endif
+
+	if (action != KOBJ_ADD || strcmp(subsystem, "i2c") ||
+	    strcmp(kobject_name(kobj), "1-0068"))
+		return 0;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC)
+	atomic_set(&gemini_da921x_dual_modalias_stage, 1);
+#endif
+	if (strcmp(devpath, expected_devpath))
+		return -EINVAL;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC)
+	atomic_set(&gemini_da921x_dual_modalias_stage, 2);
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_ENVELOPE_STATE_DIAGNOSTIC)
+	atomic_set(&gemini_da921x_dual_modalias_envp_idx, env->envp_idx);
+	atomic_set(&gemini_da921x_dual_modalias_envp_capacity,
+		   ARRAY_SIZE(env->envp));
+	atomic_set(&gemini_da921x_dual_modalias_terminator_null,
+		   env->envp_idx < ARRAY_SIZE(env->envp) ?
+		   !env->envp[env->envp_idx] : -1);
+	atomic_set(&gemini_da921x_dual_modalias_buflen, env->buflen);
+	atomic_set(&gemini_da921x_dual_modalias_buf_capacity,
+		   sizeof(env->buf));
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_ENTRY_CLASSIFICATION_DIAGNOSTIC)
+	scan_count = clamp_t(int, env->envp_idx, 0, ARRAY_SIZE(env->envp));
+	if (env->envp_idx > ARRAY_SIZE(env->envp))
+		unexpected_count++;
+	if (env->buflen > 0 && env->buflen <= sizeof(env->buf)) {
+		for (i = 0; i < scan_count; i++) {
+			size_t remaining;
+			bool matched = false;
+
+			entry = env->envp[i];
+			if (!entry || entry < env->buf ||
+			    entry >= env->buf + env->buflen) {
+				unexpected_count++;
+				ordered = false;
+				continue;
+			}
+			remaining = env->buf + env->buflen - entry;
+			if (strnlen(entry, remaining) == remaining) {
+				unexpected_count++;
+				ordered = false;
+				continue;
+			}
+			for (j = 0; j < ARRAY_SIZE(expected); j++) {
+				if (strcmp(entry, expected[j]))
+					continue;
+				if (present_mask & BIT(j))
+					duplicate_mask |= BIT(j);
+				present_mask |= BIT(j);
+				matched = true;
+				break;
+			}
+			if (!matched &&
+			    !strncmp(entry, "SEQNUM=", sizeof("SEQNUM=") - 1)) {
+				if (!seqnum_count)
+					seqnum_index = i;
+				seqnum_count++;
+				matched = true;
+			}
+			if (!matched)
+				unexpected_count++;
+			if (ordered) {
+				if (i < ARRAY_SIZE(expected) &&
+				    !strcmp(entry, expected[i]))
+					ordered_prefix++;
+				else
+					ordered = false;
+			}
+		}
+	} else {
+		unexpected_count = scan_count ? scan_count : 1;
+	}
+	atomic_set(&gemini_da921x_dual_modalias_present_mask, present_mask);
+	atomic_set(&gemini_da921x_dual_modalias_duplicate_mask, duplicate_mask);
+	atomic_set(&gemini_da921x_dual_modalias_ordered_prefix, ordered_prefix);
+	atomic_set(&gemini_da921x_dual_modalias_seqnum_count, seqnum_count);
+	atomic_set(&gemini_da921x_dual_modalias_seqnum_index, seqnum_index);
+	atomic_set(&gemini_da921x_dual_modalias_unexpected_count,
+		   unexpected_count);
+#endif
+	if (env->envp_idx != ARRAY_SIZE(expected) + 1 ||
+	    env->envp_idx >= ARRAY_SIZE(env->envp) ||
+	    env->buflen <= 0 || env->buflen > sizeof(env->buf) ||
+	    env->envp[env->envp_idx])
+		return -EINVAL;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC)
+	atomic_set(&gemini_da921x_dual_modalias_stage, 3);
+#endif
+
+	for (i = 0; i < env->envp_idx; i++) {
+		entry = env->envp[i];
+		if (entry < env->buf || entry >= env->buf + env->buflen)
+			return -EINVAL;
+		if (!i) {
+			if (entry != env->buf)
+				return -EINVAL;
+		} else if (entry != env->envp[i - 1] +
+				   strlen(env->envp[i - 1]) + 1) {
+			return -EINVAL;
+		}
+		if (i < ARRAY_SIZE(expected)) {
+			if (strcmp(entry, expected[i]))
+				return -EINVAL;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC)
+			atomic_set(&gemini_da921x_dual_modalias_stage, 4 + i);
+#endif
+			continue;
+		}
+		if (strncmp(entry, "SEQNUM=", sizeof("SEQNUM=") - 1))
+			return -EINVAL;
+		seqnum = entry + sizeof("SEQNUM=") - 1;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC)
+		atomic_set(&gemini_da921x_dual_modalias_stage, 13);
+#endif
+	}
+	if (env->envp[env->envp_idx - 1] +
+	    strlen(env->envp[env->envp_idx - 1]) + 1 !=
+	    env->buf + env->buflen)
+		return -EINVAL;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC)
+	atomic_set(&gemini_da921x_dual_modalias_stage, 14);
+#endif
+	if (!seqnum || !*seqnum)
+		return -EINVAL;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC)
+	atomic_set(&gemini_da921x_dual_modalias_stage, 15);
+#endif
+	for (entry = seqnum; *entry; entry++)
+		if (!isdigit(*entry))
+			return -EINVAL;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC)
+	atomic_set(&gemini_da921x_dual_modalias_stage, 16);
+#endif
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_DUAL_MODALIAS_STATE_DIAGNOSTIC)
+	atomic_set(&gemini_da921x_dual_modalias_state, 1);
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC)
+	atomic_set(&gemini_da921x_dual_modalias_stage, 17);
+#endif
+#else
+	pr_info("GEMINI_DA921X_DUAL_MODALIAS_PRE_DISPATCH full_env=validated envp_idx=%d buflen=%d of_modalias=present i2c_modalias=present seqnum=present transport=skipped return=success cleanup=normal\n",
+		env->envp_idx, env->buflen);
+#endif
+	return 1;
+#else
+	return 0;
+#endif
+}
+
 /**
  * kobject_uevent_env - send an uevent with environmental data
  *
@@ -485,6 +1469,15 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 	const struct kset_uevent_ops *uevent_ops;
 	int i = 0;
 	int retval = 0;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_BOUNDED_LISTENER_DIAGNOSTIC)
+	int gemini_da921x_previous_stage = -1;
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC)
+	bool gemini_da921x_normal_fallthrough = false;
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+	bool gemini_da921x_natural_device_add = false;
+#endif
 
 	/*
 	 * Mark "remove" event done regardless of result, for some subsystems
@@ -608,8 +1601,146 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 	if (retval)
 		goto exit;
 
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_BOUNDED_LISTENER_DIAGNOSTIC)
+	gemini_da921x_previous_stage =
+		atomic_read(&gemini_da921x_dual_modalias_stage);
+#endif
+	retval = gemini_da921x_pre_dispatch(kobj, action, subsystem, devpath, env);
+	if (retval < 0)
+		goto exit;
+	if (retval) {
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NETLINK_SERIALIZATION_DIAGNOSTIC)
+		retval = gemini_da921x_serialize_uevent(env, action_string,
+							devpath);
+		if (retval)
+			goto exit;
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_LISTENER_DISCOVERY_DIAGNOSTIC)
+		retval = gemini_da921x_discover_uevent_listeners();
+		if (retval)
+			goto exit;
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_BOUNDED_LISTENER_DIAGNOSTIC)
+		if (gemini_da921x_previous_stage >
+		    21 + IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_UNTAGGED_DISPATCH_DIAGNOSTIC) +
+		    IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC) +
+		    IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC)) {
+			atomic_set(&gemini_da921x_dual_modalias_stage,
+				   gemini_da921x_previous_stage);
+			retval = -EALREADY;
+			goto exit;
+		}
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_BOUNDED_LISTENER_DIAGNOSTIC)
+		if (gemini_da921x_previous_stage < 20) {
+			retval = gemini_da921x_no_listener(env, action_string,
+							   devpath);
+			if (retval)
+				goto exit;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+			if (gemini_da921x_natural_device_add_active(kobj))
+				gemini_da921x_natural_device_add = true;
+			else
+#endif
+			{
+			retval = gemini_da921x_arm_bounded_listener(kobj);
+			if (retval)
+				goto exit;
+			}
+		} else if (gemini_da921x_previous_stage == 20) {
+			retval = gemini_da921x_validate_bounded_listener();
+			if (retval)
+				goto exit;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_SINGLE_MULTICAST_DIAGNOSTIC)
+			retval = gemini_da921x_arm_single_multicast(kobj);
+			if (retval)
+				goto exit;
+		} else if (gemini_da921x_previous_stage == 21) {
+			retval = gemini_da921x_single_multicast(env,
+								action_string,
+								devpath);
+			if (retval)
+				goto exit;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_UNTAGGED_DISPATCH_DIAGNOSTIC)
+			retval = gemini_da921x_arm_untagged_dispatch(kobj);
+			if (retval)
+				goto exit;
+		} else if (gemini_da921x_previous_stage == 22) {
+			retval = gemini_da921x_untagged_dispatch(env,
+								 action_string,
+								 devpath);
+			if (retval)
+				goto exit;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC)
+			retval = gemini_da921x_arm_net_broadcast(kobj);
+			if (retval)
+				goto exit;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC)
+		} else if (gemini_da921x_previous_stage == 23) {
+#else
+		} else {
+#endif
+			retval = gemini_da921x_net_broadcast(kobj, env,
+							     action_string, devpath);
+			if (retval)
+				goto exit;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC)
+		} else {
+			if (!gemini_da921x_prepare_normal_fallthrough(kobj)) {
+				retval = -EINVAL;
+				goto exit;
+			}
+			gemini_da921x_normal_fallthrough = true;
+#endif
+#endif
+#endif
+#endif
+		}
+#elif IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NO_LISTENER_DELIVERY_DIAGNOSTIC)
+		retval = gemini_da921x_no_listener(env, action_string, devpath);
+		if (retval)
+			goto exit;
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC)
+		if (!gemini_da921x_normal_fallthrough &&
+		    !gemini_da921x_natural_device_add) {
+#endif
+			/* The exact target skb is consumed above; never broadcast it from
+			 * this experiment-only path.
+			 */
+			retval = 0;
+			goto exit;
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC)
+		}
+#endif
+	}
+
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC)
+	if (gemini_da921x_normal_fallthrough)
+		atomic_inc(&gemini_da921x_normal_fallthrough_callsite_entries);
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+	if (gemini_da921x_natural_device_add)
+		atomic_inc(&gemini_da921x_natural_device_add_callsite_entries);
+#endif
 	retval = kobject_uevent_net_broadcast(kobj, env, action_string,
 					      devpath);
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+	if (gemini_da921x_natural_device_add) {
+		atomic_inc(&gemini_da921x_natural_device_add_callsite_returns);
+		atomic_set(&gemini_da921x_natural_device_add_uevent_retval,
+			   retval);
+	}
+#endif
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC)
+	if (gemini_da921x_normal_fallthrough) {
+		atomic_inc(&gemini_da921x_normal_fallthrough_callsite_returns);
+		if (!retval &&
+		    atomic_read(&gemini_da921x_normal_fallthrough_callsite_entries) == 1 &&
+		    atomic_read(&gemini_da921x_normal_fallthrough_callsite_returns) == 1)
+			atomic_set(&gemini_da921x_dual_modalias_stage, 25);
+	}
+#endif
 
 #ifdef CONFIG_UEVENT_HELPER
 	/* call uevent_helper, usually only enabled during early boot */
@@ -639,6 +1770,10 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 #endif
 
 exit:
+#if IS_ENABLED(CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC)
+	if (gemini_da921x_natural_device_add)
+		atomic_inc(&gemini_da921x_natural_device_add_public_returns);
+#endif
 	kfree(devpath);
 	kfree(env);
 	return retval;

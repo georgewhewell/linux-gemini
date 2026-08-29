@@ -408,6 +408,54 @@ config REGULATOR_DA9211
 	  step down converter 12A or 16A DC-DC Buck controlled through an I2C
 	  interface.
 
+config REGULATOR_DA9213_LEGACY
+	tristate "Dialog DA9213/DA9214/DA9215 legacy identification"
+	depends on I2C
+	help
+	  Say y here to identify legacy direct-address DA9213, DA9214, and
+	  DA9215 devices without exposing regulator providers.
+
+	  The probe performs only a fixed, read-only identification transcript
+	  against the primary and page2 I2C addresses.  It does not use PAGE_CON,
+	  register regulators, request interrupts, or change hardware state.
+
+	  This driver can also be built as a module.  If so, the module is
+	  called da9213-legacy-regulator.
+
+config REGULATOR_DA9213_LEGACY_PROVIDER
+	bool "Dialog DA9213/DA9214/DA9215 legacy read-only provider"
+	depends on REGULATOR_DA9213_LEGACY
+	help
+	  Say y here to register a resource-only regulator provider after the
+	  fixed legacy identification transcript succeeds. The provider exposes
+	  only read-only voltage-selector and enable-state observations; it has no
+	  writable regulator operation, consumer, IRQ, or A72 integration.
+
+	  This is an offline/provider-boundary experiment. It does not establish
+	  rail ownership, constraints, rollback, suspend/resume, or CPU bring-up.
+
+config REGULATOR_DA9213_LEGACY_OBSERVER
+	bool "Dialog legacy DA921x read-only provider observer"
+	depends on REGULATOR_DA9213_LEGACY_PROVIDER
+	help
+	  Emit one attributable record after the fixed identity transcript and
+	  both read-only regulator descriptors are registered. The observation
+	  samples only selector, linear voltage, and enable state and fails probe
+	  rather than publishing a partial result.
+
+	  This default-off diagnostic adds no writable regulator operation,
+	  consumer, register-data write, transition owner, or CPU action.
+
+config REGULATOR_DA9213_LEGACY_OBSERVER_KUNIT_TEST
+	bool "KUnit tests for the legacy DA921x read-only observer"
+	depends on KUNIT=y
+	depends on REGULATOR_DA9213_LEGACY_OBSERVER
+	help
+	  Exercise the hardware-free observer success, bounded failure, semantic
+	  validation, and cleanup contracts with a fake read callback. The tests
+	  create no device, adapter, regulator, firmware, or CPU object and
+	  perform no hardware operation.
+
 config REGULATOR_DBX500_PRCMU
 	bool
 
@@ -429,6 +477,14 @@ config REGULATOR_FAN53555
 	  regulator that delivers a digitally programmable output from an
 	  input voltage supply of 2.5V to 5.5V. The output voltage is
 	  programmed through an I2C interface.
+config REGULATOR_FAN49101
+	tristate "onsemi FAN49101 buck-boost regulator"
+	depends on I2C && OF
+	select REGMAP_I2C
+	help
+	  This driver supports the onsemi FAN49101 I2C buck-boost regulator.
+	  It has a register protocol distinct from the FAN53555 family and
+	  provides one standard regulator output.
 
 config REGULATOR_FAN53880
 	tristate "Fairchild FAN53880 Regulator"
@@ -937,6 +993,15 @@ config REGULATOR_MT6332
 	  This driver supports the control of different power rails of device
 	  through regulator interface
 
+config REGULATOR_MT6351
+	tristate "MediaTek MT6351 PMIC"
+	depends on MFD_MT6397
+	help
+	  Say y here to select this option to enable the power regulators of
+	  the MediaTek MT6351 PMIC.
+	  This driver supports the control of the buck and LDO rails through
+	  the regulator interface.
+
 config REGULATOR_MT6357
 	tristate "MediaTek MT6357 PMIC"
 	depends on MFD_MT6397
@@ -1361,6 +1426,14 @@ config REGULATOR_RT5739
 
 	  This driver can also be built as a module. If so, the module
 	  will be called rt5739.
+
+config REGULATOR_RT5735
+	tristate "Richtek RT5735 regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver supports the VSEL0 output of the Richtek RT5735
+	  regulator used by the MT6797 Gemini GPU.
 
 config REGULATOR_RT5759
 	tristate "Richtek RT5759 Regulator"

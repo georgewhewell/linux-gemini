@@ -241,6 +241,7 @@ properties:
     oneOf:
       # On ARM v8 64-bit this property is required
       - enum:
+          - mediatek,mt6797-psci
           - psci
           - spin-table
       # On ARM 32-bit systems this property is optional

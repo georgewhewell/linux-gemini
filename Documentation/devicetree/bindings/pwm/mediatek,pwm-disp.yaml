@@ -19,6 +19,7 @@ properties:
           - mediatek,mt2701-disp-pwm
           - mediatek,mt6595-disp-pwm
           - mediatek,mt8173-disp-pwm
+          - mediatek,mt6797-disp-pwm
           - mediatek,mt8183-disp-pwm
       - items:
           - enum:
@@ -45,11 +46,13 @@ properties:
     maxItems: 1
 
   clocks:
+    minItems: 1
     items:
       - description: Main Clock
-      - description: Mm Clock
+      - description: MM Clock (required on SoCs that expose it)
 
   clock-names:
+    minItems: 1
     items:
       - const: main
       - const: mm

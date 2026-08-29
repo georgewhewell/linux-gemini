@@ -12,6 +12,20 @@ description:
 
 allOf:
   - $ref: /schemas/i2c/i2c-controller.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - mediatek,mt6797-i2c
+              - mediatek,mt6797-idvfs-i2c
+    then:
+      properties:
+        access-controllers:
+          maxItems: 1
+    else:
+      properties:
+        access-controllers: false
 
 maintainers:
   - Qii Wang <qii.wang@mediatek.com>
@@ -42,6 +56,7 @@ properties:
               - mediatek,mt6797-i2c
               - mediatek,mt7623-i2c
           - const: mediatek,mt6577-i2c
+      - const: mediatek,mt6797-idvfs-i2c
       - items:
           - enum:
               - mediatek,mt8365-i2c
@@ -106,6 +121,12 @@ properties:
 
   vbus-supply:
     description: Phandle to the regulator providing power to SCL/SDA
+
+  access-controllers:
+    maxItems: 1
+    description:
+      Optional MT6797 firmware-handoff access controller which must grant
+      access before this controller is initialized.
 
 required:
   - compatible

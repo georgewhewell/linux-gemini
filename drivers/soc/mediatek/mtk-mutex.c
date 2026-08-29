@@ -137,6 +137,29 @@
 #define MT8173_MUTEX_MOD_DISP_PWM1		24
 #define MT8173_MUTEX_MOD_DISP_OD		25
 
+#define MT6797_MUTEX_MOD_DISP_OVL0		10
+#define MT6797_MUTEX_MOD_DISP_OVL1		11
+#define MT6797_MUTEX_MOD_DISP_OVL0_2L		12
+#define MT6797_MUTEX_MOD_DISP_RDMA0		13
+#define MT6797_MUTEX_MOD_DISP_RDMA1		14
+#define MT6797_MUTEX_MOD_DISP_OVL1_2L		15
+#define MT6797_MUTEX_MOD_DISP_WDMA0		16
+#define MT6797_MUTEX_MOD_DISP_WDMA1		17
+#define MT6797_MUTEX_MOD_DISP_COLOR0		18
+#define MT6797_MUTEX_MOD_DISP_CCORR		19
+#define MT6797_MUTEX_MOD_DISP_AAL		20
+#define MT6797_MUTEX_MOD_DISP_GAMMA		21
+#define MT6797_MUTEX_MOD_DISP_OD		22
+#define MT6797_MUTEX_MOD_DISP_DITHER		23
+#define MT6797_MUTEX_MOD_DISP_UFOE		24
+#define MT6797_MUTEX_MOD_DISP_DSC		25
+#define MT6797_MUTEX_MOD_DISP_PWM0		26
+
+#define MT6797_MUTEX_SOF_DSI0			1
+#define MT6797_MUTEX_SOF_DSI1			2
+#define MT6797_MUTEX_SOF_DPI0			3
+#define MT6797_MUTEX_EOF(source)		((source) << 6)
+
 #define MT8188_MUTEX_MOD_DISP_OVL0		0
 #define MT8188_MUTEX_MOD_DISP_WDMA0		1
 #define MT8188_MUTEX_MOD_DISP_RDMA0		2
@@ -430,6 +453,26 @@ static const u8 mt8173_mutex_mod[DDP_COMPONENT_ID_MAX] = {
 	[DDP_COMPONENT_WDMA1] = MT8173_MUTEX_MOD_DISP_WDMA1,
 };
 
+static const u8 mt6797_mutex_mod[DDP_COMPONENT_ID_MAX] = {
+	[DDP_COMPONENT_AAL0] = MT6797_MUTEX_MOD_DISP_AAL,
+	[DDP_COMPONENT_CCORR] = MT6797_MUTEX_MOD_DISP_CCORR,
+	[DDP_COMPONENT_COLOR0] = MT6797_MUTEX_MOD_DISP_COLOR0,
+	[DDP_COMPONENT_DITHER0] = MT6797_MUTEX_MOD_DISP_DITHER,
+	[DDP_COMPONENT_DSC0] = MT6797_MUTEX_MOD_DISP_DSC,
+	[DDP_COMPONENT_GAMMA] = MT6797_MUTEX_MOD_DISP_GAMMA,
+	[DDP_COMPONENT_OD0] = MT6797_MUTEX_MOD_DISP_OD,
+	[DDP_COMPONENT_OVL0] = MT6797_MUTEX_MOD_DISP_OVL0,
+	[DDP_COMPONENT_OVL1] = MT6797_MUTEX_MOD_DISP_OVL1,
+	[DDP_COMPONENT_OVL_2L0] = MT6797_MUTEX_MOD_DISP_OVL0_2L,
+	[DDP_COMPONENT_OVL_2L1] = MT6797_MUTEX_MOD_DISP_OVL1_2L,
+	[DDP_COMPONENT_PWM0] = MT6797_MUTEX_MOD_DISP_PWM0,
+	[DDP_COMPONENT_RDMA0] = MT6797_MUTEX_MOD_DISP_RDMA0,
+	[DDP_COMPONENT_RDMA1] = MT6797_MUTEX_MOD_DISP_RDMA1,
+	[DDP_COMPONENT_UFOE] = MT6797_MUTEX_MOD_DISP_UFOE,
+	[DDP_COMPONENT_WDMA0] = MT6797_MUTEX_MOD_DISP_WDMA0,
+	[DDP_COMPONENT_WDMA1] = MT6797_MUTEX_MOD_DISP_WDMA1,
+};
+
 static const u8 mt8183_mutex_mod[DDP_COMPONENT_ID_MAX] = {
 	[DDP_COMPONENT_AAL0] = MT8183_MUTEX_MOD_DISP_AAL0,
 	[DDP_COMPONENT_CCORR] = MT8183_MUTEX_MOD_DISP_CCORR0,
@@ -678,6 +721,16 @@ static const u16 mt6795_mutex_sof[DDP_MUTEX_SOF_MAX] = {
 	[MUTEX_SOF_DPI0] = MUTEX_SOF_DPI0,
 };
 
+static const u16 mt6797_mutex_sof[DDP_MUTEX_SOF_MAX] = {
+	[MUTEX_SOF_SINGLE_MODE] = MUTEX_SOF_SINGLE_MODE,
+	[MUTEX_SOF_DSI0] = MT6797_MUTEX_SOF_DSI0 |
+			   MT6797_MUTEX_EOF(MT6797_MUTEX_SOF_DSI0),
+	[MUTEX_SOF_DSI1] = MT6797_MUTEX_SOF_DSI1 |
+			   MT6797_MUTEX_EOF(MT6797_MUTEX_SOF_DSI1),
+	[MUTEX_SOF_DPI0] = MT6797_MUTEX_SOF_DPI0 |
+			   MT6797_MUTEX_EOF(MT6797_MUTEX_SOF_DPI0),
+};
+
 static const u16 mt8167_mutex_sof[DDP_MUTEX_SOF_MAX] = {
 	[MUTEX_SOF_SINGLE_MODE] = MUTEX_SOF_SINGLE_MODE,
 	[MUTEX_SOF_DSI0] = MUTEX_SOF_DSI0,
@@ -752,6 +805,15 @@ static const struct mtk_mutex_data mt6795_mutex_driver_data = {
 	.mutex_mod_reg = MT2701_MUTEX0_MOD0,
 	.mutex_mod1_reg = MT2701_MUTEX0_MOD1,
 	.mutex_sof_reg = MT2701_MUTEX0_SOF0,
+};
+
+static const struct mtk_mutex_data mt6797_mutex_driver_data = {
+	.mutex_mod = mt6797_mutex_mod,
+	.mutex_sof = mt6797_mutex_sof,
+	.mutex_mod_reg = MT2701_MUTEX0_MOD0,
+	.mutex_mod1_reg = MT2701_MUTEX0_MOD1,
+	.mutex_sof_reg = MT2701_MUTEX0_SOF0,
+	.no_clk = true,
 };
 
 static const struct mtk_mutex_data mt8167_mutex_driver_data = {
@@ -1133,6 +1195,7 @@ static const struct of_device_id mutex_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt2701-disp-mutex", .data = &mt2701_mutex_driver_data },
 	{ .compatible = "mediatek,mt2712-disp-mutex", .data = &mt2712_mutex_driver_data },
 	{ .compatible = "mediatek,mt6795-disp-mutex", .data = &mt6795_mutex_driver_data },
+	{ .compatible = "mediatek,mt6797-disp-mutex", .data = &mt6797_mutex_driver_data },
 	{ .compatible = "mediatek,mt8167-disp-mutex", .data = &mt8167_mutex_driver_data },
 	{ .compatible = "mediatek,mt8173-disp-mutex", .data = &mt8173_mutex_driver_data },
 	{ .compatible = "mediatek,mt8183-disp-mutex", .data = &mt8183_mutex_driver_data },

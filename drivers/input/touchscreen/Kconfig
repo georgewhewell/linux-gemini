@@ -689,6 +689,16 @@ config TOUCHSCREEN_NOVATEK_NVT_TS
 	  To compile this driver as a module, choose M here: the
 	  module will be called novatek-nvt-ts.
 
+config TOUCHSCREEN_NOVATEK_NT36XXX
+	tristate "Novatek NT36772 touchscreen support"
+	depends on I2C
+	help
+	  Say Y here for a Novatek NT36772 touchscreen using the NT36xxx
+	  reset, xdata, and alternate-target protocol.
+
+	  The driver has no firmware-update interface.  To compile it as a
+	  module, choose M here: the module will be called novatek-nt36xxx.
+
 config TOUCHSCREEN_IMAGIS
 	tristate "Imagis touchscreen support"
 	depends on I2C

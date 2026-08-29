@@ -1295,6 +1295,8 @@ patternProperties:
     description: PIXCIR MICROELECTRONICS Co., Ltd
   "^plantower,.*":
     description: Plantower Co., Ltd
+  "^planet,.*":
+    description: Planet Computers Ltd.
   "^plathome,.*":
     description: Plat\'Home Co., Ltd.
   "^plda,.*":

@@ -7,6 +7,7 @@
 #include <linux/pagemap.h>
 #include <linux/fs.h>
 #include <linux/secretmem.h>
+#include <linux/string.h>
 
 #define BUILD_ID 3
 
@@ -388,6 +389,82 @@ int build_id_parse_buf(const void *buf, unsigned char *build_id, u32 buf_size)
 
 	freader_cleanup(&r);
 	return err;
+}
+
+/**
+ * build_id_parse_buf_exact - Get one exact build ID from a note buffer
+ * @buf: ELF note section(s) to parse
+ * @build_id: Buffer for the build ID, at least BUILD_ID_SIZE_MAX bytes long
+ * @buf_size: Size of @buf in bytes
+ * @expected_size: Required build ID size, from 1 through BUILD_ID_SIZE_MAX
+ *
+ * Scan the complete buffer and require exactly one GNU build-ID note with the
+ * requested size and a nonzero descriptor.  Reject malformed notes, trailing
+ * data, and duplicate GNU build-ID notes.  @build_id is zeroed on failure and
+ * zero-padded on success.
+ *
+ * Return: 0 on success, -EINVAL otherwise
+ */
+int build_id_parse_buf_exact(const void *buf, unsigned char *build_id,
+			     u32 buf_size, u32 expected_size)
+{
+	static const char note_name[] = "GNU";
+	unsigned char parsed[BUILD_ID_SIZE_MAX];
+	const u8 *bytes = buf;
+	const u8 *found = NULL;
+	u32 offset = 0;
+
+	if (!build_id)
+		return -EINVAL;
+	if (!buf || !expected_size || expected_size > BUILD_ID_SIZE_MAX)
+		goto invalid;
+
+	while (offset < buf_size) {
+		const u8 *name, *desc;
+		Elf32_Nhdr nhdr;
+		u32 name_size, desc_size, note_size;
+
+		if (buf_size - offset < sizeof(nhdr))
+			goto invalid;
+
+		memcpy(&nhdr, bytes + offset, sizeof(nhdr));
+		if (check_add_overflow(nhdr.n_namesz, 3U, &name_size) ||
+		    check_add_overflow(nhdr.n_descsz, 3U, &desc_size))
+			goto invalid;
+		name_size &= ~3U;
+		desc_size &= ~3U;
+
+		note_size = sizeof(nhdr);
+		if (check_add_overflow(note_size, name_size, &note_size) ||
+		    check_add_overflow(note_size, desc_size, &note_size) ||
+		    note_size > buf_size - offset)
+			goto invalid;
+
+		name = bytes + offset + sizeof(nhdr);
+		desc = name + name_size;
+		if (nhdr.n_type == BUILD_ID &&
+		    nhdr.n_namesz == sizeof(note_name) &&
+		    !memcmp(name, note_name, sizeof(note_name))) {
+			if (found || nhdr.n_descsz != expected_size ||
+			    !memchr_inv(desc, 0, expected_size))
+				goto invalid;
+			found = desc;
+		}
+
+		offset += note_size;
+	}
+
+	if (!found)
+		goto invalid;
+
+	memcpy(parsed, found, expected_size);
+	memset(build_id, 0, BUILD_ID_SIZE_MAX);
+	memcpy(build_id, parsed, expected_size);
+	return 0;
+
+invalid:
+	memset(build_id, 0, BUILD_ID_SIZE_MAX);
+	return -EINVAL;
 }
 
 #if IS_ENABLED(CONFIG_STACKTRACE_BUILD_ID) || IS_ENABLED(CONFIG_VMCORE_INFO)

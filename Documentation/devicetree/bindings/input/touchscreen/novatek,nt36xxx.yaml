@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/touchscreen/novatek,nt36xxx.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Novatek NT36772 touchscreen controller
+
+maintainers:
+  - Julien Etienne <julien.etienne@gmail.com>
+
+allOf:
+  - $ref: touchscreen.yaml#
+
+properties:
+  compatible:
+    const: novatek,nt36772-ts
+
+  reg:
+    const: 0x62
+
+  interrupts:
+    maxItems: 1
+
+  reset-gpios:
+    maxItems: 1
+
+  vcc-supply: true
+  iovcc-supply: true
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - vcc-supply
+  - iovcc-supply
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        touchscreen@62 {
+            compatible = "novatek,nt36772-ts";
+            reg = <0x62>;
+            interrupts-extended = <&gpio 85 IRQ_TYPE_EDGE_RISING>;
+            reset-gpios = <&gpio 68 GPIO_ACTIVE_HIGH>;
+            vcc-supply = <&touch_vcc>;
+            iovcc-supply = <&touch_iovcc>;
+        };
+    };
+...

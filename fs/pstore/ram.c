@@ -20,10 +20,174 @@
 #include <linux/compiler.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_fdt.h>
+#include <linux/memblock.h>
 #include <linux/mm.h>
 
 #include "internal.h"
 #include "ram_internal.h"
+
+#ifdef CONFIG_PSTORE_GEMINI_PRE_RAMOOPS_LEDGER
+#define GEMINI_PRELEDGER_RESERVE_BASE	0x44410000ULL
+#define GEMINI_PRELEDGER_RESERVE_SIZE	0x000e0000ULL
+#define GEMINI_PRELEDGER_BASE		0x444bb000ULL
+#define GEMINI_PRELEDGER_SLOT_SIZE	0x00001000UL
+#define GEMINI_PRELEDGER_SLOT_COUNT	4
+#define GEMINI_PRELEDGER_HEADER_SIZE	12
+#define GEMINI_PRELEDGER_SIGNATURE	0x43474244
+
+static bool gemini_preledger_armed __initdata;
+
+static const phys_addr_t gemini_preledger_slots[] __initconst = {
+	0x444bb000ULL,
+	0x444bc000ULL,
+	0x444bd000ULL,
+	0x444be000ULL,
+};
+
+static const char * const gemini_preledger_records[] __initconst = {
+	"====0.000000-D\n"
+	"GEMINI_PRE_RAMOOPS_LEDGER_V1 token=GPRL-20260816-A "
+	"stage=reserved-scan slot=171 crc32=45d42a00\n",
+	"====0.000000-D\n"
+	"GEMINI_PRE_RAMOOPS_LEDGER_V1 token=GPRL-20260816-A "
+	"stage=early-initcall slot=172 crc32=c1884938\n",
+	"====0.000000-D\n"
+	"GEMINI_PRE_RAMOOPS_LEDGER_V1 token=GPRL-20260816-A "
+	"stage=core-initcall slot=173 crc32=ba03bc4b\n",
+	"====0.000000-D\n"
+	"GEMINI_PRE_RAMOOPS_LEDGER_V1 token=GPRL-20260816-A "
+	"stage=postcore-initcall slot=174 crc32=b129c993\n",
+};
+
+static bool __init gemini_preledger_slot_empty(void __iomem *slot)
+{
+	return readl(slot) == GEMINI_PRELEDGER_SIGNATURE &&
+	       readl((u8 __iomem *)slot + 4) == 0 &&
+	       readl((u8 __iomem *)slot + 8) == 0;
+}
+
+static bool __init gemini_preledger_write(void __iomem *slot,
+					  const char *record)
+{
+	size_t i;
+	size_t len = strlen(record);
+
+	if (!gemini_preledger_slot_empty(slot) ||
+	    len > GEMINI_PRELEDGER_SLOT_SIZE - GEMINI_PRELEDGER_HEADER_SIZE)
+		return false;
+
+	memcpy_toio((u8 __iomem *)slot + GEMINI_PRELEDGER_HEADER_SIZE,
+		    record, len);
+	wmb();
+	writel(len, (u8 __iomem *)slot + 4);
+	wmb();
+	writel(len, (u8 __iomem *)slot + 8);
+	readl((u8 __iomem *)slot + 8);
+
+	if (readl((u8 __iomem *)slot + 4) != len ||
+	    readl((u8 __iomem *)slot + 8) != len)
+		return false;
+	for (i = 0; i < len; i++)
+		if (readb((u8 __iomem *)slot + GEMINI_PRELEDGER_HEADER_SIZE + i) !=
+		    record[i])
+			return false;
+
+	return true;
+}
+
+static bool __init gemini_preledger_exact_flat_dt(void)
+{
+	u64 addr;
+	u64 size;
+	unsigned long root = of_get_flat_dt_root();
+	const void *no_map;
+	int no_map_len;
+	int reserved;
+	int ramoops;
+
+	if (!of_flat_dt_is_compatible(root, "planet,gemini-pda"))
+		return false;
+	reserved = of_get_flat_dt_subnode_by_name(root, "reserved-memory");
+	if (reserved < 0)
+		return false;
+	ramoops = of_get_flat_dt_subnode_by_name(reserved,
+						 "ramoops@44410000");
+	if (ramoops < 0 ||
+	    !of_flat_dt_is_compatible(ramoops, "ramoops") ||
+	    !of_flat_dt_get_addr_size(ramoops, "reg", &addr, &size))
+		return false;
+	no_map = of_get_flat_dt_prop(ramoops, "no-map", &no_map_len);
+	if (!no_map || no_map_len != 0 ||
+	    addr != GEMINI_PRELEDGER_RESERVE_BASE ||
+	    size != GEMINI_PRELEDGER_RESERVE_SIZE)
+		return false;
+
+	return memblock_is_region_reserved(addr, size);
+}
+
+void __init gemini_pre_ramoops_ledger_setup_checkpoint(void)
+{
+	void __iomem *ledger;
+	unsigned int i;
+
+	if (!gemini_preledger_exact_flat_dt())
+		return;
+
+	ledger = early_ioremap(GEMINI_PRELEDGER_BASE,
+				GEMINI_PRELEDGER_SLOT_COUNT *
+				GEMINI_PRELEDGER_SLOT_SIZE);
+	if (!ledger)
+		return;
+
+	for (i = 0; i < GEMINI_PRELEDGER_SLOT_COUNT; i++)
+		if (!gemini_preledger_slot_empty((u8 __iomem *)ledger +
+					i * GEMINI_PRELEDGER_SLOT_SIZE))
+			goto out;
+
+	if (gemini_preledger_write(ledger, gemini_preledger_records[0]))
+		gemini_preledger_armed = true;
+out:
+	early_iounmap(ledger, GEMINI_PRELEDGER_SLOT_COUNT *
+			       GEMINI_PRELEDGER_SLOT_SIZE);
+}
+
+static int __init gemini_preledger_initcall_checkpoint(unsigned int stage)
+{
+	void __iomem *slot;
+
+	if (!gemini_preledger_armed)
+		return 0;
+
+	slot = ioremap_wc(gemini_preledger_slots[stage],
+			  GEMINI_PRELEDGER_SLOT_SIZE);
+	if (!slot || !gemini_preledger_write(slot,
+					     gemini_preledger_records[stage]))
+		gemini_preledger_armed = false;
+	if (slot)
+		iounmap(slot);
+
+	return 0;
+}
+
+static int __init gemini_preledger_early_checkpoint(void)
+{
+	return gemini_preledger_initcall_checkpoint(1);
+}
+early_initcall(gemini_preledger_early_checkpoint);
+
+static int __init gemini_preledger_core_checkpoint(void)
+{
+	return gemini_preledger_initcall_checkpoint(2);
+}
+core_initcall(gemini_preledger_core_checkpoint);
+
+static int __init gemini_preledger_postcore_checkpoint(void)
+{
+	return gemini_preledger_initcall_checkpoint(3);
+}
+postcore_initcall(gemini_preledger_postcore_checkpoint);
+#endif
 
 #define RAMOOPS_KERNMSG_HDR "===="
 #define MIN_MEM_SIZE 4096UL
@@ -851,6 +1015,14 @@ static int ramoops_probe(struct platform_device *pdev)
 		pr_err("registering with pstore failed\n");
 		goto fail_buf;
 	}
+#ifdef CONFIG_PSTORE_GEMINI_POST_RAMOOPS_CHECKPOINT
+	if (cxt->pstore.flags & PSTORE_FLAGS_CONSOLE)
+		pr_emerg("%s %s %s %s\n",
+			 "GEMINI_MAINLINE_POST_RAMOOPS_20260815_A",
+			 "checkpoint=ramoops-registered pstore_console=active",
+			 "storage_access=none regulator_reads=none",
+			 "regulator_writes=none cpu8_cpu9_admission=closed");
+#endif
 
 	/*
 	 * Update the module parameter variables as well so they are visible
@@ -978,6 +1150,14 @@ static int __init ramoops_init(void)
 {
 	int ret;
 
+#ifdef CONFIG_PSTORE_GEMINI_PRE_RAMOOPS_LEDGER
+	if (of_machine_is_compatible("planet,gemini-pda"))
+		return 0;
+#endif
+#ifdef CONFIG_PSTORE_GEMINI_ARM64_ENTRY_LEDGER
+	if (of_machine_is_compatible("planet,gemini-pda"))
+		return 0;
+#endif
 	ramoops_register_dummy();
 	ret = platform_driver_register(&ramoops_driver);
 	if (ret != 0)

@@ -80,6 +80,9 @@ struct cpuhp_cpu_state {
 	atomic_t		ap_sync_state;
 	struct completion	done_up;
 	struct completion	done_down;
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
+	struct cpu_up_rollback_trace rollback_trace;
+#endif
 #endif
 };
 
@@ -153,6 +156,141 @@ static bool cpuhp_step_empty(bool bringup, struct cpuhp_step *step)
 {
 	return bringup ? !step->startup.single : !step->teardown.single;
 }
+static unsigned int cpuhp_rollback_step_inventory(bool bringup,
+						struct cpuhp_step *step)
+{
+	struct hlist_node *node;
+	unsigned int count = 0;
+
+	if (!step->multi_instance)
+		return (bringup ? step->startup.single : step->teardown.single) ?
+			1 : 0;
+	if (!(bringup ? step->startup.multi : step->teardown.multi))
+		return 0;
+
+	hlist_for_each(node, &step->list) {
+		if (count >= CPU_UP_ROLLBACK_MAX_EVENTS)
+			return CPU_UP_ROLLBACK_MAX_EVENTS + 1;
+		count++;
+	}
+	return count;
+}
+
+static u32 cpuhp_rollback_callback_inventory(enum cpuhp_state previous,
+						 enum cpuhp_state target)
+{
+		enum cpuhp_state state;
+		u32 count = 0;
+
+		if (target <= previous)
+			return 0;
+		for (state = previous + 1; state <= target; state++) {
+			count += cpuhp_rollback_step_inventory(true,
+								cpuhp_get_step(state));
+			count += cpuhp_rollback_step_inventory(false,
+								cpuhp_get_step(state));
+			if (count > CPU_UP_ROLLBACK_MAX_EVENTS)
+				return CPU_UP_ROLLBACK_MAX_EVENTS + 1;
+		}
+		return count;
+	}
+static inline void cpuhp_record_rollback_effect(
+	struct cpuhp_cpu_state *st, enum cpu_up_rollback_effect effect,
+	u32 phase, int result)
+{
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
+	struct cpu_up_rollback_trace *trace = &st->rollback_trace;
+	struct cpu_up_rollback_effect_event *event;
+
+	if (!trace->rollback_armed)
+		return;
+	if (effect >= CPU_UP_ROLLBACK_EFFECT_COUNT ||
+	    phase < CPU_UP_ROLLBACK_EFFECT_BEGIN ||
+	    phase > CPU_UP_ROLLBACK_EFFECT_BLOCKED) {
+		trace->effect_unknown = 1;
+		trace->effect_forbidden_mask |=
+			BIT(CPU_UP_ROLLBACK_EFFECT_UNKNOWN);
+		return;
+	}
+	if (!(CPU_UP_ROLLBACK_EFFECT_FORBIDDEN_MASK & BIT(effect))) {
+		if (phase == CPU_UP_ROLLBACK_EFFECT_BEGIN ||
+		    phase == CPU_UP_ROLLBACK_EFFECT_BLOCKED)
+			trace->effect_required_mask |= BIT(effect);
+		if (phase == CPU_UP_ROLLBACK_EFFECT_COMPLETE ||
+		    phase == CPU_UP_ROLLBACK_EFFECT_BLOCKED)
+			trace->effect_seen_mask |= BIT(effect);
+	} else {
+		trace->effect_forbidden_mask |= BIT(effect);
+	}
+	if (trace->effect_count >= CPU_UP_ROLLBACK_MAX_EFFECTS) {
+		trace->effect_overflow = 1;
+		return;
+	}
+	event = &trace->effect[trace->effect_count++];
+	event->effect = effect;
+	event->phase = phase;
+	event->result = result;
+#else
+	(void)st;
+	(void)effect;
+	(void)phase;
+	(void)result;
+#endif
+}
+
+void arch_cpu_up_rollback_effect(unsigned int cpu,
+				 enum cpu_up_rollback_effect effect,
+				 u32 phase, int result)
+{
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
+	struct cpuhp_cpu_state *st;
+
+	if (cpu >= nr_cpu_ids)
+		return;
+	st = per_cpu_ptr(&cpuhp_state, cpu);
+	cpuhp_record_rollback_effect(st, effect, phase, result);
+#else
+	(void)cpu;
+	(void)effect;
+	(void)phase;
+	(void)result;
+#endif
+}
+
+
+static inline void cpuhp_record_rollback_event(
+	struct cpuhp_cpu_state *st, bool bringup, enum cpuhp_state state,
+	unsigned int instance, int result)
+{
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
+	struct cpu_up_rollback_trace *trace = &st->rollback_trace;
+	struct cpu_up_rollback_event *event;
+
+	if (!trace->rollback_armed)
+		return;
+	if (!trace->callback_inventory ||
+	    trace->event_count >= trace->callback_inventory) {
+		trace->callback_unknown = 1;
+		return;
+	}
+	if (trace->event_count >= CPU_UP_ROLLBACK_MAX_EVENTS) {
+		trace->overflow = 1;
+		return;
+	}
+	event = &trace->event[trace->event_count++];
+	event->direction = bringup ? 1 : 2;
+	event->state = state;
+	event->instance = instance;
+	event->result = result;
+	event->flags = 0;
+#else
+	(void)st;
+	(void)bringup;
+	(void)state;
+	(void)instance;
+	(void)result;
+#endif
+}
 
 /**
  * cpuhp_invoke_callback - Invoke the callbacks for a given state
@@ -193,6 +331,7 @@ static int cpuhp_invoke_callback(unsigned int cpu, enum cpuhp_state state,
 		trace_cpuhp_enter(cpu, st->target, state, cb);
 		ret = cb(cpu);
 		trace_cpuhp_exit(cpu, st->state, state, ret);
+		cpuhp_record_rollback_event(st, bringup, state, 0, ret);
 		return ret;
 	}
 	cbm = bringup ? step->startup.multi : step->teardown.multi;
@@ -203,6 +342,7 @@ static int cpuhp_invoke_callback(unsigned int cpu, enum cpuhp_state state,
 		trace_cpuhp_multi_enter(cpu, st->target, state, cbm, node);
 		ret = cbm(cpu, node);
 		trace_cpuhp_exit(cpu, st->state, state, ret);
+		cpuhp_record_rollback_event(st, bringup, state, 0, ret);
 		return ret;
 	}
 
@@ -215,6 +355,7 @@ static int cpuhp_invoke_callback(unsigned int cpu, enum cpuhp_state state,
 		trace_cpuhp_multi_enter(cpu, st->target, state, cbm, node);
 		ret = cbm(cpu, node);
 		trace_cpuhp_exit(cpu, st->state, state, ret);
+		cpuhp_record_rollback_event(st, bringup, state, cnt, ret);
 		if (ret) {
 			if (!lastp)
 				goto err;
@@ -240,6 +381,7 @@ err:
 		trace_cpuhp_multi_enter(cpu, st->target, state, cbm, node);
 		ret = cbm(cpu, node);
 		trace_cpuhp_exit(cpu, st->state, state, ret);
+		cpuhp_record_rollback_event(st, bringup, state, cnt, ret);
 		/*
 		 * Rollback must not fail,
 		 */
@@ -789,6 +931,12 @@ static int cpuhp_kick_ap(int cpu, struct cpuhp_cpu_state *st,
 	__cpuhp_kick_ap(st);
 	if ((ret = st->result)) {
 		cpuhp_reset_state(cpu, st, prev_state);
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
+		st->rollback_trace.nested_valid = 1;
+		st->rollback_trace.nested_prev_state = prev_state;
+		st->rollback_trace.nested_state = st->state;
+		st->rollback_trace.nested_result = ret;
+#endif
 		__cpuhp_kick_ap(st);
 	}
 
@@ -1023,17 +1171,71 @@ static int cpuhp_up_callbacks(unsigned int cpu, struct cpuhp_cpu_state *st,
 {
 	enum cpuhp_state prev_state = st->state;
 	int ret = 0;
+	const struct cpu_up_rollback_trace *rollback_trace = NULL;
+	int rollback_ret = 0;
 
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
+	memset(&st->rollback_trace, 0, sizeof(st->rollback_trace));
+	rollback_trace = &st->rollback_trace;
+	st->rollback_trace.rollback_armed = 1;
+	st->rollback_trace.callback_capacity = CPU_UP_ROLLBACK_MAX_EVENTS;
+	st->rollback_trace.callback_inventory =
+		cpuhp_rollback_callback_inventory(prev_state, target);
+	if (st->rollback_trace.callback_inventory >
+	    st->rollback_trace.callback_capacity)
+		st->rollback_trace.callback_unknown = 1;
+	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_NO_AFFINITY,
+					    CPU_UP_ROLLBACK_EFFECT_BLOCKED, 0);
+#endif
 	ret = cpuhp_invoke_callback_range(true, cpu, st, target);
 	if (ret) {
 		pr_debug("CPU UP failed (%d) CPU %u state %s (%d)\n",
 			 ret, cpu, cpuhp_get_step(st->state)->name,
 			 st->state);
+		if (arch_cpu_up_rollback(cpu, st->state, ret,
+					 rollback_trace))
+			pr_err("CPU%u P32 rollback publication failed\n", cpu);
 
 		cpuhp_reset_state(cpu, st, prev_state);
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
+		st->rollback_trace.outer_reset = 1;
+#endif
 		if (can_rollback_cpu(st))
-			WARN_ON(cpuhp_invoke_callback_range(false, cpu, st,
-							    prev_state));
+			rollback_ret = cpuhp_invoke_callback_range(false, cpu, st,
+								prev_state);
+		WARN_ON(rollback_ret);
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
+		st->rollback_trace.reverse_complete = !rollback_ret &&
+			can_rollback_cpu(st);
+		st->rollback_trace.callback_complete =
+			st->rollback_trace.reverse_complete &&
+			!st->rollback_trace.overflow &&
+			!st->rollback_trace.callback_unknown &&
+			st->rollback_trace.callback_capacity != 0 &&
+			st->rollback_trace.callback_inventory <=
+				st->rollback_trace.callback_capacity &&
+			st->rollback_trace.event_count <=
+				st->rollback_trace.callback_inventory;
+		arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_PRESENT_CLEAR,
+					    CPU_UP_ROLLBACK_EFFECT_BLOCKED,
+					    cpu_present(cpu) ? 0 : -EUCLEAN);
+		if (!cpu_present(cpu))
+			st->rollback_trace.effect_unknown = 1;
+		st->rollback_trace.effect_missing_mask =
+			st->rollback_trace.effect_required_mask &
+			~st->rollback_trace.effect_seen_mask;
+		st->rollback_trace.effect_complete =
+			!st->rollback_trace.effect_overflow &&
+			!st->rollback_trace.effect_unknown &&
+			!st->rollback_trace.effect_missing_mask &&
+			!st->rollback_trace.effect_forbidden_mask;
+#endif
+		if (arch_cpu_up_rollback_complete(cpu, ret,
+							rollback_trace))
+			pr_err("CPU%u P32 rollback consumption failed\n", cpu);
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
+		st->rollback_trace.rollback_armed = 0;
+#endif
 	}
 	return ret;
 }
@@ -1295,7 +1497,11 @@ static int take_cpu_down(void *_param)
 	cpuhp_invoke_callback_range_nofail(false, cpu, st, target);
 
 	/* Park the stopper thread */
+	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_PARK,
+				    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	stop_machine_park(cpu);
+	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_PARK,
+				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
 	return 0;
 }
 
@@ -1342,14 +1548,22 @@ static int takedown_cpu(unsigned int cpu)
 
 	cpuhp_bp_sync_dead(cpu);
 
+	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_LOCKDEP_CLEANUP,
+				    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	lockdep_cleanup_dead_cpu(cpu, idle_thread_get(cpu));
+	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_LOCKDEP_CLEANUP,
+				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
 
 	/*
 	 * Callbacks must be re-integrated right away to the RCU state machine.
 	 * Otherwise an RCU callback could block a further teardown function
 	 * waiting for its completion.
 	 */
+	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_RCU_MIGRATE,
+				    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	rcutree_migrate_callbacks(cpu);
+	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_RCU_MIGRATE,
+				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
 
 	return 0;
 }
@@ -1367,14 +1581,26 @@ void cpuhp_report_idle_dead(void)
 
 	BUG_ON(st->state != CPUHP_AP_OFFLINE);
 	tick_assert_timekeeping_handover();
+	arch_cpu_up_rollback_effect(smp_processor_id(),
+				    CPU_UP_ROLLBACK_EFFECT_RCU_DEAD,
+				    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	rcutree_report_cpu_dead();
+	arch_cpu_up_rollback_effect(smp_processor_id(),
+				    CPU_UP_ROLLBACK_EFFECT_RCU_DEAD,
+				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
 	st->state = CPUHP_AP_IDLE_DEAD;
 	/*
 	 * We cannot call complete after rcutree_report_cpu_dead() so we delegate it
 	 * to an online cpu.
 	 */
+	arch_cpu_up_rollback_effect(smp_processor_id(),
+				    CPU_UP_ROLLBACK_EFFECT_DEAD_PUBLISH,
+				    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	smp_call_function_single(cpumask_first(cpu_online_mask),
 				 cpuhp_complete_idle_dead, st, 0);
+	arch_cpu_up_rollback_effect(smp_processor_id(),
+				    CPU_UP_ROLLBACK_EFFECT_DEAD_PUBLISH,
+				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
 }
 
 static int cpuhp_down_callbacks(unsigned int cpu, struct cpuhp_cpu_state *st,
@@ -1615,10 +1841,15 @@ void cpuhp_online_idle(enum cpuhp_state state)
 /* Requires cpu_add_remove_lock to be held */
 static int _cpu_up(unsigned int cpu, int tasks_frozen, enum cpuhp_state target)
 {
-	struct cpuhp_cpu_state *st = per_cpu_ptr(&cpuhp_state, cpu);
+	struct cpuhp_cpu_state *st;
 	struct task_struct *idle;
 	int ret = 0;
 
+	ret = arch_cpu_up_validate(cpu, tasks_frozen, target);
+	if (ret)
+		return ret;
+
+	st = per_cpu_ptr(&cpuhp_state, cpu);
 	cpus_write_lock();
 
 	if (!cpu_present(cpu)) {
@@ -1682,6 +1913,10 @@ static int cpu_up(unsigned int cpu, enum cpuhp_state target)
 {
 	int err = 0;
 
+	err = arch_cpu_up_preflight(cpu, target);
+	if (err)
+		return err;
+
 	if (!cpu_possible(cpu)) {
 		pr_err("can't online cpu %d because it is not configured as may-hotadd at boot time\n",
 		       cpu);
@@ -1707,6 +1942,17 @@ static int cpu_up(unsigned int cpu, enum cpuhp_state target)
 out:
 	cpu_maps_update_done();
 	return err;
+}
+
+int __weak arch_cpu_up_preflight(unsigned int cpu, enum cpuhp_state target)
+{
+	return 0;
+}
+
+int __weak arch_cpu_up_validate(unsigned int cpu, int tasks_frozen,
+				enum cpuhp_state target)
+{
+	return 0;
 }
 
 /**

@@ -59,6 +59,9 @@
 #define REG_MMU_WR_LEN_CTRL			0x054
 #define F_MMU_WR_THROT_DIS_MASK			(BIT(5) | BIT(21))
 
+#define REG_MMU_COHERENCE_EN			0x080
+#define REG_MMU_IN_ORDER_WR_EN			0x084
+#define REG_MMU_TABLE_WALK_DIS			0x088
 #define REG_MMU_CTRL_REG			0x110
 #define F_MMU_TF_PROT_TO_PROGRAM_ADDR		(2 << 4)
 #define F_MMU_PREFETCH_RT_REPLACE_MOD		BIT(4)
@@ -149,6 +152,7 @@
 #define INT_ID_PORT_WIDTH_6		BIT(19)
 #define CFG_IFA_MASTER_IN_ATF		BIT(20)
 #define DL_WITH_MULTI_LARB		BIT(21)
+#define HAS_LEGACY_MMU_MISC		BIT(22)
 
 #define MTK_IOMMU_HAS_FLAG_MASK(pdata, _x, mask)	\
 				((((pdata)->flags) & (mask)) == (_x))
@@ -169,6 +173,7 @@ enum mtk_iommu_plat {
 	M4U_MT2712,
 	M4U_MT6779,
 	M4U_MT6795,
+	M4U_MT6797,
 	M4U_MT8167,
 	M4U_MT8173,
 	M4U_MT8183,
@@ -1115,6 +1120,12 @@ static int mtk_iommu_hw_init(const struct mtk_iommu_data *data, unsigned int ban
 		writel_relaxed(regval, bank0->base + REG_MMU_WR_LEN_CTRL);
 	}
 
+	if (MTK_IOMMU_HAS_FLAG(data->plat_data, HAS_LEGACY_MMU_MISC)) {
+		writel_relaxed(0x3, bank0->base + REG_MMU_COHERENCE_EN);
+		writel_relaxed(0, bank0->base + REG_MMU_IN_ORDER_WR_EN);
+		writel_relaxed(0, bank0->base + REG_MMU_TABLE_WALK_DIS);
+	}
+
 	if (MTK_IOMMU_HAS_FLAG(data->plat_data, RESET_AXI)) {
 		/* The register is called STANDARD_AXI_MODE in this case */
 		regval = 0;
@@ -1602,6 +1613,21 @@ static const struct mtk_iommu_plat_data mt6795_data = {
 	.larbid_remap = {{0}, {1}, {2}, {3}, {4}}, /* Linear mapping. */
 };
 
+static const struct mtk_iommu_plat_data mt6797_data = {
+	.m4u_plat     = M4U_MT6797,
+	.flags        = HAS_4GB_MODE | RESET_AXI | WR_THROT_EN |
+			HAS_LEGACY_IVRP_PADDR | HAS_LEGACY_MMU_MISC |
+			MTK_IOMMU_TYPE_MM,
+	.inv_sel_reg  = REG_MMU_INV_SEL_GEN1,
+	.banks_num    = 1,
+	.banks_enable = {true},
+	.iova_region  = single_domain,
+	.iova_region_nr = ARRAY_SIZE(single_domain),
+	.larbid_remap = {
+		{0}, {1}, {2}, {3}, {4}, {5}, {6}
+	},
+};
+
 static const unsigned int mt8192_larb_region_msk[MT8192_MULTI_REGION_NR_MAX][MTK_LARB_NR_MAX] = {
 	[0] = {~0, ~0},				/* Region0: larb0/1 */
 	[1] = {0, 0, 0, 0, ~0, ~0, 0, ~0},	/* Region1: larb4/5/7 */
@@ -1903,6 +1929,7 @@ static const struct of_device_id mtk_iommu_of_ids[] = {
 	{ .compatible = "mediatek,mt2712-m4u", .data = &mt2712_data},
 	{ .compatible = "mediatek,mt6779-m4u", .data = &mt6779_data},
 	{ .compatible = "mediatek,mt6795-m4u", .data = &mt6795_data},
+	{ .compatible = "mediatek,mt6797-m4u", .data = &mt6797_data},
 	{ .compatible = "mediatek,mt6893-iommu-mm", .data = &mt6893_data},
 	{ .compatible = "mediatek,mt8167-m4u", .data = &mt8167_data},
 	{ .compatible = "mediatek,mt8173-m4u", .data = &mt8173_data},

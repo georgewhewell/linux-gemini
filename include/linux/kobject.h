@@ -40,6 +40,127 @@ extern char uevent_helper[];
 /* counter to tag the uevent, read only except for the kobject core */
 extern atomic64_t uevent_seqnum;
 
+#ifdef CONFIG_I2C_GEMINI_DA921X_DUAL_MODALIAS_STATE_DIAGNOSTIC
+/* experiment-only exact-event validation state */
+extern atomic_t gemini_da921x_dual_modalias_state;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_VALIDATION_STAGE_DIAGNOSTIC
+/* experiment-only last successful exact-event validation stage */
+extern atomic_t gemini_da921x_dual_modalias_stage;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_ENVELOPE_STATE_DIAGNOSTIC
+extern atomic_t gemini_da921x_dual_modalias_envp_idx;
+extern atomic_t gemini_da921x_dual_modalias_envp_capacity;
+extern atomic_t gemini_da921x_dual_modalias_terminator_null;
+extern atomic_t gemini_da921x_dual_modalias_buflen;
+extern atomic_t gemini_da921x_dual_modalias_buf_capacity;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_ENTRY_CLASSIFICATION_DIAGNOSTIC
+extern atomic_t gemini_da921x_dual_modalias_present_mask;
+extern atomic_t gemini_da921x_dual_modalias_duplicate_mask;
+extern atomic_t gemini_da921x_dual_modalias_ordered_prefix;
+extern atomic_t gemini_da921x_dual_modalias_seqnum_count;
+extern atomic_t gemini_da921x_dual_modalias_seqnum_index;
+extern atomic_t gemini_da921x_dual_modalias_unexpected_count;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_LISTENER_DISCOVERY_DIAGNOSTIC
+/* experiment-only bounded uevent socket and listener counts */
+extern atomic_t gemini_da921x_uevent_socket_count;
+extern atomic_t gemini_da921x_uevent_listener_count;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_NO_LISTENER_DELIVERY_DIAGNOSTIC
+extern atomic_t gemini_da921x_no_listener_socket_count;
+extern atomic_t gemini_da921x_no_listener_listener_count;
+extern atomic_t gemini_da921x_no_listener_allocation_count;
+extern atomic_t gemini_da921x_no_listener_broadcast_count;
+extern atomic_t gemini_da921x_no_listener_retval;
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_BOUNDED_LISTENER_DIAGNOSTIC
+extern atomic_t gemini_da921x_bounded_listener_attempts;
+extern atomic_t gemini_da921x_bounded_listener_baseline_socket_count;
+extern atomic_t gemini_da921x_bounded_listener_socket_count;
+extern atomic_t gemini_da921x_bounded_listener_listener_count;
+extern atomic_t gemini_da921x_bounded_listener_broadcast_count;
+int gemini_da921x_trigger_bounded_listener(void);
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_SINGLE_MULTICAST_DIAGNOSTIC
+extern atomic_t gemini_da921x_single_multicast_attempts;
+extern atomic_t gemini_da921x_single_multicast_baseline_socket_count;
+extern atomic_t gemini_da921x_single_multicast_socket_count;
+extern atomic_t gemini_da921x_single_multicast_listener_count;
+extern atomic_t gemini_da921x_single_multicast_allocation_count;
+extern atomic_t gemini_da921x_single_multicast_broadcast_count;
+extern atomic_t gemini_da921x_single_multicast_retval;
+int gemini_da921x_trigger_single_multicast(void);
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_UNTAGGED_DISPATCH_DIAGNOSTIC
+extern atomic_t gemini_da921x_untagged_dispatch_attempts;
+extern atomic_t gemini_da921x_untagged_dispatch_entries;
+extern atomic_t gemini_da921x_untagged_dispatch_returns;
+extern atomic_t gemini_da921x_untagged_dispatch_baseline_socket_count;
+extern atomic_t gemini_da921x_untagged_dispatch_socket_count;
+extern atomic_t gemini_da921x_untagged_dispatch_listener_count;
+extern atomic_t gemini_da921x_untagged_dispatch_allocation_count;
+extern atomic_t gemini_da921x_untagged_dispatch_broadcast_count;
+extern atomic_t gemini_da921x_untagged_dispatch_retval;
+int gemini_da921x_trigger_untagged_dispatch(void);
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_NET_BROADCAST_DIAGNOSTIC
+extern atomic_t gemini_da921x_net_broadcast_attempts;
+extern atomic_t gemini_da921x_net_broadcast_entries;
+extern atomic_t gemini_da921x_net_broadcast_returns;
+extern atomic_t gemini_da921x_net_broadcast_namespace_checks;
+extern atomic_t gemini_da921x_net_broadcast_untagged_routes;
+extern atomic_t gemini_da921x_net_broadcast_tagged_routes;
+extern atomic_t gemini_da921x_net_broadcast_baseline_socket_count;
+extern atomic_t gemini_da921x_net_broadcast_socket_count;
+extern atomic_t gemini_da921x_net_broadcast_listener_count;
+extern atomic_t gemini_da921x_net_broadcast_allocation_count;
+extern atomic_t gemini_da921x_net_broadcast_broadcast_count;
+extern atomic_t gemini_da921x_net_broadcast_retval;
+int gemini_da921x_trigger_net_broadcast(void);
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_UEVENT_NORMAL_FALLTHROUGH_DIAGNOSTIC
+extern atomic_t gemini_da921x_normal_fallthrough_attempts;
+extern atomic_t gemini_da921x_normal_fallthrough_callsite_entries;
+extern atomic_t gemini_da921x_normal_fallthrough_callsite_returns;
+extern atomic_t gemini_da921x_normal_fallthrough_public_returns;
+extern atomic_t gemini_da921x_normal_fallthrough_retval;
+int gemini_da921x_trigger_normal_fallthrough(void);
+#endif
+
+#ifdef CONFIG_I2C_GEMINI_DA921X_NATURAL_DEVICE_ADD_DIAGNOSTIC
+extern atomic_t gemini_da921x_natural_device_add_attempts;
+extern atomic_t gemini_da921x_natural_device_add_register_entries;
+extern atomic_t gemini_da921x_natural_device_add_register_returns;
+extern atomic_t gemini_da921x_natural_device_add_register_retval;
+extern atomic_t gemini_da921x_natural_device_add_callsite_entries;
+extern atomic_t gemini_da921x_natural_device_add_callsite_returns;
+extern atomic_t gemini_da921x_natural_device_add_public_returns;
+extern atomic_t gemini_da921x_natural_device_add_wrapper_entries;
+extern atomic_t gemini_da921x_natural_device_add_wrapper_returns;
+extern atomic_t gemini_da921x_natural_device_add_namespace_checks;
+extern atomic_t gemini_da921x_natural_device_add_untagged_routes;
+extern atomic_t gemini_da921x_natural_device_add_tagged_routes;
+extern atomic_t gemini_da921x_natural_device_add_socket_count;
+extern atomic_t gemini_da921x_natural_device_add_listener_count;
+extern atomic_t gemini_da921x_natural_device_add_allocation_count;
+extern atomic_t gemini_da921x_natural_device_add_broadcast_count;
+extern atomic_t gemini_da921x_natural_device_add_uevent_retval;
+bool gemini_da921x_natural_device_add_begin(struct kobject *kobj);
+void gemini_da921x_natural_device_add_end(struct kobject *kobj, int retval);
+#endif
+
 /*
  * The actions here must match the index to the string array
  * in lib/kobject_uevent.c

@@ -2942,6 +2942,17 @@ config CMDLINE_KUNIT_TEST
 
 	  If unsure, say N.
 
+config BUILDID_KUNIT_TEST
+	bool "KUnit test for strict build ID note parsing"
+	depends on KUNIT=y
+	default n
+	help
+	  This builds unit tests for strict parsing of GNU build ID notes,
+	  including malformed input, duplicate notes, and overlapping buffers.
+
+	  This test is intended for kernel developers and should not be enabled
+	  in production kernels. If unsure, say N.
+
 config BASE64_KUNIT
 	tristate "KUnit test for base64 decoding and encoding" if !KUNIT_ALL_TESTS
 	depends on KUNIT

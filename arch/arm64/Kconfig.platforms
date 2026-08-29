@@ -182,6 +182,67 @@ config ARCH_MEDIATEK
 	  This enables support for MediaTek MT27xx, MT65xx, MT76xx
 	  & MT81xx ARMv8 SoCs
 
+config ARM64_MT6797_A72_CAPABILITY_PROFILE
+	bool "Fail-closed MT6797 late Cortex-A72 capability profile"
+	depends on ARCH_MEDIATEK && SMP && CMDLINE_FORCE
+	select ARM64_LATE_CPU_PROFILE
+	select ARM64_LATE_CPU_RUNTIME_IDENTITY
+	help
+	  Register the exact MT6797 Cortex-A53 plus late Cortex-A72 topology
+	  with the arm64 capability-finalization owner. The production profile
+	  remains blocked until its register, firmware, capability, HWCAP, and
+	  transaction-attestation evidence is complete. This option neither
+	  enables nor admits a CPU boot path; an independent early veto remains
+	  required.
+
+config ARM64_MT6797_A72_FIXTURE_EVIDENCE
+	bool "Exercise the MT6797 late Cortex-A72 evaluator with fixtures"
+	depends on ARM64_MT6797_A72_CAPABILITY_PROFILE
+	default n
+	help
+	  Supply immutable synthetic records to the late Cortex-A72 capability
+	  evaluator. The records are marked FIXTURE and retain the runtime and
+	  unavailable-commit blockers. This option is for source validation only;
+	  it neither describes hardware nor enables a CPU boot path.
+
+config ARM64_MT6797_A72_P30_PROTOCOL_MODEL
+	bool "Build the dormant MT6797 A72 P30 protocol model"
+	depends on ARM64_MT6797_A72_CAPABILITY_PROFILE
+	select ARM64_LATE_CPU_STARTUP_FAILSTOP
+	help
+	  Build the inert generation-scoped startup arbitration primitive for
+	  source review. It has no production caller, does not publish P30 or
+	  P14/P15, and leaves the MT6797 CPU boot and disable vetoes unchanged.
+
+config ARM64_MT6797_A72_P24_TRANSACTION_OWNER_MODEL
+	bool "Build the closed MT6797 A72 transaction owner model"
+	depends on ARM64_MT6797_A72_P30_PROTOCOL_MODEL
+	help
+	  Build the lifecycle-closed owner for future P17/P18/P24 membership
+	  transactions. The transaction-begin path has no production caller or
+	  opener. It rejects before P31/A38, allocates no token, and cannot issue
+	  CPU_ON.
+
+config ARM64_MT6797_A72_P24_ADMISSION_HOOKS
+	bool "Install closed MT6797 A72 CPU-up admission hooks"
+	depends on ARM64_MT6797_A72_P24_TRANSACTION_OWNER_MODEL
+	help
+	  Install public and leaf-only internal CPU-up checks for MT6797 CPU8
+	  and CPU9. Both hooks are read-only denials: they do not begin a
+	  transaction, change P30, or make the existing CPU boot veto reachable.
+	  CPU0 through CPU7 and methods without admission callbacks retain their
+	  existing behavior. This option adds no owner opener or success path.
+
+config ARM64_MT6797_A72_P32_ROLLBACK
+	bool "Install dormant MT6797 A72 P32 rollback guards"
+	depends on HOTPLUG_CPU
+	depends on ARM64_MT6797_A72_P24_TRANSACTION_OWNER_MODEL
+	help
+	  Add the exact-generation P32 side channel and fail-stop target and
+	  controller CPUHP rollback guards. The owner remains closed, the
+	  MT6797 boot and disable vetoes remain active, and no CPU_ON, CPU_OFF,
+	  affinity, provider, or device operation is opened.
+
 config ARCH_MESON
 	bool "Amlogic Platforms"
 	help

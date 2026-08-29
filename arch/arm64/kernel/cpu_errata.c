@@ -8,11 +8,13 @@
 #include <linux/arm-smccc.h>
 #include <linux/types.h>
 #include <linux/cpu.h>
+#include <asm/cache.h>
 #include <asm/cpu.h>
 #include <asm/cputype.h>
 #include <asm/cpufeature.h>
 #include <asm/fpsimd.h>
 #include <asm/kvm_asm.h>
+#include <asm/late_cpu_profile.h>
 #include <asm/smp_plat.h>
 
 static u64 target_impl_cpu_num;
@@ -96,6 +98,58 @@ is_affected_midr_range_list(const struct arm64_cpu_capabilities *entry,
 	return is_midr_in_range_list(entry->midr_range_list);
 }
 
+#ifdef CONFIG_ARM64_LATE_CPU_PROFILE
+bool __init arm64_late_cpu_target_impl_override_active(void)
+{
+	return target_impl_cpu_num || target_impl_cpus;
+}
+
+bool __init
+arm64_late_cpu_cap_uses_multi_entry_match(const struct arm64_cpu_capabilities *cap)
+{
+	return cap->matches == cpucap_multi_entry_cap_matches;
+}
+
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_midr_all_versions(const struct arm64_cpu_capabilities *cap,
+				 u32 model)
+{
+	const u32 rv_all = MIDR_CPU_VAR_REV(0xf, 0xf);
+	const struct midr_range *range;
+	bool partial = false;
+	int i;
+
+	if (cap->matches == is_affected_midr_range) {
+		range = &cap->midr_range;
+		if (range->model != model)
+			return ARM64_LATE_CPU_CAP_ABSENT;
+		if (cap->fixed_revs)
+			return ARM64_LATE_CPU_CAP_UNRESOLVED;
+		if (!range->rv_min && range->rv_max == rv_all)
+			return ARM64_LATE_CPU_CAP_PRESENT;
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+	}
+
+	if (cap->matches != is_affected_midr_range_list ||
+	    !cap->midr_range_list)
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	range = cap->midr_range_list;
+	for (i = 0; i < ARM64_NCAPS; i++, range++) {
+		if (!range->model)
+			return partial ? ARM64_LATE_CPU_CAP_UNRESOLVED :
+					 ARM64_LATE_CPU_CAP_ABSENT;
+		if (range->model != model)
+			continue;
+		if (!range->rv_min && range->rv_max == rv_all)
+			return ARM64_LATE_CPU_CAP_PRESENT;
+		partial = true;
+	}
+
+	return ARM64_LATE_CPU_CAP_UNRESOLVED;
+}
+#endif
+
 static bool __maybe_unused
 is_kryo_midr(const struct arm64_cpu_capabilities *entry, int scope)
 {
@@ -141,6 +195,59 @@ has_mismatched_cache_type(const struct arm64_cpu_capabilities *entry,
 
 	return (ctr_real != sys) && (ctr_raw != sys);
 }
+
+#ifdef CONFIG_ARM64_LATE_CPU_PROFILE
+static void
+cpu_enable_trap_ctr_access(const struct arm64_cpu_capabilities *cap);
+
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_cache_type_state(
+	const struct arm64_cpu_capabilities *cap,
+	const struct arm64_cpu_capabilities *match,
+	const struct arm64_late_cpu_target_cap_evidence *target,
+	const struct arm64_late_cpu_system_cap_evidence *system)
+{
+	u64 effective;
+	u64 mask;
+	u64 raw;
+	u64 sys;
+
+	if (!cap || cap != match || cap->match_list ||
+	    cap->capability != ARM64_MISMATCHED_CACHE_TYPE ||
+	    cap->type != ARM64_CPUCAP_LOCAL_CPU_ERRATUM ||
+	    cap->matches != has_mismatched_cache_type ||
+	    cap->cpu_enable != cpu_enable_trap_ctr_access || cap->cpus ||
+	    !target || !system ||
+	    !(target->valid & ARM64_LATE_CPU_TARGET_CAP_CTR_VALID) ||
+	    !(system->valid & ARM64_LATE_CPU_SYSTEM_CAP_CTR_VALID) ||
+	    system->valid & ~ARM64_LATE_CPU_SYSTEM_CAP_VALID_MASK)
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	raw = target->registers.ctr;
+	mask = system->ctr_strict_mask;
+	if (mask != ~GENMASK_ULL(15, 14) ||
+	    (raw | target->ctr_effective | system->ctr_sys_val) &
+		    ~GENMASK_ULL(31, 0) ||
+	    !(raw & BIT(31)) || !(system->ctr_sys_val & BIT(31)))
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	effective = raw;
+	if (!(raw & BIT(CTR_EL0_IDC_SHIFT)) &&
+	    (!CLIDR_LOC(target->clidr_el1) ||
+	     (!CLIDR_LOUIS(target->clidr_el1) &&
+	      !CLIDR_LOUU(target->clidr_el1))))
+		effective |= BIT(CTR_EL0_IDC_SHIFT);
+	if (target->ctr_effective != effective)
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	raw &= mask;
+	effective &= mask;
+	sys = system->ctr_sys_val & mask;
+
+	return effective != sys && raw != sys ?
+		ARM64_LATE_CPU_CAP_PRESENT : ARM64_LATE_CPU_CAP_ABSENT;
+}
+#endif
 
 #ifdef CONFIG_ARM64_ERRATUM_4311569
 static DEFINE_STATIC_KEY_FALSE(arm_si_l1_workaround_4311569);
@@ -636,6 +743,83 @@ static const struct midr_range erratum_ac04_cpu_23_list[] = {
 	MIDR_ALL_VERSIONS(MIDR_AMPERE1A),
 	{},
 };
+#endif
+
+#ifdef CONFIG_ARM64_LATE_CPU_PROFILE
+#ifdef CONFIG_ARM64_ERRATUM_4193714
+static enum arm64_late_cpu_cap_state __init
+late_cpu_midr_range_state(const struct arm64_cpu_capabilities *cap, u32 model)
+{
+	const u32 rv_all = MIDR_CPU_VAR_REV(0xf, 0xf);
+	const struct midr_range *range = &cap->midr_range;
+
+	if (range->model != model)
+		return ARM64_LATE_CPU_CAP_ABSENT;
+	if (cap->fixed_revs)
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+	if (!range->rv_min && range->rv_max == rv_all)
+		return ARM64_LATE_CPU_CAP_PRESENT;
+
+	return ARM64_LATE_CPU_CAP_UNRESOLVED;
+}
+#endif
+
+static enum arm64_late_cpu_cap_state __init
+late_cpu_midr_range_list_state(const struct midr_range *range, u32 model)
+{
+	const u32 rv_all = MIDR_CPU_VAR_REV(0xf, 0xf);
+	bool partial = false;
+	int i;
+
+	if (!range)
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	for (i = 0; i < ARM64_NCAPS; i++, range++) {
+		if (!range->model)
+			return partial ? ARM64_LATE_CPU_CAP_UNRESOLVED :
+					 ARM64_LATE_CPU_CAP_ABSENT;
+		if (range->model != model)
+			continue;
+		if (!range->rv_min && range->rv_max == rv_all)
+			return ARM64_LATE_CPU_CAP_PRESENT;
+		partial = true;
+	}
+
+	return ARM64_LATE_CPU_CAP_UNRESOLVED;
+}
+
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_erratum_state(const struct arm64_cpu_capabilities *cap,
+			     u32 model)
+{
+	const u32 kryo_mask = MIDR_IMPLEMENTOR_MASK |
+		(0xf00 << MIDR_PARTNUM_SHIFT) | MIDR_ARCHITECTURE_MASK;
+
+	if (!cap || arm64_late_cpu_target_impl_override_active())
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	if (cap->matches == is_kryo_midr)
+		return (model & kryo_mask) == cap->midr_range.model ?
+			ARM64_LATE_CPU_CAP_UNRESOLVED :
+			ARM64_LATE_CPU_CAP_ABSENT;
+#ifdef CONFIG_ARM64_ERRATUM_1463225
+	if (cap->matches == has_cortex_a76_erratum_1463225)
+		return late_cpu_midr_range_list_state(cap->midr_range_list,
+							 model);
+#endif
+	if (cap->matches == needs_tx2_tvm_workaround)
+		return late_cpu_midr_range_list_state(cap->midr_range_list,
+							 model);
+#ifdef CONFIG_ARM64_ERRATUM_4193714
+	if (cap->matches == has_sme_dvmsync_erratum)
+		return late_cpu_midr_range_state(cap, model);
+#endif
+	if (cap->matches == has_impdef_pmuv3)
+		return late_cpu_midr_range_list_state(impdef_pmuv3_cpus,
+							 model);
+
+	return arm64_late_cpu_midr_all_versions(cap, model);
+}
 #endif
 
 const struct arm64_cpu_capabilities arm64_errata[] = {

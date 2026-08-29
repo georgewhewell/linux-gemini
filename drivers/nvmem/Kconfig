@@ -227,6 +227,15 @@ config NVMEM_MTK_EFUSE
 	  This driver can also be built as a module. If so, the module
 	  will be called efuse-mtk.
 
+config NVMEM_MTK_ATAG_DEVINFO
+	tristate "MediaTek MT6797 LK devinfo calibration support"
+	depends on OF
+	help
+	  Say Y or M here to expose the validated, read-only MT6797 LK
+	  /chosen/atag,devinfo thermal calibration payload through NVMEM.
+	  This provider does not access or write the efuse MMIO block.  It
+	  can be built as a module named mediatek-atag-devinfo.
+
 config NVMEM_MXS_OCOTP
 	tristate "Freescale MXS On-Chip OTP Memory Support"
 	depends on ARCH_MXS || COMPILE_TEST

@@ -904,6 +904,61 @@ config I2C_MT65XX
 	  If you want to use MediaTek(R) I2C interface, say Y or M here.
 	  If unsure, say N.
 
+config I2C_MT65XX_ORION_DIAGNOSTIC
+	bool "MT6797 I2C6 fixed Orion diagnostic"
+	depends on I2C_MT65XX=y && DEBUG_FS
+	help
+	  Enable the experiment-only, one-shot Orion diagnostic for the
+	  access-controlled MT6797 iDVFS I2C instance. The root-only debugfs
+	  file accepts exactly "run" followed by a newline and performs a
+	  fixed sequence of pointer-only reads from address 0x69. It exposes
+	  no arbitrary address, register, data, length, or mode control.
+
+	  Say N outside the named Gemini Orion experiment.
+
+config I2C_MT65XX_QUASAR_DIAGNOSTIC
+	bool "MT6797 I2C6 fixed Quasar native-path canary"
+	depends on I2C_MT65XX=y && DEBUG_FS
+	depends on !I2C_MT65XX_ORION_DIAGNOSTIC
+	help
+	  Enable the experiment-only, one-shot Quasar native-path canary for
+	  the access-controlled MT6797 iDVFS I2C instance. The root-only
+	  debugfs file accepts exactly "run" followed by a newline and performs
+	  two fixed passes of pointer-only reads from address 0x69.
+
+	  The canary supplies no length or engine override and exposes no
+	  arbitrary address, register, data, length, mode, retry, or reset
+	  control. Say N outside the named Gemini Quasar experiment.
+
+config I2C_MT65XX_FERMI_DIAGNOSTIC
+	bool "MT6797 I2C6 fixed Fermi topology fingerprint"
+	depends on I2C_MT65XX=y && DEBUG_FS
+	depends on !I2C_MT65XX_ORION_DIAGNOSTIC
+	depends on !I2C_MT65XX_QUASAR_DIAGNOSTIC
+	help
+	  Enable the experiment-only, one-shot Fermi topology fingerprint for
+	  the access-controlled MT6797 iDVFS I2C instance. The root-only
+	  debugfs file accepts exactly "run" followed by a newline and performs
+	  two fixed passes of seven pointer-only reads across addresses 0x69
+	  and 0x68.
+
+	  The diagnostic supplies no length or engine override and exposes no
+	  arbitrary address, register, data, length, mode, retry, or reset
+	  control. Say N outside the named Gemini Fermi experiment.
+
+config I2C_MT65XX_GEMINI_LIFECYCLE_ORACLE
+	bool "MT6797 I2C6 read-only lifecycle oracle"
+	depends on I2C_MT65XX=y
+	depends on !I2C_MT65XX_ORION_DIAGNOSTIC
+	depends on !I2C_MT65XX_QUASAR_DIAGNOSTIC
+	depends on !I2C_MT65XX_FERMI_DIAGNOSTIC
+	help
+	  Count message shapes submitted to the access-controlled MT6797
+	  iDVFS I2C instance and expose them through the existing read-only
+	  handoff status. This adds no transfer trigger or hardware access.
+
+	  Say N outside the named Gemini legacy-driver lifecycle experiment.
+
 config I2C_MT7621
 	tristate "MT7621/MT7628 I2C Controller"
 	depends on (RALINK && (SOC_MT7620 || SOC_MT7621)) || ARCH_AIROHA || COMPILE_TEST

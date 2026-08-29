@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
 #include <linux/usb/typec.h>
 
 #define FUSB301_REG_DEVICE_ID	0x01
@@ -60,7 +61,28 @@ struct fusb301 {
 	struct fwnode_handle *connector;
 	enum typec_pwr_opmode pwr_opmode;
 	unsigned int partner_type;
+	struct regulator *vbus;
+	bool vbus_on;
 };
+
+static int fusb301_set_vbus(struct fusb301 *fusb, bool on)
+{
+	int ret;
+
+	if (!fusb->vbus || fusb->vbus_on == on)
+		return 0;
+
+	if (on)
+		ret = regulator_enable(fusb->vbus);
+	else
+		ret = regulator_disable(fusb->vbus);
+	if (ret)
+		return ret;
+
+	fusb->vbus_on = on;
+	dev_info(fusb->dev, "connector VBUS %s\n", on ? "enabled" : "disabled");
+	return 0;
+}
 
 static unsigned int fusb301_mode_for_port_type(enum typec_port_type type)
 {
@@ -167,6 +189,10 @@ static int fusb301_update_status(struct fusb301 *fusb)
 		return ret;
 
 	if (!(status & FUSB301_STATUS_ATTACH)) {
+		ret = fusb301_set_vbus(fusb, false);
+		if (ret)
+			return ret;
+
 		fusb301_unregister_partner(fusb);
 		fusb->partner_type = 0;
 		pwr_role = fusb301_default_role(fusb);
@@ -190,6 +216,13 @@ static int fusb301_update_status(struct fusb301 *fusb)
 		pwr_role = TYPEC_SINK;
 	else
 		pwr_role = fusb301_default_role(fusb);
+
+	/* A source may apply VBUS only after CC has identified a sink. */
+	ret = fusb301_set_vbus(fusb,
+				pwr_role == TYPEC_SOURCE &&
+				(partner_type & FUSB301_TYPE_SINK));
+	if (ret)
+		return ret;
 
 	if (partner_type & FUSB301_TYPE_AUDIO_ACC)
 		desc.accessory = TYPEC_ACCESSORY_AUDIO;
@@ -276,6 +309,16 @@ static int fusb301_probe(struct i2c_client *client)
 	if (!fusb)
 		return -ENOMEM;
 
+	fusb->vbus = devm_regulator_get_optional(dev, "vbus");
+	if (IS_ERR(fusb->vbus)) {
+		ret = PTR_ERR(fusb->vbus);
+		if (ret == -ENODEV)
+			fusb->vbus = NULL;
+		else
+			return dev_err_probe(dev, ret,
+					     "failed to get VBUS supply\n");
+	}
+
 	fusb->dev = dev;
 	fusb->regmap = devm_regmap_init_i2c(client, &fusb301_regmap_config);
 	if (IS_ERR(fusb->regmap))
@@ -345,6 +388,7 @@ static int fusb301_probe(struct i2c_client *client)
 	return 0;
 
 err_unregister_port:
+	fusb301_set_vbus(fusb, false);
 	fusb301_unregister_partner(fusb);
 	typec_unregister_port(fusb->port);
 err_put_connector:
@@ -356,6 +400,7 @@ static void fusb301_remove(struct i2c_client *client)
 {
 	struct fusb301 *fusb = i2c_get_clientdata(client);
 
+	fusb301_set_vbus(fusb, false);
 	fusb301_unregister_partner(fusb);
 	typec_unregister_port(fusb->port);
 }

@@ -5,9 +5,18 @@
 #include <linux/mutex.h>
 #include <linux/types.h>
 
-/* mtk_wcn_consys_hw.c:284 holds VCN18 for this verified interval. */
+/*
+ * c5b0be85017ad0c599725e8273842efdbecdd88a,
+ * drivers/misc/mediatek/connectivity/common/common_main/mt6797/
+ * mtk_wcn_consys_hw.c:301-309 enables VCN18 then waits 240us. Lines 311-326
+ * enable VCN28 when co_clock_type is zero; Gemini's WMT_SOC.cfg:6 specifies
+ * co_clock_flag=0. Lines 341-354 prepare PWRON_CONFG_EN then enable
+ * SCP_SYS_CONN through CCF, and lines 401-402 wait 30us before lines 415-420
+ * read the chip ID.
+ */
 #define MT6797_CONSYS_LIFECYCLE_ABI	1
 #define MT6797_CONSYS_VCN18_SETTLE_US	240
+#define MT6797_CONSYS_DOMAIN_SETTLE_US	30
 
 /*
  * ERROR is sticky.  A backend cleanup error means the core cannot establish
@@ -20,13 +29,11 @@ enum mt6797_consys_state {
 };
 
 enum mt6797_consys_poll {
-	MT6797_CONSYS_POLL_POWER_READY,
 	MT6797_CONSYS_POLL_CHIP_READY,
 };
 
 struct mt6797_consys_timeouts {
 	u32 poll_interval_us;
-	u32 power_ready_timeout_us;
 	u32 chip_ready_timeout_us;
 };
 
@@ -41,21 +48,31 @@ struct mt6797_consys_timeouts {
  * drivers/misc/mediatek/connectivity/common/common_main/mt6797/
  * mtk_wcn_consys_hw.c, holds reset while it enables the SCP_SYS_CONN domain
  * before it observes the chip ID. This core stops at that observation; it
- * never releases reset, configures AFE, or loads
- * firmware. The same source's include/mtk_wcn_consys_hw.h:38 sets
+ * never releases reset, configures AFE, or loads firmware. The PWRON config
+ * operation explicitly covers the SPM PWRON_CONFG_EN write; successful
+ * enable_scp_sys_conn() means its CCF/SCPSYS provider has completed domain
+ * power-on. Therefore this core does not read the raw power ACK registers;
+ * their acknowledgement boundary belongs to that provider. The same source's
+ * include/mtk_wcn_consys_hw.h:42 sets
  * CONSYS_AHB_CLK_MAGEMENT to 0, so an AHB bus-clock operation is deliberately
  * absent. The exact bus-protection masks remain disputed.
  */
 struct mt6797_consys_ops {
 	u32 abi;
-	int (*enable_supplies)(void *context);
-	int (*disable_supplies)(void *context);
+	int (*enable_vcn18)(void *context);
+	int (*disable_vcn18)(void *context);
+	int (*enable_vcn28)(void *context);
+	int (*disable_vcn28)(void *context);
 	/* Prepare the topckgen sleep mask before reset/domain observation. */
 	int (*prepare_identity)(void *context);
 	int (*unprepare_identity)(void *context);
-	int (*enable_domain_clock)(void *context);
-	int (*disable_domain_clock)(void *context);
 	int (*assert_reset)(void *context);
+	/* Set up and balance SPM PWRON_CONFG_EN around the domain vote. */
+	int (*prepare_pwron_config)(void *context);
+	int (*unprepare_pwron_config)(void *context);
+	/* CCF/SCPSYS SCP_SYS_CONN vote; its success owns the power ACK boundary. */
+	int (*enable_scp_sys_conn)(void *context);
+	int (*disable_scp_sys_conn)(void *context);
 	int (*poll)(void *context, enum mt6797_consys_poll poll);
 	void (*delay_us)(void *context, u32 min, u32 max);
 };

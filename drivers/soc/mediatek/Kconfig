@@ -94,6 +94,21 @@ config MTK_MT6797_CONSYS_INVENTORY
 	  Keep the Device Tree node disabled until a separate power and transport
 	  implementation has been reviewed.
 
+config MTK_MT6797_BTIF_INVENTORY
+	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
+	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK
+	help
+	  Build a resource-only inventory driver for the MT6797 Bluetooth
+	  interface (BTIF) and its APDMA channels. It validates and retains the
+	  Device Tree MMIO resource descriptions, clock handles, interrupt
+	  numbers, and CONSYS phandle.
+
+	  This driver is intentionally non-functional: it never maps or accesses
+	  registers, enables clocks, requests interrupts, allocates DMA, gets a
+	  CONSYS power vote, exposes a userspace ABI, or instantiates STP. Keep
+	  every future transport consumer disabled until a separately reviewed
+	  hardware transaction contract exists.
+
 config MTK_MT6797_DVFSP_HANDOFF
 	bool "MediaTek MT6797 stopped DVFSP firmware handoff"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

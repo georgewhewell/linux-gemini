@@ -27,6 +27,10 @@ properties:
   interrupts:
     maxItems: 1
 
+  vbus-supply:
+    description:
+      Regulator supplying connector VBUS when the port is acting as a source.
+
   connector:
     type: object
     $ref: ../connector/usb-connector.yaml#

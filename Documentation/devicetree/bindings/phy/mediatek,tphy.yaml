@@ -255,6 +255,13 @@ patternProperties:
           by platform firmware rather than sensed by the PHY hardware.
         type: boolean
 
+      mediatek,force-a-session-valid:
+        description:
+          Force the USB2 PHY session signals to a valid A-device state. This
+          is required on fixed-host platforms where the board supplies VBUS
+          but the PHY hardware sensing path does not report a valid session.
+        type: boolean
+
       mediatek,force-mode:
         description:
           The force mode is used to manually switch the shared phy mode between

@@ -127,6 +127,8 @@
 #define P2C_RG_SESS_VALID_MSK \
 		(P2C_RG_VBUSVALID | P2C_RG_BVALID | \
 		 P2C_RG_AVALID | P2C_RG_IDDIG)
+#define P2C_RG_A_SESS_VALID_MSK \
+		(P2C_RG_VBUSVALID | P2C_RG_BVALID | P2C_RG_AVALID)
 
 #define U3P_U2PHYBC12C		0x080
 #define P2C_RG_CHGDT_EN		BIT(0)
@@ -345,6 +347,7 @@ struct mtk_phy_instance {
 	int pre_emphasis;
 	bool bc12_en;
 	bool force_b_session_valid;
+	bool force_a_session_valid;
 	bool type_force_mode;
 };
 
@@ -894,6 +897,13 @@ static void u2_phy_instance_power_on(struct mtk_tphy *tphy,
 				 P2C_FORCE_SESS_MSK | P2C_RG_SESS_VALID_MSK);
 		dev_info(tphy->dev,
 			 "u2 phy%d: forcing valid B-device session\n", index);
+	} else if (instance->force_a_session_valid) {
+		mtk_phy_clear_bits(com + U3P_U2PHYDTM1,
+				   P2C_RG_SESSEND | P2C_RG_IDDIG);
+		mtk_phy_set_bits(com + U3P_U2PHYDTM1,
+				 P2C_FORCE_SESS_MSK | P2C_RG_A_SESS_VALID_MSK);
+		dev_info(tphy->dev,
+			 "u2 phy%d: forcing valid A-device session\n", index);
 	}
 
 	if (tphy->pdata->avoid_rx_sen_degradation && index) {
@@ -920,6 +930,9 @@ static void u2_phy_instance_power_off(struct mtk_tphy *tphy,
 	if (instance->force_b_session_valid)
 		mtk_phy_clear_bits(com + U3P_U2PHYDTM1,
 				   P2C_FORCE_SESS_MSK | P2C_RG_SESS_VALID_MSK);
+	else if (instance->force_a_session_valid)
+		mtk_phy_clear_bits(com + U3P_U2PHYDTM1,
+				   P2C_FORCE_SESS_MSK | P2C_RG_A_SESS_VALID_MSK);
 
 	if (tphy->pdata->avoid_rx_sen_degradation && index) {
 		mtk_phy_clear_bits(com + U3P_U2PHYDTM0, P2C_RG_SUSPENDM | P2C_FORCE_SUSPENDM);
@@ -1156,6 +1169,8 @@ static void phy_parse_property(struct mtk_tphy *tphy,
 	instance->bc12_en = device_property_read_bool(dev, "mediatek,bc12");
 	instance->force_b_session_valid = device_property_read_bool(dev,
 						"mediatek,force-b-session-valid");
+	instance->force_a_session_valid = device_property_read_bool(dev,
+						"mediatek,force-a-session-valid");
 	device_property_read_u32(dev, "mediatek,eye-src",
 				 &instance->eye_src);
 	device_property_read_u32(dev, "mediatek,eye-vrt",

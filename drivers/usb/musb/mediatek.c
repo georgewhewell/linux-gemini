@@ -417,7 +417,11 @@ static const struct musb_fifo_cfg mt6797_usb11_mode_cfg[] = {
 static const struct musb_hdrc_config mt6797_usb11_hdrc_config = {
 	.fifo_cfg = mt6797_usb11_mode_cfg,
 	.fifo_cfg_size = ARRAY_SIZE(mt6797_usb11_mode_cfg),
-	.multipoint = false,
+	/*
+	 * The vendor MT6797 USB11 start path forces is_multipoint = 1 and
+	 * therefore uses the per-endpoint target-address registers at 0x480.
+	 */
+	.multipoint = true,
 	.dyn_fifo = true,
 	.num_eps = 6,
 	.ram_bits = MTK_MUSB_RAM_BITS,

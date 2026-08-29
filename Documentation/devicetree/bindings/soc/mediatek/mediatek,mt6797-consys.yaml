@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: MediaTek MT6797 connectivity subsystem inventory
 
 maintainers:
-  - Gemini Mainline Experiment <gemini-mainline@example.invalid>
+  - George Whewell <georgerw@gmail.com>
 
 description: |
   The MT6797 connectivity subsystem contains the shared control resources for
@@ -79,9 +79,6 @@ properties:
 
   memory-region-names:
     const: shared
-
-  status:
-    enum: [ disabled, okay ]
 
 required:
   - compatible

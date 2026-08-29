@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-btif.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 BTIF and APDMA resource inventory
+
+maintainers:
+  - Gemini Mainline Experiment <gemini-mainline@example.invalid>
+
+description: |
+  The MT6797 Bluetooth interface is the host transport for shared CONSYS
+  traffic. This binding currently describes only the BTIF core, its TX/RX
+  APDMA resources, their clocks and interrupts, and the parent CONSYS
+  relationship. The driver is inventory-only: it does not map or access
+  registers, enable clocks, request interrupts, allocate DMA, request CONSYS
+  power, expose a userspace ABI, or instantiate STP.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-btif
+
+  reg:
+    items:
+      - description: BTIF core register window
+      - description: BTIF TX APDMA register window
+      - description: BTIF RX APDMA register window
+
+  reg-names:
+    items:
+      - const: core
+      - const: tx-dma
+      - const: rx-dma
+
+  interrupts:
+    items:
+      - description: BTIF core interrupt
+      - description: BTIF TX APDMA interrupt
+      - description: BTIF RX APDMA interrupt
+
+  interrupt-names:
+    items:
+      - const: core
+      - const: tx
+      - const: rx
+
+  clocks:
+    minItems: 2
+    maxItems: 2
+
+  clock-names:
+    items:
+      - const: btifc
+      - const: apdmac
+
+  mediatek,consys:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the shared MT6797 CONSYS resource owner.
+
+  status:
+    enum: [ disabled, okay ]
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
+  - mediatek,consys
+
+additionalProperties: false

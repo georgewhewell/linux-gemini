@@ -45,6 +45,27 @@ config MTK_INFRACFG
 	  INFRACFG controller contains various infrastructure registers not
 	  directly associated to any device.
 
+config MTK_STP
+	tristate "MediaTek STP codec and WMT/GNSS multiplexer"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	select CRC16
+	help
+	  Build the hardware-independent codec for MediaTek Serial Transport
+	  Protocol (STP) mandatory and full frames, plus a small internal
+	  multiplexer for WMT and GNSS payloads. A future byte transport supplies
+	  and consumes frames; this option does not probe hardware, load firmware,
+	  or expose a userspace ABI.
+
+config MTK_STP_KUNIT_TEST
+	bool "KUnit tests for the MediaTek STP codec"
+	depends on KUNIT=y
+	depends on MTK_STP=y
+	help
+	  Exercise STP frame vectors, fragmented input, integrity failures, and
+	  WMT/GNSS channel isolation without hardware or firmware. This test uses
+	  only the transport-neutral codec and can run without a MediaTek device.
+	  It does not open a serial link, a BTIF DMA engine, or a firmware image.
+
 config MTK_MT6797_A72_POWER
 	bool "MediaTek MT6797 Cortex-A72 power resource observer"
 	depends on ARM64 && ARCH_MEDIATEK && OF

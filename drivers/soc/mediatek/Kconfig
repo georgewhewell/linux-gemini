@@ -81,6 +81,19 @@ config MTK_MT6797_A72_POWER
 	  authorizes CPU_ON.  It is groundwork for a later provider that can
 	  reproduce the hardware power sequence.
 
+config MTK_MT6797_CONSYS_INVENTORY
+	bool "MediaTek MT6797 CONSYS resource inventory"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on RESET_CONTROLLER
+	help
+	  Build the resource-only inventory driver for the MT6797 connectivity
+	  subsystem. It validates Device Tree resource metadata and acquires no
+	  active hardware ownership: no MMIO mapping or access, firmware request,
+	  power-domain change, or clock, regulator, reset, or interrupt operation.
+
+	  Keep the Device Tree node disabled until a separate power and transport
+	  implementation has been reviewed.
+
 config MTK_MT6797_DVFSP_HANDOFF
 	bool "MediaTek MT6797 stopped DVFSP firmware handoff"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

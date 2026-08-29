@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-consys.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 connectivity subsystem inventory
+
+maintainers:
+  - Gemini Mainline Experiment <gemini-mainline@example.invalid>
+
+description: |
+  The MT6797 connectivity subsystem contains the shared control resources for
+  Bluetooth, Wi-Fi, GNSS, and FM. This binding initially describes an
+  inventory-only platform device. Its driver acquires and validates resource
+  metadata, but does not map or access registers; enable or disable a clock,
+  regulator, reset, interrupt, or power domain; access firmware; or map the
+  shared reserved memory.
+
+  Keep the node disabled until a separately reviewed power, bus-protection,
+  firmware, and recovery contract exists. In particular, this binding does not
+  yet model the vendor SCP_SYS_CONN power gate as a clock or power domain.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-consys
+
+  reg:
+    items:
+      - description: Connectivity MCU configuration registers.
+      - description: AP reset generator registers.
+      - description: Top clock generator and connectivity remap registers.
+      - description: System power manager registers.
+
+  reg-names:
+    items:
+      - const: mcu
+      - const: ap-rgu
+      - const: topckgen
+      - const: spm
+
+  interrupts:
+    minItems: 2
+    maxItems: 2
+
+  interrupt-names:
+    items:
+      - const: bgf
+      - const: wdt
+
+  resets:
+    maxItems: 1
+
+  reset-names:
+    const: conn-mcu
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: conn
+
+  vcn18-supply:
+    description: Shared 1.8 V connectivity supply.
+
+  vcn28-supply:
+    description: Shared 2.8 V connectivity supply.
+
+  vcn33-bt-supply:
+    description: Bluetooth-specific 3.3 V connectivity supply.
+
+  vcn33-wifi-supply:
+    description: Wi-Fi-specific 3.3 V connectivity supply.
+
+  memory-region:
+    maxItems: 1
+    description: |
+      The 2 MiB, 2 MiB-aligned, no-map CONSYS shared-memory reservation.
+
+  memory-region-names:
+    const: shared
+
+  status:
+    enum: [ disabled, okay ]
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - resets
+  - reset-names
+  - memory-region
+  - memory-region-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/reset/mt6797-resets.h>
+
+    consys@18070000 {
+        compatible = "mediatek,mt6797-consys";
+        reg = <0 0x18070000 0 0x200>,
+              <0 0x10007000 0 0x100>,
+              <0 0x10000000 0 0x2000>,
+              <0 0x10006000 0 0x1000>;
+        reg-names = "mcu", "ap-rgu", "topckgen", "spm";
+        interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 285 IRQ_TYPE_LEVEL_LOW>;
+        interrupt-names = "bgf", "wdt";
+        resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
+        reset-names = "conn-mcu";
+        memory-region = <&consys_reserved_memory>;
+        memory-region-names = "shared";
+        status = "disabled";
+    };
+...

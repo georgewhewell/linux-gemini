@@ -94,6 +94,30 @@ config MTK_MT6797_CONSYS_INVENTORY
 	  Keep the Device Tree node disabled until a separate power and transport
 	  implementation has been reviewed.
 
+config MTK_MT6797_CONSYS_CORE
+	bool "MediaTek MT6797 CONSYS lifecycle core"
+	help
+	  Build the hardware-neutral lifecycle core for the MT6797 connectivity
+	  subsystem. It implements serialized power votes, bounded backend polls,
+	  and reverse-order cleanup, but includes no hardware backend and cannot
+	  map MMIO, alter power state, load firmware, or access the AFE.
+
+	  The inventory driver remains separate and does not instantiate this core.
+	  A future backend must settle the unverified reset and bus-protection
+	  sequence before any Device Tree node is enabled.
+
+config MTK_MT6797_CONSYS_CORE_KUNIT_TEST
+	tristate "KUnit tests for the MT6797 CONSYS lifecycle core"
+	depends on KUNIT=y
+	depends on MTK_MT6797_CONSYS_CORE=y
+	help
+	  Exercise the hardware-free CONSYS lifecycle state machine, timeout
+	  bounds, reference counting, and reverse-order cleanup using a fake
+	  backend. No Device Tree node, MMIO region, regulator, or clock is used.
+
+	  This is intended for KUnit-compatible test kernels and has no hardware
+	  dependency or firmware requirement.
+
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

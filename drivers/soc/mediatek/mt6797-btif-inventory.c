@@ -32,9 +32,9 @@ static void mt6797_btif_inventory_put_consys(void *data)
 	of_node_put(data);
 }
 
-static int mt6797_btif_inventory_get_resource(
-	struct platform_device *pdev, const char *name,
-	const struct resource **resource)
+static int mt6797_btif_get_resource(struct platform_device *pdev,
+				    const char *name,
+				    const struct resource **resource)
 {
 	*resource = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
 	if (!*resource)
@@ -54,18 +54,15 @@ static int mt6797_btif_inventory_probe(struct platform_device *pdev)
 	if (!inventory)
 		return -ENOMEM;
 
-	ret = mt6797_btif_inventory_get_resource(pdev, "core",
-					 &inventory->core);
+	ret = mt6797_btif_get_resource(pdev, "core", &inventory->core);
 	if (ret)
 		return ret;
 
-	ret = mt6797_btif_inventory_get_resource(pdev, "tx-dma",
-					 &inventory->tx_dma);
+	ret = mt6797_btif_get_resource(pdev, "tx-dma", &inventory->tx_dma);
 	if (ret)
 		return ret;
 
-	ret = mt6797_btif_inventory_get_resource(pdev, "rx-dma",
-					 &inventory->rx_dma);
+	ret = mt6797_btif_get_resource(pdev, "rx-dma", &inventory->rx_dma);
 	if (ret)
 		return ret;
 
@@ -100,7 +97,7 @@ static int mt6797_btif_inventory_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, -EINVAL, "missing CONSYS phandle\n");
 
 	ret = devm_add_action_or_reset(dev, mt6797_btif_inventory_put_consys,
-					   inventory->consys_np);
+				       inventory->consys_np);
 	if (ret)
 		return ret;
 

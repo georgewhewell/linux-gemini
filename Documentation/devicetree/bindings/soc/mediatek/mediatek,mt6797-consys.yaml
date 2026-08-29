@@ -99,20 +99,31 @@ examples:
     #include <dt-bindings/interrupt-controller/irq.h>
     #include <dt-bindings/reset/mt6797-resets.h>
 
-    consys@18070000 {
-        compatible = "mediatek,mt6797-consys";
-        reg = <0 0x18070000 0 0x200>,
-              <0 0x10007000 0 0x100>,
-              <0 0x10000000 0 0x2000>,
-              <0 0x10006000 0 0x1000>;
-        reg-names = "mcu", "ap-rgu", "topckgen", "spm";
-        interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>,
-                     <GIC_SPI 285 IRQ_TYPE_LEVEL_LOW>;
-        interrupt-names = "bgf", "wdt";
-        resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
-        reset-names = "conn-mcu";
-        memory-region = <&consys_reserved_memory>;
-        memory-region-names = "shared";
-        status = "disabled";
+    / {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        gic: interrupt-controller {
+            interrupt-controller;
+            #interrupt-cells = <3>;
+        };
+
+        consys@18070000 {
+            compatible = "mediatek,mt6797-consys";
+            reg = <0 0x18070000 0 0x200>,
+                  <0 0x10007000 0 0x100>,
+                  <0 0x10000000 0 0x2000>,
+                  <0 0x10006000 0 0x1000>;
+            reg-names = "mcu", "ap-rgu", "topckgen", "spm";
+            interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>,
+                         <GIC_SPI 285 IRQ_TYPE_LEVEL_LOW>;
+            interrupt-names = "bgf", "wdt";
+            interrupt-parent = <&gic>;
+            resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
+            reset-names = "conn-mcu";
+            memory-region = <&consys_reserved_memory>;
+            memory-region-names = "shared";
+            status = "disabled";
+        };
     };
 ...

@@ -36,6 +36,7 @@ obj-$(CONFIG_MTK_STP) += mtk-stp.o
 obj-$(CONFIG_MTK_STP_KUNIT_TEST) += mtk-stp-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_A72_POWER) += mt6797-a72-power.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_INVENTORY) += mt6797-consys.o
+obj-$(CONFIG_MTK_MT6797_BTIF_INVENTORY) += mt6797-btif-inventory.o
 obj-$(CONFIG_MTK_MT6797_DVFSP_HANDOFF) += mt6797-dvfsp-handoff.o
 obj-$(CONFIG_MTK_MT6797_DVFSP_CLOCK_BACKEND) += mt6797-dvfsp-clock-backend.o
 obj-$(CONFIG_MTK_MT6797_DVFSP_STATE_DECODERS) += mt6797-dvfsp-cspm-state.o

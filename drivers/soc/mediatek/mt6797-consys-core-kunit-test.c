@@ -7,14 +7,17 @@
 
 enum mt6797_consys_test_op {
 	TEST_OP_NONE,
-	TEST_ENABLE_SUPPLIES,
-	TEST_DISABLE_SUPPLIES,
+	TEST_ENABLE_VCN18,
+	TEST_DISABLE_VCN18,
+	TEST_ENABLE_VCN28,
+	TEST_DISABLE_VCN28,
 	TEST_PREPARE_IDENTITY,
 	TEST_UNPREPARE_IDENTITY,
 	TEST_ASSERT_RESET,
-	TEST_ENABLE_DOMAIN_CLOCK,
-	TEST_DISABLE_DOMAIN_CLOCK,
-	TEST_POLL_POWER_READY,
+	TEST_PREPARE_PWRON_CONFIG,
+	TEST_UNPREPARE_PWRON_CONFIG,
+	TEST_ENABLE_SCP_SYS_CONN,
+	TEST_DISABLE_SCP_SYS_CONN,
 	TEST_POLL_CHIP_READY,
 	TEST_DELAY,
 };
@@ -22,7 +25,7 @@ enum mt6797_consys_test_op {
 struct mt6797_consys_test_backend {
 	enum mt6797_consys_test_op calls[32];
 	u32 call_count;
-	u32 pending[2];
+	u32 pending;
 	u32 delay_min[8];
 	u32 delay_count;
 	int fail_op;
@@ -36,24 +39,24 @@ static int mt6797_consys_test_record(
 	return backend->fail_op == op ? -EIO : 0;
 }
 
-static int mt6797_consys_test_enable_supplies(void *context)
+static int mt6797_consys_test_enable_vcn18(void *context)
 {
-	return mt6797_consys_test_record(context, TEST_ENABLE_SUPPLIES);
+	return mt6797_consys_test_record(context, TEST_ENABLE_VCN18);
 }
 
-static int mt6797_consys_test_disable_supplies(void *context)
+static int mt6797_consys_test_disable_vcn18(void *context)
 {
-	return mt6797_consys_test_record(context, TEST_DISABLE_SUPPLIES);
+	return mt6797_consys_test_record(context, TEST_DISABLE_VCN18);
 }
 
-static int mt6797_consys_test_enable_domain_clock(void *context)
+static int mt6797_consys_test_enable_vcn28(void *context)
 {
-	return mt6797_consys_test_record(context, TEST_ENABLE_DOMAIN_CLOCK);
+	return mt6797_consys_test_record(context, TEST_ENABLE_VCN28);
 }
 
-static int mt6797_consys_test_disable_domain_clock(void *context)
+static int mt6797_consys_test_disable_vcn28(void *context)
 {
-	return mt6797_consys_test_record(context, TEST_DISABLE_DOMAIN_CLOCK);
+	return mt6797_consys_test_record(context, TEST_DISABLE_VCN28);
 }
 
 static int mt6797_consys_test_prepare_identity(void *context)
@@ -71,17 +74,39 @@ static int mt6797_consys_test_assert_reset(void *context)
 	return mt6797_consys_test_record(context, TEST_ASSERT_RESET);
 }
 
+static int mt6797_consys_test_prepare_pwron_config(void *context)
+{
+	return mt6797_consys_test_record(context, TEST_PREPARE_PWRON_CONFIG);
+}
+
+static int mt6797_consys_test_unprepare_pwron_config(void *context)
+{
+	return mt6797_consys_test_record(context, TEST_UNPREPARE_PWRON_CONFIG);
+}
+
+static int mt6797_consys_test_enable_scp_sys_conn(void *context)
+{
+	return mt6797_consys_test_record(context, TEST_ENABLE_SCP_SYS_CONN);
+}
+
+static int mt6797_consys_test_disable_scp_sys_conn(void *context)
+{
+	return mt6797_consys_test_record(context, TEST_DISABLE_SCP_SYS_CONN);
+}
+
 static int mt6797_consys_test_poll(void *context,
 				   enum mt6797_consys_poll poll)
 {
 	struct mt6797_consys_test_backend *backend = context;
-	enum mt6797_consys_test_op op = TEST_POLL_POWER_READY + poll;
+	enum mt6797_consys_test_op op = TEST_POLL_CHIP_READY;
 
+	if (poll != MT6797_CONSYS_POLL_CHIP_READY)
+		return -EINVAL;
 	mt6797_consys_test_record(backend, op);
 	if (backend->fail_op == op)
 		return -EIO;
-	if (backend->pending[poll]) {
-		backend->pending[poll]--;
+	if (backend->pending) {
+		backend->pending--;
 		return -EAGAIN;
 	}
 	return 0;
@@ -98,20 +123,23 @@ static void mt6797_consys_test_delay(void *context, u32 min, u32 max)
 
 static const struct mt6797_consys_ops mt6797_consys_test_ops = {
 	.abi = MT6797_CONSYS_LIFECYCLE_ABI,
-	.enable_supplies = mt6797_consys_test_enable_supplies,
-	.disable_supplies = mt6797_consys_test_disable_supplies,
+	.enable_vcn18 = mt6797_consys_test_enable_vcn18,
+	.disable_vcn18 = mt6797_consys_test_disable_vcn18,
+	.enable_vcn28 = mt6797_consys_test_enable_vcn28,
+	.disable_vcn28 = mt6797_consys_test_disable_vcn28,
 	.prepare_identity = mt6797_consys_test_prepare_identity,
 	.unprepare_identity = mt6797_consys_test_unprepare_identity,
-	.enable_domain_clock = mt6797_consys_test_enable_domain_clock,
-	.disable_domain_clock = mt6797_consys_test_disable_domain_clock,
 	.assert_reset = mt6797_consys_test_assert_reset,
+	.prepare_pwron_config = mt6797_consys_test_prepare_pwron_config,
+	.unprepare_pwron_config = mt6797_consys_test_unprepare_pwron_config,
+	.enable_scp_sys_conn = mt6797_consys_test_enable_scp_sys_conn,
+	.disable_scp_sys_conn = mt6797_consys_test_disable_scp_sys_conn,
 	.poll = mt6797_consys_test_poll,
 	.delay_us = mt6797_consys_test_delay,
 };
 
 static const struct mt6797_consys_timeouts mt6797_consys_test_timeouts = {
 	.poll_interval_us = 1,
-	.power_ready_timeout_us = 3,
 	.chip_ready_timeout_us = 3,
 };
 
@@ -139,11 +167,12 @@ static void mt6797_consys_test_expect_calls(
 static void mt6797_consys_test_reference_counting(struct kunit *test)
 {
 	static const enum mt6797_consys_test_op expected[] = {
-		TEST_ENABLE_SUPPLIES, TEST_DELAY, TEST_PREPARE_IDENTITY,
-		TEST_ASSERT_RESET, TEST_ENABLE_DOMAIN_CLOCK,
-		TEST_POLL_POWER_READY, TEST_POLL_CHIP_READY, TEST_ASSERT_RESET,
-		TEST_DISABLE_DOMAIN_CLOCK, TEST_UNPREPARE_IDENTITY,
-		TEST_DISABLE_SUPPLIES,
+		TEST_ENABLE_VCN18, TEST_DELAY, TEST_ENABLE_VCN28,
+		TEST_PREPARE_IDENTITY, TEST_ASSERT_RESET, TEST_PREPARE_PWRON_CONFIG,
+		TEST_ENABLE_SCP_SYS_CONN, TEST_DELAY, TEST_POLL_CHIP_READY,
+		TEST_ASSERT_RESET, TEST_DISABLE_SCP_SYS_CONN,
+		TEST_UNPREPARE_PWRON_CONFIG, TEST_UNPREPARE_IDENTITY,
+		TEST_DISABLE_VCN28, TEST_DISABLE_VCN18,
 	};
 	struct mt6797_consys_test_backend backend = { };
 	struct mt6797_consys_lifecycle lifecycle;
@@ -154,6 +183,8 @@ static void mt6797_consys_test_reference_counting(struct kunit *test)
 			MT6797_CONSYS_IDENTITY_HELD);
 	KUNIT_EXPECT_EQ(test, backend.delay_min[0],
 			MT6797_CONSYS_VCN18_SETTLE_US);
+	KUNIT_EXPECT_EQ(test, backend.delay_min[1],
+			MT6797_CONSYS_DOMAIN_SETTLE_US);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_lifecycle_users(&lifecycle), 1U);
 	KUNIT_ASSERT_EQ(test, mt6797_consys_identity_get(&lifecycle), 0);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_lifecycle_users(&lifecycle), 2U);
@@ -169,11 +200,12 @@ static void mt6797_consys_test_reference_counting(struct kunit *test)
 static void mt6797_consys_test_unwinds_in_reverse_order(struct kunit *test)
 {
 	static const enum mt6797_consys_test_op expected[] = {
-		TEST_ENABLE_SUPPLIES, TEST_DELAY, TEST_PREPARE_IDENTITY,
-		TEST_ASSERT_RESET, TEST_ENABLE_DOMAIN_CLOCK,
-		TEST_POLL_POWER_READY, TEST_POLL_CHIP_READY, TEST_ASSERT_RESET,
-		TEST_DISABLE_DOMAIN_CLOCK, TEST_UNPREPARE_IDENTITY,
-		TEST_DISABLE_SUPPLIES,
+		TEST_ENABLE_VCN18, TEST_DELAY, TEST_ENABLE_VCN28,
+		TEST_PREPARE_IDENTITY, TEST_ASSERT_RESET, TEST_PREPARE_PWRON_CONFIG,
+		TEST_ENABLE_SCP_SYS_CONN, TEST_DELAY, TEST_POLL_CHIP_READY,
+		TEST_ASSERT_RESET, TEST_DISABLE_SCP_SYS_CONN,
+		TEST_UNPREPARE_PWRON_CONFIG, TEST_UNPREPARE_IDENTITY,
+		TEST_DISABLE_VCN28, TEST_DISABLE_VCN18,
 	};
 	struct mt6797_consys_test_backend backend = {
 		.fail_op = TEST_POLL_CHIP_READY,
@@ -192,25 +224,25 @@ static void mt6797_consys_test_unwinds_in_reverse_order(struct kunit *test)
 static void mt6797_consys_test_times_out_with_bounded_polls(struct kunit *test)
 {
 	static const enum mt6797_consys_test_op expected[] = {
-		TEST_ENABLE_SUPPLIES, TEST_DELAY, TEST_PREPARE_IDENTITY,
-		TEST_ASSERT_RESET, TEST_ENABLE_DOMAIN_CLOCK,
-		TEST_POLL_POWER_READY, TEST_POLL_CHIP_READY, TEST_DELAY,
+		TEST_ENABLE_VCN18, TEST_DELAY, TEST_ENABLE_VCN28,
+		TEST_PREPARE_IDENTITY, TEST_ASSERT_RESET, TEST_PREPARE_PWRON_CONFIG,
+		TEST_ENABLE_SCP_SYS_CONN, TEST_DELAY, TEST_POLL_CHIP_READY, TEST_DELAY,
 		TEST_POLL_CHIP_READY, TEST_DELAY, TEST_POLL_CHIP_READY,
 		TEST_DELAY, TEST_POLL_CHIP_READY, TEST_ASSERT_RESET,
-		TEST_DISABLE_DOMAIN_CLOCK, TEST_UNPREPARE_IDENTITY,
-		TEST_DISABLE_SUPPLIES,
+		TEST_DISABLE_SCP_SYS_CONN, TEST_UNPREPARE_PWRON_CONFIG,
+		TEST_UNPREPARE_IDENTITY, TEST_DISABLE_VCN28, TEST_DISABLE_VCN18,
 	};
 	struct mt6797_consys_test_backend backend = {
-		.pending[MT6797_CONSYS_POLL_CHIP_READY] = 4,
+		.pending = 4,
 	};
 	struct mt6797_consys_lifecycle lifecycle;
 
 	mt6797_consys_test_init(test, &lifecycle, &backend);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_identity_get(&lifecycle), -ETIMEDOUT);
-	KUNIT_EXPECT_EQ(test, backend.delay_count, 4U);
+	KUNIT_EXPECT_EQ(test, backend.delay_count, 5U);
 	KUNIT_EXPECT_EQ(test, backend.delay_min[0],
 			MT6797_CONSYS_VCN18_SETTLE_US);
-	KUNIT_EXPECT_EQ(test, backend.delay_min[3],
+	KUNIT_EXPECT_EQ(test, backend.delay_min[4],
 			mt6797_consys_test_timeouts.poll_interval_us);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_lifecycle_state(&lifecycle),
 			MT6797_CONSYS_OFF);
@@ -221,14 +253,15 @@ static void mt6797_consys_test_times_out_with_bounded_polls(struct kunit *test)
 static void mt6797_consys_test_one_interval_reaches_deadline(struct kunit *test)
 {
 	static const enum mt6797_consys_test_op expected[] = {
-		TEST_ENABLE_SUPPLIES, TEST_DELAY, TEST_PREPARE_IDENTITY,
-		TEST_ASSERT_RESET, TEST_ENABLE_DOMAIN_CLOCK,
-		TEST_POLL_POWER_READY, TEST_POLL_CHIP_READY, TEST_DELAY,
-		TEST_POLL_CHIP_READY, TEST_ASSERT_RESET, TEST_DISABLE_DOMAIN_CLOCK,
-		TEST_UNPREPARE_IDENTITY, TEST_DISABLE_SUPPLIES,
+		TEST_ENABLE_VCN18, TEST_DELAY, TEST_ENABLE_VCN28,
+		TEST_PREPARE_IDENTITY, TEST_ASSERT_RESET, TEST_PREPARE_PWRON_CONFIG,
+		TEST_ENABLE_SCP_SYS_CONN, TEST_DELAY, TEST_POLL_CHIP_READY, TEST_DELAY,
+		TEST_POLL_CHIP_READY, TEST_ASSERT_RESET, TEST_DISABLE_SCP_SYS_CONN,
+		TEST_UNPREPARE_PWRON_CONFIG, TEST_UNPREPARE_IDENTITY,
+		TEST_DISABLE_VCN28, TEST_DISABLE_VCN18,
 	};
 	struct mt6797_consys_test_backend backend = {
-		.pending[MT6797_CONSYS_POLL_CHIP_READY] = 2,
+		.pending = 2,
 	};
 	struct mt6797_consys_lifecycle lifecycle;
 	struct mt6797_consys_timeouts timeouts = mt6797_consys_test_timeouts;
@@ -237,8 +270,8 @@ static void mt6797_consys_test_one_interval_reaches_deadline(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, mt6797_consys_lifecycle_init(&lifecycle,
 				&mt6797_consys_test_ops, &backend, &timeouts), 0);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_identity_get(&lifecycle), -ETIMEDOUT);
-	KUNIT_EXPECT_EQ(test, backend.delay_count, 2U);
-	KUNIT_EXPECT_EQ(test, backend.delay_min[1], timeouts.poll_interval_us);
+	KUNIT_EXPECT_EQ(test, backend.delay_count, 3U);
+	KUNIT_EXPECT_EQ(test, backend.delay_min[2], timeouts.poll_interval_us);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_lifecycle_state(&lifecycle),
 			MT6797_CONSYS_OFF);
 	mt6797_consys_test_expect_calls(test, &backend, expected,

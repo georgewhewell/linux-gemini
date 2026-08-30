@@ -3,8 +3,8 @@
  * Planet Computers Gemini PDA native display preparation overlay.
  *
  * This is safe to compose at boot with mt6797-gemini-pda.dtb: that board DT
- * sets mediatek,drm-on-demand on MMSYS, so this overlay makes resources and
- * components available but cannot start a panel modeset. Stage1 must first
+ * sets mediatek,drm-on-demand on MMSYS. The matching drivers defer before
+ * acquiring MM power, SMI, DSI or panel resources. Stage1 must first
  * establish watchdog service and then write 1 to MMSYS activate_drm. This is
  * a one-way bring-up boundary, not a permanent display disable switch.
  *
@@ -35,10 +35,21 @@
 };
 
 /* DMA-capable display blocks cannot be useful until their M4U path exists. */
-&m4u { status = "okay"; };
-&mipi_tx0 { status = "okay"; };
-&smi_common { status = "okay"; };
-&larb0 { status = "okay"; };
+&m4u {
+	status = "okay";
+};
+
+&mipi_tx0 {
+	status = "okay";
+};
+
+&smi_common {
+	status = "okay";
+};
+
+&larb0 {
+	status = "okay";
+};
 
 &mmsys {
 	port {

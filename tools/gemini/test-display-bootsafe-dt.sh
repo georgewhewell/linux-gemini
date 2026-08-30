@@ -40,12 +40,16 @@ require_link()
 	fi
 }
 
-# The base board must expose clocks while holding back automatic DRM creation.
+# The base board must expose clocks while holding back all guarded display
+# consumers until userspace activates the MMSYS boundary.
 require_present "$base" /syscon@14000000 mediatek,drm-on-demand
 
-# The composed DT restores the M4U dependency and leaves the unroutable OVL0
-# disabled; graph construction must select OVL0_2L as the first component.
+# The composed DT restores the complete MM dependency chain and leaves the
+# unroutable OVL0 disabled; driver-side gating keeps every enabled consumer
+# dormant until activate_drm is written.
 require_equal /iommu@10205000 status okay
+require_equal /dsi-phy@10215000 status okay
+require_equal /smi@14022000 status okay
 require_equal /larb@14020000 status okay
 require_equal /ovl@1400b000 status disabled
 require_equal /ovl@1400d000 status okay

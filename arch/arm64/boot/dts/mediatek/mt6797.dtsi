@@ -389,6 +389,11 @@
 				compatible = "mediatek,mt6351-fg-readonly";
 				status = "disabled";
 			};
+
+			mt6351fgadc: fuel-gauge-active {
+				compatible = "mediatek,mt6351-fgadc";
+				status = "disabled";
+			};
 		};
 	};
 

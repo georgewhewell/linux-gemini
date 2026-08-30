@@ -16,6 +16,11 @@ mt6797-gemini-pda-fuel-gauge-observe-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-fuel-gauge-observe.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-fuel-gauge-observe.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-fuel-gauge-active.dtbo
+mt6797-gemini-pda-fuel-gauge-active-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-fuel-gauge-active.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-fuel-gauge-active.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-dev.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-rfb1.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-bananapi-bpi-r64.dtb

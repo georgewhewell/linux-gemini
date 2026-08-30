@@ -10,6 +10,7 @@ obj-$(CONFIG_POWER_SUPPLY_HWMON) += power_supply_hwmon.o
 obj-$(CONFIG_ADC_BATTERY_HELPER) += adc-battery-helper.o
 obj-$(CONFIG_GENERIC_ADC_BATTERY)	+= generic-adc-battery.o
 obj-$(CONFIG_MT6351_FG_READONLY)	+= mt6351-fg-readonly.o
+obj-$(CONFIG_BATTERY_MT6351_FGADC)	+= mt6351-fgadc.o
 
 obj-$(CONFIG_APM_POWER)		+= apm_power.o
 obj-$(CONFIG_AXP20X_POWER)	+= axp20x_usb_power.o

@@ -198,6 +198,21 @@ static int toprgu_reset_deassert(struct reset_controller_dev *rcdev,
 	return toprgu_reset_update(rcdev, id, false);
 }
 
+static int toprgu_reset_status(struct reset_controller_dev *rcdev,
+				       unsigned long id)
+{
+	struct mtk_wdt_dev *data =
+		container_of(rcdev, struct mtk_wdt_dev, rcdev);
+	unsigned long flags;
+	bool asserted;
+
+	spin_lock_irqsave(&data->lock, flags);
+	asserted = readl(data->wdt_base + WDT_SWSYSRST) & BIT(id);
+	spin_unlock_irqrestore(&data->lock, flags);
+
+	return asserted;
+}
+
 static int toprgu_reset(struct reset_controller_dev *rcdev,
 			unsigned long id)
 {
@@ -214,6 +229,7 @@ static const struct reset_control_ops toprgu_reset_ops = {
 	.assert = toprgu_reset_assert,
 	.deassert = toprgu_reset_deassert,
 	.reset = toprgu_reset,
+	.status = toprgu_reset_status,
 };
 
 static int toprgu_register_reset_controller(struct platform_device *pdev,

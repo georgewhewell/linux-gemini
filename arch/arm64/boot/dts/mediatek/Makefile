@@ -6,6 +6,11 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-sony-xperia-m5.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-identity.dtbo
+mt6797-gemini-pda-consys-identity-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-identity.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-identity.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-dev.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-rfb1.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-bananapi-bpi-r64.dtb
@@ -174,6 +179,7 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += mt8395-radxa-nio-12l-8-hd-panel.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt8516-pumpkin.dtb
 
 # Device tree overlays support
+DTC_FLAGS_mt6797-gemini-pda := -@
 DTC_FLAGS_mt7986a-bananapi-bpi-r3 := -@
 DTC_FLAGS_mt7986a-bananapi-bpi-r3-mini := -@
 DTC_FLAGS_mt7988a-bananapi-bpi-r4 := -@

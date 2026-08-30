@@ -206,6 +206,26 @@ static void mt6797_consys_test_unwinds_in_reverse_order(struct kunit *test)
 					ARRAY_SIZE(expected));
 }
 
+/* A rail operation may have changed hardware before it returns its error. */
+static void mt6797_consys_test_unwinds_failed_vcn28_setup(struct kunit *test)
+{
+	static const enum mt6797_consys_test_op expected[] = {
+		TEST_ENABLE_VCN18, TEST_DELAY, TEST_ENABLE_VCN28,
+		TEST_DISABLE_VCN28, TEST_DISABLE_VCN18,
+	};
+	struct mt6797_consys_test_backend backend = {
+		.fail_op = TEST_ENABLE_VCN28,
+	};
+	struct mt6797_consys_lifecycle lifecycle;
+
+	mt6797_consys_test_init(test, &lifecycle, &backend);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_identity_get(&lifecycle), -EIO);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_lifecycle_state(&lifecycle),
+			MT6797_CONSYS_OFF);
+	mt6797_consys_test_expect_calls(test, &backend, expected,
+					ARRAY_SIZE(expected));
+}
+
 static void mt6797_consys_test_times_out_with_bounded_polls(struct kunit *test)
 {
 	static const enum mt6797_consys_test_op expected[] = {
@@ -298,6 +318,7 @@ static void mt6797_consys_test_rejects_invalid_contract(struct kunit *test)
 static struct kunit_case mt6797_consys_core_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_test_reference_counting),
 	KUNIT_CASE(mt6797_consys_test_unwinds_in_reverse_order),
+	KUNIT_CASE(mt6797_consys_test_unwinds_failed_vcn28_setup),
 	KUNIT_CASE(mt6797_consys_test_times_out_with_bounded_polls),
 	KUNIT_CASE(mt6797_consys_test_one_interval_reaches_deadline),
 	KUNIT_CASE(mt6797_consys_test_cleanup_failure_is_sticky),

@@ -54,5 +54,6 @@ enum {
  * the rail on or off; consumers must still use the regulator API for that.
  */
 int mt6351_regulator_set_hw_control(struct regulator *regulator, bool enable);
+int mt6351_regulator_get_hw_control(struct regulator *regulator, bool *enable);
 
 #endif /* __LINUX_REGULATOR_MT6351_H */

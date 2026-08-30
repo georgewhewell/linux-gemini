@@ -194,7 +194,8 @@ int mt6351_regulator_set_hw_control(struct regulator *regulator, bool enable)
 		return -EINVAL;
 
 	info = regulator_get_drvdata(regulator);
-	if (!info || (info->desc.id != MT6351_ID_VCN18 &&
+	if (!info || info->desc.ops != &mt6351_ldo_ops ||
+	    (info->desc.id != MT6351_ID_VCN18 &&
 		      info->desc.id != MT6351_ID_VCN28))
 		return -EINVAL;
 
@@ -207,6 +208,35 @@ int mt6351_regulator_set_hw_control(struct regulator *regulator, bool enable)
 				  enable ? MT6351_LDO_ON_CTRL : 0);
 }
 EXPORT_SYMBOL_GPL(mt6351_regulator_set_hw_control);
+
+int mt6351_regulator_get_hw_control(struct regulator *regulator, bool *enable)
+{
+	struct mt6351_regulator_info *info;
+	struct regmap *regmap;
+	unsigned int value;
+	int ret;
+
+	if (!regulator || !enable)
+		return -EINVAL;
+
+	info = regulator_get_drvdata(regulator);
+	if (!info || info->desc.ops != &mt6351_ldo_ops ||
+	    (info->desc.id != MT6351_ID_VCN18 &&
+		      info->desc.id != MT6351_ID_VCN28))
+		return -EINVAL;
+
+	regmap = regulator_get_regmap(regulator);
+	if (IS_ERR(regmap))
+		return PTR_ERR(regmap);
+
+	ret = regmap_read(regmap, info->desc.enable_reg, &value);
+	if (ret)
+		return ret;
+
+	*enable = value & MT6351_LDO_ON_CTRL;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6351_regulator_get_hw_control);
 
 static struct mt6351_regulator_info mt6351_regulators[] = {
 	MT6351_BUCK("buck-vcore", VCORE, mt6351_buck_range, 0x7f,

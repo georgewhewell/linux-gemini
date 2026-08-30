@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Deliberate one-shot MT6797 CONSYS identity experiment.
+ *
+ * This overlay is inert unless it is explicitly loaded, and the driver also
+ * rejects probe without mt6797_consys_live.identity_experiment=1.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/power/mt6797-power.h>
+
+/ {
+	fragment@0 {
+		target = <&consys>;
+
+		__overlay__ {
+			compatible = "mediatek,mt6797-consys-identity";
+			mediatek,conn-power-domain = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+			status = "okay";
+		};
+	};
+};

@@ -60,7 +60,7 @@ enum mt6797_consys_stp_session_state {
 struct mt6797_consys_stp_tx_slot {
 	bool valid;
 	size_t frame_length;
-	u8 *frame;
+	u8 frame[MT6797_CONSYS_STP_MAX_FRAME_SIZE];
 };
 
 struct mt6797_consys_stp_session {

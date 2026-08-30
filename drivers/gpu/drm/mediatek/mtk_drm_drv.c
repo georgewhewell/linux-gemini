@@ -657,6 +657,14 @@ static int mtk_drm_bind(struct device *dev)
 		return -EPROBE_DEFER;
 	}
 
+	/* The platform device can exist while its display-gated driver defers. */
+	if (!platform_get_drvdata(pdev)) {
+		dev_dbg(dev, "Waiting for disp-mutex driver %pOF\n",
+			private->mutex_node);
+		put_device(&pdev->dev);
+		return -EPROBE_DEFER;
+	}
+
 	private->mutex_dev = &pdev->dev;
 	private->mtk_drm_bound = true;
 	private->dev = dev;

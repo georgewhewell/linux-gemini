@@ -117,6 +117,7 @@ struct bq25890_device {
 	struct notifier_block usb_nb;
 	struct work_struct usb_work;
 	struct delayed_work pump_express_work;
+	struct delayed_work status_poll_work;
 	unsigned long usb_event;
 
 	struct regmap *rmap;
@@ -125,9 +126,11 @@ struct bq25890_device {
 	bool skip_reset;
 	bool read_back_init_data;
 	bool read_only;
+	bool status_poll_enabled;
 	bool force_hiz;
 	u32 pump_express_vbus_max;
 	u32 iinlim_percentage;
+	u32 status_poll_interval_ms;
 	enum bq25890_chip_version chip_version;
 	struct bq25890_init_data init_data;
 	struct bq25890_state state;
@@ -900,6 +903,27 @@ static irqreturn_t bq25890_irq_handler_thread(int irq, void *private)
 	return ret;
 }
 
+/*
+ * Some boards have a known charger bus but no safe GPIO-to-IRQ route.  Keep
+ * status useful in that narrow case without making the charger a polling
+ * control loop: ti,read-only restricts these transactions to the four
+ * non-destructive state fields in bq25890_get_chip_state().
+ */
+static void bq25890_status_poll_work(struct work_struct *work)
+{
+	struct bq25890_device *bq =
+		container_of(work, struct bq25890_device,
+			     status_poll_work.work);
+
+	mutex_lock(&bq->lock);
+	__bq25890_handle_irq(bq);
+	mutex_unlock(&bq->lock);
+
+	if (READ_ONCE(bq->status_poll_enabled))
+		schedule_delayed_work(&bq->status_poll_work,
+				      msecs_to_jiffies(bq->status_poll_interval_ms));
+}
+
 static int bq25890_chip_reset(struct bq25890_device *bq)
 {
 	int ret;
@@ -1455,6 +1479,17 @@ static int bq25890_fw_probe(struct bq25890_device *bq)
 
 	bq->read_only = device_property_read_bool(bq->dev, "ti,read-only");
 	if (bq->read_only) {
+		ret = device_property_read_u32(bq->dev,
+					       "ti,status-poll-interval-ms",
+					       &bq->status_poll_interval_ms);
+		if (ret && ret != -EINVAL)
+			return ret;
+
+		if (!ret && (bq->status_poll_interval_ms < 1000 ||
+			     bq->status_poll_interval_ms > 3600000))
+			return dev_err_probe(bq->dev, -EINVAL,
+				"invalid status poll interval\n");
+
 		/*
 		 * Do not require, infer, or program any battery or charge limits in
 		 * status-only mode. bq25890_hw_init() reads only live status fields.
@@ -1529,6 +1564,7 @@ static int bq25890_probe(struct i2c_client *client)
 
 	mutex_init(&bq->lock);
 	INIT_DELAYED_WORK(&bq->pump_express_work, bq25890_pump_express_work);
+	INIT_DELAYED_WORK(&bq->status_poll_work, bq25890_status_poll_work);
 
 	bq->rmap = devm_regmap_init_i2c(client, &bq25890_regmap_config);
 	if (IS_ERR(bq->rmap))
@@ -1589,6 +1625,12 @@ static int bq25890_probe(struct i2c_client *client)
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "registering power supply\n");
 
+	if (bq->status_poll_interval_ms) {
+		WRITE_ONCE(bq->status_poll_enabled, true);
+		schedule_delayed_work(&bq->status_poll_work,
+				      msecs_to_jiffies(bq->status_poll_interval_ms));
+	}
+
 	if (!bq->read_only) {
 		ret = devm_request_threaded_irq(dev, client->irq, NULL,
 						bq25890_irq_handler_thread,
@@ -1610,6 +1652,9 @@ static int bq25890_probe(struct i2c_client *client)
 static void bq25890_remove(struct i2c_client *client)
 {
 	struct bq25890_device *bq = i2c_get_clientdata(client);
+
+	WRITE_ONCE(bq->status_poll_enabled, false);
+	cancel_delayed_work_sync(&bq->status_poll_work);
 
 	if (!IS_ERR_OR_NULL(bq->usb_phy)) {
 		usb_unregister_notifier(bq->usb_phy, &bq->usb_nb);

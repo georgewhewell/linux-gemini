@@ -329,6 +329,8 @@ config MTK_IOMMU
 	select IOMMU_API
 	select IOMMU_IO_PGTABLE_ARMV7S
 	select MEMORY
+	select MTK_CMDQ
+	select MTK_MMSYS
 	select MTK_SMI
 	help
 	  Support for the M4U on certain Mediatek SOCs. M4U is MultiMedia

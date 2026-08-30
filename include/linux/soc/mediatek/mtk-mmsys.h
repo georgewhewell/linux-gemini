@@ -7,6 +7,7 @@
 #define __MTK_MMSYS_H
 
 #include <linux/kconfig.h>
+#include <linux/of.h>
 #include <linux/mailbox_controller.h>
 #include <linux/mailbox/mtk-cmdq-mailbox.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
@@ -123,7 +124,20 @@ bool mtk_mmsys_display_is_activated(void);
 #else
 static inline bool mtk_mmsys_display_is_activated(void)
 {
-	return true;
+	struct device_node *mmsys_np;
+
+	/*
+	 * A built-in consumer cannot call into a modular MMSYS provider.  Keep
+	 * an explicitly opted-in board fail-closed rather than silently treating
+	 * it as activated. Kconfig makes the provider reachable for the MT6797
+	 * IOMMU/SMI path; this fallback only preserves unaffected boards.
+	 */
+	mmsys_np = of_find_node_with_property(NULL, "mediatek,drm-on-demand");
+	if (!mmsys_np)
+		return true;
+
+	of_node_put(mmsys_np);
+	return false;
 }
 #endif
 

@@ -27,6 +27,11 @@ description: |
   default-false module parameter still gates hardware activation. This binding
   alone cannot start a BTIF, STP, firmware, or radio operation.
 
+  A separately gated one-shot PIO qualification may initialise the BTIF core
+  and briefly set/read/clear its documented internal loopback bit. It does not
+  write THR, enable the Linux IRQ, wake CONSYS, or send WMT/STP bytes. The
+  adapter synchronously clears IER and releases btifc before probe returns.
+
 properties:
   compatible:
     const: mediatek,mt6797-btif-pio
@@ -45,6 +50,14 @@ properties:
 
   clock-names:
     const: btifc
+
+  mediatek,experimental-pio-qualification:
+    type: boolean
+    description: |
+      Permit the one-shot clocked PIO register qualification. It is rejected
+      unless the independent read-only
+      mt6797_btif_pio_platform.enable_experimental_pio_qualification=1
+      parameter is supplied. This performs no CONSYS or radio operation.
 
 required:
   - compatible

@@ -57,6 +57,16 @@ const struct mt6797_btif_pio_lease *
 mt6797_btif_pio_acquire(struct mt6797_btif_pio *pio);
 
 /*
+ * Run the vendor's clocked PIO register qualification without attaching a
+ * CONSYS/STP consumer or enabling the Linux IRQ.  The caller must own a
+ * clocked platform lease and must close it immediately afterwards: this is a
+ * one-shot experiment, not a transport activation.  @tri_level receives the
+ * final, loopback-disabled trigger register value on success.
+ */
+int mt6797_btif_pio_qualify(const struct mt6797_btif_pio_lease *pio_lease,
+			    u32 *tri_level);
+
+/*
  * Bind exactly one active full-STP lease and then perform the vendor PIO core
  * setup. runtime_lease must be the exclusive, long-lived CONSYS lifecycle
  * capability and remains pinned until close() fences this PIO owner. The

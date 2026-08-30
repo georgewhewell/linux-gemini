@@ -340,12 +340,13 @@ int mt6797_btif_pio_handoff_full_bootstrap(
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_pio_handoff_full_bootstrap);
 
-int mt6797_btif_pio_promote_full(const struct mt6797_btif_pio_lease *lease)
+int mt6797_btif_pio_promote_full(const struct mt6797_btif_pio_lease *lease,
+				 mt6797_btif_pio_rx_cb_t receive, void *receive_context)
 {
 	struct mt6797_btif_pio *pio;
 	int ret = 0;
 
-	if (!lease || !lease->pio)
+	if (!lease || !lease->pio || !receive)
 		return -EINVAL;
 	pio = lease->pio;
 
@@ -354,8 +355,11 @@ int mt6797_btif_pio_promote_full(const struct mt6797_btif_pio_lease *lease)
 		ret = -ESHUTDOWN;
 	else if (pio->state != MT6797_BTIF_PIO_FULL_BOOTSTRAP)
 		ret = -EBUSY;
-	else
+	else {
+		pio->receive = receive;
+		pio->receive_context = receive_context;
 		pio->state = MT6797_BTIF_PIO_ACTIVE;
+	}
 	mutex_unlock(&pio->state_lock);
 	return ret;
 }
@@ -842,7 +846,9 @@ static void mt6797_btif_pio_test_mandatory_handoff_is_single_owner(
 	KUNIT_EXPECT_EQ(test, full->receive_count, 1U);
 	KUNIT_EXPECT_EQ(test, full->length, (size_t)2);
 	KUNIT_EXPECT_MEMEQ(test, full->bytes, bus->rx + 2, full->length);
-	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_promote_full(lease), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_promote_full(lease,
+									mt6797_btif_pio_test_receive_raw,
+									full), 0);
 	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_handoff_full_bootstrap(lease,
 										mt6797_btif_pio_test_receive_raw,
 										mandatory), -EBUSY);

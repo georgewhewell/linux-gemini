@@ -85,9 +85,14 @@ int mt6797_btif_pio_handoff_full_bootstrap(
 		const struct mt6797_btif_pio_lease *pio_lease,
 		mt6797_btif_pio_rx_cb_t receive, void *receive_context);
 
-/* Commit the already-installed full-STP consumer after exact reply matching. */
+/*
+ * Atomically replace the provisional consumer and commit full STP after exact
+ * reply matching.  The replacement must accept only the promoted session's
+ * normal lease; the provisional lease is invalid immediately afterward.
+ */
 int mt6797_btif_pio_promote_full(
-		const struct mt6797_btif_pio_lease *pio_lease);
+		const struct mt6797_btif_pio_lease *pio_lease,
+		mt6797_btif_pio_rx_cb_t receive, void *receive_context);
 
 /*
  * Callback suitable for mt6797_consys_stp_session_ops.transmit. context must

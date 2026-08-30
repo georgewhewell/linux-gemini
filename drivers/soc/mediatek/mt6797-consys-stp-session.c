@@ -222,24 +222,32 @@ static int mt6797_consys_stp_finish_frame_locked(
 
 	sequence = (session->header[0] >> 3) & 0x7;
 	ack = session->header[0] & 0x7;
-	ret = mt6797_consys_stp_process_ack_locked(session, ack);
-	if (ret)
-		return ret;
 
 	if (sequence == session->expected_rxseq) {
-		session->txack = sequence;
-		session->expected_rxseq = mt6797_consys_stp_sequence_next(sequence);
-		ret = mt6797_consys_stp_send_ack_locked(session, session->txack);
-		if (ret)
-			return ret;
-
 		if (mt6797_consys_stp_channel_supported(session->channel))
 			ret = session->ops.receive(session->ops.context, session->channel,
-						   session->payload,
-						   session->payload_length);
+							   session->payload,
+							   session->payload_length);
 		else
 			ret = -EOPNOTSUPP;
-		session->last_rx_ok = !ret;
+		if (ret) {
+			/*
+			 * Vendor stp_process_packet() only advances rxseq/processes the
+			 * peer ACK after a successful enqueue (stp_core.c:1356-1366).
+			 * Its failure path sends no ACK and waits for a retry
+			 * (stp_core.c:1369-1387).  Preserve both properties here.
+			 */
+			session->last_rx_ok = false;
+			return ret;
+		}
+
+		ret = mt6797_consys_stp_process_ack_locked(session, ack);
+		if (ret)
+			return ret;
+		session->txack = sequence;
+		session->expected_rxseq = mt6797_consys_stp_sequence_next(sequence);
+		session->last_rx_ok = true;
+		ret = mt6797_consys_stp_send_ack_locked(session, session->txack);
 		return ret;
 	}
 
@@ -568,6 +576,7 @@ struct mt6797_consys_stp_test_link {
 	enum mtk_stp_channel last_channel;
 	u8 last_payload[MTK_STP_MAX_PAYLOAD];
 	size_t last_payload_length;
+	int receive_error;
 };
 
 static int mt6797_consys_stp_test_transmit(void *context, const u8 *frame,
@@ -593,7 +602,7 @@ static int mt6797_consys_stp_test_receive(void *context,
 	link->last_channel = channel;
 	link->last_payload_length = payload_length;
 	memcpy(link->last_payload, payload, payload_length);
-	return 0;
+	return link->receive_error;
 }
 
 static struct mt6797_consys_stp_session *
@@ -732,6 +741,37 @@ static void mt6797_consys_stp_test_duplicate_and_out_of_order(struct kunit *test
 	mt6797_consys_stp_session_destroy(session);
 }
 
+static void mt6797_consys_stp_test_receive_failure_retries_without_ack(
+									struct kunit *test)
+{
+	const struct mt6797_consys_stp_session_lease *lease;
+	struct mt6797_consys_stp_test_link *link;
+	struct mt6797_consys_stp_session *session;
+	u8 *frame;
+	u8 payload = 0x37;
+	size_t frame_length;
+
+	session = mt6797_consys_stp_test_session(test, &link, &lease);
+	frame = kunit_kmalloc(test, MT6797_CONSYS_STP_MAX_FRAME_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, frame);
+	frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_WMT, 0, 7,
+									&payload, sizeof(payload));
+
+	link->receive_error = -ENOSPC;
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session, frame,
+								 frame_length), -ENOSPC);
+	KUNIT_EXPECT_EQ(test, link->rx_count, 1U);
+	KUNIT_EXPECT_EQ(test, link->tx_count, 0U);
+
+	link->receive_error = 0;
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_receive(session, frame,
+								 frame_length), 0);
+	KUNIT_EXPECT_EQ(test, link->rx_count, 2U);
+	KUNIT_EXPECT_EQ(test, link->tx_count, 1U);
+	KUNIT_EXPECT_EQ(test, link->frames[0][0], (u8)0x80);
+	mt6797_consys_stp_session_destroy(session);
+}
+
 static void mt6797_consys_stp_test_nak_and_timeout_retry(struct kunit *test)
 {
 	const struct mt6797_consys_stp_session_lease *lease;
@@ -803,6 +843,7 @@ static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_credit_exhaustion),
 	KUNIT_CASE(mt6797_consys_stp_test_cumulative_ack),
 	KUNIT_CASE(mt6797_consys_stp_test_duplicate_and_out_of_order),
+	KUNIT_CASE(mt6797_consys_stp_test_receive_failure_retries_without_ack),
 	KUNIT_CASE(mt6797_consys_stp_test_nak_and_timeout_retry),
 	KUNIT_CASE(mt6797_consys_stp_test_retry_limit_fences),
 	KUNIT_CASE(mt6797_consys_stp_test_malformed_and_quiesce),

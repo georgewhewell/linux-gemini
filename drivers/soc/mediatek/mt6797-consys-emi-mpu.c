@@ -9,9 +9,11 @@
  */
 
 #include <linux/arm-smccc.h>
+#include <linux/device.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/of_reserved_mem.h>
@@ -50,8 +52,23 @@ struct mt6797_consys_emi_mpu {
 	struct resource shared_mem;
 	struct mt6797_consys_emi_layout layout;
 	struct mt6797_consys_emi_owner owner;
-	struct device *consumer;
 };
+
+/*
+ * This lives in the provider module rather than a DT-created device.  A DT
+ * overlay can remove and recreate the platform device, but it must never
+ * recreate a path through a one-way EMI transaction in the same boot.
+ */
+enum mt6797_consys_emi_mpu_boot_state {
+	MT6797_CONSYS_EMI_MPU_BOOT_IDLE,
+	MT6797_CONSYS_EMI_MPU_BOOT_ATTEMPTED,
+	MT6797_CONSYS_EMI_MPU_BOOT_COMMITTED,
+	MT6797_CONSYS_EMI_MPU_BOOT_FATAL,
+};
+
+static DEFINE_MUTEX(mt6797_consys_emi_mpu_boot_lock);
+static enum mt6797_consys_emi_mpu_boot_state mt6797_consys_emi_mpu_boot_state;
+static bool mt6797_consys_emi_mpu_boot_module_pinned;
 
 static const struct mt6797_consys_emi_mpu_resource mt6797_consys_emi_mpu_resources[] = {
 	{ "emi", MT6797_EMI_MPU_BASE, MT6797_EMI_MPU_SIZE },
@@ -184,19 +201,40 @@ static const struct mt6797_consys_emi_ops mt6797_consys_emi_mpu_ops = {
 };
 
 static int
-mt6797_consys_emi_mpu_claim_provider(struct mt6797_consys_emi_mpu *mpu,
-				     struct device *consumer)
+mt6797_consys_emi_mpu_claim_provider(struct mt6797_consys_emi_mpu *mpu)
 {
 	int ret;
 
 	if (!enable_experimental_ownership)
 		return -EPERM;
-	if (mpu->consumer)
-		return mpu->consumer == consumer ? 0 : -EBUSY;
+
+	/*
+	 * protect() can have changed hardware before returning an error and the
+	 * vendor supplies no inverse.  This must outlive a DT overlay's platform
+	 * device, so consume a module-global boot latch before calling it.
+	 */
+	mutex_lock(&mt6797_consys_emi_mpu_boot_lock);
+	if (mt6797_consys_emi_mpu_boot_state != MT6797_CONSYS_EMI_MPU_BOOT_IDLE) {
+		ret = -EALREADY;
+		goto unlock_boot_state;
+	}
+	if (!mt6797_consys_emi_mpu_boot_module_pinned) {
+		if (!try_module_get(THIS_MODULE)) {
+			ret = -ESHUTDOWN;
+			goto unlock_boot_state;
+		}
+		mt6797_consys_emi_mpu_boot_module_pinned = true;
+	}
+	mt6797_consys_emi_mpu_boot_state = MT6797_CONSYS_EMI_MPU_BOOT_ATTEMPTED;
+	mutex_unlock(&mt6797_consys_emi_mpu_boot_lock);
 
 	ret = mt6797_consys_emi_start(&mpu->owner, &mpu->layout, true);
-	if (!ret)
-		mpu->consumer = consumer;
+	mutex_lock(&mt6797_consys_emi_mpu_boot_lock);
+	mt6797_consys_emi_mpu_boot_state = ret ? MT6797_CONSYS_EMI_MPU_BOOT_FATAL :
+		MT6797_CONSYS_EMI_MPU_BOOT_COMMITTED;
+
+unlock_boot_state:
+	mutex_unlock(&mt6797_consys_emi_mpu_boot_lock);
 	return ret;
 }
 
@@ -218,15 +256,27 @@ int mt6797_consys_emi_mpu_claim(struct device *consumer)
 	if (!pdev)
 		return -EPROBE_DEFER;
 
+	/* Serialize against provider unbind while using its devm-owned state. */
+	device_lock(&pdev->dev);
 	mpu = platform_get_drvdata(pdev);
 	if (!mpu)
 		ret = -EPROBE_DEFER;
 	else
-		ret = mt6797_consys_emi_mpu_claim_provider(mpu, consumer);
+		ret = mt6797_consys_emi_mpu_claim_provider(mpu);
+	device_unlock(&pdev->dev);
 	put_device(&pdev->dev);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_emi_mpu_claim);
+
+void mt6797_consys_emi_mpu_latch_fatal(void)
+{
+	mutex_lock(&mt6797_consys_emi_mpu_boot_lock);
+	if (mt6797_consys_emi_mpu_boot_state != MT6797_CONSYS_EMI_MPU_BOOT_IDLE)
+		mt6797_consys_emi_mpu_boot_state = MT6797_CONSYS_EMI_MPU_BOOT_FATAL;
+	mutex_unlock(&mt6797_consys_emi_mpu_boot_lock);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_emi_mpu_latch_fatal);
 
 static int mt6797_consys_emi_mpu_probe(struct platform_device *pdev)
 {

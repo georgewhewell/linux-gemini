@@ -10,12 +10,14 @@
 #include <linux/bits.h>
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
@@ -28,6 +30,8 @@
 #include <linux/soc/mediatek/mt6797-consys.h>
 #include <linux/soc/mediatek/mt6797-consys-emi-mpu.h>
 
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
 #define MT6797_CONSYS_MCU_CHIP_ID		0x8
 #define MT6797_CONSYS_MCU_CFG_ACR		0x110
 #define MT6797_CONSYS_MCU_CFG_ACR_MBIST	BIT(18)
@@ -38,6 +42,9 @@
 #define MT6797_CONSYS_SPM_PWR_STATUS		0x180
 #define MT6797_CONSYS_SPM_PWR_STATUS_2ND	0x184
 #define MT6797_CONSYS_CHIP_ID			0x0279
+#define MT6797_CONSYS_BGF_SPI			284
+#define MT6797_CONSYS_AFE_SIZE			SZ_256
+#define MT6797_CONSYS_RESET_RELEASE_SETTLE_MS	20
 
 #define MT6797_CONSYS_CHIP_POLL_INTERVAL_US	20000
 #define MT6797_CONSYS_CHIP_POLL_TIMEOUT_US	200000
@@ -57,6 +64,18 @@ module_param_named(shared_emi_ownership_experiment,
 		   shared_emi_ownership_experiment, bool, 0400);
 MODULE_PARM_DESC(shared_emi_ownership_experiment,
 		 "allow the MT6797 CONSYS persistent shared-EMI ownership experiment");
+
+static bool reset_release_experiment;
+module_param_named(reset_release_experiment, reset_release_experiment, bool,
+		   0400);
+MODULE_PARM_DESC(reset_release_experiment,
+		 "allow the MT6797 CONSYS bounded reset-release experiment");
+
+static bool shared_mem_preflight_experiment;
+module_param_named(shared_mem_preflight_experiment,
+		   shared_mem_preflight_experiment, bool, 0400);
+MODULE_PARM_DESC(shared_mem_preflight_experiment,
+		 "allow the MT6797 CONSYS read-only shared-memory preflight");
 
 struct mt6797_consys_live_resource {
 	const char *name;
@@ -82,6 +101,10 @@ struct mt6797_consys_live {
 	bool conn_domain_attached;
 	bool prepostid_observe;
 	bool shared_emi_ownership;
+	bool reset_release;
+	bool shared_mem_preflight;
+	bool reset_release_recovery_required;
+	int bgf_irq;
 	u32 chip_id;
 };
 
@@ -94,7 +117,26 @@ static const struct mt6797_consys_live_resource
 };
 
 static const struct mt6797_consys_live_resource mt6797_consys_live_afe_resource = {
-	"afe", 0x180b6000, SZ_256,
+	"afe", 0x180b6000, MT6797_CONSYS_AFE_SIZE,
+};
+
+struct mt6797_consys_live_afe_write {
+	u8 offset;
+	u32 value;
+};
+
+static const struct mt6797_consys_live_afe_write mt6797_consys_live_afe_writes[] = {
+	{ 0x20, 0x180b0160 },
+	{ 0x50, 0xb8925421 },
+	{ 0x54, 0x00006401 },
+	{ 0x60, 0xb8925421 },
+	{ 0x64, 0x00006401 },
+	{ 0x68, 0x08400000 },
+	{ 0x6c, 0x0c110200 },
+	{ 0x70, 0x012a020a },
+	{ 0x84, 0x00006401 },
+	{ 0x88, 0x08400000 },
+	{ 0x90, 0x012a020a },
 };
 
 /*
@@ -140,28 +182,51 @@ static int mt6797_consys_live_acquire_shared_mem(struct mt6797_consys_live *cons
 {
 	struct device *dev = consys->dev;
 	struct device_node *memory_region;
-	int ret;
+	struct reserved_mem *rmem;
+	int index;
 
+	if (of_count_phandle_with_args(dev->of_node, "memory-region", NULL) != 1)
+		return dev_err_probe(dev, -EINVAL,
+				     "CONSYS needs exactly one shared-memory reservation\n");
+
+	index = of_property_match_string(dev->of_node, "memory-region-names", "shared");
+	if (index != 0)
+		return dev_err_probe(dev, -EINVAL,
+				     "CONSYS shared-memory reservation must be index zero\n");
 	memory_region = of_parse_phandle(dev->of_node, "memory-region", 0);
 	if (!memory_region)
 		return dev_err_probe(dev, -EINVAL, "missing CONSYS shared memory\n");
 
-	if (!of_property_read_bool(memory_region, "no-map")) {
+	if (!of_device_is_available(memory_region) ||
+	    !of_property_read_bool(memory_region, "no-map")) {
 		of_node_put(memory_region);
 		return dev_err_probe(dev, -EINVAL,
-				     "CONSYS shared memory must be no-map\n");
+				     "CONSYS shared memory must be available and no-map\n");
 	}
-	of_node_put(memory_region);
 
-	ret = of_reserved_mem_region_to_resource_byname(dev->of_node, "shared",
-							&consys->shared_mem);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to acquire CONSYS shared memory\n");
+	/*
+	 * Dynamic reserved-memory nodes have no FDT reg property.  The boot-time
+	 * reserved-memory core owns their allocation for the kernel lifetime and
+	 * records the resolved base and size here; merely copying it does not map,
+	 * attach, or claim the region.
+	 */
+	rmem = of_reserved_mem_lookup(memory_region);
+	of_node_put(memory_region);
+	if (!rmem)
+		return dev_err_probe(dev, -ENODEV,
+				     "CONSYS shared memory was not reserved at boot\n");
+
+	resource_set_range(&consys->shared_mem, rmem->base, rmem->size);
+	consys->shared_mem.flags = IORESOURCE_MEM;
+	consys->shared_mem.name = rmem->name;
 
 	if (!mt6797_consys_shared_mem_valid(consys->shared_mem.start,
 					 resource_size(&consys->shared_mem)))
 		return dev_err_probe(dev, -EINVAL,
 				     "invalid CONSYS shared-memory geometry\n");
+
+	dev_info(dev, "CONSYS shared memory resolved: %pa+%pa (%s)\n",
+		 &rmem->base, &rmem->size, rmem->name ?: "unnamed");
 
 	return 0;
 }
@@ -402,6 +467,138 @@ static void mt6797_consys_live_observe_prepostid(struct mt6797_consys_live *cons
 	}
 }
 
+static int mt6797_consys_live_validate_bgf_irq(struct mt6797_consys_live *consys)
+{
+	struct of_phandle_args spec;
+	int irq_count;
+	int ret;
+
+	irq_count = platform_irq_count(to_platform_device(consys->dev));
+	if (irq_count != 2)
+		return dev_err_probe(consys->dev, irq_count < 0 ? irq_count : -EINVAL,
+				     "CONSYS must expose exactly BGF and WDT IRQs\n");
+	ret = of_irq_parse_one(consys->dev->of_node, 0, &spec);
+	if (ret)
+		return dev_err_probe(consys->dev, ret, "failed to parse BGF IRQ\n");
+	if (spec.args_count != 3 || spec.args[0] != GIC_SPI ||
+	    spec.args[1] != MT6797_CONSYS_BGF_SPI ||
+	    spec.args[2] != IRQ_TYPE_LEVEL_LOW) {
+		of_node_put(spec.np);
+		return dev_err_probe(consys->dev, -EINVAL,
+				     "BGF must use GIC SPI 284 level-low\n");
+	}
+	of_node_put(spec.np);
+
+	consys->bgf_irq = platform_get_irq_byname(to_platform_device(consys->dev),
+					  "bgf");
+	if (consys->bgf_irq < 0)
+		return consys->bgf_irq;
+	if ((irq_get_trigger_type(consys->bgf_irq) & IRQ_TYPE_SENSE_MASK) !=
+	    IRQ_TYPE_LEVEL_LOW)
+		return dev_err_probe(consys->dev, -EINVAL,
+				     "BGF IRQ did not resolve as level-low\n");
+
+	return 0;
+}
+
+static int mt6797_consys_live_configure_mbist(struct mt6797_consys_live *consys)
+{
+	u32 value;
+
+	value = readl(consys->mcu + MT6797_CONSYS_MCU_CFG_ACR);
+	writel(value | MT6797_CONSYS_MCU_CFG_ACR_MBIST,
+	       consys->mcu + MT6797_CONSYS_MCU_CFG_ACR);
+	if (!(readl(consys->mcu + MT6797_CONSYS_MCU_CFG_ACR) &
+	      MT6797_CONSYS_MCU_CFG_ACR_MBIST))
+		return dev_err_probe(consys->dev, -EIO, "MBIST bit did not stick\n");
+
+	return 0;
+}
+
+static int mt6797_consys_live_configure_afe(struct mt6797_consys_live *consys)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(mt6797_consys_live_afe_writes); i++) {
+		const struct mt6797_consys_live_afe_write *write =
+			&mt6797_consys_live_afe_writes[i];
+
+		writel(write->value, consys->afe + write->offset);
+		if (readl(consys->afe + write->offset) != write->value)
+			return dev_err_probe(consys->dev, -EIO,
+					     "AFE write at %#x did not stick\n",
+					     write->offset);
+	}
+
+	return 0;
+}
+
+/*
+ * This is not a firmware launch.  Vendor hw.c writes MBIST and AFE, releases
+ * reset, and waits 20 ms. The current GIC cannot report an IRQ line level,
+ * so leave the validated level-low BGF IRQ unrequested, assert reset after
+ * that exact vendor delay, and then release the identity lifetime.
+ */
+static int mt6797_consys_live_reset_release_probe(struct mt6797_consys_live *consys)
+{
+	struct mt6797_consys_runtime_lease lease = { };
+	int assert_ret;
+	int ret;
+	bool module_pinned = false;
+
+	ret = mt6797_consys_runtime_lease_acquire(&consys->lifecycle, &lease);
+	if (ret)
+		return ret;
+
+	ret = mt6797_consys_live_configure_mbist(consys);
+	if (ret)
+		goto release_lease;
+	ret = mt6797_consys_live_configure_afe(consys);
+	if (ret)
+		goto release_lease;
+
+	if (!try_module_get(THIS_MODULE)) {
+		ret = -ESHUTDOWN;
+		goto release_lease;
+	}
+	module_pinned = true;
+	ret = reset_control_deassert(consys->conn_mcu_reset);
+	if (!ret) {
+		msleep(MT6797_CONSYS_RESET_RELEASE_SETTLE_MS);
+		dev_info(consys->dev,
+			 "BGF SPI %d is configured level-low and remains unrequested during reset release\n",
+			 consys->bgf_irq);
+	}
+
+	assert_ret = reset_control_assert(consys->conn_mcu_reset);
+	if (assert_ret) {
+		/* Reset might be released; retain all votes and require watchdog reset. */
+		consys->reset_release_recovery_required = true;
+		mt6797_consys_emi_mpu_latch_fatal();
+		dev_err(consys->dev,
+			"CONMCU reset assertion failed after release: %d; reboot required\n",
+			assert_ret);
+		return ret ? ret : assert_ret;
+	}
+
+release_lease:
+	assert_ret = mt6797_consys_runtime_lease_release(&lease);
+	if (assert_ret) {
+		consys->reset_release_recovery_required = true;
+		/* Latch before retaining the live-module pin for watchdog recovery. */
+		mt6797_consys_emi_mpu_latch_fatal();
+		dev_err(consys->dev,
+			"reset-held lifecycle release failed after shared-EMI ownership: %d; "
+			"reboot required\n", assert_ret);
+		return ret ? ret : assert_ret;
+	}
+	if (module_pinned)
+		module_put(THIS_MODULE);
+	if (!ret)
+		ret = assert_ret;
+	return ret;
+}
+
 static const struct mt6797_consys_ops mt6797_consys_live_ops = {
 	.abi = MT6797_CONSYS_LIFECYCLE_ABI,
 	.enable_vcn18 = mt6797_consys_live_enable_vcn18,
@@ -430,6 +627,50 @@ static void mt6797_consys_live_release_domain(struct mt6797_consys_live *consys)
 
 }
 
+/*
+ * Qualify the complete reset-held identity path before making the separate,
+ * one-way EMI MPU claim.  identity_put() restores reset and every lifecycle
+ * rail/domain vote; a failed unwind leaves the lifecycle in ERROR and blocks
+ * the later claim.
+ */
+static int mt6797_consys_live_reset_held_preflight(
+		struct mt6797_consys_live *consys)
+{
+	int release_ret;
+	int ret;
+
+	ret = mt6797_consys_identity_get(&consys->lifecycle);
+	if (ret)
+		return dev_err_probe(consys->dev, ret,
+				     "reset-held rail/domain preflight failed\n");
+
+	release_ret = mt6797_consys_identity_put(&consys->lifecycle);
+	if (release_ret)
+		return dev_err_probe(consys->dev, release_ret,
+				     "reset-held rail/domain preflight unwind failed\n");
+
+	dev_info(consys->dev,
+		 "reset-held rail/domain preflight completed; votes released\n");
+	return 0;
+}
+
+static int mt6797_consys_live_post_emi_failure(struct mt6797_consys_live *consys,
+						const char *stage, int ret)
+{
+	if (mt6797_consys_lifecycle_state(&consys->lifecycle) ==
+	    MT6797_CONSYS_ERROR) {
+		dev_err(consys->dev,
+			"%s failed after permanent shared-EMI ownership: %d; "
+			"lifecycle is in ERROR, reboot required\n", stage, ret);
+		return ret;
+	}
+
+	dev_err(consys->dev,
+		"%s failed after permanent shared-EMI ownership: %d; "
+		"EMI remains claimed and terminal until reboot\n", stage, ret);
+	return ret;
+}
+
 static int mt6797_consys_live_probe(struct platform_device *pdev)
 {
 	struct mt6797_consys_lifecycle *lifecycle;
@@ -444,15 +685,27 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 				    "mediatek,mt6797-consys-emi-identity") &&
 	    !shared_emi_ownership_experiment)
 		return dev_err_probe(&pdev->dev, -EPERM,
-					     "shared-EMI ownership needs explicit boot opt-in\n");
+				     "shared-EMI ownership needs explicit boot opt-in\n");
+	if (of_device_is_compatible(pdev->dev.of_node,
+				    "mediatek,mt6797-consys-emi-reset-release") &&
+	    (!shared_emi_ownership_experiment || !reset_release_experiment))
+		return dev_err_probe(&pdev->dev, -EPERM,
+				     "reset release needs shared-EMI and reset-release opt-ins\n");
 
 	if (of_device_is_compatible(pdev->dev.of_node,
 				    "mediatek,mt6797-consys-prepostid-observe") &&
 	    !prepostid_observe_experiment)
 		return dev_err_probe(&pdev->dev, -EPERM,
 					     "pre-postid observation needs explicit boot opt-in\n");
+	if (of_device_is_compatible(pdev->dev.of_node,
+				    "mediatek,mt6797-consys-emi-preflight") &&
+	    !shared_mem_preflight_experiment)
+		return dev_err_probe(&pdev->dev, -EPERM,
+				     "shared-memory preflight needs explicit boot opt-in\n");
 
-	if (!identity_experiment)
+	if (!of_device_is_compatible(pdev->dev.of_node,
+				     "mediatek,mt6797-consys-emi-preflight") &&
+	    !identity_experiment)
 		return dev_err_probe(&pdev->dev, -EPERM,
 					     "identity experiment needs explicit boot opt-in\n");
 
@@ -465,7 +718,26 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 					"mediatek,mt6797-consys-prepostid-observe");
 	consys->shared_emi_ownership =
 		of_device_is_compatible(pdev->dev.of_node,
-					"mediatek,mt6797-consys-emi-identity");
+					"mediatek,mt6797-consys-emi-identity") ||
+		of_device_is_compatible(pdev->dev.of_node,
+					"mediatek,mt6797-consys-emi-reset-release");
+	consys->reset_release =
+		of_device_is_compatible(pdev->dev.of_node,
+					"mediatek,mt6797-consys-emi-reset-release");
+	consys->shared_mem_preflight =
+		of_device_is_compatible(pdev->dev.of_node,
+					"mediatek,mt6797-consys-emi-preflight");
+
+	if (consys->shared_mem_preflight) {
+		ret = mt6797_consys_live_acquire_shared_mem(consys);
+		if (ret)
+			return ret;
+
+		platform_set_drvdata(pdev, consys);
+		dev_info(&pdev->dev,
+			 "read-only CONSYS shared-memory preflight completed\n");
+		return 0;
+	}
 
 	ret = mt6797_consys_live_map_resource(pdev,
 					     &mt6797_consys_live_resources[0], &consys->mcu);
@@ -487,9 +759,14 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	if (consys->prepostid_observe) {
+	if (consys->prepostid_observe || consys->reset_release) {
 		ret = mt6797_consys_live_map_resource(pdev, &mt6797_consys_live_afe_resource,
 						      &consys->afe);
+		if (ret)
+			return ret;
+	}
+	if (consys->reset_release) {
+		ret = mt6797_consys_live_validate_bgf_irq(consys);
 		if (ret)
 			return ret;
 	}
@@ -497,15 +774,6 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 	ret = mt6797_consys_live_acquire_shared_mem(consys);
 	if (ret)
 		return ret;
-
-	if (consys->shared_emi_ownership) {
-		ret = mt6797_consys_emi_mpu_claim(&pdev->dev);
-		if (ret)
-			return dev_err_probe(&pdev->dev, ret,
-					     "failed to claim persistent shared-EMI ownership\n");
-		dev_info(&pdev->dev,
-			 "shared-EMI ownership committed before CONSYS identity\n");
-	}
 
 	consys->infracfg = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
 							   "mediatek,infracfg");
@@ -541,11 +809,42 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 	if (ret)
 		goto disable_domain;
 
+	if (consys->shared_emi_ownership) {
+		ret = mt6797_consys_live_reset_held_preflight(consys);
+		if (ret)
+			goto disable_domain;
+	}
+
 	mt6797_consys_live_log_state(consys, "pre-identity");
-	ret = mt6797_consys_identity_get(lifecycle);
+	if (consys->shared_emi_ownership) {
+		ret = mt6797_consys_emi_mpu_claim(&pdev->dev);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+					     "persistent shared-EMI claim failed; reboot before retry\n");
+		dev_info(&pdev->dev,
+			 "shared-EMI ownership committed before CONSYS identity\n");
+	}
+	if (consys->reset_release)
+		ret = mt6797_consys_live_reset_release_probe(consys);
+	else
+		ret = mt6797_consys_identity_get(lifecycle);
 	if (ret) {
-		mt6797_consys_live_log_state(consys, "identity-failed");
+		mt6797_consys_live_log_state(consys,
+					     consys->reset_release ?
+					     "reset-release-failed" : "identity-failed");
+		if (consys->reset_release_recovery_required)
+			return ret;
+		if (consys->shared_emi_ownership)
+			return mt6797_consys_live_post_emi_failure(consys,
+					consys->reset_release ? "reset release" : "identity", ret);
 		goto disable_domain;
+	}
+	if (consys->reset_release) {
+		mt6797_consys_live_log_state(consys, "post-reset-release");
+		platform_set_drvdata(pdev, consys);
+		dev_info(&pdev->dev,
+			 "reset release completed; reset asserted and CONN votes released\n");
+		return 0;
 	}
 
 	if (consys->prepostid_observe)
@@ -554,6 +853,9 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 	ret = mt6797_consys_identity_put(lifecycle);
 	if (ret) {
 		mt6797_consys_live_log_state(consys, "identity-put-failed");
+		if (consys->shared_emi_ownership)
+			return mt6797_consys_live_post_emi_failure(consys,
+					"identity release", ret);
 		goto disable_domain;
 	}
 	mt6797_consys_live_log_state(consys, "post-identity");
@@ -578,8 +880,10 @@ static void mt6797_consys_live_remove(struct platform_device *pdev)
 
 static const struct of_device_id mt6797_consys_live_of_match[] = {
 	{ .compatible = "mediatek,mt6797-consys-identity" },
+	{ .compatible = "mediatek,mt6797-consys-emi-preflight" },
 	{ .compatible = "mediatek,mt6797-consys-prepostid-observe" },
 	{ .compatible = "mediatek,mt6797-consys-emi-identity" },
+	{ .compatible = "mediatek,mt6797-consys-emi-reset-release" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, mt6797_consys_live_of_match);

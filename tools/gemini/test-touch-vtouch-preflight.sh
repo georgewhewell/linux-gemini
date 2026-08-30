@@ -20,7 +20,7 @@ printf '\000\000\000\007' > "$dt/pmic/regulator@7/linux,phandle"
 printf '\000\000\000\010' > "$dt/pio/eint@0/linux,phandle"
 printf '\000\000\000\011' > "$dt/pio/rstoutput0/phandle"
 printf 'mock,pmic\000' > "$dt/pmic/regulator@7/compatible"
-printf 'vtouch\000' > "$dt/pmic/regulator@7/regulator-name"
+printf 'vldo28\000' > "$dt/pmic/regulator@7/regulator-name"
 printf '\000*\271\260' > "$dt/pmic/regulator@7/regulator-min-microvolt"
 printf '\000*\271\260' > "$dt/pmic/regulator@7/regulator-max-microvolt"
 printf 'GPIO85__FUNC_EINT8\000' > "$dt/pio/eint@0/pins"
@@ -31,18 +31,20 @@ printf 'mediatek,cap_touch\000' > "$dt/soc/i2c@11011000/cap_touch@62/compatible"
 printf '\000\000\000b' > "$dt/soc/i2c@11011000/cap_touch@62/reg"
 
 mkdir -p "$fixture/regulator" "$fixture/regulator-class/regulator.7" "$fixture/pinctrl/mtk-pinctrl"
-printf 'vtouch 2800000uV enabled\n' > "$fixture/regulator/summary"
-printf 'vtouch\n' > "$fixture/regulator-class/regulator.7/name"
+printf 'vldo28 2800000uV enabled\n' > "$fixture/regulator/summary"
+printf 'vldo28\n' > "$fixture/regulator-class/regulator.7/name"
 printf '2800000\n' > "$fixture/regulator-class/regulator.7/microvolts"
 printf 'enabled\n' > "$fixture/regulator-class/regulator.7/status"
 printf 'gpio-68 (touch-reset) out lo\ngpio-85 (touch-irq) in hi\n' > "$fixture/gpio"
 printf 'pin 68 (GPIO68): GPIO UNCLAIMED\npin 85 (GPIO85): GPIO UNCLAIMED\n' > "$fixture/pinctrl/mtk-pinctrl/pinmux-pins"
+printf 'nvt_ts_check_chip_ver_trim: buf[1..6]=00 00 03 72 66 03\nnvt_read_pid: PID=0101\n' > "$fixture/vendor-dmesg"
 
 output=$(DT_ROOT="$dt" \
 	REGULATOR_SUMMARY="$fixture/regulator/summary" \
 	REGULATOR_CLASS="$fixture/regulator-class" \
 	GPIO_DEBUG="$fixture/gpio" \
 	PINCTRL_DEBUG="$fixture/pinctrl" \
+	KERNEL_LOG="$fixture/vendor-dmesg" \
 	"$collector")
 
 require()
@@ -53,16 +55,23 @@ require()
 	}
 }
 
-require 'schema=gemini-vtouch-evidence-v2'
+require 'schema=gemini-touch-contract-evidence-v3'
 require 'collector_mode=read_only'
 require 'i2c_opened=no'
+require 'identity_read_by_collector=no'
+require 'vendor_touch_vdd_expected_provider=mt6351_vldo28'
+require 'vendor_touch_vdd_expected_uv=2800000'
 require 'vtouch_supply_phandle=00000007'
 require "vtouch_supply_provider=$dt/pmic/regulator@7"
 test "$(printf '%s\n' "$output" | grep -Fc "vtouch_supply_provider=$dt/pmic/regulator@7")" -eq 1
 require 'touch_pinctrl_1_provider_pins=4750494f38355f5f46554e435f45494e543800'
 require 'touch_pinctrl_4_provider_pins=4750494f36385f5f46554e435f4750494f363800'
-require 'regulator_summary_vtouch=observed'
+require 'regulator_summary_vldo28=observed'
+require 'regulator_sysfs_vldo28_name=vldo28'
 require 'gpio_debug_gpio68_85=observed'
-require 'activation_gate=keep_touchscreen_disabled_until_live_vtouch_provider_and_reset_contract_are_reviewed'
+require 'reset_gpio68_observation=snapshot_only_not_a_polarity_or_timing_contract'
+require 'vendor_identity_log=observed'
+require 'identity_gate=apply_identity_overlay_only_after_vldo28_is_observed_and_vendor_client_is_unbound'
+require 'activation_gate=base_disabled_identity_overlay_requires_recovery_image_live_vldo28_and_no_vendor_client'
 
 echo "touch-vtouch-preflight fixtures: PASS"

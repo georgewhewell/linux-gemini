@@ -41,6 +41,11 @@ mt6797-gemini-pda-touchscreen-observe-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-touchscreen-observe.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-touchscreen-observe.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-touchscreen-identity.dtbo
+mt6797-gemini-pda-touchscreen-identity-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-touchscreen-identity.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-touchscreen-identity.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-usb11-host.dtbo
 mt6797-gemini-pda-usb11-host-dtbs := \
 	mt6797-gemini-pda.dtb \

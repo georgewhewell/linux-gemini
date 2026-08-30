@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA NT36772 touchscreen bus observer.
+ *
+ * This overlay is deliberately not part of mt6797-gemini-pda.dtb.  It creates
+ * an I2C4 adapter but explicitly leaves the touchscreen client disabled, so it
+ * neither starts an I2C transfer nor requests GPIO85/EINT8.  In particular,
+ * do not run an I2C address scan while using this overlay.
+ *
+ * Evidence:
+ * - The Gemini vendor DTS puts the touch stack on GPIO85/EINT8 and describes
+ *   GPIO68 only as a selectable reset pin state
+ *   (arch/arm64/boot/dts/aeon6797_6m_n.dts:579-638).
+ * - Its NT36xxx driver selects the interrupt pin, but does not drive the reset
+ *   pin (drivers/input/touchscreen/mediatek/aeon_nt36xxx/nt36xxx.c:1392-1393).
+ * - The vendor's VTOUCH regulator-to-board-net mapping is not available.  The
+ *   current mainline driver has no regulator, reset-GPIO, or polling contract.
+ *
+ * A full client/IRQ overlay must wait for that rail mapping.  The established
+ * rising IRQ and NT36772 protocol data remain in the disabled base client for
+ * the later, recovery-tested activation gate.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&i2c4 {
+	status = "okay";
+};
+
+&touchscreen {
+	status = "disabled";
+};

@@ -37,12 +37,17 @@ description: |
   makes no AFE, MBIST, reset, firmware, shared-memory, or radio write and then
   releases the identity lease. It needs its own overlay and boot parameter.
 
+  A fourth, separately named identity experiment may first claim the distinct
+  MT6797 shared-EMI MPU owner. That owner has no inverse; the identity driver
+  does not release it if subsequent identity work fails.
+
 properties:
   compatible:
     enum:
       - mediatek,mt6797-consys
       - mediatek,mt6797-consys-identity
       - mediatek,mt6797-consys-prepostid-observe
+      - mediatek,mt6797-consys-emi-identity
       - mediatek,mt6797-consys-runtime
 
   reg:
@@ -98,6 +103,10 @@ properties:
       This does not release reset, enable BTIF, load firmware, or enable a
       connectivity function.
 
+  mediatek,emi-mpu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Persistent MT6797 shared-EMI MPU owner for the EMI identity experiment.
+
   mediatek,infracfg:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: INFRACFG syscon containing the connectivity sleep-mask bit.
@@ -144,6 +153,7 @@ allOf:
           enum:
             - mediatek,mt6797-consys-identity
             - mediatek,mt6797-consys-prepostid-observe
+            - mediatek,mt6797-consys-emi-identity
     then:
       required:
         - mediatek,conn-power-domain
@@ -151,6 +161,13 @@ allOf:
         - mediatek,spm
         - vcn18-supply
         - vcn28-supply
+  - if:
+      properties:
+        compatible:
+          const: mediatek,mt6797-consys-emi-identity
+    then:
+      required:
+        - mediatek,emi-mpu
   - if:
       properties:
         compatible:

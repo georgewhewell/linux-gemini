@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-consys-emi-mpu.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 CONSYS shared-EMI MPU owner
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The MT6797 vendor CONSYS setup permanently protects the upper half of its
+  2 MiB shared reservation through EMI MPU region 19, configures the
+  CONSYS-to-AP remap field, and clears a 343 KiB window. The vendor source has
+  no inverse operation. This node must stay disabled in the shipped board DT.
+  Activating it needs an explicit overlay property and a boot-time parameter;
+  probe only validates resources. A separately gated CONSYS consumer claims
+  the one-way ownership transaction.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-consys-emi-mpu
+
+  reg:
+    minItems: 2
+    items:
+      - description: EMI MPU aperture used by the vendor secure firmware ABI.
+      - description: TOPCKGEN aperture containing the CONSYS remap register.
+
+  reg-names:
+    items:
+      - const: emi
+      - const: topckgen
+
+  memory-region:
+    maxItems: 1
+    description: The exact 2 MiB, 2 MiB-aligned, no-map CONSYS reservation.
+
+  memory-region-names:
+    const: shared
+
+  mediatek,experimental-shared-emi-ownership:
+    type: boolean
+    description: Explicitly permit this persistent ownership provider to probe.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - memory-region
+  - memory-region-names
+
+additionalProperties: false
+...

@@ -246,6 +246,16 @@
 		status = "disabled";
 	};
 
+	consys_emi_mpu: emi-mpu@10203000 {
+		compatible = "mediatek,mt6797-consys-emi-mpu";
+		reg = <0 0x10203000 0 0x1000>,
+		      <0 0x10000000 0 0x2000>;
+		reg-names = "emi", "topckgen";
+		memory-region = <&consys_reserved_memory>;
+		memory-region-names = "shared";
+		status = "disabled";
+	};
+
 };
 
 /*

@@ -59,21 +59,29 @@ static int mt6797_consys_g2c_run(struct device *dev,
 	struct mt6797_consys_postid_owner postid;
 	bool postid_initialized = false;
 	bool controller_active = false;
+	bool emi_claimed = false;
 	int ret;
 	int cleanup_ret;
 
-	/* Keep the one-way EMI claim ahead of the vendor identity prefix. */
+	/* Pin every reversible supplier before consuming the one-way EMI claim. */
+	dev_info(dev, "G2c before reversible supplier preflight\n");
+	ret = mt6797_consys_runtime_resource_lease_acquire(runtime_dev, &resources);
+	if (ret == -ENODEV)
+		ret = -EPROBE_DEFER;
+	dev_info(dev, "G2c after runtime resource preflight ret=%d\n", ret);
+	if (ret)
+		return ret;
+	ret = mt6797_consys_runtime_controller_preflight(controller_dev);
+	dev_info(dev, "G2c after controller/BTIF preflight ret=%d\n", ret);
+	if (ret)
+		goto out_resources;
+
 	dev_info(dev, "G2c before persistent EMI claim\n");
 	ret = mt6797_consys_emi_mpu_claim(dev);
 	dev_info(dev, "G2c after persistent EMI claim ret=%d\n", ret);
 	if (ret)
-		return ret;
-
-	dev_info(dev, "G2c before runtime resources\n");
-	ret = mt6797_consys_runtime_resource_lease_acquire(runtime_dev, &resources);
-	dev_info(dev, "G2c after runtime resources ret=%d\n", ret);
-	if (ret)
-		return ret;
+		goto out_resources;
+	emi_claimed = true;
 
 	dev_info(dev, "G2c before reset-held identity\n");
 	ret = mt6797_consys_runtime_platform_identity_acquire(&resources, &identity);
@@ -126,6 +134,10 @@ out_resources:
 	cleanup_ret = mt6797_consys_runtime_resource_lease_release(&resources);
 	if (!ret)
 		ret = cleanup_ret;
+	if (emi_claimed && ret) {
+		mt6797_consys_emi_mpu_latch_fatal();
+		dev_err(dev, "G2c failed after persistent EMI claim; reboot required\n");
+	}
 	return ret;
 }
 

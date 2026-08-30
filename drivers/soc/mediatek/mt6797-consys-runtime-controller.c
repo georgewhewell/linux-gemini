@@ -298,6 +298,27 @@ static int mt6797_consys_runtime_controller_start_controller(
 	return mt6797_consys_runtime_controller_start_unchecked(controller);
 }
 
+int mt6797_consys_runtime_controller_preflight(struct device *dev)
+{
+	struct mt6797_consys_runtime_controller *controller;
+	int ret = 0;
+
+	if (!dev)
+		return -EINVAL;
+	controller = dev_get_drvdata(dev);
+	if (!controller || !controller->btif_dev ||
+	    !dev_get_drvdata(controller->btif_dev))
+		return -EPROBE_DEFER;
+
+	mutex_lock(&controller->lock);
+	if (controller->state != MT6797_CONSYS_RUNTIME_CONTROLLER_READY)
+		ret = controller->state == MT6797_CONSYS_RUNTIME_CONTROLLER_FENCED ?
+			-ESHUTDOWN : -EBUSY;
+	mutex_unlock(&controller->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_preflight);
+
 int mt6797_consys_runtime_controller_start(struct device *dev)
 {
 	struct mt6797_consys_runtime_controller *controller;

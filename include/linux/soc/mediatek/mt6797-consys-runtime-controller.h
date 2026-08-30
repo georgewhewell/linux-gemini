@@ -31,6 +31,15 @@ struct mt6797_consys_runtime_controller_gnss_lease {
 };
 
 /*
+ * Prove that the controller and its BTIF supplier have completed probe before
+ * a chronology owner performs an irreversible shared-EMI transaction.  This
+ * is a software-only readiness check: it acquires no lease, clock, IRQ, MMIO,
+ * firmware or radio state.  A caller must still hold its runtime resource
+ * lease separately.
+ */
+int mt6797_consys_runtime_controller_preflight(struct device *dev);
+
+/*
  * Both the controller DT property and its default-false parameter gate start.
  * The caller must retain @dev and serialize this operation with controller
  * removal; managed supplier links then preserve the runtime/BTIF providers.

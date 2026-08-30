@@ -78,6 +78,9 @@ resolve_phandle()
 			property_hex "${resolve_key}_provider_max_uv" "$node/regulator-max-microvolt"
 			property_hex "${resolve_key}_provider_pins" "$node/pins"
 			property_hex "${resolve_key}_provider_pinmux" "$node/pinmux"
+			# A flattened node may expose both aliases with identical bytes.
+			# Report that provider once, not once per phandle property name.
+			break
 		done
 	done <<-EOF
 $(find "$dt_root" -type d -print)

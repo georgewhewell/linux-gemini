@@ -16,6 +16,7 @@ printf '\000\000\000\007' > "$dt/soc/touch@/vtouch-supply"
 printf '\000\000\000\010' > "$dt/soc/touch@/pinctrl-1"
 printf '\000\000\000\011' > "$dt/soc/touch@/pinctrl-4"
 printf '\000\000\000\007' > "$dt/pmic/regulator@7/phandle"
+printf '\000\000\000\007' > "$dt/pmic/regulator@7/linux,phandle"
 printf '\000\000\000\010' > "$dt/pio/eint@0/linux,phandle"
 printf '\000\000\000\011' > "$dt/pio/rstoutput0/phandle"
 printf 'mock,pmic\000' > "$dt/pmic/regulator@7/compatible"
@@ -57,6 +58,7 @@ require 'collector_mode=read_only'
 require 'i2c_opened=no'
 require 'vtouch_supply_phandle=00000007'
 require "vtouch_supply_provider=$dt/pmic/regulator@7"
+test "$(printf '%s\n' "$output" | grep -Fc "vtouch_supply_provider=$dt/pmic/regulator@7")" -eq 1
 require 'touch_pinctrl_1_provider_pins=4750494f38355f5f46554e435f45494e543800'
 require 'touch_pinctrl_4_provider_pins=4750494f36385f5f46554e435f4750494f363800'
 require 'regulator_summary_vtouch=observed'

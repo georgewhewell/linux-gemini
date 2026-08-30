@@ -265,6 +265,93 @@ static void mt6797_md1_test_pmic_write_failure_can_be_rolled_back(struct kunit *
 	regmap_exit(map);
 }
 
+struct mt6797_md1_spm_fake {
+	u32 registers[0x500 / sizeof(u32)];
+	unsigned int writes;
+	unsigned int fail_write;
+};
+
+static int mt6797_md1_spm_fake_read(void *context, unsigned int reg,
+				    unsigned int *value)
+{
+	struct mt6797_md1_spm_fake *fake = context;
+
+	if (reg & 3 || reg >= 0x500)
+		return -EINVAL;
+	*value = fake->registers[reg / sizeof(u32)];
+	return 0;
+}
+
+static int mt6797_md1_spm_fake_write(void *context, unsigned int reg,
+				     unsigned int value)
+{
+	struct mt6797_md1_spm_fake *fake = context;
+
+	if (reg & 3 || reg >= 0x500)
+		return -EINVAL;
+	if (++fake->writes == fake->fail_write)
+		return -EIO;
+	fake->registers[reg / sizeof(u32)] = value;
+	return 0;
+}
+
+static const struct regmap_bus mt6797_md1_spm_fake_bus = {
+	.reg_read = mt6797_md1_spm_fake_read,
+	.reg_write = mt6797_md1_spm_fake_write,
+};
+
+static const struct regmap_config mt6797_md1_spm_fake_config = {
+	.reg_bits = 32,
+	.val_bits = 32,
+	.reg_stride = 4,
+	.max_register = 0x4fc,
+};
+
+static void mt6797_md1_test_clkbuf_set_restores_only_owned_bits(struct kunit *test)
+{
+	struct mt6797_md1_clkbuf_snapshot snapshot;
+	struct mt6797_md1_spm_fake *fake;
+	struct regmap *map;
+
+	fake = kunit_kzalloc(test, sizeof(*fake), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, fake);
+	fake->registers[0x404 / sizeof(u32)] = 0xa5a50003;
+	map = regmap_init(NULL, &mt6797_md1_spm_fake_bus, fake,
+			  &mt6797_md1_spm_fake_config);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+
+	KUNIT_ASSERT_EQ(test, mt6797_md1_clkbuf_snapshot(map, &snapshot), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_clkbuf_set_modem_on(map, &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, fake->registers[0x404 / sizeof(u32)], 0xa5a50006);
+	/* Simulate an independent SPM update above the vendor-owned low bits. */
+	fake->registers[0x404 / sizeof(u32)] ^= BIT(16);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_clkbuf_restore(map, &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, fake->registers[0x404 / sizeof(u32)], 0xa5a40003);
+	regmap_exit(map);
+}
+
+static void mt6797_md1_test_clkbuf_write_failure_can_be_rolled_back(struct kunit *test)
+{
+	struct mt6797_md1_clkbuf_snapshot snapshot;
+	struct mt6797_md1_spm_fake *fake;
+	struct regmap *map;
+
+	fake = kunit_kzalloc(test, sizeof(*fake), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, fake);
+	fake->registers[0x404 / sizeof(u32)] = 0x5;
+	map = regmap_init(NULL, &mt6797_md1_spm_fake_bus, fake,
+			  &mt6797_md1_spm_fake_config);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+
+	KUNIT_ASSERT_EQ(test, mt6797_md1_clkbuf_snapshot(map, &snapshot), 0);
+	fake->fail_write = 1;
+	KUNIT_EXPECT_EQ(test, mt6797_md1_clkbuf_set_modem_on(map, &snapshot), -EIO);
+	fake->fail_write = 0;
+	KUNIT_ASSERT_EQ(test, mt6797_md1_clkbuf_restore(map, &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, fake->registers[0x404 / sizeof(u32)], 0x5);
+	regmap_exit(map);
+}
+
 static void mt6797_md1_test_spm_timeout_is_explicitly_restored(struct kunit *test)
 {
 	struct mt6797_md1_spm_snapshot snapshot;
@@ -290,6 +377,8 @@ static struct kunit_case mt6797_md1_prerelease_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_test_cleanup_failure_is_sticky),
 	KUNIT_CASE(mt6797_md1_test_pmic_apply_restores_every_field),
 	KUNIT_CASE(mt6797_md1_test_pmic_write_failure_can_be_rolled_back),
+	KUNIT_CASE(mt6797_md1_test_clkbuf_set_restores_only_owned_bits),
+	KUNIT_CASE(mt6797_md1_test_clkbuf_write_failure_can_be_rolled_back),
 	KUNIT_CASE(mt6797_md1_test_spm_timeout_is_explicitly_restored),
 	{ }
 };

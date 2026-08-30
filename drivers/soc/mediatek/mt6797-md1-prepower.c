@@ -21,6 +21,10 @@
 #define MT6797_MD1_SPM_MD1_PWR_CON	0x320
 #define MT6797_MD1_SPM_PWR_STATUS	0x180
 #define MT6797_MD1_SPM_PWR_STATUS_2ND	0x184
+#define MT6797_MD1_SPM_MDBSI_CON	0x404
+#define MT6797_MD1_SPM_MDBSI_MASK	GENMASK(2, 0)
+/* Vendor clk_buf_swctrl_modem_on[] yields CON=0, NFC=1, AUD=1. */
+#define MT6797_MD1_SPM_MDBSI_MODEM_ON	GENMASK(2, 1)
 
 #define MT6797_MD1_SPM_PWR_RST_B	BIT(0)
 #define MT6797_MD1_SPM_PWR_ISO		BIT(1)
@@ -110,6 +114,69 @@ static const unsigned int mt6797_md1_pmic_vendor_order[] = {
 	MT6797_MD1_VMD1_HW_CONTROL,
 	MT6797_MD1_VMODEM_HW_CONTROL,
 };
+
+/*
+ * The exact 3.18 MT6797 clock-buffer owner masks only MDBSI_CON[2:0],
+ * writes its modem-on configuration, and delays two microseconds.  It has no
+ * completion bit or acknowledgement.  Preserve and restore just the owned
+ * fields: doing so does not overwrite independent SPM users which may update
+ * another field while this explicitly gated diagnostic is active.
+ */
+int mt6797_md1_clkbuf_snapshot(struct regmap *spm,
+			       struct mt6797_md1_clkbuf_snapshot *snapshot)
+{
+	unsigned int value;
+	int ret;
+
+	if (!spm || !snapshot)
+		return -EINVAL;
+
+	snapshot->valid = false;
+	ret = regmap_read(spm, MT6797_MD1_SPM_MDBSI_CON, &value);
+	if (ret)
+		return ret;
+	snapshot->mdbsi_con_low = value & MT6797_MD1_SPM_MDBSI_MASK;
+	snapshot->valid = true;
+	return 0;
+}
+
+int mt6797_md1_clkbuf_set_modem_on(struct regmap *spm,
+				   struct mt6797_md1_clkbuf_snapshot *snapshot)
+{
+	unsigned int value;
+	int ret;
+
+	if (!spm || !snapshot || !snapshot->valid)
+		return -EINVAL;
+
+	ret = regmap_update_bits(spm, MT6797_MD1_SPM_MDBSI_CON,
+				 MT6797_MD1_SPM_MDBSI_MASK,
+				 MT6797_MD1_SPM_MDBSI_MODEM_ON);
+	if (ret)
+		return ret;
+	udelay(2);
+	/* This proves the AP-visible command latch only, never clock arrival. */
+	ret = regmap_read(spm, MT6797_MD1_SPM_MDBSI_CON, &value);
+	if (ret)
+		return ret;
+	return (value & MT6797_MD1_SPM_MDBSI_MASK) ==
+		MT6797_MD1_SPM_MDBSI_MODEM_ON ? 0 : -EIO;
+}
+
+int mt6797_md1_clkbuf_restore(struct regmap *spm,
+			      struct mt6797_md1_clkbuf_snapshot *snapshot)
+{
+	int ret;
+
+	if (!spm || !snapshot || !snapshot->valid)
+		return -EINVAL;
+
+	ret = regmap_update_bits(spm, MT6797_MD1_SPM_MDBSI_CON,
+				 MT6797_MD1_SPM_MDBSI_MASK,
+				 snapshot->mdbsi_con_low);
+	snapshot->valid = false;
+	return ret;
+}
 
 int mt6797_md1_pmic_snapshot(struct regmap *pmic,
 			     struct mt6797_md1_pmic_snapshot *snapshot)

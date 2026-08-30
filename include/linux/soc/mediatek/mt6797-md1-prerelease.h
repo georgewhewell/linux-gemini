@@ -33,6 +33,12 @@ struct mt6797_md1_spm_snapshot {
 	bool valid;
 };
 
+/* Only SPM_MDBSI_CON[2:0] is owned by the vendor RF clock-buffer path. */
+struct mt6797_md1_clkbuf_snapshot {
+	u32 mdbsi_con_low;
+	bool valid;
+};
+
 struct mt6797_md1_prerelease_ops {
 	u32 abi;
 	int (*pmic_on)(void *context);
@@ -61,6 +67,13 @@ int mt6797_md1_pmic_apply_vendor_values(struct regmap *pmic,
 					 struct mt6797_md1_pmic_snapshot *snapshot);
 int mt6797_md1_pmic_restore(struct regmap *pmic,
 			    struct mt6797_md1_pmic_snapshot *snapshot);
+
+int mt6797_md1_clkbuf_snapshot(struct regmap *spm,
+			       struct mt6797_md1_clkbuf_snapshot *snapshot);
+int mt6797_md1_clkbuf_set_modem_on(struct regmap *spm,
+				   struct mt6797_md1_clkbuf_snapshot *snapshot);
+int mt6797_md1_clkbuf_restore(struct regmap *spm,
+			      struct mt6797_md1_clkbuf_snapshot *snapshot);
 
 int mt6797_md1_spm_snapshot(void __iomem *spm,
 			    struct mt6797_md1_spm_snapshot *snapshot);

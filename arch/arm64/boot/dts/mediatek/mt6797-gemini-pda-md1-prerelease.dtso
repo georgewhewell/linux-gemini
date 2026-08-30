@@ -47,6 +47,7 @@
 					"infra-md2md-ccif-4", "infra-md2md-ccif-5";
 				mediatek,experimental-md1-prerelease;
 				mediatek,stage-inventory-only;
+				/* Deliberately absent: mediatek,spm and stage-clock-buffer-rollback. */
 				status = "disabled";
 			};
 		};

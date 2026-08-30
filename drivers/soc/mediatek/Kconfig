@@ -78,8 +78,8 @@ config MTK_MT6797_MD1_PRERELEASE
 	  SPM helper snapshots MD1 power control, issues only PWR_ON/PWR_ON_2ND, and
 	  waits with a finite retry count before restoring it. The supplied profile
 	  enables stage one only. Stage two additionally needs a separate PMIC
-	  rollback DT gate; stage three stops before the vendor's unimplemented
-	  clk_buf_set_by_flightmode(false) contract. No supplied stage reaches reset
+	  rollback DT gate; stage three separately snapshots, sets and restores the
+	  vendor clock-buffer command fields. No supplied stage reaches reset
 	  release, source-clock enable, CLDMA, CCIF, shared memory, firmware, SIM,
 	  or radio action.
 

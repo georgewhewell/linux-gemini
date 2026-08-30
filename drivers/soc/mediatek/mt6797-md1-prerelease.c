@@ -3,11 +3,11 @@
  * Fail-closed MT6797 MD1 pre-release platform adapter.
  *
  * Stage 1 consumes no active resource. Stage 2 snapshots, changes, and restores
- * every MD1 rail field touched by the vendor, then stops. Stage 3 and above are
- * refused before the vendor's required clk_buf_set_by_flightmode(false): there
- * is no mainline clock-buffer owner or reversible interface for that call.
- * The SPM primitive is intentionally not bound until that preceding contract
- * exists. No stage reaches reset release, boot vector, CLDMA, CCIF, SIM or RF.
+ * every MD1 rail field touched by the vendor, then stops. Stage 3 snapshots,
+ * changes and restores only the three SPM clock-buffer command fields used by
+ * the exact vendor clk_buf_set_by_flightmode(false) path, then stops.  The SPM
+ * MD1 power primitive is intentionally not bound here. No stage reaches reset
+ * release, boot vector, CLDMA, CCIF, SIM or RF.
  */
 
 #include <linux/device.h>
@@ -15,6 +15,7 @@
 #include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mfd/syscon.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -67,7 +68,8 @@ static ushort experimental_md1_prerelease_stage;
 module_param_named(experimental_md1_prerelease_stage,
 			   experimental_md1_prerelease_stage, ushort, 0400);
 MODULE_PARM_DESC(experimental_md1_prerelease_stage,
-			 "MD1 stage: 1=inventory, 2=PMIC snapshot/apply/restore, 3+=refuse");
+			 "MD1 stage: 1=inventory, 2=PMIC snapshot/apply/restore, "
+			 "3=clock-buffer snapshot/apply/restore, 4+=refuse");
 
 static int mt6797_md1_validate_resource(struct platform_device *pdev,
 		const struct mt6797_md1_prerelease_resource *expected)
@@ -164,6 +166,38 @@ static int mt6797_md1_pmic_rollback_stage(struct device *dev)
 	return 0;
 }
 
+static int mt6797_md1_clkbuf_rollback_stage(struct device *dev)
+{
+	struct mt6797_md1_clkbuf_snapshot snapshot;
+	struct regmap *spm;
+	int apply_ret, restore_ret, ret;
+
+	if (!device_property_read_bool(dev, "mediatek,stage-clock-buffer-rollback"))
+		return dev_err_probe(dev, -EPERM,
+			"clock-buffer stage requires an explicit rollback-only DT gate\n");
+
+	spm = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,spm");
+	if (IS_ERR(spm))
+		return dev_err_probe(dev, PTR_ERR(spm), "SPM syscon regmap unavailable\n");
+
+	ret = mt6797_md1_clkbuf_snapshot(spm, &snapshot);
+	if (ret)
+		return dev_err_probe(dev, ret, "could not snapshot SPM_MDBSI_CON[2:0]\n");
+
+	apply_ret = mt6797_md1_clkbuf_set_modem_on(spm, &snapshot);
+	/* Restore after any failed write or readback.  No state is retained. */
+	restore_ret = mt6797_md1_clkbuf_restore(spm, &snapshot);
+	if (apply_ret)
+		return dev_err_probe(dev, apply_ret,
+			"clock-buffer command latch failed; state restore was attempted\n");
+	if (restore_ret)
+		return dev_err_probe(dev, restore_ret, "clock-buffer state restore failed\n");
+
+	dev_info(dev,
+		 "SPM_MDBSI_CON[2:0] command latched/restored; stopping before MD1 power\n");
+	return 0;
+}
+
 static int mt6797_md1_prerelease_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -207,9 +241,11 @@ static int mt6797_md1_prerelease_probe(struct platform_device *pdev)
 		return 0;
 	case MT6797_MD1_STAGE_PMIC_ROLLBACK:
 		return mt6797_md1_pmic_rollback_stage(dev);
+	case MT6797_MD1_STAGE_CLOCK_BUFFER_GATE:
+		return mt6797_md1_clkbuf_rollback_stage(dev);
 	default:
 		return dev_err_probe(dev, -EOPNOTSUPP,
-			"stopping before unimplemented reversible clk_buf_set_by_flightmode\n");
+			"stopping before MD1 power-domain control\n");
 	}
 }
 

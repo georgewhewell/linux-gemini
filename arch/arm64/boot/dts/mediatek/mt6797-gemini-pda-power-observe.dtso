@@ -2,12 +2,13 @@
 /*
  * Planet Computers Gemini PDA BQ2589x charger observation candidate.
  *
- * The vendor Gemini configuration selects CONFIG_MTK_BQ25896_SUPPORT and its
- * MT6797 BQ driver uses the 7-bit address 0x6b. The vendor DT, however, does
- * not identify the physical I2C controller or the IRQ wiring. The legacy
- * driver's non-DT fallback nominally used logical adapter 0, which is not
- * proof of board routing. Keep both this node and its parent controller
- * disabled until that route is established on a recoverable image.
+ * The board DWS routes SW_CHARGER at 0x6b to I2C_CHANNEL_0, whose GPIO37/38
+ * pins and 0x11007000 controller match the mainline i2c0 description. A live
+ * vendor capture independently found the bound charger at i2c-0/0x6b.
+ *
+ * The exact BQ2589x variant and CHR_STAT interrupt route remain unknown. This
+ * opt-in overlay therefore enables only a no-write, no-IRQ status observer;
+ * it supplies no charge limits, battery consumer, regulator, or OTG control.
  */
 
 /dts-v1/;
@@ -20,11 +21,14 @@
 &i2c0 {
 	#address-cells = <1>;
 	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	status = "okay";
 
 	bq25896_observe: charger@6b {
 		compatible = "ti,bq25896", "ti,bq25890";
 		reg = <0x6b>;
 		ti,read-only;
-		status = "disabled";
+		status = "okay";
 	};
 };

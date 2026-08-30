@@ -120,6 +120,7 @@
 };
 
 &usb11_u2 {
+	mediatek,force-a-session-valid;
 	status = "okay";
 };
 

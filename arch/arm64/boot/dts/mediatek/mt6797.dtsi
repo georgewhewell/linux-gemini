@@ -139,7 +139,8 @@
 
 	usb11_tphy: t-phy@11210000 {
 		compatible = "mediatek,mt6797-tphy", "mediatek,generic-tphy-v1";
-		reg = <0 0x11210000 0 0x1000>;
+		/* The child port begins at +0x800 and owns its own resource. */
+		reg = <0 0x11210000 0 0x800>;
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;

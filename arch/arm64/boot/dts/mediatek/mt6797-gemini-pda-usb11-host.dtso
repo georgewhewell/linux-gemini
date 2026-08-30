@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA right USB-C host overlay.
+ *
+ * This is an explicit host-only recovery-test overlay.  The base Gemini DT
+ * intentionally leaves USB11 and I2C0 disabled.  Applying this overlay:
+ *
+ *   - enables the existing MT6797 USB11 MUSB controller in its base-DT host
+ *     mode and its USB2 PHY;
+ *   - instantiates only the FUSB301A measured on I2C0 at 0x25; and
+ *   - lets the existing FUSB301 driver enable the VBUS regulator chain only
+ *     after it has identified a Type-C sink over CC.
+ *
+ * Evidence:
+ * - The vendor FUSB301A path initializes GPIO70 high, GPIO71 low, GPIO72 low,
+ *   and GPIO94 low; after a valid CC attach it enables GPIO94, and enables
+ *   GPIO72 only in the USB1-OTG path:
+ *   gemini-linux-kernel-3.18/drivers/misc/mediatek/usb_c/fusb302/
+ *   usb_typec.c:96-167.
+ * - A retained vendor-kernel runtime capture identifies FUSB301A at I2C0/0x25
+ *   and its attach signal as GPIO64/EINT3; it identifies USB1 MUSB as the
+ *   host path: gemini-pda-mainline/experiments/2026-07-12-usb-typec-recovery/
+ *   results/runtime-usb-typec-battery-recovery-20260714.txt:13-25.
+ * - Upstream MT6797 maps GPIO64 to EINT3, unlike the vendor pseudo-node's
+ *   GPIO-number interrupt specifier: include/dt-bindings/pinctrl/
+ *   mt6797-pinfunc.h:364-365.  The mainline MTK EINT driver implements a
+ *   both-edge interrupt by flipping hardware edges, so this observes both
+ *   attach and detach: drivers/pinctrl/mediatek/mtk-eint.c:106-128,182-228.
+ *
+ * GPIO70/71 select the vendor's ordinary right-port data path.  HDMI and
+ * accessory switching are deliberately absent.  GPIO94 and GPIO72 are kept
+ * low until the FUSB301A driver sees a sink, then modelled as a parent/child
+ * fixed-regulator chain rather than raw charger-register writes.  This is not
+ * a charging, device-mode, dual-role, or USB-PD implementation.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/pinctrl/mt6797-pinfunc.h>
+
+&{/} {
+	/* Vendor usb1_drvvbus: GPIO94 high supplies the USB1 VBUS switch. */
+	usb11_drvvbus: regulator-usb11-drvvbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb11-drvvbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&pio 94 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/* Vendor sw7226_en: GPIO72 is downstream of usb1_drvvbus. */
+	usb11_vbus: regulator-usb11-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb11-vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&pio 72 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&usb11_drvvbus>;
+	};
+};
+
+&pio {
+	usb11_fusb301a_pins: usb11-fusb301a-pins {
+		/*
+		 * GPIO64 is EINT3 on mainline MT6797, not EINT64.  Do not add a
+		 * bias setting: the current MT6797 pinctrl descriptor has no pull
+		 * register map and would reject it while selecting this state.
+		 */
+		pins-attach {
+			pinmux = <MT6797_GPIO64__FUNC_EINT3>;
+		};
+
+		/* Vendor initial FUSB301A switch selection: GPIO70=1, GPIO71=0. */
+		pins-data-mux-enable {
+			pinmux = <MT6797_GPIO70__FUNC_GPIO70>;
+			output-high;
+		};
+
+		pins-data-mux-select {
+			pinmux = <MT6797_GPIO71__FUNC_GPIO71>;
+			output-low;
+		};
+	};
+};
+
+&i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	status = "okay";
+
+	fusb301a: typec@25 {
+		compatible = "onsemi,fusb301a";
+		reg = <0x25>;
+		interrupt-parent = <&pio>;
+		interrupts = <3 IRQ_TYPE_EDGE_BOTH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&usb11_fusb301a_pins>;
+		vbus-supply = <&usb11_vbus>;
+
+		connector {
+			compatible = "usb-c-connector";
+			label = "Gemini right USB-C";
+			power-role = "source";
+			data-role = "host";
+			typec-power-opmode = "default";
+			pd-disable;
+		};
+	};
+};
+
+&usb11_tphy {
+	status = "okay";
+};
+
+&usb11_u2 {
+	status = "okay";
+};
+
+&usb11 {
+	status = "okay";
+};

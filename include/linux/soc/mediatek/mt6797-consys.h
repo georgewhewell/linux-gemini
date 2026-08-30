@@ -54,7 +54,7 @@ struct mt6797_consys_timeouts {
  * restore either. The PWRON operation explicitly covers SPM PWRON_CONFG_EN;
  * successful enable_scp_sys_conn() means its CCF/SCPSYS provider has completed
  * domain power-on. Therefore this core does not read the raw power ACK
- * registers; their acknowledgement boundary belongs to that provider. The
+ * registers; their acknowledgment boundary belongs to that provider. The
  * same source's include/mtk_wcn_consys_hw.h:42 sets
  * CONSYS_AHB_CLK_MAGEMENT to 0, so an AHB bus-clock operation is deliberately
  * absent. The exact bus-protection masks remain disputed.
@@ -87,10 +87,9 @@ struct mt6797_consys_lifecycle {
 	u32 users;
 };
 
-int mt6797_consys_lifecycle_init(
-	struct mt6797_consys_lifecycle *lifecycle,
-	const struct mt6797_consys_ops *ops, void *context,
-	const struct mt6797_consys_timeouts *timeouts);
+int mt6797_consys_lifecycle_init(struct mt6797_consys_lifecycle *lifecycle,
+				 const struct mt6797_consys_ops *ops, void *context,
+				 const struct mt6797_consys_timeouts *timeouts);
 int mt6797_consys_identity_get(struct mt6797_consys_lifecycle *lifecycle);
 int mt6797_consys_identity_put(struct mt6797_consys_lifecycle *lifecycle);
 enum mt6797_consys_state

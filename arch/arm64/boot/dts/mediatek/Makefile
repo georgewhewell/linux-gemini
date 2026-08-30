@@ -64,6 +64,11 @@ mt6797-gemini-pda-consys-g2b-no-firmware-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-consys-g2b-no-firmware.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2b-no-firmware.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-g2c-patch-only.dtbo
+mt6797-gemini-pda-consys-g2c-patch-only-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-g2c-patch-only.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2c-patch-only.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-display.dtbo
 mt6797-gemini-pda-display-test-dtbs := \
 	mt6797-gemini-pda.dtb \

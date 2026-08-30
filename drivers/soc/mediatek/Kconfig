@@ -552,6 +552,29 @@ config MTK_MT6797_CONSYS_G2B_OWNER
 	  own gates. EMI and AFE have no vendor inverse; an uncertain post-ID cleanup
 	  is terminal for the boot and requires watchdog recovery.
 
+config MTK_MT6797_CONSYS_G2C_PATCH_OWNER
+	bool "Experimental MT6797 CONSYS G2c patch-only chronology owner"
+	depends on OF
+	depends on MTK_MT6797_CONSYS_RUNTIME=y
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER=y
+	depends on MTK_MT6797_CONSYS_POSTID=y
+	depends on MTK_MT6797_CONSYS_EMI_MPU=y
+	help
+	  Build the default-disabled successor to the G2b no-firmware diagnostic.
+	  It runs the same reviewed EMI, identity, MBIST/AFE, reset-release, and
+	  mandatory-to-full STP chronology, but requires the controller's normal
+	  hash-pinned patch stage. After that stage returns, it immediately fences
+	  BTIF, reasserts reset, and releases reversible votes. It does not issue a
+	  Wi-Fi, Bluetooth, GNSS, FM, or other WMT function-control command and
+	  creates no network or HCI device.
+
+	  A matching DT node needs its experimental boolean and the
+	  mt6797_consys_g2c_patch_owner.enable_experimental_g2c_patch_owner=1
+	  parameter. The patch, EMI/provider/BTIF/bootstrap/controller gates remain
+	  independent. The patch reset's internal effect, shared-EMI, and AFE have
+	  no proven inverse; uncertain post-ID cleanup is terminal for the boot and
+	  requires watchdog recovery.
+
 config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
 	bool "MediaTek MT6797 CONSYS firmware preflight gate"
 	depends on MTK_MT6797_CONSYS_CORE

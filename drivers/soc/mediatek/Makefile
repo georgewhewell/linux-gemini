@@ -57,6 +57,7 @@ obj-$(CONFIG_MTK_MT6797_CONSYS_LIVE) += mt6797-consys-live.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_RUNTIME) += mt6797-consys-runtime.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_RUNTIME_CONTROLLER) += mt6797-consys-runtime-controller.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_G2B_OWNER) += mt6797-consys-g2b-owner.o
+obj-$(CONFIG_MTK_MT6797_CONSYS_G2C_PATCH_OWNER) += mt6797-consys-g2c-patch-owner.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT) += mt6797-consys-firmware.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT_KUNIT_TEST) += mt6797-consys-firmware-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD) += mt6797-consys-wmt-patch.o

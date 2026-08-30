@@ -24,8 +24,8 @@ description: |
 
   No shipped Gemini DT node uses this compatible. Any future hand-authored
   provider node must remain disabled by default, and the adapter's independent
-  default-false module parameter still gates hardware activation. This binding alone
-  cannot start a BTIF, STP, firmware, or radio operation.
+  default-false module parameter still gates hardware activation. This binding
+  alone cannot start a BTIF, STP, firmware, or radio operation.
 
 properties:
   compatible:

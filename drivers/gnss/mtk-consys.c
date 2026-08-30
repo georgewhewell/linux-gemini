@@ -91,6 +91,8 @@ int mtk_gnss_start(struct mtk_gnss *gnss)
 
 	if (!gnss)
 		return -EINVAL;
+	if (!READ_ONCE(gnss->initialized))
+		return -ENODEV;
 
 	ret = mtk_gnss_wait_for_transition(gnss);
 	if (ret)
@@ -124,7 +126,7 @@ void mtk_gnss_stop(struct mtk_gnss *gnss)
 {
 	int ret;
 
-	if (!gnss)
+	if (!gnss || !READ_ONCE(gnss->initialized))
 		return;
 
 	mtk_gnss_wait_for_transition_uninterruptible(gnss);
@@ -148,6 +150,8 @@ int mtk_gnss_write(struct mtk_gnss *gnss, const u8 *data, size_t data_len)
 
 	if (!gnss || (!data && data_len))
 		return -EINVAL;
+	if (!READ_ONCE(gnss->initialized))
+		return -ENODEV;
 
 	ret = mtk_gnss_wait_for_transition(gnss);
 	if (ret)
@@ -183,7 +187,7 @@ EXPORT_SYMBOL_GPL(mtk_gnss_write);
 
 void mtk_gnss_transport_reset(struct mtk_gnss *gnss)
 {
-	if (!gnss)
+	if (!gnss || !READ_ONCE(gnss->initialized))
 		return;
 
 	if (mtk_gnss_wait_for_transition(gnss))
@@ -302,7 +306,7 @@ void mtk_gnss_unregister(struct mtk_gnss *gnss)
 	struct gnss_device *gdev;
 	const struct mt6797_consys_stp_session_lease *session_lease;
 
-	if (!gnss)
+	if (!gnss || !READ_ONCE(gnss->initialized))
 		return;
 
 	for (;;) {

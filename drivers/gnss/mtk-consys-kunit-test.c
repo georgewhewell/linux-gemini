@@ -301,6 +301,19 @@ static void mtk_gnss_test_reregister(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, ret, 0);
 }
 
+static void mtk_gnss_test_unregistered_endpoint_is_safe(struct kunit *test)
+{
+	static const u8 payload[] = { 0x01 };
+	struct mtk_gnss gnss = { };
+
+	KUNIT_EXPECT_EQ(test, mtk_gnss_start(&gnss), -ENODEV);
+	KUNIT_EXPECT_EQ(test, mtk_gnss_write(&gnss, payload, sizeof(payload)),
+			-ENODEV);
+	mtk_gnss_stop(&gnss);
+	mtk_gnss_transport_reset(&gnss);
+	mtk_gnss_unregister(&gnss);
+}
+
 static void mtk_gnss_test_teardown_waits_for_transition_and_serializes(
 									struct kunit *test)
 {
@@ -350,6 +363,7 @@ static struct kunit_case mtk_gnss_test_cases[] = {
 	KUNIT_CASE(mtk_gnss_test_fifo_overflow_is_reported),
 	KUNIT_CASE(mtk_gnss_test_power_off_failure_requires_reset),
 	KUNIT_CASE(mtk_gnss_test_reregister),
+	KUNIT_CASE(mtk_gnss_test_unregistered_endpoint_is_safe),
 	KUNIT_CASE(mtk_gnss_test_teardown_waits_for_transition_and_serializes),
 	{}
 };

@@ -63,7 +63,9 @@ void mtk_gnss_unregister(struct mtk_gnss *gnss);
 /*
  * These are the GNSS endpoint session operations.  start() calls the supplied
  * controller-specific power callback; stop() makes a failed power-off sticky
- * so that a transport recovery is required before reopening.
+ * so that a transport recovery is required before reopening. Calls made on a
+ * zero-initialized endpoint before registration are rejected or are no-ops,
+ * which lets common error-unwind paths call them unconditionally.
  */
 int mtk_gnss_start(struct mtk_gnss *gnss);
 void mtk_gnss_stop(struct mtk_gnss *gnss);

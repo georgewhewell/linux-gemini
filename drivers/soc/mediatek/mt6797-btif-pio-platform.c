@@ -41,6 +41,7 @@
 
 #include <linux/soc/mediatek/mt6797-btif-pio.h>
 #include <linux/soc/mediatek/mt6797-btif-pio-platform.h>
+#include <linux/soc/mediatek/mt6797-btif-stp-bootstrap.h>
 #include <linux/soc/mediatek/mt6797-consys.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
 #include <linux/soc/mediatek/mtk-stp.h>
@@ -60,6 +61,7 @@ MODULE_PARM_DESC(enable_experimental_platform_adapter,
 enum mt6797_btif_pio_platform_state {
 	MT6797_BTIF_PIO_PLATFORM_READY,
 	MT6797_BTIF_PIO_PLATFORM_LEASED,
+	MT6797_BTIF_PIO_PLATFORM_BOOTSTRAP,
 	MT6797_BTIF_PIO_PLATFORM_ACTIVE,
 	MT6797_BTIF_PIO_PLATFORM_QUIESCING,
 	MT6797_BTIF_PIO_PLATFORM_FENCED,
@@ -250,6 +252,82 @@ mt6797_btif_pio_platform_acquire(struct device *dev)
 	return mt6797_btif_pio_platform_reserve(adapter);
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_pio_platform_acquire);
+
+static int mt6797_btif_pio_platform_bootstrap_enable_irq(void *context)
+{
+	struct mt6797_btif_pio_platform *adapter = context;
+	int ret = 0;
+
+	mutex_lock(&adapter->state_lock);
+	if (adapter->state != MT6797_BTIF_PIO_PLATFORM_BOOTSTRAP) {
+		ret = -ESHUTDOWN;
+	} else {
+		/* The mandatory RX owner was installed before this callback. */
+		adapter->state = MT6797_BTIF_PIO_PLATFORM_ACTIVE;
+		adapter->irq_enabled = true;
+		adapter->irq_ops->enable(adapter->irq_context, adapter->irq);
+	}
+	mutex_unlock(&adapter->state_lock);
+
+	return ret;
+}
+
+static void mt6797_btif_pio_platform_bootstrap_close(void *context)
+{
+	struct mt6797_btif_pio_platform *adapter = context;
+
+	mt6797_btif_pio_platform_close(&adapter->lease);
+}
+
+struct mt6797_btif_stp_bootstrap *
+mt6797_btif_pio_platform_bootstrap_create(
+		const struct mt6797_btif_pio_platform_lease *platform_lease,
+		const struct mt6797_consys_runtime_lease *runtime_lease)
+{
+	struct mt6797_btif_pio_platform *adapter;
+	struct mt6797_btif_stp_bootstrap_ops ops;
+	struct mt6797_btif_stp_bootstrap *bootstrap;
+
+	if (!platform_lease || !platform_lease->adapter || !runtime_lease)
+		return ERR_PTR(-EINVAL);
+	if (!READ_ONCE(enable_experimental_platform_adapter))
+		return ERR_PTR(-EPERM);
+	if (!mt6797_consys_runtime_lease_active(runtime_lease))
+		return ERR_PTR(-ESHUTDOWN);
+
+	adapter = platform_lease->adapter;
+	mutex_lock(&adapter->state_lock);
+	if (platform_lease != &adapter->lease ||
+	    adapter->state == MT6797_BTIF_PIO_PLATFORM_FENCED) {
+		mutex_unlock(&adapter->state_lock);
+		return ERR_PTR(-ESHUTDOWN);
+	}
+	if (adapter->state != MT6797_BTIF_PIO_PLATFORM_LEASED) {
+		mutex_unlock(&adapter->state_lock);
+		return ERR_PTR(-EBUSY);
+	}
+	/* Prevent the direct full-session path from racing this one owner. */
+	adapter->state = MT6797_BTIF_PIO_PLATFORM_BOOTSTRAP;
+	mutex_unlock(&adapter->state_lock);
+
+	ops = (struct mt6797_btif_stp_bootstrap_ops) {
+		.enable_irq = mt6797_btif_pio_platform_bootstrap_enable_irq,
+		.close = mt6797_btif_pio_platform_bootstrap_close,
+		.context = adapter,
+	};
+	bootstrap = mt6797_btif_stp_bootstrap_create(adapter->pio_lease,
+						     runtime_lease, &ops);
+	if (!IS_ERR(bootstrap))
+		return bootstrap;
+
+	/* Allocation failed before bootstrap could own any PIO/IRQ transition. */
+	mutex_lock(&adapter->state_lock);
+	if (adapter->state == MT6797_BTIF_PIO_PLATFORM_BOOTSTRAP)
+		adapter->state = MT6797_BTIF_PIO_PLATFORM_LEASED;
+	mutex_unlock(&adapter->state_lock);
+	return bootstrap;
+}
+EXPORT_SYMBOL_GPL(mt6797_btif_pio_platform_bootstrap_create);
 
 int mt6797_btif_pio_platform_attach_full_stp(
 		const struct mt6797_btif_pio_platform_lease *platform_lease,
@@ -769,12 +847,49 @@ static void mt6797_btif_pio_platform_test_irq_fence(struct kunit *test)
 	mt6797_btif_pio_platform_test_stop(ctx);
 }
 
+static void mt6797_btif_pio_platform_test_bootstrap_factory(struct kunit *test)
+{
+	struct mt6797_btif_pio_platform_test_context *ctx;
+	const struct mt6797_btif_pio_platform_lease *lease;
+	struct mt6797_btif_stp_bootstrap *bootstrap;
+	bool enabled = READ_ONCE(enable_experimental_platform_adapter);
+
+	ctx = mt6797_btif_pio_platform_test_start(test);
+	lease = mt6797_btif_pio_platform_reserve(&ctx->adapter);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
+	WRITE_ONCE(enable_experimental_platform_adapter, false);
+	KUNIT_EXPECT_EQ(test, PTR_ERR(mt6797_btif_pio_platform_bootstrap_create(
+							lease,
+							&ctx->runtime_lease)), -EPERM);
+	KUNIT_EXPECT_EQ(test, ctx->adapter.state,
+				MT6797_BTIF_PIO_PLATFORM_LEASED);
+
+	WRITE_ONCE(enable_experimental_platform_adapter, true);
+	bootstrap = mt6797_btif_pio_platform_bootstrap_create(lease,
+								      &ctx->runtime_lease);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(bootstrap));
+	KUNIT_EXPECT_EQ(test, ctx->adapter.state,
+				MT6797_BTIF_PIO_PLATFORM_BOOTSTRAP);
+	KUNIT_EXPECT_EQ(test, ctx->bus->enable_count, 0U);
+	KUNIT_EXPECT_EQ(test, ctx->bus->regs[0x04 / sizeof(u32)], 0U);
+
+	mt6797_btif_stp_bootstrap_destroy(bootstrap);
+	/* A never-run bootstrap has not invoked its close callback. */
+	mt6797_btif_pio_platform_close(lease);
+	KUNIT_EXPECT_EQ(test, ctx->adapter.state,
+				MT6797_BTIF_PIO_PLATFORM_FENCED);
+	KUNIT_EXPECT_EQ(test, ctx->bus->disable_count, 0U);
+	WRITE_ONCE(enable_experimental_platform_adapter, enabled);
+	mt6797_btif_pio_platform_test_stop(ctx);
+}
+
 static struct kunit_case mt6797_btif_pio_platform_test_cases[] = {
 	KUNIT_CASE(mt6797_btif_pio_platform_test_resource_bounds),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_contract),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_explicit_gate),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_activate_close_once),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_fence),
+	KUNIT_CASE(mt6797_btif_pio_platform_test_bootstrap_factory),
 	{ }
 };
 

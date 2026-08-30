@@ -5,7 +5,16 @@
  * The vendor MT6797 DT describes the AUXADC at 0x11001000 and thermal
  * controller at 0x1100b000. Mainline has matching MT6797 nodes, a binding,
  * and drivers; the base Gemini DT also supplies the 12-byte thermal
- * calibration cell. This overlay only enables that already-described path.
+ * calibration cell.
+ *
+ * The MT6797 thermal driver registers thermal zone 0 through the DT thermal
+ * framework.  The provider has #thermal-sensor-cells = <0> and returns the
+ * maximum temperature across its six hardware banks, so one SoC observation
+ * zone can refer to it without inventing a per-sensor identity.  The vendor
+ * driver polls its aggregate CPU temperature every second; retain that
+ * observation cadence here.  There are intentionally no trips or cooling
+ * maps: the Gemini-specific thresholds and cooling policy have not been
+ * validated.
  *
  * The vendor Hall wiring is GPIO66 in GPIO mode with a pull-up. Its driver
  * defines a raw low as FCOVER_CLOSE and reports that as SW_LID, matching the
@@ -20,8 +29,14 @@
 /dts-v1/;
 /plugin/;
 
-/ {
-	compatible = "planet,gemini-pda", "mediatek,mt6797";
+&{/} {
+	thermal-zones {
+		soc-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <1000>;
+			thermal-sensors = <&thermal>;
+		};
+	};
 };
 
 &auxadc {

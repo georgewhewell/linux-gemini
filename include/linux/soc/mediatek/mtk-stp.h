@@ -47,7 +47,9 @@ enum mtk_stp_rx_phase {
 
 /*
  * The caller must serialize mtk_stp_rx() with itself and client unregister.
- * Callbacks run synchronously in the caller's context.
+ * Callbacks run synchronously in the caller's context.  FULL mode only
+ * handles data frames here: header-only ACK/window control and the vendor
+ * resynchronization handshake need a transport owner.
  */
 struct mtk_stp {
 	enum mtk_stp_mode mode;
@@ -58,11 +60,18 @@ struct mtk_stp {
 	u8 trailer[MTK_STP_TRAILER_SIZE];
 	u8 trailer_len;
 	u8 channel;
+	u8 nak;
 	u8 sequence;
 	u8 ack;
 	u16 payload_len;
 	u16 payload_pos;
 	u8 payload[MTK_STP_MAX_PAYLOAD];
+	/* Lifetime receive diagnostics, reset only by mtk_stp_init(). */
+	u32 rx_errors;
+	u32 callback_errors;
+	u32 dropped_bytes;
+	u32 frames;
+	int last_error;
 };
 
 void mtk_stp_init(struct mtk_stp *stp, enum mtk_stp_mode mode);
@@ -86,9 +95,12 @@ int mtk_stp_encode(enum mtk_stp_mode mode, enum mtk_stp_channel channel,
 		   u8 *frame, size_t frame_size, size_t *frame_len);
 
 /*
- * Feed an arbitrary byte fragment.  A malformed or unsupported complete
- * frame returns an error immediately after resetting parser state; partial
- * frames return zero.
+ * Feed an arbitrary byte fragment.  Every supplied byte is consumed even
+ * when this returns an error: parsing resynchronizes and continues with later
+ * frames in the same fragment.  The return value is the first malformed-frame
+ * or callback error in the fragment (zero when none); rx_errors,
+ * callback_errors, dropped_bytes and last_error record the full outcome.
+ * Partial frames return zero and are retained for the next call.
  */
 int mtk_stp_rx(struct mtk_stp *stp, const u8 *data, size_t length);
 

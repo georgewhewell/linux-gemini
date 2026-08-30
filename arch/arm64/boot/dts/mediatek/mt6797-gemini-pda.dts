@@ -417,11 +417,15 @@
 };
 
 &pio {
-	/* GPIO85 is EINT8 in the upstream MT6797 pin-function table. */
+	/*
+	 * GPIO85 is EINT8 in the upstream MT6797 pin-function table.  Do not
+	 * request a bias setting here: the upstream MT6797 pinctrl driver has no
+	 * bias register map, so pinctrl would reject bias-disable with -ENOTSUPP
+	 * when a future, separately enabled touchscreen client selects this state.
+	 */
 	touchscreen_irq_pins: touchscreen-irq-pins {
 		pins-irq {
 			pinmux = <MT6797_GPIO85__FUNC_EINT8>;
-			bias-disable;
 		};
 	};
 

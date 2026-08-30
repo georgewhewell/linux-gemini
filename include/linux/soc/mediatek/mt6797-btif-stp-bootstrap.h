@@ -40,7 +40,12 @@ mt6797_btif_stp_bootstrap_create(
 const struct mt6797_consys_stp_session_lease *
 mt6797_btif_stp_bootstrap_run(struct mt6797_btif_stp_bootstrap *bootstrap);
 
-/* The returned full session remains owned by bootstrap until destroy(). */
+/*
+ * The returned full session remains owned by bootstrap until destroy().
+ * destroy() prevents another run and waits for an in-progress run to finish
+ * before freeing the controller; its supplied close() callback must not call
+ * destroy() recursively.
+ */
 void mt6797_btif_stp_bootstrap_destroy(
 		struct mt6797_btif_stp_bootstrap *bootstrap);
 

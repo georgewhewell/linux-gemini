@@ -13,6 +13,7 @@
  *
  * - arch/arm64/boot/dts/aeon6797_6m_n.dts:748-771 enables MMC1 as a
  *   4-bit MSDC_SD host, names GPIO67 as card-detect and gives CD_HIGH.
+ *   Its clk_src = <2> selects the third MSDC1 mux parent.
  * - The same file:775-783 assigns the insertion switch to EINT6, GPIO67.
  * - drivers/mmc/host/mediatek/mt6797/msdc_io.c:296-312 makes VMCH the
  *   MMC1 card rail and VMC the I/O rail, both at 3.0 V.
@@ -22,6 +23,7 @@
  * Mainline evidence:
  *
  * - mt6797.dtsi:831-839 describes the compatible controller at 0x11240000.
+ * - clk-mt6797.c's msdc30_1_parents[] maps mux index 2 to msdcpll_d2.
  * - include/dt-bindings/pinctrl/mt6797-pinfunc.h:388-389 and :709-742 map
  *   GPIO67's GPIO and EINT6 functions and GPIO129..134 to MSDC1 signals.
  * - Documentation/devicetree/bindings/mmc/mtk-sd.yaml:168-179 requires the
@@ -43,6 +45,7 @@
 /plugin/;
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/clock/mt6797-clk.h>
 #include <dt-bindings/pinctrl/mt6797-pinfunc.h>
 
 &mt6351regulator {
@@ -88,6 +91,10 @@
 };
 
 &mmc1 {
+	/* Match the vendor board's clk_src = <2> contract explicitly. */
+	assigned-clocks = <&topckgen CLK_TOP_MUX_MSDC30_1>;
+	assigned-clock-parents = <&topckgen CLK_TOP_MSDCPLL_D2>;
+
 	pinctrl-names = "default", "state_uhs";
 	pinctrl-0 = <&microsd_mmc1_pins &microsd_cd_pin>;
 	/* No electrical UHS transition is permitted; retain the 3.0 V state. */

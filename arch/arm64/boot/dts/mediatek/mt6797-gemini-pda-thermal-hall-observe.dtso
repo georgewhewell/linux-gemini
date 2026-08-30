@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA thermal and Hall switch observation overlay.
+ *
+ * The vendor MT6797 DT describes the AUXADC at 0x11001000 and thermal
+ * controller at 0x1100b000. Mainline has matching MT6797 nodes, a binding,
+ * and drivers; the base Gemini DT also supplies the 12-byte thermal
+ * calibration cell. This overlay only enables that already-described path.
+ *
+ * The vendor Hall wiring is GPIO66 in GPIO mode with a pull-up. Its driver
+ * defines a raw low as FCOVER_CLOSE and reports that as SW_LID, matching the
+ * active-low generic gpio-keys definition in the base Gemini DT. The base
+ * candidate retains a 64 ms debounce interval; no wake source is requested
+ * because suspend/wake behaviour has not been measured.
+ *
+ * This is deliberately opt-in. It adds no external sensor, regulator,
+ * power-domain, or SCP node, and it does not describe a sensor identity.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&auxadc {
+	status = "okay";
+};
+
+&thermal {
+	status = "okay";
+};
+
+&hall_gpio_keys {
+	status = "okay";
+};

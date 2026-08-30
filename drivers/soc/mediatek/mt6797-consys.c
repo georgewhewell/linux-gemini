@@ -20,7 +20,7 @@
 #include <linux/reset.h>
 #include <linux/sizes.h>
 
-#define MT6797_CONSYS_SHARED_MEM_SIZE	SZ_2M
+#include <linux/soc/mediatek/mt6797-consys.h>
 
 struct mt6797_consys_resource {
 	const char *name;
@@ -123,8 +123,8 @@ mt6797_consys_validate_shared_mem(struct device *dev,
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to acquire shared memory\n");
 
-	if (resource_size(shared_mem) != MT6797_CONSYS_SHARED_MEM_SIZE ||
-	    !IS_ALIGNED(shared_mem->start, MT6797_CONSYS_SHARED_MEM_SIZE))
+	if (!mt6797_consys_shared_mem_valid(shared_mem->start,
+					 resource_size(shared_mem)))
 		return dev_err_probe(dev, -EINVAL,
 				     "invalid shared memory geometry\n");
 

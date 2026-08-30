@@ -126,6 +126,7 @@ struct bq25890_device {
 	bool skip_reset;
 	bool read_back_init_data;
 	bool read_only;
+	bool read_only_adc;
 	bool status_poll_enabled;
 	bool force_hiz;
 	u32 pump_express_vbus_max;
@@ -579,6 +580,13 @@ static int bq25890_power_supply_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_CURRENT_NOW:	/* I_BAT now */
+		if (bq->read_only) {
+			ret = bq25890_field_read(bq, F_CONV_RATE);
+			if (ret < 0)
+				return ret;
+			if (!ret)
+				return -ENODATA;
+		}
 		/*
 		 * This is ADC-sampled immediate charge current supplied
 		 * from charger to battery. The property name is confusing,
@@ -635,6 +643,13 @@ static int bq25890_power_supply_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:	/* V_BAT now */
+		if (bq->read_only) {
+			ret = bq25890_field_read(bq, F_CONV_RATE);
+			if (ret < 0)
+				return ret;
+			if (!ret)
+				return -ENODATA;
+		}
 		/*
 		 * This is ADC-sampled immediate charge voltage supplied
 		 * from charger to battery. The property name is confusing,
@@ -1073,6 +1088,21 @@ static const enum power_supply_property bq25890_read_only_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 };
 
+/*
+ * ADC result registers are appended only with ti,read-only-adc.  Each access
+ * verifies that continuous conversion was already enabled by another owner;
+ * read-only mode never starts or configures the ADC itself.
+ */
+static const enum power_supply_property bq25890_read_only_adc_props[] = {
+	POWER_SUPPLY_PROP_MANUFACTURER,
+	POWER_SUPPLY_PROP_MODEL_NAME,
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_CHARGE_TYPE,
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+};
+
 static char *bq25890_charger_supplied_to[] = {
 	"main-battery",
 };
@@ -1107,10 +1137,15 @@ static int bq25890_power_supply_init(struct bq25890_device *bq)
 		return bq->id;
 
 	snprintf(bq->name, sizeof(bq->name), "bq25890-charger-%d", bq->id);
-	if (bq->read_only)
+	if (bq->read_only) {
 		bq->desc = bq25890_read_only_desc;
-	else
+		if (bq->read_only_adc) {
+			bq->desc.properties = bq25890_read_only_adc_props;
+			bq->desc.num_properties = ARRAY_SIZE(bq25890_read_only_adc_props);
+		}
+	} else {
 		bq->desc = bq25890_power_supply_desc;
+	}
 	bq->desc.name = bq->name;
 
 	if (!bq->read_only) {
@@ -1479,6 +1514,8 @@ static int bq25890_fw_probe(struct bq25890_device *bq)
 
 	bq->read_only = device_property_read_bool(bq->dev, "ti,read-only");
 	if (bq->read_only) {
+		bq->read_only_adc = device_property_read_bool(bq->dev,
+							      "ti,read-only-adc");
 		ret = device_property_read_u32(bq->dev,
 					       "ti,status-poll-interval-ms",
 					       &bq->status_poll_interval_ms);

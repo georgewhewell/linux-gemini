@@ -66,6 +66,8 @@ struct mt6797_consys_stp_tx_slot {
 struct mt6797_consys_stp_session {
 	struct mutex lock;
 	struct mt6797_consys_stp_session_ops ops;
+	mt6797_consys_stp_gnss_rx_cb_t gnss_receive;
+	void *gnss_receive_context;
 	struct mt6797_consys_stp_session_lease *lease;
 	struct mt6797_consys_stp_session_bootstrap_lease *bootstrap_lease;
 	enum mt6797_consys_stp_session_state state;
@@ -252,7 +254,11 @@ static int mt6797_consys_stp_finish_frame_locked(
 	ack = session->header[0] & 0x7;
 
 	if (sequence == session->expected_rxseq) {
-		if (mt6797_consys_stp_channel_supported(session->channel))
+		if (session->channel == MTK_STP_GNSS && session->gnss_receive)
+			ret = session->gnss_receive(session->gnss_receive_context,
+						    session->payload,
+						    session->payload_length);
+		else if (mt6797_consys_stp_channel_supported(session->channel))
 			ret = session->ops.receive(session->ops.receive_context,
 						   session->channel,
 						   session->payload,
@@ -509,6 +515,55 @@ bool mt6797_consys_stp_session_lease_active(
 	return active;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_lease_active);
+
+int mt6797_consys_stp_session_bind_gnss(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret = 0;
+
+	if (!lease || !lease->session || !receive)
+		return -EINVAL;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else if (session->gnss_receive)
+		ret = -EBUSY;
+	else {
+		session->gnss_receive = receive;
+		session->gnss_receive_context = receive_context;
+	}
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bind_gnss);
+
+int mt6797_consys_stp_session_unbind_gnss(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret = 0;
+
+	if (!lease || !lease->session || !receive)
+		return -EINVAL;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else if (session->gnss_receive != receive ||
+		 session->gnss_receive_context != receive_context)
+		ret = -ENOENT;
+	else {
+		session->gnss_receive = NULL;
+		session->gnss_receive_context = NULL;
+	}
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_unbind_gnss);
 
 static int mt6797_consys_stp_session_transmit_locked(
 		struct mt6797_consys_stp_session *session,
@@ -843,6 +898,13 @@ static int mt6797_consys_stp_test_receive(void *context,
 	return link->receive_error;
 }
 
+static int mt6797_consys_stp_test_receive_gnss(void *context,
+						 const u8 *payload, size_t payload_length)
+{
+	return mt6797_consys_stp_test_receive(context, MTK_STP_GNSS, payload,
+						    payload_length);
+}
+
 static struct mt6797_consys_stp_session *
 mt6797_consys_stp_test_session(struct kunit *test,
 				      struct mt6797_consys_stp_test_link **link_out,
@@ -1148,11 +1210,52 @@ static void mt6797_consys_stp_test_bootstrap_promotes_without_reset(
 	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
 	KUNIT_EXPECT_TRUE(test, mt6797_consys_stp_session_lease_active(lease));
 	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_transmit(lease,
-								 MTK_STP_WMT,
-								 &payload, sizeof(payload)), 0);
-	KUNIT_EXPECT_EQ(test, link->frames[2][0], (u8)0x88);
+							 MTK_STP_WMT,
+							 &payload, sizeof(payload)), 0);
+	/* Initial submit, resync marker, retry, received-data ACK, then seq 1. */
+	KUNIT_EXPECT_EQ(test, link->tx_count, 5U);
+	KUNIT_EXPECT_EQ(test, link->frames[4][0], (u8)0x88);
 	KUNIT_EXPECT_TRUE(test,
 			 IS_ERR(mt6797_consys_stp_session_bootstrap_promote(bootstrap)));
+	mt6797_consys_stp_session_destroy(session);
+}
+
+static void mt6797_consys_stp_test_gnss_binding_is_lease_owned(
+								  struct kunit *test)
+{
+	const struct mt6797_consys_stp_session_lease *lease;
+	struct mt6797_consys_stp_test_link *link;
+	struct mt6797_consys_stp_session *session;
+	u8 *frame;
+	u8 payload = 0x5a;
+	size_t frame_length;
+
+	session = mt6797_consys_stp_test_session(test, &link, &lease);
+	frame = kunit_kmalloc(test, MT6797_CONSYS_STP_MAX_FRAME_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, frame);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_bind_gnss(lease,
+									  mt6797_consys_stp_test_receive_gnss,
+									  link), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_bind_gnss(lease,
+									   mt6797_consys_stp_test_receive_gnss,
+									   link), -EBUSY);
+	frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_GNSS, 0, 7,
+									 &payload, sizeof(payload));
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_receive(session, frame,
+										frame_length), 0);
+	KUNIT_EXPECT_EQ(test, link->rx_count, 1U);
+	KUNIT_EXPECT_EQ(test, link->last_channel, MTK_STP_GNSS);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_unbind_gnss(lease,
+									    mt6797_consys_stp_test_receive_gnss,
+									    session), -ENOENT);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_unbind_gnss(lease,
+									    mt6797_consys_stp_test_receive_gnss,
+									    link), 0);
+	frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_GNSS, 1, 7,
+									 &payload, sizeof(payload));
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_receive(session, frame,
+										frame_length), 0);
+	KUNIT_EXPECT_EQ(test, link->rx_count, 2U);
 	mt6797_consys_stp_session_destroy(session);
 }
 
@@ -1179,6 +1282,7 @@ static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_retry_limit_fences),
 	KUNIT_CASE(mt6797_consys_stp_test_malformed_and_quiesce),
 	KUNIT_CASE(mt6797_consys_stp_test_bootstrap_promotes_without_reset),
+	KUNIT_CASE(mt6797_consys_stp_test_gnss_binding_is_lease_owned),
 	KUNIT_CASE(mt6797_consys_stp_test_null_session_lease_is_rejected),
 	{ }
 };

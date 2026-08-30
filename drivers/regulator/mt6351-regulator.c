@@ -4,6 +4,7 @@
  */
 
 #include <linux/bits.h>
+#include <linux/err.h>
 #include <linux/mfd/mt6351/registers.h>
 #include <linux/mfd/mt6397/core.h>
 #include <linux/module.h>
@@ -17,6 +18,7 @@
 #define MT6351_BUCK_QI		BIT(13)
 #define MT6351_BUCK_VOSEL_CTRL	BIT(1)
 #define MT6351_LDO_EN		BIT(1)
+#define MT6351_LDO_ON_CTRL	BIT(3)
 
 struct mt6351_regulator_info {
 	struct regulator_desc desc;
@@ -182,6 +184,29 @@ static const struct regulator_ops mt6351_fixed_ops = {
 	.disable = regulator_disable_regmap,
 	.is_enabled = regulator_is_enabled_regmap,
 };
+
+int mt6351_regulator_set_hw_control(struct regulator *regulator, bool enable)
+{
+	struct mt6351_regulator_info *info;
+	struct regmap *regmap;
+
+	if (!regulator)
+		return -EINVAL;
+
+	info = regulator_get_drvdata(regulator);
+	if (!info || (info->desc.id != MT6351_ID_VCN18 &&
+		      info->desc.id != MT6351_ID_VCN28))
+		return -EINVAL;
+
+	regmap = regulator_get_regmap(regulator);
+	if (IS_ERR(regmap))
+		return PTR_ERR(regmap);
+
+	return regmap_update_bits(regmap, info->desc.enable_reg,
+				  MT6351_LDO_ON_CTRL,
+				  enable ? MT6351_LDO_ON_CTRL : 0);
+}
+EXPORT_SYMBOL_GPL(mt6351_regulator_set_hw_control);
 
 static struct mt6351_regulator_info mt6351_regulators[] = {
 	MT6351_BUCK("buck-vcore", VCORE, mt6351_buck_range, 0x7f,

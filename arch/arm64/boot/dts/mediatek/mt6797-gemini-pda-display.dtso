@@ -34,10 +34,12 @@
 	};
 };
 
-/* DMA-capable display blocks cannot be useful until their M4U path exists. */
-&m4u {
-	status = "okay";
-};
+/*
+ * Keep M4U disabled for this bring-up.  The proven Gemini path uses
+ * physically contiguous DRM buffers and explicitly powers larb0/common;
+ * enabling the still-unvalidated MT6797 translation path here only creates a
+ * supplier which can hold every display consumer in deferred probe.
+ */
 
 &mipi_tx0 {
 	status = "okay";
@@ -64,6 +66,8 @@
 
 &ovl0_2l {
 	status = "okay";
+	/delete-property/ iommus;
+	mediatek,larb = <&larb0>;
 	ports {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -74,6 +78,8 @@
 
 &ovl1_2l {
 	status = "okay";
+	/delete-property/ iommus;
+	mediatek,larb = <&larb0>;
 	ports {
 		#address-cells = <1>;
 		#size-cells = <0>;

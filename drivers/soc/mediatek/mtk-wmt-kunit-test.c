@@ -34,6 +34,15 @@ struct mtk_wmt_test_async {
 	int result;
 };
 
+struct mtk_wmt_test_payload_transport {
+	struct mtk_wmt *wmt;
+	u8 packet[MTK_WMT_HEADER_SIZE + 3];
+	size_t packet_len;
+	u8 reply[MTK_WMT_HEADER_SIZE + 1];
+	size_t reply_len;
+	unsigned int transmits;
+};
+
 static void mtk_wmt_test_unsolicited(void *context,
 				     const struct mtk_wmt_packet *event)
 {
@@ -72,6 +81,20 @@ static int mtk_wmt_test_transmit(void *context, const u8 *frame,
 	if (ret)
 		return ret;
 	return transport->transmit_error ? -EIO : 0;
+}
+
+static int mtk_wmt_test_payload_transmit(void *context, const u8 *packet,
+					 size_t packet_len)
+{
+	struct mtk_wmt_test_payload_transport *transport = context;
+
+	if (packet_len > sizeof(transport->packet))
+		return -ENOSPC;
+	memcpy(transport->packet, packet, packet_len);
+	transport->packet_len = packet_len;
+	transport->transmits++;
+	return mtk_wmt_receive(transport->wmt, transport->reply,
+			       transport->reply_len);
 }
 
 static int mtk_wmt_test_transaction_thread(void *data)
@@ -230,6 +253,39 @@ static void mtk_wmt_test_timeout_fences_late_reply(struct kunit *test)
 	mtk_wmt_reset(wmt);
 }
 
+static void mtk_wmt_test_preframed_payload_transport(struct kunit *test)
+{
+	struct mtk_wmt_test_payload_transport *transport;
+	struct mtk_wmt *wmt;
+	u8 command[] = { 0xa5, 0x5a };
+	u8 response[] = { 0 };
+	u8 expected_packet[] = { MTK_WMT_DIR_COMMAND, 0x6, 2, 0, 0xa5, 0x5a };
+	struct mtk_wmt_match expected = { .opcode = 0x6, .data = response,
+		.data_len = sizeof(response) };
+
+	transport = kunit_kzalloc(test, sizeof(*transport), GFP_KERNEL);
+	wmt = kunit_kzalloc(test, sizeof(*wmt), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, transport);
+	KUNIT_ASSERT_NOT_NULL(test, wmt);
+	transport->wmt = wmt;
+	transport->reply[0] = MTK_WMT_DIR_EVENT;
+	transport->reply[1] = 0x6;
+	transport->reply[2] = sizeof(response);
+	transport->reply[3] = 0;
+	transport->reply[4] = response[0];
+	transport->reply_len = sizeof(transport->reply);
+	mtk_wmt_init_payload_transport(wmt, MTK_STP_MODE_FULL,
+				       mtk_wmt_test_payload_transmit, transport);
+
+	KUNIT_EXPECT_EQ(test, mtk_wmt_transaction(wmt, 0x6, command,
+						    sizeof(command), &expected,
+						    msecs_to_jiffies(100)), 0);
+	KUNIT_EXPECT_EQ(test, transport->transmits, 1U);
+	KUNIT_EXPECT_EQ(test, transport->packet_len, sizeof(expected_packet));
+	KUNIT_EXPECT_MEMEQ(test, transport->packet, expected_packet,
+			 sizeof(expected_packet));
+}
+
 static void mtk_wmt_test_reset_before_issue(struct kunit *test)
 {
 	struct mtk_wmt_test_transport *transport;
@@ -333,6 +389,7 @@ static struct kunit_case mtk_wmt_test_cases[] = {
 	KUNIT_CASE(mtk_wmt_test_zero_sdu_event),
 	KUNIT_CASE(mtk_wmt_test_transaction_fragmented_stp),
 	KUNIT_CASE(mtk_wmt_test_timeout_fences_late_reply),
+	KUNIT_CASE(mtk_wmt_test_preframed_payload_transport),
 	KUNIT_CASE(mtk_wmt_test_reset_before_issue),
 	KUNIT_CASE(mtk_wmt_test_sync_reply_transport_error_fences),
 	KUNIT_CASE(mtk_wmt_test_unmatched_is_unsolicited),

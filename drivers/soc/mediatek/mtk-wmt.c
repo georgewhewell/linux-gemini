@@ -44,6 +44,27 @@ void mtk_wmt_init(struct mtk_wmt *wmt, enum mtk_stp_mode stp_mode,
 }
 EXPORT_SYMBOL_GPL(mtk_wmt_init);
 
+void mtk_wmt_init_payload_transport(struct mtk_wmt *wmt,
+				    enum mtk_stp_mode stp_mode,
+				    mtk_wmt_payload_tx_cb_t transmit,
+				    void *transport_context)
+{
+	if (!wmt)
+		return;
+
+	memset(wmt, 0, sizeof(*wmt));
+	mutex_init(&wmt->transaction_lock);
+	mutex_init(&wmt->issue_lock);
+	spin_lock_init(&wmt->state_lock);
+	atomic_set(&wmt->reset_requests, 0);
+	init_completion(&wmt->response);
+	wmt->stp_mode = stp_mode;
+	wmt->transmit_payload = transmit;
+	wmt->transport_context = transport_context;
+	wmt->generation = 1;
+}
+EXPORT_SYMBOL_GPL(mtk_wmt_init_payload_transport);
+
 void mtk_wmt_set_unsolicited(struct mtk_wmt *wmt,
 			     mtk_wmt_unsolicited_cb_t receive, void *context)
 {
@@ -239,7 +260,7 @@ int mtk_wmt_transaction(struct mtk_wmt *wmt, u8 opcode,
 	if (wmt->stp_mode != MTK_STP_MODE_MANDATORY &&
 	    wmt->stp_mode != MTK_STP_MODE_FULL)
 		return -EINVAL;
-	if (!wmt->transmit)
+	if (!wmt->transmit && !wmt->transmit_payload)
 		return -ENODEV;
 	if (data_len > mtk_wmt_max_data(wmt->stp_mode) ||
 	    expected->data_len > mtk_wmt_max_data(wmt->stp_mode))
@@ -270,15 +291,7 @@ int mtk_wmt_transaction(struct mtk_wmt *wmt, u8 opcode,
 	if (ret)
 		goto out_packet;
 
-	frame_size = MTK_STP_HEADER_SIZE + packet_len + MTK_STP_TRAILER_SIZE;
-	frame = kmalloc(frame_size, GFP_KERNEL);
-	if (!frame) {
-		ret = -ENOMEM;
-		goto out_packet;
-	}
-	ret = mtk_stp_encode(wmt->stp_mode, MTK_STP_WMT, 0, 0, packet,
-			     packet_len, frame, frame_size, &frame_len);
-	if (!ret) {
+	if (wmt->transmit_payload) {
 		mutex_lock(&wmt->issue_lock);
 		/* A reset queued first may already have completed at this point. */
 		spin_lock_irqsave(&wmt->state_lock, flags);
@@ -289,11 +302,37 @@ int mtk_wmt_transaction(struct mtk_wmt *wmt, u8 opcode,
 			ret = -ECANCELED;
 		} else {
 			issued = true;
-			ret = wmt->transmit(wmt->transport_context, frame, frame_len);
+			ret = wmt->transmit_payload(wmt->transport_context, packet,
+						    packet_len);
 		}
 		mutex_unlock(&wmt->issue_lock);
+	} else {
+		frame_size = MTK_STP_HEADER_SIZE + packet_len + MTK_STP_TRAILER_SIZE;
+		frame = kmalloc(frame_size, GFP_KERNEL);
+		if (!frame) {
+			ret = -ENOMEM;
+			goto out_packet;
+		}
+		ret = mtk_stp_encode(wmt->stp_mode, MTK_STP_WMT, 0, 0, packet,
+				    packet_len, frame, frame_size, &frame_len);
+		if (!ret) {
+			mutex_lock(&wmt->issue_lock);
+			/* A reset queued first may already have completed at this point. */
+			spin_lock_irqsave(&wmt->state_lock, flags);
+			can_issue = wmt->generation == generation && wmt->pending &&
+				!wmt->reset_required && !atomic_read(&wmt->reset_requests);
+			spin_unlock_irqrestore(&wmt->state_lock, flags);
+			if (!can_issue) {
+				ret = -ECANCELED;
+			} else {
+				issued = true;
+				ret = wmt->transmit(wmt->transport_context, frame,
+							   frame_len);
+			}
+			mutex_unlock(&wmt->issue_lock);
+		}
+		kfree(frame);
 	}
-	kfree(frame);
 	if (ret)
 		goto out_packet;
 

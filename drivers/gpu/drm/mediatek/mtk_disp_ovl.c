@@ -9,8 +9,10 @@
 
 #include <linux/clk.h>
 #include <linux/component.h>
+#include <linux/device.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
@@ -608,10 +610,18 @@ static const struct component_ops mtk_disp_ovl_component_ops = {
 	.unbind = mtk_disp_ovl_unbind,
 };
 
+static void mtk_disp_ovl_del_device_link(void *data)
+{
+	device_link_del(data);
+}
+
 static int mtk_disp_ovl_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mtk_disp_ovl *priv;
+	struct device_node *larb_node;
+	struct platform_device *larb_pdev;
+	struct device_link *larb_link;
 	int irq;
 	int ret;
 
@@ -670,13 +680,49 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(dev);
 
+	/*
+	 * MT6797 can run the display path without M4U translation, but then no
+	 * IOMMU attach exists to carry the OVL runtime-PM reference through its
+	 * SMI larb.  Link the two explicitly so an atomic commit opens the memory
+	 * path before OVL fetches its first frame.  This ordering is proven on the
+	 * Gemini PDA's MT6797 display path; keep it DT-selected for other SoCs.
+	 */
+	larb_node = of_parse_phandle(dev->of_node, "mediatek,larb", 0);
+	if (larb_node) {
+		larb_pdev = of_find_device_by_node(larb_node);
+		of_node_put(larb_node);
+		if (!larb_pdev) {
+			ret = -EPROBE_DEFER;
+			goto err_pm_disable;
+		}
+
+		larb_link = device_link_add(dev, &larb_pdev->dev,
+					    DL_FLAG_STATELESS |
+					    DL_FLAG_PM_RUNTIME);
+		put_device(&larb_pdev->dev);
+		if (!larb_link) {
+			ret = -ENOMEM;
+			goto err_pm_disable;
+		}
+
+		ret = devm_add_action_or_reset(dev,
+					       mtk_disp_ovl_del_device_link,
+					       larb_link);
+		if (ret)
+			goto err_pm_disable;
+	}
+
 	ret = component_add(dev, &mtk_disp_ovl_component_ops);
 	if (ret) {
-		pm_runtime_disable(dev);
-		return dev_err_probe(dev, ret, "Failed to add component\n");
+		dev_err_probe(dev, ret, "Failed to add component\n");
+		goto err_pm_disable;
 	}
 
 	return 0;
+
+err_pm_disable:
+	pm_runtime_disable(dev);
+	return ret;
 }
 
 static void mtk_disp_ovl_remove(struct platform_device *pdev)

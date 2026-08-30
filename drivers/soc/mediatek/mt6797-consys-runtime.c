@@ -54,6 +54,7 @@
 
 #include <linux/soc/mediatek/mt6797-consys-runtime.h>
 #include <linux/soc/mediatek/mt6797-consys-handoff.h>
+#include <linux/soc/mediatek/mt6797-consys-postid.h>
 
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
@@ -70,6 +71,30 @@
 
 #define MT6797_CONSYS_RUNTIME_CHIP_POLL_INTERVAL_US	20000
 #define MT6797_CONSYS_RUNTIME_CHIP_POLL_TIMEOUT_US	200000
+#define MT6797_CONSYS_RUNTIME_MCU_CFG_ACR		0x110
+#define MT6797_CONSYS_RUNTIME_MCU_CFG_ACR_MBIST	BIT(18)
+#define MT6797_CONSYS_RUNTIME_AFE_BASE		0x180b6000
+#define MT6797_CONSYS_RUNTIME_AFE_SIZE		0x100
+
+struct mt6797_consys_runtime_afe_write {
+	u32 offset;
+	u32 value;
+};
+
+static const struct mt6797_consys_runtime_afe_write
+		mt6797_consys_runtime_afe_writes[] = {
+	{ 0x20, 0x180b0160 },
+	{ 0x50, 0xb8925421 },
+	{ 0x54, 0x00006401 },
+	{ 0x60, 0xb8925421 },
+	{ 0x64, 0x00006401 },
+	{ 0x68, 0x08400000 },
+	{ 0x6c, 0x0c110200 },
+	{ 0x70, 0x012a020a },
+	{ 0x84, 0x00006401 },
+	{ 0x88, 0x08400000 },
+	{ 0x90, 0x012a020a },
+};
 
 static bool enable_experimental_runtime;
 module_param_named(enable_experimental_runtime, enable_experimental_runtime,
@@ -86,6 +111,7 @@ struct mt6797_consys_runtime_resource {
 struct mt6797_consys_runtime {
 	struct device *dev;
 	void __iomem *mcu;
+	void __iomem *afe;
 	struct regmap *infracfg;
 	struct regmap *spm;
 	struct regulator *vcn18;
@@ -118,6 +144,8 @@ static const struct mt6797_consys_runtime_resource
 	{ "ap-rgu", 0x10007000, SZ_256 },
 	{ "topckgen", 0x10000000, SZ_8K },
 	{ "spm", 0x10006000, SZ_4K },
+	{ "afe", MT6797_CONSYS_RUNTIME_AFE_BASE,
+	  MT6797_CONSYS_RUNTIME_AFE_SIZE },
 };
 
 static bool mt6797_consys_runtime_resource_valid(
@@ -365,6 +393,88 @@ static void mt6797_consys_runtime_delay_us(void *context, u32 min, u32 max)
 {
 	usleep_range(min, max);
 }
+
+static int mt6797_consys_runtime_configure_mbist(void *context)
+{
+	struct mt6797_consys_runtime *runtime = context;
+	u32 value;
+
+	if (!runtime->mcu)
+		return -ENODEV;
+
+	/* Vendor mtk_wcn_consys_hw.c:438-449, ACR[18]. */
+	value = readl(runtime->mcu + MT6797_CONSYS_RUNTIME_MCU_CFG_ACR);
+	writel(value | MT6797_CONSYS_RUNTIME_MCU_CFG_ACR_MBIST,
+	       runtime->mcu + MT6797_CONSYS_RUNTIME_MCU_CFG_ACR);
+	return 0;
+}
+
+static int mt6797_consys_runtime_configure_afe(void *context)
+{
+	struct mt6797_consys_runtime *runtime = context;
+	unsigned int i;
+
+	if (!runtime->afe)
+		return -ENODEV;
+
+#if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_AFE_GPS_REGISTER_SETTING)
+	/* Vendor mtk_wcn_consys_hw.c:454-457, optional GPS setting. */
+	writel(readl(runtime->afe + 0x14) | 0x00001000,
+	       runtime->afe + 0x14);
+#endif
+
+	/* Vendor mtk_wcn_consys_hw.c:459-482, in source order. */
+	for (i = 0; i < ARRAY_SIZE(mt6797_consys_runtime_afe_writes); i++)
+		writel(mt6797_consys_runtime_afe_writes[i].value,
+		       runtime->afe + mt6797_consys_runtime_afe_writes[i].offset);
+
+	return 0;
+}
+
+static int mt6797_consys_runtime_release_reset(void *context)
+{
+	struct mt6797_consys_runtime *runtime = context;
+
+	/* The reset provider owns WDT keying and bit 12. */
+	return reset_control_deassert(runtime->conn_mcu_reset);
+}
+
+static const struct mt6797_consys_postid_ops
+		mt6797_consys_runtime_postid_ops = {
+	.abi = MT6797_CONSYS_POSTID_ABI,
+	.configure_mbist = mt6797_consys_runtime_configure_mbist,
+	.configure_afe = mt6797_consys_runtime_configure_afe,
+	.release_reset = mt6797_consys_runtime_release_reset,
+	.assert_reset = mt6797_consys_runtime_assert_reset,
+};
+
+int mt6797_consys_runtime_postid_backend(struct device *dev,
+		const struct mt6797_consys_runtime_lease *identity,
+		const struct mt6797_consys_postid_ops **ops, void **context)
+{
+	struct mt6797_consys_runtime *runtime;
+
+	if (!dev || !identity || !ops || !context)
+		return -EINVAL;
+	runtime = dev_get_drvdata(dev);
+	if (!runtime)
+		return -ENODEV;
+
+	mutex_lock(&runtime->provider_lock);
+	if (identity != &runtime->lease ||
+	    runtime->provider_state !=
+		    MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD ||
+	    !runtime->lease_held || !runtime->conn_domain_vote ||
+	    !mt6797_consys_runtime_lease_active(&runtime->lease)) {
+		mutex_unlock(&runtime->provider_lock);
+		return -ESHUTDOWN;
+	}
+	*ops = &mt6797_consys_runtime_postid_ops;
+	*context = runtime;
+	mutex_unlock(&runtime->provider_lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_postid_backend);
 
 static const struct mt6797_consys_ops mt6797_consys_runtime_ops = {
 	.abi = MT6797_CONSYS_LIFECYCLE_ABI,
@@ -822,6 +932,11 @@ static int mt6797_consys_runtime_probe(struct platform_device *pdev)
 						  &mt6797_consys_runtime_resources[3], NULL);
 	if (ret)
 		return ret;
+	ret = mt6797_consys_runtime_map_resource(pdev,
+						  &mt6797_consys_runtime_resources[4],
+						  &runtime->afe);
+	if (ret)
+		return ret;
 	ret = mt6797_consys_runtime_acquire_shared_mem(runtime);
 	if (ret)
 		return ret;
@@ -1161,12 +1276,44 @@ static void mt6797_consys_runtime_test_contracts(struct kunit *test)
 				  IRQ_TYPE_LEVEL_LOW },
 	};
 	struct resource resource = DEFINE_RES_MEM(0x18070000, SZ_512);
+	struct resource afe_resource = DEFINE_RES_MEM(
+		MT6797_CONSYS_RUNTIME_AFE_BASE, MT6797_CONSYS_RUNTIME_AFE_SIZE);
+	static const struct mt6797_consys_runtime_afe_write expected_afe[] = {
+		{ 0x20, 0x180b0160 },
+		{ 0x50, 0xb8925421 },
+		{ 0x54, 0x00006401 },
+		{ 0x60, 0xb8925421 },
+		{ 0x64, 0x00006401 },
+		{ 0x68, 0x08400000 },
+		{ 0x6c, 0x0c110200 },
+		{ 0x70, 0x012a020a },
+		{ 0x84, 0x00006401 },
+		{ 0x88, 0x08400000 },
+		{ 0x90, 0x012a020a },
+	};
+	unsigned int i;
 
 	KUNIT_EXPECT_TRUE(test, mt6797_consys_runtime_resource_valid(&resource,
 									&expected));
 	resource.end++;
 	KUNIT_EXPECT_FALSE(test, mt6797_consys_runtime_resource_valid(&resource,
-									 &expected));
+									&expected));
+	expected.name = "afe";
+	expected.start = MT6797_CONSYS_RUNTIME_AFE_BASE;
+	expected.size = MT6797_CONSYS_RUNTIME_AFE_SIZE;
+	KUNIT_EXPECT_TRUE(test, mt6797_consys_runtime_resource_valid(&afe_resource,
+									&expected));
+	afe_resource.end++;
+	KUNIT_EXPECT_FALSE(test, mt6797_consys_runtime_resource_valid(&afe_resource,
+									&expected));
+	KUNIT_EXPECT_EQ(test, ARRAY_SIZE(mt6797_consys_runtime_afe_writes),
+				ARRAY_SIZE(expected_afe));
+	for (i = 0; i < ARRAY_SIZE(expected_afe); i++) {
+		KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_afe_writes[i].offset,
+				expected_afe[i].offset);
+		KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_afe_writes[i].value,
+				expected_afe[i].value);
+	}
 	KUNIT_EXPECT_TRUE(test, mt6797_consys_runtime_irq_spec_valid(&spec,
 									 MT6797_CONSYS_RUNTIME_BGF_SPI));
 	spec.args[2] = IRQ_TYPE_EDGE_FALLING;
@@ -1196,6 +1343,39 @@ static void mt6797_consys_runtime_test_provider_setup(
 							   &runtime->lease), 0);
 	runtime->lease_held = true;
 	runtime->provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD;
+}
+
+static void mt6797_consys_runtime_test_postid_backend_requires_identity(
+		struct kunit *test)
+{
+	struct mt6797_consys_runtime_test_backend backend = { };
+	struct mt6797_consys_runtime runtime = { };
+	struct mt6797_consys_runtime_lease other_identity = { };
+	const struct mt6797_consys_postid_ops *ops;
+	void *context;
+	struct device dev = { };
+
+	mt6797_consys_runtime_test_provider_setup(test, &runtime, &dev,
+		&backend);
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_runtime_postid_backend(&dev, &runtime.lease,
+			&ops, &context), -ESHUTDOWN);
+	runtime.conn_domain_vote = true;
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_postid_backend(&dev, &runtime.lease,
+			&ops, &context), 0);
+	KUNIT_EXPECT_PTR_EQ(test, context, &runtime);
+	KUNIT_EXPECT_PTR_EQ(test, ops, &mt6797_consys_runtime_postid_ops);
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_runtime_postid_backend(&dev, &other_identity,
+			&ops, &context), -ESHUTDOWN);
+	runtime.provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_REMOVING;
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_runtime_postid_backend(&dev, &runtime.lease,
+			&ops, &context), -ESHUTDOWN);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_lease_release(&runtime.lease), 0);
+	put_device(&dev);
 }
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_HANDOFF_KUNIT_TEST)
@@ -1498,8 +1678,11 @@ static void mt6797_consys_handoff_test_postid_failures(struct kunit *test)
 		KUNIT_EXPECT_EQ(test,
 			mt6797_consys_handoff_start(&handoff, &layout, true), -EIO);
 		KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&postid),
-			MT6797_CONSYS_POSTID_IDLE);
-		KUNIT_EXPECT_EQ(test, runtime.external_users, 0U);
+			failures[i] == MT6797_CONSYS_HANDOFF_TEST_MBIST ?
+			MT6797_CONSYS_POSTID_IDLE : MT6797_CONSYS_POSTID_ERROR);
+		KUNIT_EXPECT_EQ(test, runtime.external_users,
+			failures[i] == MT6797_CONSYS_HANDOFF_TEST_MBIST ?
+			0U : 2U);
 		KUNIT_EXPECT_EQ(test, backend.call_count,
 			(unsigned int)failures[i] + 2U);
 		KUNIT_EXPECT_EQ(test, backend.calls[backend.call_count - 1],
@@ -1685,6 +1868,7 @@ static struct kunit_case mt6797_consys_runtime_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_runtime_test_lease_order),
 	KUNIT_CASE(mt6797_consys_runtime_test_failure_unwinds),
 	KUNIT_CASE(mt6797_consys_runtime_test_contracts),
+	KUNIT_CASE(mt6797_consys_runtime_test_postid_backend_requires_identity),
 	KUNIT_CASE(mt6797_consys_runtime_test_provider_lease_and_remove_fence),
 	KUNIT_CASE(mt6797_consys_runtime_test_provider_waits_concurrently),
 	KUNIT_CASE(mt6797_consys_runtime_test_provider_rejects_unready_state),

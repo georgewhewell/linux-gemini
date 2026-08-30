@@ -244,7 +244,7 @@ static void mt6797_consys_postid_test_mbist_failure_is_closed(
 	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_release(&lease), 0);
 }
 
-static void mt6797_consys_postid_test_afe_failure_never_releases(
+static void mt6797_consys_postid_test_afe_failure_is_sticky(
 		struct kunit *test)
 {
 	static const enum mt6797_consys_postid_test_op expected[] = {
@@ -262,9 +262,11 @@ static void mt6797_consys_postid_test_afe_failure_never_releases(
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease, true),
 			-EIO);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&owner),
-			MT6797_CONSYS_POSTID_IDLE);
+			MT6797_CONSYS_POSTID_ERROR);
 	mt6797_consys_postid_test_expect_calls(test, &backend, expected,
 			ARRAY_SIZE(expected));
+	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_release(&lease), -EBUSY);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_stop(&owner), 0);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_release(&lease), 0);
 }
 
@@ -287,9 +289,11 @@ static void mt6797_consys_postid_test_release_failure_asserts(
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease, true),
 			-EIO);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&owner),
-			MT6797_CONSYS_POSTID_IDLE);
+			MT6797_CONSYS_POSTID_ERROR);
 	mt6797_consys_postid_test_expect_calls(test, &backend, expected,
 			ARRAY_SIZE(expected));
+	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_release(&lease), -EBUSY);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_stop(&owner), 0);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_release(&lease), 0);
 }
 
@@ -318,7 +322,7 @@ static struct kunit_case mt6797_consys_postid_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_postid_test_exact_order_and_teardown),
 	KUNIT_CASE(mt6797_consys_postid_test_gate_and_identity_failure),
 	KUNIT_CASE(mt6797_consys_postid_test_mbist_failure_is_closed),
-	KUNIT_CASE(mt6797_consys_postid_test_afe_failure_never_releases),
+	KUNIT_CASE(mt6797_consys_postid_test_afe_failure_is_sticky),
 	KUNIT_CASE(mt6797_consys_postid_test_release_failure_asserts),
 	KUNIT_CASE(mt6797_consys_postid_test_stop_retry_completes_teardown),
 	{}

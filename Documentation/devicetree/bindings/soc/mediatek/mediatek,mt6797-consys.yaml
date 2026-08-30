@@ -40,18 +40,22 @@ properties:
       - mediatek,mt6797-consys-runtime
 
   reg:
+    minItems: 4
     items:
       - description: Connectivity MCU configuration registers.
       - description: AP reset generator registers.
       - description: Top clock generator and connectivity remap registers.
       - description: System power manager registers.
+      - description: ANA_WBG AFE registers used by the post-identity setup.
 
   reg-names:
+    minItems: 4
     items:
       - const: mcu
       - const: ap-rgu
       - const: topckgen
       - const: spm
+      - const: afe
 
   interrupts:
     minItems: 2
@@ -144,6 +148,10 @@ allOf:
         compatible:
           const: mediatek,mt6797-consys-runtime
     then:
+      properties:
+        reg-names:
+          contains:
+            const: afe
       required:
         - mediatek,conn-power-domain
         - mediatek,infracfg

@@ -198,6 +198,7 @@ struct mtk_dsi_driver_data {
 	bool support_per_frame_lp;
 	bool irq_needs_power;
 	bool force_cmd_mode_after_reset;
+	bool has_timeout_snapshot;
 };
 
 /*
@@ -644,6 +645,43 @@ static void mtk_dsi_irq_data_clear(struct mtk_dsi *dsi, u32 irq_bit)
 	dsi->irq_data &= ~irq_bit;
 }
 
+static void mtk_dsi_log_timeout_state(struct mtk_dsi *dsi)
+{
+	struct irq_data *irqd;
+	bool irq_disabled = false;
+	bool irq_masked = false;
+
+	/*
+	 * A timeout can also occur while shutting down. Only inspect registers
+	 * with an active power reference, so every read has DSI clocks available.
+	 */
+	if (!dsi->driver_data->has_timeout_snapshot || !dsi->refcount)
+		return;
+
+	irqd = irq_get_irq_data(dsi->irq);
+	if (irqd) {
+		irq_disabled = irqd_irq_disabled(irqd);
+		irq_masked = irqd_irq_masked(irqd);
+	}
+
+	DRM_ERROR("MT6797 DSI timeout: start=%#08x inten=%#08x intsta=%#08x con=%#08x mode=%#08x txrx=%#08x cmdq_size=%#08x cmdq0=%#08x lcc=%#08x ld0=%#08x timcon=%#08x/%#08x/%#08x/%#08x irq=%d disabled=%d masked=%d\n",
+		  readl(dsi->regs + DSI_START),
+		  readl(dsi->regs + DSI_INTEN),
+		  readl(dsi->regs + DSI_INTSTA),
+		  readl(dsi->regs + DSI_CON_CTRL),
+		  readl(dsi->regs + DSI_MODE_CTRL),
+		  readl(dsi->regs + DSI_TXRX_CTRL),
+		  readl(dsi->regs + DSI_CMDQ_SIZE),
+		  readl(dsi->regs + dsi->driver_data->reg_cmdq_off),
+		  readl(dsi->regs + DSI_PHY_LCCON),
+		  readl(dsi->regs + DSI_PHY_LD0CON),
+		  readl(dsi->regs + DSI_PHY_TIMECON0),
+		  readl(dsi->regs + DSI_PHY_TIMECON1),
+		  readl(dsi->regs + DSI_PHY_TIMECON2),
+		  readl(dsi->regs + DSI_PHY_TIMECON3),
+		  dsi->irq, irq_disabled, irq_masked);
+}
+
 static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 				     unsigned int timeout)
 {
@@ -654,6 +692,7 @@ static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 					       dsi->irq_data & irq_flag,
 					       jiffies);
 	if (ret == 0) {
+		mtk_dsi_log_timeout_state(dsi);
 		DRM_WARN("Wait DSI IRQ(0x%08x) Timeout\n", irq_flag);
 
 		mtk_dsi_enable(dsi);
@@ -1314,6 +1353,7 @@ static const struct mtk_dsi_driver_data mt6797_dsi_driver_data = {
 	.phy_timcon = mt6797_dsi_phy_timcon,
 	.irq_needs_power = true,
 	.force_cmd_mode_after_reset = true,
+	.has_timeout_snapshot = true,
 };
 
 static const struct mtk_dsi_driver_data mt2701_dsi_driver_data = {

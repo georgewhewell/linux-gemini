@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * MT6797's mandatory-STP WMT identity preflight.
+ * MT6797's mandatory-STP WMT identity and chip-side mode preflight.
  *
  * This is deliberately not a platform, power, firmware, or radio API.  A
  * future single transport owner may use it only after it owns the mandatory
- * STP endpoint, its WMT receive callback, and recovery lifecycle.
+ * STP endpoint, its WMT receive callback, and recovery lifecycle.  It must
+ * not be composed with mt6797-btif-stp-bootstrap: that PIO owner already owns
+ * the complete default-query/set/host-handoff/full-query sequence.
  */
 
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_CONSYS_WMT_INITIAL_H
@@ -44,12 +46,23 @@ void mt6797_consys_wmt_initial_destroy(struct mt6797_consys_wmt_initial *initial
 
 /*
  * Run HCR, HVR, and FVR verification followed by the exact mandatory-STP
- * default-query.  identity reports the masked values obtained before the
+ * default-query. identity reports the masked values obtained before the
  * query; this is default-disabled and has no Device Tree or in-kernel caller.
  * On any error the controller instance is permanently fenced; its owner must
  * recover and instantiate a new endpoint before trying again.
  */
 int mt6797_consys_wmt_initial_run(struct mt6797_consys_wmt_initial *initial,
 				  struct mt6797_consys_wmt_initial_identity *identity);
+
+/*
+ * Send only the vendor's chip-side set-full WMT command after a successful
+ * run(). The local endpoint remains mandatory: this neither changes host STP
+ * framing nor delays, performs a full-mode query, creates a full-session
+ * lease, or authorizes any subsequent firmware or radio operation. A future
+ * single owner must perform those remaining handoff steps exactly once. This
+ * call is valid only after run() succeeds; a malformed, timed-out, or
+ * out-of-order call permanently fences the instance.
+ */
+int mt6797_consys_wmt_initial_configure_chip_full(struct mt6797_consys_wmt_initial *initial);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_CONSYS_WMT_INITIAL_H */

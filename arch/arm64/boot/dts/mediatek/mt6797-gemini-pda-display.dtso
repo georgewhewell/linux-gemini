@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Planet Computers Gemini PDA native display bring-up overlay.
+ * Planet Computers Gemini PDA native display preparation overlay.
  *
- * This overlay is intentionally not applied by mt6797-gemini-pda.dtb.
- * It is the explicit, recovery-slot-only opt-in for the first native-panel
- * test.  It reflects the vendor wiring and command source named in the
- * accompanying display campaign record; it is not a device-tested panel
- * description.
+ * This is safe to compose at boot with mt6797-gemini-pda.dtb: that board DT
+ * sets mediatek,drm-on-demand on MMSYS, so this overlay makes resources and
+ * components available but cannot start a panel modeset. Stage1 must first
+ * establish watchdog service and then write 1 to MMSYS activate_drm. This is
+ * a one-way bring-up boundary, not a permanent display disable switch.
+ *
+ * The graph avoids the legacy MT6797 fallback path, whose OVL0 -> OVL0_2L
+ * hop is not routable. The documented hardware path is instead:
+ * OVL0_2L -> OVL1_2L -> COLOR0 -> CCORR -> AAL -> GAMMA -> OD -> DITHER ->
+ * RDMA0 -> UFOE -> DSI0 -> NT36672E panel.
  */
 
 /dts-v1/;
@@ -24,73 +29,126 @@
 	lcd_bias: regulator@3e {
 		compatible = "mediatek,i2c_lcd_bias";
 		reg = <0x3e>;
+		outp: outp { regulator-name = "outp"; enable-gpios = <&pio 60 GPIO_ACTIVE_HIGH>; };
+		outn: outn { regulator-name = "outn"; enable-gpios = <&pio 251 GPIO_ACTIVE_HIGH>; };
+	};
+};
 
-		outp: outp {
-			regulator-name = "outp";
-			enable-gpios = <&pio 60 GPIO_ACTIVE_HIGH>;
-		};
+/* DMA-capable display blocks cannot be useful until their M4U path exists. */
+&m4u { status = "okay"; };
+&mipi_tx0 { status = "okay"; };
+&smi_common { status = "okay"; };
+&larb0 { status = "okay"; };
 
-		outn: outn {
-			regulator-name = "outn";
-			enable-gpios = <&pio 251 GPIO_ACTIVE_HIGH>;
+&mmsys {
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		gemini_mmsys_out: endpoint@0 {
+			reg = <0>;
+			remote-endpoint = <&gemini_ovl0_2l_in>;
 		};
 	};
 };
 
-&mipi_tx0 {
-	status = "okay";
-};
-
-&smi_common {
-	status = "okay";
-};
-
-&larb0 {
-	status = "okay";
-};
-
-&ovl0 {
-	status = "okay";
-};
-
 &ovl0_2l {
 	status = "okay";
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; gemini_ovl0_2l_in: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_mmsys_out>; }; };
+		port@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; gemini_ovl0_2l_out: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_ovl1_2l_in>; }; };
+	};
 };
 
 &ovl1_2l {
 	status = "okay";
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; gemini_ovl1_2l_in: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_ovl0_2l_out>; }; };
+		port@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; gemini_ovl1_2l_out: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_color0_in>; }; };
+	};
 };
 
 &color0 {
 	status = "okay";
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; gemini_color0_in: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_ovl1_2l_out>; }; };
+		port@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; gemini_color0_out: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_ccorr0_in>; }; };
+	};
 };
 
 &ccorr0 {
 	status = "okay";
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; gemini_ccorr0_in: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_color0_out>; }; };
+		port@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; gemini_ccorr0_out: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_aal0_in>; }; };
+	};
 };
 
 &aal0 {
 	status = "okay";
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; gemini_aal0_in: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_ccorr0_out>; }; };
+		port@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; gemini_aal0_out: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_gamma0_in>; }; };
+	};
 };
 
 &gamma0 {
 	status = "okay";
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; gemini_gamma0_in: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_aal0_out>; }; };
+		port@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; gemini_gamma0_out: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_od0_in>; }; };
+	};
 };
 
 &od0 {
 	status = "okay";
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; gemini_od0_in: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_gamma0_out>; }; };
+		port@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; gemini_od0_out: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_dither0_in>; }; };
+	};
 };
 
 &dither0 {
 	status = "okay";
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; gemini_dither0_in: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_od0_out>; }; };
+		port@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; gemini_dither0_out: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_rdma0_in>; }; };
+	};
 };
 
 &rdma0 {
 	status = "okay";
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; gemini_rdma0_in: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_dither0_out>; }; };
+		port@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; gemini_rdma0_out: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_ufoe_in>; }; };
+	};
 };
 
 &ufoe {
 	status = "okay";
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; gemini_ufoe_in: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_rdma0_out>; }; };
+		port@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; gemini_ufoe_out: endpoint@0 { reg = <0>; remote-endpoint = <&gemini_dsi0_in>; }; };
+	};
 };
 
 &dsi0 {
@@ -103,20 +161,26 @@
 		reg = <0>;
 		outp-supply = <&outp>;
 		outn-supply = <&outn>;
-		/*
-		 * Vendor aeon6797_6m_n.dts identifies GPIO180 as LCM_RST; its LCM
-		 * driver drives the physical sequence low, high, low, high.
-		 */
+		/* Vendor aeon6797_6m_n.dts identifies GPIO180 as LCM_RST. */
 		reset-gpios = <&pio 180 GPIO_ACTIVE_HIGH>;
+		port { gemini_panel_in: endpoint { remote-endpoint = <&gemini_dsi0_out>; }; };
+	};
+};
 
-		port {
-			gemini_panel_in: endpoint {
-				remote-endpoint = <&dsi0_out>;
-			};
-		};
+&dsi0_in {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	gemini_dsi0_in: endpoint@0 {
+		reg = <0>;
+		remote-endpoint = <&gemini_ufoe_out>;
 	};
 };
 
 &dsi0_out {
-	remote-endpoint = <&gemini_panel_in>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	gemini_dsi0_out: endpoint@0 {
+		reg = <0>;
+		remote-endpoint = <&gemini_panel_in>;
+	};
 };

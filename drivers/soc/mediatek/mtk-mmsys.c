@@ -8,6 +8,7 @@
 #include <linux/device.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reset-controller.h>
@@ -160,6 +161,9 @@ struct mtk_mmsys {
 	const struct mtk_mmsys_driver_data *data;
 	struct platform_device *clks_pdev;
 	struct platform_device *drm_pdev;
+	/* Serializes the one-way on-demand creation of the DRM child. */
+	struct mutex drm_lock;
+	bool drm_on_demand;
 	spinlock_t lock; /* protects mmsys_sw_rst_b reg */
 	struct reset_controller_dev rcdev;
 	struct cmdq_client_reg cmdq_base;
@@ -389,17 +393,59 @@ static const struct reset_control_ops mtk_mmsys_reset_ops = {
 	.reset = mtk_mmsys_reset,
 };
 
+static int mtk_mmsys_register_drm(struct mtk_mmsys *mmsys, struct device *dev)
+{
+	struct platform_device *drm;
+
+	drm = platform_device_register_data(dev, "mediatek-drm",
+					    PLATFORM_DEVID_AUTO, NULL, 0);
+	if (IS_ERR(drm))
+		return PTR_ERR(drm);
+
+	mmsys->drm_pdev = drm;
+	return 0;
+}
+
+/*
+ * Some boards need their early watchdog and userspace health checks alive
+ * before the first DRM client modeset talks to the panel.  The clock child is
+ * still created during probe, so the display components can bind normally;
+ * only the mediatek-drm master is held until userspace explicitly releases it.
+ */
+static ssize_t activate_drm_store(struct device *dev,
+				  struct device_attribute *attr, const char *buf,
+				  size_t count)
+{
+	struct mtk_mmsys *mmsys = dev_get_drvdata(dev);
+	bool activate;
+	int ret;
+
+	ret = kstrtobool(buf, &activate);
+	if (ret || !activate)
+		return -EINVAL;
+	if (!mmsys->drm_on_demand)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&mmsys->drm_lock);
+	if (!mmsys->drm_pdev)
+		ret = mtk_mmsys_register_drm(mmsys, dev);
+	mutex_unlock(&mmsys->drm_lock);
+
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_WO(activate_drm);
+
 static int mtk_mmsys_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct platform_device *clks;
-	struct platform_device *drm;
 	struct mtk_mmsys *mmsys;
 	int ret;
 
 	mmsys = devm_kzalloc(dev, sizeof(*mmsys), GFP_KERNEL);
 	if (!mmsys)
 		return -ENOMEM;
+	mutex_init(&mmsys->drm_lock);
 
 	mmsys->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(mmsys->regs)) {
@@ -430,6 +476,8 @@ static int mtk_mmsys_probe(struct platform_device *pdev)
 		dev_dbg(dev, "No mediatek,gce-client-reg!\n");
 
 	platform_set_drvdata(pdev, mmsys);
+	mmsys->drm_on_demand = of_property_read_bool(dev->of_node,
+						     "mediatek,drm-on-demand");
 
 	clks = platform_device_register_data(&pdev->dev, mmsys->data->clk_driver,
 					     PLATFORM_DEVID_AUTO, NULL, 0);
@@ -440,13 +488,17 @@ static int mtk_mmsys_probe(struct platform_device *pdev)
 	if (mmsys->data->is_vppsys)
 		goto out_probe_done;
 
-	drm = platform_device_register_data(&pdev->dev, "mediatek-drm",
-					    PLATFORM_DEVID_AUTO, NULL, 0);
-	if (IS_ERR(drm)) {
-		platform_device_unregister(clks);
-		return PTR_ERR(drm);
+	if (mmsys->drm_on_demand) {
+		ret = device_create_file(dev, &dev_attr_activate_drm);
+		if (!ret)
+			goto out_probe_done;
+	} else {
+		ret = mtk_mmsys_register_drm(mmsys, dev);
 	}
-	mmsys->drm_pdev = drm;
+	if (ret) {
+		platform_device_unregister(clks);
+		return ret;
+	}
 
 out_probe_done:
 	return 0;
@@ -456,7 +508,13 @@ static void mtk_mmsys_remove(struct platform_device *pdev)
 {
 	struct mtk_mmsys *mmsys = platform_get_drvdata(pdev);
 
-	platform_device_unregister(mmsys->drm_pdev);
+	if (mmsys->drm_on_demand)
+		device_remove_file(&pdev->dev, &dev_attr_activate_drm);
+
+	mutex_lock(&mmsys->drm_lock);
+	if (mmsys->drm_pdev)
+		platform_device_unregister(mmsys->drm_pdev);
+	mutex_unlock(&mmsys->drm_lock);
 	platform_device_unregister(mmsys->clks_pdev);
 }
 

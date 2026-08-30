@@ -27,6 +27,7 @@ static const unsigned long regulator_enable_loads[] = {
 
 struct panel_desc {
 	const char * const *supply_names;
+	const unsigned long *supply_enable_loads;
 	unsigned int num_supplies;
 	const struct drm_display_mode *display_mode;
 	u32 width_mm;
@@ -370,7 +371,10 @@ static void nt36672e_1080x2408_60hz_init(struct mipi_dsi_multi_context *ctx)
 static void nt36672e_gemini_write_cmd(struct mipi_dsi_multi_context *ctx,
 				      const u8 *data, unsigned int len)
 {
-	/* The vendor MT6797 helper uses generic packets for commands >= 0xb0. */
+	/*
+	 * The vendor MT6797 DSI_set_cmdq_V2() helper uses generic packets for
+	 * commands >= 0xb0 and DCS packets below that threshold.
+	 */
 	if (data[0] >= 0xb0)
 		mipi_dsi_generic_write_multi(ctx, data, len);
 	else
@@ -378,10 +382,10 @@ static void nt36672e_gemini_write_cmd(struct mipi_dsi_multi_context *ctx,
 }
 
 /*
- * Generated from the pinned Planet vendor object by
- * experiments/2026-07-11-gemini-panel-recovery/scripts/
- * emit-gemini-panel-init.py. Keep the source commit in the experiment
- * record; do not hand-edit this command sequence.
+ * Transcribed, in order, from init_setting[] in the Planet vendor source:
+ * drivers/misc/mediatek/lcm/aeon_nt36672_fhd_dsi_vdo_x600_xinli/
+ * aeon_nt36672_fhd_dsi_vdo_x600_xinli.c.  Keep this command sequence in
+ * lockstep with that source; the register values are panel-specific.
  */
 static void nt36672e_gemini_1080x2160_init(struct mipi_dsi_multi_context *ctx)
 {
@@ -796,6 +800,7 @@ static const struct drm_display_mode nt36672e_1080x2408_60hz = {
 
 static const struct panel_desc nt36672e_panel_desc = {
 	.supply_names = regulator_names,
+	.supply_enable_loads = regulator_enable_loads,
 	.num_supplies = ARRAY_SIZE(regulator_names),
 	.display_mode = &nt36672e_1080x2408_60hz,
 	.width_mm = 74,
@@ -820,9 +825,14 @@ static const char * const gemini_regulator_names[] = {
 	"outn",
 };
 
-static const struct drm_display_mode gemini_1080x2160_60hz = {
+static const struct drm_display_mode gemini_1080x2160 = {
 	.name = "1080x2160",
-	.clock = 138839,
+	/*
+	 * The vendor LCM gives PLL_CLOCK = 440.  Its MT6797 DSI driver in
+	 * drivers/misc/mediatek/video/mt6797/dispsys/ddp_dsi.c doubles this to
+	 * an 880 MHz lane data rate, so RGB888 over four lanes is 146667 kHz.
+	 */
+	.clock = 146667,
 	.hdisplay = 1080,
 	.hsync_start = 1090,
 	.hsync_end = 1132,
@@ -837,17 +847,19 @@ static const struct drm_display_mode gemini_1080x2160_60hz = {
 static const struct panel_desc gemini_panel_desc = {
 	.supply_names = gemini_regulator_names,
 	.num_supplies = ARRAY_SIZE(gemini_regulator_names),
-	.display_mode = &gemini_1080x2160_60hz,
-	/* 5.99in diagonal specification, converted from the 2:1 active area. */
-	.width_mm = 68,
-	.height_mm = 136,
+	.display_mode = &gemini_1080x2160,
+	/* The recovered vendor source does not state the active-area dimensions. */
+	.width_mm = 0,
+	.height_mm = 0,
+	/* Vendor parameters specify burst video and clk_lp_per_line_enable. */
 	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
-			MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
+			MIPI_DSI_MODE_LPM,
 	.format = MIPI_DSI_FMT_RGB888,
 	.lanes = 4,
 	.panel_name = "Gemini NT36672 1080x2160 panel",
 	.init_sequence = nt36672e_gemini_1080x2160_init,
-	.power_on_delay_ms = 20,
+	/* The Gemini LP3101 provider supplies the vendor's 20 ms rail settle. */
+	.power_on_delay_ms = 0,
 	.reset_high_delay_ms = 10,
 	.reset_low_delay_ms = 10,
 	.reset_final_high_delay_ms = 20,
@@ -906,7 +918,9 @@ static int nt36672e_panel_probe(struct mipi_dsi_device *dsi)
 
 	for (i = 0; i < ctx->desc->num_supplies; i++) {
 		ctx->supplies[i].supply = ctx->desc->supply_names[i];
-		ctx->supplies[i].init_load_uA = regulator_enable_loads[i];
+		if (ctx->desc->supply_enable_loads)
+			ctx->supplies[i].init_load_uA =
+				ctx->desc->supply_enable_loads[i];
 	}
 
 	ret = devm_regulator_bulk_get(dev, ctx->desc->num_supplies,

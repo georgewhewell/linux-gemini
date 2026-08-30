@@ -22,6 +22,14 @@ struct mt6797_btif_pio;
 struct mt6797_btif_pio_lease;
 
 /*
+ * Consume one arbitrary fragment of received STP bytes.  The callback runs in
+ * threaded-IRQ context while the PIO owner is held; it must not re-enter a PIO
+ * lifecycle API.  It returns zero only after consuming the complete fragment.
+ */
+typedef int (*mt6797_btif_pio_rx_cb_t)(void *context, const u8 *data,
+					       size_t length);
+
+/*
  * These callbacks perform one already-authorized BTIF register access.  They
  * must not sleep and may be called from a future threaded IRQ.  The transport
  * deliberately has no MMIO mapping helper so it cannot discover or enable
@@ -57,6 +65,31 @@ int mt6797_btif_pio_attach_full_stp(
 		const struct mt6797_consys_stp_session_lease *stp_lease);
 
 /*
+ * Initialize PIO and install one mandatory-STP byte consumer.  This is the
+ * first half of the vendor BTIF switch sequence: wmt_core.c:747-809 selects
+ * mandatory mode, and wmt_ic_soc.c:1008-1018 queries and sets the controller
+ * before the host changes mode.  There is one callback and one PIO lease; no
+ * second consumer can observe or emit bytes during the later handoff.
+ */
+int mt6797_btif_pio_begin_mandatory(
+		const struct mt6797_btif_pio_lease *pio_lease,
+		mt6797_btif_pio_rx_cb_t receive, void *receive_context);
+
+/*
+ * Replace the mandatory consumer with the provisional full-STP consumer after
+ * the exact mandatory set reply.  This performs no register, IRQ, power, or
+ * WMT operation.  The caller begins its provisional full session before this
+ * one-way handoff and must wait the vendor's 10 ms before the full-mode query.
+ */
+int mt6797_btif_pio_handoff_full_bootstrap(
+		const struct mt6797_btif_pio_lease *pio_lease,
+		mt6797_btif_pio_rx_cb_t receive, void *receive_context);
+
+/* Commit the already-installed full-STP consumer after exact reply matching. */
+int mt6797_btif_pio_promote_full(
+		const struct mt6797_btif_pio_lease *pio_lease);
+
+/*
  * Callback suitable for mt6797_consys_stp_session_ops.transmit. context must
  * be the PIO lease. It accepts the entire frame or returns -EAGAIN without
  * accepting any bytes; it never silently performs a short frame write.
@@ -66,7 +99,7 @@ int mt6797_btif_pio_transmit(void *context, const u8 *frame,
 
 /*
  * Handle one already-delivered BTIF core interrupt in threaded-IRQ context.
- * RX bytes are passed as arbitrary fragments to the attached full-STP lease.
+ * RX bytes are passed as arbitrary fragments to exactly one attached consumer.
  */
 int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease);
 

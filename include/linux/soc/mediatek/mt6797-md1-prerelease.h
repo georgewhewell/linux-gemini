@@ -6,7 +6,6 @@
 #include <linux/types.h>
 
 struct regmap;
-#include <linux/types.h>
 
 /* A backend operation returns -EAGAIN while its bounded observation is pending. */
 #define MT6797_MD1_PRERELEASE_ABI		1

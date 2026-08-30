@@ -56,7 +56,7 @@ static bool enable_experimental_md1_prerelease;
 module_param_named(enable_experimental_md1_prerelease,
 			   enable_experimental_md1_prerelease, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_md1_prerelease,
-			 "allow MT6797 MD1 pre-release inventory only (default: false)");
+			 "allow explicitly staged MT6797 MD1 pre-release diagnostics");
 
 enum mt6797_md1_prerelease_stage {
 	MT6797_MD1_STAGE_INVENTORY = 1,

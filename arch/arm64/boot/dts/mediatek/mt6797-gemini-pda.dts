@@ -387,9 +387,12 @@
 
 &i2c4 {
 	/*
-	 * The vendor DT has a Novatek controller at 0x62 on this bus. Keep both
-	 * bus and client disabled until the VTOUCH rail and EINT routing have been
-	 * checked on a recovery-tested image.
+	 * The Gemini vendor DT and a filtered vendor dmesg capture establish the
+	 * NT36772 at 0x62 and GPIO85/EINT8 with a rising edge.  Keep both bus and
+	 * client disabled in the base DT: the vendor's VTOUCH supply is owned by a
+	 * separate pseudo-node, and its physical MT6351 regulator has not been
+	 * identified.  The observer overlay may enable only this adapter; it leaves
+	 * the client disabled and performs no touchscreen I2C transfer.
 	 */
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c4_pins_a>;

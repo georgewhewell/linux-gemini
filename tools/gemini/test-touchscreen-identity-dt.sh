@@ -10,6 +10,7 @@ overlay=$root/arch/arm64/boot/dts/mediatek/mt6797-gemini-pda-touchscreen-identit
 makefile=$root/arch/arm64/boot/dts/mediatek/Makefile
 driver=$root/drivers/input/touchscreen/novatek-nt36xxx.c
 pmic=$root/drivers/regulator/mt6351-regulator.c
+binding=$root/Documentation/devicetree/bindings/input/touchscreen/novatek,nt36xxx.yaml
 
 need()
 {
@@ -45,5 +46,7 @@ need "$driver" 'device_property_read_bool(dev, "novatek,identity-only")'
 need "$driver" 'keeping input and IRQ quiescent'
 need "$driver" 'MODULE_DESCRIPTION("Novatek legacy NT36xxx touchscreen driver")'
 need "$pmic" 'MT6351_FIXED("ldo-vldo28", VLDO28'
+need "$binding" 'novatek,identity-only:'
+need "$binding" 'Recovery-image bring-up mode.'
 
 echo "touchscreen identity overlay contract: PASS"

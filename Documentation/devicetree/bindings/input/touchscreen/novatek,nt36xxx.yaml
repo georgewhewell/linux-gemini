@@ -29,6 +29,14 @@ properties:
   interrupts:
     maxItems: 1
 
+  novatek,identity-only:
+    type: boolean
+    description: |
+      Recovery-image bring-up mode. The driver performs its bounded trim
+      identification, restores the controller, and declines to register an
+      input device or request the interrupt. This is not a production board
+      operating mode and must be omitted for normal touchscreen activation.
+
 required:
   - compatible
   - reg

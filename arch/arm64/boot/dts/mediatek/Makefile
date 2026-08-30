@@ -11,6 +11,11 @@ mt6797-gemini-pda-gpu-vgpu-identity-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-gpu-vgpu-identity.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-vgpu-identity.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-staged.dtbo
+mt6797-gemini-pda-gpu-staged-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-gpu-staged.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-staged.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-identity.dtbo
 mt6797-gemini-pda-consys-identity-dtbs := \
 	mt6797-gemini-pda.dtb \

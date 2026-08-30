@@ -42,6 +42,7 @@ obj-$(CONFIG_MTK_WMT) += mtk-wmt.o
 obj-$(CONFIG_MTK_WMT_KUNIT_TEST) += mtk-wmt-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_WMT_INITIAL) += mt6797-consys-wmt-initial.o
 obj-$(CONFIG_MTK_MT6797_A72_POWER) += mt6797-a72-power.o
+obj-$(CONFIG_MTK_MT6797_GPU_STAGED_DIAGNOSTIC) += mt6797-gpu-staged.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_INVENTORY) += mt6797-consys.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_CORE) += mt6797-consys-core.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_CORE_KUNIT_TEST) += mt6797-consys-core-kunit-test.o

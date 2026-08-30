@@ -252,6 +252,25 @@ config MTK_MT6797_A72_POWER
 	  authorizes CPU_ON.  It is groundwork for a later provider that can
 	  reproduce the hardware power sequence.
 
+config MTK_MT6797_GPU_STAGED_DIAGNOSTIC
+	tristate "Experimental MT6797 staged Mali-T880 diagnostic"
+	depends on ARM64 && ARCH_MEDIATEK && OF && PM
+	depends on PM_GENERIC_DOMAINS_OF && MTK_SCPSYS && REGULATOR_RT5735
+	select MFD_SYSCON
+	help
+	  Build the default-disabled, explicitly gated MT6797 GPU diagnostic.
+	  Stage 0 proves the RT5735 regulator has registered after its product-ID
+	  read.  Stage 1 makes one fixed VGPU vote and powers the four MFG core
+	  domains, verifies both SPM status words, then releases every vote.  Stage
+	  2 additionally enables the BG3D clock and reads only Mali ID/features,
+	  before the same reverse-order release.
+
+	  The driver rejects every stage unless both its module gate and an explicit
+	  stage number are supplied.  It has no Panfrost match and never registers a
+	  DRM device, requests an IRQ, submits work, or writes Mali registers.  A
+	  stage above 2 is rejected: Panfrost needs a separately reviewed image and
+	  is not a continuation of this diagnostic.
+
 config MTK_MT6797_CONSYS_INVENTORY
 	bool "MediaTek MT6797 CONSYS resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF

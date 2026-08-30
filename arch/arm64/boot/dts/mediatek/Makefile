@@ -26,6 +26,11 @@ mt6797-gemini-pda-gpu-staged-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-gpu-staged.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-staged.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-fixed-opp.dtbo
+mt6797-gemini-pda-gpu-fixed-opp-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-gpu-fixed-opp.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-fixed-opp.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-identity.dtbo
 mt6797-gemini-pda-consys-identity-dtbs := \
 	mt6797-gemini-pda.dtb \

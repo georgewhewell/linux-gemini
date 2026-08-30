@@ -38,8 +38,12 @@
 		vgpu-supply = <&rt5735_vgpu>;
 		mediatek,spm = <&scpsys>;
 		mediatek,gpu = <&gpu>;
-		clocks = <&mfgsys CLK_MFG_BG3D>;
-		clock-names = "core";
+		nvmem-cells = <&mt6797_gpu_devinfo>;
+		nvmem-cell-names = "gpu-devinfo";
+		clocks = <&mfgsys CLK_MFG_BG3D>,
+			 <&topckgen CLK_TOP_MUX_MFG>,
+			 <&apmixedsys CLK_APMIXED_MFGPLL>;
+		clock-names = "core", "mfg-sel", "mfgpll";
 		power-domains = <&scpsys MT6797_POWER_DOMAIN_MFG_CORE0>,
 				<&scpsys MT6797_POWER_DOMAIN_MFG_CORE1>,
 				<&scpsys MT6797_POWER_DOMAIN_MFG_CORE2>,

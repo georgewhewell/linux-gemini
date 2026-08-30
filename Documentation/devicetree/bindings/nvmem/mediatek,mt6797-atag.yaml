@@ -4,13 +4,13 @@
 $id: http://devicetree.org/schemas/nvmem/mediatek,mt6797-atag.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: MediaTek MT6797 LK devinfo thermal calibration
+title: MediaTek MT6797 LK devinfo calibration
 
 description: |
   The retained MT6797 Little Kernel bootloader appends a fixed-format,
   read-only devinfo payload to /chosen/atag,devinfo.  This provider validates
-  that handoff property and exposes the ordered thermal calibration cell.
-  It does not access the efuse MMIO block.
+  that handoff property and exposes the ordered thermal calibration, CPU/PTP
+  identity, and GPU-bin cells. It does not access the efuse MMIO block.
 
 maintainers:
   - Julien Etienne <julien.etienne@gmail.com>
@@ -71,6 +71,22 @@ patternProperties:
         items:
           - items:
               - const: 88
+              - const: 12
+    required:
+      - reg
+    additionalProperties: false
+  "^gpu-devinfo@64$":
+    type: object
+    description: |
+      Raw MT6797 GPU DVFS inputs in vendor mt_gpufreq order: devinfo word 8,
+      function-code word 22, and PTP-program-version word 61.
+    properties:
+      reg:
+        minItems: 1
+        maxItems: 1
+        items:
+          - items:
+              - const: 100
               - const: 12
     required:
       - reg

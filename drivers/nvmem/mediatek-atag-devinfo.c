@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * MediaTek MT6797 LK devinfo thermal calibration provider.
+ * MediaTek MT6797 LK devinfo calibration provider.
  *
  * The retained MT6797 LK appends an opaque, little-endian 103-word property
- * at /chosen/atag,devinfo.  Only the three words consumed by the MT6797
- * thermal extractor are retained here; the efuse MMIO block is never mapped.
+ * at /chosen/atag,devinfo.  It exposes the thermal, CPU/PTP identity, and
+ * GPU-bin words consumed by existing MT6797 drivers; the efuse MMIO block is
+ * never mapped.
  */
 
 #include <linux/init.h>
@@ -30,9 +31,14 @@
 #define MT6797_PTP_WORDS		19
 #define MT6797_PTP_CELL_BYTES		(MT6797_PTP_WORDS * sizeof(u32))
 #define MT6797_EFUSE_IDENTITY_CELL_BYTES	(3 * sizeof(u32))
+#define MT6797_GPU_DEVINFO_WORDS		3
+#define MT6797_GPU_DEVINFO_CELL_BYTES	(MT6797_GPU_DEVINFO_WORDS * sizeof(u32))
 #define MT6797_ATAG_CELL_BYTES		(MT6797_THERMAL_CELL_BYTES + \
 					 MT6797_PTP_CELL_BYTES + \
-					 MT6797_EFUSE_IDENTITY_CELL_BYTES)
+					 MT6797_EFUSE_IDENTITY_CELL_BYTES + \
+					 MT6797_GPU_DEVINFO_CELL_BYTES)
+
+#define MT6797_GPU_SPEED_WORD_INDEX		8
 
 struct mt6797_atag_devinfo {
 	u8 cells[MT6797_ATAG_CELL_BYTES];
@@ -104,6 +110,28 @@ static int mt6797_atag_parse(struct mt6797_atag_devinfo *data)
 					MT6797_DVFSP_EFUSE_DATE_WORD_INDEX),
 				   &data->cells[MT6797_THERMAL_CELL_BYTES +
 						MT6797_PTP_CELL_BYTES + 2 * sizeof(u32)]);
+
+	/* Keep the raw inputs in the order used by vendor mt_gpufreq. */
+	put_unaligned_le32(
+		mt6797_atag_word(property, MT6797_ATAG_HEADER_WORDS +
+					MT6797_GPU_SPEED_WORD_INDEX),
+				   &data->cells[MT6797_THERMAL_CELL_BYTES +
+						MT6797_PTP_CELL_BYTES +
+						MT6797_EFUSE_IDENTITY_CELL_BYTES]);
+	put_unaligned_le32(
+		mt6797_atag_word(property, MT6797_ATAG_HEADER_WORDS +
+					MT6797_DVFSP_EFUSE_FUNCTION_WORD_INDEX),
+				   &data->cells[MT6797_THERMAL_CELL_BYTES +
+						MT6797_PTP_CELL_BYTES +
+						MT6797_EFUSE_IDENTITY_CELL_BYTES +
+						sizeof(u32)]);
+	put_unaligned_le32(
+		mt6797_atag_word(property, MT6797_ATAG_HEADER_WORDS +
+					MT6797_DVFSP_EFUSE_DATE_WORD_INDEX),
+				   &data->cells[MT6797_THERMAL_CELL_BYTES +
+						MT6797_PTP_CELL_BYTES +
+						MT6797_EFUSE_IDENTITY_CELL_BYTES +
+						2 * sizeof(u32)]);
 
 out:
 	of_node_put(chosen);

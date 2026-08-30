@@ -41,6 +41,10 @@
 			mt6797_cpu_efuse_identity: cpu-efuse-identity@58 {
 				reg = <88 12>;
 			};
+
+			mt6797_gpu_devinfo: gpu-devinfo@64 {
+				reg = <100 12>;
+			};
 		};
 	};
 

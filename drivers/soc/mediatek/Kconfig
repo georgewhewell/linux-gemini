@@ -303,6 +303,7 @@ config MTK_MT6797_GPU_STAGED_DIAGNOSTIC
 	tristate "Experimental MT6797 staged Mali-T880 diagnostic"
 	depends on ARM64 && ARCH_MEDIATEK && OF && PM
 	depends on PM_GENERIC_DOMAINS_OF && MTK_SCPSYS && REGULATOR_RT5735
+	depends on NVMEM_MTK_ATAG_DEVINFO
 	select MFD_SYSCON
 	help
 	  Build the default-disabled, explicitly gated MT6797 GPU diagnostic.

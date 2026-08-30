@@ -9,6 +9,7 @@
 
 #include <linux/bitops.h>
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/io.h>
@@ -17,6 +18,7 @@
 #include <linux/ktime.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
@@ -24,7 +26,9 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
+#include <linux/slab.h>
 #include <linux/sizes.h>
+#include <linux/unaligned.h>
 
 #define MT6797_GPU_BASE			0x13040000
 #define MT6797_GPU_SIZE			SZ_16K
@@ -43,8 +47,21 @@
 #define MT6797_GPU_SHADER_PRESENT_LO	0x100
 
 #define MT6797_GPU_MAX_STAGE		2
+#define MT6797_GPU_READONLY_STAGE	-1
 #define MT6797_GPU_DEFAULT_TIMEOUT_MS	1000
 #define MT6797_GPU_MAX_TIMEOUT_MS	10000
+#define MT6797_GPU_DEVINFO_WORDS	3
+
+#define MT6797_GPU_SPEED_WORD		0
+#define MT6797_GPU_FUNCTION_WORD	1
+#define MT6797_GPU_PTP_WORD		2
+
+#define MT6797_GPU_SPEED_SHIFT		8
+#define MT6797_GPU_SPEED_MASK		GENMASK(3, 0)
+#define MT6797_GPU_FUNCTION0_SHIFT	24
+#define MT6797_GPU_FUNCTION_MASK	GENMASK(3, 0)
+#define MT6797_GPU_PTP_SHIFT		4
+#define MT6797_GPU_PTP_MASK		GENMASK(3, 0)
 
 static bool enable_experimental_stages;
 module_param_named(enable_experimental_stages, enable_experimental_stages, bool, 0400);
@@ -53,7 +70,8 @@ MODULE_PARM_DESC(enable_experimental_stages,
 
 static int stage = -1;
 module_param(stage, int, 0400);
-MODULE_PARM_DESC(stage, "highest staged diagnostic gate to run (0=rail ID, 1=MFG, 2=GPU ID)");
+MODULE_PARM_DESC(stage,
+		 "highest staged diagnostic gate to run (-1=devinfo/clock capture, 0=rail ID, 1=MFG, 2=GPU ID)");
 
 static unsigned int max_stage_ms = MT6797_GPU_DEFAULT_TIMEOUT_MS;
 module_param(max_stage_ms, uint, 0400);
@@ -78,6 +96,117 @@ struct mt6797_gpu_staged {
 static const char * const mt6797_gpu_domain_names[] = {
 	"core0", "core1", "core2", "core3",
 };
+
+static unsigned int mt6797_gpu_staged_vendor_table_type(u32 function_word,
+						 u32 ptp_word)
+{
+	unsigned int function_code = function_word & MT6797_GPU_FUNCTION_MASK;
+	unsigned int ptp_version = (ptp_word >> MT6797_GPU_PTP_SHIFT) &
+				   MT6797_GPU_PTP_MASK;
+	unsigned int type;
+
+	if (function_code == 0 || function_code == 3)
+		type = 0;
+	else if (function_code == 1 || function_code == 6)
+		type = 1;
+	else if (function_code == 2 || function_code == 7)
+		type = 2;
+	else
+		type = 0;
+
+	if (ptp_version <= 5)
+		type += 4;
+	if (ptp_version > 6)
+		type += 8;
+	if (function_code == 0xf)
+		type = 11;
+	else if (function_code == 4)
+		type = 12;
+
+	return type;
+}
+
+static int mt6797_gpu_staged_read_devinfo(struct mt6797_gpu_staged *diag)
+{
+	struct nvmem_cell *cell;
+	void *buffer;
+	size_t length;
+	u32 speed_word;
+	u32 function_word;
+	u32 ptp_word;
+	unsigned int speed_bin;
+	unsigned int function0;
+	unsigned int function1;
+	unsigned int ptp_version;
+
+	cell = devm_nvmem_cell_get(diag->dev, "gpu-devinfo");
+	if (IS_ERR(cell))
+		return dev_err_probe(diag->dev, PTR_ERR(cell),
+				     "missing GPU devinfo cell\n");
+
+	buffer = nvmem_cell_read(cell, &length);
+	if (IS_ERR(buffer))
+		return dev_err_probe(diag->dev, PTR_ERR(buffer),
+				     "failed to read GPU devinfo\n");
+	if (length != MT6797_GPU_DEVINFO_WORDS * sizeof(u32)) {
+		kfree(buffer);
+		return dev_err_probe(diag->dev, -EINVAL,
+				     "invalid GPU devinfo length %zu\n", length);
+	}
+
+	speed_word = get_unaligned_le32((u8 *)buffer +
+					MT6797_GPU_SPEED_WORD * sizeof(u32));
+	function_word = get_unaligned_le32((u8 *)buffer +
+					   MT6797_GPU_FUNCTION_WORD * sizeof(u32));
+	ptp_word = get_unaligned_le32((u8 *)buffer +
+					      MT6797_GPU_PTP_WORD * sizeof(u32));
+	kfree(buffer);
+
+	speed_bin = (speed_word >> MT6797_GPU_SPEED_SHIFT) & MT6797_GPU_SPEED_MASK;
+	function0 = (function_word >> MT6797_GPU_FUNCTION0_SHIFT) &
+			    MT6797_GPU_FUNCTION_MASK;
+	function1 = function_word & MT6797_GPU_FUNCTION_MASK;
+	ptp_version = (ptp_word >> MT6797_GPU_PTP_SHIFT) & MT6797_GPU_PTP_MASK;
+
+	dev_info(diag->dev,
+		 "read-only GPU devinfo: word8=%08x word22=%08x word61=%08x speed-bin=%x function=%x/%x ptp-version=%x vendor-table=%u\n",
+		 speed_word, function_word, ptp_word, speed_bin, function0, function1,
+		 ptp_version,
+		 mt6797_gpu_staged_vendor_table_type(function_word, ptp_word));
+	return 0;
+}
+
+static int mt6797_gpu_staged_log_clock(struct mt6797_gpu_staged *diag,
+					 const char *id)
+{
+	struct clk *clk;
+	struct clk *parent;
+
+	clk = devm_clk_get(diag->dev, id);
+	if (IS_ERR(clk))
+		return dev_err_probe(diag->dev, PTR_ERR(clk),
+				     "failed to get %s clock\n", id);
+
+	parent = clk_get_parent(clk);
+	dev_info(diag->dev,
+		 "read-only clock: %s=%luHz parent=%s%s%luHz\n", id,
+		 clk_get_rate(clk), parent ? __clk_get_name(parent) : "(none)",
+		 parent ? "@" : "", parent ? clk_get_rate(parent) : 0UL);
+	return 0;
+}
+
+static int mt6797_gpu_staged_read_only_capture(struct mt6797_gpu_staged *diag)
+{
+	int ret;
+
+	ret = mt6797_gpu_staged_read_devinfo(diag);
+	if (ret)
+		return ret;
+	ret = mt6797_gpu_staged_log_clock(diag, "mfg-sel");
+	if (ret)
+		return ret;
+	return mt6797_gpu_staged_log_clock(diag, "mfgpll");
+}
 
 static int mt6797_gpu_staged_check_timeout(struct mt6797_gpu_staged *diag,
 					    ktime_t started, const char *name)
@@ -265,12 +394,18 @@ static int mt6797_gpu_staged_probe(struct platform_device *pdev)
 
 	if (!enable_experimental_stages)
 		return dev_err_probe(diag.dev, -EPERM, "experimental gate is false\n");
-	if (stage < 0 || stage > MT6797_GPU_MAX_STAGE)
-		return dev_err_probe(diag.dev, -EINVAL, "stage must be 0, 1, or 2\n");
+	if (stage < MT6797_GPU_READONLY_STAGE || stage > MT6797_GPU_MAX_STAGE)
+		return dev_err_probe(diag.dev, -EINVAL, "stage must be -1, 0, 1, or 2\n");
 	if (!max_stage_ms || max_stage_ms > MT6797_GPU_MAX_TIMEOUT_MS)
 		return dev_err_probe(diag.dev, -EINVAL, "invalid stage timeout\n");
 
 	started = ktime_get();
+	ret = mt6797_gpu_staged_read_only_capture(&diag);
+	if (ret)
+		return ret;
+	if (stage == MT6797_GPU_READONLY_STAGE)
+		return 0;
+
 	diag.vgpu = devm_regulator_get_exclusive(diag.dev, "vgpu");
 	if (IS_ERR(diag.vgpu))
 		return dev_err_probe(diag.dev, PTR_ERR(diag.vgpu),

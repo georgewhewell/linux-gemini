@@ -338,6 +338,9 @@ static int mt6797_consys_stp_receive_byte_locked(
 			session->rx_state = MT6797_CONSYS_STP_RX_RESYNC;
 			return 0;
 		}
+		/* Vendor full mode accepts the optional 0x55 delimiter in SYNC. */
+		if (byte == 0x55)
+			return 0;
 		return -EBADMSG;
 	case MT6797_CONSYS_STP_RX_HEADER:
 		session->header[session->header_length++] = byte;
@@ -1161,6 +1164,94 @@ static void mt6797_consys_stp_test_malformed_and_quiesce(struct kunit *test)
 	mt6797_consys_stp_session_destroy(session);
 }
 
+static void mt6797_consys_stp_test_fragmented_delimiter_resync_and_crc_recovery(
+										  struct kunit *test)
+{
+	const struct mt6797_consys_stp_session_lease *lease;
+	struct mt6797_consys_stp_test_link *link;
+	struct mt6797_consys_stp_session *session;
+	u8 *frame;
+	u8 *bytes;
+	u8 delimiter = 0x55;
+	u8 resync[] = { 0x7f, 0x7f, 0x7f, 0x7f };
+	u8 payload = 0x37;
+	size_t frame_length;
+	size_t split;
+
+	/* Every data-frame boundary is a valid BTIF receive fragmentation point. */
+	for (split = 0; split <= MTK_STP_HEADER_SIZE + sizeof(payload) +
+		MTK_STP_TRAILER_SIZE; split++) {
+		session = mt6797_consys_stp_test_session(test, &link, &lease);
+		frame = kunit_kmalloc(test, MT6797_CONSYS_STP_MAX_FRAME_SIZE, GFP_KERNEL);
+		KUNIT_ASSERT_NOT_NULL(test, frame);
+		frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_WMT, 0, 7,
+									&payload, sizeof(payload));
+		KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_receive(session, frame,
+									split), 0);
+		KUNIT_EXPECT_EQ(test, link->rx_count, split == frame_length ? 1U : 0U);
+		KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session,
+									frame + split,
+									frame_length - split), 0);
+		KUNIT_EXPECT_EQ(test, link->rx_count, 1U);
+		mt6797_consys_stp_session_destroy(session);
+	}
+
+	session = mt6797_consys_stp_test_session(test, &link, &lease);
+	frame = kunit_kmalloc(test, MT6797_CONSYS_STP_MAX_FRAME_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, frame);
+	bytes = kunit_kmalloc(test, 2 * MT6797_CONSYS_STP_MAX_FRAME_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, bytes);
+	frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_WMT, 0, 7,
+									&payload, sizeof(payload));
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session, &delimiter, 1), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session, resync, 2), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session, resync + 2, 2), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session, frame,
+									frame_length), 0);
+	KUNIT_EXPECT_EQ(test, link->rx_count, 1U);
+
+	frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_WMT, 1, 7,
+									&payload, sizeof(payload));
+	memcpy(bytes, frame, frame_length);
+	bytes[frame_length - 1] ^= 1;
+	memcpy(bytes + frame_length, frame, frame_length);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session, bytes,
+									2 * frame_length), -EBADMSG);
+	/* The CRC-rejected seq=1 did not advance expected_rxseq. */
+	KUNIT_EXPECT_EQ(test, link->rx_count, 2U);
+	mt6797_consys_stp_session_destroy(session);
+}
+
+static void mt6797_consys_stp_test_receive_sequence_wraps(struct kunit *test)
+{
+	const struct mt6797_consys_stp_session_lease *lease;
+	struct mt6797_consys_stp_test_link *link;
+	struct mt6797_consys_stp_session *session;
+	u8 *frame;
+	u8 payload = 0x91;
+	size_t frame_length;
+	u8 sequence;
+
+	session = mt6797_consys_stp_test_session(test, &link, &lease);
+	frame = kunit_kmalloc(test, MT6797_CONSYS_STP_MAX_FRAME_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, frame);
+	for (sequence = 0; sequence < MT6797_CONSYS_STP_SEQUENCE_COUNT; sequence++) {
+		frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_WMT,
+									sequence, 7, &payload,
+									sizeof(payload));
+		KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_receive(session, frame,
+									frame_length), 0);
+	}
+	frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_WMT, 0, 7,
+									&payload, sizeof(payload));
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session, frame,
+									frame_length), 0);
+	KUNIT_EXPECT_EQ(test, link->rx_count, 9U);
+	KUNIT_EXPECT_EQ(test, link->tx_count, 9U);
+	KUNIT_EXPECT_EQ(test, link->frames[8][0], (u8)0x80);
+	mt6797_consys_stp_session_destroy(session);
+}
+
 static void mt6797_consys_stp_test_bootstrap_promotes_without_reset(
 								 struct kunit *test)
 {
@@ -1281,6 +1372,8 @@ static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_nak_and_timeout_retry),
 	KUNIT_CASE(mt6797_consys_stp_test_retry_limit_fences),
 	KUNIT_CASE(mt6797_consys_stp_test_malformed_and_quiesce),
+	KUNIT_CASE(mt6797_consys_stp_test_fragmented_delimiter_resync_and_crc_recovery),
+	KUNIT_CASE(mt6797_consys_stp_test_receive_sequence_wraps),
 	KUNIT_CASE(mt6797_consys_stp_test_bootstrap_promotes_without_reset),
 	KUNIT_CASE(mt6797_consys_stp_test_gnss_binding_is_lease_owned),
 	KUNIT_CASE(mt6797_consys_stp_test_null_session_lease_is_rejected),

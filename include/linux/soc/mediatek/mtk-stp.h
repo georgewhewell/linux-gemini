@@ -34,6 +34,17 @@ enum mtk_stp_mode {
 typedef int (*mtk_stp_rx_cb_t)(void *context, const u8 *payload,
 				      size_t length);
 
+/* A full-STP zero-length header is an ACK control packet, not data. */
+struct mtk_stp_control {
+	u8 sequence;
+	u8 ack;
+	/* Vendor full-mode defaults mask this bit, so it is always zero here. */
+	u8 nak;
+};
+
+typedef int (*mtk_stp_control_cb_t)(void *context,
+				    const struct mtk_stp_control *control);
+
 struct mtk_stp_client {
 	mtk_stp_rx_cb_t receive;
 	void *context;
@@ -47,13 +58,15 @@ enum mtk_stp_rx_phase {
 
 /*
  * The caller must serialize mtk_stp_rx() with itself and client unregister.
- * Callbacks run synchronously in the caller's context.  FULL mode only
- * handles data frames here: header-only ACK/window control and the vendor
- * resynchronization handshake need a transport owner.
+ * Callbacks run synchronously in the caller's context.  FULL-mode header-only
+ * ACK packets are reported to control_receive; sequence windows,
+ * retransmission and resynchronization ownership remain with the transport.
  */
 struct mtk_stp {
 	enum mtk_stp_mode mode;
 	struct mtk_stp_client clients[MTK_STP_MAX_CHANNEL + 1];
+	mtk_stp_control_cb_t control_receive;
+	void *control_context;
 	enum mtk_stp_rx_phase rx_phase;
 	u8 header[MTK_STP_HEADER_SIZE];
 	u8 header_len;
@@ -71,6 +84,7 @@ struct mtk_stp {
 	u32 callback_errors;
 	u32 dropped_bytes;
 	u32 frames;
+	u32 control_frames;
 	int last_error;
 };
 
@@ -81,18 +95,25 @@ int mtk_stp_register_client(struct mtk_stp *stp, enum mtk_stp_channel channel,
 			    mtk_stp_rx_cb_t receive, void *context);
 void mtk_stp_unregister_client(struct mtk_stp *stp,
 			       enum mtk_stp_channel channel);
+int mtk_stp_register_control(struct mtk_stp *stp,
+			     mtk_stp_control_cb_t receive, void *context);
+void mtk_stp_unregister_control(struct mtk_stp *stp);
 
 /*
  * Encode exactly one STP frame.  In mandatory mode this emits the fixed
  * 0x80 prefix and zero integrity fields used by stp_send_data_no_ps().
  * FULL mode does not implement windowing,
  * acknowledgment scheduling or retransmission; sequence and ack are caller
- * supplied protocol fields.  Zero-length frames return -EOPNOTSUPP: full-mode
- * header-only control packets require separate protocol handling.
+ * supplied protocol fields.  Data frames cannot be zero-length; use
+ * mtk_stp_encode_ack() for the vendor full-mode header-only ACK packet.
  */
 int mtk_stp_encode(enum mtk_stp_mode mode, enum mtk_stp_channel channel,
 		   u8 sequence, u8 ack, const u8 *payload, size_t payload_len,
 		   u8 *frame, size_t frame_size, size_t *frame_len);
+
+/* Encode the vendor default full-STP ACK: sequence zero, NAK disabled. */
+int mtk_stp_encode_ack(u8 ack, u8 *frame, size_t frame_size,
+		       size_t *frame_len);
 
 /*
  * Feed an arbitrary byte fragment.  Every supplied byte is consumed even

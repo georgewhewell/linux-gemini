@@ -11,6 +11,11 @@ mt6797-gemini-pda-md1-boot-status-observe-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-md1-boot-status-observe.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-boot-status-observe.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-prerelease.dtbo
+mt6797-gemini-pda-md1-prerelease-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-md1-prerelease.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-prerelease.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-vgpu-identity.dtbo
 mt6797-gemini-pda-gpu-vgpu-identity-dtbs := \
 	mt6797-gemini-pda.dtb \

@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Disabled MT6797 MD1 pre-release inventory profile.
+ *
+ * Even if enabled manually, the driver needs its module parameter and an
+ * inventory-only DT property, validates metadata only, then stops before PMIC
+ * or MD1 power. No firmware image, boot-vector, CLDMA/CCIF transaction, SIM,
+ * RF, shared-memory byte, interrupt request, clock, reset, or DMA action is
+ * possible through this profile.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		interrupt-parent = <&sysirq>;
+
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <2>;
+
+			md1_prerelease: modem@10014000 {
+				compatible = "mediatek,mt6797-md1-prerelease";
+				reg = <0 0x10014000 0 0x1e00>,
+				      <0 0x10015000 0 0x1e00>,
+				      <0 0x10219000 0 0x1e00>,
+				      <0 0x1021a000 0 0x1e00>,
+				      <0 0x10209000 0 0x1000>,
+				      <0 0x1020a000 0 0x1000>;
+				reg-names = "ap-cldma-ao", "md-cldma-ao", "ap-cldma-pdn",
+					    "md-cldma-pdn", "ap-ccif", "md-ccif";
+				interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>,
+					     <GIC_SPI 147 IRQ_TYPE_LEVEL_LOW>,
+					     <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
+				mediatek,vendor-clock-names = "scp-sys-md1-main",
+					"infra-ccif-ap", "infra-ccif-md",
+					"infra-ap-c2k-ccif-0", "infra-ap-c2k-ccif-1",
+					"infra-md2md-ccif-0", "infra-md2md-ccif-1",
+					"infra-md2md-ccif-2", "infra-md2md-ccif-3",
+					"infra-md2md-ccif-4", "infra-md2md-ccif-5";
+				mediatek,experimental-md1-prerelease;
+				mediatek,stage-inventory-only;
+				status = "disabled";
+			};
+		};
+	};
+};

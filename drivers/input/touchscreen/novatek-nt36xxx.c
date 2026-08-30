@@ -13,6 +13,7 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/string.h>
 #include <linux/unaligned.h>
 
 #include "novatek-nt36xxx.h"
@@ -24,6 +25,7 @@ struct nvt36xxx_data {
 	struct mutex lock;
 	struct touchscreen_properties prop;
 	const struct nvt36xxx_chip *chip;
+	u8 trim[NVT36XXX_TRIM_LEN];
 	u8 event[NVT36XXX_EVENT_DATA_LEN];
 	u32 raw_x_max;
 	u32 raw_y_max;
@@ -139,6 +141,7 @@ static int nvt36xxx_identify(struct nvt36xxx_data *data)
 		if (ret)
 			continue;
 
+		memcpy(data->trim, trim, sizeof(data->trim));
 		data->chip = nvt36xxx_find_chip(trim);
 		if (data->chip)
 			return 0;
@@ -301,8 +304,11 @@ static int nvt36xxx_probe(struct i2c_client *client)
 	i2c_set_clientdata(client, data);
 
 	ret = nvt36xxx_identify(data);
+	if (ret == -ENODEV)
+		return dev_err_probe(dev, ret, "unsupported NT36xxx trim %*ph\n",
+				     NVT36XXX_TRIM_LEN, data->trim);
 	if (ret)
-		return dev_err_probe(dev, ret, "unsupported NT36xxx trim identity\n");
+		return dev_err_probe(dev, ret, "failed to read NT36xxx trim\n");
 
 	ret = nvt36xxx_bootloader_reset(data);
 	if (ret)
@@ -342,8 +348,8 @@ static int nvt36xxx_probe(struct i2c_client *client)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request IRQ\n");
 
-	dev_info(dev, "%s detected (%ux%u)\n", data->chip->name,
-		 data->raw_x_max, data->raw_y_max);
+	dev_info(dev, "%s trim %*ph detected (%ux%u)\n", data->chip->name,
+		 NVT36XXX_TRIM_LEN, data->trim, data->raw_x_max, data->raw_y_max);
 
 	return input_register_device(input);
 }

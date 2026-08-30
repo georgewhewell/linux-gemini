@@ -353,7 +353,7 @@ static int fusb301_probe(struct i2c_client *client)
 	fusb->pwr_opmode = ret;
 	if (client->irq <= 0) {
 		ret = -EINVAL;
-		dev_err_probe(dev, ret, "missing active-low interrupt\n");
+		dev_err_probe(dev, ret, "missing interrupt\n");
 		goto err_put_connector;
 	}
 

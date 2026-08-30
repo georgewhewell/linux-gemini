@@ -5,7 +5,7 @@
  * Vendor evidence deliberately limits this adapter to the BTIF core resource:
  *
  * - MT6797's vendor DT describes BTIF as 0x1100c000/0x1000 with one
- *   level-low SPI 130 interrupt (arch/arm64/boot/dts/mt6797.dtsi:2511-2514);
+ *   level-low GIC SPI 130 interrupt (arch/arm64/boot/dts/mt6797.dtsi:2511-2514);
  * - that DT also names btifc and apdmac clocks (mt6797.dtsi:2515-2516), but
  *   no reviewed CONSYS owner establishes when either can be enabled here;
  * - the vendor registration path requests the IRQ then leaves it disabled
@@ -21,6 +21,7 @@
 
 #include <linux/completion.h>
 #include <linux/device.h>
+#include <linux/irq.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -29,6 +30,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/slab.h>
@@ -42,8 +44,11 @@
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
 #include <linux/soc/mediatek/mtk-stp.h>
 
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
 #define MT6797_BTIF_CORE_BASE	0x1100c000
 #define MT6797_BTIF_CORE_SIZE	0x1000
+#define MT6797_BTIF_CORE_SPI	130
 
 static bool enable_experimental_platform_adapter;
 module_param_named(enable_experimental_platform_adapter,
@@ -67,6 +72,7 @@ struct mt6797_btif_pio_platform_lease {
 
 struct mt6797_btif_pio_platform_irq_ops {
 	void (*enable)(void *context, int irq);
+	void (*disable_nosync)(void *context, int irq);
 	void (*disable_sync)(void *context, int irq);
 };
 
@@ -90,6 +96,11 @@ static void mt6797_btif_pio_platform_irq_enable(void *context, int irq)
 	enable_irq(irq);
 }
 
+static void mt6797_btif_pio_platform_irq_disable_nosync(void *context, int irq)
+{
+	disable_irq_nosync(irq);
+}
+
 static void mt6797_btif_pio_platform_irq_disable_sync(void *context, int irq)
 {
 	disable_irq(irq);
@@ -98,6 +109,7 @@ static void mt6797_btif_pio_platform_irq_disable_sync(void *context, int irq)
 static const struct mt6797_btif_pio_platform_irq_ops
 		mt6797_btif_pio_platform_linux_irq_ops = {
 	.enable = mt6797_btif_pio_platform_irq_enable,
+	.disable_nosync = mt6797_btif_pio_platform_irq_disable_nosync,
 	.disable_sync = mt6797_btif_pio_platform_irq_disable_sync,
 };
 
@@ -136,6 +148,37 @@ static bool mt6797_btif_pio_platform_resource_valid(const struct resource *res)
 	return res && (res->flags & IORESOURCE_MEM) &&
 		res->start == MT6797_BTIF_CORE_BASE &&
 		res->end == MT6797_BTIF_CORE_BASE + MT6797_BTIF_CORE_SIZE - 1;
+}
+
+static bool mt6797_btif_pio_platform_irq_contract_valid(int irq_count,
+						 unsigned int trigger_type)
+{
+	return irq_count == 1 &&
+		(trigger_type & IRQ_TYPE_SENSE_MASK) == IRQ_TYPE_LEVEL_LOW;
+}
+
+static bool mt6797_btif_pio_platform_irq_spec_valid(
+		const struct of_phandle_args *spec)
+{
+	return spec && spec->args_count == 3 &&
+		spec->args[0] == GIC_SPI &&
+		spec->args[1] == MT6797_BTIF_CORE_SPI &&
+		spec->args[2] == IRQ_TYPE_LEVEL_LOW;
+}
+
+static int mt6797_btif_pio_platform_of_irq_valid(struct device_node *np)
+{
+	struct of_phandle_args spec;
+	int ret;
+
+	if (!np)
+		return -EINVAL;
+	ret = of_irq_parse_one(np, 0, &spec);
+	if (ret)
+		return ret;
+	ret = mt6797_btif_pio_platform_irq_spec_valid(&spec) ? 0 : -EINVAL;
+	of_node_put(spec.np);
+	return ret;
 }
 
 static int mt6797_btif_pio_platform_prepare(
@@ -281,6 +324,24 @@ void mt6797_btif_pio_platform_close(
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_pio_platform_close);
 
+static void mt6797_btif_pio_platform_fence_irq(
+		struct mt6797_btif_pio_platform *adapter)
+{
+	bool disable_irq = false;
+
+	/* Caller already put the PIO owner into its permanent fenced state. */
+	mutex_lock(&adapter->state_lock);
+	if (adapter->state == MT6797_BTIF_PIO_PLATFORM_ACTIVE &&
+	    adapter->irq_enabled) {
+		adapter->state = MT6797_BTIF_PIO_PLATFORM_FENCED;
+		adapter->irq_enabled = false;
+		disable_irq = true;
+	}
+	mutex_unlock(&adapter->state_lock);
+	if (disable_irq)
+		adapter->irq_ops->disable_nosync(adapter->irq_context, adapter->irq);
+}
+
 static irqreturn_t mt6797_btif_pio_platform_irq_thread(int irq, void *context)
 {
 	struct mt6797_btif_pio_platform *adapter = context;
@@ -299,6 +360,14 @@ static irqreturn_t mt6797_btif_pio_platform_irq_thread(int irq, void *context)
 	ret = mt6797_btif_pio_irq(pio_lease);
 	if (ret == -EAGAIN)
 		return IRQ_NONE;
+	if (ret == -EOVERFLOW || ret == -EPROTO || ret == -ESHUTDOWN) {
+		/*
+		 * These PIO paths already clear BTIF IER and invalidate its lease.
+		 * Mask the Linux line from its own threaded handler without waiting on
+		 * ourselves; normal close/remove uses the synchronous variant.
+		 */
+		mt6797_btif_pio_platform_fence_irq(adapter);
+	}
 	if (ret && ret != -ESHUTDOWN)
 		dev_warn_ratelimited(adapter->dev, "BTIF PIO IRQ fenced: %d\n", ret);
 	return IRQ_HANDLED;
@@ -310,6 +379,7 @@ static int mt6797_btif_pio_platform_probe(struct platform_device *pdev)
 	struct mt6797_btif_pio_platform *adapter;
 	struct mt6797_btif_pio_io_ops io_ops;
 	struct resource *res;
+	int irq_count;
 	int ret;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -325,9 +395,24 @@ static int mt6797_btif_pio_platform_probe(struct platform_device *pdev)
 	if (IS_ERR(adapter->base))
 		return PTR_ERR(adapter->base);
 
+	irq_count = platform_irq_count(pdev);
+	if (irq_count != 1)
+		return dev_err_probe(dev, irq_count < 0 ? irq_count : -EINVAL,
+				     "BTIF must have exactly one core IRQ, got %d\n",
+				     irq_count);
+	ret = mt6797_btif_pio_platform_of_irq_valid(dev->of_node);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "BTIF must use GIC SPI %u level-low\n",
+				     MT6797_BTIF_CORE_SPI);
+
 	adapter->irq = platform_get_irq(pdev, 0);
 	if (adapter->irq < 0)
 		return adapter->irq;
+	if (!mt6797_btif_pio_platform_irq_contract_valid(irq_count,
+							 irq_get_trigger_type(adapter->irq)))
+		return dev_err_probe(dev, -EINVAL,
+				     "BTIF IRQ must resolve as level-low\n");
 
 	adapter->dev = dev;
 	adapter->irq_ops = &mt6797_btif_pio_platform_linux_irq_ops;
@@ -393,6 +478,7 @@ struct mt6797_btif_pio_platform_test_bus {
 	u32 regs[MT6797_BTIF_PIO_PLATFORM_TEST_REGS];
 	u32 iir;
 	unsigned int enable_count;
+	unsigned int disable_nosync_count;
 	unsigned int disable_count;
 };
 
@@ -449,9 +535,18 @@ static void mt6797_btif_pio_platform_test_irq_disable(void *context, int irq)
 	bus->disable_count++;
 }
 
+static void mt6797_btif_pio_platform_test_irq_disable_nosync(void *context,
+						       int irq)
+{
+	struct mt6797_btif_pio_platform_test_bus *bus = context;
+
+	bus->disable_nosync_count++;
+}
+
 static const struct mt6797_btif_pio_platform_irq_ops
 		mt6797_btif_pio_platform_test_irq_ops = {
 	.enable = mt6797_btif_pio_platform_test_irq_enable,
+	.disable_nosync = mt6797_btif_pio_platform_test_irq_disable_nosync,
 	.disable_sync = mt6797_btif_pio_platform_test_irq_disable,
 };
 
@@ -538,6 +633,30 @@ static void mt6797_btif_pio_platform_test_resource_bounds(struct kunit *test)
 			 mt6797_btif_pio_platform_resource_valid(&resource));
 }
 
+static void mt6797_btif_pio_platform_test_irq_contract(struct kunit *test)
+{
+	struct of_phandle_args spec = {
+		.args_count = 3,
+		.args = { GIC_SPI, MT6797_BTIF_CORE_SPI, IRQ_TYPE_LEVEL_LOW },
+	};
+
+	KUNIT_EXPECT_TRUE(test, mt6797_btif_pio_platform_irq_contract_valid(
+							1, IRQ_TYPE_LEVEL_LOW));
+	KUNIT_EXPECT_FALSE(test, mt6797_btif_pio_platform_irq_contract_valid(
+							2, IRQ_TYPE_LEVEL_LOW));
+	KUNIT_EXPECT_FALSE(test, mt6797_btif_pio_platform_irq_contract_valid(
+							1, IRQ_TYPE_LEVEL_HIGH));
+	KUNIT_EXPECT_TRUE(test, mt6797_btif_pio_platform_irq_spec_valid(&spec));
+	spec.args[1]++;
+	KUNIT_EXPECT_FALSE(test, mt6797_btif_pio_platform_irq_spec_valid(&spec));
+	spec.args[1]--;
+	spec.args[2] = IRQ_TYPE_LEVEL_HIGH;
+	KUNIT_EXPECT_FALSE(test, mt6797_btif_pio_platform_irq_spec_valid(&spec));
+	spec.args[2] = IRQ_TYPE_LEVEL_LOW;
+	spec.args_count = 2;
+	KUNIT_EXPECT_FALSE(test, mt6797_btif_pio_platform_irq_spec_valid(&spec));
+}
+
 static void mt6797_btif_pio_platform_test_explicit_gate(struct kunit *test)
 {
 	struct mt6797_btif_pio_platform_test_context *ctx;
@@ -583,10 +702,29 @@ static void mt6797_btif_pio_platform_test_activate_close_once(struct kunit *test
 	mt6797_btif_pio_platform_test_stop(ctx);
 }
 
+static void mt6797_btif_pio_platform_test_irq_fence(struct kunit *test)
+{
+	struct mt6797_btif_pio_platform_test_context *ctx;
+
+	ctx = mt6797_btif_pio_platform_test_start(test);
+	ctx->adapter.state = MT6797_BTIF_PIO_PLATFORM_ACTIVE;
+	ctx->adapter.irq_enabled = true;
+	mt6797_btif_pio_platform_fence_irq(&ctx->adapter);
+	KUNIT_EXPECT_EQ(test, ctx->bus->disable_nosync_count, 1U);
+	KUNIT_EXPECT_EQ(test, ctx->adapter.state,
+			MT6797_BTIF_PIO_PLATFORM_FENCED);
+	KUNIT_EXPECT_FALSE(test, ctx->adapter.irq_enabled);
+	mt6797_btif_pio_platform_fence_irq(&ctx->adapter);
+	KUNIT_EXPECT_EQ(test, ctx->bus->disable_nosync_count, 1U);
+	mt6797_btif_pio_platform_test_stop(ctx);
+}
+
 static struct kunit_case mt6797_btif_pio_platform_test_cases[] = {
 	KUNIT_CASE(mt6797_btif_pio_platform_test_resource_bounds),
+	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_contract),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_explicit_gate),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_activate_close_once),
+	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_fence),
 	{ }
 };
 

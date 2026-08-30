@@ -233,6 +233,9 @@ static const struct mfd_cell mt6351_devs[] = {
 		.name = "mt6351-fg-readonly",
 		.of_compatible = "mediatek,mt6351-fg-readonly",
 	}, {
+		.name = "mt6351-fgadc",
+		.of_compatible = "mediatek,mt6351-fgadc",
+	}, {
 		.name = "mt6351-sound",
 		.of_compatible = "mediatek,mt6351-sound",
 	}, {

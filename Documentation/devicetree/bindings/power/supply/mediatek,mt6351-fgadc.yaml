@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/mediatek,mt6351-fgadc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6351 FGADC battery monitor
+
+maintainers:
+  - linux-mediatek@lists.infradead.org
+
+description: |
+  The MT6351 fuel-gauge ADC reports calibrated current and a coulomb counter.
+  Its hardware configuration and calibration are board-specific.  The driver
+  does not start the hardware unless this node is enabled and explicitly grants
+  ownership with mediatek,initialize-fgadc.  The properties below are required
+  so that Linux never substitutes a battery or factory calibration value.
+
+properties:
+  compatible:
+    const: mediatek,mt6351-fgadc
+
+  mediatek,initialize-fgadc:
+    description: |
+      Permit Linux to enable the two FGADC clocks, program the initial FGADC
+      control byte, and select the oversampling ratio.  The driver snapshots
+      and restores those fields on probe failure and removal.  It does not
+      reset the hardware coulomb counter.
+    type: boolean
+
+  mediatek,fgadc-init-control:
+    description: |
+      Lower FGADC_CON0 byte to program before setting FG_ON. Bit 0 must be
+      clear; the driver sets it only after the initial value is installed.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    maximum: 254
+
+  mediatek,fgadc-osr:
+    description: FGADC oversampling ratio field programmed in FGADC_CON15.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+    maximum: 15
+
+  mediatek,fg-resistance-milliohm:
+    description: Board current-sense resistance in milliohms.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+
+  mediatek,fg-board-base:
+    description: Board current-calibration base factor.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+
+  mediatek,fg-board-slope:
+    description: Board current-calibration slope factor.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+
+  mediatek,car-tune:
+    description: Factory coulomb/current calibration, with 100 meaning unity.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+
+  mediatek,fg-trim-permille:
+    description: PMIC current/coulomb trim factor, with 1000 meaning unity.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+
+required:
+  - compatible
+  - mediatek,initialize-fgadc
+  - mediatek,fgadc-init-control
+  - mediatek,fgadc-osr
+  - mediatek,fg-resistance-milliohm
+  - mediatek,fg-board-base
+  - mediatek,fg-board-slope
+  - mediatek,car-tune
+  - mediatek,fg-trim-permille
+
+additionalProperties: false

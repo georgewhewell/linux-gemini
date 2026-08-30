@@ -55,6 +55,16 @@ config MT6351_FG_READONLY
 	  battery capacity. Say M to keep this diagnostic separate from the normal
 	  boot path.
 
+config BATTERY_MT6351_FGADC
+	tristate "MediaTek MT6351 FGADC battery monitor"
+	depends on MFD_MT6397
+	help
+	  This driver provides calibrated current and coulomb-counter reporting from
+	  the MT6351 fuel-gauge ADC. It needs explicit board calibration and an
+	  explicit DT permission to initialize FGADC; it intentionally does not
+	  estimate capacity or control a charger. Say M to keep the active path
+	  separate from the default boot path.
+
 config IP5XXX_POWER
 	tristate "Injoinic IP5xxx power bank IC driver"
 	depends on I2C

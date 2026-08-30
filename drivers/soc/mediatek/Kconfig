@@ -343,7 +343,7 @@ config MTK_MT6797_CONSYS_EMI_LAYOUT_KUNIT_TEST
 	  dependency.
 
 config MTK_MT6797_CONSYS_EMI_MPU
-	bool "Experimental MT6797 CONSYS shared-EMI MPU owner"
+	tristate "Experimental MT6797 CONSYS shared-EMI MPU owner"
 	depends on ARM64 && ARCH_MEDIATEK && OF
 	select MTK_MT6797_CONSYS_EMI_LAYOUT
 	select ARM_SMCCC
@@ -359,7 +359,10 @@ config MTK_MT6797_CONSYS_EMI_MPU
 	  explicit overlay property and
 	  mt6797_consys_emi_mpu.enable_experimental_ownership=1 before it probes;
 	  it performs no hardware operation until an independently gated consumer
-	  claims it.
+	  claims it. It may be built as a module. The first consumer claim attempt
+	  consumes the provider for the boot, whether it succeeds or fails; the
+	  module deliberately remains loaded until reboot so overlay removal or
+	  recreation cannot repeat the one-way transaction.
 
 config MTK_MT6797_CONSYS_HANDOFF
 	tristate "Dormant MT6797 CONSYS true-chronology handoff owner"

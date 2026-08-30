@@ -10918,6 +10918,7 @@ F:	Documentation/ABI/testing/sysfs-class-gnss
 F:	Documentation/devicetree/bindings/gnss/
 F:	drivers/gnss/
 F:	include/linux/gnss.h
+F:	include/linux/soc/mediatek/mtk-gnss.h
 
 GO7007 MPEG CODEC
 M:	Hans Verkuil <hverkuil@kernel.org>

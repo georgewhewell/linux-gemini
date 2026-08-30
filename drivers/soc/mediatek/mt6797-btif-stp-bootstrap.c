@@ -20,6 +20,8 @@
  * is default-false parameter gated, and only the three vendor STP-switch WMT
  * exchanges below can be emitted.  In particular, it neither downloads a
  * patch nor enables Wi-Fi, Bluetooth, GNSS, or FM.
+ * The caller supplies the same long-lived CONSYS runtime lease that the PIO
+ * owner pins for the entire mandatory-to-full handoff.
  */
 
 #include <linux/delay.h>
@@ -39,6 +41,7 @@
 
 #include <linux/soc/mediatek/mt6797-btif-pio.h>
 #include <linux/soc/mediatek/mt6797-btif-stp-bootstrap.h>
+#include <linux/soc/mediatek/mt6797-consys.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
 #include <linux/soc/mediatek/mtk-stp.h>
 #include <linux/soc/mediatek/mtk-wmt.h>
@@ -66,6 +69,7 @@ struct mt6797_btif_stp_bootstrap {
 	/* destroy() waits for the sole runner before it frees this object. */
 	struct completion run_complete;
 	const struct mt6797_btif_pio_lease *pio_lease;
+	const struct mt6797_consys_runtime_lease *runtime_lease;
 	struct mt6797_btif_stp_bootstrap_ops ops;
 	struct mtk_stp mandatory_stp;
 	struct mtk_wmt mandatory_wmt;
@@ -186,11 +190,12 @@ static void mt6797_btif_stp_bootstrap_full_retry(struct work_struct *work)
 struct mt6797_btif_stp_bootstrap *
 mt6797_btif_stp_bootstrap_create(
 		const struct mt6797_btif_pio_lease *pio_lease,
+		const struct mt6797_consys_runtime_lease *runtime_lease,
 		const struct mt6797_btif_stp_bootstrap_ops *ops)
 {
 	struct mt6797_btif_stp_bootstrap *bootstrap;
 
-	if (!pio_lease || !ops || !ops->enable_irq || !ops->close)
+	if (!pio_lease || !runtime_lease || !ops || !ops->enable_irq || !ops->close)
 		return ERR_PTR(-EINVAL);
 
 	bootstrap = kzalloc_obj(*bootstrap, GFP_KERNEL);
@@ -201,6 +206,7 @@ mt6797_btif_stp_bootstrap_create(
 	INIT_DELAYED_WORK(&bootstrap->full_retry_work,
 			  mt6797_btif_stp_bootstrap_full_retry);
 	bootstrap->pio_lease = pio_lease;
+	bootstrap->runtime_lease = runtime_lease;
 	bootstrap->ops = *ops;
 	return bootstrap;
 }
@@ -239,6 +245,7 @@ mt6797_btif_stp_bootstrap_run_unchecked(
 	if (ret)
 		goto fail_locked;
 	ret = mt6797_btif_pio_begin_mandatory(bootstrap->pio_lease,
+					      bootstrap->runtime_lease,
 					      mt6797_btif_stp_bootstrap_receive,
 					      bootstrap);
 	if (ret)
@@ -429,12 +436,55 @@ struct mt6797_btif_stp_test_peer {
 	const struct mt6797_btif_pio_lease *pio_lease;
 	struct mt6797_btif_pio *pio;
 	struct task_struct *task;
+	struct mt6797_consys_lifecycle lifecycle;
+	struct mt6797_consys_runtime_lease runtime_lease;
 	struct completion done;
 	size_t tx_position;
 	unsigned int stage;
 	unsigned int close_count;
 	int error;
 };
+
+static int mt6797_btif_stp_test_lifecycle_op(void *context)
+{
+	return 0;
+}
+
+static int mt6797_btif_stp_test_lifecycle_poll(
+		void *context, enum mt6797_consys_poll poll)
+{
+	return poll == MT6797_CONSYS_POLL_CHIP_READY ? 0 : -EINVAL;
+}
+
+static const struct mt6797_consys_ops mt6797_btif_stp_test_lifecycle_ops = {
+	.abi = MT6797_CONSYS_LIFECYCLE_ABI,
+	.enable_vcn18 = mt6797_btif_stp_test_lifecycle_op,
+	.disable_vcn18 = mt6797_btif_stp_test_lifecycle_op,
+	.enable_vcn28 = mt6797_btif_stp_test_lifecycle_op,
+	.disable_vcn28 = mt6797_btif_stp_test_lifecycle_op,
+	.configure_sleep_mask = mt6797_btif_stp_test_lifecycle_op,
+	.assert_reset = mt6797_btif_stp_test_lifecycle_op,
+	.configure_pwron = mt6797_btif_stp_test_lifecycle_op,
+	.enable_scp_sys_conn = mt6797_btif_stp_test_lifecycle_op,
+	.disable_scp_sys_conn = mt6797_btif_stp_test_lifecycle_op,
+	.poll = mt6797_btif_stp_test_lifecycle_poll,
+};
+
+static const struct mt6797_consys_timeouts mt6797_btif_stp_test_timeouts = {
+	.poll_interval_us = 1,
+	.chip_ready_timeout_us = 1,
+};
+
+static void mt6797_btif_stp_test_runtime_acquire(
+		struct kunit *test, struct mt6797_btif_stp_test_peer *peer)
+{
+	KUNIT_ASSERT_EQ(test, mt6797_consys_lifecycle_init(&peer->lifecycle,
+							    &mt6797_btif_stp_test_lifecycle_ops,
+							    NULL,
+							    &mt6797_btif_stp_test_timeouts), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_acquire(&peer->lifecycle,
+									  &peer->runtime_lease), 0);
+}
 
 struct mt6797_btif_stp_test_destroy_race {
 	struct mt6797_btif_stp_bootstrap *bootstrap;
@@ -648,6 +698,7 @@ static void mt6797_btif_stp_test_exact_handoff(struct kunit *test)
 	KUNIT_ASSERT_NOT_NULL(test, peer);
 	KUNIT_ASSERT_NOT_NULL(test, bus);
 	peer->bus = bus;
+	mt6797_btif_stp_test_runtime_acquire(test, peer);
 	bus->iir = MT6797_BTIF_STP_TEST_IIR_NINT;
 	init_completion(&peer->done);
 	io_ops = (struct mt6797_btif_pio_io_ops) {
@@ -666,7 +717,8 @@ static void mt6797_btif_stp_test_exact_handoff(struct kunit *test)
 		.close = mt6797_btif_stp_test_close,
 		.context = peer,
 	};
-	bootstrap = mt6797_btif_stp_bootstrap_create(peer->pio_lease, &ops);
+	bootstrap = mt6797_btif_stp_bootstrap_create(peer->pio_lease,
+								&peer->runtime_lease, &ops);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(bootstrap));
 	session_lease = mt6797_btif_stp_bootstrap_run_unchecked(bootstrap);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(session_lease));
@@ -677,6 +729,8 @@ static void mt6797_btif_stp_test_exact_handoff(struct kunit *test)
 	KUNIT_EXPECT_TRUE(test,
 		mt6797_consys_stp_session_lease_active(session_lease));
 	mt6797_btif_stp_bootstrap_destroy(bootstrap);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_release(
+									&peer->runtime_lease), 0);
 	mt6797_btif_pio_destroy(peer->pio);
 }
 
@@ -693,6 +747,7 @@ static void mt6797_btif_stp_test_fence_is_one_shot(struct kunit *test)
 	KUNIT_ASSERT_NOT_NULL(test, peer);
 	KUNIT_ASSERT_NOT_NULL(test, bus);
 	peer->bus = bus;
+	mt6797_btif_stp_test_runtime_acquire(test, peer);
 	io_ops = (struct mt6797_btif_pio_io_ops) {
 		.read32 = mt6797_btif_stp_test_read32,
 		.write32 = mt6797_btif_stp_test_write32,
@@ -709,7 +764,8 @@ static void mt6797_btif_stp_test_fence_is_one_shot(struct kunit *test)
 		.close = mt6797_btif_stp_test_close,
 		.context = peer,
 	};
-	bootstrap = mt6797_btif_stp_bootstrap_create(peer->pio_lease, &ops);
+	bootstrap = mt6797_btif_stp_bootstrap_create(peer->pio_lease,
+								&peer->runtime_lease, &ops);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(bootstrap));
 	mt6797_btif_stp_bootstrap_fence(bootstrap, false);
 	KUNIT_EXPECT_EQ(test, peer->close_count, 0U);
@@ -719,6 +775,8 @@ static void mt6797_btif_stp_test_fence_is_one_shot(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, peer->close_count, 1U);
 	mt6797_btif_stp_bootstrap_destroy(bootstrap);
 	KUNIT_EXPECT_EQ(test, peer->close_count, 1U);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_release(
+									&peer->runtime_lease), 0);
 	mt6797_btif_pio_destroy(peer->pio);
 }
 
@@ -740,6 +798,7 @@ static void mt6797_btif_stp_test_destroy_waits_for_runner(struct kunit *test)
 	KUNIT_ASSERT_NOT_NULL(test, peer);
 	KUNIT_ASSERT_NOT_NULL(test, bus);
 	peer->bus = bus;
+	mt6797_btif_stp_test_runtime_acquire(test, peer);
 	bus->iir = MT6797_BTIF_STP_TEST_IIR_NINT;
 	init_completion(&race->enable_irq_entered);
 	init_completion(&race->allow_enable_irq);
@@ -762,7 +821,8 @@ static void mt6797_btif_stp_test_destroy_waits_for_runner(struct kunit *test)
 		.close = mt6797_btif_stp_test_destroy_race_close,
 		.context = race,
 	};
-	race->bootstrap = mt6797_btif_stp_bootstrap_create(peer->pio_lease, &ops);
+	race->bootstrap = mt6797_btif_stp_bootstrap_create(peer->pio_lease,
+									     &peer->runtime_lease, &ops);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(race->bootstrap));
 
 	run_task = kthread_run(mt6797_btif_stp_test_run_thread, race,
@@ -786,6 +846,8 @@ static void mt6797_btif_stp_test_destroy_waits_for_runner(struct kunit *test)
 	KUNIT_ASSERT_NE(test, waited, 0UL);
 	KUNIT_EXPECT_EQ(test, race->run_result, -EIO);
 	KUNIT_EXPECT_EQ(test, race->close_count, 1U);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_release(
+									&peer->runtime_lease), 0);
 	mt6797_btif_pio_destroy(peer->pio);
 }
 

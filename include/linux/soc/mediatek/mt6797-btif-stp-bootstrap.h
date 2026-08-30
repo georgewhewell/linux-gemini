@@ -4,14 +4,16 @@
  *
  * This object owns no platform device, register mapping, Linux IRQ, clock,
  * reset, power domain, pad, firmware image, or radio function.  Its caller
- * supplies one acquired PIO lease plus IRQ enable/close callbacks after those
- * separate contracts have been established.
+ * supplies one acquired PIO lease, one exclusive long-lived CONSYS lifecycle
+ * lease, and IRQ enable/close callbacks after those separate contracts have
+ * been established.
  */
 
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_BTIF_STP_BOOTSTRAP_H
 #define __LINUX_SOC_MEDIATEK_MT6797_BTIF_STP_BOOTSTRAP_H
 
 struct mt6797_btif_pio_lease;
+struct mt6797_consys_runtime_lease;
 struct mt6797_btif_stp_bootstrap;
 struct mt6797_consys_stp_session_lease;
 
@@ -29,6 +31,7 @@ struct mt6797_btif_stp_bootstrap_ops {
 struct mt6797_btif_stp_bootstrap *
 mt6797_btif_stp_bootstrap_create(
 		const struct mt6797_btif_pio_lease *pio_lease,
+		const struct mt6797_consys_runtime_lease *runtime_lease,
 		const struct mt6797_btif_stp_bootstrap_ops *ops);
 
 /*

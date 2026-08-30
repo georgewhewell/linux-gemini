@@ -13,6 +13,7 @@
 
 struct device;
 struct mt6797_btif_pio_platform_lease;
+struct mt6797_consys_runtime_lease;
 struct mt6797_consys_stp_session_lease;
 
 /*
@@ -25,11 +26,14 @@ mt6797_btif_pio_platform_acquire(struct device *dev);
 
 /*
  * Bind one already-active full-STP session, initialize the vendor PIO subset,
- * then enable the previously installed threaded IRQ. This remains rejected
- * unless the separate enable_experimental_platform_adapter parameter was set.
+ * then enable the previously installed threaded IRQ. runtime_lease is pinned
+ * across that live PIO interval and must be the exclusive long-lived CONSYS
+ * lifecycle owner. This remains rejected unless the separate
+ * enable_experimental_platform_adapter parameter was set.
  */
 int mt6797_btif_pio_platform_attach_full_stp(
 		const struct mt6797_btif_pio_platform_lease *platform_lease,
+		const struct mt6797_consys_runtime_lease *runtime_lease,
 		const struct mt6797_consys_stp_session_lease *stp_lease);
 
 /*

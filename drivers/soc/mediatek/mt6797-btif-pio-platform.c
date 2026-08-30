@@ -41,6 +41,7 @@
 
 #include <linux/soc/mediatek/mt6797-btif-pio.h>
 #include <linux/soc/mediatek/mt6797-btif-pio-platform.h>
+#include <linux/soc/mediatek/mt6797-consys.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
 #include <linux/soc/mediatek/mtk-stp.h>
 
@@ -252,12 +253,14 @@ EXPORT_SYMBOL_GPL(mt6797_btif_pio_platform_acquire);
 
 int mt6797_btif_pio_platform_attach_full_stp(
 		const struct mt6797_btif_pio_platform_lease *platform_lease,
+		const struct mt6797_consys_runtime_lease *runtime_lease,
 		const struct mt6797_consys_stp_session_lease *stp_lease)
 {
 	struct mt6797_btif_pio_platform *adapter;
 	int ret;
 
-	if (!platform_lease || !platform_lease->adapter || !stp_lease)
+	if (!platform_lease || !platform_lease->adapter || !runtime_lease ||
+	    !stp_lease)
 		return -EINVAL;
 	if (!READ_ONCE(enable_experimental_platform_adapter))
 		return -EPERM;
@@ -271,7 +274,8 @@ int mt6797_btif_pio_platform_attach_full_stp(
 		ret = -EBUSY;
 	} else {
 		/* PIO setup completes before the masked Linux IRQ can run. */
-		ret = mt6797_btif_pio_attach_full_stp(adapter->pio_lease, stp_lease);
+		ret = mt6797_btif_pio_attach_full_stp(adapter->pio_lease,
+						      runtime_lease, stp_lease);
 		if (!ret) {
 			adapter->state = MT6797_BTIF_PIO_PLATFORM_ACTIVE;
 			adapter->irq_enabled = true;
@@ -488,10 +492,44 @@ struct mt6797_btif_pio_platform_test_endpoint {
 
 struct mt6797_btif_pio_platform_test_context {
 	struct mt6797_btif_pio_platform adapter;
+	struct mt6797_consys_lifecycle lifecycle;
+	struct mt6797_consys_runtime_lease runtime_lease;
 	struct mt6797_btif_pio_platform_test_bus *bus;
 	struct mt6797_btif_pio_platform_test_endpoint *endpoint;
 	struct mt6797_consys_stp_session *session;
 	const struct mt6797_consys_stp_session_lease *stp_lease;
+};
+
+static int mt6797_btif_pio_platform_test_lifecycle_op(void *context)
+{
+	return 0;
+}
+
+static int mt6797_btif_pio_platform_test_lifecycle_poll(
+		void *context, enum mt6797_consys_poll poll)
+{
+	return poll == MT6797_CONSYS_POLL_CHIP_READY ? 0 : -EINVAL;
+}
+
+static const struct mt6797_consys_ops
+		mt6797_btif_pio_platform_test_lifecycle_ops = {
+	.abi = MT6797_CONSYS_LIFECYCLE_ABI,
+	.enable_vcn18 = mt6797_btif_pio_platform_test_lifecycle_op,
+	.disable_vcn18 = mt6797_btif_pio_platform_test_lifecycle_op,
+	.enable_vcn28 = mt6797_btif_pio_platform_test_lifecycle_op,
+	.disable_vcn28 = mt6797_btif_pio_platform_test_lifecycle_op,
+	.configure_sleep_mask = mt6797_btif_pio_platform_test_lifecycle_op,
+	.assert_reset = mt6797_btif_pio_platform_test_lifecycle_op,
+	.configure_pwron = mt6797_btif_pio_platform_test_lifecycle_op,
+	.enable_scp_sys_conn = mt6797_btif_pio_platform_test_lifecycle_op,
+	.disable_scp_sys_conn = mt6797_btif_pio_platform_test_lifecycle_op,
+	.poll = mt6797_btif_pio_platform_test_lifecycle_poll,
+};
+
+static const struct mt6797_consys_timeouts
+		mt6797_btif_pio_platform_test_timeouts = {
+	.poll_interval_us = 1,
+	.chip_ready_timeout_us = 1,
 };
 
 static u32 mt6797_btif_pio_platform_test_read32(void *context, u32 offset)
@@ -576,6 +614,12 @@ mt6797_btif_pio_platform_test_start(struct kunit *test)
 	ctx->endpoint = kunit_kzalloc(test, sizeof(*ctx->endpoint), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_NULL(test, ctx->endpoint);
 	ctx->bus->iir = BIT(0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_lifecycle_init(&ctx->lifecycle,
+							    &mt6797_btif_pio_platform_test_lifecycle_ops,
+							    NULL,
+							    &mt6797_btif_pio_platform_test_timeouts), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_acquire(&ctx->lifecycle,
+									  &ctx->runtime_lease), 0);
 	mutex_init(&ctx->adapter.state_lock);
 	init_completion(&ctx->adapter.close_complete);
 	ctx->adapter.irq = 1;
@@ -607,6 +651,7 @@ static void mt6797_btif_pio_platform_test_stop(
 		struct mt6797_btif_pio_platform_test_context *ctx)
 {
 	mt6797_btif_pio_platform_destroy(&ctx->adapter);
+	WARN_ON_ONCE(mt6797_consys_runtime_lease_release(&ctx->runtime_lease));
 	mt6797_consys_stp_session_quiesce(ctx->session);
 	mt6797_consys_stp_session_destroy(ctx->session);
 }
@@ -668,7 +713,8 @@ static void mt6797_btif_pio_platform_test_explicit_gate(struct kunit *test)
 	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
 	WRITE_ONCE(enable_experimental_platform_adapter, false);
 	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_platform_attach_full_stp(lease,
-								ctx->stp_lease), -EPERM);
+									&ctx->runtime_lease,
+									ctx->stp_lease), -EPERM);
 	KUNIT_EXPECT_EQ(test, ctx->bus->enable_count, 0U);
 	KUNIT_EXPECT_EQ(test, ctx->bus->regs[0x04 / sizeof(u32)], 0U);
 	WRITE_ONCE(enable_experimental_platform_adapter, enabled);
@@ -687,10 +733,14 @@ static void mt6797_btif_pio_platform_test_activate_close_once(struct kunit *test
 	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
 	WRITE_ONCE(enable_experimental_platform_adapter, true);
 	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_platform_attach_full_stp(lease,
-								ctx->stp_lease), 0);
+									&ctx->runtime_lease,
+									ctx->stp_lease), 0);
 	KUNIT_EXPECT_EQ(test, ctx->bus->enable_count, 1U);
 	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_platform_attach_full_stp(lease,
-								ctx->stp_lease), -EBUSY);
+									&ctx->runtime_lease,
+									ctx->stp_lease), -EBUSY);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_consys_runtime_lease_release(&ctx->runtime_lease), -EBUSY);
 	mt6797_btif_pio_platform_close(lease);
 	KUNIT_EXPECT_EQ(test, ctx->bus->disable_count, 1U);
 	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_transmit(

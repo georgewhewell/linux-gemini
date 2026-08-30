@@ -100,7 +100,7 @@ config MTK_MT6797_CONSYS_STP_SESSION_KUNIT_TEST
 
 config MTK_MT6797_BTIF_PIO
 	tristate "MediaTek MT6797 dormant BTIF PIO transport owner"
-	depends on MTK_MT6797_CONSYS_STP_SESSION
+	depends on MTK_MT6797_CONSYS_STP_SESSION && MTK_MT6797_CONSYS_CORE
 	help
 	  Build the default-disabled byte transport owner for the MT6797 BTIF PIO
 	  register protocol. It owns bounded PIO TX backpressure, RX framing input,
@@ -109,8 +109,9 @@ config MTK_MT6797_BTIF_PIO
 	  This is not a platform driver. It does not map a register resource, obtain
 	  a clock, request or enable a Linux IRQ, wake/power/reset CONSYS, allocate
 	  DMA, request firmware, send WMT commands, enable a radio, or expose a
-	  userspace ABI. A separately reviewed owner must supply already-authorized
-	  register callbacks and a synchronized threaded IRQ boundary.
+	  userspace ABI. A separately reviewed owner must supply one exclusive,
+	  long-lived CONSYS lifecycle lease, already-authorized register callbacks,
+	  and a synchronized threaded IRQ boundary.
 
 config MTK_MT6797_BTIF_PIO_KUNIT_TEST
 	bool "KUnit tests for the MT6797 BTIF PIO transport owner"
@@ -160,9 +161,10 @@ config MTK_MT6797_BTIF_STP_BOOTSTRAP
 
 	  This option is disabled by default and has no Device Tree match. Calling
 	  it additionally requires enable_experimental_stp_bootstrap=1. The caller
-	  must provide an acquired PIO lease and a synchronized IRQ close callback
-	  after independently establishing CONSYS power/reset, clocks, pads and
-	  firmware ownership. It never discovers hardware, requests firmware,
+	  must provide an acquired PIO lease, exclusive long-lived CONSYS lifecycle
+	  lease, and synchronized IRQ close callback after independently
+	  establishing clocks, pads and firmware ownership. It never discovers
+	  hardware, requests firmware,
 	  downloads a patch, or enables Wi-Fi, Bluetooth, GNSS or FM.
 
 config MTK_MT6797_BTIF_STP_BOOTSTRAP_KUNIT_TEST

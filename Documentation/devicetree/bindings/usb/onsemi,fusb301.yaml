@@ -9,8 +9,10 @@ title: onsemi FUSB301 autonomous USB Type-C controller
 description: |
   The onsemi FUSB301 and FUSB301A are autonomous USB Type-C 1.1
   controllers. They detect source/sink, dual-role, accessory, VBUS, BC
-  current, and CC orientation, and report events through an active-low
-  interrupt. They do not implement USB Power Delivery or TCPCI.
+  current, and CC orientation. They report state changes through their
+  interrupt output; board designs may instead route a controller attach-
+  indication output to the interrupt controller. They do not implement USB
+  Power Delivery or TCPCI.
 
 maintainers:
   - Julien Etienne <julien.etienne@gmail.com>
@@ -25,6 +27,9 @@ properties:
     maxItems: 1
 
   interrupts:
+    description:
+      Controller interrupt or board-level attach indication. It must report
+      both attach and detach transitions.
     maxItems: 1
 
   vbus-supply:

@@ -14,9 +14,15 @@ allOf:
   - $ref: power-supply.yaml#
   - if:
       required:
+        - ti,status-poll-interval-ms
+    then:
+      required:
         - ti,read-only
-    then: {}
-    else:
+  - if:
+      not:
+        required:
+          - ti,read-only
+    then:
       required:
         - interrupts
         - ti,battery-regulation-voltage
@@ -110,6 +116,16 @@ properties:
       or accept writable power-supply properties. BQ2589x fault status bits
       are read-to-clear and are intentionally not reported in this mode.
     type: boolean
+
+  ti,status-poll-interval-ms:
+    description: |
+      Poll the non-destructive charge status fields at this interval and send
+      a power-supply change notification when the status changes. This is for
+      ti,read-only boards whose charger-status interrupt route is not known.
+      It does not enable the charger watchdog, ADC, OTG regulator, or any
+      writable power-supply property.
+    minimum: 1000
+    maximum: 3600000
 
 required:
   - compatible

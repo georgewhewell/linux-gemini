@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Read-only MT6797 CONSYS shared-memory preflight for rescue-live.dtb.
+ *
+ * The rescue DT exports no usable CONSYS label.  This target-path-only
+ * overlay changes no phandle and adds no node: it leaves the boot-time
+ * dynamically allocated `consys-reserve-memory` node in place for the
+ * driver to resolve through the reserved-memory core.  It has no external
+ * fixups and is intentionally specific to /consys@18070000.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/consys@18070000";
+
+		__overlay__ {
+			compatible = "mediatek,mt6797-consys-emi-preflight";
+			status = "okay";
+		};
+	};
+};

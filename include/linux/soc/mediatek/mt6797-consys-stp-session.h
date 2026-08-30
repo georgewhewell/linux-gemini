@@ -81,6 +81,17 @@ int mt6797_consys_stp_session_bootstrap_transmit(
 int mt6797_consys_stp_session_bootstrap_receive(
 		const struct mt6797_consys_stp_session_bootstrap_lease *lease,
 		const u8 *data, size_t length);
+/* Run the same 180-ms retained-frame timeout/retry semantics while provisional. */
+int mt6797_consys_stp_session_bootstrap_timeout(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease);
+
+/*
+ * Record that the bootstrap controller's strict WMT transaction matcher
+ * accepted the final full-mode query reply.  Promotion is rejected until this
+ * marker is set; callers must not set it from an unsolicited event path.
+ */
+int mt6797_consys_stp_session_bootstrap_confirm(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease);
 
 /*
  * Irreversibly expose the normal full-STP lease after the bootstrap owner has

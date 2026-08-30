@@ -85,6 +85,7 @@ struct mt6797_consys_stp_session {
 	u16 payload_position;
 	u8 channel;
 	bool last_rx_ok;
+	bool bootstrap_verified;
 	u8 resync_count;
 	u8 payload[MTK_STP_MAX_PAYLOAD];
 };
@@ -162,6 +163,7 @@ static void mt6797_consys_stp_reset_protocol(
 	session->credits = MT6797_CONSYS_STP_WINDOW_SIZE;
 	session->retries = 0;
 	session->last_rx_ok = true;
+	session->bootstrap_verified = false;
 	mt6797_consys_stp_reset_parser(session);
 }
 
@@ -690,6 +692,44 @@ int mt6797_consys_stp_session_bootstrap_receive(
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bootstrap_receive);
 
+int mt6797_consys_stp_session_bootstrap_timeout(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret;
+
+	if (!lease || !lease->session)
+		return -EINVAL;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_bootstrap_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else
+		ret = mt6797_consys_stp_timeout_locked(session);
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bootstrap_timeout);
+
+int mt6797_consys_stp_session_bootstrap_confirm(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret = 0;
+
+	if (!lease || !lease->session)
+		return -EINVAL;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_bootstrap_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else
+		session->bootstrap_verified = true;
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bootstrap_confirm);
+
 const struct mt6797_consys_stp_session_lease *
 mt6797_consys_stp_session_bootstrap_promote(
 		const struct mt6797_consys_stp_session_bootstrap_lease *lease)
@@ -703,6 +743,8 @@ mt6797_consys_stp_session_bootstrap_promote(
 	mutex_lock(&session->lock);
 	if (!mt6797_consys_stp_bootstrap_lease_valid(lease)) {
 		active = ERR_PTR(-ESHUTDOWN);
+	} else if (!session->bootstrap_verified) {
+		active = ERR_PTR(-EACCES);
 	} else {
 		/* Keep txseq/txack/rxack and every retained frame intact. */
 		session->state = MT6797_CONSYS_STP_ACTIVE;
@@ -1088,11 +1130,20 @@ static void mt6797_consys_stp_test_bootstrap_promotes_without_reset(
 										 MTK_STP_WMT,
 										 &payload, sizeof(payload)), 0);
 	KUNIT_ASSERT_EQ(test, link->frames[0][0], (u8)0x87);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_bootstrap_timeout(bootstrap),
+				0);
+	KUNIT_EXPECT_EQ(test, link->lengths[1],
+				sizeof(mt6797_consys_stp_resync));
 	frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_WMT, 0, 0,
 									 &payload, sizeof(payload));
 	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_bootstrap_receive(bootstrap,
 										frame, frame_length), 0);
-	KUNIT_EXPECT_EQ(test, link->frames[1][0], (u8)0x80);
+	KUNIT_EXPECT_EQ(test, link->frames[3][0], (u8)0x80);
+	lease = mt6797_consys_stp_session_bootstrap_promote(bootstrap);
+	KUNIT_EXPECT_TRUE(test, IS_ERR(lease));
+	KUNIT_EXPECT_EQ(test, PTR_ERR(lease), -EACCES);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_bootstrap_confirm(bootstrap),
+				0);
 	lease = mt6797_consys_stp_session_bootstrap_promote(bootstrap);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
 	KUNIT_EXPECT_TRUE(test, mt6797_consys_stp_session_lease_active(lease));

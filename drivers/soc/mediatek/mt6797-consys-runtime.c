@@ -71,6 +71,7 @@
 
 #define MT6797_CONSYS_RUNTIME_CHIP_POLL_INTERVAL_US	20000
 #define MT6797_CONSYS_RUNTIME_CHIP_POLL_TIMEOUT_US	200000
+#define MT6797_CONSYS_RUNTIME_RESET_SETTLE_MS		20
 #define MT6797_CONSYS_RUNTIME_MCU_CFG_ACR		0x110
 #define MT6797_CONSYS_RUNTIME_MCU_CFG_ACR_MBIST	BIT(18)
 #define MT6797_CONSYS_RUNTIME_MCU_CPUPCR		0x160
@@ -485,9 +486,16 @@ static int mt6797_consys_runtime_configure_afe(void *context)
 static int mt6797_consys_runtime_release_reset(void *context)
 {
 	struct mt6797_consys_runtime *runtime = context;
+	int ret;
 
 	/* The reset provider owns WDT keying and bit 12. */
-	return reset_control_deassert(runtime->conn_mcu_reset);
+	ret = reset_control_deassert(runtime->conn_mcu_reset);
+	if (ret)
+		return ret;
+
+	/* Vendor mtk_wcn_consys_hw.c:492-496,609, before first WMT. */
+	msleep(MT6797_CONSYS_RUNTIME_RESET_SETTLE_MS);
+	return 0;
 }
 
 static const struct mt6797_consys_postid_ops

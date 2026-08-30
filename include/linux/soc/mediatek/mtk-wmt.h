@@ -78,6 +78,11 @@ struct mtk_wmt {
 	mtk_wmt_unsolicited_cb_t unsolicited;
 	void *unsolicited_context;
 	struct mtk_wmt_match expected;
+	/* A capture transaction matches opcode/length and copies its raw SDU. */
+	bool capture_pending;
+	u8 capture_opcode;
+	size_t capture_data_len;
+	u8 *capture_data;
 	u32 generation;
 	int result;
 	bool pending;
@@ -126,6 +131,18 @@ int mtk_wmt_transaction(struct mtk_wmt *wmt, u8 opcode,
 			const u8 *data, size_t data_len,
 			const struct mtk_wmt_match *expected,
 			unsigned long timeout);
+
+/*
+ * As mtk_wmt_transaction(), but accept an event by opcode and exact SDU
+ * length, then copy that raw SDU into @reply.  This exists for controller
+ * commands such as the vendor MT6631 efuse read whose final byte is data, not
+ * a pre-known status value.  @reply_len must equal @expected_data_len.
+ */
+int mtk_wmt_transaction_capture(struct mtk_wmt *wmt, u8 opcode,
+				const u8 *data, size_t data_len,
+				u8 expected_opcode, size_t expected_data_len,
+				u8 *reply, size_t reply_len,
+				unsigned long timeout);
 
 /*
  * Local cancellation/generation fence; this never emits a controller reset.

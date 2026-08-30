@@ -47,6 +47,11 @@ struct mt6797_consys_runtime_controller_wifi_lease {
  * removal; managed supplier links then preserve the runtime/BTIF providers.
  */
 int mt6797_consys_runtime_controller_start(struct device *dev);
+/*
+ * Start the normal hash-pinned patch stage, then run one synchronous,
+ * caller-supplied post-patch WMT stage before a full-STP session is published.
+ * The stage capability expires before this function returns.
+ */
 int mt6797_consys_runtime_controller_start_with_postpatch_stage(struct device *dev,
 		mt6797_consys_runtime_controller_postpatch_stage_t stage,
 		void *stage_context);

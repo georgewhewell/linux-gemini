@@ -64,6 +64,7 @@ obj-$(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_OBSERVE) += mt6797-wifi-ahb-wcir.o
 obj-$(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_KUNIT_TEST) += mt6797-wifi-ahb-wcir-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT) += mt6797-wifi-ahb-w1-firmware.o
 obj-$(CONFIG_MTK_MT6797_WIFI_AHB_W1_FIRMWARE_KUNIT_TEST) += mt6797-wifi-ahb-w1-firmware-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST) += mt6797-consys-wmt-postpatch-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_BTIF_INVENTORY) += mt6797-btif-inventory.o
 obj-$(CONFIG_MTK_MT6797_WIFI_AHB_W3_SESSION) += mt6797-wifi-ahb-w3-session.o
 obj-$(CONFIG_MTK_MT6797_WIFI_AHB_W3_SESSION_KUNIT_TEST) += mt6797-wifi-ahb-w3-session-kunit-test.o

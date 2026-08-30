@@ -3,9 +3,12 @@
 
 #include <kunit/device.h>
 #include <kunit/test.h>
+#include <linux/completion.h>
 #include <linux/errno.h>
 #include <linux/gnss.h>
+#include <linux/jiffies.h>
 #include <linux/kfifo.h>
+#include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/string.h>
 
@@ -26,6 +29,9 @@ struct mtk_gnss_test_backend {
 	size_t loopback_frame_len;
 	bool loopback_from_power;
 	int loopback_result;
+	bool block_power_off;
+	struct completion power_off_entered;
+	struct completion allow_power_off;
 };
 
 struct mtk_gnss_test {
@@ -70,6 +76,10 @@ static int mtk_gnss_test_set_power(void *context, bool on)
 	}
 
 	backend->power_off_calls++;
+	if (backend->block_power_off) {
+		complete(&backend->power_off_entered);
+		wait_for_completion(&backend->allow_power_off);
+	}
 	if (backend->loopback_from_power)
 		backend->loopback_result =
 			mt6797_consys_stp_session_receive(backend->session,
@@ -100,6 +110,8 @@ static int mtk_gnss_test_init(struct kunit *test)
 	if (IS_ERR(ctx->session))
 		return PTR_ERR(ctx->session);
 	ctx->backend.session = ctx->session;
+	init_completion(&ctx->backend.power_off_entered);
+	init_completion(&ctx->backend.allow_power_off);
 	ctx->session_lease = mt6797_consys_stp_session_begin_full(ctx->session);
 	if (IS_ERR(ctx->session_lease))
 		return PTR_ERR(ctx->session_lease);
@@ -108,6 +120,22 @@ static int mtk_gnss_test_init(struct kunit *test)
 
 	return mtk_gnss_register(&ctx->gnss, ctx->dev, ctx->session_lease,
 				 &transport);
+}
+
+struct mtk_gnss_test_unregister {
+	struct mtk_gnss *gnss;
+	struct completion entered;
+	struct completion done;
+};
+
+static int mtk_gnss_test_unregister_thread(void *context)
+{
+	struct mtk_gnss_test_unregister *unregister = context;
+
+	complete(&unregister->entered);
+	mtk_gnss_unregister(unregister->gnss);
+	complete(&unregister->done);
+	return 0;
 }
 
 static void mtk_gnss_test_exit(struct kunit *test)
@@ -273,6 +301,48 @@ static void mtk_gnss_test_reregister(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, ret, 0);
 }
 
+static void mtk_gnss_test_teardown_waits_for_transition_and_serializes(
+									struct kunit *test)
+{
+	struct mtk_gnss_test_unregister first;
+	struct mtk_gnss_test_unregister second;
+	struct mtk_gnss_test *ctx = test->priv;
+	struct task_struct *first_task;
+	struct task_struct *second_task;
+	unsigned long waited;
+
+	KUNIT_ASSERT_EQ(test, mtk_gnss_start(&ctx->gnss), 0);
+	init_completion(&first.entered);
+	init_completion(&first.done);
+	init_completion(&second.entered);
+	init_completion(&second.done);
+	first.gnss = &ctx->gnss;
+	second.gnss = &ctx->gnss;
+	ctx->backend.block_power_off = true;
+	first_task = kthread_run(mtk_gnss_test_unregister_thread, &first,
+				 "mtk-gnss-unregister-1");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(first_task));
+	waited = wait_for_completion_timeout(&ctx->backend.power_off_entered,
+					     msecs_to_jiffies(1000));
+	KUNIT_ASSERT_NE(test, waited, 0UL);
+	second_task = kthread_run(mtk_gnss_test_unregister_thread, &second,
+				  "mtk-gnss-unregister-2");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(second_task));
+	waited = wait_for_completion_timeout(&second.entered, msecs_to_jiffies(1000));
+	KUNIT_ASSERT_NE(test, waited, 0UL);
+	/* The second void teardown must wait, not detach or put the same gdev. */
+	waited = wait_for_completion_timeout(&second.done, msecs_to_jiffies(20));
+	KUNIT_EXPECT_EQ(test, waited, 0UL);
+	ctx->backend.block_power_off = false;
+	complete(&ctx->backend.allow_power_off);
+	waited = wait_for_completion_timeout(&first.done, msecs_to_jiffies(1000));
+	KUNIT_ASSERT_NE(test, waited, 0UL);
+	waited = wait_for_completion_timeout(&second.done, msecs_to_jiffies(1000));
+	KUNIT_ASSERT_NE(test, waited, 0UL);
+	KUNIT_EXPECT_EQ(test, ctx->backend.power_off_calls, 1U);
+	KUNIT_EXPECT_FALSE(test, ctx->gnss.registered);
+}
+
 static struct kunit_case mtk_gnss_test_cases[] = {
 	KUNIT_CASE(mtk_gnss_test_lifecycle_and_stream),
 	KUNIT_CASE(mtk_gnss_test_tx_failure_requires_reset),
@@ -280,6 +350,7 @@ static struct kunit_case mtk_gnss_test_cases[] = {
 	KUNIT_CASE(mtk_gnss_test_fifo_overflow_is_reported),
 	KUNIT_CASE(mtk_gnss_test_power_off_failure_requires_reset),
 	KUNIT_CASE(mtk_gnss_test_reregister),
+	KUNIT_CASE(mtk_gnss_test_teardown_waits_for_transition_and_serializes),
 	{}
 };
 

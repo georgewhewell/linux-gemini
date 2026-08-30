@@ -67,6 +67,24 @@ static int mtk_gnss_wait_for_transition(struct mtk_gnss *gnss)
 	}
 }
 
+/*
+ * Teardown cannot leave a live callback or power vote behind merely because
+ * the caller has a pending signal.  Like the interruptible helper above this
+ * returns with gnss->lock held, but it retries until the current transition
+ * has completed.
+ */
+static void mtk_gnss_wait_for_transition_uninterruptible(struct mtk_gnss *gnss)
+{
+	for (;;) {
+		mutex_lock(&gnss->lock);
+		if (!gnss->transitioning)
+			return;
+		mutex_unlock(&gnss->lock);
+
+		wait_event(gnss->transition_queue, !READ_ONCE(gnss->transitioning));
+	}
+}
+
 int mtk_gnss_start(struct mtk_gnss *gnss)
 {
 	int ret;
@@ -109,9 +127,7 @@ void mtk_gnss_stop(struct mtk_gnss *gnss)
 	if (!gnss)
 		return;
 
-	ret = mtk_gnss_wait_for_transition(gnss);
-	if (ret)
-		return;
+	mtk_gnss_wait_for_transition_uninterruptible(gnss);
 	if (gnss->registered && gnss->active) {
 		gnss->transitioning = true;
 		mutex_unlock(&gnss->lock);
@@ -254,13 +270,27 @@ int mtk_gnss_register(struct mtk_gnss *gnss, struct device *parent,
 	return 0;
 
 err_unregister_stp:
+	/*
+	 * A concurrent full-STP RX holds the session lock while its GNSS callback
+	 * takes gnss->lock.  Make this callback unable to accept input, then drop
+	 * gnss->lock before waiting for the session lock in unbind below.
+	 */
 	gnss->registered = false;
+	gnss->gdev = NULL;
+	gnss->session_lease = NULL;
+	mutex_unlock(&gnss->lock);
 	mt6797_consys_stp_session_unbind_gnss(session_lease, mtk_gnss_receive,
 						      gnss);
+	gnss_put_device(gdev);
+	return ret;
+
 err_put_device:
 	gnss->gdev = NULL;
 	gnss->session_lease = NULL;
+	mutex_unlock(&gnss->lock);
 	gnss_put_device(gdev);
+	return ret;
+
 unlock:
 	mutex_unlock(&gnss->lock);
 	return ret;
@@ -275,11 +305,17 @@ void mtk_gnss_unregister(struct mtk_gnss *gnss)
 	if (!gnss)
 		return;
 
-	if (mtk_gnss_wait_for_transition(gnss))
-		return;
-	if (!gnss->registered) {
+	for (;;) {
+		mtk_gnss_wait_for_transition_uninterruptible(gnss);
+		if (!gnss->registered) {
+			mutex_unlock(&gnss->lock);
+			return;
+		}
+		if (!gnss->unregistering)
+			break;
 		mutex_unlock(&gnss->lock);
-		return;
+		/* A competing teardown owns the device and session callback. */
+		wait_event(gnss->transition_queue, !READ_ONCE(gnss->unregistering));
 	}
 	gdev = gnss->gdev;
 	session_lease = gnss->session_lease;
@@ -300,6 +336,7 @@ void mtk_gnss_unregister(struct mtk_gnss *gnss)
 	gnss->unregistering = false;
 	gnss->gdev = NULL;
 	gnss->session_lease = NULL;
+	wake_up_all(&gnss->transition_queue);
 	mutex_unlock(&gnss->lock);
 
 	gnss_put_device(gdev);

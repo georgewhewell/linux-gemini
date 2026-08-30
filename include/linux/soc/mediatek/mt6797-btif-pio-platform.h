@@ -13,6 +13,7 @@
 
 struct device;
 struct mt6797_btif_pio_platform_lease;
+struct mt6797_btif_stp_bootstrap;
 struct mt6797_consys_runtime_lease;
 struct mt6797_consys_stp_session_lease;
 
@@ -23,6 +24,22 @@ struct mt6797_consys_stp_session_lease;
  */
 const struct mt6797_btif_pio_platform_lease *
 mt6797_btif_pio_platform_acquire(struct device *dev);
+
+/*
+ * Create the one mandatory-to-full STP handover object for a reserved
+ * adapter.  This keeps the raw PIO lease and Linux IRQ callback private to
+ * the platform adapter; it performs neither BTIF register I/O nor WMT traffic.
+ *
+ * The caller must hold both provider device lifetimes and, after destroying
+ * the returned object, call close() even if run() never started.  The latter
+ * fences this deliberately single-use adapter reservation.  The factory is
+ * rejected unless the separately default-false platform-adapter parameter is
+ * set, and the returned bootstrap has its own independent run gate.
+ */
+struct mt6797_btif_stp_bootstrap *
+mt6797_btif_pio_platform_bootstrap_create(
+		const struct mt6797_btif_pio_platform_lease *platform_lease,
+		const struct mt6797_consys_runtime_lease *runtime_lease);
 
 /*
  * Bind one already-active full-STP session, initialize the vendor PIO subset,

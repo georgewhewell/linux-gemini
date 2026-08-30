@@ -774,6 +774,15 @@ static const struct scp_subdomain scp_subdomain_mt2712[] = {
 
 #define SPM_MFG_SRAM_CON_MT6797		0x033c
 
+/*
+ * The GPU and its MFGSYS clock provider are disabled in the Gemini DT.  Do
+ * not turn this whole hierarchy on merely while registering the SCPSYS
+ * provider: the generic registration path does that before it installs the
+ * MFG parent links.  Leave the boot firmware's state alone until a future GPU
+ * consumer explicitly votes for the hierarchy.
+ */
+#define MT6797_MFG_DEFAULT_OFF		MTK_SCPD_KEEP_DEFAULT_OFF
+
 static const struct scp_domain_data scp_domain_data_mt6797[] = {
 	[MT6797_POWER_DOMAIN_VDEC] = {
 		.name = "vdec",
@@ -823,6 +832,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_bits = 0,
 		.sram_pdn_ack_bits = 0,
 		.clk_id = {CLK_MFG_52M},
+		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
 	[MT6797_POWER_DOMAIN_MFG] = {
 		.name = "mfg",
@@ -833,6 +843,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_bits = GENMASK(1, 0),
 		.sram_pdn_ack_bits = GENMASK(17, 16),
 		.clk_id = {CLK_MFG_52M},
+		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE0] = {
 		.name = "mfg_core0",
@@ -843,6 +854,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(20),
 		.clk_id = {CLK_MFG_52M},
+		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE1] = {
 		.name = "mfg_core1",
@@ -853,6 +865,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(21),
 		.clk_id = {CLK_MFG_52M},
+		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE2] = {
 		.name = "mfg_core2",
@@ -863,6 +876,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(22),
 		.clk_id = {CLK_MFG_52M},
+		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE3] = {
 		.name = "mfg_core3",
@@ -873,6 +887,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(23),
 		.clk_id = {CLK_MFG_52M},
+		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
 	[MT6797_POWER_DOMAIN_MJC] = {
 		.name = "mjc",

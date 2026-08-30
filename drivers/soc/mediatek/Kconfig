@@ -256,6 +256,30 @@ config MTK_MT6797_CONSYS_CORE_KUNIT_TEST
 	  This is intended for KUnit-compatible test kernels and has no hardware
 	  dependency or firmware requirement.
 
+config MTK_MT6797_CONSYS_POSTID
+	tristate "Dormant MT6797 CONSYS post-identity bootstrap owner"
+	depends on MTK_MT6797_CONSYS_CORE
+	help
+	  Build the hardware-neutral, default-disabled owner for the reviewed
+	  post-identity prefix: MBIST configuration, AFE configuration, and
+	  CONMCU reset release. It requires an already active exclusive CONSYS
+	  runtime lease and an independent caller-supplied experiment gate.
+
+	  The backend supplies callbacks; this option has no Device Tree match,
+	  platform caller, MMIO access, clock, regulator, power-domain, firmware,
+	  BTIF/STP, or radio operation. Failures are fail-closed and assert reset
+	  before releasing the runtime pin.
+
+config MTK_MT6797_CONSYS_POSTID_KUNIT_TEST
+	bool "KUnit tests for the MT6797 CONSYS post-identity owner"
+	depends on KUNIT=y
+	depends on MTK_MT6797_CONSYS_POSTID=y
+	help
+	  Exercise exact MBIST/AFE/reset-release ordering, the independent gate,
+	  inactive-identity rejection, error injection, reset assertion and
+	  teardown completion with fake callbacks only. No Device Tree, MMIO,
+	  hardware, firmware, transport, or radio is used.
+
 config MTK_MT6797_CONSYS_LIVE
 	tristate "MediaTek MT6797 CONSYS bounded identity experiment"
 	depends on ARM64 && ARCH_MEDIATEK && OF && PM

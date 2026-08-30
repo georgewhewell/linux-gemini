@@ -5,9 +5,10 @@
  * Stage 1 consumes no active resource. Stage 2 snapshots, changes, and restores
  * every MD1 rail field touched by the vendor, then stops. Stage 3 snapshots,
  * changes and restores only the three SPM clock-buffer command fields used by
- * the exact vendor clk_buf_set_by_flightmode(false) path, then stops.  The SPM
- * MD1 power primitive is intentionally not bound here. No stage reaches reset
- * release, boot vector, CLDMA, CCIF, SIM or RF.
+ * the exact vendor clk_buf_set_by_flightmode(false) path, then stops. Stage 4
+ * holds the PMIC and clock-buffer changes while it clears MD_EXT_BUCK_ISO and
+ * obtains the two PWR_STATUS acknowledgements, then unwinds in reverse. No
+ * stage reaches reset release, boot vector, CLDMA, CCIF, SIM or RF.
  */
 
 #include <linux/device.h>
@@ -58,18 +59,32 @@ module_param_named(enable_experimental_md1_prerelease,
 MODULE_PARM_DESC(enable_experimental_md1_prerelease,
 			 "allow explicitly staged MT6797 MD1 pre-release diagnostics");
 
+static bool enable_experimental_md1_stage4_power_ack;
+module_param_named(enable_experimental_md1_stage4_power_ack,
+		   enable_experimental_md1_stage4_power_ack, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_md1_stage4_power_ack,
+		 "allow the reversible MT6797 MD1 stage-4 power ack transaction");
+
 enum mt6797_md1_prerelease_stage {
 	MT6797_MD1_STAGE_INVENTORY = 1,
 	MT6797_MD1_STAGE_PMIC_ROLLBACK,
 	MT6797_MD1_STAGE_CLOCK_BUFFER_GATE,
+	MT6797_MD1_STAGE_POWER_ACK,
 };
 
 static ushort experimental_md1_prerelease_stage;
 module_param_named(experimental_md1_prerelease_stage,
 			   experimental_md1_prerelease_stage, ushort, 0400);
 MODULE_PARM_DESC(experimental_md1_prerelease_stage,
-			 "MD1 stage: 1=inventory, 2=PMIC snapshot/apply/restore, "
-			 "3=clock-buffer snapshot/apply/restore, 4+=refuse");
+			 "MD1 stage: 1=inventory, 2=PMIC, 3=clock-buffer, 4=power ack, 5+=refuse");
+
+struct mt6797_md1_stage4_context {
+	struct regmap *pmic;
+	struct regmap *spm;
+	struct mt6797_md1_pmic_snapshot pmic_snapshot;
+	struct mt6797_md1_clkbuf_snapshot clkbuf_snapshot;
+	struct mt6797_md1_spm_snapshot spm_snapshot;
+};
 
 static int mt6797_md1_validate_resource(struct platform_device *pdev,
 		const struct mt6797_md1_prerelease_resource *expected)
@@ -198,6 +213,112 @@ static int mt6797_md1_clkbuf_rollback_stage(struct device *dev)
 	return 0;
 }
 
+static int mt6797_md1_stage4_pmic_on(void *context)
+{
+	struct mt6797_md1_stage4_context *stage4 = context;
+	int ret;
+
+	ret = mt6797_md1_pmic_snapshot(stage4->pmic, &stage4->pmic_snapshot);
+	if (ret)
+		return ret;
+	return mt6797_md1_pmic_apply_vendor_values(stage4->pmic,
+					     &stage4->pmic_snapshot);
+}
+
+static int mt6797_md1_stage4_pmic_off(void *context)
+{
+	struct mt6797_md1_stage4_context *stage4 = context;
+
+	return stage4->pmic_snapshot.valid ?
+		mt6797_md1_pmic_restore(stage4->pmic, &stage4->pmic_snapshot) : 0;
+}
+
+static int mt6797_md1_stage4_clock_on(void *context)
+{
+	struct mt6797_md1_stage4_context *stage4 = context;
+	int ret;
+
+	ret = mt6797_md1_clkbuf_snapshot(stage4->spm, &stage4->clkbuf_snapshot);
+	if (ret)
+		return ret;
+	return mt6797_md1_clkbuf_set_modem_on(stage4->spm,
+					  &stage4->clkbuf_snapshot);
+}
+
+static int mt6797_md1_stage4_clock_off(void *context)
+{
+	struct mt6797_md1_stage4_context *stage4 = context;
+
+	return stage4->clkbuf_snapshot.valid ?
+		mt6797_md1_clkbuf_restore(stage4->spm, &stage4->clkbuf_snapshot) : 0;
+}
+
+static int mt6797_md1_stage4_domain_on(void *context)
+{
+	struct mt6797_md1_stage4_context *stage4 = context;
+	int ret;
+
+	ret = mt6797_md1_spm_snapshot(stage4->spm, &stage4->spm_snapshot);
+	if (ret)
+		return ret;
+	return mt6797_md1_spm_power_on(stage4->spm, &stage4->spm_snapshot);
+}
+
+static int mt6797_md1_stage4_domain_off(void *context)
+{
+	struct mt6797_md1_stage4_context *stage4 = context;
+
+	return stage4->spm_snapshot.valid ?
+		mt6797_md1_spm_restore(stage4->spm, &stage4->spm_snapshot) : 0;
+}
+
+static int mt6797_md1_stage4_poll(void *context)
+{
+	(void)context;
+	/* mt6797_md1_spm_power_on() already performs the bounded dual-status poll. */
+	return 0;
+}
+
+static const struct mt6797_md1_prerelease_ops mt6797_md1_stage4_ops = {
+	.abi = MT6797_MD1_PRERELEASE_ABI,
+	.pmic_on = mt6797_md1_stage4_pmic_on,
+	.pmic_off = mt6797_md1_stage4_pmic_off,
+	.clock_on = mt6797_md1_stage4_clock_on,
+	.clock_off = mt6797_md1_stage4_clock_off,
+	.domain_on = mt6797_md1_stage4_domain_on,
+	.domain_off = mt6797_md1_stage4_domain_off,
+	.poll = mt6797_md1_stage4_poll,
+};
+
+static int mt6797_md1_power_ack_stage(struct device *dev)
+{
+	struct mt6797_md1_stage4_context context = { };
+	struct mt6797_md1_prerelease prerelease;
+	int ret;
+
+	if (!READ_ONCE(enable_experimental_md1_stage4_power_ack) ||
+	    !device_property_read_bool(dev, "mediatek,stage4-power-ack"))
+		return dev_err_probe(dev, -EPERM,
+			"stage 4 requires independent module and DT power-ack gates\n");
+	context.pmic = mt6797_md1_get_pmic_regmap(dev);
+	if (IS_ERR(context.pmic))
+		return dev_err_probe(dev, PTR_ERR(context.pmic),
+			"MT6351 PMIC regmap unavailable\n");
+	context.spm = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,spm");
+	if (IS_ERR(context.spm))
+		return dev_err_probe(dev, PTR_ERR(context.spm), "SPM syscon regmap unavailable\n");
+	ret = mt6797_md1_prerelease_init(&prerelease, &mt6797_md1_stage4_ops,
+					 &context);
+	if (ret)
+		return ret;
+	ret = mt6797_md1_prerelease_run(&prerelease);
+	if (ret)
+		return dev_err_probe(dev, ret,
+			"stage-4 PMIC/clock/MD1 power-ack transaction failed\n");
+	dev_info(dev, "MD1 stage-4 power ack succeeded and all state was restored\n");
+	return 0;
+}
+
 static int mt6797_md1_prerelease_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -243,9 +364,11 @@ static int mt6797_md1_prerelease_probe(struct platform_device *pdev)
 		return mt6797_md1_pmic_rollback_stage(dev);
 	case MT6797_MD1_STAGE_CLOCK_BUFFER_GATE:
 		return mt6797_md1_clkbuf_rollback_stage(dev);
+	case MT6797_MD1_STAGE_POWER_ACK:
+		return mt6797_md1_power_ack_stage(dev);
 	default:
 		return dev_err_probe(dev, -EOPNOTSUPP,
-			"stopping before MD1 power-domain control\n");
+			"stopping after the reversible MD1 power-ack transaction\n");
 	}
 }
 
@@ -264,5 +387,5 @@ static struct platform_driver mt6797_md1_prerelease_driver = {
 };
 module_platform_driver(mt6797_md1_prerelease_driver);
 
-MODULE_DESCRIPTION("Fail-closed MT6797 MD1 pre-release inventory adapter");
+MODULE_DESCRIPTION("Fail-closed MT6797 MD1 pre-release power-ack adapter");
 MODULE_LICENSE("GPL");

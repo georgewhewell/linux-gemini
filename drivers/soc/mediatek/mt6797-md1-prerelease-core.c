@@ -16,7 +16,8 @@ int mt6797_md1_prerelease_init(struct mt6797_md1_prerelease *prerelease,
 		const struct mt6797_md1_prerelease_ops *ops, void *context)
 {
 	if (!prerelease || !ops || ops->abi != MT6797_MD1_PRERELEASE_ABI ||
-	    !ops->pmic_on || !ops->pmic_off || !ops->domain_on ||
+	    !ops->pmic_on || !ops->pmic_off || !ops->clock_on || !ops->clock_off ||
+	    !ops->domain_on ||
 	    !ops->domain_off || !ops->poll)
 		return -EINVAL;
 
@@ -28,7 +29,8 @@ int mt6797_md1_prerelease_init(struct mt6797_md1_prerelease *prerelease,
 }
 
 static int mt6797_md1_prerelease_unwind(struct mt6797_md1_prerelease *prerelease,
-		bool domain_may_be_on, bool pmic_may_be_on, int ret)
+		bool domain_may_be_on, bool clock_may_be_on, bool pmic_may_be_on,
+		int ret)
 {
 	int cleanup;
 	int cleanup_error = 0;
@@ -36,6 +38,13 @@ static int mt6797_md1_prerelease_unwind(struct mt6797_md1_prerelease *prerelease
 	if (domain_may_be_on) {
 		cleanup = prerelease->ops->domain_off(prerelease->context);
 		if (cleanup)
+			cleanup_error = cleanup;
+		if (!ret)
+			ret = cleanup;
+	}
+	if (clock_may_be_on) {
+		cleanup = prerelease->ops->clock_off(prerelease->context);
+		if (cleanup && !cleanup_error)
 			cleanup_error = cleanup;
 		if (!ret)
 			ret = cleanup;
@@ -57,6 +66,7 @@ static int mt6797_md1_prerelease_unwind(struct mt6797_md1_prerelease *prerelease
 int mt6797_md1_prerelease_run(struct mt6797_md1_prerelease *prerelease)
 {
 	bool pmic_may_be_on = false;
+	bool clock_may_be_on = false;
 	bool domain_may_be_on = false;
 	unsigned int attempt;
 	int ret;
@@ -73,6 +83,11 @@ int mt6797_md1_prerelease_run(struct mt6797_md1_prerelease *prerelease)
 	/* Set ownership before every callback: an error may follow a real write. */
 	pmic_may_be_on = true;
 	ret = prerelease->ops->pmic_on(prerelease->context);
+	if (ret)
+		goto out_unwind;
+
+	clock_may_be_on = true;
+	ret = prerelease->ops->clock_on(prerelease->context);
 	if (ret)
 		goto out_unwind;
 
@@ -93,7 +108,7 @@ int mt6797_md1_prerelease_run(struct mt6797_md1_prerelease *prerelease)
 
 out_unwind:
 	ret = mt6797_md1_prerelease_unwind(prerelease, domain_may_be_on,
-					     pmic_may_be_on, ret);
+					     clock_may_be_on, pmic_may_be_on, ret);
 out_unlock:
 	mutex_unlock(&prerelease->lock);
 	return ret;

@@ -3,10 +3,11 @@
  * Disabled MT6797 MD1 pre-release inventory profile.
  *
  * Even if enabled manually, the driver needs its module parameter and an
- * inventory-only DT property, validates metadata only, then stops before PMIC
- * or MD1 power. No firmware image, boot-vector, CLDMA/CCIF transaction, SIM,
- * RF, shared-memory byte, interrupt request, clock, reset, or DMA action is
- * possible through this profile.
+ * stage-specific DT property. Stage 4 additionally requires its own module
+ * parameter; it retains no PMIC, clock-buffer, or MD1 power state. No firmware
+ * image, boot-vector, CLDMA/CCIF transaction, SIM, RF, shared-memory byte,
+ * interrupt request, reset release, or DMA action is possible through this
+ * profile.
  */
 
 /dts-v1/;
@@ -47,7 +48,10 @@
 					"infra-md2md-ccif-4", "infra-md2md-ccif-5";
 				mediatek,experimental-md1-prerelease;
 				mediatek,stage-inventory-only;
-				/* Deliberately absent: mediatek,spm and stage-clock-buffer-rollback. */
+				/* These gates are inert while this node remains disabled. */
+				mediatek,stage4-power-ack;
+				mediatek,pmic = <&pmic>;
+				mediatek,spm = <&scpsys>;
 				status = "disabled";
 			};
 		};

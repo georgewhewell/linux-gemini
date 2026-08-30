@@ -13,14 +13,15 @@
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
-#include <linux/io.h>
 #include <linux/mfd/mt6351/registers.h>
 #include <linux/regmap.h>
 #include <linux/soc/mediatek/mt6797-md1-prerelease.h>
 
-#define MT6797_MD1_SPM_MD1_PWR_CON	0x320
+#define MT6797_MD1_SPM_POWERON_CONFIG_EN	0x000
 #define MT6797_MD1_SPM_PWR_STATUS	0x180
 #define MT6797_MD1_SPM_PWR_STATUS_2ND	0x184
+#define MT6797_MD1_SPM_MD1_PWR_CON	0x320
+#define MT6797_MD1_SPM_MD_EXT_BUCK_ISO	0x390
 #define MT6797_MD1_SPM_MDBSI_CON	0x404
 #define MT6797_MD1_SPM_MDBSI_MASK	GENMASK(2, 0)
 /* Vendor clk_buf_swctrl_modem_on[] yields CON=0, NFC=1, AUD=1. */
@@ -33,6 +34,10 @@
 #define MT6797_MD1_SPM_PWR_CLK_DIS	BIT(4)
 #define MT6797_MD1_SPM_MD_SRAM_PDN	BIT(8)
 #define MT6797_MD1_SPM_PWR_STATUS_MD1	BIT(0)
+#define MT6797_MD1_SPM_POWERON_CONFIG_EN_BIT	BIT(0)
+#define MT6797_MD1_SPM_MD_EXT_BUCK_ISO_MD1	BIT(0)
+#define MT6797_MD1_SPM_MD1_PWR_CON_OWNED	(MT6797_MD1_SPM_PWR_ON | \
+						 MT6797_MD1_SPM_PWR_ON_2ND)
 
 #define MT6797_MD1_SPM_MAX_POLLS	100
 #define MT6797_MD1_SPM_POLL_DELAY_US	10
@@ -110,6 +115,8 @@ static const unsigned int mt6797_md1_pmic_vendor_order[] = {
 	MT6797_MD1_VMODEM_SLEEP_ENABLE,
 	MT6797_MD1_VSRAM_MD_SELECTOR,
 	MT6797_MD1_VMODEM_SELECTOR,
+	/* cldma_platform.c delays 300us after the two selector writes. */
+	/* The three hardware-control writes below must remain after that delay. */
 	MT6797_MD1_VSRAM_MD_HW_CONTROL,
 	MT6797_MD1_VMD1_HW_CONTROL,
 	MT6797_MD1_VMODEM_HW_CONTROL,
@@ -221,6 +228,8 @@ int mt6797_md1_pmic_apply_vendor_values(struct regmap *pmic,
 					     mt6797_md1_pmic_fields[field].vendor_value);
 		if (ret)
 			return ret;
+		if (field == MT6797_MD1_VMODEM_SELECTOR)
+			udelay(300);
 	}
 	return 0;
 }
@@ -244,67 +253,108 @@ int mt6797_md1_pmic_restore(struct regmap *pmic,
 	return first_error;
 }
 
-int mt6797_md1_spm_snapshot(void __iomem *spm,
-			    struct mt6797_md1_spm_snapshot *snapshot)
+static int mt6797_md1_spm_wait(struct regmap *spm, bool on)
 {
-	if (!spm || !snapshot)
-		return -EINVAL;
-
-	snapshot->pwr_con = readl(spm + MT6797_MD1_SPM_MD1_PWR_CON);
-	snapshot->valid = true;
-	return 0;
-}
-
-static int mt6797_md1_spm_wait(void __iomem *spm, bool on)
-{
-	unsigned int attempt;
-	u32 status, status_2nd;
+	unsigned int attempt, status, status_2nd;
+	int ret;
 
 	for (attempt = 0; attempt < MT6797_MD1_SPM_MAX_POLLS; attempt++) {
-		status = readl(spm + MT6797_MD1_SPM_PWR_STATUS) &
-			 MT6797_MD1_SPM_PWR_STATUS_MD1;
-		status_2nd = readl(spm + MT6797_MD1_SPM_PWR_STATUS_2ND) &
-			     MT6797_MD1_SPM_PWR_STATUS_MD1;
-		if (!!status == on && !!status_2nd == on)
+		ret = regmap_read(spm, MT6797_MD1_SPM_PWR_STATUS, &status);
+		if (ret)
+			return ret;
+		ret = regmap_read(spm, MT6797_MD1_SPM_PWR_STATUS_2ND,
+				  &status_2nd);
+		if (ret)
+			return ret;
+		if (!!(status & MT6797_MD1_SPM_PWR_STATUS_MD1) == on &&
+		    !!(status_2nd & MT6797_MD1_SPM_PWR_STATUS_MD1) == on)
 			return 0;
 		udelay(MT6797_MD1_SPM_POLL_DELAY_US);
 	}
 	return -ETIMEDOUT;
 }
 
-int mt6797_md1_spm_power_on(void __iomem *spm,
+int mt6797_md1_spm_snapshot(struct regmap *spm,
 			    struct mt6797_md1_spm_snapshot *snapshot)
 {
-	u32 value;
+	unsigned int poweron_config, pwr_con, ext_buck_iso;
+	int ret;
+
+	if (!spm || !snapshot)
+		return -EINVAL;
+
+	snapshot->valid = false;
+	/* Do not alter the shared SPM key: it must already be enabled. */
+	ret = regmap_read(spm, MT6797_MD1_SPM_POWERON_CONFIG_EN,
+			  &poweron_config);
+	if (ret)
+		return ret;
+	if (!(poweron_config & MT6797_MD1_SPM_POWERON_CONFIG_EN_BIT))
+		return -EPERM;
+
+	ret = regmap_read(spm, MT6797_MD1_SPM_MD1_PWR_CON, &pwr_con);
+	if (ret)
+		return ret;
+	ret = regmap_read(spm, MT6797_MD1_SPM_MD_EXT_BUCK_ISO, &ext_buck_iso);
+	if (ret)
+		return ret;
+	/* Refuse both a live MD1 and command/isolation state inconsistent with off. */
+	if ((pwr_con & MT6797_MD1_SPM_MD1_PWR_CON_OWNED) ||
+	    !(ext_buck_iso & MT6797_MD1_SPM_MD_EXT_BUCK_ISO_MD1))
+		return -EBUSY;
+	ret = mt6797_md1_spm_wait(spm, false);
+	if (ret)
+		return ret == -ETIMEDOUT ? -EBUSY : ret;
+
+	snapshot->pwr_con_owned = pwr_con & MT6797_MD1_SPM_MD1_PWR_CON_OWNED;
+	snapshot->ext_buck_iso = ext_buck_iso & MT6797_MD1_SPM_MD_EXT_BUCK_ISO_MD1;
+	snapshot->valid = true;
+	return 0;
+}
+
+int mt6797_md1_spm_power_on(struct regmap *spm,
+			    struct mt6797_md1_spm_snapshot *snapshot)
+{
 	int ret;
 
 	if (!spm || !snapshot || !snapshot->valid)
 		return -EINVAL;
 
-	/* Do not take ownership of an already-booted or half-powered MD1. */
-	ret = mt6797_md1_spm_wait(spm, false);
+	/* Vendor MD1 power-on first clears MD_EXT_BUCK_ISO[0], then PWR_ON. */
+	ret = regmap_update_bits(spm, MT6797_MD1_SPM_MD_EXT_BUCK_ISO,
+				 MT6797_MD1_SPM_MD_EXT_BUCK_ISO_MD1, 0);
 	if (ret)
 		return ret;
-
-	value = snapshot->pwr_con | MT6797_MD1_SPM_PWR_ON;
-	writel(value, spm + MT6797_MD1_SPM_MD1_PWR_CON);
-	value |= MT6797_MD1_SPM_PWR_ON_2ND;
-	writel(value, spm + MT6797_MD1_SPM_MD1_PWR_CON);
+	ret = regmap_update_bits(spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				 MT6797_MD1_SPM_PWR_ON, MT6797_MD1_SPM_PWR_ON);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				 MT6797_MD1_SPM_PWR_ON_2ND,
+				 MT6797_MD1_SPM_PWR_ON_2ND);
+	if (ret)
+		return ret;
 
 	return mt6797_md1_spm_wait(spm, true);
 }
 
-int mt6797_md1_spm_restore(void __iomem *spm,
+int mt6797_md1_spm_restore(struct regmap *spm,
 			    struct mt6797_md1_spm_snapshot *snapshot)
 {
-	int ret;
+	int ret, poll_ret, iso_ret;
 
 	if (!spm || !snapshot || !snapshot->valid)
 		return -EINVAL;
 
-	/* Restore clock/isolation/reset/SRAM bits exactly before reporting exit. */
-	writel(snapshot->pwr_con, spm + MT6797_MD1_SPM_MD1_PWR_CON);
-	ret = mt6797_md1_spm_wait(spm, false);
+	/* Reverse only our owned power requests, wait, then restore buck isolation. */
+	ret = regmap_update_bits(spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				 MT6797_MD1_SPM_MD1_PWR_CON_OWNED,
+				 snapshot->pwr_con_owned);
+	poll_ret = ret ? ret : mt6797_md1_spm_wait(spm, false);
+	/* Attempt isolation restoration even when the prior power write failed. */
+	iso_ret = regmap_update_bits(spm, MT6797_MD1_SPM_MD_EXT_BUCK_ISO,
+				     MT6797_MD1_SPM_MD_EXT_BUCK_ISO_MD1,
+				     snapshot->ext_buck_iso);
 	snapshot->valid = false;
-	return ret;
+	return ret ?: poll_ret ?: iso_ret;
 }

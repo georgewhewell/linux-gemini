@@ -75,13 +75,13 @@ config MTK_MT6797_MD1_PRERELEASE
 
 	  The PMIC helper snapshots and restores every VMODEM/VMD1/VSRAM enable,
 	  sleep, selector, and hardware-control field before leaving stage two. The
-	  SPM helper snapshots MD1 power control, issues only PWR_ON/PWR_ON_2ND, and
-	  waits with a finite retry count before restoring it. The supplied profile
-	  enables stage one only. Stage two additionally needs a separate PMIC
-	  rollback DT gate; stage three separately snapshots, sets and restores the
-	  vendor clock-buffer command fields. No supplied stage reaches reset
-	  release, source-clock enable, CLDMA, CCIF, shared memory, firmware, SIM,
-	  or radio action.
+	  Stage four additionally snapshots MD_EXT_BUCK_ISO[0] and the two owned
+	  MD1 power-request bits, requires the shared SPM control bit to be already
+	  enabled, gets both status acknowledgements with a finite retry count, then
+	  restores power, clock-buffer, and PMIC state in that order. It separately
+	  needs both a DT property and module parameter. No supplied stage reaches
+	  reset release, source-clock enable, CLDMA, CCIF, shared memory, firmware,
+	  SIM, or radio action.
 
 config MTK_MT6797_MD1_PRERELEASE_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 pre-release transaction core"

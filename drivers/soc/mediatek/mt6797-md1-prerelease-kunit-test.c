@@ -10,9 +10,11 @@
 enum mt6797_md1_test_op {
 	MD1_TEST_NONE,
 	MD1_TEST_PMIC_ON,
+	MD1_TEST_CLOCK_ON,
 	MD1_TEST_DOMAIN_ON,
 	MD1_TEST_POLL,
 	MD1_TEST_DOMAIN_OFF,
+	MD1_TEST_CLOCK_OFF,
 	MD1_TEST_PMIC_OFF,
 };
 
@@ -38,6 +40,16 @@ static int mt6797_md1_test_pmic_on(void *context)
 static int mt6797_md1_test_pmic_off(void *context)
 {
 	return mt6797_md1_test_record(context, MD1_TEST_PMIC_OFF);
+}
+
+static int mt6797_md1_test_clock_on(void *context)
+{
+	return mt6797_md1_test_record(context, MD1_TEST_CLOCK_ON);
+}
+
+static int mt6797_md1_test_clock_off(void *context)
+{
+	return mt6797_md1_test_record(context, MD1_TEST_CLOCK_OFF);
 }
 
 static int mt6797_md1_test_domain_on(void *context)
@@ -69,6 +81,8 @@ static const struct mt6797_md1_prerelease_ops mt6797_md1_test_ops = {
 	.abi = MT6797_MD1_PRERELEASE_ABI,
 	.pmic_on = mt6797_md1_test_pmic_on,
 	.pmic_off = mt6797_md1_test_pmic_off,
+	.clock_on = mt6797_md1_test_clock_on,
+	.clock_off = mt6797_md1_test_clock_off,
 	.domain_on = mt6797_md1_test_domain_on,
 	.domain_off = mt6797_md1_test_domain_off,
 	.poll = mt6797_md1_test_poll,
@@ -88,8 +102,9 @@ static void mt6797_md1_test_expect_calls(struct kunit *test,
 static void mt6797_md1_test_success_unwinds(struct kunit *test)
 {
 	static const enum mt6797_md1_test_op expected[] = {
-		MD1_TEST_PMIC_ON, MD1_TEST_DOMAIN_ON, MD1_TEST_POLL,
-		MD1_TEST_DOMAIN_OFF, MD1_TEST_PMIC_OFF,
+		MD1_TEST_PMIC_ON, MD1_TEST_CLOCK_ON, MD1_TEST_DOMAIN_ON,
+		MD1_TEST_POLL, MD1_TEST_DOMAIN_OFF, MD1_TEST_CLOCK_OFF,
+		MD1_TEST_PMIC_OFF,
 	};
 	struct mt6797_md1_test_backend backend = { };
 	struct mt6797_md1_prerelease prerelease;
@@ -105,9 +120,9 @@ static void mt6797_md1_test_success_unwinds(struct kunit *test)
 static void mt6797_md1_test_timeout_is_bounded_and_unwinds(struct kunit *test)
 {
 	static const enum mt6797_md1_test_op expected[] = {
-		MD1_TEST_PMIC_ON, MD1_TEST_DOMAIN_ON,
+		MD1_TEST_PMIC_ON, MD1_TEST_CLOCK_ON, MD1_TEST_DOMAIN_ON,
 		MD1_TEST_POLL, MD1_TEST_POLL, MD1_TEST_POLL,
-		MD1_TEST_DOMAIN_OFF, MD1_TEST_PMIC_OFF,
+		MD1_TEST_DOMAIN_OFF, MD1_TEST_CLOCK_OFF, MD1_TEST_PMIC_OFF,
 	};
 	struct mt6797_md1_test_backend backend = { .pending = 3 };
 	struct mt6797_md1_prerelease prerelease;
@@ -123,8 +138,8 @@ static void mt6797_md1_test_timeout_is_bounded_and_unwinds(struct kunit *test)
 static void mt6797_md1_test_failed_domain_setup_is_unwound(struct kunit *test)
 {
 	static const enum mt6797_md1_test_op expected[] = {
-		MD1_TEST_PMIC_ON, MD1_TEST_DOMAIN_ON,
-		MD1_TEST_DOMAIN_OFF, MD1_TEST_PMIC_OFF,
+		MD1_TEST_PMIC_ON, MD1_TEST_CLOCK_ON, MD1_TEST_DOMAIN_ON,
+		MD1_TEST_DOMAIN_OFF, MD1_TEST_CLOCK_OFF, MD1_TEST_PMIC_OFF,
 	};
 	struct mt6797_md1_test_backend backend = { .fail = MD1_TEST_DOMAIN_ON };
 	struct mt6797_md1_prerelease prerelease;
@@ -269,6 +284,7 @@ struct mt6797_md1_spm_fake {
 	u32 registers[0x500 / sizeof(u32)];
 	unsigned int writes;
 	unsigned int fail_write;
+	unsigned int write_reg[8];
 };
 
 static int mt6797_md1_spm_fake_read(void *context, unsigned int reg,
@@ -291,6 +307,8 @@ static int mt6797_md1_spm_fake_write(void *context, unsigned int reg,
 		return -EINVAL;
 	if (++fake->writes == fake->fail_write)
 		return -EIO;
+	if (fake->writes <= ARRAY_SIZE(fake->write_reg))
+		fake->write_reg[fake->writes - 1] = reg;
 	fake->registers[reg / sizeof(u32)] = value;
 	return 0;
 }
@@ -355,19 +373,74 @@ static void mt6797_md1_test_clkbuf_write_failure_can_be_rolled_back(struct kunit
 static void mt6797_md1_test_spm_timeout_is_explicitly_restored(struct kunit *test)
 {
 	struct mt6797_md1_spm_snapshot snapshot;
-	u32 *spm;
+	struct mt6797_md1_spm_fake *fake;
+	struct regmap *map;
 
-	spm = kunit_kzalloc(test, 0x1000, GFP_KERNEL);
-	KUNIT_ASSERT_NOT_NULL(test, spm);
+	fake = kunit_kzalloc(test, sizeof(*fake), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, fake);
 	/* The status registers remain clear: this is a bounded no-ack simulation. */
-	spm[0x320 / sizeof(*spm)] = BIT(1) | BIT(4);
-	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_snapshot((void __iomem *)spm,
-							  &snapshot), 0);
-	KUNIT_EXPECT_EQ(test, mt6797_md1_spm_power_on((void __iomem *)spm,
-							  &snapshot), -ETIMEDOUT);
-	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_restore((void __iomem *)spm,
-							 &snapshot), 0);
-	KUNIT_EXPECT_EQ(test, spm[0x320 / sizeof(*spm)], BIT(1) | BIT(4));
+	fake->registers[0x0 / sizeof(u32)] = BIT(0);
+	fake->registers[0x320 / sizeof(u32)] = BIT(1) | BIT(4);
+	fake->registers[0x390 / sizeof(u32)] = BIT(0);
+	map = regmap_init(NULL, &mt6797_md1_spm_fake_bus, fake,
+			  &mt6797_md1_spm_fake_config);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_snapshot(map, &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_spm_power_on(map, &snapshot), -ETIMEDOUT);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_restore(map, &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, fake->registers[0x320 / sizeof(u32)], BIT(1) | BIT(4));
+	KUNIT_EXPECT_EQ(test, fake->registers[0x390 / sizeof(u32)], BIT(0));
+	/* Vendor order: external buck isolation, PWR_ON, PWR_ON_2ND. */
+	KUNIT_EXPECT_EQ(test, fake->write_reg[0], 0x390U);
+	KUNIT_EXPECT_EQ(test, fake->write_reg[1], 0x320U);
+	KUNIT_EXPECT_EQ(test, fake->write_reg[2], 0x320U);
+	regmap_exit(map);
+}
+
+static void mt6797_md1_test_spm_rejects_shared_or_live_state(struct kunit *test)
+{
+	struct mt6797_md1_spm_snapshot snapshot;
+	struct mt6797_md1_spm_fake *fake;
+	struct regmap *map;
+
+	fake = kunit_kzalloc(test, sizeof(*fake), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, fake);
+	map = regmap_init(NULL, &mt6797_md1_spm_fake_bus, fake,
+			  &mt6797_md1_spm_fake_config);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	KUNIT_EXPECT_EQ(test, mt6797_md1_spm_snapshot(map, &snapshot), -EPERM);
+	fake->registers[0x0 / sizeof(u32)] = BIT(0);
+	fake->registers[0x320 / sizeof(u32)] = BIT(2);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_spm_snapshot(map, &snapshot), -EBUSY);
+	regmap_exit(map);
+}
+
+static void mt6797_md1_test_spm_restore_attempts_isolation_after_power_failure(struct kunit *test)
+{
+	struct mt6797_md1_spm_snapshot snapshot;
+	struct mt6797_md1_spm_fake *fake;
+	struct regmap *map;
+
+	fake = kunit_kzalloc(test, sizeof(*fake), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, fake);
+	fake->registers[0x0 / sizeof(u32)] = BIT(0);
+	fake->registers[0x390 / sizeof(u32)] = BIT(0);
+	map = regmap_init(NULL, &mt6797_md1_spm_fake_bus, fake,
+			  &mt6797_md1_spm_fake_config);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_snapshot(map, &snapshot), 0);
+	/* Pretend the dual power ack arrived after both requests. */
+	fake->registers[0x180 / sizeof(u32)] = BIT(0);
+	fake->registers[0x184 / sizeof(u32)] = BIT(0);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_power_on(map, &snapshot), 0);
+	fake->registers[0x180 / sizeof(u32)] = 0;
+	fake->registers[0x184 / sizeof(u32)] = 0;
+	/* The PWR_CON restore fails, but isolation must still be restored. */
+	fake->fail_write = fake->writes + 1;
+	KUNIT_EXPECT_EQ(test, mt6797_md1_spm_restore(map, &snapshot), -EIO);
+	KUNIT_EXPECT_EQ(test, fake->registers[0x390 / sizeof(u32)], BIT(0));
+	KUNIT_EXPECT_EQ(test, fake->write_reg[fake->writes - 1], 0x390U);
+	regmap_exit(map);
 }
 
 static struct kunit_case mt6797_md1_prerelease_test_cases[] = {
@@ -380,6 +453,8 @@ static struct kunit_case mt6797_md1_prerelease_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_test_clkbuf_set_restores_only_owned_bits),
 	KUNIT_CASE(mt6797_md1_test_clkbuf_write_failure_can_be_rolled_back),
 	KUNIT_CASE(mt6797_md1_test_spm_timeout_is_explicitly_restored),
+	KUNIT_CASE(mt6797_md1_test_spm_rejects_shared_or_live_state),
+	KUNIT_CASE(mt6797_md1_test_spm_restore_attempts_isolation_after_power_failure),
 	{ }
 };
 

@@ -344,14 +344,21 @@ static int nvt36xxx_probe(struct i2c_client *client)
 
 	data->input = input;
 	ret = devm_request_threaded_irq(dev, client->irq, NULL, nvt36xxx_irq,
-					IRQF_ONESHOT, dev_name(dev), data);
+					IRQF_ONESHOT | IRQF_NO_AUTOEN,
+					dev_name(dev), data);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request IRQ\n");
+
+	ret = input_register_device(input);
+	if (ret)
+		return ret;
+
+	enable_irq(client->irq);
 
 	dev_info(dev, "%s trim %*ph detected (%ux%u)\n", data->chip->name,
 		 NVT36XXX_TRIM_LEN, data->trim, data->raw_x_max, data->raw_y_max);
 
-	return input_register_device(input);
+	return 0;
 }
 
 static const struct of_device_id nvt36xxx_of_match[] = {

@@ -21,12 +21,14 @@
  */
 
 #include <linux/bits.h>
+#include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/irq.h>
+#include <linux/kthread.h>
 #include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
@@ -42,6 +44,7 @@
 #include <linux/regulator/mt6351-regulator.h>
 #include <linux/reset.h>
 #include <linux/sizes.h>
+#include <linux/wait.h>
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_RUNTIME_KUNIT_TEST)
 #include <kunit/test.h>
@@ -98,6 +101,10 @@ struct mt6797_consys_runtime {
 	bool conn_domain_vote;
 	bool runtime_pm_enabled;
 	bool lease_held;
+	struct mutex provider_lock;
+	wait_queue_head_t provider_wait;
+	unsigned int external_users;
+	enum mt6797_consys_runtime_provider_state provider_state;
 };
 
 /* The vendor DT order is MCU, AP-RGU, TOPCKGEN, then SPM. */
@@ -494,6 +501,93 @@ mt6797_consys_runtime_platform_lease(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_platform_lease);
 
+enum mt6797_consys_runtime_provider_state
+mt6797_consys_runtime_platform_state(struct device *dev)
+{
+	struct mt6797_consys_runtime *runtime;
+	enum mt6797_consys_runtime_provider_state state;
+
+	if (!dev)
+		return MT6797_CONSYS_RUNTIME_PROVIDER_UNINITIALIZED;
+	runtime = dev_get_drvdata(dev);
+	if (!runtime)
+		return MT6797_CONSYS_RUNTIME_PROVIDER_UNINITIALIZED;
+	mutex_lock(&runtime->provider_lock);
+	state = runtime->provider_state;
+	mutex_unlock(&runtime->provider_lock);
+	return state;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_platform_state);
+
+int mt6797_consys_runtime_platform_lease_acquire(struct device *dev,
+		struct mt6797_consys_runtime_provider_lease *lease)
+{
+	struct mt6797_consys_runtime *runtime;
+	int ret;
+
+	if (!dev || !lease || lease->device)
+		return -EINVAL;
+	runtime = dev_get_drvdata(dev);
+	if (!runtime)
+		return -ENODEV;
+
+	mutex_lock(&runtime->provider_lock);
+	if (runtime->provider_state !=
+		    MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD ||
+		    !runtime->lease_held) {
+		ret = -ESHUTDOWN;
+	} else if (runtime->external_users == UINT_MAX) {
+		ret = -EOVERFLOW;
+	} else {
+		ret = mt6797_consys_runtime_lease_pin(&runtime->lease);
+		if (!ret) {
+			lease->device = get_device(dev);
+			if (!lease->device) {
+				mt6797_consys_runtime_lease_unpin(&runtime->lease);
+				ret = -ENODEV;
+			} else {
+				lease->identity = &runtime->lease;
+				runtime->external_users++;
+			}
+		}
+	}
+	mutex_unlock(&runtime->provider_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_platform_lease_acquire);
+
+int mt6797_consys_runtime_platform_lease_release(
+		struct mt6797_consys_runtime_provider_lease *lease)
+{
+	struct mt6797_consys_runtime *runtime;
+	struct device *dev;
+	int ret = 0;
+
+	if (!lease || !lease->device || !lease->identity)
+		return -EINVAL;
+	dev = lease->device;
+	runtime = dev_get_drvdata(dev);
+	if (!runtime)
+		return -ESHUTDOWN;
+
+	mutex_lock(&runtime->provider_lock);
+	if (lease->identity != &runtime->lease || !runtime->external_users) {
+		ret = -EINVAL;
+	} else {
+		mt6797_consys_runtime_lease_unpin(lease->identity);
+		runtime->external_users--;
+		lease->device = NULL;
+		lease->identity = NULL;
+		if (!runtime->external_users)
+			wake_up_all(&runtime->provider_wait);
+	}
+	mutex_unlock(&runtime->provider_lock);
+	if (!ret)
+		put_device(dev);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_platform_lease_release);
+
 static void mt6797_consys_runtime_put_domain_args(
 		struct mt6797_consys_runtime *runtime)
 {
@@ -501,6 +595,12 @@ static void mt6797_consys_runtime_put_domain_args(
 		of_node_put(runtime->conn_domain.np);
 		runtime->conn_domain.np = NULL;
 	}
+}
+
+static void mt6797_consys_runtime_wait_external(
+		struct mt6797_consys_runtime *runtime)
+{
+	wait_event(runtime->provider_wait, !READ_ONCE(runtime->external_users));
 }
 
 static int mt6797_consys_runtime_probe(struct platform_device *pdev)
@@ -522,6 +622,10 @@ static int mt6797_consys_runtime_probe(struct platform_device *pdev)
 	if (!runtime)
 		return -ENOMEM;
 	runtime->dev = &pdev->dev;
+	mutex_init(&runtime->provider_lock);
+	init_waitqueue_head(&runtime->provider_wait);
+	runtime->provider_state =
+		MT6797_CONSYS_RUNTIME_PROVIDER_UNINITIALIZED;
 
 	ret = mt6797_consys_runtime_map_resource(pdev,
 						  &mt6797_consys_runtime_resources[0],
@@ -591,6 +695,7 @@ static int mt6797_consys_runtime_probe(struct platform_device *pdev)
 						  runtime, &timeouts);
 	if (ret)
 		goto put_domain_args;
+	runtime->provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY;
 
 	ret = mt6797_consys_runtime_lease_acquire(&runtime->lifecycle,
 							   &runtime->lease);
@@ -599,6 +704,7 @@ static int mt6797_consys_runtime_probe(struct platform_device *pdev)
 		goto put_domain_args;
 	}
 	runtime->lease_held = true;
+	runtime->provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD;
 	platform_set_drvdata(pdev, runtime);
 	mt6797_consys_runtime_log_state(runtime, "runtime identity", 0);
 	return 0;
@@ -617,6 +723,11 @@ static void mt6797_consys_runtime_remove(struct platform_device *pdev)
 
 	if (!runtime)
 		return;
+
+	mutex_lock(&runtime->provider_lock);
+	runtime->provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_REMOVING;
+	mutex_unlock(&runtime->provider_lock);
+	mt6797_consys_runtime_wait_external(runtime);
 
 	ret = mt6797_consys_runtime_lease_release(&runtime->lease);
 	if (ret) {
@@ -872,13 +983,141 @@ static void mt6797_consys_runtime_test_contracts(struct kunit *test)
 									 MT6797_CONSYS_RUNTIME_BGF_SPI));
 	spec.args[2] = IRQ_TYPE_EDGE_FALLING;
 	KUNIT_EXPECT_FALSE(test, mt6797_consys_runtime_irq_spec_valid(&spec,
-									  MT6797_CONSYS_RUNTIME_BGF_SPI));
+								 MT6797_CONSYS_RUNTIME_BGF_SPI));
+}
+
+static void mt6797_consys_runtime_test_device_release(struct device *dev)
+{
+}
+
+static void mt6797_consys_runtime_test_provider_setup(
+		struct kunit *test, struct mt6797_consys_runtime *runtime,
+		struct device *dev, struct mt6797_consys_runtime_test_backend *backend)
+{
+	device_initialize(dev);
+	dev->release = mt6797_consys_runtime_test_device_release;
+	runtime->dev = dev;
+	mutex_init(&runtime->provider_lock);
+	init_waitqueue_head(&runtime->provider_wait);
+	runtime->provider_state =
+		MT6797_CONSYS_RUNTIME_PROVIDER_UNINITIALIZED;
+	dev_set_drvdata(dev, runtime);
+	mt6797_consys_runtime_test_init(test, &runtime->lifecycle, backend);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_consys_runtime_lease_acquire(&runtime->lifecycle,
+							   &runtime->lease), 0);
+	runtime->lease_held = true;
+	runtime->provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD;
+}
+
+static void mt6797_consys_runtime_test_provider_lease_and_remove_fence(
+		struct kunit *test)
+{
+	struct mt6797_consys_runtime_test_backend backend = { };
+	struct mt6797_consys_runtime_provider_lease external = { };
+	struct mt6797_consys_runtime runtime = { };
+	struct device dev;
+
+	mt6797_consys_runtime_test_provider_setup(test, &runtime, &dev,
+							 &backend);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_consys_runtime_platform_state(&dev),
+			MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_consys_runtime_platform_lease_acquire(&dev, &external),
+			0);
+	KUNIT_EXPECT_EQ(test, runtime.external_users, 1U);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_release(&runtime.lease),
+			-EBUSY);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_consys_runtime_platform_lease_release(&external), 0);
+	KUNIT_EXPECT_EQ(test, runtime.external_users, 0U);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_release(&runtime.lease),
+			0);
+	put_device(&dev);
+}
+
+struct mt6797_consys_runtime_test_waiter {
+	struct mt6797_consys_runtime *runtime;
+	struct completion started;
+	struct completion finished;
+};
+
+static int mt6797_consys_runtime_test_waiter_thread(void *data)
+{
+	struct mt6797_consys_runtime_test_waiter *waiter = data;
+
+	complete(&waiter->started);
+	mt6797_consys_runtime_wait_external(waiter->runtime);
+	complete(&waiter->finished);
+	return 0;
+}
+
+static void mt6797_consys_runtime_test_provider_waits_concurrently(
+		struct kunit *test)
+{
+	struct mt6797_consys_runtime_test_backend backend = { };
+	struct mt6797_consys_runtime_provider_lease external = { };
+	struct mt6797_consys_runtime_test_waiter waiter;
+	struct mt6797_consys_runtime runtime = { };
+	struct task_struct *task;
+	struct device dev;
+
+	mt6797_consys_runtime_test_provider_setup(test, &runtime, &dev,
+							 &backend);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_consys_runtime_platform_lease_acquire(&dev, &external),
+			0);
+	waiter.runtime = &runtime;
+	init_completion(&waiter.started);
+	init_completion(&waiter.finished);
+	task = kthread_run(mt6797_consys_runtime_test_waiter_thread, &waiter,
+			   "mt6797-runtime-wait");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(task));
+	wait_for_completion(&waiter.started);
+	KUNIT_EXPECT_EQ(test, wait_for_completion_timeout(&waiter.finished,
+							 msecs_to_jiffies(10)), 0UL);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_consys_runtime_platform_lease_release(&external), 0);
+	KUNIT_EXPECT_NE(test, wait_for_completion_timeout(&waiter.finished,
+							 msecs_to_jiffies(100)), 0UL);
+	kthread_stop(task);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_release(&runtime.lease),
+			0);
+	put_device(&dev);
+}
+
+static void mt6797_consys_runtime_test_provider_rejects_unready_state(
+		struct kunit *test)
+{
+	struct mt6797_consys_runtime_test_backend backend = { };
+	struct mt6797_consys_runtime_provider_lease external = { };
+	struct mt6797_consys_runtime runtime = { };
+	struct device dev;
+
+	mt6797_consys_runtime_test_provider_setup(test, &runtime, &dev,
+							 &backend);
+	runtime.provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY;
+	KUNIT_EXPECT_EQ(test,
+			mt6797_consys_runtime_platform_lease_acquire(&dev, &external),
+			-ESHUTDOWN);
+	runtime.provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_REMOVING;
+	KUNIT_EXPECT_EQ(test,
+			mt6797_consys_runtime_platform_lease_acquire(&dev, &external),
+			-ESHUTDOWN);
+	KUNIT_EXPECT_EQ(test, runtime.external_users, 0U);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_release(&runtime.lease),
+			0);
+	put_device(&dev);
 }
 
 static struct kunit_case mt6797_consys_runtime_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_runtime_test_lease_order),
 	KUNIT_CASE(mt6797_consys_runtime_test_failure_unwinds),
 	KUNIT_CASE(mt6797_consys_runtime_test_contracts),
+	KUNIT_CASE(mt6797_consys_runtime_test_provider_lease_and_remove_fence),
+	KUNIT_CASE(mt6797_consys_runtime_test_provider_waits_concurrently),
+	KUNIT_CASE(mt6797_consys_runtime_test_provider_rejects_unready_state),
 	{ }
 };
 

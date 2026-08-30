@@ -90,12 +90,13 @@ properties:
   mediatek,drm-on-demand:
     type: boolean
     description: |
-      Do not create the mediatek-drm child during MMSYS probe.  The MMSYS
-      clock child is still created so all display resources can bind, but the
-      first DRM client modeset is deferred until userspace writes 1 to the
-      MMSYS activate_drm sysfs attribute.  This is a one-way board bring-up
-      control for platforms whose watchdog service must be established before
-      the panel is first initialized.
+      Do not create the mediatek-drm child during MMSYS probe. The MMSYS clock
+      child is still created, while guarded MTK display consumers defer before
+      acquiring their display resources. Userspace writes 1 to the MMSYS
+      activate_drm sysfs attribute to release that one-way boundary and retry
+      the deferred consumers. This is a board bring-up control for platforms
+      whose watchdog service must be established before MM power, SMI, DSI or
+      panel initialization.
 
   "#clock-cells":
     const: 1

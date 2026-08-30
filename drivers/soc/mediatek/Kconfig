@@ -156,11 +156,12 @@ config MTK_MT6797_BTIF_PIO_PLATFORM_KUNIT_TEST
 config MTK_MT6797_BTIF_STP_BOOTSTRAP
 	tristate "MediaTek MT6797 dormant BTIF STP bootstrap controller"
 	depends on MTK_MT6797_BTIF_PIO && MTK_WMT
+	depends on MTK_MT6797_CONSYS_WMT_INITIAL
 	help
 	  Build the single-owner controller for the exact vendor BTIF handover:
-	  mandatory-STP query-default, set-full, host-side full-STP handoff, a
-	  10-ms delay, and full-STP query verification. It uses only those three
-	  WMT transactions and bounded vendor timeouts/retries.
+	  raw HCR/HVR/FVR identity reads, mandatory-STP query-default and set-full,
+	  host-side full-STP handoff, a 10-ms delay, and full-STP query verification.
+	  It uses only the vendor-evidenced WMT transactions and bounded timeouts.
 
 	  This option is disabled by default and has no Device Tree match. Calling
 	  it additionally requires enable_experimental_stp_bootstrap=1. The caller
@@ -175,10 +176,11 @@ config MTK_MT6797_BTIF_STP_BOOTSTRAP_KUNIT_TEST
 	depends on KUNIT=y
 	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
 	help
-	  Exercise the exact mandatory query/set/full-query packets, one-owner PIO
-	  handoff, full 0/7 framing, strict full-query promotion, and bounded retry
-	  setup against an in-memory PIO register/peer model. It instantiates no
-	  Device Tree node and accesses no Gemini hardware or radio function.
+	  Exercise exact HCR/HVR/FVR/default-query/set/full-query order, one-owner
+	  raw-event and ordinary-WMT receive ownership, PIO handoff, full 0/7
+	  framing, strict full-query promotion, and bounded retry setup against an
+	  in-memory PIO register/peer model. It instantiates no Device Tree node and
+	  accesses no Gemini hardware or radio function.
 
 config MTK_WMT
 	tristate "MediaTek WMT packet codec and transaction fence"
@@ -216,8 +218,10 @@ config MTK_MT6797_CONSYS_WMT_INITIAL
 	  mode, waits for a chip transition, or verifies full-mode STP. It cannot
 	  enable Wi-Fi, Bluetooth, GNSS, or FM. Any malformed, unexpected, timed-out,
 	  or out-of-order operation permanently fences the instance; the transport
-	  owner must recover and provide a new endpoint. It must not be composed with
-	  the PIO bootstrap controller, which owns the complete host/full handoff.
+	  owner must recover and provide a new endpoint. It must not be independently
+	  run beside the PIO bootstrap controller: that exclusive, default-disabled
+	  owner consumes these identity/default/set stages exactly once before it
+	  performs the host/full handoff.
 
 config MTK_MT6797_CONSYS_WMT_INITIAL_KUNIT_TEST
 	bool "KUnit tests for MT6797 identity/chip-STP WMT controller"

@@ -331,6 +331,15 @@ int mt6797_consys_wmt_initial_run(struct mt6797_consys_wmt_initial *initial,
 EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_run);
 
 int
+mt6797_consys_wmt_initial_run_exclusive(struct mt6797_consys_wmt_initial *initial,
+					struct mt6797_consys_wmt_initial_identity *identity,
+					unsigned long timeout)
+{
+	return mt6797_wmt_initial_run_unchecked(initial, timeout, identity);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_run_exclusive);
+
+int
 mt6797_consys_wmt_initial_configure_chip_full(struct mt6797_consys_wmt_initial *initial)
 {
 	if (!enable_initial_sequence)
@@ -340,6 +349,14 @@ mt6797_consys_wmt_initial_configure_chip_full(struct mt6797_consys_wmt_initial *
 					 MT6797_CONSYS_WMT_INITIAL_TIMEOUT);
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_configure_chip_full);
+
+int
+mt6797_consys_wmt_initial_configure_chip_full_exclusive(struct mt6797_consys_wmt_initial *initial,
+							unsigned long timeout)
+{
+	return mt6797_wmt_initial_set_full_unchecked(initial, timeout);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_configure_chip_full_exclusive);
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_WMT_INITIAL_KUNIT_TEST)
 

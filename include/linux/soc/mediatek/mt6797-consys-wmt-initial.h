@@ -5,8 +5,9 @@
  * This is deliberately not a platform, power, firmware, or radio API.  A
  * future single transport owner may use it only after it owns the mandatory
  * STP endpoint, its WMT receive callback, and recovery lifecycle.  It must
- * not be composed with mt6797-btif-stp-bootstrap: that PIO owner already owns
- * the complete default-query/set/host-handoff/full-query sequence.
+ * not run independently beside mt6797-btif-stp-bootstrap: that exclusive PIO
+ * owner consumes the identity/default/set stages exactly once before its
+ * host-handoff/full-query tail.
  */
 
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_CONSYS_WMT_INITIAL_H
@@ -55,6 +56,18 @@ int mt6797_consys_wmt_initial_run(struct mt6797_consys_wmt_initial *initial,
 				  struct mt6797_consys_wmt_initial_identity *identity);
 
 /*
+ * Exclusive transport coordinators use this bounded form after their own
+ * explicit default-false activation gate has admitted one sole owner.  It is
+ * not a second endpoint or a recovery mechanism: the coordinator must own
+ * the mandatory STP receive path until this operation returns, and must fence
+ * that path before destroying initial.  Ordinary callers must use run().
+ */
+int
+mt6797_consys_wmt_initial_run_exclusive(struct mt6797_consys_wmt_initial *initial,
+					struct mt6797_consys_wmt_initial_identity *identity,
+					unsigned long timeout);
+
+/*
  * Send only the vendor's chip-side set-full WMT command after a successful
  * run(). The local endpoint remains mandatory: this neither changes host STP
  * framing nor delays, performs a full-mode query, creates a full-session
@@ -64,5 +77,10 @@ int mt6797_consys_wmt_initial_run(struct mt6797_consys_wmt_initial *initial,
  * out-of-order call permanently fences the instance.
  */
 int mt6797_consys_wmt_initial_configure_chip_full(struct mt6797_consys_wmt_initial *initial);
+
+/* See run_exclusive(): this is for one gated exclusive coordinator only. */
+int
+mt6797_consys_wmt_initial_configure_chip_full_exclusive(struct mt6797_consys_wmt_initial *initial,
+							unsigned long timeout);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_CONSYS_WMT_INITIAL_H */

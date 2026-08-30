@@ -35,8 +35,8 @@ mt6797_btif_stp_bootstrap_create(
 		const struct mt6797_btif_stp_bootstrap_ops *ops);
 
 /*
- * Run exactly query-default, set-full, host handoff, 10-ms wait, and
- * query-full.  It is rejected unless the default-false
+ * Run exactly raw HCR/HVR/FVR identity reads, query-default, set-full, host
+ * handoff, 10-ms wait, and query-full.  It is rejected unless the default-false
  * enable_experimental_stp_bootstrap parameter was set.  On every error it
  * leaves the supplied transport closed/fenced and returns an error pointer.
  */

@@ -66,6 +66,25 @@ config MTK_STP_KUNIT_TEST
 	  only the transport-neutral codec and can run without a MediaTek device.
 	  It does not open a serial link, a BTIF DMA engine, or a firmware image.
 
+config MTK_WMT
+	tristate "MediaTek WMT packet codec and transaction fence"
+	depends on MTK_STP
+	help
+	  Build the hardware-independent WMT packet codec and one-at-a-time
+	  request/reply matcher.  A future transport owner supplies STP frames and
+	  explicitly chooses controller commands.  This option neither probes
+	  hardware nor loads firmware or exposes a userspace interface.
+
+config MTK_WMT_KUNIT_TEST
+	bool "KUnit tests for the MediaTek WMT transaction layer"
+	depends on KUNIT=y
+	depends on MTK_WMT=y
+	help
+	  Exercise strict WMT length/direction validation, exact matching,
+	  timeout fencing, cancellation, unsolicited events and fragmented STP
+	  delivery without hardware or firmware. This does not send a WMT command,
+	  access an STP transport, or instantiate a connectivity device.
+
 config MTK_MT6797_A72_POWER
 	bool "MediaTek MT6797 Cortex-A72 power resource observer"
 	depends on ARM64 && ARCH_MEDIATEK && OF

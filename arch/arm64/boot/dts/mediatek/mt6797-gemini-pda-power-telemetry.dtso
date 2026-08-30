@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA bounded BQ2589x battery telemetry activation.
+ *
+ * The vendor DWS assigns SW_CHARGER to I2C0 at 7-bit address 0x6b.  GPIO37
+ * and GPIO38 are the I2C0 pads in the DWS and mainline MT6797 pinctrl data.
+ * Its BQ25890 driver explicitly starts ADC conversion before reading V_BAT,
+ * so this overlay deliberately does not start it.  The generic driver exposes
+ * a voltage/current sample only if another owner already left continuous ADC
+ * conversion enabled; otherwise userspace gets -ENODATA.
+ *
+ * No CHR_STAT GPIO mapping, battery fuel-gauge topology, charger limits,
+ * watchdog owner, OTG ownership, or regulator rail was established.  Those
+ * properties and the physical interrupt are deliberately absent.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	status = "okay";
+
+	bq2589x_telemetry: charger@6b {
+		compatible = "ti,bq25896", "ti,bq25890";
+		reg = <0x6b>;
+		ti,read-only;
+		ti,read-only-adc;
+		ti,status-poll-interval-ms = <30000>;
+		status = "okay";
+	};
+};

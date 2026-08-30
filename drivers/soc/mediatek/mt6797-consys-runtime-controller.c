@@ -99,6 +99,7 @@ struct mt6797_consys_runtime_controller {
 	u64 session_generation;
 	bool run_in_progress;
 	bool stop_requested;
+	bool no_patch_stage;
 	enum mt6797_consys_runtime_controller_state state;
 };
 
@@ -239,9 +240,18 @@ static int mt6797_consys_runtime_controller_start_unchecked(
 		goto abort;
 	}
 
-	session_lease = controller->ops->bootstrap_run(
-		controller->ops_context, bootstrap,
-		mt6797_consys_runtime_controller_patch_stage, controller);
+	/*
+	 * A G2b diagnostic may prove the vendor mandatory-to-full query sequence
+	 * without loading a patch.  Patch download remains the normal controller
+	 * path and is never selected implicitly.
+	 */
+	if (controller->no_patch_stage)
+		session_lease = controller->ops->bootstrap_run(
+			controller->ops_context, bootstrap, NULL, NULL);
+	else
+		session_lease = controller->ops->bootstrap_run(
+			controller->ops_context, bootstrap,
+			mt6797_consys_runtime_controller_patch_stage, controller);
 	if (IS_ERR_OR_NULL(session_lease)) {
 		ret = session_lease ? PTR_ERR(session_lease) : -EIO;
 		goto abort;
@@ -487,6 +497,9 @@ mt6797_consys_runtime_controller_run_bootstrap(void *context,
 		mt6797_btif_stp_bootstrap_full_wmt_stage_t stage,
 		void *stage_context)
 {
+	if (!stage)
+		return mt6797_btif_stp_bootstrap_run(bootstrap);
+
 	return mt6797_btif_stp_bootstrap_run_with_full_wmt_stage(bootstrap, stage,
 								    stage_context);
 }
@@ -559,6 +572,8 @@ static int mt6797_consys_runtime_controller_probe(struct platform_device *pdev)
 	if (!controller)
 		return -ENOMEM;
 	controller->dev = dev;
+	controller->no_patch_stage = device_property_read_bool(dev,
+			"mediatek,experimental-bootstrap-no-patch");
 	ret = mt6797_consys_runtime_controller_init(controller,
 					    &mt6797_consys_runtime_controller_platform_ops,
 					    controller);
@@ -736,6 +751,8 @@ mt6797_consys_runtime_controller_test_run(void *context,
 	}
 	if (backend->run_error)
 		return ERR_PTR(backend->run_error);
+	if (!stage)
+		return (const void *)&backend->session_token;
 	ret = stage(stage_context, (const void *)&backend->session_token);
 	if (ret)
 		return ERR_PTR(ret);
@@ -899,6 +916,28 @@ static void mt6797_consys_runtime_controller_test_patch_failure_fences(
 		-ETIMEDOUT);
 	KUNIT_EXPECT_EQ(test, controller->state,
 			MT6797_CONSYS_RUNTIME_CONTROLLER_FENCED);
+	KUNIT_EXPECT_EQ(test, backend->call_count, ARRAY_SIZE(expected));
+	KUNIT_EXPECT_MEMEQ(test, backend->calls, expected, sizeof(expected));
+}
+
+static void mt6797_consys_runtime_controller_test_no_patch_stage(struct kunit *test)
+{
+	static const enum mt6797_consys_runtime_controller_test_call expected[] = {
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUNTIME,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_PLATFORM,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CREATE,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUN,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_DESTROY,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CLOSE,
+	};
+	struct mt6797_consys_runtime_controller_test_backend *backend;
+	struct mt6797_consys_runtime_controller *controller;
+
+	controller = mt6797_consys_runtime_controller_test_init(test, &backend);
+	controller->no_patch_stage = true;
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_controller_start_unchecked(controller), 0);
+	mt6797_consys_runtime_controller_stop_controller(controller);
 	KUNIT_EXPECT_EQ(test, backend->call_count, ARRAY_SIZE(expected));
 	KUNIT_EXPECT_MEMEQ(test, backend->calls, expected, sizeof(expected));
 }
@@ -1150,6 +1189,7 @@ static struct kunit_case mt6797_consys_runtime_controller_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_order),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_failure_unwinds),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_patch_failure_fences),
+	KUNIT_CASE(mt6797_consys_runtime_controller_test_no_patch_stage),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_gate),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_stop_waits_for_run),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_stop_waits_for_patch_stage),

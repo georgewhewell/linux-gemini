@@ -220,28 +220,42 @@ static int mt6797_wmt_initial_run_unchecked(struct mt6797_consys_wmt_initial *in
 	if (ret)
 		return ret;
 
+	pr_info("mt6797-consys-g2b: before mandatory raw HCR\n");
 	ret = mt6797_consys_wmt_reg_read(initial, MT6797_CONSYS_WMT_GEN_HCR,
 					 MT6797_CONSYS_WMT_GEN_HCR_MASK, timeout,
 					 &identity->chip_id);
+	pr_info("mt6797-consys-g2b: after mandatory raw HCR ret=%d chip=0x%04x\n",
+		ret, identity->chip_id);
 	if (!ret && identity->chip_id != MT6797_CONSYS_WMT_CHIP_ID)
 		ret = -ENODEV;
-	if (!ret)
+	if (!ret) {
+		pr_info("mt6797-consys-g2b: before mandatory raw HVR\n");
 		ret = mt6797_consys_wmt_reg_read(initial, MT6797_CONSYS_WMT_GEN_HVR,
-						 MT6797_CONSYS_WMT_GEN_VER_MASK, timeout,
-						 &identity->hardware_version);
+							 MT6797_CONSYS_WMT_GEN_VER_MASK, timeout,
+							 &identity->hardware_version);
+		pr_info("mt6797-consys-g2b: after mandatory raw HVR ret=%d hvr=0x%04x\n",
+			ret, identity->hardware_version);
+	}
 	if (!ret && !mt6797_consys_wmt_hvr_supported(identity->hardware_version))
 		ret = -ENODEV;
-	if (!ret)
+	if (!ret) {
+		pr_info("mt6797-consys-g2b: before mandatory raw FVR\n");
 		ret = mt6797_consys_wmt_reg_read(initial, MT6797_CONSYS_WMT_GEN_FVR,
-						 MT6797_CONSYS_WMT_GEN_VER_MASK, timeout,
-						 &identity->firmware_version);
-	if (!ret)
+							 MT6797_CONSYS_WMT_GEN_VER_MASK, timeout,
+							 &identity->firmware_version);
+		pr_info("mt6797-consys-g2b: after mandatory raw FVR ret=%d fvr=0x%04x\n",
+			ret, identity->firmware_version);
+	}
+	if (!ret) {
+		pr_info("mt6797-consys-g2b: before mandatory query-default\n");
 		ret = mtk_wmt_transaction(initial->wmt,
 					  MT6797_CONSYS_WMT_STP_OPCODE,
 					  mt6797_consys_wmt_default_query_data,
 					  sizeof(mt6797_consys_wmt_default_query_data),
-					  &mt6797_consys_wmt_default_query_match,
-					  timeout);
+						  &mt6797_consys_wmt_default_query_match,
+						  timeout);
+		pr_info("mt6797-consys-g2b: after mandatory query-default ret=%d\n", ret);
+	}
 
 	mutex_lock(&initial->lock);
 	initial->state = ret ? MT6797_CONSYS_WMT_INITIAL_FENCED :
@@ -289,10 +303,12 @@ mt6797_wmt_initial_set_full_unchecked(struct mt6797_consys_wmt_initial *initial,
 	if (ret)
 		return ret;
 
+	pr_info("mt6797-consys-g2b: before mandatory set-full\n");
 	ret = mtk_wmt_transaction(initial->wmt, MT6797_CONSYS_WMT_STP_OPCODE,
 				  mt6797_consys_wmt_set_chip_full_data,
 				  sizeof(mt6797_consys_wmt_set_chip_full_data),
 				  &mt6797_consys_wmt_set_chip_full_match, timeout);
+	pr_info("mt6797-consys-g2b: after mandatory set-full ret=%d\n", ret);
 
 	mutex_lock(&initial->lock);
 	initial->state = ret ? MT6797_CONSYS_WMT_INITIAL_FENCED :

@@ -486,16 +486,20 @@ mt6797_btif_stp_bootstrap_run_unchecked(
 	if (ret)
 		goto fail;
 	/* Vendor wmt_ic_soc.c says 10 ms, although its stated minimum is 2 ms. */
+	pr_info("mt6797-consys-g2b: before host full-mode settle\n");
 	msleep(MT6797_BTIF_STP_HOST_SWITCH_DELAY_MS);
+	pr_info("mt6797-consys-g2b: after host full-mode settle\n");
 
 	expected = (struct mtk_wmt_match) {
 		.opcode = MT6797_BTIF_STP_WMT_OPCODE,
 		.data = mt6797_btif_stp_query_full_data,
 		.data_len = sizeof(mt6797_btif_stp_query_full_data),
 	};
+	pr_info("mt6797-consys-g2b: before full-mode query\n");
 	ret = mt6797_btif_stp_bootstrap_full_wmt_transaction_unchecked(
-		bootstrap, MT6797_BTIF_STP_WMT_OPCODE, mt6797_btif_stp_query_data,
-		sizeof(mt6797_btif_stp_query_data), &expected, timeout);
+			bootstrap, MT6797_BTIF_STP_WMT_OPCODE, mt6797_btif_stp_query_data,
+			sizeof(mt6797_btif_stp_query_data), &expected, timeout);
+	pr_info("mt6797-consys-g2b: after full-mode query ret=%d\n", ret);
 	if (ret)
 		goto fail;
 

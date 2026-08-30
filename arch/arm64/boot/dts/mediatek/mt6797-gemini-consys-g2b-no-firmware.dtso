@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * One MT6797 G2b wire-cycle: vendor EMI/identity/post-ID prefix followed by
+ * raw HCR/HVR/FVR and mandatory-to-full STP queries, but no patch or radio
+ * client.  This overlay is not an activation mechanism by itself. Every
+ * participating driver rejects probe until its separate read-only boot
+ * parameter is set; the G2b owner additionally requires both booleans below.
+ *
+ * The run is one-shot per boot. It fences BTIF, reasserts CONMCU reset and
+ * releases reversible rails/domain votes on the ordinary return paths. Shared
+ * EMI and AFE writes have no vendor inverse, so a post-ID cleanup error is
+ * deliberately terminal and requires watchdog recovery.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/clock/mt6797-clk.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/power/mt6797-power.h>
+
+/ {
+	fragment@0 {
+		target = <&consys_emi_mpu>;
+
+		__overlay__ {
+			mediatek,experimental-shared-emi-ownership;
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target = <&consys>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+
+		__overlay__ {
+			compatible = "mediatek,mt6797-consys-runtime";
+			reg = <0 0x18070000 0 0x200>,
+			      <0 0x10007000 0 0x100>,
+			      <0 0x10000000 0 0x2000>,
+			      <0 0x10006000 0 0x1000>,
+			      <0 0x180b6000 0 0x100>;
+			reg-names = "mcu", "ap-rgu", "topckgen", "spm", "afe";
+			mediatek,conn-power-domain = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+			mediatek,infracfg = <&infrasys>;
+			mediatek,spm = <&scpsys>;
+			mediatek,experimental-runtime;
+			status = "okay";
+		};
+	};
+
+	fragment@2 {
+		target = <&btif>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		interrupt-parent = <&sysirq>;
+
+		__overlay__ {
+			compatible = "mediatek,mt6797-btif-pio";
+			reg = <0 0x1100c000 0 0x1000>;
+			interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&infrasys CLK_INFRA_BTIF>;
+			clock-names = "btifc";
+			/delete-property/ reg-shift;
+			/delete-property/ reg-io-width;
+			status = "okay";
+		};
+	};
+
+	fragment@3 {
+		target-path = "/";
+
+		__overlay__ {
+			consys_g2b_controller: consys-g2b-controller {
+				compatible = "mediatek,mt6797-consys-runtime-controller";
+				mediatek,runtime-provider = <&consys>;
+				mediatek,btif-provider = <&btif>;
+				mediatek,experimental-bootstrap;
+				mediatek,experimental-bootstrap-no-patch;
+				status = "okay";
+			};
+
+			consys_g2b_owner: consys-g2b-owner {
+				compatible = "mediatek,mt6797-consys-g2b-owner";
+				mediatek,runtime-provider = <&consys>;
+				mediatek,controller = <&consys_g2b_controller>;
+				mediatek,emi-mpu = <&consys_emi_mpu>;
+				mediatek,experimental-g2b-owner;
+				mediatek,experimental-g2b-no-firmware;
+				status = "okay";
+			};
+		};
+	};
+};

@@ -49,6 +49,11 @@ mt6797-gemini-pda-btif-pio-loopback-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-btif-pio-loopback.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-btif-pio-loopback.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-g2b-no-firmware.dtbo
+mt6797-gemini-pda-consys-g2b-no-firmware-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-g2b-no-firmware.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2b-no-firmware.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-display.dtbo
 mt6797-gemini-pda-display-test-dtbs := \
 	mt6797-gemini-pda.dtb \

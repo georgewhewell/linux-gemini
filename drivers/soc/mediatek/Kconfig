@@ -492,6 +492,28 @@ config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER_KUNIT_TEST
 	  provider operations. No platform device, Device Tree, MMIO, WMT packet,
 	  firmware, CONSYS resource, or Gemini hardware is used.
 
+config MTK_MT6797_CONSYS_G2B_OWNER
+	bool "Experimental MT6797 CONSYS G2b no-firmware chronology owner"
+	depends on OF
+	depends on MTK_MT6797_CONSYS_RUNTIME=y
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER=y
+	depends on MTK_MT6797_CONSYS_POSTID=y
+	depends on MTK_MT6797_CONSYS_EMI_MPU=y
+	help
+	  Build the missing, default-disabled chronology owner for one bounded G2b
+	  diagnostic. It claims persistent shared EMI, acquires reset-held identity,
+	  applies the reviewed MBIST/AFE/reset-release prefix, and starts the STP
+	  controller only in its explicit no-patch mode. That executes raw HCR/HVR/FVR
+	  reads and the vendor mandatory-to-full query sequence, then fences BTIF,
+	  reasserts reset, and drops reversible votes. It never requests firmware or
+	  enables a radio client.
+
+	  A matching DT node additionally needs both experimental booleans and the
+	  mt6797_consys_g2b_owner.enable_experimental_g2b_owner=1 parameter. The
+	  dependent EMI/provider/BTIF/bootstrap/controller parameters retain their
+	  own gates. EMI and AFE have no vendor inverse; an uncertain post-ID cleanup
+	  is terminal for the boot and requires watchdog recovery.
+
 config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
 	bool "MediaTek MT6797 CONSYS firmware preflight gate"
 	depends on MTK_MT6797_CONSYS_CORE

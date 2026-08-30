@@ -671,6 +671,21 @@ config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD_KUNIT_TEST
 	  window/ACK/retry ownership, request firmware, bind Device Tree, access
 	  hardware, or enable a connectivity function.
 
+config MTK_MT6797_CONSYS_WMT_BT_FUNCTION_CHOREOGRAPHY_KUNIT_TEST
+	bool "KUnit tests for MT6797 Bluetooth WMT function choreography"
+	depends on KUNIT=y
+	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
+	help
+	  Exercise the vendor MT6797 SoC Bluetooth function sequence with an
+	  in-memory PALDO and WMT transport: BT VCN33/PALDO on, WMT FUNC_CTRL BT
+	  on/status, WMT FUNC_CTRL BT off/status, then PALDO off. Every command
+	  timeout or cleanup failure is terminal and requires the outer CONSYS/BTIF
+	  owner to fence and recover the hardware before another attempt.
+
+	  This is deliberately test-only choreography. It has no Device Tree node,
+	  module parameter, platform driver, WMT endpoint, or callable live entry
+	  point, and cannot enable a regulator or a Bluetooth function on Gemini.
+
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

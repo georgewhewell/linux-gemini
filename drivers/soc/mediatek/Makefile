@@ -65,6 +65,7 @@ obj-$(CONFIG_MTK_MT6797_CONSYS_G2C_PATCH_OWNER) += mt6797-consys-g2c-patch-owner
 obj-$(CONFIG_MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT) += mt6797-consys-firmware.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT_KUNIT_TEST) += mt6797-consys-firmware-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD) += mt6797-consys-wmt-patch.o
+obj-$(CONFIG_MTK_MT6797_CONSYS_WMT_BT_FUNCTION_CHOREOGRAPHY_KUNIT_TEST) += mt6797-consys-wmt-bt-function-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_BTIF_INVENTORY) += mt6797-btif-inventory.o
 obj-$(CONFIG_MTK_MT6797_BTIF_TRANSPORT) += mt6797-btif-transport.o
 obj-$(CONFIG_MTK_MT6797_BTIF_TRANSPORT_KUNIT_TEST) += mt6797-btif-transport-kunit-test.o

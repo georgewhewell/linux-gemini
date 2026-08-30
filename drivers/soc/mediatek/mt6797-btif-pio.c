@@ -172,8 +172,14 @@ static void mt6797_btif_pio_fence_locked(struct mt6797_btif_pio *pio)
 
 	pio->state = MT6797_BTIF_PIO_FENCED;
 	pio->stp_lease = NULL;
-	mt6797_btif_pio_set_ier(pio, MT6797_BTIF_IER_RX | MT6797_BTIF_IER_TX, 0);
 	spin_lock_irqsave(&pio->tx_lock, flags);
+	/*
+	 * Transmit enables TX IER while holding tx_lock.  Clear both interrupt
+	 * enables under the same lock so an in-flight submit cannot re-enable TX
+	 * after this permanent fence.
+	 */
+	mt6797_btif_pio_set_ier(pio, MT6797_BTIF_IER_RX | MT6797_BTIF_IER_TX,
+				 0);
 	kfifo_reset(&pio->tx_fifo);
 	spin_unlock_irqrestore(&pio->tx_lock, flags);
 }
@@ -604,8 +610,9 @@ static void mt6797_btif_pio_test_backpressure_and_timeout(struct kunit *test)
 								  &byte, sizeof(byte)), -EAGAIN);
 	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_tx_timeout(ctx->pio_lease),
 				-ETIMEDOUT);
+	KUNIT_EXPECT_EQ(test, ctx->bus->regs[MT6797_BTIF_IER / sizeof(u32)], 0U);
 	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_transmit((void *)ctx->pio_lease,
-								  &byte, sizeof(byte)), -ESHUTDOWN);
+							  &byte, sizeof(byte)), -ESHUTDOWN);
 	mt6797_btif_pio_test_stop(ctx);
 }
 

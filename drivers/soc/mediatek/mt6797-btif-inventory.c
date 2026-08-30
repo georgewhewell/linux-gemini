@@ -108,7 +108,7 @@ static int mt6797_btif_inventory_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id mt6797_btif_inventory_of_match[] = {
-	{ .compatible = "mediatek,mt6797-btif" },
+	{ .compatible = "mediatek,mt6797-btif-inventory" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, mt6797_btif_inventory_of_match);

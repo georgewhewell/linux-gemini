@@ -521,6 +521,21 @@
 		status = "disabled";
 	};
 
+	/*
+	 * Do not enable this until a CONSYS owner supplies the power, reset,
+	 * and wake contract.  PIO intentionally has no APDMA dependency here.
+	 */
+	btif: serial@1100c000 {
+		compatible = "mediatek,mt6797-btif",
+			     "mediatek,mtk-btif";
+		reg = <0 0x1100c000 0 0x1000>;
+		interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infrasys CLK_INFRA_BTIF>;
+		reg-shift = <2>;
+		reg-io-width = <4>;
+		status = "disabled";
+	};
+
 	spi1: spi@11012000 {
 		compatible = "mediatek,mt6797-spi";
 		reg = <0 0x11012000 0 0x1000>;

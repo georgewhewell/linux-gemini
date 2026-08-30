@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-btif.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: MediaTek MT6797 BTIF and APDMA resource inventory
+title: MediaTek MT6797 BTIF and APDMA diagnostic resource inventory
 
 maintainers:
   - George Whewell <georgerw@gmail.com>
@@ -19,7 +19,7 @@ description: |
 
 properties:
   compatible:
-    const: mediatek,mt6797-btif
+    const: mediatek,mt6797-btif-inventory
 
   reg:
     items:

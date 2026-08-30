@@ -158,6 +158,7 @@ properties:
           - enum:
               - mediatek,mt7622-btif
               - mediatek,mt7623-btif
+              - mediatek,mt6797-btif
           - const: mediatek,mtk-btif
       - items:
           - enum:

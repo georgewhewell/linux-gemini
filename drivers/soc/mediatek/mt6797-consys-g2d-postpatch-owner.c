@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * One-shot MT6797 G2d post-patch VCN33 experiment.  It runs only inside the
- * bootstrap's post-full WMT callback: efuse read, both initially-off VCN33
- * rails at the fused selector, RF calibration, exact reverse rail restore,
- * then the vendor's WMT coexistence command.  Any WMT or restoration failure
- * lets the surrounding one-shot controller fence BTIF and requires reboot.
+ * One-shot MT6797 G2d post-patch initialisation experiment.
+ *
+ * This stays inside the bootstrap's retained full-STP callback.  It completes
+ * the vendor post-patch transactions, then leaves BTIF fenced and CONSYS
+ * reset-held.  It issues no WMT function-control command and creates no
+ * Wi-Fi, Bluetooth, GNSS, or FM client.
+ *
+ * MT6797 uses fixed 3.3 V VCN33 PALDOs.  The old efuse opcode 0x12 sequence
+ * was MT6580-only and must not be sent here.
  */
+
 #include <linux/device.h>
+#include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
@@ -22,159 +28,337 @@
 #include <linux/soc/mediatek/mt6797-consys-postid.h>
 #include <linux/soc/mediatek/mt6797-consys-runtime-controller.h>
 #include <linux/soc/mediatek/mt6797-consys-runtime.h>
-#include <linux/soc/mediatek/mt6797-consys-vcn33.h>
 #include <linux/soc/mediatek/mtk-wmt.h>
 
-#define MT6797_G2D_TIMEOUT msecs_to_jiffies(3000)
+#define MT6797_G2D_TIMEOUT		msecs_to_jiffies(3000)
+#define MT6797_G2D_VCN33_UV		3300000
+#define MT6797_G2D_COEX_DELAY_MS	5
 
 static bool enable_experimental_g2d_postpatch_owner;
 module_param_named(enable_experimental_g2d_postpatch_owner,
-		enable_experimental_g2d_postpatch_owner, bool, 0400);
+			enable_experimental_g2d_postpatch_owner, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_g2d_postpatch_owner,
-	"allow one MT6797 G2d fused-VCN33 post-patch experiment (default: false)");
+	"allow one MT6797 G2d fixed-3.3V post-patch experiment (default: false)");
 
-struct mt6797_g2d_rail {
-	struct regulator *reg;
+enum mt6797_g2d_stage {
+	G2D_SNAPSHOT, G2D_SET_BT, G2D_SET_WIFI, G2D_ENABLE_BT, G2D_ENABLE_WIFI,
+	G2D_LTE_EXT, G2D_LTE_FILTER, G2D_LTE_FREQ, G2D_LTE_UNSAFE, G2D_LTE_L,
+	G2D_CALIBRATE, G2D_DISABLE_BT, G2D_DISABLE_WIFI, G2D_VERIFY_OFF,
+	G2D_RESTORE_SELECTOR, G2D_COEX, G2D_FM_STRAP,
+};
+
+struct mt6797_g2d_ops {
+	int (*get_voltage)(void *context, bool wifi);
+	int (*is_enabled)(void *context, bool wifi);
+	int (*set_voltage)(void *context, bool wifi, int uv);
+	int (*enable)(void *context, bool wifi);
+	int (*disable)(void *context, bool wifi);
+	int (*wmt)(void *context, u8 opcode, const u8 *data, size_t data_len,
+		   const struct mtk_wmt_match *expected);
+	void (*delay_ms)(void *context, unsigned int milliseconds);
+	void *context;
+};
+
+struct mt6797_g2d_state {
 	int original_uv;
-	bool enabled;
-	bool voltage_changed;
-};
-struct mt6797_g2d_owner {
-	struct device *dev;
-	struct mt6797_g2d_rail bt;
-	struct mt6797_g2d_rail wifi;
-	bool cleanup_failed;
+	bool selector_dirty;
+	bool bt_enabled;
+	bool wifi_enabled;
+	enum mt6797_g2d_stage stage;
 };
 
-static const u8 g2d_calibrate[] = { 1 };
-static const u8 g2d_calibrate_reply[] = { 0, 1 };
-static const u8 g2d_coex[] = { 1, 0 };
-static const u8 g2d_ok[] = { 0 };
-static const struct mtk_wmt_match g2d_calibrate_match = {
-	.opcode = 0x14, .data = g2d_calibrate_reply, .data_len = sizeof(g2d_calibrate_reply),
+/* Exact raw SDUs from wmt_ic_soc.c's MT6797 post-patch tables. */
+static const u8 g2d_lte_ext[] = { 0x0d, 0x00, 0x00 };
+static const u8 g2d_lte_filter[] = {
+	0x11, 0x00, 0x00, 0x01, 0x00, 0x11, 0x11, 0x16,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x63, 0x63, 0x63,
+	0x00, 0x39, 0x43, 0x63, 0x63, 0x02, 0x02, 0x03,
+	0x00, 0x01, 0x01, 0x01, 0x01, 0x0e, 0x0e, 0x0e,
+	0x00, 0x0a, 0x0c, 0x0e, 0x0e, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00,
 };
-static const struct mtk_wmt_match g2d_coex_match = {
+static const u8 g2d_lte_freq[] = {
+	0x12, 0xfc, 0x08, 0x15, 0x09, 0x2e, 0x09, 0x47,
+	0x09, 0xc4, 0x09, 0xd4, 0x09, 0xe3, 0x09, 0x5a,
+	0x0a, 0x14, 0x09, 0x2d, 0x09, 0x46, 0x09, 0x60,
+	0x09, 0xd3, 0x09, 0xe2, 0x09, 0x59, 0x0a, 0x8b,
+	0x0a,
+};
+static const u8 g2d_lte_unsafe[] = { 0x13, 0x00 };
+static const u8 g2d_lte_l[] = { 0x21, 0x01 };
+static const u8 g2d_calibrate[] = { 0x01 };
+static const u8 g2d_coex[] = { 0x01, 0x01 };
+static const u8 g2d_fm_strap[] = { 0x02, 0x02 };
+static const u8 g2d_ok[] = { 0x00 };
+static const u8 g2d_calibrate_reply[] = { 0x00, 0x01 };
+static const u8 g2d_fm_strap_reply[] = { 0x00, 0x02 };
+
+static const struct mtk_wmt_match g2d_ok_10 = {
 	.opcode = 0x10, .data = g2d_ok, .data_len = sizeof(g2d_ok),
 };
+static const struct mtk_wmt_match g2d_calibrate_match = {
+	.opcode = 0x14, .data = g2d_calibrate_reply,
+	.data_len = sizeof(g2d_calibrate_reply),
+};
+static const struct mtk_wmt_match g2d_fm_strap_match = {
+	.opcode = 0x05, .data = g2d_fm_strap_reply,
+	.data_len = sizeof(g2d_fm_strap_reply),
+};
 
-static int g2d_snapshot_rail(struct mt6797_g2d_rail *rail)
+static const char * const mt6797_g2d_stage_name[] = {
+	[G2D_SNAPSHOT] = "snapshot", [G2D_SET_BT] = "set-vcn33-bt",
+	[G2D_SET_WIFI] = "set-vcn33-wifi", [G2D_ENABLE_BT] = "enable-vcn33-bt",
+	[G2D_ENABLE_WIFI] = "enable-vcn33-wifi", [G2D_LTE_EXT] = "lte-ext",
+	[G2D_LTE_FILTER] = "lte-filter", [G2D_LTE_FREQ] = "lte-frequency",
+	[G2D_LTE_UNSAFE] = "lte-unsafe", [G2D_LTE_L] = "lte-l",
+	[G2D_CALIBRATE] = "rf-calibration", [G2D_DISABLE_BT] = "disable-vcn33-bt",
+	[G2D_DISABLE_WIFI] = "disable-vcn33-wifi", [G2D_VERIFY_OFF] = "verify-vcn33-off",
+	[G2D_RESTORE_SELECTOR] = "restore-vcn33-selector", [G2D_COEX] = "coex-antenna",
+	[G2D_FM_STRAP] = "fm-strap",
+};
+
+static int mt6797_g2d_wmt(struct mt6797_g2d_ops *ops,
+		struct mt6797_g2d_state *state, enum mt6797_g2d_stage stage,
+		u8 opcode, const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected)
 {
-	int ret;
+	state->stage = stage;
+	return ops->wmt(ops->context, opcode, data, data_len, expected);
+}
 
-	rail->original_uv = regulator_get_voltage(rail->reg);
-	if (rail->original_uv <= 0)
-		return rail->original_uv ?: -EINVAL;
-	ret = regulator_is_enabled(rail->reg);
-	if (ret < 0)
-		return ret;
-	/* A pre-existing consumer makes a transient selector change non-reversible. */
+static int mt6797_g2d_snapshot(struct mt6797_g2d_ops *ops,
+		struct mt6797_g2d_state *state)
+{
+	int bt_uv, wifi_uv, ret;
+
+	state->stage = G2D_SNAPSHOT;
+	bt_uv = ops->get_voltage(ops->context, false);
+	if (bt_uv <= 0)
+		return bt_uv ?: -EINVAL;
+	wifi_uv = ops->get_voltage(ops->context, true);
+	if (wifi_uv <= 0)
+		return wifi_uv ?: -EINVAL;
+	if (bt_uv != wifi_uv)
+		return -EUCLEAN;
+	ret = ops->is_enabled(ops->context, false);
 	if (ret)
-		return -EBUSY;
+		return ret < 0 ? ret : -EBUSY;
+	ret = ops->is_enabled(ops->context, true);
+	if (ret)
+		return ret < 0 ? ret : -EBUSY;
+	state->original_uv = bt_uv;
 	return 0;
 }
 
-static int g2d_enable_rail(struct mt6797_g2d_rail *rail, int uv)
+/*
+ * MT6351's VCN33 handles have distinct enable bits but a shared selector.
+ * Disable every consumer in vendor BT-then-Wi-Fi order, prove both off, and
+ * only then restore the one shared selector.  A failed cleanup never writes
+ * the selector while either consumer might still be powered.
+ */
+static int mt6797_g2d_cleanup(struct mt6797_g2d_ops *ops,
+		struct mt6797_g2d_state *state)
 {
-	int ret;
+	int ret = 0, tmp, bt_on, wifi_on;
 
-	rail->enabled = false;
-	ret = regulator_set_voltage(rail->reg, uv, uv);
-	if (ret)
-		return ret;
-	rail->voltage_changed = true;
-	ret = regulator_enable(rail->reg);
-	if (ret)
-		return ret;
-	rail->enabled = true;
-	return 0;
-}
-
-static int g2d_restore_rail(struct mt6797_g2d_rail *rail)
-{
-	int ret = 0, tmp;
-
-	if (rail->enabled) {
-		tmp = regulator_disable(rail->reg);
+	if (state->bt_enabled) {
+		state->stage = G2D_DISABLE_BT;
+		tmp = ops->disable(ops->context, false);
 		if (tmp)
 			ret = tmp;
 		else
-			rail->enabled = false;
+			state->bt_enabled = false;
 	}
-	if (rail->voltage_changed && !rail->enabled) {
-		tmp = regulator_set_voltage(rail->reg, rail->original_uv,
-					  rail->original_uv);
+	if (state->wifi_enabled) {
+		state->stage = G2D_DISABLE_WIFI;
+		tmp = ops->disable(ops->context, true);
 		if (!ret && tmp)
 			ret = tmp;
-		if (!tmp)
-			rail->voltage_changed = false;
+		else if (!tmp)
+			state->wifi_enabled = false;
 	}
-	return ret;
+	if (!state->selector_dirty)
+		return ret;
+
+	state->stage = G2D_VERIFY_OFF;
+	bt_on = ops->is_enabled(ops->context, false);
+	wifi_on = ops->is_enabled(ops->context, true);
+	if (ret || bt_on || wifi_on)
+		return ret ?: (bt_on < 0 ? bt_on : (wifi_on < 0 ? wifi_on : -EBUSY));
+
+	state->stage = G2D_RESTORE_SELECTOR;
+	tmp = ops->set_voltage(ops->context, false, state->original_uv);
+	if (tmp)
+		return tmp;
+	state->selector_dirty = false;
+	return 0;
+}
+
+static int mt6797_g2d_postpatch_run(struct mt6797_g2d_ops *ops,
+		struct mt6797_g2d_state *state)
+{
+	enum mt6797_g2d_stage stage_before_cleanup;
+	int ret, cleanup_ret;
+
+	if (!ops || !state || !ops->get_voltage || !ops->is_enabled ||
+	    !ops->set_voltage || !ops->enable || !ops->disable || !ops->wmt ||
+	    !ops->delay_ms)
+		return -EINVAL;
+	ret = mt6797_g2d_snapshot(ops, state);
+	if (ret)
+		return ret;
+	/* Vendor wmt_stp_wifi_lte_coex() waits after G2c's clock-down. */
+	ops->delay_ms(ops->context, MT6797_G2D_COEX_DELAY_MS);
+	ret = mt6797_g2d_wmt(ops, state, G2D_LTE_EXT, 0x10,
+		g2d_lte_ext, sizeof(g2d_lte_ext), &g2d_ok_10);
+	if (ret)
+		goto out_cleanup;
+	ret = mt6797_g2d_wmt(ops, state, G2D_LTE_FILTER, 0x10,
+		g2d_lte_filter, sizeof(g2d_lte_filter), &g2d_ok_10);
+	if (ret)
+		goto out_cleanup;
+	ret = mt6797_g2d_wmt(ops, state, G2D_LTE_FREQ, 0x10,
+		g2d_lte_freq, sizeof(g2d_lte_freq), &g2d_ok_10);
+	if (ret)
+		goto out_cleanup;
+	ret = mt6797_g2d_wmt(ops, state, G2D_LTE_UNSAFE, 0x10,
+		g2d_lte_unsafe, sizeof(g2d_lte_unsafe), &g2d_ok_10);
+	if (ret)
+		goto out_cleanup;
+	ret = mt6797_g2d_wmt(ops, state, G2D_LTE_L, 0x10,
+		g2d_lte_l, sizeof(g2d_lte_l), &g2d_ok_10);
+	if (ret)
+		goto out_cleanup;
+	state->stage = G2D_SET_BT;
+	ret = ops->set_voltage(ops->context, false, MT6797_G2D_VCN33_UV);
+	if (ret)
+		return ret;
+	state->selector_dirty = true;
+	state->stage = G2D_SET_WIFI;
+	ret = ops->set_voltage(ops->context, true, MT6797_G2D_VCN33_UV);
+	if (ret)
+		goto out_cleanup;
+	state->stage = G2D_ENABLE_BT;
+	ret = ops->enable(ops->context, false);
+	if (ret)
+		goto out_cleanup;
+	state->bt_enabled = true;
+	state->stage = G2D_ENABLE_WIFI;
+	ret = ops->enable(ops->context, true);
+	if (ret)
+		goto out_cleanup;
+	state->wifi_enabled = true;
+
+	ret = mt6797_g2d_wmt(ops, state, G2D_CALIBRATE, 0x14,
+		g2d_calibrate, sizeof(g2d_calibrate), &g2d_calibrate_match);
+out_cleanup:
+	stage_before_cleanup = state->stage;
+	cleanup_ret = mt6797_g2d_cleanup(ops, state);
+	/* Preserve the causal stage in logs when cleanup itself succeeds. */
+	if (ret)
+		state->stage = stage_before_cleanup;
+	if (!ret)
+		ret = cleanup_ret;
+	if (ret)
+		return ret;
+	ret = mt6797_g2d_wmt(ops, state, G2D_COEX, 0x10,
+		g2d_coex, sizeof(g2d_coex), &g2d_ok_10);
+	if (ret)
+		return ret;
+	return mt6797_g2d_wmt(ops, state, G2D_FM_STRAP, 0x05,
+		g2d_fm_strap, sizeof(g2d_fm_strap), &g2d_fm_strap_match);
+}
+
+struct mt6797_g2d_owner {
+	struct device *dev;
+	struct regulator *bt;
+	struct regulator *wifi;
+	const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease;
+};
+
+static struct regulator *mt6797_g2d_regulator(struct mt6797_g2d_owner *owner,
+		bool wifi)
+{
+	return wifi ? owner->wifi : owner->bt;
+}
+
+static int mt6797_g2d_live_get_voltage(void *context, bool wifi)
+{
+	return regulator_get_voltage(mt6797_g2d_regulator(context, wifi));
+}
+
+static int mt6797_g2d_live_is_enabled(void *context, bool wifi)
+{
+	return regulator_is_enabled(mt6797_g2d_regulator(context, wifi));
+}
+
+static int mt6797_g2d_live_set_voltage(void *context, bool wifi, int uv)
+{
+	return regulator_set_voltage(mt6797_g2d_regulator(context, wifi), uv, uv);
+}
+
+static int mt6797_g2d_live_enable(void *context, bool wifi)
+{
+	return regulator_enable(mt6797_g2d_regulator(context, wifi));
+}
+
+static int mt6797_g2d_live_disable(void *context, bool wifi)
+{
+	return regulator_disable(mt6797_g2d_regulator(context, wifi));
+}
+
+static int mt6797_g2d_live_wmt(void *context, u8 opcode, const u8 *data,
+		size_t data_len, const struct mtk_wmt_match *expected)
+{
+	struct mt6797_g2d_owner *owner = context;
+
+	return mt6797_btif_stp_bootstrap_full_wmt_transaction(owner->lease, opcode,
+		data, data_len, expected, MT6797_G2D_TIMEOUT);
+}
+
+static void mt6797_g2d_live_delay_ms(void *context, unsigned int milliseconds)
+{
+	msleep(milliseconds);
 }
 
 static int mt6797_g2d_postpatch_stage(void *context,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
 {
 	struct mt6797_g2d_owner *owner = context;
-	u8 command[] = { 4, 0 }, reply[2], level;
-	int uv, ret, cleanup;
+	struct mt6797_g2d_ops ops = {
+		.get_voltage = mt6797_g2d_live_get_voltage,
+		.is_enabled = mt6797_g2d_live_is_enabled,
+		.set_voltage = mt6797_g2d_live_set_voltage,
+		.enable = mt6797_g2d_live_enable,
+		.disable = mt6797_g2d_live_disable,
+		.wmt = mt6797_g2d_live_wmt,
+		.delay_ms = mt6797_g2d_live_delay_ms,
+		.context = owner,
+	};
+	struct mt6797_g2d_state state = { };
+	int ret;
 
-	ret = mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(lease, 0x12,
-		command, sizeof(command), 0x12, sizeof(reply), reply, sizeof(reply),
-		MT6797_G2D_TIMEOUT);
+	owner->lease = lease;
+	dev_info(owner->dev, "G2d start: fixed 3.3V, no function control\n");
+	ret = mt6797_g2d_postpatch_run(&ops, &state);
+	owner->lease = NULL;
 	if (ret)
-		return ret;
-	if (reply[0] != 4)
-		return -EPROTO;
-	level = reply[1] & 3;
-	ret = mt6797_consys_vcn33_level_to_uv(level, &uv);
-	if (ret)
-		return ret;
-	dev_info(owner->dev, "G2d efuse VCN33 level %u -> %duV\n", level, uv);
-
-	/*
-	 * MT6351 exposes distinct BT/Wi-Fi enables but one shared VCN33 voltage
-	 * selector.  Capture both views before either consumer changes that
-	 * selector, then require the two snapshots to agree.
-	 */
-	ret = g2d_snapshot_rail(&owner->bt);
-	if (ret)
-		return ret;
-	ret = g2d_snapshot_rail(&owner->wifi);
-	if (ret)
-		return ret;
-	if (owner->bt.original_uv != owner->wifi.original_uv)
-		return -EUCLEAN;
-
-	ret = g2d_enable_rail(&owner->bt, uv);
-	if (ret)
-		goto out;
-	ret = g2d_enable_rail(&owner->wifi, uv);
-	if (ret)
-		goto out;
-	ret = mt6797_btif_stp_bootstrap_full_wmt_transaction(lease, 0x14,
-		g2d_calibrate, sizeof(g2d_calibrate), &g2d_calibrate_match,
-		MT6797_G2D_TIMEOUT);
-out:
-	cleanup = g2d_restore_rail(&owner->wifi);
-	if (cleanup)
-		owner->cleanup_failed = true;
-	if (!ret)
-		ret = cleanup;
-	cleanup = g2d_restore_rail(&owner->bt);
-	if (cleanup)
-		owner->cleanup_failed = true;
-	if (!ret)
-		ret = cleanup;
-	if (ret)
-		return ret;
-	return mt6797_btif_stp_bootstrap_full_wmt_transaction(lease, 0x10,
-		g2d_coex, sizeof(g2d_coex), &g2d_coex_match, MT6797_G2D_TIMEOUT);
+		dev_err(owner->dev, "G2d stage %s failed: %d; bootstrap must fence/reset\n",
+			mt6797_g2d_stage_name[state.stage], ret);
+	else
+		dev_info(owner->dev, "G2d passed; bootstrap will fence/reset\n");
+	return ret;
 }
 
-static int g2d_supplier(struct device *dev, const char *prop, struct device **out)
+static int mt6797_g2d_supplier(struct device *dev, const char *prop,
+		struct device **out)
 {
 	struct device_node *node = of_parse_phandle(dev->of_node, prop, 0);
 	struct platform_device *pdev;
+
 	if (!node)
 		return -EINVAL;
 	pdev = of_find_device_by_node(node);
@@ -192,33 +376,31 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	struct mt6797_consys_runtime_resource_lease resources = { };
 	struct mt6797_consys_runtime_provider_lease identity = { };
 	struct mt6797_consys_postid_owner postid;
-	bool postid_init = false;
-	bool controller_active = false;
-	bool emi_claimed = false;
+	bool postid_init = false, controller_active = false, emi_claimed = false;
 	int ret, cleanup;
 
 	if (!READ_ONCE(enable_experimental_g2d_postpatch_owner) ||
-	    !device_property_read_bool(&pdev->dev, "mediatek,experimental-g2d-postpatch-owner"))
+	    !device_property_read_bool(&pdev->dev,
+		"mediatek,experimental-g2d-postpatch-owner"))
 		return -EPERM;
 	owner = devm_kzalloc(&pdev->dev, sizeof(*owner), GFP_KERNEL);
 	if (!owner)
 		return -ENOMEM;
 	owner->dev = &pdev->dev;
-	owner->bt.reg = devm_regulator_get(&pdev->dev, "vcn33-bt");
-	if (IS_ERR(owner->bt.reg))
-		return PTR_ERR(owner->bt.reg);
-	owner->wifi.reg = devm_regulator_get(&pdev->dev, "vcn33-wifi");
-	if (IS_ERR(owner->wifi.reg))
-		return PTR_ERR(owner->wifi.reg);
-	if (regulator_is_equal(owner->bt.reg, owner->wifi.reg))
+	owner->bt = devm_regulator_get(&pdev->dev, "vcn33-bt");
+	if (IS_ERR(owner->bt))
+		return PTR_ERR(owner->bt);
+	owner->wifi = devm_regulator_get(&pdev->dev, "vcn33-wifi");
+	if (IS_ERR(owner->wifi))
+		return PTR_ERR(owner->wifi);
+	if (regulator_is_equal(owner->bt, owner->wifi))
 		return -EINVAL;
-	ret = g2d_supplier(&pdev->dev, "mediatek,runtime-provider", &runtime);
+	ret = mt6797_g2d_supplier(&pdev->dev, "mediatek,runtime-provider", &runtime);
 	if (ret)
 		return ret;
-	ret = g2d_supplier(&pdev->dev, "mediatek,controller", &controller);
+	ret = mt6797_g2d_supplier(&pdev->dev, "mediatek,controller", &controller);
 	if (ret)
 		goto put_runtime;
-	/* Resolve every reversible supplier before the persistent EMI claim. */
 	ret = mt6797_consys_runtime_resource_lease_acquire(runtime, &resources);
 	if (ret == -ENODEV)
 		ret = -EPROBE_DEFER;
@@ -266,12 +448,9 @@ resources:
 	cleanup = mt6797_consys_runtime_resource_lease_release(&resources);
 	if (!ret)
 		ret = cleanup;
-	if (emi_claimed && (ret || owner->cleanup_failed)) {
+	if (emi_claimed && ret) {
 		mt6797_consys_emi_mpu_latch_fatal();
-		dev_err(&pdev->dev,
-			"G2d failed after persistent EMI claim; reboot required\n");
-		if (!ret)
-			ret = -EIO;
+		dev_err(&pdev->dev, "G2d failed after persistent EMI claim; reboot required\n");
 	}
 put_controller:
 	put_device(controller);
@@ -281,11 +460,358 @@ put_runtime:
 }
 
 static const struct of_device_id mt6797_g2d_postpatch_owner_of_match[] = {
-	{ .compatible = "mediatek,mt6797-consys-g2d-postpatch-owner" }, {}
+	{ .compatible = "mediatek,mt6797-consys-g2d-postpatch-owner" }, { }
 };
+MODULE_DEVICE_TABLE(of, mt6797_g2d_postpatch_owner_of_match);
+
 static struct platform_driver mt6797_g2d_postpatch_owner_driver = {
 	.probe = mt6797_g2d_postpatch_owner_probe,
-	.driver = { .name = "mt6797-consys-g2d-postpatch-owner", .of_match_table = mt6797_g2d_postpatch_owner_of_match, .suppress_bind_attrs = true },
+	.driver = {
+		.name = "mt6797-consys-g2d-postpatch-owner",
+		.of_match_table = mt6797_g2d_postpatch_owner_of_match,
+		/* EMI ownership is persistent: no runtime unbind/retry. */
+		.suppress_bind_attrs = true,
+	},
 };
 module_platform_driver(mt6797_g2d_postpatch_owner_driver);
+
+MODULE_DESCRIPTION("One-shot gated MT6797 CONSYS G2d post-patch owner");
 MODULE_LICENSE("GPL");
+
+#if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST)
+#include <kunit/test.h>
+
+enum mt6797_g2d_test_event {
+	G2D_TEST_DELAY, G2D_TEST_LTE_EXT, G2D_TEST_LTE_FILTER,
+	G2D_TEST_LTE_FREQ, G2D_TEST_LTE_UNSAFE, G2D_TEST_LTE_L,
+	G2D_TEST_SET_BT, G2D_TEST_SET_WIFI, G2D_TEST_ENABLE_BT,
+	G2D_TEST_ENABLE_WIFI, G2D_TEST_CALIBRATE, G2D_TEST_DISABLE_BT,
+	G2D_TEST_DISABLE_WIFI, G2D_TEST_RESTORE, G2D_TEST_COEX,
+	G2D_TEST_FM_STRAP,
+};
+
+struct mt6797_g2d_test_command {
+	u8 opcode;
+	const u8 *data;
+	size_t data_len;
+	const struct mtk_wmt_match *expected;
+};
+
+struct mt6797_g2d_test {
+	int voltage[2];
+	bool enabled[2];
+	int fail_set;
+	int fail_enable;
+	int fail_disable;
+	int fail_wmt;
+	int fail_enabled_call;
+	unsigned int enabled_calls;
+	unsigned int wmt_calls;
+	unsigned int delay_calls;
+	unsigned int delay_ms;
+	bool wmt_before_delay;
+	unsigned int restore_calls;
+	bool restore_while_enabled;
+	enum mt6797_g2d_test_event event[24];
+	unsigned int events;
+	struct mt6797_g2d_test_command command[8];
+};
+
+static void mt6797_g2d_test_event(struct mt6797_g2d_test *test,
+		enum mt6797_g2d_test_event event)
+{
+	if (test->events < ARRAY_SIZE(test->event))
+		test->event[test->events++] = event;
+}
+
+static int mt6797_g2d_test_get_voltage(void *context, bool wifi)
+{
+	struct mt6797_g2d_test *test = context;
+
+	return test->voltage[wifi];
+}
+
+static int mt6797_g2d_test_is_enabled(void *context, bool wifi)
+{
+	struct mt6797_g2d_test *test = context;
+
+	if (test->fail_enabled_call >= 0 &&
+	    test->enabled_calls++ == test->fail_enabled_call)
+		return -ETIMEDOUT;
+	return test->enabled[wifi];
+}
+
+static int mt6797_g2d_test_set_voltage(void *context, bool wifi, int uv)
+{
+	struct mt6797_g2d_test *test = context;
+
+	if (uv == MT6797_G2D_VCN33_UV) {
+		mt6797_g2d_test_event(test, wifi ? G2D_TEST_SET_WIFI : G2D_TEST_SET_BT);
+		if (test->fail_set == wifi)
+			return -ETIMEDOUT;
+	} else {
+		mt6797_g2d_test_event(test, G2D_TEST_RESTORE);
+		test->restore_calls++;
+		test->restore_while_enabled = test->enabled[false] || test->enabled[true];
+	}
+	test->voltage[false] = uv;
+	test->voltage[true] = uv;
+	return 0;
+}
+
+static int mt6797_g2d_test_enable(void *context, bool wifi)
+{
+	struct mt6797_g2d_test *test = context;
+
+	mt6797_g2d_test_event(test, wifi ? G2D_TEST_ENABLE_WIFI : G2D_TEST_ENABLE_BT);
+	if (test->fail_enable == wifi)
+		return -ETIMEDOUT;
+	test->enabled[wifi] = true;
+	return 0;
+}
+
+static int mt6797_g2d_test_disable(void *context, bool wifi)
+{
+	struct mt6797_g2d_test *test = context;
+
+	mt6797_g2d_test_event(test, wifi ? G2D_TEST_DISABLE_WIFI : G2D_TEST_DISABLE_BT);
+	if (test->fail_disable == wifi)
+		return -ETIMEDOUT;
+	test->enabled[wifi] = false;
+	return 0;
+}
+
+static int mt6797_g2d_test_wmt(void *context, u8 opcode, const u8 *data,
+		size_t data_len, const struct mtk_wmt_match *expected)
+{
+	struct mt6797_g2d_test *test = context;
+	unsigned int call = test->wmt_calls++;
+
+	if (!test->delay_calls)
+		test->wmt_before_delay = true;
+	if (data == g2d_lte_ext)
+		mt6797_g2d_test_event(test, G2D_TEST_LTE_EXT);
+	else if (data == g2d_lte_filter)
+		mt6797_g2d_test_event(test, G2D_TEST_LTE_FILTER);
+	else if (data == g2d_lte_freq)
+		mt6797_g2d_test_event(test, G2D_TEST_LTE_FREQ);
+	else if (data == g2d_lte_unsafe)
+		mt6797_g2d_test_event(test, G2D_TEST_LTE_UNSAFE);
+	else if (data == g2d_lte_l)
+		mt6797_g2d_test_event(test, G2D_TEST_LTE_L);
+	else if (data == g2d_calibrate)
+		mt6797_g2d_test_event(test, G2D_TEST_CALIBRATE);
+	else if (data == g2d_coex)
+		mt6797_g2d_test_event(test, G2D_TEST_COEX);
+	else if (data == g2d_fm_strap)
+		mt6797_g2d_test_event(test, G2D_TEST_FM_STRAP);
+	if (call < ARRAY_SIZE(test->command))
+		test->command[call] = (struct mt6797_g2d_test_command) {
+			.opcode = opcode, .data = data, .data_len = data_len,
+			.expected = expected,
+		};
+	if (test->fail_wmt >= 0 && call == test->fail_wmt)
+		return -ETIMEDOUT;
+	return 0;
+}
+
+static void mt6797_g2d_test_delay(void *context, unsigned int milliseconds)
+{
+	struct mt6797_g2d_test *test = context;
+
+	test->delay_calls++;
+	test->delay_ms = milliseconds;
+	mt6797_g2d_test_event(test, G2D_TEST_DELAY);
+}
+
+static struct mt6797_g2d_ops mt6797_g2d_test_ops(struct mt6797_g2d_test *test)
+{
+	return (struct mt6797_g2d_ops) {
+		.get_voltage = mt6797_g2d_test_get_voltage,
+		.is_enabled = mt6797_g2d_test_is_enabled,
+		.set_voltage = mt6797_g2d_test_set_voltage,
+		.enable = mt6797_g2d_test_enable,
+		.disable = mt6797_g2d_test_disable,
+		.wmt = mt6797_g2d_test_wmt,
+		.delay_ms = mt6797_g2d_test_delay,
+		.context = test,
+	};
+}
+
+static void mt6797_g2d_test_expect_command(struct kunit *test,
+		const struct mt6797_g2d_test_command *command, u8 opcode,
+		const u8 *data, size_t data_len, const struct mtk_wmt_match *expected)
+{
+	KUNIT_EXPECT_EQ(test, command->opcode, opcode);
+	KUNIT_EXPECT_EQ(test, command->data_len, data_len);
+	KUNIT_EXPECT_PTR_EQ(test, command->expected, expected);
+	KUNIT_EXPECT_MEMEQ(test, command->data, data, data_len);
+}
+
+static void mt6797_g2d_test_exact_order(struct kunit *test)
+{
+	struct mt6797_g2d_test context = {
+		.voltage = { 3500000, 3500000 },
+		.fail_set = -1, .fail_enable = -1, .fail_disable = -1,
+		.fail_wmt = -1, .fail_enabled_call = -1,
+	};
+	struct mt6797_g2d_state state = { };
+	struct mt6797_g2d_ops ops = mt6797_g2d_test_ops(&context);
+
+	KUNIT_ASSERT_EQ(test, mt6797_g2d_postpatch_run(&ops, &state), 0);
+	KUNIT_EXPECT_EQ(test, context.delay_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.delay_ms, MT6797_G2D_COEX_DELAY_MS);
+	KUNIT_EXPECT_FALSE(test, context.wmt_before_delay);
+	KUNIT_EXPECT_EQ(test, context.wmt_calls, 8U);
+	mt6797_g2d_test_expect_command(test, &context.command[0], 0x10,
+		g2d_lte_ext, sizeof(g2d_lte_ext), &g2d_ok_10);
+	mt6797_g2d_test_expect_command(test, &context.command[1], 0x10,
+		g2d_lte_filter, sizeof(g2d_lte_filter), &g2d_ok_10);
+	mt6797_g2d_test_expect_command(test, &context.command[2], 0x10,
+		g2d_lte_freq, sizeof(g2d_lte_freq), &g2d_ok_10);
+	mt6797_g2d_test_expect_command(test, &context.command[3], 0x10,
+		g2d_lte_unsafe, sizeof(g2d_lte_unsafe), &g2d_ok_10);
+	mt6797_g2d_test_expect_command(test, &context.command[4], 0x10,
+		g2d_lte_l, sizeof(g2d_lte_l), &g2d_ok_10);
+	mt6797_g2d_test_expect_command(test, &context.command[5], 0x14,
+		g2d_calibrate, sizeof(g2d_calibrate), &g2d_calibrate_match);
+	mt6797_g2d_test_expect_command(test, &context.command[6], 0x10,
+		g2d_coex, sizeof(g2d_coex), &g2d_ok_10);
+	mt6797_g2d_test_expect_command(test, &context.command[7], 0x05,
+		g2d_fm_strap, sizeof(g2d_fm_strap), &g2d_fm_strap_match);
+	KUNIT_EXPECT_EQ(test, context.events, 16U);
+	KUNIT_EXPECT_EQ(test, context.event[0], G2D_TEST_DELAY);
+	KUNIT_EXPECT_EQ(test, context.event[1], G2D_TEST_LTE_EXT);
+	KUNIT_EXPECT_EQ(test, context.event[2], G2D_TEST_LTE_FILTER);
+	KUNIT_EXPECT_EQ(test, context.event[3], G2D_TEST_LTE_FREQ);
+	KUNIT_EXPECT_EQ(test, context.event[4], G2D_TEST_LTE_UNSAFE);
+	KUNIT_EXPECT_EQ(test, context.event[5], G2D_TEST_LTE_L);
+	KUNIT_EXPECT_EQ(test, context.event[6], G2D_TEST_SET_BT);
+	KUNIT_EXPECT_EQ(test, context.event[7], G2D_TEST_SET_WIFI);
+	KUNIT_EXPECT_EQ(test, context.event[8], G2D_TEST_ENABLE_BT);
+	KUNIT_EXPECT_EQ(test, context.event[9], G2D_TEST_ENABLE_WIFI);
+	KUNIT_EXPECT_EQ(test, context.event[10], G2D_TEST_CALIBRATE);
+	KUNIT_EXPECT_EQ(test, context.event[11], G2D_TEST_DISABLE_BT);
+	KUNIT_EXPECT_EQ(test, context.event[12], G2D_TEST_DISABLE_WIFI);
+	KUNIT_EXPECT_EQ(test, context.event[13], G2D_TEST_RESTORE);
+	KUNIT_EXPECT_EQ(test, context.event[14], G2D_TEST_COEX);
+	KUNIT_EXPECT_EQ(test, context.event[15], G2D_TEST_FM_STRAP);
+	KUNIT_EXPECT_FALSE(test, context.restore_while_enabled);
+}
+
+static void mt6797_g2d_test_every_wmt_failure_unwinds(struct kunit *test)
+{
+	int fail;
+
+	for (fail = 0; fail < 8; fail++) {
+		struct mt6797_g2d_test context = {
+			.voltage = { 3500000, 3500000 }, .fail_set = -1,
+			.fail_enable = -1, .fail_disable = -1, .fail_wmt = fail,
+			.fail_enabled_call = -1,
+		};
+		struct mt6797_g2d_state state = { };
+		struct mt6797_g2d_ops ops = mt6797_g2d_test_ops(&context);
+
+		KUNIT_EXPECT_EQ_MSG(test, mt6797_g2d_postpatch_run(&ops, &state),
+			-ETIMEDOUT, "WMT command %d", fail);
+		KUNIT_EXPECT_FALSE(test, context.enabled[false]);
+		KUNIT_EXPECT_FALSE(test, context.enabled[true]);
+		KUNIT_EXPECT_EQ(test, context.restore_calls, fail < 5 ? 0U : 1U);
+		KUNIT_EXPECT_FALSE(test, context.restore_while_enabled);
+	}
+}
+
+static void mt6797_g2d_test_setup_and_cleanup_failures(struct kunit *test)
+{
+	int fail_set, fail_enable, fail_disable;
+
+	for (fail_set = 0; fail_set < 2; fail_set++) {
+		struct mt6797_g2d_test context = {
+			.voltage = { 3500000, 3500000 }, .fail_set = fail_set,
+			.fail_enable = -1, .fail_disable = -1, .fail_wmt = -1,
+			.fail_enabled_call = -1,
+		};
+		struct mt6797_g2d_state state = { };
+		struct mt6797_g2d_ops ops = mt6797_g2d_test_ops(&context);
+
+		KUNIT_EXPECT_EQ(test, mt6797_g2d_postpatch_run(&ops, &state), -ETIMEDOUT);
+		KUNIT_EXPECT_FALSE(test, context.enabled[false]);
+		KUNIT_EXPECT_FALSE(test, context.enabled[true]);
+		KUNIT_EXPECT_EQ(test, context.restore_calls, fail_set ? 1U : 0U);
+	}
+	for (fail_enable = 0; fail_enable < 2; fail_enable++) {
+		struct mt6797_g2d_test context = {
+			.voltage = { 3500000, 3500000 }, .fail_set = -1,
+			.fail_enable = fail_enable, .fail_disable = -1, .fail_wmt = -1,
+			.fail_enabled_call = -1,
+		};
+		struct mt6797_g2d_state state = { };
+		struct mt6797_g2d_ops ops = mt6797_g2d_test_ops(&context);
+
+		KUNIT_EXPECT_EQ(test, mt6797_g2d_postpatch_run(&ops, &state), -ETIMEDOUT);
+		KUNIT_EXPECT_FALSE(test, context.enabled[false]);
+		KUNIT_EXPECT_FALSE(test, context.enabled[true]);
+		KUNIT_EXPECT_EQ(test, context.restore_calls, 1U);
+	}
+	for (fail_disable = 0; fail_disable < 2; fail_disable++) {
+		struct mt6797_g2d_test context = {
+			.voltage = { 3500000, 3500000 }, .fail_set = -1,
+			.fail_enable = -1, .fail_disable = fail_disable, .fail_wmt = 5,
+			.fail_enabled_call = -1,
+		};
+		struct mt6797_g2d_state state = { };
+		struct mt6797_g2d_ops ops = mt6797_g2d_test_ops(&context);
+
+		KUNIT_EXPECT_EQ(test, mt6797_g2d_postpatch_run(&ops, &state), -ETIMEDOUT);
+		KUNIT_EXPECT_EQ(test, context.restore_calls, 0U);
+		KUNIT_EXPECT_FALSE(test, context.restore_while_enabled);
+		KUNIT_EXPECT_EQ(test, context.event[11], G2D_TEST_DISABLE_BT);
+		KUNIT_EXPECT_EQ(test, context.event[12], G2D_TEST_DISABLE_WIFI);
+	}
+	for (fail_disable = 2; fail_disable < 4; fail_disable++) {
+		struct mt6797_g2d_test context = {
+			.voltage = { 3500000, 3500000 }, .fail_set = -1,
+			.fail_enable = -1, .fail_disable = -1, .fail_wmt = 5,
+			.fail_enabled_call = fail_disable,
+		};
+		struct mt6797_g2d_state state = { };
+		struct mt6797_g2d_ops ops = mt6797_g2d_test_ops(&context);
+
+		KUNIT_EXPECT_EQ(test, mt6797_g2d_postpatch_run(&ops, &state), -ETIMEDOUT);
+		KUNIT_EXPECT_EQ(test, context.restore_calls, 0U);
+		KUNIT_EXPECT_FALSE(test, context.restore_while_enabled);
+	}
+}
+
+static void mt6797_g2d_test_rejects_unsafe_entry(struct kunit *test)
+{
+	struct mt6797_g2d_test context = {
+		.voltage = { 3300000, 3400000 }, .fail_set = -1,
+		.fail_enable = -1, .fail_disable = -1, .fail_wmt = -1,
+		.fail_enabled_call = -1,
+	};
+	struct mt6797_g2d_state state = { };
+	struct mt6797_g2d_ops ops = mt6797_g2d_test_ops(&context);
+
+	KUNIT_EXPECT_EQ(test, mt6797_g2d_postpatch_run(&ops, &state), -EUCLEAN);
+	KUNIT_EXPECT_EQ(test, context.events, 0U);
+	context.voltage[true] = 3300000;
+	context.enabled[true] = true;
+	KUNIT_EXPECT_EQ(test, mt6797_g2d_postpatch_run(&ops, &state), -EBUSY);
+	KUNIT_EXPECT_EQ(test, context.events, 0U);
+}
+
+static struct kunit_case mt6797_g2d_postpatch_cases[] = {
+	KUNIT_CASE(mt6797_g2d_test_exact_order),
+	KUNIT_CASE(mt6797_g2d_test_every_wmt_failure_unwinds),
+	KUNIT_CASE(mt6797_g2d_test_setup_and_cleanup_failures),
+	KUNIT_CASE(mt6797_g2d_test_rejects_unsafe_entry),
+	{}
+};
+
+static struct kunit_suite mt6797_g2d_postpatch_suite = {
+	.name = "mt6797-consys-g2d-postpatch",
+	.test_cases = mt6797_g2d_postpatch_cases,
+};
+kunit_test_suite(mt6797_g2d_postpatch_suite);
+#endif

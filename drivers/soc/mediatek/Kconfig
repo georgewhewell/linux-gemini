@@ -697,36 +697,33 @@ config MTK_MT6797_CONSYS_G2D_VCN33_PREFLIGHT
 	  regulator_enable(), voltage change, WMT, BTIF, calibration, radio, or
 	  userspace path. Binding needs its DT boolean and read-only parameter.
 
-	  Vendor MT6797 code performs an efuse-selected VCN33 voltage operation
-	  before calibration. Its helper body is absent, but the vendor's 3.5 V
-	  level-2 default and the MT6351 selector table establish the direct 0..3
-	  mapping used by the separately gated post-patch owner.
+	  Vendor MT6797 uses a fixed 3.3 V selector for both PALDO paths. The
+	  MT6580-only efuse VCN33 operation is deliberately not part of MT6797 G2d.
 
 config MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
-	tristate "Experimental MT6797 G2d fused-VCN33 post-patch owner"
+	tristate "Experimental MT6797 G2d post-patch owner"
 	depends on OF && REGULATOR && MTK_MT6797_CONSYS_G2C_PATCH_OWNER
 	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
 	help
-	  Default-disabled one-shot post-patch experiment. It captures the vendor
-	  efuse VCN33 level over the controller-owned full-STP WMT lease, rejects
-	  either pre-enabled rail, applies the matching MT6351 selector to both
-	  rails, calibrates, and restores disabled/voltage state before coexistence.
-	  Both its DT property and read-only module parameter are required.
-
-config MTK_MT6797_CONSYS_G2D_VCN33_KUNIT_TEST
-	bool "KUnit tests for the MT6797 fused VCN33 selector table"
-	depends on KUNIT=y
-	help
-	  Check the direct 0..3 <-> 3.3..3.6 V conversion used by G2d only.
+	  Default-disabled one-shot post-patch experiment. It uses the vendor
+	  MT6797 fixed 3.3 V VCN33 selector over the controller-owned full-STP WMT
+	  lease, rejects pre-enabled or disagreeing rail snapshots, runs the exact
+	  LTE coexistence and RF calibration transactions, then disables BT and
+	  Wi-Fi before restoring their shared selector. Both its DT property and
+	  read-only module parameter are required. It never enables a radio
+	  function or exposes a radio endpoint.
 
 config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
 	bool "KUnit tests for MT6797 post-patch calibration choreography"
 	depends on KUNIT=y
-	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER=y
 	help
-	  Exercise in memory the vendor order: efuse VCN33 read, distinct rails on,
-	  RF calibration, reverse rail release, then WMT_SOC.cfg antenna coexistence.
-	  It does not access a regulator, WMT endpoint, Device Tree, or Gemini.
+	  Exercise the exact MT6797 post-patch sequence in memory: vendor 5-ms
+	  delay, five LTE coexistence packets, fixed-3.3-V BT/Wi-Fi PALDOs, RF
+	  calibration, BT-then-Wi-Fi release, antenna coexistence, and the firmware
+	  FM strap. It checks every WMT and rail failure path and proves the shared
+	  MT6351 selector is not restored until both consumers are off. It does not
+	  access a regulator, WMT endpoint, Device Tree, or Gemini.
 
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"

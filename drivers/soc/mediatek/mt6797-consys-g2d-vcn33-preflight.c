@@ -7,12 +7,10 @@
  * vcn33_wifi, sets each to 3.3 V and enables/disables it in the PALDO paths:
  * gemini-linux-kernel-3.18 .../mt6797/mtk_wcn_consys_hw.c:897-935.
  *
- * This provider deliberately stops one step before that mutation. The same
- * vendor build reads an efuse level after patching and calls the declared but
- * absent wmt_set_pmic_voltage(level) before calibration (wmt_ic_soc.c:
- * 1120-1138). The separately gated G2d owner combines the vendor's level-2
- * 3.5 V default with the MT6351 selector table; this preflight still performs
- * no voltage or enable operation.
+ * This provider deliberately stops one step before that mutation. MT6797's
+ * build does not compile CFG_WMT_READ_EFUSE_VCN33 (that flag is MT6580-only),
+ * and the separately gated G2d owner uses the vendor's fixed 3.3 V setting.
+ * This preflight still performs no voltage or enable operation.
  */
 
 #include <linux/device.h>
@@ -54,7 +52,7 @@ static int mt6797_consys_g2d_vcn33_preflight_probe(struct platform_device *pdev)
 			"vendor MT6797 requires distinct BT/Wi-Fi VCN33 handles\n");
 
 	dev_info(&pdev->dev,
-		 "G2d VCN33 handles acquired; rails remain untouched pending efuse mapping\n");
+		 "G2d VCN33 handles acquired; rails remain untouched pending fixed-3.3V stage\n");
 	return 0;
 }
 

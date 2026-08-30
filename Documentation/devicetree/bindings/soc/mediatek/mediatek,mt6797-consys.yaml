@@ -17,11 +17,13 @@ description: |
   regulator, reset, interrupt, or power domain; access firmware; or map the
   shared reserved memory.
 
-  A separately named, explicitly opt-in identity experiment may acquire the
-  MT6797 CONN power domain, read chip ID 0x0279 while CONMCU reset remains
-  asserted, and release its votes again. It never configures AFE, firmware, or
-  a radio. Its node must remain disabled in the shipped board DT; activation
-  requires a deliberate DT overlay and a boot-time kernel parameter.
+  A separately named, explicitly opt-in identity experiment first validates
+  the same 2 MiB no-map shared-memory reservation required by vendor power-on,
+  then may acquire the MT6797 CONN power domain, read chip ID 0x0279 while
+  CONMCU reset remains asserted, and release its votes again. It neither maps
+  nor clears that reservation, and never configures AFE, firmware, or a radio.
+  Its node must remain disabled in the shipped board DT; activation requires a
+  deliberate DT overlay and a boot-time kernel parameter.
 
 properties:
   compatible:

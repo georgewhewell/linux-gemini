@@ -382,7 +382,11 @@ config MTK_MT6797_CONSYS_LIVE
 
 	  The board node remains disabled and the driver additionally requires
 	  mt6797_consys_live.identity_experiment=1 at boot. This is for one
-	  recoverable device test only.
+	  recoverable device test only. The separately named pre-post-ID observe
+	  overlay requires that parameter and
+	  mt6797_consys_live.prepostid_observe_experiment=1. It reads the MCU ACR
+	  and vendor AFE setup locations once, after chip identity succeeds and
+	  before the reset-held identity lease is released; it performs no writes.
 
 config MTK_MT6797_CONSYS_RUNTIME
 	bool "Experimental MT6797 CONSYS runtime lifecycle backend"

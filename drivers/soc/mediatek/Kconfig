@@ -303,6 +303,37 @@ config MTK_MT6797_CONSYS_RUNTIME_KUNIT_TEST
 	  long-lived lease ordering against an in-memory lifecycle backend. It does
 	  not create a platform device or access Gemini hardware.
 
+config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
+	bool "Experimental MT6797 CONSYS STP-bootstrap coordinator"
+	depends on OF
+	depends on MTK_MT6797_CONSYS_RUNTIME=y
+	depends on MTK_MT6797_BTIF_PIO_PLATFORM=y
+	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
+	help
+	  Build the default-disabled coordinator that joins separately reviewed
+	  MT6797 runtime and BTIF PIO platform providers through managed device
+	  links. An explicit in-kernel start operation acquires their leases and
+	  invokes only the exact mandatory-to-full STP bootstrap controller.
+
+	  The shipped Gemini DT contains no matching node. A hand-authored,
+	  disabled-by-default node must carry mediatek,experimental-bootstrap and
+	  the read-only mt6797_consys_runtime_controller.
+	  enable_experimental_runtime_controller=1 parameter must be supplied.
+	  Each provider and the STP bootstrap retain their own independent gates.
+	  The coordinator creates no GNSS, Bluetooth, Wi-Fi, or FM function; it
+	  releases no CONMCU reset, accesses no AFE/shared EMI, requests no firmware,
+	  and has no userspace ABI.
+
+config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER_KUNIT_TEST
+	bool "KUnit tests for the MT6797 CONSYS STP-bootstrap coordinator"
+	depends on KUNIT=y
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER=y
+	help
+	  Exercise supplier acquisition, one-owner bootstrap start, reverse-order
+	  cleanup, gate rejection, and stop-versus-run serialization with fake
+	  provider operations. No platform device, Device Tree, MMIO, WMT packet,
+	  firmware, CONSYS resource, or Gemini hardware is used.
+
 config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
 	bool "MediaTek MT6797 CONSYS firmware preflight gate"
 	depends on MTK_MT6797_CONSYS_CORE

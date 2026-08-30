@@ -664,12 +664,9 @@ static void mtk_drm_debugfs_init(struct drm_minor *minor)
 {
 	struct mtk_drm_private *private = minor->dev->dev_private;
 
-	/*
-	 * The DRM master is an auxiliary platform device created by MMSYS and
-	 * therefore has no MT6797 OF node of its own.  Match the driver data
-	 * selected from the parent MMSYS node instead.
-	 */
-	if (private->data != &mt6797_mmsys_driver_data)
+	/* The DRM master is an auxiliary child; the OF identity belongs to MMSYS. */
+	if (!of_device_is_compatible(private->mmsys_dev->of_node,
+				     "mediatek,mt6797-mmsys"))
 		return;
 
 	debugfs_create_file("mt6797_ddp_state", 0400, minor->debugfs_root,

@@ -39,12 +39,15 @@ typedef int (*mt6797_consys_stp_rx_cb_t)(void *context,
 struct mt6797_consys_stp_session_ops {
 	mt6797_consys_stp_tx_cb_t transmit;
 	mt6797_consys_stp_rx_cb_t receive;
-	void *context;
+	void *transmit_context;
+	void *receive_context;
 };
 
 /*
  * Allocate one single-use full-STP owner.  It is initially inert.  The caller
- * retains the lifetime of ops->context and must serialize all public calls.
+ * retains the lifetime of both callback contexts and must serialize all public
+ * calls. Separate contexts let a transport lease own TX while an endpoint owns
+ * delivery without exposing either capability to the other.
  */
 struct mt6797_consys_stp_session *
 mt6797_consys_stp_session_create(const struct mt6797_consys_stp_session_ops *ops);
@@ -58,6 +61,14 @@ mt6797_consys_stp_session_create(const struct mt6797_consys_stp_session_ops *ops
 const struct mt6797_consys_stp_session_lease *
 mt6797_consys_stp_session_begin_full(struct mt6797_consys_stp_session *session);
 
+/*
+ * Validate an opaque full-STP capability without exposing its owning session.
+ * The caller retains the lease/session lifetime and serializes teardown with
+ * users of the capability.
+ */
+bool mt6797_consys_stp_session_lease_active(
+			const struct mt6797_consys_stp_session_lease *lease);
+
 /* Send one WMT or GNSS payload through an active full-STP capability. */
 int mt6797_consys_stp_session_transmit(
 		const struct mt6797_consys_stp_session_lease *lease,
@@ -65,7 +76,12 @@ int mt6797_consys_stp_session_transmit(
 
 /* Feed arbitrary full-STP byte fragments from the owning transport. */
 int mt6797_consys_stp_session_receive(struct mt6797_consys_stp_session *session,
-					      const u8 *data, size_t length);
+						      const u8 *data, size_t length);
+
+/* Feed RX only through an active full-STP capability. */
+int mt6797_consys_stp_session_receive_lease(
+			const struct mt6797_consys_stp_session_lease *lease,
+			const u8 *data, size_t length);
 
 /*
  * Run one vendor 180-ms timeout tick.  A future owner schedules this only

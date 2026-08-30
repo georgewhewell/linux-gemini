@@ -308,6 +308,30 @@ config MTK_MT6797_CONSYS_POSTID_KUNIT_TEST
 	  teardown completion with fake callbacks only. No Device Tree, MMIO,
 	  hardware, firmware, transport, or radio is used.
 
+config MTK_MT6797_CONSYS_EMI_LAYOUT
+	tristate "Dormant MT6797 CONSYS shared-EMI layout owner"
+	depends on MTK_MT6797_CONSYS_CORE
+	help
+	  Build the hardware-neutral, default-disabled shared-EMI layout owner.
+	  It validates the vendor 2 MiB reservation, derives the exact MPU,
+	  remap, and 343 KiB clear windows, and invokes backend callbacks in that
+	  order. It has no Device Tree node or caller, performs no MMIO, ioremap,
+	  or memset, and does not implement rollback because the vendor source
+	  supplies no inverse for these persistent settings. The caller must pass
+	  an independent experiment gate explicitly.
+
+config MTK_MT6797_CONSYS_EMI_LAYOUT_KUNIT_TEST
+	bool "KUnit tests for the MT6797 CONSYS shared-EMI layout owner"
+	depends on KUNIT=y
+	depends on MTK_MT6797_CONSYS_EMI_LAYOUT=y
+	default n
+	help
+	  Exercise exact vendor geometry, overflow and boundary rejection,
+	  callback ordering, gate rejection, sticky failures, and the absence of
+	  teardown with fake callbacks and no hardware or memory mapping.
+	  It is suitable for test kernels and QEMU and has no Gemini hardware
+	  dependency.
+
 config MTK_MT6797_CONSYS_LIVE
 	tristate "MediaTek MT6797 CONSYS bounded identity experiment"
 	depends on ARM64 && ARCH_MEDIATEK && OF && PM

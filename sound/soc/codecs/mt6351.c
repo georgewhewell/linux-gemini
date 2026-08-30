@@ -6,6 +6,7 @@
 // Author: KaiChieh Chuang <kaichieh.chuang@mediatek.com>
 
 #include <linux/dma-mapping.h>
+#include <linux/mfd/mt6397/core.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/mod_devicetable.h>
@@ -1451,6 +1452,7 @@ static const struct snd_soc_component_driver mt6351_soc_component_driver = {
 static int mt6351_codec_driver_probe(struct platform_device *pdev)
 {
 	struct mt6351_priv *priv;
+	struct mt6397_chip *mt6351;
 
 	priv = devm_kzalloc(&pdev->dev,
 			    sizeof(struct mt6351_priv),
@@ -1462,9 +1464,19 @@ static int mt6351_codec_driver_probe(struct platform_device *pdev)
 
 	priv->dev = &pdev->dev;
 
-	priv->regmap = dev_get_regmap(pdev->dev.parent, NULL);
-	if (!priv->regmap)
-		return -ENODEV;
+	/*
+	 * The MT6351 codec is an MFD child.  The PMIC core gets its regmap from
+	 * the PMIC wrapper parent and retains it in struct mt6397_chip; it does
+	 * not attach that regmap to the MFD device itself.  Looking the regmap up
+	 * directly on our parent therefore always fails on MT6351, even though
+	 * the PMIC core and regulator child are already live.
+	 */
+	mt6351 = dev_get_drvdata(pdev->dev.parent);
+	if (!mt6351 || !mt6351->regmap)
+		return dev_err_probe(&pdev->dev, -EPROBE_DEFER,
+				     "MT6351 MFD regmap not ready\n");
+
+	priv->regmap = mt6351->regmap;
 
 	dev_dbg(priv->dev, "%s(), dev name %s\n",
 		__func__, dev_name(&pdev->dev));

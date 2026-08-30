@@ -52,6 +52,7 @@ enum mt6797_consys_stp_rx_state {
 
 enum mt6797_consys_stp_session_state {
 	MT6797_CONSYS_STP_NEW,
+	MT6797_CONSYS_STP_BOOTSTRAP,
 	MT6797_CONSYS_STP_ACTIVE,
 	MT6797_CONSYS_STP_FENCED,
 };
@@ -59,13 +60,14 @@ enum mt6797_consys_stp_session_state {
 struct mt6797_consys_stp_tx_slot {
 	bool valid;
 	size_t frame_length;
-	u8 frame[MT6797_CONSYS_STP_MAX_FRAME_SIZE];
+	u8 *frame;
 };
 
 struct mt6797_consys_stp_session {
 	struct mutex lock;
 	struct mt6797_consys_stp_session_ops ops;
 	struct mt6797_consys_stp_session_lease *lease;
+	struct mt6797_consys_stp_session_bootstrap_lease *bootstrap_lease;
 	enum mt6797_consys_stp_session_state state;
 	enum mt6797_consys_stp_rx_state rx_state;
 	struct mt6797_consys_stp_tx_slot tx[MT6797_CONSYS_STP_SEQUENCE_COUNT];
@@ -88,6 +90,10 @@ struct mt6797_consys_stp_session {
 };
 
 struct mt6797_consys_stp_session_lease {
+	struct mt6797_consys_stp_session *session;
+};
+
+struct mt6797_consys_stp_session_bootstrap_lease {
 	struct mt6797_consys_stp_session *session;
 };
 
@@ -114,6 +120,21 @@ static bool mt6797_consys_stp_lease_valid(
 	return lease && lease->session &&
 		lease == lease->session->lease &&
 		lease->session->state == MT6797_CONSYS_STP_ACTIVE;
+}
+
+static bool mt6797_consys_stp_bootstrap_lease_valid(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease)
+{
+	return lease && lease->session &&
+		lease == lease->session->bootstrap_lease &&
+		lease->session->state == MT6797_CONSYS_STP_BOOTSTRAP;
+}
+
+static bool mt6797_consys_stp_session_full_state(
+		const struct mt6797_consys_stp_session *session)
+{
+	return session->state == MT6797_CONSYS_STP_BOOTSTRAP ||
+		session->state == MT6797_CONSYS_STP_ACTIVE;
 }
 
 static void mt6797_consys_stp_reset_parser(
@@ -391,6 +412,7 @@ mt6797_consys_stp_session_create(const struct mt6797_consys_stp_session_ops *ops
 {
 	struct mt6797_consys_stp_session *session;
 	struct mt6797_consys_stp_session_lease *lease;
+	struct mt6797_consys_stp_session_bootstrap_lease *bootstrap_lease;
 
 	if (!ops || !ops->transmit || !ops->receive)
 		return ERR_PTR(-EINVAL);
@@ -403,11 +425,19 @@ mt6797_consys_stp_session_create(const struct mt6797_consys_stp_session_ops *ops
 		kfree(session);
 		return ERR_PTR(-ENOMEM);
 	}
+	bootstrap_lease = kzalloc_obj(*bootstrap_lease, GFP_KERNEL);
+	if (!bootstrap_lease) {
+		kfree(lease);
+		kfree(session);
+		return ERR_PTR(-ENOMEM);
+	}
 
 	mutex_init(&session->lock);
 	session->ops = *ops;
 	session->lease = lease;
+	session->bootstrap_lease = bootstrap_lease;
 	lease->session = session;
+	bootstrap_lease->session = session;
 	mt6797_consys_stp_reset_protocol(session);
 	return session;
 }
@@ -424,7 +454,7 @@ mt6797_consys_stp_session_begin_full(struct mt6797_consys_stp_session *session)
 	mutex_lock(&session->lock);
 	if (session->state == MT6797_CONSYS_STP_FENCED)
 		lease = ERR_PTR(-EPIPE);
-	else if (session->state == MT6797_CONSYS_STP_ACTIVE)
+	else if (session->state != MT6797_CONSYS_STP_NEW)
 		lease = ERR_PTR(-EBUSY);
 	else {
 		mt6797_consys_stp_reset_protocol(session);
@@ -436,6 +466,31 @@ mt6797_consys_stp_session_begin_full(struct mt6797_consys_stp_session *session)
 	return lease;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_begin_full);
+
+const struct mt6797_consys_stp_session_bootstrap_lease *
+mt6797_consys_stp_session_begin_full_bootstrap(
+					struct mt6797_consys_stp_session *session)
+{
+	const struct mt6797_consys_stp_session_bootstrap_lease *lease;
+
+	if (!session)
+		return ERR_PTR(-EINVAL);
+
+	mutex_lock(&session->lock);
+	if (session->state == MT6797_CONSYS_STP_FENCED)
+		lease = ERR_PTR(-EPIPE);
+	else if (session->state != MT6797_CONSYS_STP_NEW)
+		lease = ERR_PTR(-EBUSY);
+	else {
+		mt6797_consys_stp_reset_protocol(session);
+		session->state = MT6797_CONSYS_STP_BOOTSTRAP;
+		lease = session->bootstrap_lease;
+	}
+	mutex_unlock(&session->lock);
+
+	return lease;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_begin_full_bootstrap);
 
 bool mt6797_consys_stp_session_lease_active(
 			const struct mt6797_consys_stp_session_lease *lease)
@@ -453,39 +508,24 @@ bool mt6797_consys_stp_session_lease_active(
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_lease_active);
 
-int mt6797_consys_stp_session_transmit(
-		const struct mt6797_consys_stp_session_lease *lease,
+static int mt6797_consys_stp_session_transmit_locked(
+		struct mt6797_consys_stp_session *session,
 		enum mtk_stp_channel channel, const u8 *payload, size_t payload_length)
 {
-	struct mt6797_consys_stp_session *session;
 	struct mt6797_consys_stp_tx_slot *slot;
 	u16 crc;
 	int ret;
 
-	if (!lease || !lease->session || (!payload && payload_length) ||
-	    !payload_length)
-		return -EINVAL;
-	if (!mt6797_consys_stp_channel_supported(channel))
-		return -EOPNOTSUPP;
-	if (payload_length > MTK_STP_MAX_PAYLOAD)
-		return -EMSGSIZE;
-
-	session = lease->session;
-	mutex_lock(&session->lock);
-	if (!mt6797_consys_stp_lease_valid(lease)) {
-		ret = -ESHUTDOWN;
-		goto out_unlock;
-	}
 	if (!session->credits) {
 		ret = -EAGAIN;
-		goto out_unlock;
+		goto out;
 	}
 
 	slot = &session->tx[session->txseq];
 	if (slot->valid) {
 		session->state = MT6797_CONSYS_STP_FENCED;
 		ret = -EPROTO;
-		goto out_unlock;
+		goto out;
 	}
 
 	slot->frame[0] = 0x80 | ((session->txseq & 0x7) << 3) |
@@ -511,11 +551,63 @@ int mt6797_consys_stp_session_transmit(
 			(MT6797_CONSYS_STP_SEQUENCE_COUNT - 1);
 		session->credits++;
 	}
-out_unlock:
+out:
+	return ret;
+}
+
+int mt6797_consys_stp_session_transmit(
+		const struct mt6797_consys_stp_session_lease *lease,
+		enum mtk_stp_channel channel, const u8 *payload, size_t payload_length)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret;
+
+	if (!lease || !lease->session || (!payload && payload_length) ||
+	    !payload_length)
+		return -EINVAL;
+	if (!mt6797_consys_stp_channel_supported(channel))
+		return -EOPNOTSUPP;
+	if (payload_length > MTK_STP_MAX_PAYLOAD)
+		return -EMSGSIZE;
+
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else
+		ret = mt6797_consys_stp_session_transmit_locked(session, channel,
+								 payload, payload_length);
 	mutex_unlock(&session->lock);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_transmit);
+
+int mt6797_consys_stp_session_bootstrap_transmit(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease,
+		enum mtk_stp_channel channel, const u8 *payload, size_t payload_length)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret;
+
+	if (!lease || !lease->session || (!payload && payload_length) ||
+	    !payload_length)
+		return -EINVAL;
+	if (!mt6797_consys_stp_channel_supported(channel))
+		return -EOPNOTSUPP;
+	if (payload_length > MTK_STP_MAX_PAYLOAD)
+		return -EMSGSIZE;
+
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_bootstrap_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else
+		ret = mt6797_consys_stp_session_transmit_locked(session, channel,
+								 payload, payload_length);
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bootstrap_transmit);
 
 static int mt6797_consys_stp_session_receive_locked(
 			struct mt6797_consys_stp_session *session,
@@ -531,7 +623,7 @@ static int mt6797_consys_stp_session_receive_locked(
 			first_error = ret;
 		if (ret)
 			mt6797_consys_stp_reset_parser(session);
-		if (session->state != MT6797_CONSYS_STP_ACTIVE) {
+		if (!mt6797_consys_stp_session_full_state(session)) {
 			if (!first_error)
 				first_error = -ESHUTDOWN;
 			break;
@@ -578,6 +670,49 @@ int mt6797_consys_stp_session_receive_lease(
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_receive_lease);
 
+int mt6797_consys_stp_session_bootstrap_receive(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease,
+		const u8 *data, size_t length)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret;
+
+	if (!lease || !lease->session || (!data && length))
+		return -EINVAL;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_bootstrap_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else
+		ret = mt6797_consys_stp_session_receive_locked(session, data, length);
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bootstrap_receive);
+
+const struct mt6797_consys_stp_session_lease *
+mt6797_consys_stp_session_bootstrap_promote(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease)
+{
+	struct mt6797_consys_stp_session *session;
+	const struct mt6797_consys_stp_session_lease *active;
+
+	if (!lease || !lease->session)
+		return ERR_PTR(-EINVAL);
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_bootstrap_lease_valid(lease)) {
+		active = ERR_PTR(-ESHUTDOWN);
+	} else {
+		/* Keep txseq/txack/rxack and every retained frame intact. */
+		session->state = MT6797_CONSYS_STP_ACTIVE;
+		active = session->lease;
+	}
+	mutex_unlock(&session->lock);
+	return active;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bootstrap_promote);
+
 int mt6797_consys_stp_session_timeout(
 		const struct mt6797_consys_stp_session_lease *lease)
 {
@@ -616,6 +751,7 @@ void mt6797_consys_stp_session_destroy(struct mt6797_consys_stp_session *session
 		return;
 
 	mt6797_consys_stp_session_quiesce(session);
+	kfree(session->bootstrap_lease);
 	kfree(session->lease);
 	kfree(session);
 }
@@ -921,6 +1057,54 @@ static void mt6797_consys_stp_test_malformed_and_quiesce(struct kunit *test)
 	mt6797_consys_stp_session_destroy(session);
 }
 
+static void mt6797_consys_stp_test_bootstrap_promotes_without_reset(
+								 struct kunit *test)
+{
+	const struct mt6797_consys_stp_session_bootstrap_lease *bootstrap;
+	const struct mt6797_consys_stp_session_lease *lease;
+	struct mt6797_consys_stp_test_link *link;
+	struct mt6797_consys_stp_session *session;
+	struct mt6797_consys_stp_session_ops ops;
+	u8 *frame;
+	u8 payload = 0x5a;
+	size_t frame_length;
+
+	link = kunit_kzalloc(test, sizeof(*link), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, link);
+	ops = (struct mt6797_consys_stp_session_ops) {
+		.transmit = mt6797_consys_stp_test_transmit,
+		.receive = mt6797_consys_stp_test_receive,
+		.transmit_context = link,
+		.receive_context = link,
+	};
+	session = mt6797_consys_stp_session_create(&ops);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(session));
+	frame = kunit_kmalloc(test, MT6797_CONSYS_STP_MAX_FRAME_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, frame);
+	bootstrap = mt6797_consys_stp_session_begin_full_bootstrap(session);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(bootstrap));
+	KUNIT_EXPECT_TRUE(test, IS_ERR(mt6797_consys_stp_session_begin_full(session)));
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_bootstrap_transmit(bootstrap,
+										 MTK_STP_WMT,
+										 &payload, sizeof(payload)), 0);
+	KUNIT_ASSERT_EQ(test, link->frames[0][0], (u8)0x87);
+	frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_WMT, 0, 0,
+									 &payload, sizeof(payload));
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_bootstrap_receive(bootstrap,
+										frame, frame_length), 0);
+	KUNIT_EXPECT_EQ(test, link->frames[1][0], (u8)0x80);
+	lease = mt6797_consys_stp_session_bootstrap_promote(bootstrap);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
+	KUNIT_EXPECT_TRUE(test, mt6797_consys_stp_session_lease_active(lease));
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_transmit(lease,
+								 MTK_STP_WMT,
+								 &payload, sizeof(payload)), 0);
+	KUNIT_EXPECT_EQ(test, link->frames[2][0], (u8)0x88);
+	KUNIT_EXPECT_TRUE(test,
+			 IS_ERR(mt6797_consys_stp_session_bootstrap_promote(bootstrap)));
+	mt6797_consys_stp_session_destroy(session);
+}
+
 static void mt6797_consys_stp_test_null_session_lease_is_rejected(
 							   struct kunit *test)
 {
@@ -943,6 +1127,7 @@ static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_nak_and_timeout_retry),
 	KUNIT_CASE(mt6797_consys_stp_test_retry_limit_fences),
 	KUNIT_CASE(mt6797_consys_stp_test_malformed_and_quiesce),
+	KUNIT_CASE(mt6797_consys_stp_test_bootstrap_promotes_without_reset),
 	KUNIT_CASE(mt6797_consys_stp_test_null_session_lease_is_rejected),
 	{ }
 };

@@ -170,6 +170,34 @@ config MTK_MT6797_BTIF_INVENTORY
 	  every future transport consumer disabled until a separately reviewed
 	  hardware transaction contract exists.
 
+config MTK_MT6797_BTIF_TRANSPORT
+	tristate "Experimental MediaTek MT6797 BTIF/APDMA byte transport"
+	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK
+	depends on MTK_STP
+	help
+	  Build the bounded MT6797 BTIF/APDMA byte transport. It uses the vendor
+	  register layout to allocate two 8192-byte DMA32 virtual FIFOs, issue only
+	  warm reset and STOP-and-poll operations, and feed received mandatory-mode
+	  STP bytes to the hardware-independent parser.
+
+	  The driver has no userspace ABI and does not power CONSYS, release reset,
+	  choose pad muxing, load firmware, transmit WMT/HCI/Wi-Fi/FM data, or
+	  implement STP full-mode sequencing. Its disabled DT node additionally
+	  requires a hand-authored experimental property and the read-only module
+	  parameter enable_experimental_transport=1 before it maps registers or
+	  enables clocks. This is bring-up infrastructure, not a radio driver.
+
+config MTK_MT6797_BTIF_TRANSPORT_KUNIT_TEST
+	bool "KUnit tests for the MT6797 BTIF/APDMA virtual-FIFO helpers"
+	depends on KUNIT=y
+	depends on MTK_MT6797_BTIF_TRANSPORT=y
+	help
+	  Exercise virtual-FIFO pointer wrapping, two-segment RX extraction and
+	  short-space TX rejection without Device Tree, DMA, clocks, interrupts,
+	  firmware or BTIF hardware. The test is suitable for QEMU and validates
+	  that malformed pointers never cause the transport to copy or publish
+	  uncontrolled ring data.
+
 config MTK_MT6797_DVFSP_HANDOFF
 	bool "MediaTek MT6797 stopped DVFSP firmware handoff"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

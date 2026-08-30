@@ -25,6 +25,7 @@
 
 #define MTK_SCPD_ACTIVE_WAKEUP		BIT(0)
 #define MTK_SCPD_FWAIT_SRAM		BIT(1)
+#define MTK_SCPD_KEEP_DEFAULT_OFF	BIT(2)
 #define MTK_SCPD_CAPS(_scpd, _x)	((_scpd)->data->caps & (_x))
 
 #define SPM_VDE_PWR_CON			0x0210
@@ -546,7 +547,10 @@ static void mtk_register_power_domains(struct platform_device *pdev,
 		 * software.  The unused domains will be switched off during
 		 * late_init time.
 		 */
-		on = !WARN_ON(genpd->power_on(genpd) < 0);
+		if (MTK_SCPD_CAPS(scpd, MTK_SCPD_KEEP_DEFAULT_OFF))
+			on = false;
+		else
+			on = !WARN_ON(genpd->power_on(genpd) < 0);
 
 		pm_genpd_init(genpd, NULL, !on);
 	}
@@ -877,6 +881,22 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_bits = GENMASK(8, 8),
 		.sram_pdn_ack_bits = GENMASK(12, 12),
 		.clk_id = {CLK_NONE},
+	},
+	/*
+	 * The vendor CCF path uses SPM 0x32c, both PWR_STATUS registers bit 1,
+	 * and infracfg protection bits 17 and 18. There is no SRAM operation.
+	 *
+	 * Do not power CONN while registering SCPSYS. Its first vote must be
+	 * made by an explicitly enabled, recoverable identity experiment after
+	 * CONMCU reset has been asserted.
+	 */
+	[MT6797_POWER_DOMAIN_CONN] = {
+		.name = "conn",
+		.sta_mask = BIT(1),
+		.ctl_offs = 0x32c,
+		.bus_prot_mask = BIT(17) | BIT(18),
+		.clk_id = {CLK_NONE},
+		.caps = MTK_SCPD_KEEP_DEFAULT_OFF,
 	},
 };
 

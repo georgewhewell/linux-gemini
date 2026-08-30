@@ -149,6 +149,32 @@ config MTK_MT6797_BTIF_PIO_PLATFORM_KUNIT_TEST
 	  not instantiate a platform device or access Device Tree, MMIO, clock, DMA,
 	  firmware, CONSYS, or Gemini hardware.
 
+config MTK_MT6797_BTIF_STP_BOOTSTRAP
+	tristate "MediaTek MT6797 dormant BTIF STP bootstrap controller"
+	depends on MTK_MT6797_BTIF_PIO && MTK_WMT
+	help
+	  Build the single-owner controller for the exact vendor BTIF handover:
+	  mandatory-STP query-default, set-full, host-side full-STP handoff, a
+	  10-ms delay, and full-STP query verification. It uses only those three
+	  WMT transactions and bounded vendor timeouts/retries.
+
+	  This option is disabled by default and has no Device Tree match. Calling
+	  it additionally requires enable_experimental_stp_bootstrap=1. The caller
+	  must provide an acquired PIO lease and a synchronized IRQ close callback
+	  after independently establishing CONSYS power/reset, clocks, pads and
+	  firmware ownership. It never discovers hardware, requests firmware,
+	  downloads a patch, or enables Wi-Fi, Bluetooth, GNSS or FM.
+
+config MTK_MT6797_BTIF_STP_BOOTSTRAP_KUNIT_TEST
+	bool "KUnit tests for the MT6797 BTIF STP bootstrap controller"
+	depends on KUNIT=y
+	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
+	help
+	  Exercise the exact mandatory query/set/full-query packets, one-owner PIO
+	  handoff, full 0/7 framing, strict full-query promotion, and bounded retry
+	  setup against an in-memory PIO register/peer model. It instantiates no
+	  Device Tree node and accesses no Gemini hardware or radio function.
+
 config MTK_WMT
 	tristate "MediaTek WMT packet codec and transaction fence"
 	depends on MTK_STP

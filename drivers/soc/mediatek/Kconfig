@@ -270,6 +270,39 @@ config MTK_MT6797_CONSYS_LIVE
 	  mt6797_consys_live.identity_experiment=1 at boot. This is for one
 	  recoverable device test only.
 
+config MTK_MT6797_CONSYS_RUNTIME
+	bool "Experimental MT6797 CONSYS runtime lifecycle backend"
+	depends on ARM64 && ARCH_MEDIATEK && OF && PM
+	depends on PM_GENERIC_DOMAINS_OF && MTK_SCPSYS
+	depends on REGULATOR_MT6351 && RESET_CONTROLLER
+	depends on MTK_MT6797_CONSYS_CORE
+	select MFD_SYSCON
+	help
+	  Build the separately named, default-disabled MT6797 CONSYS runtime
+	  lifecycle provider. It validates the exact Gemini resource layout and
+	  2 MiB no-map reservation, registers the BGF IRQ disabled, then holds one
+	  exclusive core runtime lease across the vendor-reviewed identity prefix:
+	  VCN18, 240 us, VCN28, sleep mask, CONMCU reset, PWRON configuration,
+	  SCPSYS CONN vote, 30 us, and chip ID 0x0279.
+
+	  The shipped Gemini node does not match this driver. A hand-authored node
+	  must be enabled, carry mediatek,experimental-runtime, and the read-only
+	  mt6797_consys_runtime.enable_experimental_runtime=1 parameter must be
+	  supplied. It never releases reset, maps or clears shared EMI, accesses AFE,
+	  requests the WDT IRQ, initializes BTIF, loads firmware, sends WMT, or
+	  enables Wi-Fi, Bluetooth, GNSS, or FM. A failed identity transaction
+	  unwinds rail and domain votes in reverse order but intentionally does not
+	  claim to restore the vendor-persistent sleep-mask/PWRON writes.
+
+config MTK_MT6797_CONSYS_RUNTIME_KUNIT_TEST
+	bool "KUnit tests for the MT6797 CONSYS runtime lifecycle backend"
+	depends on KUNIT=y
+	depends on MTK_MT6797_CONSYS_RUNTIME=y
+	help
+	  Exercise the runtime provider's required resource/IRQ contracts and the
+	  long-lived lease ordering against an in-memory lifecycle backend. It does
+	  not create a platform device or access Gemini hardware.
+
 config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
 	bool "MediaTek MT6797 CONSYS firmware preflight gate"
 	depends on MTK_MT6797_CONSYS_CORE

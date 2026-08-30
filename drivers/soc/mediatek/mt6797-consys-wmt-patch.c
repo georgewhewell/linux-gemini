@@ -8,11 +8,15 @@
  * at nixos-gemini/research/mt6797-btif-runtime-evidence-next/
  * firmware-provenance.md:17-23,67-70.
  *
- * Vendor MT6797 code removes the 28-byte WMT_PATCH header, issues the full
- * and partial patch-address commands, then sends 1000-byte body fragments
- * with first/middle/last tags. It checks the exact address and patch replies:
+ * Vendor MT6797 code initially uses BTIF mandatory STP to query the chip, then
+ * switches the host to BTIF full STP before entering the patch-download loop:
  * gemini-linux-kernel-3.18/drivers/misc/mediatek/connectivity/common/
- * common_main/core/wmt_ic_soc.c:51-54,125-153,2130-2135,2163-2200,2222-2288.
+ * common_main/core/wmt_core.c:755-775,795-809 and
+ * common_main/core/wmt_ic_soc.c:1008-1044,1052-1091. The vendor patch loop
+ * removes the 28-byte WMT_PATCH header, issues the full and partial
+ * patch-address commands, then sends 1000-byte body fragments with
+ * first/middle/last tags. It checks the exact address and patch replies:
+ * common_main/core/wmt_ic_soc.c:2042-2308.
  *
  * This file is intentionally not a platform driver. It cannot acquire power,
  * clocks, resets, pads, BTIF DMA, STP ownership or a WMT endpoint. A future
@@ -219,6 +223,15 @@ mt6797_consys_wmt_patch_download_manifest(struct mtk_wmt *wmt,
 	if (!wmt || !manifest || manifest->patch_count != 2)
 		return -EINVAL;
 
+	/*
+	 * On MT6797 patch traffic follows the vendor's mandatory-to-full STP
+	 * switchover. A full-mode value is only a minimum endpoint contract: the
+	 * caller still owns the missing window/ACK/retry session and must not call
+	 * us until it has established and can recover that session.
+	 */
+	if (wmt->stp_mode != MTK_STP_MODE_FULL)
+		return -EPROTONOSUPPORT;
+
 	ret = mt6797_consys_firmware_manifest_preflight(manifest);
 	if (ret)
 		return ret;
@@ -284,6 +297,13 @@ int mt6797_consys_wmt_patch_download(struct device *dev, struct mtk_wmt *wmt)
 		return -EPERM;
 	if (!dev || !wmt)
 		return -EINVAL;
+	/*
+	 * Do not even acquire blobs for the bootstrap-only mandatory-STP endpoint.
+	 * See mt6797_consys_wmt_patch_download_manifest() for why FULL alone is
+	 * deliberately not treated as proof of a complete session owner.
+	 */
+	if (wmt->stp_mode != MTK_STP_MODE_FULL)
+		return -EPROTONOSUPPORT;
 
 	mutex_lock(&mt6797_consys_wmt_patch_download_lock);
 	ret = request_firmware(&config, config_blob.name, dev);
@@ -467,10 +487,10 @@ static void mt6797_consys_wmt_patch_test_manifest_sequence(struct kunit *test)
 
 	transport = kunit_kzalloc(test, sizeof(*transport), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_NULL(test, transport);
-	mtk_wmt_init(&wmt, MTK_STP_MODE_MANDATORY,
+	mtk_wmt_init(&wmt, MTK_STP_MODE_FULL,
 		     mt6797_consys_wmt_patch_test_transmit, transport);
 	transport->wmt = &wmt;
-	mtk_stp_init(&transport->stp, MTK_STP_MODE_MANDATORY);
+	mtk_stp_init(&transport->stp, MTK_STP_MODE_FULL);
 	KUNIT_ASSERT_EQ(test, mtk_stp_register_client(&transport->stp, MTK_STP_WMT,
 						      mt6797_consys_wmt_patch_test_receive,
 						      transport), 0);
@@ -516,10 +536,10 @@ static void mt6797_consys_wmt_patch_test_fragment_tags(struct kunit *test)
 	transport = kunit_kzalloc(test, sizeof(*transport), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_NULL(test, transport);
 	patch.blob.data = patch_data;
-	mtk_wmt_init(&wmt, MTK_STP_MODE_MANDATORY,
+	mtk_wmt_init(&wmt, MTK_STP_MODE_FULL,
 		     mt6797_consys_wmt_patch_test_transmit, transport);
 	transport->wmt = &wmt;
-	mtk_stp_init(&transport->stp, MTK_STP_MODE_MANDATORY);
+	mtk_stp_init(&transport->stp, MTK_STP_MODE_FULL);
 	KUNIT_ASSERT_EQ(test, mtk_stp_register_client(&transport->stp, MTK_STP_WMT,
 						      mt6797_consys_wmt_patch_test_receive,
 						      transport), 0);
@@ -540,9 +560,24 @@ static void mt6797_consys_wmt_patch_test_fragment_tags(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, transport->packet_lengths[2], (size_t)6);
 }
 
+static void mt6797_consys_wmt_patch_test_mandatory_endpoint_rejected(struct kunit *test)
+{
+	struct mt6797_consys_firmware_manifest manifest = {
+		.patch_count = 2,
+	};
+	struct mtk_wmt wmt;
+
+	/* A mandatory endpoint is only the vendor bootstrap phase, never DLM. */
+	mtk_wmt_init(&wmt, MTK_STP_MODE_MANDATORY, NULL, NULL);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_consys_wmt_patch_download_manifest(&wmt, &manifest),
+			-EPROTONOSUPPORT);
+}
+
 static struct kunit_case mt6797_consys_wmt_patch_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_manifest_sequence),
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_fragment_tags),
+	KUNIT_CASE(mt6797_consys_wmt_patch_test_mandatory_endpoint_rejected),
 	{ }
 };
 

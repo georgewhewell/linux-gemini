@@ -203,6 +203,10 @@ config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD
 	  This is deliberately not a Device Tree driver. It cannot acquire a
 	  transport, power domain, reset, clock, regulator, pad, or RF resource.
 	  A future WMT/STP owner must explicitly call it, and calls are rejected
+	  unless the supplied endpoint uses full STP; the MT6797 vendor sequence
+	  switches from mandatory to full STP before patch download. Full mode alone
+	  is not a session-capability proof: the caller must also own the full STP
+	  window, ACK, retry and recovery lifecycle. Calls are also rejected
 	  unless mt6797_consys_wmt_patch.enable_patch_download=1 is set at boot (or
 	  the equivalent read-only module parameter is supplied). It neither enables
 	  Wi-Fi, Bluetooth, GNSS, FM, nor any radio function.
@@ -217,9 +221,10 @@ config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD_KUNIT_TEST
 	depends on MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD=y
 	help
 	  Exercise the patch-header boundary, exact MT6797 address packets, body
-	  fragment tags and WMT reply matching with in-memory data and a fake STP
-	  transport. The test does not request firmware, bind Device Tree, access
-	  hardware, or enable a connectivity function.
+	  fragment tags and WMT reply matching with in-memory data and a fake
+	  full-STP data-frame codec. It does not model full-STP window/ACK/retry
+	  ownership, request firmware, bind Device Tree, access hardware, or enable
+	  a connectivity function.
 
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"

@@ -21,6 +21,14 @@ mt6797-gemini-pda-consys-emi-identity-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-consys-emi-identity.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-emi-identity.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-emi-reset-release.dtbo
+# The raw-phandle rescue reset-release overlay is deliberately omitted until it
+# can be tied mechanically to the exact rescue base DTB.
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-emi-preflight-rescue.dtbo
+mt6797-gemini-pda-consys-emi-reset-release-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-emi-reset-release.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-emi-reset-release.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-btif-pio-qualification.dtbo
 mt6797-gemini-pda-btif-pio-qualification-dtbs := \
 	mt6797-gemini-pda.dtb \

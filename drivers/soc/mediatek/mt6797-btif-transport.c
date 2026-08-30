@@ -179,6 +179,8 @@ int mt6797_btif_vfifo_rx_segments(const struct mt6797_btif_vfifo *fifo,
 		length = wpt - rpt;
 	else
 		return -EOVERFLOW;
+	if (length > MT6797_BTIF_VFIFO_SIZE)
+		return -EOVERFLOW;
 
 	first_len = min_t(size_t, length, MT6797_BTIF_VFIFO_SIZE - rpt);
 	segments->first = fifo->cpu_addr + rpt;
@@ -456,10 +458,18 @@ static int mt6797_btif_enable(struct mt6797_btif_transport *btif)
 				MT6797_BTIF_DMA_RX, MT6797_BTIF_DMA_RX);
 	writel(MT6797_BTIF_VFF_EN_BIT,
 	       btif->rx_dma + MT6797_BTIF_VFF_EN);
+	/* Clear a stale W1C RX indication before Linux unmasks the IRQ. */
+	writel(MT6797_BTIF_VFF_RX_INT,
+	       btif->rx_dma + MT6797_BTIF_VFF_INT_FLAG);
 	mt6797_btif_update_bits(btif->rx_dma, MT6797_BTIF_VFF_INT_EN,
 				MT6797_BTIF_VFF_RX_INT,
 				MT6797_BTIF_VFF_RX_INT);
 	spin_unlock_irqrestore(&btif->state_lock, flags);
+
+	/* All handlers may touch MMIO, so do not unmask until it is live. */
+	enable_irq(btif->core_irq);
+	enable_irq(btif->tx_irq);
+	enable_irq(btif->rx_irq);
 
 	return 0;
 
@@ -541,16 +551,19 @@ static int mt6797_btif_transport_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = devm_request_irq(dev, btif->core_irq, mt6797_btif_core_irq, 0,
+	ret = devm_request_irq(dev, btif->core_irq, mt6797_btif_core_irq,
+			       IRQF_NO_AUTOEN,
 			       dev_name(dev), btif);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request core IRQ\n");
-	ret = devm_request_irq(dev, btif->tx_irq, mt6797_btif_tx_irq, 0,
+	ret = devm_request_irq(dev, btif->tx_irq, mt6797_btif_tx_irq,
+			       IRQF_NO_AUTOEN,
 			       dev_name(dev), btif);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request TX DMA IRQ\n");
 	ret = devm_request_threaded_irq(dev, btif->rx_irq, mt6797_btif_rx_irq,
-					mt6797_btif_rx_thread, IRQF_ONESHOT,
+					mt6797_btif_rx_thread,
+					IRQF_ONESHOT | IRQF_NO_AUTOEN,
 					dev_name(dev), btif);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request RX DMA IRQ\n");

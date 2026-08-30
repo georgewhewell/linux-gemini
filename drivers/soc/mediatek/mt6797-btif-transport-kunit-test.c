@@ -105,12 +105,28 @@ static void mt6797_btif_test_rx_invalid_progress(struct kunit *test)
 			-EOVERFLOW);
 }
 
+static void mt6797_btif_test_rx_impossible_wrap_progress(struct kunit *test)
+{
+	struct mt6797_btif_vfifo *fifo;
+	struct mt6797_btif_rx_segments segments;
+	u32 impossible_wpt = MT6797_BTIF_VFIFO_WRAP | 64;
+
+	fifo = mt6797_btif_test_fifo(test);
+	KUNIT_ASSERT_NOT_NULL(test, fifo);
+	KUNIT_ASSERT_NOT_NULL(test, fifo->cpu_addr);
+	fifo->rpt = 32;
+	KUNIT_EXPECT_EQ(test,
+			mt6797_btif_vfifo_rx_segments(fifo, impossible_wpt, &segments),
+			-EOVERFLOW);
+}
+
 static struct kunit_case mt6797_btif_transport_test_cases[] = {
 	KUNIT_CASE(mt6797_btif_test_pointer_advance),
 	KUNIT_CASE(mt6797_btif_test_tx_short_space),
 	KUNIT_CASE(mt6797_btif_test_tx_wrap),
 	KUNIT_CASE(mt6797_btif_test_rx_wrap_segments),
 	KUNIT_CASE(mt6797_btif_test_rx_invalid_progress),
+	KUNIT_CASE(mt6797_btif_test_rx_impossible_wrap_progress),
 	{}
 };
 

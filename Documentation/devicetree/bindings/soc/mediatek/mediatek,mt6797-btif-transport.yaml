@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-btif-transport.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 experimental BTIF/APDMA byte transport
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  MT6797 BTIF is the byte transport shared by the vendor CONSYS stack. This
+  experimental binding describes its core, two APDMA virtual-FIFO windows,
+  clocks and interrupts. It does not describe pads, firmware, CONSYS power
+  votes, function control, or STP full-mode ownership.
+
+  Keep the node disabled. Even when a test overlay sets status to "okay", the
+  driver refuses to access hardware unless this node has
+  mediatek,experimental-transport and its module parameter is enabled. The
+  double gate prevents an ordinary DT enable from powering clocks or starting
+  DMA while the CONSYS ownership contract remains under development.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-btif-transport
+
+  reg:
+    maxItems: 3
+    description: |
+      BTIF core, TX APDMA virtual-FIFO, and RX APDMA virtual-FIFO register
+      windows, in that order.
+
+  reg-names:
+    items:
+      - const: core
+      - const: tx-dma
+      - const: rx-dma
+
+  interrupts:
+    items:
+      - description: BTIF core interrupt
+      - description: BTIF TX APDMA interrupt
+      - description: BTIF RX APDMA interrupt
+
+  interrupt-names:
+    items:
+      - const: core
+      - const: tx
+      - const: rx
+
+  clocks:
+    minItems: 2
+    maxItems: 2
+
+  clock-names:
+    items:
+      - const: btifc
+      - const: apdmac
+
+  mediatek,consys:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the shared MT6797 CONSYS owner.
+
+  mediatek,experimental-transport:
+    type: boolean
+    description: |
+      Explicitly permit a hand-authored experiment when the module parameter
+      enable_experimental_transport=1 is also present. This property does not
+      establish pad mux, firmware, or CONSYS power ownership.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
+  - mediatek,consys
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    btif-transport@1100c000 {
+        compatible = "mediatek,mt6797-btif-transport";
+        reg = <0 0x1100c000 0 0x1000>,
+              <0 0x11000a00 0 0x80>,
+              <0 0x11000a80 0 0x80>;
+        reg-names = "core", "tx-dma", "rx-dma";
+        interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 116 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 117 IRQ_TYPE_LEVEL_LOW>;
+        interrupt-names = "core", "tx", "rx";
+        clocks = <&infrasys CLK_INFRA_BTIF>,
+                 <&infrasys CLK_INFRA_AP_DMA>;
+        clock-names = "btifc", "apdmac";
+        mediatek,consys = <&consys>;
+        status = "disabled";
+    };
+...

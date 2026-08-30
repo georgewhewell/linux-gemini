@@ -12,9 +12,11 @@
  * switches the host to BTIF full STP before entering the patch-download loop:
  * gemini-linux-kernel-3.18/drivers/misc/mediatek/connectivity/common/
  * common_main/core/wmt_core.c:755-775,795-809 and
- * common_main/core/wmt_ic_soc.c:1008-1044,1052-1091. The vendor patch loop
- * removes the 28-byte WMT_PATCH header, issues the full and partial
- * patch-address commands, then sends 1000-byte body fragments with
+ * common_main/core/wmt_ic_soc.c:1008-1051,1068-1103. For MT6797 (0x0279),
+ * the active envelope sends three power-on DLM commands, four MCU-clock-up
+ * commands, then the patch loop, followed by three MCU-clock-down commands.
+ * The vendor patch loop removes the 28-byte WMT_PATCH header, issues the full
+ * and partial patch-address commands, then sends 1000-byte body fragments with
  * first/middle/last tags. It checks the exact address and patch replies, then
  * runs init_table_3's WMT reset after every patch:
  * common_main/core/wmt_ic_soc.c:122-128,719-724,1079-1091,2042-2308. The
@@ -25,6 +27,10 @@
  * determined from this source. Therefore it is sent and matched only as the
  * vendor's ordinary full-STP transaction; any failure stops the manifest and
  * only the bootstrap session owner may fence/recover that transport.
+ *
+ * CFG_WMT_POWER_ON_DLM and CFG_WMT_PATCH_DL_OPTM are both hard-coded to 1 in
+ * the cited vendor source. Their failures are fail-closed here; the bootstrap
+ * session owner must fence/recover the full-STP window.
  *
  * This file is intentionally not a platform driver. It cannot acquire power,
  * clocks, resets, pads, BTIF DMA, STP ownership or a WMT endpoint. No Device
@@ -59,6 +65,7 @@
 
 #define MT6797_CONSYS_WMT_OPCODE_PATCH		0x01
 #define MT6797_CONSYS_WMT_OPCODE_PATCH_ADDRESS	0x08
+#define MT6797_CONSYS_WMT_OPCODE_MCU_CONFIG	0x08
 #define MT6797_CONSYS_WMT_OPCODE_RESET		0x07
 
 #define MT6797_CONSYS_WMT_PATCH_FRAGMENT_FIRST	0x01
@@ -119,11 +126,20 @@ static const u8 mt6797_consys_wmt_address_reply[] = { 0x00, 0x00, 0x00, 0x01 };
 static const u8 mt6797_consys_wmt_patch_reply[] = { 0x00 };
 static const u8 mt6797_consys_wmt_reset_data[] = { 0x04 };
 static const u8 mt6797_consys_wmt_reset_reply[] = { 0x00 };
+static const u8 mt6797_consys_wmt_mcu_config_reply[] = {
+	0x00, 0x00, 0x00, 0x01,
+};
 
 static const struct mtk_wmt_match mt6797_consys_wmt_address_match = {
 	.opcode = MT6797_CONSYS_WMT_OPCODE_PATCH_ADDRESS,
 	.data = mt6797_consys_wmt_address_reply,
 	.data_len = sizeof(mt6797_consys_wmt_address_reply),
+};
+
+static const struct mtk_wmt_match mt6797_consys_wmt_mcu_config_match = {
+	.opcode = MT6797_CONSYS_WMT_OPCODE_MCU_CONFIG,
+	.data = mt6797_consys_wmt_mcu_config_reply,
+	.data_len = sizeof(mt6797_consys_wmt_mcu_config_reply),
 };
 
 static const struct mtk_wmt_match mt6797_consys_wmt_patch_match = {
@@ -160,6 +176,58 @@ static const u8 mt6797_consys_wmt_partial_address_template[] = {
 	0x00, 0x3f, 0x00, 0x01, 0xff, 0xff, 0xff, 0xff,
 };
 
+/* The vendor's CFG_WMT_POWER_ON_DLM=1 envelope, SDUs after WMT's header. */
+static const u8 mt6797_consys_wmt_power_on_dlm[][16] = {
+	{
+		0x01, 0x01, 0x00, 0x01, 0x60, 0x00, 0x10, 0x80,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00,
+	},
+	{
+		0x01, 0x01, 0x00, 0x01, 0x60, 0x00, 0x10, 0x80,
+		0x00, 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00,
+	},
+	{
+		0x01, 0x01, 0x00, 0x01, 0x60, 0x00, 0x10, 0x80,
+		0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+	},
+};
+
+/* The vendor's CFG_WMT_PATCH_DL_OPTM=1 MT6797 clock-up envelope. */
+static const u8 mt6797_consys_wmt_mcu_clock_up[][16] = {
+	{
+		0x01, 0x01, 0x00, 0x01, 0x10, 0x11, 0x02, 0x81,
+		0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x10,
+	},
+	{
+		0x01, 0x01, 0x00, 0x01, 0x0c, 0x01, 0x00, 0x80,
+		0x40, 0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00,
+	},
+	{
+		0x01, 0x01, 0x00, 0x01, 0x18, 0x11, 0x02, 0x80,
+		0x07, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00,
+	},
+	{
+		0x01, 0x01, 0x00, 0x01, 0x00, 0x11, 0x02, 0x81,
+		0x04, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00,
+	},
+};
+
+/* The vendor's CFG_WMT_PATCH_DL_OPTM=1 MT6797 clock-down envelope. */
+static const u8 mt6797_consys_wmt_mcu_clock_down[][16] = {
+	{
+		0x01, 0x01, 0x00, 0x01, 0x00, 0x11, 0x02, 0x81,
+		0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00,
+	},
+	{
+		0x01, 0x01, 0x00, 0x01, 0x0c, 0x01, 0x00, 0x80,
+		0x00, 0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00,
+	},
+	{
+		0x01, 0x01, 0x00, 0x01, 0x10, 0x11, 0x02, 0x81,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+	},
+};
+
 static int mt6797_consys_wmt_patch_transaction(
 		const struct mt6797_consys_wmt_patch_transport *transport,
 		u8 opcode, const u8 *data, size_t data_len,
@@ -170,6 +238,25 @@ static int mt6797_consys_wmt_patch_transaction(
 
 	return transport->transaction(transport->context, opcode, data, data_len,
 				      expected, MT6797_CONSYS_WMT_PATCH_TIMEOUT);
+}
+
+static int mt6797_consys_wmt_run_mcu_script(
+		const struct mt6797_consys_wmt_patch_transport *transport,
+		const u8 commands[][16], size_t command_count)
+{
+	size_t i;
+	int ret;
+
+	for (i = 0; i < command_count; i++) {
+		ret = mt6797_consys_wmt_patch_transaction(transport,
+				MT6797_CONSYS_WMT_OPCODE_MCU_CONFIG,
+				commands[i], 16,
+				&mt6797_consys_wmt_mcu_config_match);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 
 static int
@@ -260,6 +347,20 @@ mt6797_consys_wmt_patch_download_manifest(
 	if (ret)
 		return ret;
 
+	/* Vendor CFG_WMT_POWER_ON_DLM=1, after full STP and before patch discovery. */
+	ret = mt6797_consys_wmt_run_mcu_script(transport,
+			mt6797_consys_wmt_power_on_dlm,
+			ARRAY_SIZE(mt6797_consys_wmt_power_on_dlm));
+	if (ret)
+		return ret;
+
+	/* Vendor CFG_WMT_PATCH_DL_OPTM=1, MT6797 (0x0279) clock-up table 3. */
+	ret = mt6797_consys_wmt_run_mcu_script(transport,
+			mt6797_consys_wmt_mcu_clock_up,
+			ARRAY_SIZE(mt6797_consys_wmt_mcu_clock_up));
+	if (ret)
+		return ret;
+
 	for (i = 0; i < manifest->patch_count; i++) {
 		ret = mt6797_consys_patch_preflight(&manifest->patches[i], &info);
 		if (ret)
@@ -280,7 +381,10 @@ mt6797_consys_wmt_patch_download_manifest(
 			return ret;
 	}
 
-	return 0;
+	/* Vendor MT6797 clock-down table 4, only after every patch/reset. */
+	return mt6797_consys_wmt_run_mcu_script(transport,
+			mt6797_consys_wmt_mcu_clock_down,
+			ARRAY_SIZE(mt6797_consys_wmt_mcu_clock_down));
 }
 
 static int mt6797_consys_wmt_patch_bootstrap_transaction(
@@ -386,7 +490,7 @@ EXPORT_SYMBOL_GPL(mt6797_consys_wmt_patch_download);
 #if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD_KUNIT_TEST)
 /* Hardware-free packet-vector coverage for the static manifest helper. */
 
-#define MT6797_CONSYS_WMT_PATCH_TEST_MAX_PACKETS	8
+#define MT6797_CONSYS_WMT_PATCH_TEST_MAX_PACKETS	32
 #define MT6797_CONSYS_WMT_PATCH_TEST_PACKET_SIZE \
 	(MTK_WMT_HEADER_SIZE + MT6797_CONSYS_WMT_PATCH_FRAGMENT_SIZE + 1)
 
@@ -397,6 +501,8 @@ struct mt6797_consys_wmt_patch_test_transport {
 		  [MT6797_CONSYS_WMT_PATCH_TEST_PACKET_SIZE];
 	size_t packet_lengths[MT6797_CONSYS_WMT_PATCH_TEST_MAX_PACKETS];
 	unsigned int packet_count;
+	bool fail_transaction;
+	unsigned int fail_packet;
 };
 
 static int
@@ -420,6 +526,8 @@ mt6797_consys_wmt_patch_test_receive(void *context, const u8 *payload,
 	memcpy(transport->packets[index], payload, length);
 	transport->packet_lengths[index] = length;
 	transport->packet_count++;
+	if (transport->fail_transaction && index == transport->fail_packet)
+		return -EIO;
 	if (payload[1] == MT6797_CONSYS_WMT_OPCODE_PATCH_ADDRESS) {
 		reply = address_event;
 		reply_size = sizeof(address_event);
@@ -517,6 +625,23 @@ mt6797_consys_wmt_patch_test_manifest(struct mt6797_consys_firmware_blob *config
 	};
 }
 
+static void mt6797_consys_wmt_patch_test_expect_mcu_script(
+		struct kunit *test,
+		struct mt6797_consys_wmt_patch_test_transport *transport,
+		unsigned int first, const u8 commands[][16], unsigned int count)
+{
+	static const u8 header[] = { 0x01, 0x08, 0x10, 0x00 };
+	unsigned int i;
+
+	for (i = 0; i < count; i++) {
+		KUNIT_EXPECT_EQ(test, transport->packet_lengths[first + i], 20U);
+		KUNIT_EXPECT_MEMEQ(test, transport->packets[first + i], header,
+				   sizeof(header));
+		KUNIT_EXPECT_MEMEQ(test, transport->packets[first + i] + 4,
+				   commands[i], 16);
+	}
+}
+
 static void mt6797_consys_wmt_patch_test_manifest_sequence(struct kunit *test)
 {
 	static const u8 full_address[] = {
@@ -563,31 +688,80 @@ static void mt6797_consys_wmt_patch_test_manifest_sequence(struct kunit *test)
 	KUNIT_ASSERT_EQ(test,
 			mt6797_consys_wmt_patch_download_manifest(&patch_transport,
 								  &manifest), 0);
-	KUNIT_ASSERT_EQ(test, transport->packet_count, 8U);
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[0], sizeof(full_address));
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[1],
-			sizeof(first_partial_address));
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[2], sizeof(patch_last));
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[3], sizeof(reset));
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[4], sizeof(full_address));
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[5],
-			sizeof(second_partial_address));
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[6], sizeof(patch_last));
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[7], sizeof(reset));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[0], full_address,
+	KUNIT_ASSERT_EQ(test, transport->packet_count, 18U);
+	mt6797_consys_wmt_patch_test_expect_mcu_script(
+		test, transport, 0, mt6797_consys_wmt_power_on_dlm,
+		ARRAY_SIZE(mt6797_consys_wmt_power_on_dlm));
+	mt6797_consys_wmt_patch_test_expect_mcu_script(
+		test, transport, 3, mt6797_consys_wmt_mcu_clock_up,
+		ARRAY_SIZE(mt6797_consys_wmt_mcu_clock_up));
+	mt6797_consys_wmt_patch_test_expect_mcu_script(
+		test, transport, 15, mt6797_consys_wmt_mcu_clock_down,
+		ARRAY_SIZE(mt6797_consys_wmt_mcu_clock_down));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[7], sizeof(full_address));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[8],
+				sizeof(first_partial_address));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[9], sizeof(patch_last));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[10], sizeof(reset));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[11], sizeof(full_address));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[12],
+				sizeof(second_partial_address));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[13], sizeof(patch_last));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[14], sizeof(reset));
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[7], full_address,
 			   sizeof(full_address));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[1], first_partial_address,
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[8], first_partial_address,
 			   sizeof(first_partial_address));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[2], patch_last,
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[9], patch_last,
 			   sizeof(patch_last));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[3], reset, sizeof(reset));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[4], full_address,
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[10], reset, sizeof(reset));
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[11], full_address,
 			   sizeof(full_address));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[5], second_partial_address,
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[12], second_partial_address,
 			   sizeof(second_partial_address));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[6], patch_last,
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[13], patch_last,
 			   sizeof(patch_last));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[7], reset, sizeof(reset));
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[14], reset, sizeof(reset));
+}
+
+static void mt6797_consys_wmt_patch_test_envelope_failure_fences(
+		struct kunit *test)
+{
+	struct mt6797_consys_wmt_patch_test_transport *transport;
+	struct mt6797_consys_wmt_patch_transport patch_transport;
+	struct mt6797_consys_firmware_blob config;
+	struct mt6797_consys_patch_image patches[2];
+	struct mt6797_consys_firmware_manifest manifest;
+	struct mtk_wmt wmt;
+	u8 patch_data[29];
+
+	transport = kunit_kzalloc(test, sizeof(*transport), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, transport);
+	mtk_wmt_init(&wmt, MTK_STP_MODE_FULL,
+			 mt6797_consys_wmt_patch_test_transmit, transport);
+	transport->wmt = &wmt;
+	transport->fail_transaction = true;
+	transport->fail_packet = 2;
+	mtk_stp_init(&transport->stp, MTK_STP_MODE_FULL);
+	KUNIT_ASSERT_EQ(test, mtk_stp_register_client(&transport->stp, MTK_STP_WMT,
+							      mt6797_consys_wmt_patch_test_receive,
+							      transport), 0);
+	mt6797_consys_wmt_patch_test_manifest(&config, patches, &manifest,
+							     patch_data);
+	patch_transport = (struct mt6797_consys_wmt_patch_transport) {
+		.transaction = mt6797_consys_wmt_patch_test_transaction,
+		.context = &wmt,
+	};
+
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_wmt_patch_download_manifest(&patch_transport,
+								  &manifest), -EIO);
+	KUNIT_EXPECT_EQ(test, transport->packet_count, 3U);
+	transport->fail_transaction = false;
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_wmt_patch_download_manifest(&patch_transport,
+								  &manifest), -EPIPE);
+	KUNIT_EXPECT_EQ(test, transport->packet_count, 3U);
 }
 
 static void mt6797_consys_wmt_patch_test_fragment_tags(struct kunit *test)
@@ -648,6 +822,7 @@ static void mt6797_consys_wmt_patch_test_unowned_transport_rejected(struct kunit
 
 static struct kunit_case mt6797_consys_wmt_patch_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_manifest_sequence),
+	KUNIT_CASE(mt6797_consys_wmt_patch_test_envelope_failure_fences),
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_fragment_tags),
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_unowned_transport_rejected),
 	{ }

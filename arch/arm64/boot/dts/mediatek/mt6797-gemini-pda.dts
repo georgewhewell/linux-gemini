@@ -234,6 +234,31 @@
 		memory-region-names = "shared";
 		status = "disabled";
 	};
+
+};
+
+/*
+ * Replace the generic disabled 8250 BTIF description from mt6797.dtsi.
+ * Keep this disabled: the transport driver has a second explicit experiment
+ * gate because BTIF pads, firmware and CONSYS power ownership remain unknown.
+ */
+&btif {
+	compatible = "mediatek,mt6797-btif-transport";
+	reg = <0 0x1100c000 0 0x1000>,
+	      <0 0x11000a00 0 0x80>,
+	      <0 0x11000a80 0 0x80>;
+	reg-names = "core", "tx-dma", "rx-dma";
+	interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>,
+		     <GIC_SPI 116 IRQ_TYPE_LEVEL_LOW>,
+		     <GIC_SPI 117 IRQ_TYPE_LEVEL_LOW>;
+	interrupt-names = "core", "tx", "rx";
+	clocks = <&infrasys CLK_INFRA_BTIF>,
+		 <&infrasys CLK_INFRA_AP_DMA>;
+	clock-names = "btifc", "apdmac";
+	mediatek,consys = <&consys>;
+	/delete-property/ reg-shift;
+	/delete-property/ reg-io-width;
+	status = "disabled";
 };
 
 &pio {

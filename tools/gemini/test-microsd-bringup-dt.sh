@@ -22,6 +22,17 @@ require_prop() {
 	fi
 }
 
+require_hex_prop() {
+	path=$1
+	prop=$2
+	want=$3
+	actual=$($fdtget_bin -t x "$dtb" "$path" "$prop")
+	if [ "$actual" != "$want" ]; then
+		echo "$path/$prop: got '$actual', want '$want'" >&2
+		exit 1
+	fi
+}
+
 reject_prop() {
 	path=$1
 	prop=$2
@@ -52,13 +63,17 @@ require_supply() {
 
 mmc=/mmc@11240000
 regs=/pwrap@1000d000/pmic/regulators
+cd_pins=/pinctrl@10005000/microsd-cd-pin/pins-cd
 
 require_prop "$mmc" status okay
 require_prop "$mmc" bus-width 4
-require_prop "$mmc" max-frequency 400000
+require_prop "$mmc" max-frequency 25000000
 # GPIO_ACTIVE_HIGH is zero.  No cd-inverted means high is card present.
 require_gpio_cd
 reject_prop "$mmc" cd-inverted
+require_prop "$mmc" no-1-8-v
+# MT6797_GPIO67__FUNC_GPIO67, not the distinct EINT6 mux function (0x4301).
+require_hex_prop "$cd_pins" pinmux 4300
 
 require_prop "$regs/ldo-vmch" regulator-min-microvolt 3000000
 require_prop "$regs/ldo-vmch" regulator-max-microvolt 3000000
@@ -79,4 +94,4 @@ reject_prop "$mmc" sd-uhs-sdr50
 reject_prop "$mmc" sd-uhs-sdr104
 reject_prop "$mmc" sd-uhs-ddr50
 
-echo "MicroSD MMC1 composed-DT contract is valid: 4-bit, 400 kHz, fixed 3.0 V."
+echo "MicroSD MMC1 composed-DT contract is valid: 4-bit, 25 MHz legacy SD, fixed 3.0 V."

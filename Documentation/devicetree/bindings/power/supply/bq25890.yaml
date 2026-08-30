@@ -19,6 +19,12 @@ allOf:
       required:
         - ti,read-only
   - if:
+      required:
+        - ti,read-only-adc
+    then:
+      required:
+        - ti,read-only
+  - if:
       not:
         required:
           - ti,read-only
@@ -111,10 +117,11 @@ properties:
       identification and status-observation stage when the board charge
       limits, interrupt wiring, or host-control ownership have not yet been
       established. The driver reads only the chip ID and non-destructive
-      charge/online status fields; it does not reset the charger, configure
-      the watchdog or ADC, expose its OTG regulator, register an interrupt,
-      or accept writable power-supply properties. BQ2589x fault status bits
-      are read-to-clear and are intentionally not reported in this mode.
+      charge/online status fields (plus optional ADC results with
+      ti,read-only-adc); it does not reset the charger, configure the watchdog
+      or ADC, expose its OTG regulator, register an interrupt, or accept
+      writable power-supply properties. BQ2589x fault status bits are
+      read-to-clear and are intentionally not reported in this mode.
     type: boolean
 
   ti,status-poll-interval-ms:
@@ -126,6 +133,16 @@ properties:
       writable power-supply property.
     minimum: 1000
     maximum: 3600000
+
+  ti,read-only-adc:
+    description: |
+      In ti,read-only mode, also expose VOLTAGE_NOW and CURRENT_NOW from the
+      BQ2589x ADC result registers. The driver never starts or configures ADC
+      conversion in this mode. It reports a sample only while the chip's
+      continuous-conversion bit is already set, otherwise these properties
+      return -ENODATA. This is intended for a bounded diagnostic stage where
+      charger policy and ADC ownership remain outside Linux.
+    type: boolean
 
 required:
   - compatible

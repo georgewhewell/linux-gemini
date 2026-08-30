@@ -43,6 +43,9 @@
 #define WDT_RST			0x08
 #define WDT_RST_RELOAD		0x1971
 
+#define WDT_STATUS		0x0c
+#define WDT_INTERVAL		0x10
+
 #define WDT_MODE		0x00
 #define WDT_MODE_EN		(1 << 0)
 #define WDT_MODE_EXT_POL_LOW	(0 << 1)
@@ -80,12 +83,14 @@ struct mtk_wdt_dev {
 	bool reset_by_toprgu;
 	bool has_swsysrst_en;
 	bool use_auto_restart;
+	bool report_handoff_state;
 };
 
 struct mtk_wdt_data {
 	int toprgu_sw_rst_num;
 	bool has_swsysrst_en;
 	bool use_auto_restart;
+	bool report_handoff_state;
 	unsigned int restart_priority;
 };
 
@@ -104,6 +109,7 @@ static const struct mtk_wdt_data mt6795_data = {
 static const struct mtk_wdt_data mt6797_data = {
 	.toprgu_sw_rst_num = MT6797_TOPRGU_SW_RST_NUM,
 	.use_auto_restart = true,
+	.report_handoff_state = true,
 	.restart_priority = 255,
 };
 
@@ -318,11 +324,20 @@ static void mtk_wdt_init(struct watchdog_device *wdt_dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
 	void __iomem *wdt_base;
+	u32 handoff_interval = 0;
+	u32 handoff_length = 0;
+	u32 handoff_status = 0;
 	u32 reg;
 
 	wdt_base = mtk_wdt->wdt_base;
 
 	reg = readl(wdt_base + WDT_MODE);
+	if (mtk_wdt->report_handoff_state) {
+		/* Snapshot the boot-firmware handoff before Linux changes it. */
+		handoff_length = readl(wdt_base + WDT_LENGTH);
+		handoff_status = readl(wdt_base + WDT_STATUS);
+		handoff_interval = readl(wdt_base + WDT_INTERVAL);
+	}
 	if (reg & WDT_MODE_EN) {
 		if (mtk_wdt->use_auto_restart) {
 			if (wdt_dev->pretimeout)
@@ -335,6 +350,10 @@ static void mtk_wdt_init(struct watchdog_device *wdt_dev)
 		set_bit(WDOG_HW_RUNNING, &wdt_dev->status);
 		mtk_wdt_set_timeout(wdt_dev, wdt_dev->timeout);
 	}
+	if (mtk_wdt->report_handoff_state)
+		dev_info(wdt_dev->parent,
+			 "boot handoff: mode=%#010x length=%#010x status=%#010x interval=%#010x\n",
+			 reg, handoff_length, handoff_status, handoff_interval);
 }
 
 static int mtk_wdt_stop(struct watchdog_device *wdt_dev)
@@ -450,8 +469,10 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, mtk_wdt);
 
 	wdt_data = of_device_get_match_data(dev);
-	if (wdt_data)
+	if (wdt_data) {
 		mtk_wdt->use_auto_restart = wdt_data->use_auto_restart;
+		mtk_wdt->report_handoff_state = wdt_data->report_handoff_state;
+	}
 
 	mtk_wdt->wdt_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(mtk_wdt->wdt_base))

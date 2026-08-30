@@ -33,13 +33,14 @@ static void mt6797_consys_postid_unpin(
 }
 
 static int mt6797_consys_postid_fail(
-		struct mt6797_consys_postid_owner *owner, int error)
+		struct mt6797_consys_postid_owner *owner, int error,
+		bool persistent)
 {
 	int reset_ret;
 
 	/* A failed callback may have changed hardware before returning an error. */
 	reset_ret = owner->ops->assert_reset(owner->context);
-	if (reset_ret) {
+	if (persistent || reset_ret) {
 		/* Keep the pin: the subsystem is not known to be safely held/reset. */
 		owner->state = MT6797_CONSYS_POSTID_ERROR;
 		return error;
@@ -95,15 +96,15 @@ int mt6797_consys_postid_start(
 			owner->lease = lease;
 			ret = owner->ops->configure_mbist(owner->context);
 			if (ret)
-				ret = mt6797_consys_postid_fail(owner, ret);
+				ret = mt6797_consys_postid_fail(owner, ret, false);
 			else {
 				ret = owner->ops->configure_afe(owner->context);
 				if (ret)
-					ret = mt6797_consys_postid_fail(owner, ret);
+					ret = mt6797_consys_postid_fail(owner, ret, true);
 				else {
 					ret = owner->ops->release_reset(owner->context);
 					if (ret)
-						ret = mt6797_consys_postid_fail(owner, ret);
+						ret = mt6797_consys_postid_fail(owner, ret, true);
 					else
 						owner->state = MT6797_CONSYS_POSTID_ACTIVE;
 				}

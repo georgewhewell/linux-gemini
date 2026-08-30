@@ -44,7 +44,11 @@ int mt6797_consys_postid_init(
 		struct mt6797_consys_lifecycle *lifecycle,
 		const struct mt6797_consys_postid_ops *ops, void *context);
 
-/* @experiment_gate is independent of the identity provider's gate. */
+/*
+ * @experiment_gate is independent of the identity provider's gate. A failure
+ * after AFE configuration is sticky: stop() must complete teardown before a
+ * caller can release the identity lease.
+ */
 int mt6797_consys_postid_start(
 		struct mt6797_consys_postid_owner *owner,
 		const struct mt6797_consys_runtime_lease *lease, bool experiment_gate);

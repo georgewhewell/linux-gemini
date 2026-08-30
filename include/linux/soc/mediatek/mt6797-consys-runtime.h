@@ -12,6 +12,7 @@
 #include <linux/soc/mediatek/mt6797-consys.h>
 
 struct device;
+struct mt6797_consys_postid_ops;
 
 enum mt6797_consys_runtime_provider_state {
 	MT6797_CONSYS_RUNTIME_PROVIDER_UNINITIALIZED,
@@ -66,5 +67,14 @@ int mt6797_consys_runtime_platform_lease_acquire(struct device *dev,
 		struct mt6797_consys_runtime_provider_lease *lease);
 int mt6797_consys_runtime_platform_lease_release(
 		struct mt6797_consys_runtime_provider_lease *lease);
+
+/*
+ * Return the runtime-owned post-ID backend only for its canonical identity
+ * lease. The caller must pass that same lease to postid_start(), which pins
+ * it for the complete MBIST/AFE/reset-release transaction.
+ */
+int mt6797_consys_runtime_postid_backend(struct device *dev,
+		const struct mt6797_consys_runtime_lease *identity,
+		const struct mt6797_consys_postid_ops **ops, void **context);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_CONSYS_RUNTIME_H */

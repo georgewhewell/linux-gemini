@@ -409,6 +409,16 @@ config MTK_MT6797_CONSYS_RUNTIME
 	  unwinds rail and domain votes in reverse order but intentionally does not
 	  claim to restore the vendor-persistent sleep-mask/PWRON writes.
 
+config MTK_MT6797_CONSYS_AFE_GPS_REGISTER_SETTING
+	bool "Optional MT6797 CONSYS GPS AFE register write"
+	depends on MTK_MT6797_CONSYS_RUNTIME
+	default n
+	help
+	  Include the vendor-conditional GPS AFE write at offset 0x14. Keep this
+	  disabled unless a board-specific CONSYS AFE review proves it is required.
+	  This option does not enable the runtime provider or create a Device Tree
+	  caller; both remain independently disabled by default.
+
 config MTK_MT6797_CONSYS_RUNTIME_KUNIT_TEST
 	bool "KUnit tests for the MT6797 CONSYS runtime lifecycle backend"
 	depends on KUNIT=y

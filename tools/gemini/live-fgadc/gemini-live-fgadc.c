@@ -124,6 +124,10 @@ static int gemini_fgadc_preflight_locked(void)
 {
 	struct mt6397_chip *mt6351;
 	struct device_node *parent;
+	u32 expected_control;
+	u32 expected_osr;
+	bool already_configured;
+	bool quiescent;
 	int ret;
 
 	if (preflight_ok)
@@ -185,19 +189,46 @@ static int gemini_fgadc_preflight_locked(void)
 	if (ret)
 		goto out_put_node;
 
-	/* Any live FGADC state could belong to firmware or another kernel owner. */
-	if ((before.clkpdn & GEMINI_FGADC_CLK_PDN_MASK) !=
-	    GEMINI_FGADC_CLK_PDN_MASK ||
-	    before.con0 & (GEMINI_FGADC_CON0_LOW_MASK | GEMINI_FGADC_CON0_HIGH_MASK)) {
-		pr_err("gemini-live-fgadc: FGADC is not quiescent (ckpdn=%#x con0=%#x); refusing\n",
-		       before.clkpdn, before.con0);
+	ret = of_property_read_u32(gemini_fgadc_node,
+				   "mediatek,fgadc-init-control",
+				   &expected_control);
+	if (ret)
+		goto out_put_node;
+	if (expected_control & BIT(0)) {
+		ret = -EINVAL;
+		goto out_put_node;
+	}
+	ret = of_property_read_u32(gemini_fgadc_node, "mediatek,fgadc-osr",
+				   &expected_osr);
+	if (ret)
+		goto out_put_node;
+	if (!expected_osr || expected_osr > GEMINI_FGADC_OSR_MASK) {
+		ret = -EINVAL;
+		goto out_put_node;
+	}
+
+	quiescent =
+		(before.clkpdn & GEMINI_FGADC_CLK_PDN_MASK) ==
+		GEMINI_FGADC_CLK_PDN_MASK &&
+		!(before.con0 & (GEMINI_FGADC_CON0_LOW_MASK |
+				 GEMINI_FGADC_CON0_HIGH_MASK));
+	already_configured =
+		!(before.clkpdn & GEMINI_FGADC_CLK_PDN_MASK) &&
+		(before.con0 & GEMINI_FGADC_CON0_LOW_MASK) ==
+		(expected_control | BIT(0)) &&
+		!(before.con0 & GEMINI_FGADC_CON0_HIGH_MASK) &&
+		(before.osr & GEMINI_FGADC_OSR_MASK) == expected_osr;
+	if (!quiescent && !already_configured) {
+		pr_err("gemini-live-fgadc: FGADC state differs from quiescent and exact authorized configuration (ckpdn=%#x con0=%#x osr=%#x); refusing\n",
+		       before.clkpdn, before.con0, before.osr);
 		ret = -EBUSY;
 		goto out_put_node;
 	}
 
 	preflight_ok = true;
-	pr_info("gemini-live-fgadc: read-only preflight passed: ckpdn=%#x con0=%#x osr=%#x\n",
-		before.clkpdn, before.con0, before.osr);
+	pr_info("gemini-live-fgadc: read-only preflight passed (%s): ckpdn=%#x con0=%#x osr=%#x\n",
+		already_configured ? "exact configuration already active" :
+		"quiescent", before.clkpdn, before.con0, before.osr);
 	return 0;
 
 out_put_node:
@@ -233,7 +264,7 @@ static int gemini_fgadc_activate_locked(void)
 
 	gemini_fgadc_pdev->dev.parent = gemini_pmic;
 	device_set_node(&gemini_fgadc_pdev->dev,
-			of_fwnode_handle(gemini_fgadc_node));
+			of_fwnode_handle(of_node_get(gemini_fgadc_node)));
 	ret = platform_device_add(gemini_fgadc_pdev);
 	if (ret)
 		goto out_put_pdev;

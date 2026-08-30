@@ -40,6 +40,7 @@
 #define GEMINI_FGADC_CLK_PDN_MASK	GENMASK(3, 2)
 #define GEMINI_FGADC_CON0_LOW_MASK	GENMASK(7, 0)
 #define GEMINI_FGADC_CON0_HIGH_MASK	GENMASK(15, 8)
+#define GEMINI_FGADC_OSR_MASK		GENMASK(3, 0)
 
 struct gemini_fgadc_snapshot {
 	unsigned int clkpdn;
@@ -54,6 +55,7 @@ static struct platform_device *gemini_fgadc_pdev;
 static struct gemini_fgadc_snapshot before;
 static bool preflight_ok;
 static bool activate;
+static bool restore_pending;
 
 module_param(activate, bool, 0400);
 MODULE_PARM_DESC(activate, "create the FGADC child during module load (default false)");
@@ -278,7 +280,8 @@ static int gemini_fgadc_verify_restore_locked(void)
 	    (before.clkpdn & GEMINI_FGADC_CLK_PDN_MASK) ||
 	    (after.con0 & GEMINI_FGADC_CON0_LOW_MASK) !=
 	    (before.con0 & GEMINI_FGADC_CON0_LOW_MASK) ||
-	    (after.osr & GENMASK(3, 0)) != (before.osr & GENMASK(3, 0))) {
+	    (after.osr & GEMINI_FGADC_OSR_MASK) !=
+	    (before.osr & GEMINI_FGADC_OSR_MASK)) {
 		pr_err("gemini-live-fgadc: restore mismatch: before=%#x/%#x/%#x after=%#x/%#x/%#x\n",
 		       before.clkpdn, before.con0, before.osr,
 		       after.clkpdn, after.con0, after.osr);
@@ -289,19 +292,51 @@ static int gemini_fgadc_verify_restore_locked(void)
 	return 0;
 }
 
+static int gemini_fgadc_restore_snapshot_locked(void)
+{
+	struct mt6397_chip *mt6351 = dev_get_drvdata(gemini_pmic);
+	int ret;
+
+	ret = regmap_update_bits(mt6351->regmap, MT6351_FGADC_CON15,
+				 GEMINI_FGADC_OSR_MASK, before.osr);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(mt6351->regmap, MT6351_FGADC_CON0,
+				 GEMINI_FGADC_CON0_LOW_MASK, before.con0);
+	if (ret)
+		return ret;
+
+	return regmap_update_bits(mt6351->regmap, MT6351_TOP_CKPDN_CON2,
+				  GEMINI_FGADC_CLK_PDN_MASK, before.clkpdn);
+}
+
 static int gemini_fgadc_deactivate_locked(void)
 {
 	int ret;
 
-	if (!gemini_fgadc_pdev)
+	if (!gemini_fgadc_pdev && !restore_pending)
 		return -ENOENT;
 
-	/* The FGADC driver's devm cleanup restores its exact masked snapshot here. */
-	platform_device_unregister(gemini_fgadc_pdev);
-	gemini_fgadc_pdev = NULL;
+	if (gemini_fgadc_pdev) {
+		/* The driver's devm cleanup attempts its exact masked restore first. */
+		platform_device_unregister(gemini_fgadc_pdev);
+		gemini_fgadc_pdev = NULL;
+		restore_pending = true;
+	}
+
+	/* Retain the module and an explicit retry path until restoration verifies. */
 	ret = gemini_fgadc_verify_restore_locked();
+	if (ret) {
+		ret = gemini_fgadc_restore_snapshot_locked();
+		if (!ret)
+			ret = gemini_fgadc_verify_restore_locked();
+	}
+	if (ret)
+		return ret;
+
+	restore_pending = false;
 	module_put(THIS_MODULE);
-	return ret;
+	return 0;
 }
 
 static int gemini_fgadc_activate_param(const char *value,
@@ -342,7 +377,7 @@ static int gemini_fgadc_deactivate_param(const char *value,
 		return -EINVAL;
 
 	mutex_lock(&gemini_fgadc_lock);
-	if (!gemini_fgadc_pdev) {
+	if (!gemini_fgadc_pdev && !restore_pending) {
 		mutex_unlock(&gemini_fgadc_lock);
 		return -ENOENT;
 	}
@@ -373,7 +408,7 @@ static int __init gemini_live_fgadc_init(void)
 static void __exit gemini_live_fgadc_exit(void)
 {
 	mutex_lock(&gemini_fgadc_lock);
-	WARN_ON_ONCE(gemini_fgadc_pdev);
+	WARN_ON_ONCE(gemini_fgadc_pdev || restore_pending);
 	if (gemini_fgadc_node)
 		of_node_put(gemini_fgadc_node);
 	if (gemini_pmic)

@@ -49,6 +49,18 @@ struct mt6797_consys_timeouts {
 	u32 chip_ready_timeout_us;
 };
 
+struct mt6797_consys_lifecycle;
+
+/*
+ * Caller-owned, opaque-in-practice capability for one long-lived CONSYS
+ * owner.  Zero-initialize it before acquire(). Its generation makes a lease
+ * from an earlier release fail closed after a later acquisition.
+ */
+struct mt6797_consys_runtime_lease {
+	struct mt6797_consys_lifecycle *lifecycle;
+	u64 generation;
+};
+
 /*
  * The backend owns all hardware access.  Each cleanup operation must be
  * idempotent and tolerate a failed matching setup operation: a setup write
@@ -98,6 +110,9 @@ struct mt6797_consys_lifecycle {
 	struct mutex lock;
 	enum mt6797_consys_state state;
 	u32 users;
+	const struct mt6797_consys_runtime_lease *runtime_lease;
+	u32 runtime_pins;
+	u64 runtime_generation;
 };
 
 int mt6797_consys_lifecycle_init(struct mt6797_consys_lifecycle *lifecycle,
@@ -105,6 +120,23 @@ int mt6797_consys_lifecycle_init(struct mt6797_consys_lifecycle *lifecycle,
 				 const struct mt6797_consys_timeouts *timeouts);
 int mt6797_consys_identity_get(struct mt6797_consys_lifecycle *lifecycle);
 int mt6797_consys_identity_put(struct mt6797_consys_lifecycle *lifecycle);
+
+/*
+ * Acquire one exclusive lifecycle capability.  Unlike identity_get(), this
+ * keeps the reviewed bring-up prefix held for a controller lifetime. Hardware
+ * children pin it before BTIF setup and release it only after quiescing.
+ */
+int mt6797_consys_runtime_lease_acquire(
+		struct mt6797_consys_lifecycle *lifecycle,
+		struct mt6797_consys_runtime_lease *lease);
+int mt6797_consys_runtime_lease_release(
+		struct mt6797_consys_runtime_lease *lease);
+bool mt6797_consys_runtime_lease_active(
+		const struct mt6797_consys_runtime_lease *lease);
+int mt6797_consys_runtime_lease_pin(
+		const struct mt6797_consys_runtime_lease *lease);
+void mt6797_consys_runtime_lease_unpin(
+		const struct mt6797_consys_runtime_lease *lease);
 enum mt6797_consys_state
 mt6797_consys_lifecycle_state(struct mt6797_consys_lifecycle *lifecycle);
 u32 mt6797_consys_lifecycle_users(struct mt6797_consys_lifecycle *lifecycle);

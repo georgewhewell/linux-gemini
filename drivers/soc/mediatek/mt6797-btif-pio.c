@@ -18,6 +18,9 @@
  * There is deliberately no platform driver or Device Tree match here.  This
  * object cannot map MMIO, turn on clocks, request/enable an IRQ, wake CONSYS,
  * allocate DMA, load firmware, or initiate a WMT/radio transaction.
+ * Its first hardware-facing attachment also pins the caller's already-live
+ * runtime lease; close/fence releases that pin before the long-lived owner
+ * may unwind its identity transaction.
  */
 
 #include <linux/errno.h>
@@ -33,6 +36,7 @@
 #endif
 
 #include <linux/soc/mediatek/mt6797-btif-pio.h>
+#include <linux/soc/mediatek/mt6797-consys.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
 #include <linux/soc/mediatek/mtk-stp.h>
 
@@ -81,6 +85,8 @@ struct mt6797_btif_pio {
 	struct mt6797_btif_pio_io_ops io;
 	struct kfifo tx_fifo;
 	struct mt6797_btif_pio_lease *lease;
+	const struct mt6797_consys_runtime_lease *runtime_lease;
+	bool runtime_pinned;
 	const struct mt6797_consys_stp_session_lease *stp_lease;
 	mt6797_btif_pio_rx_cb_t receive;
 	void *receive_context;
@@ -190,6 +196,28 @@ static void mt6797_btif_pio_fence_locked(struct mt6797_btif_pio *pio)
 				 0);
 	kfifo_reset(&pio->tx_fifo);
 	spin_unlock_irqrestore(&pio->tx_lock, flags);
+	if (pio->runtime_pinned) {
+		mt6797_consys_runtime_lease_unpin(pio->runtime_lease);
+		pio->runtime_pinned = false;
+		pio->runtime_lease = NULL;
+	}
+}
+
+static int mt6797_btif_pio_pin_runtime_locked(struct mt6797_btif_pio *pio,
+		const struct mt6797_consys_runtime_lease *runtime_lease)
+{
+	int ret;
+
+	if (!runtime_lease)
+		return -EINVAL;
+	if (pio->runtime_pinned)
+		return pio->runtime_lease == runtime_lease ? 0 : -EBUSY;
+	ret = mt6797_consys_runtime_lease_pin(runtime_lease);
+	if (ret)
+		return ret;
+	pio->runtime_lease = runtime_lease;
+	pio->runtime_pinned = true;
+	return 0;
 }
 
 struct mt6797_btif_pio *
@@ -259,12 +287,13 @@ static int mt6797_btif_pio_full_receive(void *context, const u8 *data,
 
 int mt6797_btif_pio_attach_full_stp(
 		const struct mt6797_btif_pio_lease *lease,
+		const struct mt6797_consys_runtime_lease *runtime_lease,
 		const struct mt6797_consys_stp_session_lease *stp_lease)
 {
 	struct mt6797_btif_pio *pio;
 	int ret = 0;
 
-	if (!lease || !lease->pio || !stp_lease)
+	if (!lease || !lease->pio || !runtime_lease || !stp_lease)
 		return -EINVAL;
 	if (!mt6797_consys_stp_session_lease_active(stp_lease))
 		return -ESHUTDOWN;
@@ -276,11 +305,14 @@ int mt6797_btif_pio_attach_full_stp(
 	else if (pio->state != MT6797_BTIF_PIO_LEASED || pio->stp_lease)
 		ret = -EBUSY;
 	else {
-		pio->stp_lease = stp_lease;
-		pio->receive = mt6797_btif_pio_full_receive;
-		pio->receive_context = (void *)stp_lease;
-		mt6797_btif_pio_hw_init(pio);
-		pio->state = MT6797_BTIF_PIO_ACTIVE;
+		ret = mt6797_btif_pio_pin_runtime_locked(pio, runtime_lease);
+		if (!ret) {
+			pio->stp_lease = stp_lease;
+			pio->receive = mt6797_btif_pio_full_receive;
+			pio->receive_context = (void *)stp_lease;
+			mt6797_btif_pio_hw_init(pio);
+			pio->state = MT6797_BTIF_PIO_ACTIVE;
+		}
 	}
 	mutex_unlock(&pio->state_lock);
 	return ret;
@@ -289,12 +321,13 @@ EXPORT_SYMBOL_GPL(mt6797_btif_pio_attach_full_stp);
 
 int mt6797_btif_pio_begin_mandatory(
 		const struct mt6797_btif_pio_lease *lease,
+		const struct mt6797_consys_runtime_lease *runtime_lease,
 		mt6797_btif_pio_rx_cb_t receive, void *receive_context)
 {
 	struct mt6797_btif_pio *pio;
 	int ret = 0;
 
-	if (!lease || !lease->pio || !receive)
+	if (!lease || !lease->pio || !runtime_lease || !receive)
 		return -EINVAL;
 	pio = lease->pio;
 
@@ -304,10 +337,13 @@ int mt6797_btif_pio_begin_mandatory(
 	else if (pio->state != MT6797_BTIF_PIO_LEASED || pio->receive)
 		ret = -EBUSY;
 	else {
-		pio->receive = receive;
-		pio->receive_context = receive_context;
-		mt6797_btif_pio_hw_init(pio);
-		pio->state = MT6797_BTIF_PIO_MANDATORY;
+		ret = mt6797_btif_pio_pin_runtime_locked(pio, runtime_lease);
+		if (!ret) {
+			pio->receive = receive;
+			pio->receive_context = receive_context;
+			mt6797_btif_pio_hw_init(pio);
+			pio->state = MT6797_BTIF_PIO_MANDATORY;
+		}
 	}
 	mutex_unlock(&pio->state_lock);
 	return ret;
@@ -555,11 +591,55 @@ struct mt6797_btif_pio_test_raw_endpoint {
 struct mt6797_btif_pio_test_context {
 	struct mt6797_btif_pio *pio;
 	const struct mt6797_btif_pio_lease *pio_lease;
+	struct mt6797_consys_lifecycle lifecycle;
+	struct mt6797_consys_runtime_lease runtime_lease;
 	struct mt6797_consys_stp_session *session;
 	const struct mt6797_consys_stp_session_lease *stp_lease;
 	struct mt6797_btif_pio_test_bus *bus;
 	struct mt6797_btif_pio_test_endpoint *endpoint;
 };
+
+static int mt6797_btif_pio_test_lifecycle_op(void *context)
+{
+	return 0;
+}
+
+static int mt6797_btif_pio_test_lifecycle_poll(
+		void *context, enum mt6797_consys_poll poll)
+{
+	return poll == MT6797_CONSYS_POLL_CHIP_READY ? 0 : -EINVAL;
+}
+
+static const struct mt6797_consys_ops mt6797_btif_pio_test_lifecycle_ops = {
+	.abi = MT6797_CONSYS_LIFECYCLE_ABI,
+	.enable_vcn18 = mt6797_btif_pio_test_lifecycle_op,
+	.disable_vcn18 = mt6797_btif_pio_test_lifecycle_op,
+	.enable_vcn28 = mt6797_btif_pio_test_lifecycle_op,
+	.disable_vcn28 = mt6797_btif_pio_test_lifecycle_op,
+	.configure_sleep_mask = mt6797_btif_pio_test_lifecycle_op,
+	.assert_reset = mt6797_btif_pio_test_lifecycle_op,
+	.configure_pwron = mt6797_btif_pio_test_lifecycle_op,
+	.enable_scp_sys_conn = mt6797_btif_pio_test_lifecycle_op,
+	.disable_scp_sys_conn = mt6797_btif_pio_test_lifecycle_op,
+	.poll = mt6797_btif_pio_test_lifecycle_poll,
+};
+
+static const struct mt6797_consys_timeouts mt6797_btif_pio_test_timeouts = {
+	.poll_interval_us = 1,
+	.chip_ready_timeout_us = 1,
+};
+
+static void mt6797_btif_pio_test_runtime_acquire(
+		struct kunit *test, struct mt6797_consys_lifecycle *lifecycle,
+		struct mt6797_consys_runtime_lease *runtime_lease)
+{
+	KUNIT_ASSERT_EQ(test, mt6797_consys_lifecycle_init(lifecycle,
+							    &mt6797_btif_pio_test_lifecycle_ops,
+							    NULL,
+							    &mt6797_btif_pio_test_timeouts), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_acquire(lifecycle,
+									  runtime_lease), 0);
+}
 
 static u32 mt6797_btif_pio_test_read32(void *context, u32 offset)
 {
@@ -639,6 +719,8 @@ mt6797_btif_pio_test_start(struct kunit *test)
 	ctx->endpoint = kunit_kzalloc(test, sizeof(*ctx->endpoint), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_NULL(test, ctx->endpoint);
 	ctx->bus->iir = MT6797_BTIF_IIR_NINT;
+	mt6797_btif_pio_test_runtime_acquire(test, &ctx->lifecycle,
+						    &ctx->runtime_lease);
 	io_ops = (struct mt6797_btif_pio_io_ops) {
 		.read32 = mt6797_btif_pio_test_read32,
 		.write32 = mt6797_btif_pio_test_write32,
@@ -661,6 +743,7 @@ mt6797_btif_pio_test_start(struct kunit *test)
 	ctx->stp_lease = mt6797_consys_stp_session_begin_full(ctx->session);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(ctx->stp_lease));
 	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_attach_full_stp(ctx->pio_lease,
+									&ctx->runtime_lease,
 									ctx->stp_lease), 0);
 	KUNIT_ASSERT_EQ(test, ctx->bus->regs[MT6797_BTIF_DMA_EN / sizeof(u32)] &
 				 (MT6797_BTIF_DMA_RX | MT6797_BTIF_DMA_TX), 0U);
@@ -678,6 +761,7 @@ static void mt6797_btif_pio_test_stop(
 			struct mt6797_btif_pio_test_context *ctx)
 {
 	mt6797_btif_pio_close(ctx->pio);
+	WARN_ON_ONCE(mt6797_consys_runtime_lease_release(&ctx->runtime_lease));
 	mt6797_consys_stp_session_quiesce(ctx->session);
 	mt6797_consys_stp_session_destroy(ctx->session);
 	mt6797_btif_pio_destroy(ctx->pio);
@@ -783,7 +867,10 @@ static void mt6797_btif_pio_test_quiesce_close_and_lease_exclusion(
 
 	ctx = mt6797_btif_pio_test_start(test);
 	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_attach_full_stp(ctx->pio_lease,
+									&ctx->runtime_lease,
 									ctx->stp_lease), -EBUSY);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_consys_runtime_lease_release(&ctx->runtime_lease), -EBUSY);
 	mt6797_consys_stp_session_quiesce(ctx->session);
 	ctx->bus->rx[0] = byte;
 	ctx->bus->rx_length = 1;
@@ -804,6 +891,8 @@ static void mt6797_btif_pio_test_mandatory_handoff_is_single_owner(
 	struct mt6797_btif_pio_io_ops io_ops;
 	const struct mt6797_btif_pio_lease *lease;
 	struct mt6797_btif_pio *pio;
+	struct mt6797_consys_lifecycle lifecycle;
+	struct mt6797_consys_runtime_lease runtime_lease = { };
 
 	bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
 	mandatory = kunit_kzalloc(test, sizeof(*mandatory), GFP_KERNEL);
@@ -821,9 +910,10 @@ static void mt6797_btif_pio_test_mandatory_handoff_is_single_owner(
 	};
 	pio = mt6797_btif_pio_create(&io_ops);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(pio));
+	mt6797_btif_pio_test_runtime_acquire(test, &lifecycle, &runtime_lease);
 	lease = mt6797_btif_pio_acquire(pio);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
-	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_begin_mandatory(lease,
+	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_begin_mandatory(lease, &runtime_lease,
 									mt6797_btif_pio_test_receive_raw,
 									mandatory), 0);
 	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_IER / sizeof(u32)],
@@ -854,6 +944,7 @@ static void mt6797_btif_pio_test_mandatory_handoff_is_single_owner(
 										mandatory), -EBUSY);
 	mt6797_btif_pio_close(pio);
 	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_IER / sizeof(u32)], 0U);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_release(&runtime_lease), 0);
 	mt6797_btif_pio_destroy(pio);
 }
 

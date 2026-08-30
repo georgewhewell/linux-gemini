@@ -159,6 +159,20 @@ mt6797_consys_timeouts_valid(const struct mt6797_consys_timeouts *timeouts)
 		timeouts->chip_ready_timeout_us >= timeouts->poll_interval_us;
 }
 
+static bool mt6797_consys_runtime_lease_valid_locked(
+		const struct mt6797_consys_runtime_lease *lease)
+{
+	struct mt6797_consys_lifecycle *lifecycle;
+
+	if (!lease || !lease->lifecycle)
+		return false;
+	lifecycle = lease->lifecycle;
+	return lifecycle->runtime_lease == lease &&
+		lifecycle->runtime_generation == lease->generation &&
+		lifecycle->state == MT6797_CONSYS_IDENTITY_HELD &&
+		lifecycle->users == 1;
+}
+
 int mt6797_consys_lifecycle_init(struct mt6797_consys_lifecycle *lifecycle,
 				 const struct mt6797_consys_ops *ops, void *context,
 				 const struct mt6797_consys_timeouts *timeouts)
@@ -172,6 +186,9 @@ int mt6797_consys_lifecycle_init(struct mt6797_consys_lifecycle *lifecycle,
 	lifecycle->timeouts = *timeouts;
 	lifecycle->state = MT6797_CONSYS_OFF;
 	lifecycle->users = 0;
+	lifecycle->runtime_lease = NULL;
+	lifecycle->runtime_pins = 0;
+	lifecycle->runtime_generation = 0;
 	mutex_init(&lifecycle->lock);
 
 	return 0;
@@ -188,6 +205,9 @@ int mt6797_consys_identity_get(struct mt6797_consys_lifecycle *lifecycle)
 	mutex_lock(&lifecycle->lock);
 	if (lifecycle->state == MT6797_CONSYS_ERROR) {
 		ret = -EIO;
+	} else if (lifecycle->runtime_lease) {
+		/* A long-lived owner excludes unrelated short identity votes. */
+		ret = -EBUSY;
 	} else if (lifecycle->state == MT6797_CONSYS_IDENTITY_HELD) {
 		if (lifecycle->users == U32_MAX)
 			ret = -EOVERFLOW;
@@ -218,6 +238,8 @@ int mt6797_consys_identity_put(struct mt6797_consys_lifecycle *lifecycle)
 	mutex_lock(&lifecycle->lock);
 	if (lifecycle->state == MT6797_CONSYS_ERROR) {
 		ret = -EIO;
+	} else if (lifecycle->runtime_lease) {
+		ret = -EBUSY;
 	} else if (lifecycle->state != MT6797_CONSYS_IDENTITY_HELD ||
 		   !lifecycle->users) {
 		ret = -EINVAL;
@@ -233,6 +255,125 @@ int mt6797_consys_identity_put(struct mt6797_consys_lifecycle *lifecycle)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_identity_put);
+
+int mt6797_consys_runtime_lease_acquire(
+		struct mt6797_consys_lifecycle *lifecycle,
+		struct mt6797_consys_runtime_lease *lease)
+{
+	int ret = 0;
+
+	if (!lifecycle || !lease || lease->lifecycle)
+		return -EINVAL;
+
+	mutex_lock(&lifecycle->lock);
+	if (lifecycle->state == MT6797_CONSYS_ERROR) {
+		ret = -EIO;
+	} else if (lifecycle->runtime_lease || lifecycle->users ||
+		   lifecycle->state != MT6797_CONSYS_OFF) {
+		ret = -EBUSY;
+	} else if (lifecycle->runtime_generation == U64_MAX) {
+		ret = -EOVERFLOW;
+	} else {
+		ret = mt6797_consys_identity_acquire(lifecycle);
+		if (!ret) {
+			lifecycle->state = MT6797_CONSYS_IDENTITY_HELD;
+			lifecycle->users = 1;
+			lifecycle->runtime_generation++;
+			lease->lifecycle = lifecycle;
+			lease->generation = lifecycle->runtime_generation;
+			lifecycle->runtime_lease = lease;
+		} else if (lifecycle->state != MT6797_CONSYS_ERROR) {
+			lifecycle->state = MT6797_CONSYS_OFF;
+		}
+	}
+	mutex_unlock(&lifecycle->lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_lease_acquire);
+
+int mt6797_consys_runtime_lease_release(
+		struct mt6797_consys_runtime_lease *lease)
+{
+	struct mt6797_consys_lifecycle *lifecycle;
+	int ret = 0;
+
+	if (!lease || !lease->lifecycle)
+		return -EINVAL;
+	lifecycle = lease->lifecycle;
+	mutex_lock(&lifecycle->lock);
+	if (!mt6797_consys_runtime_lease_valid_locked(lease)) {
+		ret = -ESHUTDOWN;
+	} else if (lifecycle->runtime_pins) {
+		ret = -EBUSY;
+	} else {
+		ret = mt6797_consys_identity_unwind(lifecycle, true, true, true,
+							    true);
+		lifecycle->state = ret ? MT6797_CONSYS_ERROR : MT6797_CONSYS_OFF;
+		lifecycle->users = 0;
+		lifecycle->runtime_lease = NULL;
+		lease->lifecycle = NULL;
+	}
+	mutex_unlock(&lifecycle->lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_lease_release);
+
+bool mt6797_consys_runtime_lease_active(
+		const struct mt6797_consys_runtime_lease *lease)
+{
+	struct mt6797_consys_lifecycle *lifecycle;
+	bool active;
+
+	if (!lease || !lease->lifecycle)
+		return false;
+	lifecycle = lease->lifecycle;
+	mutex_lock(&lifecycle->lock);
+	active = mt6797_consys_runtime_lease_valid_locked(lease);
+	mutex_unlock(&lifecycle->lock);
+
+	return active;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_lease_active);
+
+int mt6797_consys_runtime_lease_pin(
+		const struct mt6797_consys_runtime_lease *lease)
+{
+	struct mt6797_consys_lifecycle *lifecycle;
+	int ret = 0;
+
+	if (!lease || !lease->lifecycle)
+		return -EINVAL;
+	lifecycle = lease->lifecycle;
+	mutex_lock(&lifecycle->lock);
+	if (!mt6797_consys_runtime_lease_valid_locked(lease))
+		ret = -ESHUTDOWN;
+	else if (lifecycle->runtime_pins == U32_MAX)
+		ret = -EOVERFLOW;
+	else
+		lifecycle->runtime_pins++;
+	mutex_unlock(&lifecycle->lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_lease_pin);
+
+void mt6797_consys_runtime_lease_unpin(
+		const struct mt6797_consys_runtime_lease *lease)
+{
+	struct mt6797_consys_lifecycle *lifecycle;
+
+	if (!lease || !lease->lifecycle)
+		return;
+	lifecycle = lease->lifecycle;
+	mutex_lock(&lifecycle->lock);
+	if (mt6797_consys_runtime_lease_valid_locked(lease) &&
+	    lifecycle->runtime_pins)
+		lifecycle->runtime_pins--;
+	mutex_unlock(&lifecycle->lock);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_lease_unpin);
 
 enum mt6797_consys_state
 mt6797_consys_lifecycle_state(struct mt6797_consys_lifecycle *lifecycle)

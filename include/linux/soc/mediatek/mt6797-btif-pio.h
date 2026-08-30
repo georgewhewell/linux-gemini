@@ -18,6 +18,7 @@
 #define MT6797_BTIF_PIO_RX_BUDGET		256
 
 struct mt6797_consys_stp_session_lease;
+struct mt6797_consys_runtime_lease;
 struct mt6797_btif_pio;
 struct mt6797_btif_pio_lease;
 
@@ -57,11 +58,14 @@ mt6797_btif_pio_acquire(struct mt6797_btif_pio *pio);
 
 /*
  * Bind exactly one active full-STP lease and then perform the vendor PIO core
- * setup. The future platform owner must have installed-but-disabled IRQ
- * handling before this call; this library neither owns nor enables Linux IRQs.
+ * setup. runtime_lease must be the exclusive, long-lived CONSYS lifecycle
+ * capability and remains pinned until close() fences this PIO owner. The
+ * future platform owner must have installed-but-disabled IRQ handling before
+ * this call; this library neither owns nor enables Linux IRQs.
  */
 int mt6797_btif_pio_attach_full_stp(
 		const struct mt6797_btif_pio_lease *pio_lease,
+		const struct mt6797_consys_runtime_lease *runtime_lease,
 		const struct mt6797_consys_stp_session_lease *stp_lease);
 
 /*
@@ -73,6 +77,7 @@ int mt6797_btif_pio_attach_full_stp(
  */
 int mt6797_btif_pio_begin_mandatory(
 		const struct mt6797_btif_pio_lease *pio_lease,
+		const struct mt6797_consys_runtime_lease *runtime_lease,
 		mt6797_btif_pio_rx_cb_t receive, void *receive_context);
 
 /*

@@ -336,6 +336,50 @@ static void mt6797_consys_test_shared_memory_geometry(struct kunit *test)
 							MT6797_CONSYS_SHARED_MEM_SIZE / 2));
 }
 
+static void mt6797_consys_test_runtime_lease_is_exclusive_and_pinned(
+									struct kunit *test)
+{
+	struct mt6797_consys_runtime_lease lease = { };
+	struct mt6797_consys_runtime_lease competing = { };
+	struct mt6797_consys_test_backend backend = { };
+	struct mt6797_consys_lifecycle lifecycle;
+
+	mt6797_consys_test_init(test, &lifecycle, &backend);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_acquire(&lifecycle,
+									  &lease), 0);
+	KUNIT_EXPECT_TRUE(test, mt6797_consys_runtime_lease_active(&lease));
+	KUNIT_EXPECT_EQ(test, mt6797_consys_identity_get(&lifecycle), -EBUSY);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_acquire(&lifecycle,
+									  &competing), -EBUSY);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_pin(&lease), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_release(&lease), -EBUSY);
+	mt6797_consys_runtime_lease_unpin(&lease);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_release(&lease), 0);
+	KUNIT_EXPECT_FALSE(test, mt6797_consys_runtime_lease_active(&lease));
+	KUNIT_EXPECT_EQ(test, mt6797_consys_lifecycle_state(&lifecycle),
+				MT6797_CONSYS_OFF);
+}
+
+static void mt6797_consys_test_runtime_lease_generation_rejects_stale_copy(
+										 struct kunit *test)
+{
+	struct mt6797_consys_runtime_lease lease = { };
+	struct mt6797_consys_runtime_lease stale;
+	struct mt6797_consys_test_backend backend = { };
+	struct mt6797_consys_lifecycle lifecycle;
+
+	mt6797_consys_test_init(test, &lifecycle, &backend);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_acquire(&lifecycle,
+									  &lease), 0);
+	stale = lease;
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_release(&lease), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_acquire(&lifecycle,
+									  &lease), 0);
+	KUNIT_EXPECT_FALSE(test, mt6797_consys_runtime_lease_active(&stale));
+	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_pin(&stale), -ESHUTDOWN);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_lease_release(&lease), 0);
+}
+
 static struct kunit_case mt6797_consys_core_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_test_reference_counting),
 	KUNIT_CASE(mt6797_consys_test_unwinds_in_reverse_order),
@@ -345,6 +389,8 @@ static struct kunit_case mt6797_consys_core_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_test_cleanup_failure_is_sticky),
 	KUNIT_CASE(mt6797_consys_test_rejects_invalid_contract),
 	KUNIT_CASE(mt6797_consys_test_shared_memory_geometry),
+	KUNIT_CASE(mt6797_consys_test_runtime_lease_is_exclusive_and_pinned),
+	KUNIT_CASE(mt6797_consys_test_runtime_lease_generation_rejects_stale_copy),
 	{ }
 };
 

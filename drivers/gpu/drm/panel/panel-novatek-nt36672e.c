@@ -6,6 +6,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
+#include <linux/soc/mediatek/mtk-mmsys.h>
 
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
@@ -919,6 +920,9 @@ static int nt36672e_panel_probe(struct mipi_dsi_device *dsi)
 	struct device *dev = &dsi->dev;
 	struct nt36672e_panel *ctx;
 	int i, ret = 0;
+
+	if (!mtk_mmsys_display_is_activated())
+		return -EPROBE_DEFER;
 
 	ctx = devm_drm_panel_alloc(dev, struct nt36672e_panel, panel,
 				   &nt36672e_drm_funcs,

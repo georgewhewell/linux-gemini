@@ -12,6 +12,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/dma-mapping.h>
+#include <linux/soc/mediatek/mtk-mmsys.h>
 
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
@@ -1108,6 +1109,9 @@ static int mtk_drm_probe(struct platform_device *pdev)
 	struct platform_device *ovl_adaptor;
 	int ret;
 	int i;
+
+	if (!mtk_mmsys_display_is_activated())
+		return -EPROBE_DEFER;
 
 	private = devm_kzalloc(dev, sizeof(*private), GFP_KERNEL);
 	if (!private)

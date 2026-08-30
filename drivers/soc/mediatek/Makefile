@@ -32,6 +32,7 @@ obj-$(CONFIG_MTK_CMDQ) += mtk-cmdq-helper.o
 obj-$(CONFIG_MTK_DEVAPC) += mtk-devapc.o
 obj-$(CONFIG_MTK_DVFSRC) += mtk-dvfsrc.o
 obj-$(CONFIG_MTK_INFRACFG) += mtk-infracfg.o
+obj-$(CONFIG_MTK_MT6797_MD1_BOOT_STATUS_OBSERVE) += mt6797-md1-boot-status-observe.o
 obj-$(CONFIG_MTK_STP) += mtk-stp.o
 obj-$(CONFIG_MTK_STP_KUNIT_TEST) += mtk-stp-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_STP_SESSION) += mt6797-consys-stp-session.o

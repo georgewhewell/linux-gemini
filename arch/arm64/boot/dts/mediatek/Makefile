@@ -6,6 +6,11 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-sony-xperia-m5.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-boot-status-observe.dtbo
+mt6797-gemini-pda-md1-boot-status-observe-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-md1-boot-status-observe.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-boot-status-observe.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-vgpu-identity.dtbo
 mt6797-gemini-pda-gpu-vgpu-identity-dtbs := \
 	mt6797-gemini-pda.dtb \

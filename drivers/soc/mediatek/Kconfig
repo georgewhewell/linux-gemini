@@ -45,6 +45,25 @@ config MTK_INFRACFG
 	  INFRACFG controller contains various infrastructure registers not
 	  directly associated to any device.
 
+config MTK_MT6797_MD1_BOOT_STATUS_OBSERVE
+	tristate "MT6797 MD1 boot-status observer"
+	depends on OF
+	help
+	  Build one explicitly gated, read-only observation of the two AP-visible
+	  MD1 boot-status registers. The vendor MT6797 CCCI driver reads these
+	  registers to report modem boot status, before it exposes a userspace
+	  transport.
+
+	  The driver has no matching Gemini node by default. A separately loaded
+	  overlay must provide exactly the vendor 0x10201300/8 resource and the
+	  mediatek,experimental-md1-boot-status property. Probe also requires
+	  mt6797_md1_boot_status_observe.enable_experimental_boot_status=1.
+	  The one-shot probe performs exactly three reads of each status register;
+	  it does not acquire or enable clocks, power domains, resets, IRQs, DMA,
+	  shared memory, firmware, SIM, or radio functions, and contains no
+	  write/poll/retry path. It cannot make a fabric-wide stalled MMIO read
+	  recoverable.
+
 config MTK_STP
 	tristate "MediaTek STP codec and WMT/GNSS multiplexer"
 	depends on ARCH_MEDIATEK || COMPILE_TEST

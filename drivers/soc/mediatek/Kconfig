@@ -104,13 +104,16 @@ config MTK_MT6797_CONSYS_INVENTORY
 	bool "MediaTek MT6797 CONSYS resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF
 	depends on RESET_CONTROLLER
+	select MTK_MT6797_CONSYS_CORE
 	help
 	  Build the resource-only inventory driver for the MT6797 connectivity
 	  subsystem. It validates Device Tree resource metadata and acquires no
 	  active hardware ownership: no MMIO mapping or access, firmware request,
 	  power-domain change, or clock, regulator, reset, or interrupt operation.
 
-	  Keep the Device Tree node disabled until a separate power and transport
+	  It reuses only the shared-memory geometry validator from the hardware-
+	  neutral core; it never enters the core's lifecycle state machine. Keep the
+	  Device Tree node disabled until a separate power and transport
 	  implementation has been reviewed.
 
 config MTK_MT6797_CONSYS_CORE
@@ -122,9 +125,10 @@ config MTK_MT6797_CONSYS_CORE
 	  cleanup. It includes no hardware backend and cannot map MMIO, release
 	  reset, alter AFE state, or load firmware.
 
-	  The inventory driver remains separate and does not instantiate this core.
-	  A future backend must settle the unverified reset and bus-protection
-	  sequence before any Device Tree node is enabled.
+	  The inventory driver reuses this core's data-only shared-memory geometry
+	  validator but does not instantiate its lifecycle state machine. A future
+	  backend must settle the unverified reset and bus-protection sequence before
+	  any Device Tree node is enabled.
 
 config MTK_MT6797_CONSYS_CORE_KUNIT_TEST
 	tristate "KUnit tests for the MT6797 CONSYS lifecycle core"
@@ -154,6 +158,35 @@ config MTK_MT6797_CONSYS_LIVE
 	  The board node remains disabled and the driver additionally requires
 	  mt6797_consys_live.identity_experiment=1 at boot. This is for one
 	  recoverable device test only.
+
+config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
+	bool "MediaTek MT6797 CONSYS firmware preflight gate"
+	depends on MTK_MT6797_CONSYS_CORE
+	select CRYPTO_SHA256
+	help
+	  Build a data-only guard for the MT6797 CONSYS WMT configuration and patch
+	  blobs. It accepts only bare firmware names, verifies a caller-supplied
+	  SHA-256 digest of every full blob, bounds and parses the documented 28-byte
+	  patch header, and requires opaque four-byte address metadata for every
+	  patch.
+
+	  It does not request firmware, map shared memory, alter a rail or clock,
+	  access BTIF/CONSYS registers, construct a WMT packet, or transmit data.
+	  The patch address remains an input from separately evidenced patch
+	  discovery; this code never guesses an address from the EMI reservation or
+	  a register value.
+
+config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT_KUNIT_TEST
+	tristate "KUnit tests for the MT6797 CONSYS firmware preflight gate"
+	depends on KUNIT=y
+	depends on MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT=y
+	help
+	  Exercise firmware digest, bare-name, patch-header bounds and parsing,
+	  address-presence, and duplicate-sequence rejection with in-memory blobs
+	  only. No firmware class request, Device Tree node, MMIO, power resource, or
+	  radio is used.
+	  This is suitable for test kernels and QEMU, and has no Gemini hardware
+	  dependency.
 
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"

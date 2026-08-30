@@ -384,6 +384,11 @@
 			rtc {
 				compatible = "mediatek,mt6351-rtc";
 			};
+
+			mt6351fg: fuel-gauge {
+				compatible = "mediatek,mt6351-fg-readonly";
+				status = "disabled";
+			};
 		};
 	};
 

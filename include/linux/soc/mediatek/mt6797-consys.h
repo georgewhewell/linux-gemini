@@ -2,6 +2,7 @@
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_CONSYS_H
 #define __LINUX_SOC_MEDIATEK_MT6797_CONSYS_H
 
+#include <linux/ioport.h>
 #include <linux/mutex.h>
 #include <linux/types.h>
 
@@ -17,6 +18,17 @@
 #define MT6797_CONSYS_LIFECYCLE_ABI	1
 #define MT6797_CONSYS_VCN18_SETTLE_US	240
 #define MT6797_CONSYS_DOMAIN_SETTLE_US	30
+
+/*
+ * The vendor DT declares this as a no-map 2 MiB reservation allocated in
+ * 0x40000000..0xc0000000.  It is an AP/CONNSYS shared debug/EMI window, not a
+ * firmware-patch load address.  Future runtime owners must validate this
+ * contract before they alter CONSYS state, but must not infer a patch address
+ * from it.
+ */
+#define MT6797_CONSYS_SHARED_MEM_SIZE	0x200000ULL
+#define MT6797_CONSYS_SHARED_MEM_MIN	0x40000000ULL
+#define MT6797_CONSYS_SHARED_MEM_END	0xc0000000ULL
 
 /*
  * ERROR is sticky.  A backend cleanup error means the core cannot establish
@@ -96,5 +108,8 @@ int mt6797_consys_identity_put(struct mt6797_consys_lifecycle *lifecycle);
 enum mt6797_consys_state
 mt6797_consys_lifecycle_state(struct mt6797_consys_lifecycle *lifecycle);
 u32 mt6797_consys_lifecycle_users(struct mt6797_consys_lifecycle *lifecycle);
+
+/* Validate only the documented shared-memory geometry; this does not map it. */
+bool mt6797_consys_shared_mem_valid(phys_addr_t start, resource_size_t size);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_CONSYS_H */

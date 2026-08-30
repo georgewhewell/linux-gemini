@@ -315,6 +315,27 @@ static void mt6797_consys_test_rejects_invalid_contract(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 }
 
+static void mt6797_consys_test_shared_memory_geometry(struct kunit *test)
+{
+	KUNIT_EXPECT_TRUE(test, mt6797_consys_shared_mem_valid(0x40000000,
+						       MT6797_CONSYS_SHARED_MEM_SIZE));
+	KUNIT_EXPECT_TRUE(test, mt6797_consys_shared_mem_valid(0xbfa00000,
+						       MT6797_CONSYS_SHARED_MEM_SIZE));
+	KUNIT_EXPECT_TRUE(test, mt6797_consys_shared_mem_valid(
+				MT6797_CONSYS_SHARED_MEM_END -
+				MT6797_CONSYS_SHARED_MEM_SIZE,
+				MT6797_CONSYS_SHARED_MEM_SIZE));
+	KUNIT_EXPECT_FALSE(test, mt6797_consys_shared_mem_valid(0x3fe00000,
+							MT6797_CONSYS_SHARED_MEM_SIZE));
+	KUNIT_EXPECT_FALSE(test, mt6797_consys_shared_mem_valid(
+				MT6797_CONSYS_SHARED_MEM_END,
+				MT6797_CONSYS_SHARED_MEM_SIZE));
+	KUNIT_EXPECT_FALSE(test, mt6797_consys_shared_mem_valid(0xbfa01000,
+							MT6797_CONSYS_SHARED_MEM_SIZE));
+	KUNIT_EXPECT_FALSE(test, mt6797_consys_shared_mem_valid(0xbfa00000,
+							MT6797_CONSYS_SHARED_MEM_SIZE / 2));
+}
+
 static struct kunit_case mt6797_consys_core_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_test_reference_counting),
 	KUNIT_CASE(mt6797_consys_test_unwinds_in_reverse_order),
@@ -323,6 +344,7 @@ static struct kunit_case mt6797_consys_core_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_test_one_interval_reaches_deadline),
 	KUNIT_CASE(mt6797_consys_test_cleanup_failure_is_sticky),
 	KUNIT_CASE(mt6797_consys_test_rejects_invalid_contract),
+	KUNIT_CASE(mt6797_consys_test_shared_memory_geometry),
 	{ }
 };
 

@@ -265,5 +265,16 @@ u32 mt6797_consys_lifecycle_users(struct mt6797_consys_lifecycle *lifecycle)
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_lifecycle_users);
 
+bool mt6797_consys_shared_mem_valid(phys_addr_t start, resource_size_t size)
+{
+	if (size != MT6797_CONSYS_SHARED_MEM_SIZE ||
+	    start & (MT6797_CONSYS_SHARED_MEM_SIZE - 1))
+		return false;
+
+	return start >= MT6797_CONSYS_SHARED_MEM_MIN &&
+		start <= MT6797_CONSYS_SHARED_MEM_END - size;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_shared_mem_valid);
+
 MODULE_DESCRIPTION("MT6797 CONSYS hardware-neutral identity transaction core");
 MODULE_LICENSE("GPL");

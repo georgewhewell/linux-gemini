@@ -43,6 +43,7 @@ struct mtk_gnss {
 	enum mtk_stp_mode stp_mode;
 	/* Waited on before a conflicting power or transmit callback is issued. */
 	wait_queue_head_t transition_queue;
+	bool initialized;
 	bool transitioning;
 	bool unregistering;
 	bool registered;

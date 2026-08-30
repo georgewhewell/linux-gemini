@@ -233,8 +233,11 @@ int mtk_gnss_register(struct mtk_gnss *gnss, struct device *parent,
 	if (stp->mode != stp_mode)
 		return -EINVAL;
 
-	mutex_init(&gnss->lock);
-	init_waitqueue_head(&gnss->transition_queue);
+	if (!gnss->initialized) {
+		mutex_init(&gnss->lock);
+		init_waitqueue_head(&gnss->transition_queue);
+		gnss->initialized = true;
+	}
 	mutex_lock(&gnss->lock);
 	if (gnss->registered) {
 		ret = -EBUSY;
@@ -263,15 +266,17 @@ int mtk_gnss_register(struct mtk_gnss *gnss, struct device *parent,
 	if (ret)
 		goto err_put_device;
 
+	/* Publish complete state before the character device can be opened. */
+	gnss->registered = true;
 	ret = gnss_register_device(gdev);
 	if (ret)
 		goto err_unregister_stp;
 
-	gnss->registered = true;
 	mutex_unlock(&gnss->lock);
 	return 0;
 
 err_unregister_stp:
+	gnss->registered = false;
 	mtk_stp_unregister_client(stp, MTK_STP_GNSS);
 err_put_device:
 	gnss->gdev = NULL;

@@ -234,12 +234,35 @@ static void mtk_gnss_test_power_off_failure_requires_reset(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mtk_gnss_start(&ctx->gnss), 0);
 }
 
+static void mtk_gnss_test_reregister(struct kunit *test)
+{
+	struct mtk_gnss_test *ctx = test->priv;
+	struct mtk_gnss_transport transport = {
+		.transmit = mtk_gnss_test_transmit,
+		.set_power = mtk_gnss_test_set_power,
+		.context = &ctx->backend,
+	};
+	int ret;
+
+	ret = mtk_gnss_register(&ctx->gnss, ctx->dev, &ctx->stp,
+				MTK_STP_MODE_MANDATORY, &transport);
+	KUNIT_EXPECT_EQ(test, ret, -EBUSY);
+	KUNIT_EXPECT_EQ(test, mtk_gnss_start(&ctx->gnss), 0);
+	mtk_gnss_stop(&ctx->gnss);
+
+	mtk_gnss_unregister(&ctx->gnss);
+	ret = mtk_gnss_register(&ctx->gnss, ctx->dev, &ctx->stp,
+				MTK_STP_MODE_MANDATORY, &transport);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+}
+
 static struct kunit_case mtk_gnss_test_cases[] = {
 	KUNIT_CASE(mtk_gnss_test_lifecycle_and_stream),
 	KUNIT_CASE(mtk_gnss_test_tx_failure_requires_reset),
 	KUNIT_CASE(mtk_gnss_test_callbacks_can_feed_stp),
 	KUNIT_CASE(mtk_gnss_test_fifo_overflow_is_reported),
 	KUNIT_CASE(mtk_gnss_test_power_off_failure_requires_reset),
+	KUNIT_CASE(mtk_gnss_test_reregister),
 	{}
 };
 

@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA native display bring-up overlay.
+ *
+ * This overlay is intentionally not applied by mt6797-gemini-pda.dtb.
+ * It is the explicit, recovery-slot-only opt-in for the first native-panel
+ * test.  It reflects the vendor wiring and command source named in the
+ * accompanying display campaign record; it is not a device-tested panel
+ * description.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins_a>;
+	status = "okay";
+
+	lcd_bias: regulator@3e {
+		compatible = "mediatek,i2c_lcd_bias";
+		reg = <0x3e>;
+
+		outp: outp {
+			regulator-name = "outp";
+			enable-gpios = <&pio 60 GPIO_ACTIVE_HIGH>;
+		};
+
+		outn: outn {
+			regulator-name = "outn";
+			enable-gpios = <&pio 251 GPIO_ACTIVE_HIGH>;
+		};
+	};
+};
+
+&mipi_tx0 {
+	status = "okay";
+};
+
+&smi_common {
+	status = "okay";
+};
+
+&larb0 {
+	status = "okay";
+};
+
+&ovl0 {
+	status = "okay";
+};
+
+&ovl0_2l {
+	status = "okay";
+};
+
+&ovl1_2l {
+	status = "okay";
+};
+
+&color0 {
+	status = "okay";
+};
+
+&ccorr0 {
+	status = "okay";
+};
+
+&aal0 {
+	status = "okay";
+};
+
+&gamma0 {
+	status = "okay";
+};
+
+&od0 {
+	status = "okay";
+};
+
+&dither0 {
+	status = "okay";
+};
+
+&rdma0 {
+	status = "okay";
+};
+
+&ufoe {
+	status = "okay";
+};
+
+&dsi0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	panel@0 {
+		compatible = "planet,gemini-pda-nt36672";
+		reg = <0>;
+		outp-supply = <&outp>;
+		outn-supply = <&outn>;
+		/*
+		 * Vendor aeon6797_6m_n.dts identifies GPIO180 as LCM_RST; its LCM
+		 * driver drives the physical sequence low, high, low, high.
+		 */
+		reset-gpios = <&pio 180 GPIO_ACTIVE_HIGH>;
+
+		port {
+			gemini_panel_in: endpoint {
+				remote-endpoint = <&dsi0_out>;
+			};
+		};
+	};
+};
+
+&dsi0_out {
+	remote-endpoint = <&gemini_panel_in>;
+};

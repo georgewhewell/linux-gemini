@@ -138,6 +138,22 @@ config MTK_MT6797_CONSYS_CORE_KUNIT_TEST
 	  This is intended for KUnit-compatible test kernels and has no hardware
 	  dependency or firmware requirement.
 
+config MTK_MT6797_CONSYS_LIVE
+	tristate "MediaTek MT6797 CONSYS bounded identity experiment"
+	depends on ARM64 && ARCH_MEDIATEK && OF && PM
+	depends on PM_GENERIC_DOMAINS_OF && MTK_SCPSYS
+	depends on REGULATOR_MT6351 && RESET_CONTROLLER
+	depends on MTK_MT6797_CONSYS_CORE
+	help
+	  Build the explicitly opt-in MT6797 CONSYS identity experiment. It uses
+	  the MT6351 VCN18/VCN28 regulator owner, the MT6797 SCPSYS CONN domain,
+	  and the CONMCU reset controller to read chip ID 0x0279 while reset stays
+	  asserted. It does not configure AFE, load firmware, or enable a radio.
+
+	  The board node remains disabled and the driver additionally requires
+	  mt6797_consys_live.identity_experiment=1 at boot. This is for one
+	  recoverable device test only.
+
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

@@ -57,7 +57,8 @@ struct mt6797_consys_timeouts {
  * registers; their acknowledgment boundary belongs to that provider. The
  * same source's include/mtk_wcn_consys_hw.h:42 sets
  * CONSYS_AHB_CLK_MAGEMENT to 0, so an AHB bus-clock operation is deliberately
- * absent. The exact bus-protection masks remain disputed.
+ * absent. The bus-protection sequence belongs to the MT6797 SCPSYS provider,
+ * which follows the configured vendor CCF path rather than this core.
  */
 struct mt6797_consys_ops {
 	u32 abi;

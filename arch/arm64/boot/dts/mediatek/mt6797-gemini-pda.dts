@@ -188,6 +188,18 @@
 };
 
 &mt6351regulator {
+	mt6351_vcn18_reg: ldo-vcn18 {
+		regulator-name = "vcn18";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
+	mt6351_vcn28_reg: ldo-vcn28 {
+		regulator-name = "vcn28";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+	};
+
 	mt6351_vemc_reg: ldo-vemc {
 		regulator-name = "vemc_3v3";
 		regulator-min-microvolt = <3000000>;
@@ -216,9 +228,8 @@
 		interrupt-names = "bgf", "wdt";
 		resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
 		reset-names = "conn-mcu";
-		/* The domain stays dormant until this node is explicitly enabled. */
-		power-domains = <&scpsys MT6797_POWER_DOMAIN_CONN>;
-		power-domain-names = "conn";
+		vcn18-supply = <&mt6351_vcn18_reg>;
+		vcn28-supply = <&mt6351_vcn28_reg>;
 		memory-region = <&consys_reserved_memory>;
 		memory-region-names = "shared";
 		status = "disabled";

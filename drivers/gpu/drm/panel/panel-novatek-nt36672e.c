@@ -29,6 +29,7 @@ struct panel_desc {
 	const char * const *supply_names;
 	const unsigned long *supply_enable_loads;
 	unsigned int num_supplies;
+	bool sequential_supply_enable;
 	const struct drm_display_mode *display_mode;
 	u32 width_mm;
 	u32 height_mm;
@@ -672,15 +673,22 @@ static int nt36672e_power_on(struct nt36672e_panel *ctx)
 {
 	struct mipi_dsi_device *dsi = ctx->dsi;
 	const struct panel_desc *desc = ctx->desc;
+	int i;
 	int ret;
 
 	/* Keep reset asserted while the descriptor-selected rails come up. */
 	gpiod_set_value(ctx->reset_gpio, 0);
 
-	ret = regulator_bulk_enable(desc->num_supplies, ctx->supplies);
-	if (ret < 0) {
-		dev_err(&dsi->dev, "regulator bulk enable failed: %d\n", ret);
-		return ret;
+	if (!desc->sequential_supply_enable) {
+		ret = regulator_bulk_enable(desc->num_supplies, ctx->supplies);
+		if (ret < 0)
+			goto err_enable;
+	} else {
+		for (i = 0; i < desc->num_supplies; i++) {
+			ret = regulator_enable(ctx->supplies[i].consumer);
+			if (ret < 0)
+				goto err_disable;
+		}
 	}
 
 	msleep(desc->power_on_delay_ms);
@@ -698,6 +706,13 @@ static int nt36672e_power_on(struct nt36672e_panel *ctx)
 	nt36672e_delay_ms(desc->reset_final_high_delay_ms);
 
 	return 0;
+
+err_disable:
+	while (i--)
+		regulator_disable(ctx->supplies[i].consumer);
+err_enable:
+	dev_err(&dsi->dev, "regulator enable failed: %d\n", ret);
+	return ret;
 }
 
 static int nt36672e_power_off(struct nt36672e_panel *ctx)
@@ -847,6 +862,8 @@ static const struct drm_display_mode gemini_1080x2160 = {
 static const struct panel_desc gemini_panel_desc = {
 	.supply_names = gemini_regulator_names,
 	.num_supplies = ARRAY_SIZE(gemini_regulator_names),
+	/* regulator_bulk_enable() is asynchronous; the vendor requires OUTP first. */
+	.sequential_supply_enable = true,
 	.display_mode = &gemini_1080x2160,
 	/* The recovered vendor source does not state the active-area dimensions. */
 	.width_mm = 0,

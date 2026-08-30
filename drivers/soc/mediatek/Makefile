@@ -40,6 +40,7 @@ obj-$(CONFIG_MTK_MT6797_BTIF_PIO_PLATFORM) += mt6797-btif-pio-platform.o
 obj-$(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP) += mt6797-btif-stp-bootstrap.o
 obj-$(CONFIG_MTK_WMT) += mtk-wmt.o
 obj-$(CONFIG_MTK_WMT_KUNIT_TEST) += mtk-wmt-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_CONSYS_WMT_INITIAL) += mt6797-consys-wmt-initial.o
 obj-$(CONFIG_MTK_MT6797_A72_POWER) += mt6797-a72-power.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_INVENTORY) += mt6797-consys.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_CORE) += mt6797-consys-core.o

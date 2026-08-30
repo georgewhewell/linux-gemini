@@ -30,6 +30,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -58,6 +59,9 @@
 #define MT6797_BTIF_CORE_BASE	0x1100c000
 #define MT6797_BTIF_CORE_SIZE	0x1000
 #define MT6797_BTIF_CORE_SPI	130
+#define MT6797_BTIF_LOOPBACK_PATTERN	0xa5
+/* Safety bound only; vendor BTIF source supplies no loopback deadline. */
+#define MT6797_BTIF_LOOPBACK_TIMEOUT_MS	100
 
 static bool enable_experimental_platform_adapter;
 module_param_named(enable_experimental_platform_adapter,
@@ -71,9 +75,16 @@ module_param_named(enable_experimental_pio_qualification,
 MODULE_PARM_DESC(enable_experimental_pio_qualification,
 		 "allow one MT6797 BTIF clocked PIO register qualification (default: false)");
 
+static bool enable_experimental_pio_loopback_qualification;
+module_param_named(enable_experimental_pio_loopback_qualification,
+		   enable_experimental_pio_loopback_qualification, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_pio_loopback_qualification,
+		 "allow one MT6797 BTIF PIO loopback byte/IRQ qualification (default: false)");
+
 enum mt6797_btif_pio_platform_state {
 	MT6797_BTIF_PIO_PLATFORM_READY,
 	MT6797_BTIF_PIO_PLATFORM_LEASED,
+	MT6797_BTIF_PIO_PLATFORM_LOOPBACK_QUALIFYING,
 	MT6797_BTIF_PIO_PLATFORM_BOOTSTRAP,
 	MT6797_BTIF_PIO_PLATFORM_ACTIVE,
 	MT6797_BTIF_PIO_PLATFORM_QUIESCING,
@@ -103,6 +114,7 @@ struct mt6797_btif_pio_platform {
 	void __iomem *base;
 	struct mutex state_lock;
 	struct completion close_complete;
+	struct completion loopback_complete;
 	struct work_struct fatal_close_work;
 	struct mt6797_btif_pio *pio;
 	const struct mt6797_btif_pio_lease *pio_lease;
@@ -115,6 +127,8 @@ struct mt6797_btif_pio_platform {
 	int irq;
 	bool irq_enabled;
 	bool btifc_enabled;
+	int loopback_status;
+	u8 loopback_byte;
 	enum mt6797_btif_pio_platform_state state;
 };
 
@@ -252,6 +266,7 @@ static int mt6797_btif_pio_platform_prepare(
 
 	adapter->lease.adapter = adapter;
 	adapter->state = MT6797_BTIF_PIO_PLATFORM_READY;
+	init_completion(&adapter->loopback_complete);
 	INIT_WORK(&adapter->fatal_close_work,
 		  mt6797_btif_pio_platform_fatal_close_work);
 	return 0;
@@ -321,6 +336,33 @@ mt6797_btif_pio_platform_acquire(struct device *dev)
 	return mt6797_btif_pio_platform_reserve(adapter);
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_pio_platform_acquire);
+
+static int
+mt6797_btif_pio_platform_loopback_begin(struct mt6797_btif_pio_platform *adapter)
+{
+	int ret = 0;
+
+	mutex_lock(&adapter->state_lock);
+	if (adapter->state == MT6797_BTIF_PIO_PLATFORM_FENCED) {
+		ret = -ESHUTDOWN;
+	} else if (adapter->state != MT6797_BTIF_PIO_PLATFORM_LEASED) {
+		ret = -EBUSY;
+	} else {
+		reinit_completion(&adapter->loopback_complete);
+		adapter->loopback_status = -ETIMEDOUT;
+		ret = mt6797_btif_pio_loopback_prepare(adapter->pio_lease,
+						       MT6797_BTIF_LOOPBACK_PATTERN);
+		if (!ret) {
+			/* Queue the byte before unmasking the vendor-disabled IRQ line. */
+			adapter->state = MT6797_BTIF_PIO_PLATFORM_LOOPBACK_QUALIFYING;
+			adapter->irq_enabled = true;
+			adapter->irq_ops->enable(adapter->irq_context, adapter->irq);
+		}
+	}
+	mutex_unlock(&adapter->state_lock);
+
+	return ret;
+}
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
 
@@ -513,7 +555,8 @@ static void mt6797_btif_pio_platform_fence_irq(
 
 	/* Caller already put the PIO owner into its permanent fenced state. */
 	mutex_lock(&adapter->state_lock);
-	if (adapter->state == MT6797_BTIF_PIO_PLATFORM_ACTIVE &&
+	if ((adapter->state == MT6797_BTIF_PIO_PLATFORM_ACTIVE ||
+	     adapter->state == MT6797_BTIF_PIO_PLATFORM_LOOPBACK_QUALIFYING) &&
 	    adapter->irq_enabled) {
 		adapter->state = MT6797_BTIF_PIO_PLATFORM_QUIESCING;
 		adapter->irq_enabled = false;
@@ -531,16 +574,35 @@ static irqreturn_t mt6797_btif_pio_platform_irq_thread(int irq, void *context)
 {
 	struct mt6797_btif_pio_platform *adapter = context;
 	const struct mt6797_btif_pio_lease *pio_lease;
+	bool loopback;
+	u8 byte;
 	int ret;
 
 	mutex_lock(&adapter->state_lock);
-	if (adapter->state != MT6797_BTIF_PIO_PLATFORM_ACTIVE ||
+	loopback = adapter->state == MT6797_BTIF_PIO_PLATFORM_LOOPBACK_QUALIFYING;
+	if ((!loopback && adapter->state != MT6797_BTIF_PIO_PLATFORM_ACTIVE) ||
 	    !adapter->irq_enabled) {
 		mutex_unlock(&adapter->state_lock);
 		return IRQ_NONE;
 	}
 	pio_lease = adapter->pio_lease;
 	mutex_unlock(&adapter->state_lock);
+
+	if (loopback) {
+		ret = mt6797_btif_pio_loopback_irq(pio_lease, &byte);
+		if (ret == -EAGAIN)
+			return IRQ_NONE;
+		if (!ret)
+			adapter->loopback_byte = byte;
+		WRITE_ONCE(adapter->loopback_status, ret);
+		complete(&adapter->loopback_complete);
+		/* PIO is already fenced on every non-spurious qualification result. */
+		mt6797_btif_pio_platform_fence_irq(adapter);
+		if (ret)
+			dev_warn_ratelimited(adapter->dev,
+					     "BTIF loopback qualification fenced: %d\n", ret);
+		return IRQ_HANDLED;
+	}
 
 	ret = mt6797_btif_pio_irq(pio_lease);
 	if (ret == -EAGAIN)
@@ -564,6 +626,8 @@ static int mt6797_btif_pio_platform_probe(struct platform_device *pdev)
 	struct mt6797_btif_pio_platform *adapter;
 	struct mt6797_btif_pio_io_ops io_ops;
 	struct resource *res;
+	bool pio_qualification;
+	bool loopback_qualification;
 	int irq_count;
 	int ret;
 
@@ -631,8 +695,17 @@ static int mt6797_btif_pio_platform_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, adapter);
-	if (device_property_read_bool(dev,
-				      "mediatek,experimental-pio-qualification")) {
+	pio_qualification =
+		device_property_read_bool(dev, "mediatek,experimental-pio-qualification");
+	loopback_qualification =
+		device_property_read_bool(dev,
+					  "mediatek,experimental-pio-loopback-qualification");
+	if (pio_qualification && loopback_qualification) {
+		ret = dev_err_probe(dev, -EINVAL,
+				    "choose at most one BTIF PIO qualification\n");
+		goto qualification_destroy;
+	}
+	if (pio_qualification) {
 		const struct mt6797_btif_pio_platform_lease *lease;
 		u32 tri_level;
 
@@ -655,6 +728,40 @@ static int mt6797_btif_pio_platform_probe(struct platform_device *pdev)
 		dev_info(dev,
 			 "BTIF PIO qualification passed; TRI_LVL=0x%08x, loopback disabled\n",
 			 tri_level);
+	}
+	if (loopback_qualification) {
+		const struct mt6797_btif_pio_platform_lease *lease;
+		unsigned long complete;
+		unsigned long timeout;
+
+		if (!READ_ONCE(enable_experimental_pio_loopback_qualification)) {
+			ret = dev_err_probe(dev, -EPERM,
+					    "PIO loopback qualification requires explicit parameter opt-in\n");
+			goto qualification_destroy;
+		}
+
+		lease = mt6797_btif_pio_platform_reserve(adapter);
+		if (IS_ERR(lease)) {
+			ret = PTR_ERR(lease);
+			goto qualification_destroy;
+		}
+		ret = mt6797_btif_pio_platform_loopback_begin(adapter);
+		if (!ret) {
+			timeout = msecs_to_jiffies(MT6797_BTIF_LOOPBACK_TIMEOUT_MS);
+			complete = wait_for_completion_timeout(&adapter->loopback_complete,
+							       timeout);
+			ret = complete ? READ_ONCE(adapter->loopback_status) : -ETIMEDOUT;
+			if (!ret && READ_ONCE(adapter->loopback_byte) !=
+			    MT6797_BTIF_LOOPBACK_PATTERN)
+				ret = -EBADMSG;
+		}
+		mt6797_btif_pio_platform_close(lease);
+		if (ret)
+			goto qualification_destroy;
+
+		dev_info(dev,
+			 "BTIF PIO loopback passed; byte=0x%02x via RX IRQ, PIO fenced\n",
+			 MT6797_BTIF_LOOPBACK_PATTERN);
 	}
 	return 0;
 
@@ -698,6 +805,9 @@ MODULE_LICENSE("GPL");
 struct mt6797_btif_pio_platform_test_bus {
 	u32 regs[MT6797_BTIF_PIO_PLATFORM_TEST_REGS];
 	u32 iir;
+	u8 loopback_byte;
+	unsigned int write8_count;
+	bool loopback_pending;
 	unsigned int enable_count;
 	unsigned int disable_nosync_count;
 	unsigned int disable_count;
@@ -764,6 +874,9 @@ static u32 mt6797_btif_pio_platform_test_read32(void *context, u32 offset)
 	if (!bus->btifc_enabled)
 		bus->io_while_btifc_disabled = true;
 	if (offset == 0x08)
+		if (bus->loopback_pending)
+			return BIT(2);
+	if (offset == 0x08)
 		return bus->iir;
 	return bus->regs[offset / sizeof(u32)];
 }
@@ -784,7 +897,10 @@ static u8 mt6797_btif_pio_platform_test_read8(void *context, u32 offset)
 
 	if (!bus->btifc_enabled)
 		bus->io_while_btifc_disabled = true;
-	return 0;
+	if (offset != 0 || !bus->loopback_pending)
+		return 0;
+	bus->loopback_pending = false;
+	return bus->loopback_byte;
 }
 
 static void mt6797_btif_pio_platform_test_write8(void *context, u32 offset,
@@ -794,6 +910,13 @@ static void mt6797_btif_pio_platform_test_write8(void *context, u32 offset,
 
 	if (!bus->btifc_enabled)
 		bus->io_while_btifc_disabled = true;
+	if (offset != 0)
+		return;
+	bus->write8_count++;
+	if (bus->regs[0x60 / sizeof(u32)] & BIT(7)) {
+		bus->loopback_byte = value;
+		bus->loopback_pending = true;
+	}
 }
 
 static void mt6797_btif_pio_platform_test_irq_enable(void *context, int irq)
@@ -1042,6 +1165,35 @@ static void mt6797_btif_pio_platform_test_qualification_releases_clock(struct ku
 	mt6797_btif_pio_platform_test_stop(ctx);
 }
 
+static void mt6797_btif_pio_platform_test_loopback_byte_irq_fences(struct kunit *test)
+{
+	struct mt6797_btif_pio_platform_test_context *ctx;
+	const struct mt6797_btif_pio_platform_lease *lease;
+	int irq_result;
+
+	ctx = mt6797_btif_pio_platform_test_start(test);
+	lease = mt6797_btif_pio_platform_reserve(&ctx->adapter);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
+	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_platform_loopback_begin(&ctx->adapter), 0);
+	KUNIT_EXPECT_EQ(test, ctx->bus->write8_count, 1U);
+	KUNIT_EXPECT_EQ(test, ctx->bus->enable_count, 1U);
+	irq_result = mt6797_btif_pio_platform_irq_thread(ctx->adapter.irq, &ctx->adapter);
+	KUNIT_ASSERT_EQ(test, irq_result, IRQ_HANDLED);
+	KUNIT_EXPECT_TRUE(test, try_wait_for_completion(&ctx->adapter.loopback_complete));
+	KUNIT_EXPECT_EQ(test, ctx->adapter.loopback_status, 0);
+	KUNIT_EXPECT_EQ(test, ctx->adapter.loopback_byte,
+			MT6797_BTIF_LOOPBACK_PATTERN);
+	flush_work(&ctx->adapter.fatal_close_work);
+	KUNIT_EXPECT_EQ(test, ctx->bus->disable_nosync_count, 1U);
+	KUNIT_EXPECT_EQ(test, ctx->bus->synchronize_count, 1U);
+	KUNIT_EXPECT_EQ(test, ctx->bus->clock_disable_count, 1U);
+	KUNIT_EXPECT_EQ(test, ctx->bus->regs[0x04 / sizeof(u32)], 0U);
+	KUNIT_EXPECT_EQ(test, ctx->bus->regs[0x60 / sizeof(u32)] & BIT(7), 0U);
+	KUNIT_EXPECT_FALSE(test, ctx->bus->clock_disabled_before_irq_quiesce);
+	KUNIT_EXPECT_FALSE(test, ctx->bus->clock_disabled_before_pio_fence);
+	mt6797_btif_pio_platform_test_stop(ctx);
+}
+
 static void mt6797_btif_pio_platform_test_activate_close_once(struct kunit *test)
 {
 	struct mt6797_btif_pio_platform_test_context *ctx;
@@ -1151,6 +1303,7 @@ static struct kunit_case mt6797_btif_pio_platform_test_cases[] = {
 	KUNIT_CASE(mt6797_btif_pio_platform_test_explicit_gate),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_clock_enable_failure),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_qualification_releases_clock),
+	KUNIT_CASE(mt6797_btif_pio_platform_test_loopback_byte_irq_fences),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_activate_close_once),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_fence),
 #if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)

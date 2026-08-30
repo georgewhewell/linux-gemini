@@ -9,6 +9,7 @@
 struct regmap;
 struct device;
 struct mtk_mutex;
+struct seq_file;
 
 enum mtk_mutex_mod_index {
 	/* MDP table index */
@@ -86,5 +87,6 @@ int mtk_mutex_write_mod(struct mtk_mutex *mutex,
 			bool clear);
 int mtk_mutex_write_sof(struct mtk_mutex *mutex,
 			enum mtk_mutex_sof_index idx);
+void mtk_mutex_debug_dump(struct device *dev, struct seq_file *s);
 
 #endif /* MTK_MUTEX_H */

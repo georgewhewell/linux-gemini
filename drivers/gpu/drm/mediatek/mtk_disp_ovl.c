@@ -8,6 +8,7 @@
 #include <drm/drm_framebuffer.h>
 
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/component.h>
 #include <linux/device.h>
 #include <linux/module.h>
@@ -15,6 +16,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/seq_file.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
 #include <linux/soc/mediatek/mtk-mmsys.h>
 
@@ -46,6 +48,7 @@
 #define DISP_REG_OVL_RDMA_GMC(n)		(0x00c8 + 0x20 * (n))
 #define DISP_REG_OVL_ADDR_MT2701		0x0040
 #define DISP_REG_OVL_CLRFMT_EXT			0x02d0
+#define DISP_REG_OVL_FLOW_CTRL_DBG		0x0240
 #define OVL_CON_CLRFMT_BIT_DEPTH_MASK(n)		(GENMASK(1, 0) << (4 * (n)))
 #define OVL_CON_CLRFMT_BIT_DEPTH(depth, n)		((depth) << (4 * (n)))
 #define OVL_CON_CLRFMT_8_BIT				(0)
@@ -169,6 +172,24 @@ struct mtk_disp_ovl {
 	void				(*vblank_cb)(void *data);
 	void				*vblank_cb_data;
 };
+
+bool mtk_ovl_is_enabled(struct device *dev)
+{
+	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
+
+	return __clk_is_enabled(ovl->clk);
+}
+
+void mtk_ovl_debug_dump(struct device *dev, struct seq_file *s)
+{
+	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
+
+	seq_printf(s, "%s: OVL_EN=%#08x INTSTA=%#08x SRC_CON=%#08x FLOW_CTRL_DBG=%#08x\n",
+		   dev_name(dev), readl(ovl->regs + DISP_REG_OVL_EN),
+		   readl(ovl->regs + DISP_REG_OVL_INTSTA),
+		   readl(ovl->regs + DISP_REG_OVL_SRC_CON),
+		   readl(ovl->regs + DISP_REG_OVL_FLOW_CTRL_DBG));
+}
 
 static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
 {

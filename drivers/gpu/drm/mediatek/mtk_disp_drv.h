@@ -12,6 +12,8 @@
 #include "mtk_mdp_rdma.h"
 #include "mtk_plane.h"
 
+struct seq_file;
+
 int mtk_aal_clk_enable(struct device *dev);
 void mtk_aal_clk_disable(struct device *dev);
 void mtk_aal_config(struct device *dev, unsigned int w,
@@ -107,6 +109,8 @@ u32 mtk_ovl_get_blend_modes(struct device *dev);
 const u32 *mtk_ovl_get_formats(struct device *dev);
 size_t mtk_ovl_get_num_formats(struct device *dev);
 bool mtk_ovl_is_afbc_supported(struct device *dev);
+bool mtk_ovl_is_enabled(struct device *dev);
+void mtk_ovl_debug_dump(struct device *dev, struct seq_file *s);
 
 void mtk_ovl_adaptor_add_comp(struct device *dev, struct mtk_mutex *mutex);
 void mtk_ovl_adaptor_remove_comp(struct device *dev, struct mtk_mutex *mutex);
@@ -160,6 +164,8 @@ void mtk_rdma_enable_vblank(struct device *dev);
 void mtk_rdma_disable_vblank(struct device *dev);
 const u32 *mtk_rdma_get_formats(struct device *dev);
 size_t mtk_rdma_get_num_formats(struct device *dev);
+bool mtk_rdma_is_enabled(struct device *dev);
+void mtk_rdma_debug_dump(struct device *dev, struct seq_file *s);
 
 int mtk_mdp_rdma_power_on(struct device *dev);
 void mtk_mdp_rdma_power_off(struct device *dev);

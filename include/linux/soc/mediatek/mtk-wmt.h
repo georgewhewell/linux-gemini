@@ -51,6 +51,13 @@ struct mtk_wmt_match {
 
 typedef int (*mtk_wmt_tx_cb_t)(void *context, const u8 *frame,
 				      size_t frame_len);
+/*
+ * Transmit exactly one complete WMT packet, without an STP envelope.  This is
+ * for a transport owner which already owns STP framing and its full-mode
+ * sequence/window lifetime; it cannot be substituted with an enum mode alone.
+ */
+typedef int (*mtk_wmt_payload_tx_cb_t)(void *context, const u8 *packet,
+					      size_t packet_len);
 typedef void (*mtk_wmt_unsolicited_cb_t)(void *context,
 					 const struct mtk_wmt_packet *packet);
 
@@ -66,6 +73,7 @@ struct mtk_wmt {
 	struct completion response;
 	enum mtk_stp_mode stp_mode;
 	mtk_wmt_tx_cb_t transmit;
+	mtk_wmt_payload_tx_cb_t transmit_payload;
 	void *transport_context;
 	mtk_wmt_unsolicited_cb_t unsolicited;
 	void *unsolicited_context;
@@ -79,6 +87,16 @@ struct mtk_wmt {
 
 void mtk_wmt_init(struct mtk_wmt *wmt, enum mtk_stp_mode stp_mode,
 		  mtk_wmt_tx_cb_t transmit, void *transport_context);
+/*
+ * Initialize a WMT matcher on a pre-framed-payload transport.  The callback
+ * gets the complete WMT command packet, starting with type/opcode/length.
+ * It is the caller's responsibility to own the underlying mandatory or
+ * full-STP parser, ACK/window state, timeouts, and recovery lifecycle.
+ */
+void mtk_wmt_init_payload_transport(struct mtk_wmt *wmt,
+				    enum mtk_stp_mode stp_mode,
+				    mtk_wmt_payload_tx_cb_t transmit,
+				    void *transport_context);
 void mtk_wmt_set_unsolicited(struct mtk_wmt *wmt,
 			     mtk_wmt_unsolicited_cb_t receive, void *context);
 

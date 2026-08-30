@@ -22,6 +22,7 @@
 
 struct mt6797_consys_stp_session;
 struct mt6797_consys_stp_session_lease;
+struct mt6797_consys_stp_session_bootstrap_lease;
 
 /*
  * transmit() receives exactly one complete full-STP frame or the four-byte
@@ -60,6 +61,35 @@ mt6797_consys_stp_session_create(const struct mt6797_consys_stp_session_ops *ops
  */
 const struct mt6797_consys_stp_session_lease *
 mt6797_consys_stp_session_begin_full(struct mt6797_consys_stp_session *session);
+
+/*
+ * Start the one-shot provisional full-STP half of the vendor BTIF handover.
+ * This exists solely for the exact mandatory -> full WMT transition in
+ * wmt_ic_soc.c:1008-1044: after the mandatory set reply, the host switches to
+ * full STP, waits 10 ms, and verifies the controller's full-mode reply.  It
+ * is not an active full-session capability.  In particular, it cannot be
+ * passed to a normal endpoint or PIO attachment.
+ */
+const struct mt6797_consys_stp_session_bootstrap_lease *
+mt6797_consys_stp_session_begin_full_bootstrap(
+					struct mt6797_consys_stp_session *session);
+
+/* Send/receive through a provisional full-STP capability during verification. */
+int mt6797_consys_stp_session_bootstrap_transmit(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease,
+		enum mtk_stp_channel channel, const u8 *payload, size_t payload_length);
+int mt6797_consys_stp_session_bootstrap_receive(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease,
+		const u8 *data, size_t length);
+
+/*
+ * Irreversibly expose the normal full-STP lease after the bootstrap owner has
+ * matched the exact final full-mode WMT query reply.  This preserves the
+ * existing sequence/window state; it must never reset the protocol.
+ */
+const struct mt6797_consys_stp_session_lease *
+mt6797_consys_stp_session_bootstrap_promote(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease);
 
 /*
  * Validate an opaque full-STP capability without exposing its owning session.

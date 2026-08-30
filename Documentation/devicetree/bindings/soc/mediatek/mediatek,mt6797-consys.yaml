@@ -25,11 +25,19 @@ description: |
   Its node must remain disabled in the shipped board DT; activation requires a
   deliberate DT overlay and a boot-time kernel parameter.
 
+  A distinct runtime lifecycle provider uses the same bounded prefix but holds
+  its exclusive core lease for a later BTIF owner. Its node must likewise stay
+  disabled and needs both mediatek,experimental-runtime and its independent
+  default-false module or boot parameter gate. It registers the BGF IRQ with
+  Linux disabled, but does not request the WDT IRQ or perform any radio,
+  firmware, AFE, shared-memory, BTIF, or reset-release operation.
+
 properties:
   compatible:
     enum:
       - mediatek,mt6797-consys
       - mediatek,mt6797-consys-identity
+      - mediatek,mt6797-consys-runtime
 
   reg:
     items:
@@ -72,6 +80,13 @@ properties:
       Deferred CONN domain attachment for the identity experiment. Unlike the
       standard power-domains property this is not attached by the device core;
       the driver attaches it only after its rail, reset, and PWRON prefix.
+
+  mediatek,experimental-runtime:
+    type: boolean
+    description: |
+      Explicitly permit the separately gated runtime lifecycle experiment.
+      This does not release reset, enable BTIF, load firmware, or enable a
+      connectivity function.
 
   mediatek,infracfg:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -122,6 +137,18 @@ allOf:
         - mediatek,conn-power-domain
         - mediatek,infracfg
         - mediatek,spm
+        - vcn18-supply
+        - vcn28-supply
+  - if:
+      properties:
+        compatible:
+          const: mediatek,mt6797-consys-runtime
+    then:
+      required:
+        - mediatek,conn-power-domain
+        - mediatek,infracfg
+        - mediatek,spm
+        - mediatek,experimental-runtime
         - vcn18-supply
         - vcn28-supply
 

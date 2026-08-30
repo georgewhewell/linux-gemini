@@ -122,6 +122,33 @@ config MTK_MT6797_BTIF_PIO_KUNIT_TEST
 	  an in-memory register model. The test has no Device Tree, MMIO, clock, DMA,
 	  firmware, WMT, CONSYS, or Gemini hardware dependency.
 
+config MTK_MT6797_BTIF_PIO_PLATFORM
+	tristate "MediaTek MT6797 dormant BTIF PIO platform adapter"
+	depends on OF && MTK_MT6797_BTIF_PIO
+	help
+	  Build the default-disabled platform acquisition adapter for the MT6797
+	  BTIF PIO transport owner. It validates and maps only the vendor-evidenced
+	  4 KiB BTIF core window, obtains one DT-described IRQ, and installs a
+	  threaded handler with IRQF_NO_AUTOEN. The adapter does not obtain, enable,
+	  or disable clocks; CONSYS power/reset/wake ownership is not yet proven.
+
+	  No Gemini Device Tree node matches this driver. A future separately
+	  reviewed node must remain disabled by default, and attachment still needs
+	  enable_experimental_platform_adapter=1. The module parameter is a further
+	  explicit experiment gate; it does not establish any missing power, pad,
+	  firmware, WMT, or radio contract.
+
+config MTK_MT6797_BTIF_PIO_PLATFORM_KUNIT_TEST
+	bool "KUnit tests for the MT6797 BTIF PIO platform adapter"
+	depends on KUNIT=y
+	depends on MTK_MT6797_BTIF_PIO_PLATFORM=y
+	help
+	  Exercise exact resource validation, the explicit experiment gate, the
+	  one-shot platform lease, threaded-IRQ activation ordering, and synchronized
+	  close using in-memory registers and a fake IRQ controller. The test does
+	  not instantiate a platform device or access Device Tree, MMIO, clock, DMA,
+	  firmware, CONSYS, or Gemini hardware.
+
 config MTK_WMT
 	tristate "MediaTek WMT packet codec and transaction fence"
 	depends on MTK_STP

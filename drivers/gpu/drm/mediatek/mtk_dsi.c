@@ -195,6 +195,8 @@ struct mtk_dsi_driver_data {
 	bool has_size_ctl;
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
+	bool irq_needs_power;
+	bool force_cmd_mode_after_reset;
 };
 
 struct mtk_dsi {
@@ -220,6 +222,7 @@ struct mtk_dsi {
 	struct videomode vm;
 	struct mtk_phy_timing phy_timing;
 	int refcount;
+	int irq;
 	bool enabled;
 	bool lanes_ready;
 	u32 irq_data;
@@ -735,12 +738,16 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 		       dsi->regs + dsi->driver_data->reg_shadow_dbg_off);
 
 	mtk_dsi_reset_engine(dsi);
+	if (dsi->driver_data->force_cmd_mode_after_reset)
+		mtk_dsi_set_cmd_mode(dsi);
 	mtk_dsi_phy_timconfig(dsi);
 
 	mtk_dsi_ps_control(dsi, true);
 	mtk_dsi_set_vm_cmd(dsi);
 	mtk_dsi_config_vdo_timing(dsi);
 	mtk_dsi_set_interrupt_enable(dsi);
+	if (dsi->driver_data->irq_needs_power)
+		enable_irq(dsi->irq);
 	mtk_dsi_lane_ready(dsi);
 	mtk_dsi_clk_hs_mode(dsi, 1);
 
@@ -779,6 +786,8 @@ static void mtk_dsi_poweroff(struct mtk_dsi *dsi)
 	writel(0, dsi->regs + DSI_TXRX_CTRL);
 
 	mtk_dsi_disable(dsi);
+	if (dsi->driver_data->irq_needs_power)
+		disable_irq(dsi->irq);
 
 	clk_disable_unprepare(dsi->engine_clk);
 	clk_disable_unprepare(dsi->digital_clk);
@@ -1248,7 +1257,9 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Failed to register DSI host\n");
 
+	dsi->irq = irq_num;
 	ret = devm_request_irq(&pdev->dev, irq_num, mtk_dsi_irq,
+			       dsi->driver_data->irq_needs_power ? IRQF_NO_AUTOEN :
 			       IRQF_TRIGGER_NONE, dev_name(&pdev->dev), dsi);
 	if (ret) {
 		mipi_dsi_host_unregister(&dsi->host);
@@ -1278,7 +1289,9 @@ static const struct mtk_dsi_driver_data mt8173_dsi_driver_data = {
 static const struct mtk_dsi_driver_data mt6797_dsi_driver_data = {
 	.reg_cmdq_off = 0x200,
 	.reg_vm_cmd_off = 0x130,
-	.reg_shadow_dbg_off = 0x190
+	.reg_shadow_dbg_off = 0x190,
+	.irq_needs_power = true,
+	.force_cmd_mode_after_reset = true,
 };
 
 static const struct mtk_dsi_driver_data mt2701_dsi_driver_data = {

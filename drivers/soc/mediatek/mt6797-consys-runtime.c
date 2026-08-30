@@ -1609,7 +1609,7 @@ static void mt6797_consys_handoff_test_identity_and_emi_failures(
 	struct mt6797_consys_emi_owner emi;
 	struct mt6797_consys_postid_owner postid;
 	struct mt6797_consys_emi_layout layout;
-	struct device dev;
+	struct device dev = { };
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(failures); i++) {
@@ -1663,7 +1663,7 @@ static void mt6797_consys_handoff_test_postid_failures(struct kunit *test)
 	struct mt6797_consys_emi_owner emi;
 	struct mt6797_consys_postid_owner postid;
 	struct mt6797_consys_emi_layout layout;
-	struct device dev;
+	struct device dev = { };
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(failures); i++) {
@@ -1769,7 +1769,7 @@ static void mt6797_consys_runtime_test_provider_lease_and_remove_fence(
 	struct mt6797_consys_runtime_test_backend backend = { };
 	struct mt6797_consys_runtime_provider_lease external = { };
 	struct mt6797_consys_runtime runtime = { };
-	struct device dev;
+	struct device dev = { };
 
 	mt6797_consys_runtime_test_provider_setup(test, &runtime, &dev,
 							 &backend);
@@ -1814,7 +1814,7 @@ static void mt6797_consys_runtime_test_provider_waits_concurrently(
 	struct mt6797_consys_runtime_test_waiter waiter;
 	struct mt6797_consys_runtime runtime = { };
 	struct task_struct *task;
-	struct device dev;
+	struct device dev = { };
 
 	mt6797_consys_runtime_test_provider_setup(test, &runtime, &dev,
 							 &backend);
@@ -1846,7 +1846,7 @@ static void mt6797_consys_runtime_test_provider_rejects_unready_state(
 	struct mt6797_consys_runtime_test_backend backend = { };
 	struct mt6797_consys_runtime_provider_lease external = { };
 	struct mt6797_consys_runtime runtime = { };
-	struct device dev;
+	struct device dev = { };
 
 	mt6797_consys_runtime_test_provider_setup(test, &runtime, &dev,
 							 &backend);

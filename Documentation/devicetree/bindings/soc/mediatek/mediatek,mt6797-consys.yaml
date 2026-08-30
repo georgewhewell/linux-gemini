@@ -17,6 +17,12 @@ description: |
   regulator, reset, interrupt, or power domain; access firmware; or map the
   shared reserved memory.
 
+  A separately named, explicitly opt-in shared-memory preflight obtains the
+  boot-time reserved-memory record for the existing no-map CONSYS reservation
+  and validates its resolved geometry. It neither maps nor attaches the
+  reservation, and does not access registers, EMI MPU, regulators, reset, or
+  power domain. Its node must remain disabled in the shipped board DT.
+
   A separately named, explicitly opt-in identity experiment first validates
   the same 2 MiB no-map shared-memory reservation required by vendor power-on,
   then may acquire the MT6797 CONN power domain, read chip ID 0x0279 while
@@ -41,13 +47,23 @@ description: |
   MT6797 shared-EMI MPU owner. That owner has no inverse; the identity driver
   does not release it if subsequent identity work fails.
 
+  A fifth experiment first runs and unwinds the complete reset-held identity
+  path to qualify rails, CONN domain, and chip-ID polling, then extends that
+  owner through the vendor MBIST and AFE prefix. It releases CONMCU reset for
+  the vendor 20 ms delay, leaves the validated BGF IRQ unrequested, then
+  asserts reset and drops power votes. Its AFE and EMI writes remain
+  persistent; failed reset assertion or lifecycle unwind requires watchdog
+  recovery.
+
 properties:
   compatible:
     enum:
       - mediatek,mt6797-consys
+      - mediatek,mt6797-consys-emi-preflight
       - mediatek,mt6797-consys-identity
       - mediatek,mt6797-consys-prepostid-observe
       - mediatek,mt6797-consys-emi-identity
+      - mediatek,mt6797-consys-emi-reset-release
       - mediatek,mt6797-consys-runtime
 
   reg:
@@ -105,7 +121,8 @@ properties:
 
   mediatek,emi-mpu:
     $ref: /schemas/types.yaml#/definitions/phandle
-    description: Persistent MT6797 shared-EMI MPU owner for the EMI identity experiment.
+    description: |
+      Persistent MT6797 shared-EMI MPU owner for the EMI identity experiment.
 
   mediatek,infracfg:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -154,6 +171,7 @@ allOf:
             - mediatek,mt6797-consys-identity
             - mediatek,mt6797-consys-prepostid-observe
             - mediatek,mt6797-consys-emi-identity
+            - mediatek,mt6797-consys-emi-reset-release
     then:
       required:
         - mediatek,conn-power-domain
@@ -164,10 +182,21 @@ allOf:
   - if:
       properties:
         compatible:
-          const: mediatek,mt6797-consys-emi-identity
+          enum:
+            - mediatek,mt6797-consys-emi-identity
+            - mediatek,mt6797-consys-emi-reset-release
     then:
       required:
         - mediatek,emi-mpu
+  - if:
+      properties:
+        compatible:
+          const: mediatek,mt6797-consys-emi-reset-release
+    then:
+      properties:
+        reg-names:
+          contains:
+            const: afe
   - if:
       properties:
         compatible:

@@ -36,6 +36,9 @@ typedef int (*mt6797_consys_stp_rx_cb_t)(void *context,
 						 enum mtk_stp_channel channel,
 						 const u8 *payload,
 						 size_t payload_length);
+typedef int (*mt6797_consys_stp_gnss_rx_cb_t)(void *context,
+						      const u8 *payload,
+						      size_t payload_length);
 
 struct mt6797_consys_stp_session_ops {
 	mt6797_consys_stp_tx_cb_t transmit;
@@ -109,6 +112,19 @@ mt6797_consys_stp_session_bootstrap_promote(
  */
 bool mt6797_consys_stp_session_lease_active(
 			const struct mt6797_consys_stp_session_lease *lease);
+
+/*
+ * Bind one GNSS endpoint to an already-active full-STP owner. The GNSS client
+ * never receives a raw transport or generic STP codec: only this opaque lease
+ * can submit its channel-2 payloads and receive channel-2 frames. Unbind
+ * requires the same callback/context pair so another endpoint cannot detach it.
+ */
+int mt6797_consys_stp_session_bind_gnss(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context);
+int mt6797_consys_stp_session_unbind_gnss(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context);
 
 /* Send one WMT or GNSS payload through an active full-STP capability. */
 int mt6797_consys_stp_session_transmit(

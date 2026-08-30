@@ -30,27 +30,29 @@ config GNSS_MTK_SERIAL
 	  If unsure, say N.
 
 config GNSS_MTK_CONSYS
-	tristate "MediaTek CONSYS GNSS STP endpoint"
-	depends on MTK_STP
+	tristate "MediaTek CONSYS GNSS full-STP endpoint"
+	depends on MTK_MT6797_CONSYS_STP_SESSION
 	help
-	  Build the GNSS class endpoint for a MediaTek CONSYS transport owner.
+	  Build the GNSS class endpoint for a MediaTek CONSYS full-STP controller
+	  owner.
 	  Vendor source proves that GPS is STP task 2 and is bracketed by WMT GPS
 	  function control, but does not establish the MT6797 command protocol,
 	  firmware contract, or hardware transport. This option only provides the
 	  client endpoint; it neither probes a device nor accesses hardware.
 
-	  A separately reviewed transport owner must supply the exact power and
-	  frame callbacks before it can register /dev/gnssN. Keep it disabled until
-	  that owner exists. If unsure, say N.
+	  A separately reviewed controller must supply an active opaque full-STP
+	  lease plus an exact power callback before it can register /dev/gnssN.
+	  Keep it disabled until that owner exists. If unsure, say N.
 
 config GNSS_MTK_CONSYS_KUNIT_TEST
 	tristate "KUnit tests for the MediaTek CONSYS GNSS endpoint"
 	depends on KUNIT=y
 	depends on GNSS_MTK_CONSYS=y
 	help
-	  Exercise the hardware-free GNSS endpoint lifecycle, STP channel-2 stream,
-	  transmit failure fencing, and recovery contract using fake callbacks. No
-	  Device Tree node, WMT command, firmware image, or hardware is used.
+	  Exercise the hardware-free GNSS endpoint lifecycle, opaque full-STP
+	  channel-2 stream, transmit failure fencing, and recovery contract using
+	  fake callbacks. No Device Tree node, WMT command, firmware image, or
+	  hardware is used.
 	  This test has no dependency on a MediaTek platform at run time.
 
 config GNSS_SIRF_SERIAL

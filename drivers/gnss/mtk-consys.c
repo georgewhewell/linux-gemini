@@ -4,20 +4,19 @@
  *
  * Vendor MT6797 code proves only that GPS uses STP task 2 and that opening the
  * vendor character device brackets that stream with WMT GPS function on/off.
- * It does not prove the WMT request/reply bytes, BTIF transport ownership,
- * firmware protocol, register map, power rails, NMEA dialect, or shared-memory
- * contract.  Those responsibilities therefore stay with a future transport
- * owner.  This file contains the safe, reusable half: a standard GNSS class
- * endpoint which moves opaque bytes over the reviewed STP channel.
+ * It does not prove BTIF transport ownership, firmware protocol, register map,
+ * power rails, NMEA dialect, or shared-memory contract. Those responsibilities
+ * stay with a future controller owner. This endpoint uses an opaque active
+ * full-STP lease, so it cannot forge sequence/ACK fields or coexist with a
+ * generic full-STP encoder.
  */
 
 #include <linux/errno.h>
 #include <linux/gnss.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/slab.h>
-
 #include <linux/soc/mediatek/mtk-gnss.h>
+#include <linux/soc/mediatek/mt6797-consys-stp-session.h>
 
 static int mtk_gnss_receive(void *context, const u8 *payload, size_t length)
 {
@@ -129,8 +128,6 @@ EXPORT_SYMBOL_GPL(mtk_gnss_stop);
 
 int mtk_gnss_write(struct mtk_gnss *gnss, const u8 *data, size_t data_len)
 {
-	u8 *frame;
-	size_t frame_len;
 	int ret;
 
 	if (!gnss || (!data && data_len))
@@ -148,34 +145,19 @@ int mtk_gnss_write(struct mtk_gnss *gnss, const u8 *data, size_t data_len)
 		goto unlock;
 	}
 
-	frame = kmalloc(MTK_STP_HEADER_SIZE + MTK_STP_MAX_PAYLOAD +
-			MTK_STP_TRAILER_SIZE, GFP_KERNEL);
-	if (!frame) {
-		ret = -ENOMEM;
-		goto unlock;
-	}
-
-	ret = mtk_stp_encode(gnss->stp_mode, MTK_STP_GNSS, 0, 0, data,
-			     data_len, frame,
-			     MTK_STP_HEADER_SIZE + MTK_STP_MAX_PAYLOAD +
-			     MTK_STP_TRAILER_SIZE, &frame_len);
-	if (ret)
-		goto free_frame;
-
 	gnss->transitioning = true;
 	mutex_unlock(&gnss->lock);
-	ret = gnss->transport.transmit(gnss->transport.context, frame, frame_len);
+	ret = mt6797_consys_stp_session_transmit(gnss->session_lease,
+						 MTK_STP_GNSS, data, data_len);
 	mutex_lock(&gnss->lock);
 	if (ret) {
-		/* A partial or failed transport write has no recoverable boundary. */
+		/* A failed opaque full-STP submit has no endpoint-local recovery. */
 		gnss->active = false;
 		gnss->faulted = true;
 	} else {
 		ret = data_len;
 	}
 	mtk_gnss_complete_transition(gnss);
-free_frame:
-	kfree(frame);
 unlock:
 	mutex_unlock(&gnss->lock);
 
@@ -219,18 +201,14 @@ static const struct gnss_operations mtk_gnss_ops = {
 };
 
 int mtk_gnss_register(struct mtk_gnss *gnss, struct device *parent,
-		      struct mtk_stp *stp, enum mtk_stp_mode stp_mode,
+		      const struct mt6797_consys_stp_session_lease *session_lease,
 		      const struct mtk_gnss_transport *transport)
 {
 	struct gnss_device *gdev;
 	int ret;
 
-	if (!gnss || !parent || !stp || !transport || !transport->transmit ||
+	if (!gnss || !parent || !session_lease || !transport ||
 	    !transport->set_power)
-		return -EINVAL;
-	if (stp_mode != MTK_STP_MODE_MANDATORY && stp_mode != MTK_STP_MODE_FULL)
-		return -EINVAL;
-	if (stp->mode != stp_mode)
 		return -EINVAL;
 
 	if (!gnss->initialized) {
@@ -253,16 +231,16 @@ int mtk_gnss_register(struct mtk_gnss *gnss, struct device *parent,
 	gdev->type = GNSS_TYPE_MTK;
 	gdev->ops = &mtk_gnss_ops;
 	gnss_set_drvdata(gdev, gnss);
-	gnss->stp = stp;
+	gnss->session_lease = session_lease;
 	gnss->gdev = gdev;
 	gnss->transport = *transport;
-	gnss->stp_mode = stp_mode;
 	gnss->active = false;
 	gnss->faulted = false;
 	gnss->transitioning = false;
 	gnss->unregistering = false;
 
-	ret = mtk_stp_register_client(stp, MTK_STP_GNSS, mtk_gnss_receive, gnss);
+	ret = mt6797_consys_stp_session_bind_gnss(session_lease,
+						    mtk_gnss_receive, gnss);
 	if (ret)
 		goto err_put_device;
 
@@ -277,9 +255,11 @@ int mtk_gnss_register(struct mtk_gnss *gnss, struct device *parent,
 
 err_unregister_stp:
 	gnss->registered = false;
-	mtk_stp_unregister_client(stp, MTK_STP_GNSS);
+	mt6797_consys_stp_session_unbind_gnss(session_lease, mtk_gnss_receive,
+						      gnss);
 err_put_device:
 	gnss->gdev = NULL;
+	gnss->session_lease = NULL;
 	gnss_put_device(gdev);
 unlock:
 	mutex_unlock(&gnss->lock);
@@ -290,7 +270,7 @@ EXPORT_SYMBOL_GPL(mtk_gnss_register);
 void mtk_gnss_unregister(struct mtk_gnss *gnss)
 {
 	struct gnss_device *gdev;
-	struct mtk_stp *stp;
+	const struct mt6797_consys_stp_session_lease *session_lease;
 
 	if (!gnss)
 		return;
@@ -302,7 +282,7 @@ void mtk_gnss_unregister(struct mtk_gnss *gnss)
 		return;
 	}
 	gdev = gnss->gdev;
-	stp = gnss->stp;
+	session_lease = gnss->session_lease;
 	gnss->unregistering = true;
 	mutex_unlock(&gnss->lock);
 
@@ -310,7 +290,8 @@ void mtk_gnss_unregister(struct mtk_gnss *gnss)
 	gnss_deregister_device(gdev);
 	/* Also balance a session started directly by a transport owner. */
 	mtk_gnss_stop(gnss);
-	mtk_stp_unregister_client(stp, MTK_STP_GNSS);
+	mt6797_consys_stp_session_unbind_gnss(session_lease, mtk_gnss_receive,
+						      gnss);
 
 	mutex_lock(&gnss->lock);
 	gnss->registered = false;
@@ -318,7 +299,7 @@ void mtk_gnss_unregister(struct mtk_gnss *gnss)
 	gnss->faulted = false;
 	gnss->unregistering = false;
 	gnss->gdev = NULL;
-	gnss->stp = NULL;
+	gnss->session_lease = NULL;
 	mutex_unlock(&gnss->lock);
 
 	gnss_put_device(gdev);

@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * MT6797 CONSYS persistent shared-EMI ownership plus bounded identity test.
+ *
+ * Loading this overlay alone does nothing. It needs all three explicit boot
+ * parameters documented below. A successful run changes persistent region-19
+ * protection, remap, and shared-memory contents before it performs the
+ * reset-held identity observation. There is deliberately no teardown.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/power/mt6797-power.h>
+
+/ {
+	fragment@0 {
+		target = <&consys_emi_mpu>;
+
+		__overlay__ {
+			mediatek,experimental-shared-emi-ownership;
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target = <&consys>;
+
+		__overlay__ {
+			compatible = "mediatek,mt6797-consys-emi-identity";
+			mediatek,conn-power-domain = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+			mediatek,infracfg = <&infrasys>;
+			mediatek,spm = <&scpsys>;
+			mediatek,emi-mpu = <&consys_emi_mpu>;
+			status = "okay";
+		};
+	};
+};

@@ -342,6 +342,25 @@ config MTK_MT6797_CONSYS_EMI_LAYOUT_KUNIT_TEST
 	  It is suitable for test kernels and QEMU and has no Gemini hardware
 	  dependency.
 
+config MTK_MT6797_CONSYS_EMI_MPU
+	bool "Experimental MT6797 CONSYS shared-EMI MPU owner"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	select MTK_MT6797_CONSYS_EMI_LAYOUT
+	select ARM_SMCCC
+	help
+	  Build the MT6797-specific backend for the vendor shared-EMI sequence.
+	  It validates a named, no-map 2 MiB reservation, calls the vendor SIP
+	  region-19 protection ABI, sets the vendor CONSYS-to-AP remap field, and
+	  clears the exact vendor 343 KiB window. The configuration is persistent:
+	  vendor supplies no inverse, so the provider rejects unbind and its owner
+	  never offers release or retry after a partial failure.
+
+	  The provider has no enabled node in the shipped Gemini DT. It requires an
+	  explicit overlay property and
+	  mt6797_consys_emi_mpu.enable_experimental_ownership=1 before it probes;
+	  it performs no hardware operation until an independently gated consumer
+	  claims it.
+
 config MTK_MT6797_CONSYS_HANDOFF
 	tristate "Dormant MT6797 CONSYS true-chronology handoff owner"
 	depends on MTK_MT6797_CONSYS_RUNTIME
@@ -373,6 +392,7 @@ config MTK_MT6797_CONSYS_LIVE
 	depends on PM_GENERIC_DOMAINS_OF && MTK_SCPSYS
 	depends on REGULATOR_MT6351 && RESET_CONTROLLER
 	depends on MTK_MT6797_CONSYS_CORE
+	select MTK_MT6797_CONSYS_EMI_MPU
 	select MFD_SYSCON
 	help
 	  Build the explicitly opt-in MT6797 CONSYS identity experiment. It uses

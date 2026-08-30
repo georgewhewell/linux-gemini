@@ -26,6 +26,7 @@
 #include <linux/reset.h>
 #include <linux/sizes.h>
 #include <linux/soc/mediatek/mt6797-consys.h>
+#include <linux/soc/mediatek/mt6797-consys-emi-mpu.h>
 
 #define MT6797_CONSYS_MCU_CHIP_ID		0x8
 #define MT6797_CONSYS_MCU_CFG_ACR		0x110
@@ -51,6 +52,12 @@ module_param_named(prepostid_observe_experiment, prepostid_observe_experiment,
 MODULE_PARM_DESC(prepostid_observe_experiment,
 		 "allow the MT6797 CONSYS reset-held pre-post-ID register observation");
 
+static bool shared_emi_ownership_experiment;
+module_param_named(shared_emi_ownership_experiment,
+		   shared_emi_ownership_experiment, bool, 0400);
+MODULE_PARM_DESC(shared_emi_ownership_experiment,
+		 "allow the MT6797 CONSYS persistent shared-EMI ownership experiment");
+
 struct mt6797_consys_live_resource {
 	const char *name;
 	resource_size_t start;
@@ -74,6 +81,7 @@ struct mt6797_consys_live {
 	bool runtime_pm_enabled;
 	bool conn_domain_attached;
 	bool prepostid_observe;
+	bool shared_emi_ownership;
 	u32 chip_id;
 };
 
@@ -433,6 +441,12 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 	int ret;
 
 	if (of_device_is_compatible(pdev->dev.of_node,
+				    "mediatek,mt6797-consys-emi-identity") &&
+	    !shared_emi_ownership_experiment)
+		return dev_err_probe(&pdev->dev, -EPERM,
+					     "shared-EMI ownership needs explicit boot opt-in\n");
+
+	if (of_device_is_compatible(pdev->dev.of_node,
 				    "mediatek,mt6797-consys-prepostid-observe") &&
 	    !prepostid_observe_experiment)
 		return dev_err_probe(&pdev->dev, -EPERM,
@@ -449,6 +463,9 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 	consys->prepostid_observe =
 		of_device_is_compatible(pdev->dev.of_node,
 					"mediatek,mt6797-consys-prepostid-observe");
+	consys->shared_emi_ownership =
+		of_device_is_compatible(pdev->dev.of_node,
+					"mediatek,mt6797-consys-emi-identity");
 
 	ret = mt6797_consys_live_map_resource(pdev,
 					     &mt6797_consys_live_resources[0], &consys->mcu);
@@ -480,6 +497,15 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 	ret = mt6797_consys_live_acquire_shared_mem(consys);
 	if (ret)
 		return ret;
+
+	if (consys->shared_emi_ownership) {
+		ret = mt6797_consys_emi_mpu_claim(&pdev->dev);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+					     "failed to claim persistent shared-EMI ownership\n");
+		dev_info(&pdev->dev,
+			 "shared-EMI ownership committed before CONSYS identity\n");
+	}
 
 	consys->infracfg = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
 							   "mediatek,infracfg");
@@ -553,6 +579,7 @@ static void mt6797_consys_live_remove(struct platform_device *pdev)
 static const struct of_device_id mt6797_consys_live_of_match[] = {
 	{ .compatible = "mediatek,mt6797-consys-identity" },
 	{ .compatible = "mediatek,mt6797-consys-prepostid-observe" },
+	{ .compatible = "mediatek,mt6797-consys-emi-identity" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, mt6797_consys_live_of_match);

@@ -12,6 +12,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/delay.h>
+#include <linux/mutex.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -189,6 +190,14 @@ enum {
 struct mt6351_priv {
 	struct device *dev;
 	struct regmap *regmap;
+	/*
+	 * The PMIC baseline is deliberately established by the first real audio
+	 * stream, rather than while the MFD child is being enumerated.  Keep that
+	 * transition serialised: playback and capture may negotiate parameters at
+	 * the same time, and an unsuccessful partial setup must be retried.
+	 */
+	struct mutex init_mutex;
+	bool initialized;
 
 	unsigned int dl_rate;
 	unsigned int ul_rate;
@@ -197,6 +206,8 @@ struct mt6351_priv {
 
 	int hp_en_counter;
 };
+
+static int mt6351_codec_init_reg(struct snd_soc_component *cmpnt);
 
 static void set_hp_gain_zero(struct snd_soc_component *cmpnt)
 {
@@ -267,9 +278,20 @@ static int mt6351_codec_dai_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_component *cmpnt = dai->component;
 	struct mt6351_priv *priv = snd_soc_component_get_drvdata(cmpnt);
 	unsigned int rate = params_rate(params);
+	int ret;
 
 	dev_dbg(priv->dev, "%s(), substream->stream %d, rate %d\n",
 		__func__, substream->stream, rate);
+
+	/*
+	 * Do not touch the PMIC merely because the MT6351 MFD child is present.
+	 * A hw_params call is the first point at which userspace has explicitly
+	 * requested playback or capture; DAPM will subsequently enable only the
+	 * supplies selected by that stream's route.
+	 */
+	ret = mt6351_codec_init_reg(cmpnt);
+	if (ret)
+		return ret;
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		priv->dl_rate = rate;
@@ -1406,26 +1428,68 @@ static const struct snd_soc_dapm_route mt6351_dapm_routes[] = {
 	{"Receiver", NULL, "RCV Buffer"},
 };
 
+struct mt6351_codec_init_reg {
+	unsigned int reg;
+	unsigned int mask;
+	unsigned int val;
+	const char *name;
+};
+
+/*
+ * This is the upstream MT6351 inactive baseline.  It is not a board routing
+ * description: external amplifiers, headset detection and depop GPIOs remain
+ * outside this codec driver until their Gemini wiring is established.
+ */
+static const struct mt6351_codec_init_reg mt6351_codec_init_regs[] = {
+	{ MT6351_TOP_CLKSQ, 0x0001, 0x0000, "CLKSQ" },
+	{ MT6351_AUDDEC_ANA_CON9, 0x1000, 0x1000, "AUDGLB" },
+	{ MT6351_TOP_CKPDN_CON0_SET, 0x3800, 0x3800, "audio clocks" },
+	{ MT6351_AUDDEC_ANA_CON0, 0xe000, 0xe000,
+	  "headphone/receiver short-circuit protection" },
+	{ MT6351_AUDDEC_ANA_CON3, 0x0020, 0x0020,
+	  "line-out short-circuit protection" },
+	{ MT6351_AFE_PMIC_NEWIF_CFG2, 0x8000, 0x8000,
+	  "PMIC RX interface clock polarity" },
+};
+
+static int mt6351_codec_apply_init_reg(struct snd_soc_component *cmpnt)
+{
+	const struct mt6351_codec_init_reg *init;
+	int ret;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(mt6351_codec_init_regs); i++) {
+		init = &mt6351_codec_init_regs[i];
+		ret = regmap_update_bits(cmpnt->regmap, init->reg, init->mask,
+					 init->val);
+		if (ret) {
+			dev_err(cmpnt->dev,
+				"MT6351 audio baseline %s (reg %#x) failed: %d\n",
+				init->name, init->reg, ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 static int mt6351_codec_init_reg(struct snd_soc_component *cmpnt)
 {
-	/* Disable CLKSQ 26MHz */
-	regmap_update_bits(cmpnt->regmap, MT6351_TOP_CLKSQ, 0x0001, 0x0);
-	/* disable AUDGLB */
-	regmap_update_bits(cmpnt->regmap, MT6351_AUDDEC_ANA_CON9,
-			   0x1000, 0x1000);
-	/* Turn off AUDNCP_CLKDIV engine clock,Turn off AUD 26M */
-	regmap_update_bits(cmpnt->regmap, MT6351_TOP_CKPDN_CON0_SET,
-			   0x3800, 0x3800);
-	/* Disable HeadphoneL/HeadphoneR/voice short circuit protection */
-	regmap_update_bits(cmpnt->regmap, MT6351_AUDDEC_ANA_CON0,
-			   0xe000, 0xe000);
-	/* [5] = 1, disable LO buffer left short circuit protection */
-	regmap_update_bits(cmpnt->regmap, MT6351_AUDDEC_ANA_CON3,
-			   0x20, 0x20);
-	/* Reverse the PMIC clock*/
-	regmap_update_bits(cmpnt->regmap, MT6351_AFE_PMIC_NEWIF_CFG2,
-			   0x8000, 0x8000);
-	return 0;
+	struct mt6351_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+	int ret = 0;
+
+	mutex_lock(&priv->init_mutex);
+	if (!priv->initialized) {
+		ret = mt6351_codec_apply_init_reg(cmpnt);
+		if (!ret) {
+			priv->initialized = true;
+			dev_dbg(priv->dev,
+				"MT6351 audio baseline applied for first stream\n");
+		}
+	}
+	mutex_unlock(&priv->init_mutex);
+
+	return ret;
 }
 
 static int mt6351_codec_probe(struct snd_soc_component *cmpnt)
@@ -1433,8 +1497,6 @@ static int mt6351_codec_probe(struct snd_soc_component *cmpnt)
 	struct mt6351_priv *priv = snd_soc_component_get_drvdata(cmpnt);
 
 	snd_soc_component_init_regmap(cmpnt, priv->regmap);
-
-	mt6351_codec_init_reg(cmpnt);
 	return 0;
 }
 
@@ -1463,6 +1525,7 @@ static int mt6351_codec_driver_probe(struct platform_device *pdev)
 	dev_set_drvdata(&pdev->dev, priv);
 
 	priv->dev = &pdev->dev;
+	mutex_init(&priv->init_mutex);
 
 	/*
 	 * The MT6351 codec is an MFD child.  The PMIC core gets its regmap from

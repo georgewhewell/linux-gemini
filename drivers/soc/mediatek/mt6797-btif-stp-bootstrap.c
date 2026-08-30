@@ -352,6 +352,38 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction(
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_full_wmt_transaction);
 
+int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		u8 opcode, const u8 *data, size_t data_len,
+		u8 expected_opcode, size_t expected_data_len,
+		u8 *reply, size_t reply_len, unsigned long timeout)
+{
+	struct mt6797_btif_stp_bootstrap *bootstrap;
+	bool valid;
+	int ret;
+
+	if (!lease || !lease->bootstrap || !reply || reply_len != expected_data_len ||
+	    (!data && data_len) || !timeout)
+		return -EINVAL;
+	bootstrap = lease->bootstrap;
+	mutex_lock(&bootstrap->lifecycle_lock);
+	valid = bootstrap->run_in_progress && bootstrap->full_wmt_stage_running &&
+		!bootstrap->destroy_requested &&
+		bootstrap->state == MT6797_BTIF_STP_BOOTSTRAP_FULL_VERIFY;
+	mutex_unlock(&bootstrap->lifecycle_lock);
+	if (!valid)
+		return -ESHUTDOWN;
+
+	WRITE_ONCE(bootstrap->full_retry_armed, true);
+	ret = mtk_wmt_transaction_capture(&bootstrap->full_wmt, opcode, data,
+			data_len, expected_opcode, expected_data_len, reply, reply_len,
+			timeout);
+	WRITE_ONCE(bootstrap->full_retry_armed, false);
+	cancel_delayed_work_sync(&bootstrap->full_retry_work);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_full_wmt_transaction_capture);
+
 struct mt6797_btif_stp_bootstrap *
 mt6797_btif_stp_bootstrap_create(
 		const struct mt6797_btif_pio_lease *pio_lease,

@@ -17,6 +17,10 @@
 struct device;
 struct mt6797_consys_runtime_controller;
 struct mt6797_consys_stp_session_lease;
+struct mt6797_btif_stp_bootstrap_full_wmt_lease;
+
+typedef int (*mt6797_consys_runtime_controller_postpatch_stage_t)(void *context,
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
 
 /*
  * One controller-owned GNSS borrower.  The object is caller-owned, must be
@@ -45,6 +49,15 @@ int mt6797_consys_runtime_controller_preflight(struct device *dev);
  * removal; managed supplier links then preserve the runtime/BTIF providers.
  */
 int mt6797_consys_runtime_controller_start(struct device *dev);
+
+/*
+ * Start the normal hash-pinned patch stage, then run one synchronous,
+ * caller-supplied post-patch WMT stage before a full-STP session is published.
+ * The stage capability expires before this function returns.
+ */
+int mt6797_consys_runtime_controller_start_with_postpatch_stage(struct device *dev,
+		mt6797_consys_runtime_controller_postpatch_stage_t stage,
+		void *stage_context);
 
 /* Safe for teardown and idempotent after a failed or completed handover. */
 void mt6797_consys_runtime_controller_stop(struct device *dev);

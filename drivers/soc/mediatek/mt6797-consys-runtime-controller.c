@@ -103,6 +103,12 @@ struct mt6797_consys_runtime_controller {
 	enum mt6797_consys_runtime_controller_state state;
 };
 
+struct mt6797_consys_runtime_controller_stage_context {
+	struct mt6797_consys_runtime_controller *controller;
+	mt6797_consys_runtime_controller_postpatch_stage_t postpatch_stage;
+	void *postpatch_context;
+};
+
 static bool mt6797_consys_runtime_controller_ops_valid(
 		const struct mt6797_consys_runtime_controller_ops *ops)
 {
@@ -169,10 +175,13 @@ static void mt6797_consys_runtime_controller_abort(
 static int mt6797_consys_runtime_controller_patch_stage(void *context,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
 {
-	struct mt6797_consys_runtime_controller *controller = context;
+	struct mt6797_consys_runtime_controller_stage_context *stage_context = context;
+	struct mt6797_consys_runtime_controller *controller;
+	int ret;
 
-	if (!controller || !lease)
+	if (!stage_context || !stage_context->controller || !lease)
 		return -EINVAL;
+	controller = stage_context->controller;
 	if (mt6797_consys_runtime_controller_stop_requested(controller))
 		return -ESHUTDOWN;
 
@@ -182,17 +191,29 @@ static int mt6797_consys_runtime_controller_patch_stage(void *context,
 	 * SoC initialization returns.  The opaque lease keeps this controller
 	 * from acquiring a second WMT/STP endpoint or bypassing its retry owner.
 	 */
-	return controller->ops->patch_download(controller->ops_context,
-						 controller->dev, lease);
+	ret = controller->ops->patch_download(controller->ops_context,
+						     controller->dev, lease);
+	if (ret || !stage_context->postpatch_stage)
+		return ret;
+	if (mt6797_consys_runtime_controller_stop_requested(controller))
+		return -ESHUTDOWN;
+	return stage_context->postpatch_stage(stage_context->postpatch_context, lease);
 }
 
-static int mt6797_consys_runtime_controller_start_unchecked(
-		struct mt6797_consys_runtime_controller *controller)
+static int mt6797_consys_runtime_controller_start_with_stage_unchecked(
+		struct mt6797_consys_runtime_controller *controller,
+		mt6797_consys_runtime_controller_postpatch_stage_t postpatch_stage,
+		void *postpatch_context)
 {
 	const struct mt6797_consys_runtime_lease *runtime_lease = NULL;
 	const struct mt6797_btif_pio_platform_lease *platform_lease = NULL;
 	const struct mt6797_consys_stp_session_lease *session_lease;
 	struct mt6797_btif_stp_bootstrap *bootstrap = NULL;
+	struct mt6797_consys_runtime_controller_stage_context stage_context = {
+		.controller = controller,
+		.postpatch_stage = postpatch_stage,
+		.postpatch_context = postpatch_context,
+	};
 	int ret;
 
 	mutex_lock(&controller->lock);
@@ -251,7 +272,7 @@ static int mt6797_consys_runtime_controller_start_unchecked(
 	else
 		session_lease = controller->ops->bootstrap_run(
 			controller->ops_context, bootstrap,
-			mt6797_consys_runtime_controller_patch_stage, controller);
+			mt6797_consys_runtime_controller_patch_stage, &stage_context);
 	if (IS_ERR_OR_NULL(session_lease)) {
 		ret = session_lease ? PTR_ERR(session_lease) : -EIO;
 		goto abort;
@@ -285,6 +306,13 @@ abort:
 						      !IS_ERR_OR_NULL(platform_lease) ?
 						      platform_lease : NULL);
 	return ret;
+}
+
+static int mt6797_consys_runtime_controller_start_unchecked(
+		struct mt6797_consys_runtime_controller *controller)
+{
+	return mt6797_consys_runtime_controller_start_with_stage_unchecked(controller,
+							      NULL, NULL);
 }
 
 static int mt6797_consys_runtime_controller_start_controller(
@@ -332,6 +360,22 @@ int mt6797_consys_runtime_controller_start(struct device *dev)
 	return mt6797_consys_runtime_controller_start_controller(controller);
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_start);
+
+int mt6797_consys_runtime_controller_start_with_postpatch_stage(struct device *dev,
+		mt6797_consys_runtime_controller_postpatch_stage_t stage,
+		void *stage_context)
+{
+	struct mt6797_consys_runtime_controller *controller;
+
+	if (!dev || !stage)
+		return -EINVAL;
+	controller = dev_get_drvdata(dev);
+	if (!controller || !READ_ONCE(enable_experimental_runtime_controller))
+		return -EPERM;
+	return mt6797_consys_runtime_controller_start_with_stage_unchecked(controller,
+								       stage, stage_context);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_start_with_postpatch_stage);
 
 static int mt6797_consys_runtime_controller_gnss_session_get_controller(
 		struct mt6797_consys_runtime_controller *controller,

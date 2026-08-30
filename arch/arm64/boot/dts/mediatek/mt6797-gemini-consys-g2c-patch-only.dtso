@@ -84,6 +84,17 @@
 				mediatek,experimental-g2c-patch-owner;
 				status = "okay";
 			};
+
+			/* G2d is a separately selected successor; never bind it by default. */
+			consys_g2d_postpatch_owner: consys-g2d-postpatch-owner {
+				compatible = "mediatek,mt6797-consys-g2d-postpatch-owner";
+				mediatek,runtime-provider = <&consys>;
+				mediatek,controller = <&consys_g2c_controller>;
+				vcn33-bt-supply = <&mt6351_vcn33_bt_reg>;
+				vcn33-wifi-supply = <&mt6351_vcn33_wifi_reg>;
+				mediatek,experimental-g2d-postpatch-owner;
+				status = "disabled";
+			};
 		};
 	};
 };

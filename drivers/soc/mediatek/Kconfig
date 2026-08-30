@@ -699,6 +699,23 @@ config MTK_MT6797_CONSYS_G2D_VCN33_PREFLIGHT
 	  before calibration, but its wmt_set_pmic_voltage() implementation is not
 	  present in the vendor tree. This preflight deliberately cannot infer it.
 
+config MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	tristate "Experimental MT6797 G2d fused-VCN33 post-patch owner"
+	depends on OF && REGULATOR && MTK_MT6797_CONSYS_G2C_PATCH_OWNER
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
+	help
+	  Default-disabled one-shot post-patch experiment. It captures the vendor
+	  efuse VCN33 level over the controller-owned full-STP WMT lease, rejects
+	  either pre-enabled rail, applies the matching MT6351 selector to both
+	  rails, calibrates, and restores disabled/voltage state before coexistence.
+	  Both its DT property and read-only module parameter are required.
+
+config MTK_MT6797_CONSYS_G2D_VCN33_KUNIT_TEST
+	bool "KUnit tests for the MT6797 fused VCN33 selector table"
+	depends on KUNIT=y
+	help
+	  Check the direct 0..3 <-> 3.3..3.6 V conversion used by G2d only.
+
 config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
 	bool "KUnit tests for MT6797 post-patch calibration choreography"
 	depends on KUNIT=y

@@ -68,6 +68,7 @@
 #define MT7988_TOPRGU_SW_RST_NUM	24
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
+static bool start_at_boot;
 static unsigned int timeout;
 
 struct mtk_wdt_dev {
@@ -487,13 +488,21 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	watchdog_set_drvdata(&mtk_wdt->wdt_dev, mtk_wdt);
 
 	mtk_wdt_init(&mtk_wdt->wdt_dev);
+	if (start_at_boot && !watchdog_hw_running(&mtk_wdt->wdt_dev)) {
+		err = mtk_wdt_start(&mtk_wdt->wdt_dev);
+		if (err)
+			return dev_err_probe(dev, err,
+					     "failed to start boot watchdog\n");
+		set_bit(WDOG_HW_RUNNING, &mtk_wdt->wdt_dev.status);
+	}
 
 	watchdog_stop_on_reboot(&mtk_wdt->wdt_dev);
 	err = devm_watchdog_register_device(dev, &mtk_wdt->wdt_dev);
 	if (unlikely(err))
 		return err;
 
-	dev_info(dev, "Watchdog enabled (timeout=%d sec, nowayout=%d)\n",
+	dev_info(dev, "Watchdog registered (running=%d, timeout=%d sec, nowayout=%d)\n",
+		 watchdog_hw_running(&mtk_wdt->wdt_dev),
 		 mtk_wdt->wdt_dev.timeout, nowayout);
 
 	if (wdt_data && wdt_data->toprgu_sw_rst_num) {
@@ -573,6 +582,10 @@ MODULE_PARM_DESC(timeout, "Watchdog heartbeat in seconds");
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 			__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+
+module_param(start_at_boot, bool, 0);
+MODULE_PARM_DESC(start_at_boot,
+		 "Start the watchdog during probe so the core open timeout covers init");
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Matthias Brugger <matthias.bgg@gmail.com>");

@@ -7,10 +7,12 @@
  */
 
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/seq_file.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
 #include <drm/drm_print.h>
 
@@ -125,6 +127,23 @@ static int mtk_ddp_clk_enable(struct device *dev)
 	struct mtk_ddp_comp_dev *priv = dev_get_drvdata(dev);
 
 	return clk_prepare_enable(priv->clk);
+}
+
+static bool mtk_ddp_clk_is_enabled(struct device *dev)
+{
+	struct mtk_ddp_comp_dev *priv = dev_get_drvdata(dev);
+
+	return __clk_is_enabled(priv->clk);
+}
+
+static void mtk_od_debug_dump(struct device *dev, struct seq_file *s)
+{
+	struct mtk_ddp_comp_dev *priv = dev_get_drvdata(dev);
+
+	seq_printf(s, "%s: OD_EN=%#08x OD_CFG=%#08x OD_SIZE=%#08x\n",
+		   dev_name(dev), readl(priv->regs + DISP_REG_OD_EN),
+		   readl(priv->regs + DISP_REG_OD_CFG),
+		   readl(priv->regs + DISP_REG_OD_SIZE));
 }
 
 static void mtk_ddp_clk_disable(struct device *dev)
@@ -355,6 +374,8 @@ static const struct mtk_ddp_comp_funcs ddp_od = {
 	.clk_disable = mtk_ddp_clk_disable,
 	.config = mtk_od_config,
 	.start = mtk_od_start,
+	.is_enabled = mtk_ddp_clk_is_enabled,
+	.debug_dump = mtk_od_debug_dump,
 };
 
 static const struct mtk_ddp_comp_funcs ddp_ovl = {
@@ -377,6 +398,8 @@ static const struct mtk_ddp_comp_funcs ddp_ovl = {
 	.get_formats = mtk_ovl_get_formats,
 	.get_num_formats = mtk_ovl_get_num_formats,
 	.is_afbc_supported = mtk_ovl_is_afbc_supported,
+	.is_enabled = mtk_ovl_is_enabled,
+	.debug_dump = mtk_ovl_debug_dump,
 };
 
 static const struct mtk_ddp_comp_funcs ddp_postmask = {
@@ -401,6 +424,8 @@ static const struct mtk_ddp_comp_funcs ddp_rdma = {
 	.layer_config = mtk_rdma_layer_config,
 	.get_formats = mtk_rdma_get_formats,
 	.get_num_formats = mtk_rdma_get_num_formats,
+	.is_enabled = mtk_rdma_is_enabled,
+	.debug_dump = mtk_rdma_debug_dump,
 };
 
 static const struct mtk_ddp_comp_funcs ddp_ufoe = {

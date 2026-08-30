@@ -9,6 +9,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/seq_file.h>
 #include <linux/soc/mediatek/mtk-mmsys.h>
 #include <linux/soc/mediatek/mtk-mutex.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
@@ -1151,6 +1152,26 @@ int mtk_mutex_write_sof(struct mtk_mutex *mutex,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_write_sof);
+
+void mtk_mutex_debug_dump(struct device *dev, struct seq_file *s)
+{
+	struct mtk_mutex_ctx *mtx = dev_get_drvdata(dev);
+	u32 sof;
+
+	if (!mtx) {
+		seq_puts(s, "mutex: unavailable\n");
+		return;
+	}
+
+	sof = readl(mtx->regs + DISP_REG_MUTEX_SOF(mtx->data->mutex_sof_reg,
+						      0));
+	seq_printf(s, "%s: MUTEX0_EN=%#08x MOD=%#08x SOF=%#08x (sof=%u eof=%u)\n",
+		   dev_name(dev), readl(mtx->regs + DISP_REG_MUTEX_EN(0)),
+		   readl(mtx->regs + DISP_REG_MUTEX_MOD(mtx, 0, 0)), sof,
+		   (u32)(sof & GENMASK(5, 0)),
+		   (u32)((sof & GENMASK(11, 6)) >> 6));
+}
+EXPORT_SYMBOL_GPL(mtk_mutex_debug_dump);
 
 static int mtk_mutex_probe(struct platform_device *pdev)
 {

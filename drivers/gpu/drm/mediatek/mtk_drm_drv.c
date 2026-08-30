@@ -6,11 +6,13 @@
 
 #include <linux/aperture.h>
 #include <linux/component.h>
+#include <linux/debugfs.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/seq_file.h>
 #include <linux/dma-mapping.h>
 #include <linux/soc/mediatek/mtk-mmsys.h>
 
@@ -18,6 +20,7 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_file.h>
 #include <drm/drm_fbdev_dma.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_gem.h>
@@ -624,6 +627,51 @@ static void mtk_drm_kms_deinit(struct drm_device *drm)
 
 DEFINE_DRM_GEM_FOPS(mtk_drm_fops);
 
+static bool mtk_drm_mt6797_ddp_active(struct mtk_drm_private *private)
+{
+	return mtk_ddp_comp_is_enabled(&private->ddp_comp[DDP_COMPONENT_OD0]) &&
+		mtk_ddp_comp_is_enabled(&private->ddp_comp[DDP_COMPONENT_OVL_2L0]) &&
+		mtk_ddp_comp_is_enabled(&private->ddp_comp[DDP_COMPONENT_OVL_2L1]) &&
+		mtk_ddp_comp_is_enabled(&private->ddp_comp[DDP_COMPONENT_RDMA0]);
+}
+
+static int mtk_drm_mt6797_ddp_state_show(struct seq_file *s, void *unused)
+{
+	struct drm_device *drm = s->private;
+	struct mtk_drm_private *private = drm->dev_private;
+
+	/*
+	 * Never power a component for a diagnostic read. This snapshot is only
+	 * available while the already-enabled CRTC holds all relevant clocks.
+	 */
+	if (!mtk_drm_mt6797_ddp_active(private)) {
+		seq_puts(s, "display inactive; no DDP registers read\n");
+		return 0;
+	}
+
+	seq_puts(s, "MT6797 DDP snapshot (read-only)\n");
+	mtk_mutex_debug_dump(private->mutex_dev, s);
+	mtk_ddp_comp_debug_dump(&private->ddp_comp[DDP_COMPONENT_OD0], s);
+	mtk_ddp_comp_debug_dump(&private->ddp_comp[DDP_COMPONENT_OVL_2L0], s);
+	mtk_ddp_comp_debug_dump(&private->ddp_comp[DDP_COMPONENT_OVL_2L1], s);
+	mtk_ddp_comp_debug_dump(&private->ddp_comp[DDP_COMPONENT_RDMA0], s);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mtk_drm_mt6797_ddp_state);
+
+static void mtk_drm_debugfs_init(struct drm_minor *minor)
+{
+	struct mtk_drm_private *private = minor->dev->dev_private;
+
+	if (!of_device_is_compatible(private->dev->of_node,
+				     "mediatek,mt6797-mmsys"))
+		return;
+
+	debugfs_create_file("mt6797_ddp_state", 0400, minor->debugfs_root,
+			    minor->dev, &mtk_drm_mt6797_ddp_state_fops);
+}
+
 static const struct drm_driver mtk_drm_driver = {
 	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 
@@ -631,6 +679,7 @@ static const struct drm_driver mtk_drm_driver = {
 	DRM_FBDEV_DMA_DRIVER_OPS,
 
 	.fops = &mtk_drm_fops,
+	.debugfs_init = mtk_drm_debugfs_init,
 
 	.name = DRIVER_NAME,
 	.desc = DRIVER_DESC,

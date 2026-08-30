@@ -20,6 +20,7 @@ struct drm_crtc;
 struct drm_device;
 struct mtk_plane_state;
 struct drm_crtc_state;
+struct seq_file;
 
 enum mtk_ddp_comp_type {
 	MTK_DISP_AAL,
@@ -90,6 +91,8 @@ struct mtk_ddp_comp_funcs {
 	void (*remove)(struct device *dev, struct mtk_mutex *mutex);
 	unsigned int (*encoder_index)(struct device *dev);
 	enum drm_mode_status (*mode_valid)(struct device *dev, const struct drm_display_mode *mode);
+	bool (*is_enabled)(struct device *dev);
+	void (*debug_dump)(struct device *dev, struct seq_file *s);
 };
 
 struct mtk_ddp_comp {
@@ -345,6 +348,19 @@ static inline void mtk_ddp_comp_encoder_index_set(struct mtk_ddp_comp *comp)
 {
 	if (comp->funcs && comp->funcs->encoder_index)
 		comp->encoder_index = (int)comp->funcs->encoder_index(comp->dev);
+}
+
+static inline bool mtk_ddp_comp_is_enabled(struct mtk_ddp_comp *comp)
+{
+	return comp->funcs && comp->funcs->is_enabled &&
+		comp->funcs->is_enabled(comp->dev);
+}
+
+static inline void mtk_ddp_comp_debug_dump(struct mtk_ddp_comp *comp,
+					    struct seq_file *s)
+{
+	if (comp->funcs && comp->funcs->debug_dump)
+		comp->funcs->debug_dump(comp->dev, s);
 }
 
 int mtk_ddp_comp_get_id(struct device_node *node,

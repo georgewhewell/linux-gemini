@@ -6,11 +6,13 @@
 #include <drm/drm_fourcc.h>
 
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/component.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/seq_file.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
 #include <linux/soc/mediatek/mtk-mmsys.h>
 
@@ -88,6 +90,25 @@ struct mtk_disp_rdma {
 	void				*vblank_cb_data;
 	u32				fifo_size;
 };
+
+bool mtk_rdma_is_enabled(struct device *dev)
+{
+	struct mtk_disp_rdma *rdma = dev_get_drvdata(dev);
+
+	return __clk_is_enabled(rdma->clk);
+}
+
+void mtk_rdma_debug_dump(struct device *dev, struct seq_file *s)
+{
+	struct mtk_disp_rdma *rdma = dev_get_drvdata(dev);
+
+	seq_printf(s, "%s: INT_STATUS=%#08x GLOBAL_CON=%#08x SIZE0=%#08x SIZE1=%#08x FIFO_CON=%#08x\n",
+		   dev_name(dev), readl(rdma->regs + DISP_REG_RDMA_INT_STATUS),
+		   readl(rdma->regs + DISP_REG_RDMA_GLOBAL_CON),
+		   readl(rdma->regs + DISP_REG_RDMA_SIZE_CON_0),
+		   readl(rdma->regs + DISP_REG_RDMA_SIZE_CON_1),
+		   readl(rdma->regs + DISP_REG_RDMA_FIFO_CON));
+}
 
 static irqreturn_t mtk_disp_rdma_irq_handler(int irq, void *dev_id)
 {

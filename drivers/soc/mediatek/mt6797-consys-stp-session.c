@@ -462,7 +462,8 @@ int mt6797_consys_stp_session_transmit(
 	u16 crc;
 	int ret;
 
-	if (!lease || (!payload && payload_length) || !payload_length)
+	if (!lease || !lease->session || (!payload && payload_length) ||
+	    !payload_length)
 		return -EINVAL;
 	if (!mt6797_consys_stp_channel_supported(channel))
 		return -EOPNOTSUPP;
@@ -583,7 +584,7 @@ int mt6797_consys_stp_session_timeout(
 	struct mt6797_consys_stp_session *session;
 	int ret;
 
-	if (!lease)
+	if (!lease || !lease->session)
 		return -EINVAL;
 	session = lease->session;
 	mutex_lock(&session->lock);
@@ -920,6 +921,18 @@ static void mt6797_consys_stp_test_malformed_and_quiesce(struct kunit *test)
 	mt6797_consys_stp_session_destroy(session);
 }
 
+static void mt6797_consys_stp_test_null_session_lease_is_rejected(
+							   struct kunit *test)
+{
+	struct mt6797_consys_stp_session_lease invalid = {};
+	u8 payload = 0;
+
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_transmit(&invalid,
+								 MTK_STP_WMT,
+								 &payload, sizeof(payload)), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_timeout(&invalid), -EINVAL);
+}
+
 static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_wraparound),
 	KUNIT_CASE(mt6797_consys_stp_test_credit_exhaustion),
@@ -930,6 +943,7 @@ static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_nak_and_timeout_retry),
 	KUNIT_CASE(mt6797_consys_stp_test_retry_limit_fences),
 	KUNIT_CASE(mt6797_consys_stp_test_malformed_and_quiesce),
+	KUNIT_CASE(mt6797_consys_stp_test_null_session_lease_is_rejected),
 	{ }
 };
 

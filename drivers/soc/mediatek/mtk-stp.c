@@ -33,6 +33,14 @@ static u8 mtk_stp_header_checksum(const u8 *header)
 	return header[0] + header[1] + header[2];
 }
 
+static bool mtk_stp_is_sync(const struct mtk_stp *stp, u8 byte)
+{
+	if (stp->mode == MTK_STP_MODE_FULL)
+		return (byte & 0xc0) == 0x80;
+
+	return byte & 0x80;
+}
+
 static void mtk_stp_reset_frame(struct mtk_stp *stp)
 {
 	stp->rx_phase = MTK_STP_RX_HEADER;
@@ -145,7 +153,7 @@ static int mtk_stp_parse_header(struct mtk_stp *stp)
 		return -EBADMSG;
 	}
 
-	channel = stp->header[1] >> 4;
+	channel = (stp->header[1] & 0x70) >> 4;
 	payload_len = ((stp->header[1] & 0xf) << 8) | stp->header[2];
 	if (channel > MTK_STP_MAX_CHANNEL ||
 	    payload_len > mtk_stp_max_payload(stp->mode))
@@ -154,6 +162,7 @@ static int mtk_stp_parse_header(struct mtk_stp *stp)
 		return -EOPNOTSUPP;
 
 	stp->channel = channel;
+	stp->nak = stp->header[1] >> 7;
 	stp->sequence = (stp->header[0] >> 3) & 0x7;
 	stp->ack = stp->header[0] & 0x7;
 	stp->payload_len = payload_len;
@@ -163,7 +172,7 @@ static int mtk_stp_parse_header(struct mtk_stp *stp)
 	return 0;
 }
 
-static int mtk_stp_finish_frame(struct mtk_stp *stp)
+static int mtk_stp_finish_frame(struct mtk_stp *stp, bool *callback_error)
 {
 	u16 crc;
 	int ret = 0;
@@ -175,18 +184,60 @@ static int mtk_stp_finish_frame(struct mtk_stp *stp)
 			return -EBADMSG;
 	}
 
+	*callback_error = false;
 	if (stp->payload_len && mtk_stp_supported_channel(stp->channel) &&
 	    stp->clients[stp->channel].receive)
 		ret = stp->clients[stp->channel].receive(stp->clients[stp->channel].context,
 							      stp->payload,
 							      stp->payload_len);
+	if (ret)
+		*callback_error = true;
+	else
+		stp->frames++;
 
 	return ret;
+}
+
+static void mtk_stp_record_error(struct mtk_stp *stp, int error,
+				 bool callback_error)
+{
+	stp->rx_errors++;
+	if (callback_error)
+		stp->callback_errors++;
+	stp->last_error = error;
+}
+
+static int mtk_stp_feed_header(struct mtk_stp *stp, u8 byte)
+{
+	int ret;
+
+	stp->header[stp->header_len++] = byte;
+	while (stp->header_len) {
+		if (!mtk_stp_is_sync(stp, stp->header[0])) {
+			memmove(stp->header, stp->header + 1, --stp->header_len);
+			stp->dropped_bytes++;
+			continue;
+		}
+		if (stp->header_len < MTK_STP_HEADER_SIZE)
+			return 0;
+
+		ret = mtk_stp_parse_header(stp);
+		if (!ret)
+			return 0;
+
+		/* Slide one byte to consider overlapping sync candidates. */
+		memmove(stp->header, stp->header + 1, --stp->header_len);
+		stp->dropped_bytes++;
+		return ret;
+	}
+
+	return 0;
 }
 
 int mtk_stp_rx(struct mtk_stp *stp, const u8 *data, size_t length)
 {
 	size_t i;
+	int first_error = 0;
 
 	if (!stp || (!data && length))
 		return -EINVAL;
@@ -196,12 +247,11 @@ int mtk_stp_rx(struct mtk_stp *stp, const u8 *data, size_t length)
 
 	for (i = 0; i < length; i++) {
 		int frame_ret = 0;
+		bool callback_error = false;
 
 		switch (stp->rx_phase) {
 		case MTK_STP_RX_HEADER:
-			stp->header[stp->header_len++] = data[i];
-			if (stp->header_len == MTK_STP_HEADER_SIZE)
-				frame_ret = mtk_stp_parse_header(stp);
+			frame_ret = mtk_stp_feed_header(stp, data[i]);
 			break;
 		case MTK_STP_RX_PAYLOAD:
 			stp->payload[stp->payload_pos++] = data[i];
@@ -210,21 +260,24 @@ int mtk_stp_rx(struct mtk_stp *stp, const u8 *data, size_t length)
 			break;
 		case MTK_STP_RX_TRAILER:
 			stp->trailer[stp->trailer_len++] = data[i];
-			if (stp->trailer_len == MTK_STP_TRAILER_SIZE)
-				frame_ret = mtk_stp_finish_frame(stp);
+			if (stp->trailer_len == MTK_STP_TRAILER_SIZE) {
+				frame_ret = mtk_stp_finish_frame(stp, &callback_error);
+				mtk_stp_reset_frame(stp);
+			}
 			break;
 		}
 
 		if (frame_ret) {
-			mtk_stp_reset_frame(stp);
-			return frame_ret;
+			mtk_stp_record_error(stp, frame_ret, callback_error);
+			if (!first_error)
+				first_error = frame_ret;
 		}
 		if (stp->rx_phase == MTK_STP_RX_TRAILER &&
 		    stp->trailer_len == MTK_STP_TRAILER_SIZE)
 			mtk_stp_reset_frame(stp);
 	}
 
-	return 0;
+	return first_error;
 }
 EXPORT_SYMBOL_GPL(mtk_stp_rx);
 

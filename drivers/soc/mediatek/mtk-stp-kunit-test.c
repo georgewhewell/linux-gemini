@@ -15,6 +15,8 @@ struct mtk_stp_test_rx {
 	u8 payload[MTK_STP_MAX_PAYLOAD];
 	size_t length;
 	unsigned int calls;
+	unsigned int errors_left;
+	int error;
 };
 
 static int mtk_stp_test_receive(void *context, const u8 *payload,
@@ -28,6 +30,10 @@ static int mtk_stp_test_receive(void *context, const u8 *payload,
 	memcpy(rx->payload, payload, length);
 	rx->length = length;
 	rx->calls++;
+	if (rx->errors_left) {
+		rx->errors_left--;
+		return rx->error;
+	}
 
 	return 0;
 }
@@ -156,8 +162,10 @@ static void mtk_stp_test_integrity_and_length(struct kunit *test)
 	mtk_stp_init(stp, MTK_STP_MODE_FULL);
 	KUNIT_EXPECT_EQ(test,
 			mtk_stp_rx(stp, bad_header, sizeof(bad_header)), -EBADMSG);
+	mtk_stp_reset(stp);
 	KUNIT_EXPECT_EQ(test,
 			mtk_stp_rx(stp, bad_crc, sizeof(bad_crc)), -EBADMSG);
+	mtk_stp_reset(stp);
 	KUNIT_EXPECT_EQ(test,
 			mtk_stp_rx(stp, full_header, sizeof(full_header)), -EMSGSIZE);
 
@@ -188,12 +196,175 @@ static void mtk_stp_test_error_then_valid_frame(struct kunit *test)
 	KUNIT_EXPECT_EQ(test,
 			mtk_stp_rx(stp, bad_then_valid, sizeof(bad_then_valid)),
 			-EBADMSG);
-	KUNIT_EXPECT_EQ(test, stp->rx_phase, MTK_STP_RX_HEADER);
-	KUNIT_EXPECT_EQ(test, stp->header_len, 0);
-	KUNIT_EXPECT_EQ(test, stp->payload_pos, 0);
-	KUNIT_EXPECT_EQ(test, rx->calls, 0U);
+	KUNIT_EXPECT_EQ(test, rx->calls, 1U);
+	KUNIT_EXPECT_MEMEQ(test, rx->payload, payload, sizeof(payload));
+	KUNIT_EXPECT_EQ(test, stp->rx_errors, 1U);
+	KUNIT_EXPECT_EQ(test, stp->callback_errors, 0U);
+	KUNIT_EXPECT_EQ(test, stp->last_error, -EBADMSG);
+}
+
+static void mtk_stp_test_false_sync_then_valid_frame(struct kunit *test)
+{
+	/* Byte 1 is a false full-mode sync; byte 4 starts the valid frame. */
+	static const u8 false_sync_then_valid[] = {
+		0x9d, 0x90, 0x03, 0x31,
+		0x9d, 0x20, 0x03, 0xc0, 0x01, 0x02, 0x03, 0x10, 0xa1,
+	};
+	static const u8 payload[] = { 0x01, 0x02, 0x03 };
+	struct mtk_stp *stp;
+	struct mtk_stp_test_rx *rx;
+
+	stp = kunit_kzalloc(test, sizeof(*stp), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, stp);
+	rx = kunit_kzalloc(test, sizeof(*rx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, rx);
+	mtk_stp_init(stp, MTK_STP_MODE_FULL);
+	KUNIT_ASSERT_EQ(test,
+			mtk_stp_register_client(stp, MTK_STP_GNSS,
+						mtk_stp_test_receive, rx), 0);
+
 	KUNIT_EXPECT_EQ(test,
-			mtk_stp_rx(stp, bad_then_valid + 9, 9), 0);
+			mtk_stp_rx(stp, false_sync_then_valid,
+				   sizeof(false_sync_then_valid)), -EBADMSG);
+	KUNIT_EXPECT_EQ(test, rx->calls, 1U);
+	KUNIT_EXPECT_MEMEQ(test, rx->payload, payload, sizeof(payload));
+	KUNIT_EXPECT_EQ(test, stp->rx_errors, 2U);
+	KUNIT_EXPECT_EQ(test, stp->dropped_bytes, 4U);
+}
+
+static void mtk_stp_test_false_sync_all_splits(struct kunit *test)
+{
+	static const u8 false_sync_then_valid[] = {
+		0x9d, 0x90, 0x03, 0x31,
+		0x9d, 0x20, 0x03, 0xc0, 0x01, 0x02, 0x03, 0x10, 0xa1,
+	};
+	struct mtk_stp *stp;
+	struct mtk_stp_test_rx *rx;
+	size_t i;
+	int byte_error = 0;
+
+	stp = kunit_kzalloc(test, sizeof(*stp), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, stp);
+	rx = kunit_kzalloc(test, sizeof(*rx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, rx);
+
+	for (i = 0; i <= sizeof(false_sync_then_valid); i++) {
+		int ret;
+		int next;
+
+		memset(rx, 0, sizeof(*rx));
+		mtk_stp_init(stp, MTK_STP_MODE_FULL);
+		KUNIT_ASSERT_EQ(test,
+				mtk_stp_register_client(stp, MTK_STP_GNSS,
+							mtk_stp_test_receive, rx), 0);
+		ret = mtk_stp_rx(stp, false_sync_then_valid, i);
+		next = mtk_stp_rx(stp, false_sync_then_valid + i,
+				  sizeof(false_sync_then_valid) - i);
+		if (!ret)
+			ret = next;
+		KUNIT_EXPECT_EQ(test, ret, -EBADMSG);
+		KUNIT_EXPECT_EQ(test, rx->calls, 1U);
+	}
+
+	memset(rx, 0, sizeof(*rx));
+	mtk_stp_init(stp, MTK_STP_MODE_FULL);
+	KUNIT_ASSERT_EQ(test,
+			mtk_stp_register_client(stp, MTK_STP_GNSS,
+						mtk_stp_test_receive, rx), 0);
+	for (i = 0; i < sizeof(false_sync_then_valid); i++) {
+		int ret = mtk_stp_rx(stp, false_sync_then_valid + i, 1);
+
+		if (!byte_error)
+			byte_error = ret;
+		KUNIT_EXPECT_TRUE(test, !ret || ret == -EBADMSG);
+	}
+	KUNIT_EXPECT_EQ(test, byte_error, -EBADMSG);
+	KUNIT_EXPECT_EQ(test, rx->calls, 1U);
+}
+
+static void mtk_stp_test_callback_error_then_valid_frame(struct kunit *test)
+{
+	static const u8 payload[] = { 0x01, 0x02, 0x03 };
+	struct mtk_stp *stp;
+	struct mtk_stp_test_rx *rx;
+	u8 frames[2 * (MTK_STP_HEADER_SIZE + sizeof(payload) +
+			 MTK_STP_TRAILER_SIZE)];
+	size_t frame_len;
+
+	stp = kunit_kzalloc(test, sizeof(*stp), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, stp);
+	rx = kunit_kzalloc(test, sizeof(*rx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, rx);
+	mtk_stp_init(stp, MTK_STP_MODE_FULL);
+	KUNIT_ASSERT_EQ(test,
+			mtk_stp_register_client(stp, MTK_STP_GNSS,
+						mtk_stp_test_receive, rx), 0);
+	KUNIT_ASSERT_EQ(test,
+			mtk_stp_encode(MTK_STP_MODE_FULL, MTK_STP_GNSS, 0, 0,
+				       payload, sizeof(payload), frames, sizeof(frames),
+				       &frame_len), 0);
+	memcpy(frames + frame_len, frames, frame_len);
+	rx->error = -EIO;
+	rx->errors_left = 1;
+
+	KUNIT_EXPECT_EQ(test, mtk_stp_rx(stp, frames, 2 * frame_len), -EIO);
+	KUNIT_EXPECT_EQ(test, rx->calls, 2U);
+	KUNIT_EXPECT_MEMEQ(test, rx->payload, payload, sizeof(payload));
+	KUNIT_EXPECT_EQ(test, stp->rx_errors, 1U);
+	KUNIT_EXPECT_EQ(test, stp->callback_errors, 1U);
+	KUNIT_EXPECT_EQ(test, stp->frames, 1U);
+}
+
+static void mtk_stp_test_noise_prefix_then_valid_frame(struct kunit *test)
+{
+	static const u8 payload[] = { 0x57 };
+	static const u8 noise[] = { 0x00, 0x55, 0x7f };
+	struct mtk_stp *stp;
+	struct mtk_stp_test_rx *rx;
+	u8 bytes[sizeof(noise) + MTK_STP_HEADER_SIZE + sizeof(payload) +
+		 MTK_STP_TRAILER_SIZE];
+	size_t frame_len;
+
+	stp = kunit_kzalloc(test, sizeof(*stp), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, stp);
+	rx = kunit_kzalloc(test, sizeof(*rx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, rx);
+	mtk_stp_init(stp, MTK_STP_MODE_MANDATORY);
+	KUNIT_ASSERT_EQ(test,
+			mtk_stp_register_client(stp, MTK_STP_WMT,
+						mtk_stp_test_receive, rx), 0);
+	memcpy(bytes, noise, sizeof(noise));
+	KUNIT_ASSERT_EQ(test,
+			mtk_stp_encode(MTK_STP_MODE_MANDATORY, MTK_STP_WMT, 0, 0,
+				       payload, sizeof(payload), bytes + sizeof(noise),
+				       sizeof(bytes) - sizeof(noise), &frame_len), 0);
+
+	KUNIT_EXPECT_EQ(test,
+			mtk_stp_rx(stp, bytes, sizeof(noise) + frame_len), 0);
+	KUNIT_EXPECT_EQ(test, rx->calls, 1U);
+	KUNIT_EXPECT_EQ(test, stp->dropped_bytes, (u32)sizeof(noise));
+	KUNIT_EXPECT_EQ(test, stp->rx_errors, 0U);
+}
+
+static void mtk_stp_test_nak_masks_channel(struct kunit *test)
+{
+	static const u8 frame[] = { 0x80, 0xc0, 0x01, 0x00, 0x5a, 0x00, 0x00 };
+	static const u8 payload[] = { 0x5a };
+	struct mtk_stp *stp;
+	struct mtk_stp_test_rx *rx;
+
+	stp = kunit_kzalloc(test, sizeof(*stp), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, stp);
+	rx = kunit_kzalloc(test, sizeof(*rx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, rx);
+	mtk_stp_init(stp, MTK_STP_MODE_MANDATORY);
+	KUNIT_ASSERT_EQ(test,
+			mtk_stp_register_client(stp, MTK_STP_WMT,
+						mtk_stp_test_receive, rx), 0);
+
+	KUNIT_EXPECT_EQ(test, mtk_stp_rx(stp, frame, sizeof(frame)), 0);
+	KUNIT_EXPECT_EQ(test, stp->channel, (u8)MTK_STP_WMT);
+	KUNIT_EXPECT_EQ(test, stp->nak, (u8)1);
 	KUNIT_EXPECT_EQ(test, rx->calls, 1U);
 	KUNIT_EXPECT_MEMEQ(test, rx->payload, payload, sizeof(payload));
 }
@@ -219,8 +390,7 @@ static void mtk_stp_test_zero_payload_is_unsupported(struct kunit *test)
 	mtk_stp_init(stp, MTK_STP_MODE_FULL);
 	KUNIT_EXPECT_EQ(test,
 			mtk_stp_rx(stp, full_header, sizeof(full_header)), -EOPNOTSUPP);
-	KUNIT_EXPECT_EQ(test, stp->rx_phase, MTK_STP_RX_HEADER);
-	KUNIT_EXPECT_EQ(test, stp->header_len, 0);
+	KUNIT_EXPECT_EQ(test, stp->rx_errors, 1U);
 }
 
 static void mtk_stp_test_mandatory_is_permissive(struct kunit *test)
@@ -273,6 +443,11 @@ static struct kunit_case mtk_stp_test_cases[] = {
 	KUNIT_CASE(mtk_stp_test_channel_isolation),
 	KUNIT_CASE(mtk_stp_test_integrity_and_length),
 	KUNIT_CASE(mtk_stp_test_error_then_valid_frame),
+	KUNIT_CASE(mtk_stp_test_false_sync_then_valid_frame),
+	KUNIT_CASE(mtk_stp_test_false_sync_all_splits),
+	KUNIT_CASE(mtk_stp_test_callback_error_then_valid_frame),
+	KUNIT_CASE(mtk_stp_test_noise_prefix_then_valid_frame),
+	KUNIT_CASE(mtk_stp_test_nak_masks_channel),
 	KUNIT_CASE(mtk_stp_test_zero_payload_is_unsupported),
 	KUNIT_CASE(mtk_stp_test_mandatory_is_permissive),
 	KUNIT_CASE(mtk_stp_test_client_registration),

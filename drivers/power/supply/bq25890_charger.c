@@ -124,6 +124,7 @@ struct bq25890_device {
 
 	bool skip_reset;
 	bool read_back_init_data;
+	bool read_only;
 	bool force_hiz;
 	u32 pump_express_vbus_max;
 	u32 iinlim_percentage;
@@ -374,6 +375,14 @@ static int bq25890_field_read(struct bq25890_device *bq,
 static int bq25890_field_write(struct bq25890_device *bq,
 			       enum bq25890_fields field_id, u8 val)
 {
+	/*
+	 * Do not let a status-only consumer accidentally transition the charger
+	 * out of its autonomous mode.  In particular, an I2C write starts the
+	 * watchdog on BQ2589x parts, even when the written value is unchanged.
+	 */
+	if (bq->read_only)
+		return -EPERM;
+
 	return regmap_field_write(bq->rmap_fields[field_id], val);
 }
 
@@ -475,7 +484,8 @@ static void bq25890_update_state(struct bq25890_device *bq,
 	/* update state in case we lost an interrupt */
 	__bq25890_handle_irq(bq);
 	*state = bq->state;
-	do_adc_conv = (!state->online || state->hiz) && bq25890_is_adc_property(psp);
+	do_adc_conv = !bq->read_only && (!state->online || state->hiz) &&
+		bq25890_is_adc_property(psp);
 	if (do_adc_conv)
 		bq25890_field_write(bq, F_CONV_START, 1);
 	mutex_unlock(&bq->lock);
@@ -691,6 +701,9 @@ static int bq25890_power_supply_set_property(struct power_supply *psy,
 	int maxval, ret;
 	u8 lval;
 
+	if (bq->read_only)
+		return -EPERM;
+
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 		maxval = bq25890_find_val(bq->init_data.ichg, TBL_ICHG);
@@ -717,6 +730,11 @@ static int bq25890_power_supply_set_property(struct power_supply *psy,
 static int bq25890_power_supply_property_is_writeable(struct power_supply *psy,
 						      enum power_supply_property psp)
 {
+	struct bq25890_device *bq = power_supply_get_drvdata(psy);
+
+	if (bq->read_only)
+		return false;
+
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
@@ -747,7 +765,7 @@ static void bq25890_charger_external_power_changed(struct power_supply *psy)
 	union power_supply_propval val;
 	int input_current_limit, ret;
 
-	if (bq->chip_version != BQ25892)
+	if (bq->read_only || bq->chip_version != BQ25892)
 		return;
 
 	ret = power_supply_get_property_from_supplier(psy,
@@ -781,7 +799,7 @@ static void bq25890_charger_external_power_changed(struct power_supply *psy)
 static int bq25890_get_chip_state(struct bq25890_device *bq,
 				  struct bq25890_state *state)
 {
-	int i, ret;
+	int i, ret, num_state_fields;
 
 	struct {
 		enum bq25890_fields id;
@@ -797,7 +815,18 @@ static int bq25890_get_chip_state(struct bq25890_device *bq,
 		{F_NTC_FAULT,	&state->ntc_fault}
 	};
 
-	for (i = 0; i < ARRAY_SIZE(state_fields); i++) {
+	/*
+	 * REG0C latches some fault state until it is read.  Do not consume that
+	 * diagnostic state in ti,read-only mode: the observation interface is
+	 * deliberately limited to the non-destructive status fields above.
+	 */
+	if (bq->read_only)
+		num_state_fields = 4;
+	else
+		num_state_fields = ARRAY_SIZE(state_fields);
+
+	memset(state, 0, sizeof(*state));
+	for (i = 0; i < num_state_fields; i++) {
 		ret = bq25890_field_read(bq, state_fields[i].id);
 		if (ret < 0)
 			return ret;
@@ -831,7 +860,8 @@ static irqreturn_t __bq25890_handle_irq(struct bq25890_device *bq)
 	 * Restore HiZ bit in case it was set by user. The chip does not retain
 	 * this bit on cable replug, hence the bit must be reset manually here.
 	 */
-	if (new_state.online && !bq->state.online && bq->force_hiz) {
+	if (!bq->read_only && new_state.online && !bq->state.online &&
+	    bq->force_hiz) {
 		ret = bq25890_field_write(bq, F_EN_HIZ, bq->force_hiz);
 		if (ret < 0)
 			goto error;
@@ -842,7 +872,7 @@ static irqreturn_t __bq25890_handle_irq(struct bq25890_device *bq)
 	adc_conv_rate = bq->state.online && !bq->state.hiz;
 	new_adc_conv_rate = new_state.online && !new_state.hiz;
 
-	if (new_adc_conv_rate != adc_conv_rate) {
+	if (!bq->read_only && new_adc_conv_rate != adc_conv_rate) {
 		ret = bq25890_field_write(bq, F_CONV_RATE, new_adc_conv_rate);
 		if (ret < 0)
 			goto error;
@@ -939,6 +969,11 @@ static int bq25890_hw_init(struct bq25890_device *bq)
 {
 	int ret;
 
+	if (bq->read_only) {
+		/* No write and no read-to-clear fault-register access. */
+		return bq25890_get_chip_state(bq, &bq->state);
+	}
+
 	if (!bq->skip_reset) {
 		ret = bq25890_chip_reset(bq);
 		if (ret < 0) {
@@ -1005,6 +1040,15 @@ static const enum power_supply_property bq25890_power_supply_props[] = {
 	POWER_SUPPLY_PROP_TEMP,
 };
 
+/* These fields do not trigger an ADC conversion or consume REG0C faults. */
+static const enum power_supply_property bq25890_read_only_props[] = {
+	POWER_SUPPLY_PROP_MANUFACTURER,
+	POWER_SUPPLY_PROP_MODEL_NAME,
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_CHARGE_TYPE,
+	POWER_SUPPLY_PROP_ONLINE,
+};
+
 static char *bq25890_charger_supplied_to[] = {
 	"main-battery",
 };
@@ -1019,6 +1063,14 @@ static const struct power_supply_desc bq25890_power_supply_desc = {
 	.external_power_changed	= bq25890_charger_external_power_changed,
 };
 
+static const struct power_supply_desc bq25890_read_only_desc = {
+	.type = POWER_SUPPLY_TYPE_USB,
+	.properties = bq25890_read_only_props,
+	.num_properties = ARRAY_SIZE(bq25890_read_only_props),
+	.get_property = bq25890_power_supply_get_property,
+	.property_is_writeable = bq25890_power_supply_property_is_writeable,
+};
+
 static int bq25890_power_supply_init(struct bq25890_device *bq)
 {
 	struct power_supply_config psy_cfg = { .drv_data = bq, };
@@ -1031,11 +1083,16 @@ static int bq25890_power_supply_init(struct bq25890_device *bq)
 		return bq->id;
 
 	snprintf(bq->name, sizeof(bq->name), "bq25890-charger-%d", bq->id);
-	bq->desc = bq25890_power_supply_desc;
+	if (bq->read_only)
+		bq->desc = bq25890_read_only_desc;
+	else
+		bq->desc = bq25890_power_supply_desc;
 	bq->desc.name = bq->name;
 
-	psy_cfg.supplied_to = bq25890_charger_supplied_to;
-	psy_cfg.num_supplicants = ARRAY_SIZE(bq25890_charger_supplied_to);
+	if (!bq->read_only) {
+		psy_cfg.supplied_to = bq25890_charger_supplied_to;
+		psy_cfg.num_supplicants = ARRAY_SIZE(bq25890_charger_supplied_to);
+	}
 
 	bq->charger = devm_power_supply_register(bq->dev, &bq->desc, &psy_cfg);
 
@@ -1396,6 +1453,15 @@ static int bq25890_fw_probe(struct bq25890_device *bq)
 	const char *str;
 	u32 val;
 
+	bq->read_only = device_property_read_bool(bq->dev, "ti,read-only");
+	if (bq->read_only) {
+		/*
+		 * Do not require, infer, or program any battery or charge limits in
+		 * status-only mode. bq25890_hw_init() reads only live status fields.
+		 */
+		return 0;
+	}
+
 	ret = device_property_read_string(bq->dev, "linux,secondary-charger-name", &str);
 	if (ret == 0) {
 		bq->secondary_chrg = power_supply_get_by_name(str);
@@ -1492,16 +1558,18 @@ static int bq25890_probe(struct i2c_client *client)
 		return ret;
 	}
 
-	if (client->irq <= 0)
-		client->irq = bq25890_irq_probe(bq);
+	if (!bq->read_only) {
+		if (client->irq <= 0)
+			client->irq = bq25890_irq_probe(bq);
 
-	if (client->irq < 0) {
-		dev_err(dev, "No irq resource found.\n");
-		return client->irq;
+		if (client->irq < 0) {
+			dev_err(dev, "No irq resource found.\n");
+			return client->irq;
+		}
+
+		/* OTG reporting */
+		bq->usb_phy = devm_usb_get_phy(dev, USB_PHY_TYPE_USB2);
 	}
-
-	/* OTG reporting */
-	bq->usb_phy = devm_usb_get_phy(dev, USB_PHY_TYPE_USB2);
 
 	/*
 	 * This must be before bq25890_power_supply_init(), so that it runs
@@ -1511,22 +1579,26 @@ static int bq25890_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 
-	ret = bq25890_register_regulator(bq);
-	if (ret)
-		return ret;
+	if (!bq->read_only) {
+		ret = bq25890_register_regulator(bq);
+		if (ret)
+			return ret;
+	}
 
 	ret = bq25890_power_supply_init(bq);
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "registering power supply\n");
 
-	ret = devm_request_threaded_irq(dev, client->irq, NULL,
-					bq25890_irq_handler_thread,
-					IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-					BQ25890_IRQ_PIN, bq);
-	if (ret)
-		return ret;
+	if (!bq->read_only) {
+		ret = devm_request_threaded_irq(dev, client->irq, NULL,
+						bq25890_irq_handler_thread,
+						IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+						BQ25890_IRQ_PIN, bq);
+		if (ret)
+			return ret;
+	}
 
-	if (!IS_ERR_OR_NULL(bq->usb_phy)) {
+	if (!bq->read_only && !IS_ERR_OR_NULL(bq->usb_phy)) {
 		INIT_WORK(&bq->usb_work, bq25890_usb_work);
 		bq->usb_nb.notifier_call = bq25890_usb_notifier;
 		usb_register_notifier(bq->usb_phy, &bq->usb_nb);
@@ -1544,7 +1616,7 @@ static void bq25890_remove(struct i2c_client *client)
 		cancel_work_sync(&bq->usb_work);
 	}
 
-	if (!bq->skip_reset) {
+	if (!bq->read_only && !bq->skip_reset) {
 		/* reset all registers to default values */
 		bq25890_chip_reset(bq);
 	}
@@ -1553,6 +1625,9 @@ static void bq25890_remove(struct i2c_client *client)
 static void bq25890_shutdown(struct i2c_client *client)
 {
 	struct bq25890_device *bq = i2c_get_clientdata(client);
+
+	if (bq->read_only)
+		return;
 
 	/*
 	 * TODO this if + return should probably be removed, but that would
@@ -1581,6 +1656,9 @@ static int bq25890_suspend(struct device *dev)
 	 * If charger is removed, while in suspend, make sure ADC is diabled
 	 * since it consumes slightly more power.
 	 */
+	if (bq->read_only)
+		return 0;
+
 	return bq25890_field_write(bq, F_CONV_RATE, 0);
 }
 
@@ -1596,7 +1674,7 @@ static int bq25890_resume(struct device *dev)
 		goto unlock;
 
 	/* Re-enable ADC only if charger is plugged in. */
-	if (bq->state.online) {
+	if (!bq->read_only && bq->state.online) {
 		ret = bq25890_field_write(bq, F_CONV_RATE, 1);
 		if (ret < 0)
 			goto unlock;

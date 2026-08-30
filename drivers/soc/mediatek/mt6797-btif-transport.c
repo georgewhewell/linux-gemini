@@ -316,8 +316,9 @@ static irqreturn_t mt6797_btif_tx_irq(int irq, void *data)
 	/* TX completion is not consumed until a future STP TX owner exists. */
 	mt6797_btif_update_bits(btif->tx_dma, MT6797_BTIF_VFF_INT_EN,
 				MT6797_BTIF_VFF_TX_INT, 0);
-	mt6797_btif_update_bits(btif->tx_dma, MT6797_BTIF_VFF_INT_FLAG,
-				MT6797_BTIF_VFF_TX_INT, 0);
+	/* APDMA interrupt flags are write-one-to-clear. */
+	writel(MT6797_BTIF_VFF_TX_INT,
+	       btif->tx_dma + MT6797_BTIF_VFF_INT_FLAG);
 	return IRQ_HANDLED;
 }
 

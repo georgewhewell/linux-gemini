@@ -66,6 +66,38 @@ config MTK_STP_KUNIT_TEST
 	  only the transport-neutral codec and can run without a MediaTek device.
 	  It does not open a serial link, a BTIF DMA engine, or a firmware image.
 
+config MTK_MT6797_CONSYS_STP_SESSION
+	tristate "MediaTek MT6797 transport-neutral full-STP session owner"
+	depends on MTK_STP
+	help
+	  Build the hardware-independent owner for the full STP sequence window,
+	  cumulative ACKs, default-disabled NAK bit, retransmission and resync
+	  machinery used by the MT6797 vendor BTIF path. It is disabled by default
+	  and owns no Device Tree node or hardware resource.
+
+	  A future transport owner supplies complete byte frames after it has
+	  independently completed the vendor mandatory-to-full WMT handover. The
+	  owner obtains an opaque full-STP lease rather than selecting a framing enum;
+	  no MTK_STP_MODE_FULL value can masquerade as a live session. On a transport
+	  error, retry exhaustion, or explicit quiesce, the lease is permanently
+	  fenced. Recovery requires a new session after the real transport/controller
+	  owner has recovered the device.
+
+	  This option cannot map BTIF or CONSYS MMIO, enable a clock, regulator or
+	  reset, allocate DMA, request firmware, emit WMT commands, enable a radio,
+	  or expose a userspace ABI.
+
+config MTK_MT6797_CONSYS_STP_SESSION_KUNIT_TEST
+	bool "KUnit tests for the MT6797 full-STP session owner"
+	depends on KUNIT=y
+	depends on MTK_MT6797_CONSYS_STP_SESSION=y
+	help
+	  Exercise full-STP sequence wrapping, credit exhaustion, cumulative ACKs,
+	  duplicate and out-of-order input, default NAK masking, retry/resync,
+	  malformed-frame rejection and permanent quiesce fencing using an in-memory
+	  byte link. The test does not access Device Tree, MMIO, DMA, firmware or
+	  Gemini hardware.
+
 config MTK_WMT
 	tristate "MediaTek WMT packet codec and transaction fence"
 	depends on MTK_STP

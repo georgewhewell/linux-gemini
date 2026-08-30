@@ -29,6 +29,12 @@ properties:
   interrupts:
     maxItems: 1
 
+  touchscreen-inverted-x:
+    type: boolean
+
+  touchscreen-swapped-x-y:
+    type: boolean
+
   novatek,identity-only:
     type: boolean
     description: |

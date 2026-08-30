@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA NT36xxx touchscreen activation trial.
+ *
+ * This overlay is deliberately separate from both the inert base DT and the
+ * identity-only recovery overlay.  It is an explicit, recovery-only hardware
+ * trial: normal binding is possible only after the driver has matched a
+ * supported trim, restored the controller, observed its reset state, and
+ * validated firmware coordinates.  Only then does it create an input device
+ * and enable GPIO85/EINT8.
+ *
+ * The vendor board source establishes the one client at I2C4/0x62 and the
+ * rising EINT8 function.  Its normal probe selects only the interrupt pin;
+ * it does not drive GPIO68 (drivers/input/touchscreen/mediatek/aeon_nt36xxx/
+ * nt36xxx.c:1392-1393).  Therefore this overlay has no reset-gpios property.
+ * Likewise, it supplies no regulator phandle or voltage: the runtime state of
+ * the dynamically registered touch rail is not established by the board DT.
+ *
+ * Do not combine this overlay with the identity-only overlay.  The base DT
+ * remains disabled, so routine boots cannot bind this client.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&i2c4 {
+	status = "okay";
+};
+
+&touchscreen {
+	/delete-property/ novatek,identity-only;
+	status = "okay";
+};

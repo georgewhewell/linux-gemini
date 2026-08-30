@@ -32,11 +32,17 @@ description: |
   Linux disabled, but does not request the WDT IRQ or perform any radio,
   firmware, AFE, shared-memory, BTIF, or reset-release operation.
 
+  A third, separately named reset-held observation experiment may read the
+  vendor AFE setup locations only after that identity prefix succeeds. It
+  makes no AFE, MBIST, reset, firmware, shared-memory, or radio write and then
+  releases the identity lease. It needs its own overlay and boot parameter.
+
 properties:
   compatible:
     enum:
       - mediatek,mt6797-consys
       - mediatek,mt6797-consys-identity
+      - mediatek,mt6797-consys-prepostid-observe
       - mediatek,mt6797-consys-runtime
 
   reg:
@@ -135,7 +141,9 @@ allOf:
   - if:
       properties:
         compatible:
-          const: mediatek,mt6797-consys-identity
+          enum:
+            - mediatek,mt6797-consys-identity
+            - mediatek,mt6797-consys-prepostid-observe
     then:
       required:
         - mediatek,conn-power-domain
@@ -143,6 +151,15 @@ allOf:
         - mediatek,spm
         - vcn18-supply
         - vcn28-supply
+  - if:
+      properties:
+        compatible:
+          const: mediatek,mt6797-consys-prepostid-observe
+    then:
+      properties:
+        reg-names:
+          contains:
+            const: afe
   - if:
       properties:
         compatible:

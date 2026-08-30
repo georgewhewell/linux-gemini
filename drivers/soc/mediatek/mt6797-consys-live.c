@@ -28,6 +28,8 @@
 #include <linux/soc/mediatek/mt6797-consys.h>
 
 #define MT6797_CONSYS_MCU_CHIP_ID		0x8
+#define MT6797_CONSYS_MCU_CFG_ACR		0x110
+#define MT6797_CONSYS_MCU_CFG_ACR_MBIST	BIT(18)
 #define MT6797_CONSYS_INFRACFG_SLEEP_MASK	0x350
 #define MT6797_CONSYS_INFRACFG_SLEEP_MASK_CONN	BIT(8)
 #define MT6797_CONSYS_SPM_PWRON_CONFIG_EN	0x0
@@ -43,6 +45,12 @@ static bool identity_experiment;
 module_param_named(identity_experiment, identity_experiment, bool, 0400);
 MODULE_PARM_DESC(identity_experiment, "allow the MT6797 CONSYS bounded identity experiment");
 
+static bool prepostid_observe_experiment;
+module_param_named(prepostid_observe_experiment, prepostid_observe_experiment,
+		   bool, 0400);
+MODULE_PARM_DESC(prepostid_observe_experiment,
+		 "allow the MT6797 CONSYS reset-held pre-post-ID register observation");
+
 struct mt6797_consys_live_resource {
 	const char *name;
 	resource_size_t start;
@@ -52,6 +60,7 @@ struct mt6797_consys_live_resource {
 struct mt6797_consys_live {
 	struct device *dev;
 	void __iomem *mcu;
+	void __iomem *afe;
 	struct regmap *infracfg;
 	struct regmap *spm;
 	struct regulator *vcn18;
@@ -64,6 +73,7 @@ struct mt6797_consys_live {
 	bool conn_domain_vote;
 	bool runtime_pm_enabled;
 	bool conn_domain_attached;
+	bool prepostid_observe;
 	u32 chip_id;
 };
 
@@ -73,6 +83,20 @@ static const struct mt6797_consys_live_resource
 	{ "ap-rgu", 0x10007000, SZ_256 },
 	{ "topckgen", 0x10000000, SZ_8K },
 	{ "spm", 0x10006000, SZ_4K },
+};
+
+static const struct mt6797_consys_live_resource mt6797_consys_live_afe_resource = {
+	"afe", 0x180b6000, SZ_256,
+};
+
+/*
+ * These are the complete vendor AFE write targets, plus its optional GPS
+ * setting. This experiment only reads them after a successful chip-ID poll,
+ * while reset remains asserted; it never uses the vendor values or writes.
+ */
+static const u8 mt6797_consys_live_afe_observed_offsets[] = {
+	0x14, 0x20, 0x50, 0x54, 0x60, 0x64, 0x68, 0x6c,
+	0x70, 0x84, 0x88, 0x90,
 };
 
 static int mt6797_consys_live_map_resource(struct platform_device *pdev,
@@ -349,6 +373,27 @@ static void mt6797_consys_live_log_state(struct mt6797_consys_live *consys,
 		 regulator_is_enabled(consys->vcn28), vcn28_hw, ret28);
 }
 
+static void mt6797_consys_live_observe_prepostid(struct mt6797_consys_live *consys)
+{
+	u32 acr;
+	unsigned int i;
+
+	/* The identity lease keeps CONN powered and CONMCU reset asserted here. */
+	acr = readl(consys->mcu + MT6797_CONSYS_MCU_CFG_ACR);
+	dev_info(consys->dev,
+		 "pre-postid observe: mcu[0x%03x]=0x%08x mbist=%u (no writes)\n",
+		 MT6797_CONSYS_MCU_CFG_ACR, acr,
+		 !!(acr & MT6797_CONSYS_MCU_CFG_ACR_MBIST));
+
+	for (i = 0; i < ARRAY_SIZE(mt6797_consys_live_afe_observed_offsets); i++) {
+		u8 offset = mt6797_consys_live_afe_observed_offsets[i];
+
+		dev_info(consys->dev,
+			 "pre-postid observe: afe[0x%02x]=0x%08x (no writes)\n",
+			 offset, readl(consys->afe + offset));
+	}
+}
+
 static const struct mt6797_consys_ops mt6797_consys_live_ops = {
 	.abi = MT6797_CONSYS_LIFECYCLE_ABI,
 	.enable_vcn18 = mt6797_consys_live_enable_vcn18,
@@ -387,6 +432,12 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 	};
 	int ret;
 
+	if (of_device_is_compatible(pdev->dev.of_node,
+				    "mediatek,mt6797-consys-prepostid-observe") &&
+	    !prepostid_observe_experiment)
+		return dev_err_probe(&pdev->dev, -EPERM,
+					     "pre-postid observation needs explicit boot opt-in\n");
+
 	if (!identity_experiment)
 		return dev_err_probe(&pdev->dev, -EPERM,
 					     "identity experiment needs explicit boot opt-in\n");
@@ -395,6 +446,9 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 	if (!consys)
 		return -ENOMEM;
 	consys->dev = &pdev->dev;
+	consys->prepostid_observe =
+		of_device_is_compatible(pdev->dev.of_node,
+					"mediatek,mt6797-consys-prepostid-observe");
 
 	ret = mt6797_consys_live_map_resource(pdev,
 					     &mt6797_consys_live_resources[0], &consys->mcu);
@@ -415,6 +469,13 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 					     &mt6797_consys_live_resources[3], NULL);
 	if (ret)
 		return ret;
+
+	if (consys->prepostid_observe) {
+		ret = mt6797_consys_live_map_resource(pdev, &mt6797_consys_live_afe_resource,
+						      &consys->afe);
+		if (ret)
+			return ret;
+	}
 
 	ret = mt6797_consys_live_acquire_shared_mem(consys);
 	if (ret)
@@ -461,6 +522,9 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 		goto disable_domain;
 	}
 
+	if (consys->prepostid_observe)
+		mt6797_consys_live_observe_prepostid(consys);
+
 	ret = mt6797_consys_identity_put(lifecycle);
 	if (ret) {
 		mt6797_consys_live_log_state(consys, "identity-put-failed");
@@ -488,6 +552,7 @@ static void mt6797_consys_live_remove(struct platform_device *pdev)
 
 static const struct of_device_id mt6797_consys_live_of_match[] = {
 	{ .compatible = "mediatek,mt6797-consys-identity" },
+	{ .compatible = "mediatek,mt6797-consys-prepostid-observe" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, mt6797_consys_live_of_match);

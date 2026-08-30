@@ -51,10 +51,10 @@ static int mt6797_consys_wait(
 	}
 }
 
-/* Execute every applicable inverse operation, preserving the first failure. */
+/* Unwind only voted resources, preserving the first failure. */
 static int mt6797_consys_identity_unwind(
 	struct mt6797_consys_lifecycle *lifecycle, bool reset, bool scp_sys_conn,
-	bool pwron_config, bool prepared, bool vcn28, bool vcn18)
+	bool vcn28, bool vcn18)
 {
 	int ret;
 	int first_error = 0;
@@ -67,18 +67,6 @@ static int mt6797_consys_identity_unwind(
 
 	if (scp_sys_conn) {
 		ret = lifecycle->ops->disable_scp_sys_conn(lifecycle->context);
-		if (ret && !first_error)
-			first_error = ret;
-	}
-
-	if (pwron_config) {
-		ret = lifecycle->ops->unprepare_pwron_config(lifecycle->context);
-		if (ret && !first_error)
-			first_error = ret;
-	}
-
-	if (prepared) {
-		ret = lifecycle->ops->unprepare_identity(lifecycle->context);
 		if (ret && !first_error)
 			first_error = ret;
 	}
@@ -104,8 +92,6 @@ mt6797_consys_identity_acquire(struct mt6797_consys_lifecycle *lifecycle)
 	bool vcn18 = false;
 	bool vcn28 = false;
 	bool scp_sys_conn = false;
-	bool pwron_config = false;
-	bool prepared = false;
 	bool reset = false;
 	int ret;
 
@@ -120,8 +106,7 @@ mt6797_consys_identity_acquire(struct mt6797_consys_lifecycle *lifecycle)
 	if (ret)
 		goto unwind;
 
-	prepared = true;
-	ret = lifecycle->ops->prepare_identity(lifecycle->context);
+	ret = lifecycle->ops->configure_sleep_mask(lifecycle->context);
 	if (ret)
 		goto unwind;
 
@@ -130,8 +115,7 @@ mt6797_consys_identity_acquire(struct mt6797_consys_lifecycle *lifecycle)
 	if (ret)
 		goto unwind;
 
-	pwron_config = true;
-	ret = lifecycle->ops->prepare_pwron_config(lifecycle->context);
+	ret = lifecycle->ops->configure_pwron(lifecycle->context);
 	if (ret)
 		goto unwind;
 
@@ -152,7 +136,7 @@ mt6797_consys_identity_acquire(struct mt6797_consys_lifecycle *lifecycle)
 
 unwind:
 	if (mt6797_consys_identity_unwind(lifecycle, reset, scp_sys_conn,
-					   pwron_config, prepared, vcn28, vcn18))
+					   vcn28, vcn18))
 		lifecycle->state = MT6797_CONSYS_ERROR;
 	return ret;
 }
@@ -162,9 +146,8 @@ static bool mt6797_consys_ops_valid(const struct mt6797_consys_ops *ops)
 	return ops && ops->abi == MT6797_CONSYS_LIFECYCLE_ABI &&
 		ops->enable_vcn18 && ops->disable_vcn18 &&
 		ops->enable_vcn28 && ops->disable_vcn28 &&
-		ops->prepare_identity && ops->unprepare_identity &&
-		ops->assert_reset && ops->prepare_pwron_config &&
-		ops->unprepare_pwron_config && ops->enable_scp_sys_conn &&
+		ops->configure_sleep_mask && ops->assert_reset &&
+		ops->configure_pwron && ops->enable_scp_sys_conn &&
 		ops->disable_scp_sys_conn && ops->poll;
 }
 
@@ -242,7 +225,7 @@ int mt6797_consys_identity_put(struct mt6797_consys_lifecycle *lifecycle)
 		/* The final voter owns the physical identity cleanup. */
 	} else {
 		ret = mt6797_consys_identity_unwind(lifecycle, true, true, true,
-						    true, true, true);
+						    true);
 		lifecycle->state = ret ? MT6797_CONSYS_ERROR : MT6797_CONSYS_OFF;
 	}
 	mutex_unlock(&lifecycle->lock);

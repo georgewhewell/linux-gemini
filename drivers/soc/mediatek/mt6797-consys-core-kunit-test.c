@@ -11,11 +11,9 @@ enum mt6797_consys_test_op {
 	TEST_DISABLE_VCN18,
 	TEST_ENABLE_VCN28,
 	TEST_DISABLE_VCN28,
-	TEST_PREPARE_IDENTITY,
-	TEST_UNPREPARE_IDENTITY,
+	TEST_CONFIGURE_SLEEP_MASK,
 	TEST_ASSERT_RESET,
-	TEST_PREPARE_PWRON_CONFIG,
-	TEST_UNPREPARE_PWRON_CONFIG,
+	TEST_CONFIGURE_PWRON,
 	TEST_ENABLE_SCP_SYS_CONN,
 	TEST_DISABLE_SCP_SYS_CONN,
 	TEST_POLL_CHIP_READY,
@@ -59,14 +57,9 @@ static int mt6797_consys_test_disable_vcn28(void *context)
 	return mt6797_consys_test_record(context, TEST_DISABLE_VCN28);
 }
 
-static int mt6797_consys_test_prepare_identity(void *context)
+static int mt6797_consys_test_configure_sleep_mask(void *context)
 {
-	return mt6797_consys_test_record(context, TEST_PREPARE_IDENTITY);
-}
-
-static int mt6797_consys_test_unprepare_identity(void *context)
-{
-	return mt6797_consys_test_record(context, TEST_UNPREPARE_IDENTITY);
+	return mt6797_consys_test_record(context, TEST_CONFIGURE_SLEEP_MASK);
 }
 
 static int mt6797_consys_test_assert_reset(void *context)
@@ -74,14 +67,9 @@ static int mt6797_consys_test_assert_reset(void *context)
 	return mt6797_consys_test_record(context, TEST_ASSERT_RESET);
 }
 
-static int mt6797_consys_test_prepare_pwron_config(void *context)
+static int mt6797_consys_test_configure_pwron(void *context)
 {
-	return mt6797_consys_test_record(context, TEST_PREPARE_PWRON_CONFIG);
-}
-
-static int mt6797_consys_test_unprepare_pwron_config(void *context)
-{
-	return mt6797_consys_test_record(context, TEST_UNPREPARE_PWRON_CONFIG);
+	return mt6797_consys_test_record(context, TEST_CONFIGURE_PWRON);
 }
 
 static int mt6797_consys_test_enable_scp_sys_conn(void *context)
@@ -127,11 +115,9 @@ static const struct mt6797_consys_ops mt6797_consys_test_ops = {
 	.disable_vcn18 = mt6797_consys_test_disable_vcn18,
 	.enable_vcn28 = mt6797_consys_test_enable_vcn28,
 	.disable_vcn28 = mt6797_consys_test_disable_vcn28,
-	.prepare_identity = mt6797_consys_test_prepare_identity,
-	.unprepare_identity = mt6797_consys_test_unprepare_identity,
+	.configure_sleep_mask = mt6797_consys_test_configure_sleep_mask,
 	.assert_reset = mt6797_consys_test_assert_reset,
-	.prepare_pwron_config = mt6797_consys_test_prepare_pwron_config,
-	.unprepare_pwron_config = mt6797_consys_test_unprepare_pwron_config,
+	.configure_pwron = mt6797_consys_test_configure_pwron,
 	.enable_scp_sys_conn = mt6797_consys_test_enable_scp_sys_conn,
 	.disable_scp_sys_conn = mt6797_consys_test_disable_scp_sys_conn,
 	.poll = mt6797_consys_test_poll,
@@ -168,10 +154,9 @@ static void mt6797_consys_test_reference_counting(struct kunit *test)
 {
 	static const enum mt6797_consys_test_op expected[] = {
 		TEST_ENABLE_VCN18, TEST_DELAY, TEST_ENABLE_VCN28,
-		TEST_PREPARE_IDENTITY, TEST_ASSERT_RESET, TEST_PREPARE_PWRON_CONFIG,
+		TEST_CONFIGURE_SLEEP_MASK, TEST_ASSERT_RESET, TEST_CONFIGURE_PWRON,
 		TEST_ENABLE_SCP_SYS_CONN, TEST_DELAY, TEST_POLL_CHIP_READY,
 		TEST_ASSERT_RESET, TEST_DISABLE_SCP_SYS_CONN,
-		TEST_UNPREPARE_PWRON_CONFIG, TEST_UNPREPARE_IDENTITY,
 		TEST_DISABLE_VCN28, TEST_DISABLE_VCN18,
 	};
 	struct mt6797_consys_test_backend backend = { };
@@ -201,10 +186,9 @@ static void mt6797_consys_test_unwinds_in_reverse_order(struct kunit *test)
 {
 	static const enum mt6797_consys_test_op expected[] = {
 		TEST_ENABLE_VCN18, TEST_DELAY, TEST_ENABLE_VCN28,
-		TEST_PREPARE_IDENTITY, TEST_ASSERT_RESET, TEST_PREPARE_PWRON_CONFIG,
+		TEST_CONFIGURE_SLEEP_MASK, TEST_ASSERT_RESET, TEST_CONFIGURE_PWRON,
 		TEST_ENABLE_SCP_SYS_CONN, TEST_DELAY, TEST_POLL_CHIP_READY,
 		TEST_ASSERT_RESET, TEST_DISABLE_SCP_SYS_CONN,
-		TEST_UNPREPARE_PWRON_CONFIG, TEST_UNPREPARE_IDENTITY,
 		TEST_DISABLE_VCN28, TEST_DISABLE_VCN18,
 	};
 	struct mt6797_consys_test_backend backend = {
@@ -225,12 +209,11 @@ static void mt6797_consys_test_times_out_with_bounded_polls(struct kunit *test)
 {
 	static const enum mt6797_consys_test_op expected[] = {
 		TEST_ENABLE_VCN18, TEST_DELAY, TEST_ENABLE_VCN28,
-		TEST_PREPARE_IDENTITY, TEST_ASSERT_RESET, TEST_PREPARE_PWRON_CONFIG,
+		TEST_CONFIGURE_SLEEP_MASK, TEST_ASSERT_RESET, TEST_CONFIGURE_PWRON,
 		TEST_ENABLE_SCP_SYS_CONN, TEST_DELAY, TEST_POLL_CHIP_READY, TEST_DELAY,
 		TEST_POLL_CHIP_READY, TEST_DELAY, TEST_POLL_CHIP_READY,
 		TEST_DELAY, TEST_POLL_CHIP_READY, TEST_ASSERT_RESET,
-		TEST_DISABLE_SCP_SYS_CONN, TEST_UNPREPARE_PWRON_CONFIG,
-		TEST_UNPREPARE_IDENTITY, TEST_DISABLE_VCN28, TEST_DISABLE_VCN18,
+		TEST_DISABLE_SCP_SYS_CONN, TEST_DISABLE_VCN28, TEST_DISABLE_VCN18,
 	};
 	struct mt6797_consys_test_backend backend = {
 		.pending = 4,
@@ -254,10 +237,9 @@ static void mt6797_consys_test_one_interval_reaches_deadline(struct kunit *test)
 {
 	static const enum mt6797_consys_test_op expected[] = {
 		TEST_ENABLE_VCN18, TEST_DELAY, TEST_ENABLE_VCN28,
-		TEST_PREPARE_IDENTITY, TEST_ASSERT_RESET, TEST_PREPARE_PWRON_CONFIG,
+		TEST_CONFIGURE_SLEEP_MASK, TEST_ASSERT_RESET, TEST_CONFIGURE_PWRON,
 		TEST_ENABLE_SCP_SYS_CONN, TEST_DELAY, TEST_POLL_CHIP_READY, TEST_DELAY,
 		TEST_POLL_CHIP_READY, TEST_ASSERT_RESET, TEST_DISABLE_SCP_SYS_CONN,
-		TEST_UNPREPARE_PWRON_CONFIG, TEST_UNPREPARE_IDENTITY,
 		TEST_DISABLE_VCN28, TEST_DISABLE_VCN18,
 	};
 	struct mt6797_consys_test_backend backend = {

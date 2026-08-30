@@ -48,12 +48,14 @@ struct mt6797_consys_timeouts {
  * drivers/misc/mediatek/connectivity/common/common_main/mt6797/
  * mtk_wcn_consys_hw.c, holds reset while it enables the SCP_SYS_CONN domain
  * before it observes the chip ID. This core stops at that observation; it
- * never releases reset, configures AFE, or loads firmware. The PWRON config
- * operation explicitly covers the SPM PWRON_CONFG_EN write; successful
- * enable_scp_sys_conn() means its CCF/SCPSYS provider has completed domain
- * power-on. Therefore this core does not read the raw power ACK registers;
- * their acknowledgement boundary belongs to that provider. The same source's
- * include/mtk_wcn_consys_hw.h:42 sets
+ * never releases reset, configures AFE, or loads firmware. The two configure
+ * operations are persistent, idempotent writes rather than votes: vendor
+ * hw.c:328-330 and :341-342 set them, while its off path at :611-750 does not
+ * restore either. The PWRON operation explicitly covers SPM PWRON_CONFG_EN;
+ * successful enable_scp_sys_conn() means its CCF/SCPSYS provider has completed
+ * domain power-on. Therefore this core does not read the raw power ACK
+ * registers; their acknowledgement boundary belongs to that provider. The
+ * same source's include/mtk_wcn_consys_hw.h:42 sets
  * CONSYS_AHB_CLK_MAGEMENT to 0, so an AHB bus-clock operation is deliberately
  * absent. The exact bus-protection masks remain disputed.
  */
@@ -63,13 +65,11 @@ struct mt6797_consys_ops {
 	int (*disable_vcn18)(void *context);
 	int (*enable_vcn28)(void *context);
 	int (*disable_vcn28)(void *context);
-	/* Prepare the topckgen sleep mask before reset/domain observation. */
-	int (*prepare_identity)(void *context);
-	int (*unprepare_identity)(void *context);
+	/* Persistent topckgen sleep-mask configuration before reset/domain. */
+	int (*configure_sleep_mask)(void *context);
 	int (*assert_reset)(void *context);
-	/* Set up and balance SPM PWRON_CONFG_EN around the domain vote. */
-	int (*prepare_pwron_config)(void *context);
-	int (*unprepare_pwron_config)(void *context);
+	/* Persistent SPM PWRON_CONFG_EN configuration before the domain vote. */
+	int (*configure_pwron)(void *context);
 	/* CCF/SCPSYS SCP_SYS_CONN vote; its success owns the power ACK boundary. */
 	int (*enable_scp_sys_conn)(void *context);
 	int (*disable_scp_sys_conn)(void *context);

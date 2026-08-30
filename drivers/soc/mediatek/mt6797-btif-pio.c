@@ -93,6 +93,17 @@ struct mt6797_btif_pio {
 	const struct mt6797_consys_stp_session_lease *stp_lease;
 	mt6797_btif_pio_rx_cb_t receive;
 	void *receive_context;
+	/* Protected by state_lock, except TX fields protected by tx_lock. */
+	u64 tx_enqueue_count;
+	u64 tx_enqueue_bytes;
+	u64 tx_thr_writes;
+	u64 irq_count;
+	u64 iir_reads;
+	u64 iir_rx;
+	u64 iir_tx_empty;
+	u64 iir_spurious;
+	u64 rx_bytes;
+	u64 rx_callbacks;
 	enum mt6797_btif_pio_state state;
 };
 
@@ -124,6 +135,17 @@ static void mt6797_btif_pio_set_ier(struct mt6797_btif_pio *pio,
 				     u32 mask, u32 value)
 {
 	mt6797_btif_pio_update_bits(pio, MT6797_BTIF_IER, mask, value);
+}
+
+static void mt6797_btif_pio_record_iir(struct mt6797_btif_pio *pio, u32 iir)
+{
+	pio->iir_reads++;
+	if (iir & MT6797_BTIF_IIR_NINT)
+		pio->iir_spurious++;
+	if (iir & (MT6797_BTIF_IIR_RX | MT6797_BTIF_IIR_RX_TIMEOUT))
+		pio->iir_rx++;
+	if (iir & MT6797_BTIF_IIR_TX_EMPTY)
+		pio->iir_tx_empty++;
 }
 
 static void mt6797_btif_pio_hw_init(struct mt6797_btif_pio *pio)
@@ -173,6 +195,7 @@ static void mt6797_btif_pio_tx_drain_locked(struct mt6797_btif_pio *pio)
 				 sizeof(byte)))
 			break;
 		pio->io.write8(pio->io.context, MT6797_BTIF_THR, byte);
+		pio->tx_thr_writes++;
 	}
 	if (kfifo_is_empty(&pio->tx_fifo))
 		mt6797_btif_pio_set_ier(pio, MT6797_BTIF_IER_TX, 0);
@@ -567,9 +590,12 @@ int mt6797_btif_pio_transmit(void *context, const u8 *frame,
 		ret = -EAGAIN;
 	else if (kfifo_in(&pio->tx_fifo, frame, frame_length) != frame_length)
 		ret = -EIO;
-	else
+	else {
+		pio->tx_enqueue_count++;
+		pio->tx_enqueue_bytes += frame_length;
 		mt6797_btif_pio_set_ier(pio, MT6797_BTIF_IER_TX,
 					 MT6797_BTIF_IER_TX);
+	}
 	spin_unlock_irqrestore(&pio->tx_lock, flags);
 	return ret;
 }
@@ -596,7 +622,9 @@ int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease)
 		goto out_unlock;
 	}
 
+	pio->irq_count++;
 	iir = pio->io.read32(pio->io.context, MT6797_BTIF_IIR);
+	mt6797_btif_pio_record_iir(pio, iir);
 	if (iir & MT6797_BTIF_IIR_NINT) {
 		ret = -EAGAIN;
 		goto out_unlock;
@@ -605,6 +633,7 @@ int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease)
 	       count < ARRAY_SIZE(rx)) {
 		rx[count++] = pio->io.read8(pio->io.context, MT6797_BTIF_RBR);
 		iir = pio->io.read32(pio->io.context, MT6797_BTIF_IIR);
+		mt6797_btif_pio_record_iir(pio, iir);
 	}
 	if (iir & (MT6797_BTIF_IIR_RX | MT6797_BTIF_IIR_RX_TIMEOUT)) {
 		mt6797_btif_pio_fence_locked(pio);
@@ -620,6 +649,8 @@ int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease)
 		goto out_unlock;
 	}
 	if (count) {
+		pio->rx_bytes += count;
+		pio->rx_callbacks++;
 		ret = receive(receive_context, rx, count);
 		if (ret == -ESHUTDOWN)
 			mt6797_btif_pio_fence_locked(pio);
@@ -638,6 +669,52 @@ out_unlock:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_pio_irq);
+
+int mt6797_btif_pio_diagnostics_snapshot(
+		const struct mt6797_btif_pio_lease *lease,
+		struct mt6797_btif_pio_diagnostics *diagnostics)
+{
+	struct mt6797_btif_pio *pio;
+	unsigned long flags;
+
+	if (!lease || !lease->pio || !diagnostics)
+		return -EINVAL;
+	pio = lease->pio;
+
+	mutex_lock(&pio->state_lock);
+	if (!mt6797_btif_pio_lease_valid(lease)) {
+		mutex_unlock(&pio->state_lock);
+		return -ESHUTDOWN;
+	}
+
+	memset(diagnostics, 0, sizeof(*diagnostics));
+	spin_lock_irqsave(&pio->tx_lock, flags);
+	diagnostics->tx_enqueue_count = pio->tx_enqueue_count;
+	diagnostics->tx_enqueue_bytes = pio->tx_enqueue_bytes;
+	diagnostics->tx_thr_writes = pio->tx_thr_writes;
+	diagnostics->tx_queued = kfifo_len(&pio->tx_fifo);
+	spin_unlock_irqrestore(&pio->tx_lock, flags);
+	diagnostics->irq_count = pio->irq_count;
+	diagnostics->iir_reads = pio->iir_reads;
+	diagnostics->iir_rx = pio->iir_rx;
+	diagnostics->iir_tx_empty = pio->iir_tx_empty;
+	diagnostics->iir_spurious = pio->iir_spurious;
+	diagnostics->rx_bytes = pio->rx_bytes;
+	diagnostics->rx_callbacks = pio->rx_callbacks;
+	/* Do not read write-only THR/RBR, FIFOCTRL or WAK in a timeout report. */
+	diagnostics->ier = pio->io.read32(pio->io.context, MT6797_BTIF_IER);
+	diagnostics->iir = pio->io.read32(pio->io.context, MT6797_BTIF_IIR);
+	diagnostics->fakelcr = pio->io.read32(pio->io.context, MT6797_BTIF_FAKELCR);
+	diagnostics->lsr = pio->io.read32(pio->io.context, MT6797_BTIF_LSR);
+	diagnostics->dma_en = pio->io.read32(pio->io.context, MT6797_BTIF_DMA_EN);
+	diagnostics->tri_lvl = pio->io.read32(pio->io.context, MT6797_BTIF_TRI_LVL);
+	diagnostics->handshake =
+		pio->io.read32(pio->io.context, MT6797_BTIF_HANDSHAKE);
+	mutex_unlock(&pio->state_lock);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_btif_pio_diagnostics_snapshot);
 
 int mt6797_btif_pio_tx_timeout(const struct mt6797_btif_pio_lease *lease)
 {
@@ -923,6 +1000,7 @@ static void mt6797_btif_pio_test_stop(
 static void mt6797_btif_pio_test_partial_tx(struct kunit *test)
 {
 	struct mt6797_btif_pio_test_context *ctx;
+	struct mt6797_btif_pio_diagnostics diagnostics;
 	u8 frame[20];
 	unsigned int index;
 
@@ -947,6 +1025,17 @@ static void mt6797_btif_pio_test_partial_tx(struct kunit *test)
 	KUNIT_EXPECT_MEMEQ(test, ctx->bus->tx, frame, sizeof(frame));
 	KUNIT_EXPECT_EQ(test, ctx->bus->regs[MT6797_BTIF_IER / sizeof(u32)] &
 				MT6797_BTIF_IER_TX, 0U);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_btif_pio_diagnostics_snapshot(ctx->pio_lease,
+							      &diagnostics), 0);
+	KUNIT_EXPECT_EQ(test, diagnostics.tx_enqueue_count, 1ULL);
+	KUNIT_EXPECT_EQ(test, diagnostics.tx_enqueue_bytes, (u64)sizeof(frame));
+	KUNIT_EXPECT_EQ(test, diagnostics.tx_thr_writes, (u64)sizeof(frame));
+	KUNIT_EXPECT_EQ(test, diagnostics.tx_queued, 0U);
+	KUNIT_EXPECT_EQ(test, diagnostics.irq_count, 2ULL);
+	KUNIT_EXPECT_EQ(test, diagnostics.iir_tx_empty, 2ULL);
+	KUNIT_EXPECT_EQ(test, diagnostics.rx_bytes, 0ULL);
+	KUNIT_EXPECT_EQ(test, diagnostics.ier, MT6797_BTIF_IER_RX);
 	mt6797_btif_pio_test_stop(ctx);
 }
 

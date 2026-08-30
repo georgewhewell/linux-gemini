@@ -44,6 +44,32 @@ struct mt6797_btif_pio_io_ops {
 	void *context;
 };
 
+/*
+ * A read-only transport snapshot for a bounded failure report.  The register
+ * set intentionally excludes THR/RBR, FIFOCTRL and WAK: their vendor access
+ * directions make them unsafe or unhelpful to sample after a timeout.
+ */
+struct mt6797_btif_pio_diagnostics {
+	u64 tx_enqueue_count;
+	u64 tx_enqueue_bytes;
+	u64 tx_thr_writes;
+	u64 irq_count;
+	u64 iir_reads;
+	u64 iir_rx;
+	u64 iir_tx_empty;
+	u64 iir_spurious;
+	u64 rx_bytes;
+	u64 rx_callbacks;
+	u32 tx_queued;
+	u32 ier;
+	u32 iir;
+	u32 fakelcr;
+	u32 lsr;
+	u32 dma_en;
+	u32 tri_lvl;
+	u32 handshake;
+};
+
 /* Allocate an inert owner. No register access occurs here. */
 struct mt6797_btif_pio *
 mt6797_btif_pio_create(const struct mt6797_btif_pio_io_ops *ops);
@@ -133,6 +159,14 @@ int mt6797_btif_pio_transmit(void *context, const u8 *frame,
  * RX bytes are passed as arbitrary fragments to exactly one attached consumer.
  */
 int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease);
+
+/*
+ * Snapshot transport progress and only safe readable BTIF registers.  This
+ * neither changes PIO state nor accesses write-only FIFOCTRL/WAK registers.
+ */
+int mt6797_btif_pio_diagnostics_snapshot(
+		const struct mt6797_btif_pio_lease *lease,
+		struct mt6797_btif_pio_diagnostics *diagnostics);
 
 /*
  * A future owner calls this only after its separately evidenced TX deadline.

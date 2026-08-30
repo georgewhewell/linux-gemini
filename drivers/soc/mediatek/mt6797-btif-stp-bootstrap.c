@@ -94,6 +94,8 @@ struct mt6797_btif_stp_bootstrap {
 	size_t *raw_event_length;
 	int raw_result;
 	bool raw_pending;
+	u64 raw_wmt_events;
+	u64 raw_wmt_event_bytes;
 	struct mtk_wmt full_wmt;
 	struct mt6797_consys_stp_session *session;
 	const struct mt6797_consys_stp_session_bootstrap_lease *full_bootstrap;
@@ -157,7 +159,10 @@ mt6797_btif_stp_bootstrap_raw_exchange(void *context, const u8 *command,
 	unsigned long flags;
 	size_t frame_length;
 	long wait;
+	u64 raw_wmt_events;
+	u64 raw_wmt_event_bytes;
 	int ret;
+	struct mt6797_btif_pio_diagnostics diagnostics;
 
 	if (!command || !event || !event_length || !timeout)
 		return -EINVAL;
@@ -191,6 +196,27 @@ mt6797_btif_stp_bootstrap_raw_exchange(void *context, const u8 *command,
 		ret = wait;
 	} else if (!wait) {
 		ret = -ETIMEDOUT;
+		spin_lock_irqsave(&bootstrap->raw_lock, flags);
+		raw_wmt_events = bootstrap->raw_wmt_events;
+		raw_wmt_event_bytes = bootstrap->raw_wmt_event_bytes;
+		spin_unlock_irqrestore(&bootstrap->raw_lock, flags);
+		if (!mt6797_btif_pio_diagnostics_snapshot(bootstrap->pio_lease,
+							   &diagnostics))
+			pr_warn("mt6797-consys-g2b: raw WMT timeout tx_enq=%llu/%lluB "
+				"thr=%llu queued=%u irq=%llu iir=%llu(rx=%llu txe=%llu nint=%llu) "
+				"rx=%lluB/%llu cb raw=%llu/%lluB regs="
+				"IER=%#08x IIR=%#08x LCR=%#08x LSR=%#08x DMA=%#08x "
+				"TRI=%#08x HANDSHAKE=%#08x\n",
+				diagnostics.tx_enqueue_count,
+				diagnostics.tx_enqueue_bytes, diagnostics.tx_thr_writes,
+				diagnostics.tx_queued, diagnostics.irq_count,
+				diagnostics.iir_reads, diagnostics.iir_rx,
+				diagnostics.iir_tx_empty, diagnostics.iir_spurious,
+				diagnostics.rx_bytes, diagnostics.rx_callbacks,
+				raw_wmt_events, raw_wmt_event_bytes,
+				diagnostics.ier, diagnostics.iir, diagnostics.fakelcr,
+				diagnostics.lsr, diagnostics.dma_en, diagnostics.tri_lvl,
+				diagnostics.handshake);
 	} else {
 		spin_lock_irqsave(&bootstrap->raw_lock, flags);
 		ret = bootstrap->raw_result;
@@ -218,6 +244,8 @@ mt6797_btif_stp_bootstrap_mandatory_wmt_receive(void *context,
 	spin_lock_irqsave(&bootstrap->raw_lock, flags);
 	if (bootstrap->raw_pending) {
 		raw = true;
+		bootstrap->raw_wmt_events++;
+		bootstrap->raw_wmt_event_bytes += payload_length;
 		if (payload_length > bootstrap->raw_event_capacity) {
 			bootstrap->raw_result = -EMSGSIZE;
 		} else {

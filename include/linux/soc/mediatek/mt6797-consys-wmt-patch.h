@@ -15,11 +15,12 @@ struct mt6797_btif_stp_bootstrap_full_wmt_lease;
 
 /*
  * Request and preflight the one captured Gemini manifest, then issue only the
- * vendor-evidenced patch-address, patch-data, and reset WMT transactions. It
- * is blocked unless the controller's explicit read-only command-line/module
- * parameter is set. @lease is an opaque capability supplied only to the
- * bootstrap's synchronous post-full callback; it proves one owner retains the
- * full STP window, ACK, retry and recovery lifecycle for this call.
+ * vendor-evidenced power-on DLM, MT6797 MCU-clock, patch-address, patch-data,
+ * reset, and clock-down WMT transactions. It is blocked unless the
+ * controller's explicit read-only command-line/module parameter is set.
+ * @lease is an opaque capability supplied only to the bootstrap's synchronous
+ * post-full callback; it proves one owner retains the full STP window, ACK,
+ * retry and recovery lifecycle for this call.
  */
 int mt6797_consys_wmt_patch_download(struct device *dev,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);

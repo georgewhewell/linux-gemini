@@ -13,12 +13,12 @@
  *   (arch/arm64/boot/dts/aeon6797_6m_n.dts:579-638).
  * - Its NT36xxx driver selects the interrupt pin, but does not drive the reset
  *   pin (drivers/input/touchscreen/mediatek/aeon_nt36xxx/nt36xxx.c:1392-1393).
- * - The vendor's VTOUCH regulator-to-board-net mapping is not available.  The
- *   current mainline driver has no regulator, reset-GPIO, or polling contract.
+ * - The vendor DWS maps CAP_TOUCH_VDD to MT6351 VLDO28 at 2.8 V, but does not
+ *   establish GPIO68 reset polarity or timing.  The current mainline identity
+ *   path deliberately changes controller state before it can identify trim.
  *
- * A full client/IRQ overlay must wait for that rail mapping.  The established
- * rising IRQ and NT36772 protocol data remain in the disabled base client for
- * the later, recovery-tested activation gate.
+ * The identity overlay is a separate, operator-selected recovery gate.  This
+ * observer stays read-only: it leaves the client disabled and transfers no I2C.
  */
 
 /dts-v1/;

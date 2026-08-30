@@ -398,11 +398,14 @@
 &i2c4 {
 	/*
 	 * The Gemini vendor DT and a filtered vendor dmesg capture establish the
-	 * NT36772 at 0x62 and GPIO85/EINT8 with a rising edge.  Keep both bus and
-	 * client disabled in the base DT: the vendor's VTOUCH supply is owned by a
-	 * separate pseudo-node, and its physical MT6351 regulator has not been
-	 * identified.  The observer overlay may enable only this adapter; it leaves
-	 * the client disabled and performs no touchscreen I2C transfer.
+	 * NT36772 at 0x62 and GPIO85/EINT8 with a rising edge.  CAP_TOUCH_VDD maps
+	 * to MT6351 VLDO28, a fixed 2.8 V rail, but the current MT6351 provider is
+	 * dynamically registered and has no board-DT phandle.  More importantly,
+	 * GPIO68 reset polarity and timing have not been established.  Keep both
+	 * bus and client disabled in the base DT.  The observer overlay enables
+	 * only the adapter; the separate identity overlay is an explicitly opted-in,
+	 * recovery-gated probe of the already-powered controller and never claims
+	 * ownership of GPIO68 or VLDO28.
 	 */
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c4_pins_a>;

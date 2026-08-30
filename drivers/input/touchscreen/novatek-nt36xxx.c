@@ -13,6 +13,7 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/property.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 
@@ -309,6 +310,26 @@ static int nvt36xxx_probe(struct i2c_client *client)
 				     NVT36XXX_TRIM_LEN, data->trim);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to read NT36xxx trim\n");
+
+	/*
+	 * This is an explicit runtime identity gate for recovery images.  The trim
+	 * protocol is stateful, so restore the controller through the same bounded
+	 * bootloader-reset/reset-state path before declining to bind.  Returning
+	 * -ENODEV leaves no input device or IRQ registered; a later full activation
+	 * must use a DT without novatek,identity-only.
+	 */
+	if (device_property_read_bool(dev, "novatek,identity-only")) {
+		ret = nvt36xxx_bootloader_reset(data);
+		if (!ret)
+			ret = nvt36xxx_wait_reset(data);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "identity trim read could not restore controller\n");
+
+		dev_info(dev, "identity-only: %s trim %*ph detected; keeping input and IRQ quiescent\n",
+			 data->chip->name, NVT36XXX_TRIM_LEN, data->trim);
+		return -ENODEV;
+	}
 
 	ret = nvt36xxx_bootloader_reset(data);
 	if (ret)

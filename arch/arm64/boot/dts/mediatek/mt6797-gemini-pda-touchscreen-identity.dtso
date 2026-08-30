@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA NT36772 touchscreen identity overlay.
+ *
+ * This is deliberately separate from the base DT and the read-only observer.
+ * Applying it is an explicit, recoverable operator action: it enables I2C4 and
+ * the 0x62 client, which runs the driver's bounded vendor-compatible trim
+ * sequence.  The novatek,identity-only property then makes the driver restore
+ * the controller and decline its normal input/IRQ bind.  It is not a generic
+ * I2C scan and it must never be applied while a vendor touchscreen client owns
+ * I2C4/0x62.
+ *
+ * Established facts:
+ * - CAP_TOUCH_VDD maps to MT6351 VLDO28, fixed at 2.8 V
+ *   (drivers/misc/mediatek/dws/mt6797/aeon6797_6m_n.dws:3848-3871 and
+ *   drivers/regulator/mt6351-regulator.c:321).
+ * - I2C4/0x62, rising EINT8/GPIO85, and a live NT36772 trim are captured in
+ *   the vendor sources and boot log (arch/arm64/boot/dts/
+ *   novatek-nt36xxx-i2c.dtsi:19-25 and
+ *   experiments/2026-07-12-input-backlight-recovery/results/
+ *   nvt-live-trim-identity-20260714.txt:12-35).
+ *
+ * Intentional boundary:
+ * - No reset-gpios property: the vendor driver selects GPIO85 but does not
+ *   drive GPIO68, and the GPIO68 external reset polarity/timing is unknown.
+ * - No vcc-supply property: the MT6351 provider is dynamically registered and
+ *   has no board-DT regulator phandle.  This overlay neither enables nor
+ *   disables VLDO28; an unpowered controller fails its bounded I2C probe.
+ * - The driver has no firmware-update interface.  Its trim read is stateful:
+ *   at most five 0x62 reset/xdata attempts followed by a 100-iteration,
+ *   10-11 ms reset-state timeout.  Remove the overlay/reboot to recover.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&i2c4 {
+	status = "okay";
+};
+
+&touchscreen {
+	novatek,identity-only;
+	status = "okay";
+};

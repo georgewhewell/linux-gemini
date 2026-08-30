@@ -360,11 +360,43 @@
 	};
 };
 
+&i2c4 {
+	/*
+	 * The vendor DT has a Novatek controller at 0x62 on this bus. Keep both
+	 * bus and client disabled until the VTOUCH rail and EINT routing have been
+	 * checked on a recovery-tested image.
+	 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c4_pins_a>;
+	status = "disabled";
+
+	touchscreen: touchscreen@62 {
+		compatible = "novatek,nt36xxx";
+		reg = <0x62>;
+		interrupt-parent = <&pio>;
+		interrupts = <8 IRQ_TYPE_EDGE_RISING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touchscreen_irq_pins>;
+		/* Vendor reports X/Y swapped and reverses the raw X axis. */
+		touchscreen-inverted-x;
+		touchscreen-swapped-x-y;
+		status = "disabled";
+	};
+};
+
 &watchdog {
 	interrupts = <GIC_SPI 137 IRQ_TYPE_EDGE_FALLING>;
 };
 
 &pio {
+	/* GPIO85 is EINT8 in the upstream MT6797 pin-function table. */
+	touchscreen_irq_pins: touchscreen-irq-pins {
+		pins-irq {
+			pinmux = <MT6797_GPIO85__FUNC_EINT8>;
+			bias-disable;
+		};
+	};
+
 	keyboard_soc_pins: keyboard-soc-pins {
 		pins-reset {
 			pinmux = <MT6797_GPIO58__FUNC_GPIO58>;

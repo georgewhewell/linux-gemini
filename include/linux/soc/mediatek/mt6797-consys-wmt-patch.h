@@ -2,27 +2,26 @@
 /*
  * Bounded MT6797 WMT patch-download controller.
  *
- * This interface deliberately accepts an already-owned WMT transaction
- * endpoint. It does not discover BTIF, CONSYS, Device Tree or power
- * resources, and it cannot establish a transport by itself.
+ * This interface deliberately accepts only bootstrap's already-owned opaque
+ * WMT transaction lease. It does not discover BTIF, CONSYS, Device Tree or
+ * power resources, and it cannot establish a transport by itself.
  */
 
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_CONSYS_WMT_PATCH_H
 #define __LINUX_SOC_MEDIATEK_MT6797_CONSYS_WMT_PATCH_H
 
 struct device;
-struct mtk_wmt;
+struct mt6797_btif_stp_bootstrap_full_wmt_lease;
 
 /*
  * Request and preflight the one captured Gemini manifest, then issue only the
- * vendor-evidenced patch-address and patch-data WMT transactions. This is
- * blocked unless the controller's explicit read-only command-line/module
- * parameter is set. The endpoint must be in full STP mode: vendor MT6797
- * software changes from mandatory to full STP before patch download. This
- * check is not a full-STP capability proof. The caller must exclusively own
- * the endpoint for the whole call and retains ownership of window/ACK/retry
- * state and transport recovery.
+ * vendor-evidenced patch-address, patch-data, and reset WMT transactions. It
+ * is blocked unless the controller's explicit read-only command-line/module
+ * parameter is set. @lease is an opaque capability supplied only to the
+ * bootstrap's synchronous post-full callback; it proves one owner retains the
+ * full STP window, ACK, retry and recovery lifecycle for this call.
  */
-int mt6797_consys_wmt_patch_download(struct device *dev, struct mtk_wmt *wmt);
+int mt6797_consys_wmt_patch_download(struct device *dev,
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_CONSYS_WMT_PATCH_H */

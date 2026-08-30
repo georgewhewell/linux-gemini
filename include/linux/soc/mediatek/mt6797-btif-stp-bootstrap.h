@@ -12,10 +12,14 @@
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_BTIF_STP_BOOTSTRAP_H
 #define __LINUX_SOC_MEDIATEK_MT6797_BTIF_STP_BOOTSTRAP_H
 
+#include <linux/types.h>
+
 struct mt6797_btif_pio_lease;
 struct mt6797_consys_runtime_lease;
 struct mt6797_btif_stp_bootstrap;
 struct mt6797_consys_stp_session_lease;
+struct mt6797_btif_stp_bootstrap_full_wmt_lease;
+struct mtk_wmt_match;
 
 /*
  * enable_irq() is called only after PIO mandatory setup installed its RX
@@ -27,6 +31,15 @@ struct mt6797_btif_stp_bootstrap_ops {
 	void (*close)(void *context);
 	void *context;
 };
+
+/*
+ * A post-full stage runs synchronously between the exact full-STP query and
+ * session promotion.  The opaque lease has no constructor or endpoint getter:
+ * it is valid only for this callback and exposes one serialized WMT operation
+ * owned by the bootstrap.
+ */
+typedef int (*mt6797_btif_stp_bootstrap_full_wmt_stage_t)(void *context,
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
 
 struct mt6797_btif_stp_bootstrap *
 mt6797_btif_stp_bootstrap_create(
@@ -42,6 +55,30 @@ mt6797_btif_stp_bootstrap_create(
  */
 const struct mt6797_consys_stp_session_lease *
 mt6797_btif_stp_bootstrap_run(struct mt6797_btif_stp_bootstrap *bootstrap);
+
+/*
+ * As mt6797_btif_stp_bootstrap_run(), but runs @stage after the exact
+ * full-STP query has succeeded and before the full session is published.  The
+ * stage must neither retain @lease nor issue traffic except through
+ * mt6797_btif_stp_bootstrap_full_wmt_transaction().  A stage error fences the
+ * PIO/STP owner and prevents promotion.
+ */
+const struct mt6797_consys_stp_session_lease *
+mt6797_btif_stp_bootstrap_run_with_full_wmt_stage(
+		struct mt6797_btif_stp_bootstrap *bootstrap,
+		mt6797_btif_stp_bootstrap_full_wmt_stage_t stage,
+		void *stage_context);
+
+/*
+ * Send one exact WMT operation through the bootstrap's private full-STP WMT
+ * endpoint.  This is valid only while its synchronous post-full stage owns
+ * @lease.  The bootstrap retains the STP window, ACK, retry and recovery
+ * lifecycle; callers cannot obtain or reset the underlying struct mtk_wmt.
+ */
+int mt6797_btif_stp_bootstrap_full_wmt_transaction(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		u8 opcode, const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected, unsigned long timeout);
 
 /*
  * The returned full session remains owned by bootstrap until destroy().

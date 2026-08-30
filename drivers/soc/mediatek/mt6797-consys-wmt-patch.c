@@ -15,16 +15,24 @@
  * common_main/core/wmt_ic_soc.c:1008-1044,1052-1091. The vendor patch loop
  * removes the 28-byte WMT_PATCH header, issues the full and partial
  * patch-address commands, then sends 1000-byte body fragments with
- * first/middle/last tags. It checks the exact address and patch replies:
- * common_main/core/wmt_ic_soc.c:2042-2308.
+ * first/middle/last tags. It checks the exact address and patch replies, then
+ * runs init_table_3's WMT reset after every patch:
+ * common_main/core/wmt_ic_soc.c:122-128,719-724,1079-1091,2042-2308. The
+ * vendor loop starts the next patch on the same WMT/STP path: its init-script
+ * helper is only a strict wmt_core_tx()/wmt_core_rx() exchange
+ * (common_main/core/wmt_core.c:634-679), not a transport teardown or STP
+ * renegotiation. The reset's firmware-internal side effects could not be
+ * determined from this source. Therefore it is sent and matched only as the
+ * vendor's ordinary full-STP transaction; any failure stops the manifest and
+ * only the bootstrap session owner may fence/recover that transport.
  *
  * This file is intentionally not a platform driver. It cannot acquire power,
- * clocks, resets, pads, BTIF DMA, STP ownership or a WMT endpoint. A future
- * transport owner must explicitly call the exported entry point after its own
- * independently reviewed recovery sequence. No Device Tree node can bind this
- * code, and the entry point is additionally blocked by a read-only
- * command-line/module parameter. It does not enable Wi-Fi, Bluetooth, GNSS,
- * FM, RF, or any unknown rail.
+ * clocks, resets, pads, BTIF DMA, STP ownership or a WMT endpoint. No Device
+ * Tree node can bind this code, and the entry point is additionally blocked by
+ * a read-only command-line/module parameter. The caller gets no struct
+ * mtk_wmt: only the bootstrap's private full-STP stage may supply the opaque
+ * transaction lease after its own independently reviewed recovery sequence.
+ * It does not enable Wi-Fi, Bluetooth, GNSS, FM, RF, or any unknown rail.
  */
 
 #include <linux/device.h>
@@ -42,6 +50,7 @@
 #endif
 
 #include <linux/soc/mediatek/mt6797-consys-firmware.h>
+#include <linux/soc/mediatek/mt6797-btif-stp-bootstrap.h>
 #include <linux/soc/mediatek/mt6797-consys-wmt-patch.h>
 #include <linux/soc/mediatek/mtk-wmt.h>
 
@@ -50,6 +59,7 @@
 
 #define MT6797_CONSYS_WMT_OPCODE_PATCH		0x01
 #define MT6797_CONSYS_WMT_OPCODE_PATCH_ADDRESS	0x08
+#define MT6797_CONSYS_WMT_OPCODE_RESET		0x07
 
 #define MT6797_CONSYS_WMT_PATCH_FRAGMENT_FIRST	0x01
 #define MT6797_CONSYS_WMT_PATCH_FRAGMENT_MIDDLE	0x02
@@ -107,6 +117,8 @@ static const u8 mt6797_consys_wmt_patch_1_0_address[] = {
 /* WMT_PATCH_ADDRESS_EVT and WMT_PATCH_EVT with the outer WMT header removed. */
 static const u8 mt6797_consys_wmt_address_reply[] = { 0x00, 0x00, 0x00, 0x01 };
 static const u8 mt6797_consys_wmt_patch_reply[] = { 0x00 };
+static const u8 mt6797_consys_wmt_reset_data[] = { 0x04 };
+static const u8 mt6797_consys_wmt_reset_reply[] = { 0x00 };
 
 static const struct mtk_wmt_match mt6797_consys_wmt_address_match = {
 	.opcode = MT6797_CONSYS_WMT_OPCODE_PATCH_ADDRESS,
@@ -118,6 +130,19 @@ static const struct mtk_wmt_match mt6797_consys_wmt_patch_match = {
 	.opcode = MT6797_CONSYS_WMT_OPCODE_PATCH,
 	.data = mt6797_consys_wmt_patch_reply,
 	.data_len = sizeof(mt6797_consys_wmt_patch_reply),
+};
+
+static const struct mtk_wmt_match mt6797_consys_wmt_reset_match = {
+	.opcode = MT6797_CONSYS_WMT_OPCODE_RESET,
+	.data = mt6797_consys_wmt_reset_reply,
+	.data_len = sizeof(mt6797_consys_wmt_reset_reply),
+};
+
+struct mt6797_consys_wmt_patch_transport {
+	int (*transaction)(void *context, u8 opcode, const u8 *data,
+			   size_t data_len, const struct mtk_wmt_match *expected,
+			   unsigned long timeout);
+	void *context;
 };
 
 /*
@@ -135,25 +160,30 @@ static const u8 mt6797_consys_wmt_partial_address_template[] = {
 	0x00, 0x3f, 0x00, 0x01, 0xff, 0xff, 0xff, 0xff,
 };
 
-static int mt6797_consys_wmt_transaction(struct mtk_wmt *wmt, u8 opcode,
-					 const u8 *data, size_t data_len,
-					 const struct mtk_wmt_match *expected)
+static int mt6797_consys_wmt_patch_transaction(
+		const struct mt6797_consys_wmt_patch_transport *transport,
+		u8 opcode, const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected)
 {
-	return mtk_wmt_transaction(wmt, opcode, data, data_len, expected,
-				   MT6797_CONSYS_WMT_PATCH_TIMEOUT);
+	if (!transport || !transport->transaction)
+		return -EINVAL;
+
+	return transport->transaction(transport->context, opcode, data, data_len,
+				      expected, MT6797_CONSYS_WMT_PATCH_TIMEOUT);
 }
 
 static int
-mt6797_consys_wmt_patch_set_address(struct mtk_wmt *wmt,
+mt6797_consys_wmt_patch_set_address(
+		const struct mt6797_consys_wmt_patch_transport *transport,
 				    const struct mt6797_consys_patch_info *info)
 {
 	u8 partial_address[sizeof(mt6797_consys_wmt_partial_address_template)];
 	int ret;
 
-	if (!wmt || !info)
+	if (!transport || !info)
 		return -EINVAL;
 
-	ret = mt6797_consys_wmt_transaction(wmt,
+	ret = mt6797_consys_wmt_patch_transaction(transport,
 					    MT6797_CONSYS_WMT_OPCODE_PATCH_ADDRESS,
 					    mt6797_consys_wmt_full_address_data,
 					    sizeof(mt6797_consys_wmt_full_address_data),
@@ -166,14 +196,15 @@ mt6797_consys_wmt_patch_set_address(struct mtk_wmt *wmt,
 	/* Vendor full-command bytes 12--15 are SDU bytes 8--11. */
 	memcpy(partial_address + 8, info->load_address,
 	       sizeof(info->load_address));
-	return mt6797_consys_wmt_transaction(wmt,
+	return mt6797_consys_wmt_patch_transaction(transport,
 		MT6797_CONSYS_WMT_OPCODE_PATCH_ADDRESS, partial_address,
 		sizeof(partial_address), &mt6797_consys_wmt_address_match);
 }
 
-static int mt6797_consys_wmt_patch_send_body(struct mtk_wmt *wmt,
-					     const struct mt6797_consys_patch_image *patch,
-					     const struct mt6797_consys_patch_info *info)
+static int mt6797_consys_wmt_patch_send_body(
+		const struct mt6797_consys_wmt_patch_transport *transport,
+		const struct mt6797_consys_patch_image *patch,
+		const struct mt6797_consys_patch_info *info)
 {
 	u8 data[MT6797_CONSYS_WMT_PATCH_FRAGMENT_SIZE + 1];
 	const u8 *body;
@@ -182,7 +213,7 @@ static int mt6797_consys_wmt_patch_send_body(struct mtk_wmt *wmt,
 	size_t fragment_size;
 	int ret;
 
-	if (!wmt || !patch || !patch->blob.data || !info || !info->body_size)
+	if (!transport || !patch || !patch->blob.data || !info || !info->body_size)
 		return -EINVAL;
 
 	body = patch->blob.data + MT6797_CONSYS_PATCH_HEADER_SIZE;
@@ -198,7 +229,7 @@ static int mt6797_consys_wmt_patch_send_body(struct mtk_wmt *wmt,
 			data[0] = MT6797_CONSYS_WMT_PATCH_FRAGMENT_MIDDLE;
 		memcpy(data + 1, body + offset, fragment_size);
 
-		ret = mt6797_consys_wmt_transaction(wmt,
+		ret = mt6797_consys_wmt_patch_transaction(transport,
 						    MT6797_CONSYS_WMT_OPCODE_PATCH,
 						    data, fragment_size + 1,
 						    &mt6797_consys_wmt_patch_match);
@@ -213,24 +244,17 @@ static int mt6797_consys_wmt_patch_send_body(struct mtk_wmt *wmt,
 }
 
 static int
-mt6797_consys_wmt_patch_download_manifest(struct mtk_wmt *wmt,
+mt6797_consys_wmt_patch_download_manifest(
+					  const struct mt6797_consys_wmt_patch_transport *transport,
 					  const struct mt6797_consys_firmware_manifest *manifest)
 {
 	struct mt6797_consys_patch_info info;
 	size_t i;
 	int ret;
 
-	if (!wmt || !manifest || manifest->patch_count != 2)
+	if (!transport || !transport->transaction || !manifest ||
+	    manifest->patch_count != 2)
 		return -EINVAL;
-
-	/*
-	 * On MT6797 patch traffic follows the vendor's mandatory-to-full STP
-	 * switchover. A full-mode value is only a minimum endpoint contract: the
-	 * caller still owns the missing window/ACK/retry session and must not call
-	 * us until it has established and can recover that session.
-	 */
-	if (wmt->stp_mode != MTK_STP_MODE_FULL)
-		return -EPROTONOSUPPORT;
 
 	ret = mt6797_consys_firmware_manifest_preflight(manifest);
 	if (ret)
@@ -240,11 +264,18 @@ mt6797_consys_wmt_patch_download_manifest(struct mtk_wmt *wmt,
 		ret = mt6797_consys_patch_preflight(&manifest->patches[i], &info);
 		if (ret)
 			return ret;
-		ret = mt6797_consys_wmt_patch_set_address(wmt, &info);
+		ret = mt6797_consys_wmt_patch_set_address(transport, &info);
 		if (ret)
 			return ret;
-		ret = mt6797_consys_wmt_patch_send_body(wmt,
+		ret = mt6797_consys_wmt_patch_send_body(transport,
 							&manifest->patches[i], &info);
+		if (ret)
+			return ret;
+		ret = mt6797_consys_wmt_patch_transaction(transport,
+					MT6797_CONSYS_WMT_OPCODE_RESET,
+					mt6797_consys_wmt_reset_data,
+					sizeof(mt6797_consys_wmt_reset_data),
+					&mt6797_consys_wmt_reset_match);
 		if (ret)
 			return ret;
 	}
@@ -252,7 +283,16 @@ mt6797_consys_wmt_patch_download_manifest(struct mtk_wmt *wmt,
 	return 0;
 }
 
-int mt6797_consys_wmt_patch_download(struct device *dev, struct mtk_wmt *wmt)
+static int mt6797_consys_wmt_patch_bootstrap_transaction(
+		void *context, u8 opcode, const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected, unsigned long timeout)
+{
+	return mt6797_btif_stp_bootstrap_full_wmt_transaction(context, opcode, data,
+							  data_len, expected, timeout);
+}
+
+int mt6797_consys_wmt_patch_download(struct device *dev,
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
 {
 	const struct firmware *config = NULL;
 	const struct firmware *patch_1_1 = NULL;
@@ -283,6 +323,10 @@ int mt6797_consys_wmt_patch_download(struct device *dev, struct mtk_wmt *wmt)
 		.patches = verified_patches,
 		.patch_count = ARRAY_SIZE(verified_patches),
 	};
+	struct mt6797_consys_wmt_patch_transport transport = {
+		.transaction = mt6797_consys_wmt_patch_bootstrap_transaction,
+		.context = (void *)lease,
+	};
 	int ret;
 
 	/*
@@ -295,15 +339,16 @@ int mt6797_consys_wmt_patch_download(struct device *dev, struct mtk_wmt *wmt)
 	 */
 	if (!enable_patch_download)
 		return -EPERM;
-	if (!dev || !wmt)
+	if (!dev || !lease)
 		return -EINVAL;
 	/*
-	 * Do not even acquire blobs for the bootstrap-only mandatory-STP endpoint.
-	 * See mt6797_consys_wmt_patch_download_manifest() for why FULL alone is
-	 * deliberately not treated as proof of a complete session owner.
+	 * The vendor reads and parses WMT_SOC.cfg before runtime power/STP setup
+	 * (wmt_lib.c:284-302; wmt_conf.c:432-486).  It is not a WMT command and
+	 * this post-full phase intentionally performs only the captured filename
+	 * and digest preflight.  In particular, it does not apply co-clock/rail
+	 * semantics late; the runtime provider's co-clock==0 lifecycle contract is
+	 * independently evidenced.
 	 */
-	if (wmt->stp_mode != MTK_STP_MODE_FULL)
-		return -EPROTONOSUPPORT;
 
 	mutex_lock(&mt6797_consys_wmt_patch_download_lock);
 	ret = request_firmware(&config, config_blob.name, dev);
@@ -325,8 +370,8 @@ int mt6797_consys_wmt_patch_download(struct device *dev, struct mtk_wmt *wmt)
 	verified_patches[1].blob.data = patch_1_0->data;
 	verified_patches[1].blob.size = patch_1_0->size;
 
-	ret = mt6797_consys_wmt_patch_download_manifest(wmt, &manifest);
-	/* Never call mtk_wmt_reset(): only the transport owner can recover it. */
+	ret = mt6797_consys_wmt_patch_download_manifest(&transport, &manifest);
+	/* The bootstrap owns recovery: this stage never calls mtk_wmt_reset(). */
 	release_firmware(patch_1_0);
 out_patch_1_1:
 	release_firmware(patch_1_1);
@@ -362,6 +407,7 @@ mt6797_consys_wmt_patch_test_receive(void *context, const u8 *payload,
 	static const u8 address_event[] = { 0x02, 0x08, 0x04, 0x00,
 		0x00, 0x00, 0x00, 0x01 };
 	static const u8 patch_event[] = { 0x02, 0x01, 0x01, 0x00, 0x00 };
+	static const u8 reset_event[] = { 0x02, 0x07, 0x01, 0x00, 0x00 };
 	unsigned int index = transport->packet_count;
 	const u8 *reply;
 	size_t reply_size;
@@ -380,6 +426,9 @@ mt6797_consys_wmt_patch_test_receive(void *context, const u8 *payload,
 	} else if (payload[1] == MT6797_CONSYS_WMT_OPCODE_PATCH) {
 		reply = patch_event;
 		reply_size = sizeof(patch_event);
+	} else if (payload[1] == MT6797_CONSYS_WMT_OPCODE_RESET) {
+		reply = reset_event;
+		reply_size = sizeof(reset_event);
 	} else {
 		return -EPROTO;
 	}
@@ -394,6 +443,14 @@ mt6797_consys_wmt_patch_test_transmit(void *context, const u8 *frame,
 	struct mt6797_consys_wmt_patch_test_transport *transport = context;
 
 	return mtk_stp_rx(&transport->stp, frame, frame_length);
+}
+
+static int mt6797_consys_wmt_patch_test_transaction(
+		void *context, u8 opcode, const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected, unsigned long timeout)
+{
+	return mtk_wmt_transaction(context, opcode, data, data_len, expected,
+				   timeout);
 }
 
 static void mt6797_consys_wmt_patch_test_make_data(u8 patch[29])
@@ -478,7 +535,9 @@ static void mt6797_consys_wmt_patch_test_manifest_sequence(struct kunit *test)
 		0x00, 0x00, 0x09, 0x00, 0xff, 0xff, 0xff, 0xff,
 	};
 	static const u8 patch_last[] = { 0x01, 0x01, 0x02, 0x00, 0x03, 'X' };
+	static const u8 reset[] = { 0x01, 0x07, 0x01, 0x00, 0x04 };
 	struct mt6797_consys_wmt_patch_test_transport *transport;
+	struct mt6797_consys_wmt_patch_transport patch_transport;
 	struct mt6797_consys_firmware_blob config;
 	struct mt6797_consys_patch_image patches[2];
 	struct mt6797_consys_firmware_manifest manifest;
@@ -496,35 +555,45 @@ static void mt6797_consys_wmt_patch_test_manifest_sequence(struct kunit *test)
 						      transport), 0);
 	mt6797_consys_wmt_patch_test_manifest(&config, patches, &manifest,
 					      patch_data);
+	patch_transport = (struct mt6797_consys_wmt_patch_transport) {
+		.transaction = mt6797_consys_wmt_patch_test_transaction,
+		.context = &wmt,
+	};
 
 	KUNIT_ASSERT_EQ(test,
-			mt6797_consys_wmt_patch_download_manifest(&wmt, &manifest), 0);
-	KUNIT_ASSERT_EQ(test, transport->packet_count, 6U);
+			mt6797_consys_wmt_patch_download_manifest(&patch_transport,
+								  &manifest), 0);
+	KUNIT_ASSERT_EQ(test, transport->packet_count, 8U);
 	KUNIT_EXPECT_EQ(test, transport->packet_lengths[0], sizeof(full_address));
 	KUNIT_EXPECT_EQ(test, transport->packet_lengths[1],
 			sizeof(first_partial_address));
 	KUNIT_EXPECT_EQ(test, transport->packet_lengths[2], sizeof(patch_last));
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[3], sizeof(full_address));
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[4],
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[3], sizeof(reset));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[4], sizeof(full_address));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[5],
 			sizeof(second_partial_address));
-	KUNIT_EXPECT_EQ(test, transport->packet_lengths[5], sizeof(patch_last));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[6], sizeof(patch_last));
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[7], sizeof(reset));
 	KUNIT_EXPECT_MEMEQ(test, transport->packets[0], full_address,
 			   sizeof(full_address));
 	KUNIT_EXPECT_MEMEQ(test, transport->packets[1], first_partial_address,
 			   sizeof(first_partial_address));
 	KUNIT_EXPECT_MEMEQ(test, transport->packets[2], patch_last,
 			   sizeof(patch_last));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[3], full_address,
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[3], reset, sizeof(reset));
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[4], full_address,
 			   sizeof(full_address));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[4], second_partial_address,
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[5], second_partial_address,
 			   sizeof(second_partial_address));
-	KUNIT_EXPECT_MEMEQ(test, transport->packets[5], patch_last,
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[6], patch_last,
 			   sizeof(patch_last));
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[7], reset, sizeof(reset));
 }
 
 static void mt6797_consys_wmt_patch_test_fragment_tags(struct kunit *test)
 {
 	struct mt6797_consys_wmt_patch_test_transport *transport;
+	struct mt6797_consys_wmt_patch_transport patch_transport;
 	struct mt6797_consys_patch_image patch = { };
 	struct mt6797_consys_patch_info info = { .body_size = 2001 };
 	struct mtk_wmt wmt;
@@ -543,9 +612,14 @@ static void mt6797_consys_wmt_patch_test_fragment_tags(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, mtk_stp_register_client(&transport->stp, MTK_STP_WMT,
 						      mt6797_consys_wmt_patch_test_receive,
 						      transport), 0);
+	patch_transport = (struct mt6797_consys_wmt_patch_transport) {
+		.transaction = mt6797_consys_wmt_patch_test_transaction,
+		.context = &wmt,
+	};
 
 	KUNIT_ASSERT_EQ(test,
-			mt6797_consys_wmt_patch_send_body(&wmt, &patch, &info), 0);
+			mt6797_consys_wmt_patch_send_body(&patch_transport, &patch,
+							       &info), 0);
 	KUNIT_ASSERT_EQ(test, transport->packet_count, 3U);
 	KUNIT_EXPECT_EQ(test, transport->packets[0][4],
 			MT6797_CONSYS_WMT_PATCH_FRAGMENT_FIRST);
@@ -560,24 +634,22 @@ static void mt6797_consys_wmt_patch_test_fragment_tags(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, transport->packet_lengths[2], (size_t)6);
 }
 
-static void mt6797_consys_wmt_patch_test_mandatory_endpoint_rejected(struct kunit *test)
+static void mt6797_consys_wmt_patch_test_unowned_transport_rejected(struct kunit *test)
 {
 	struct mt6797_consys_firmware_manifest manifest = {
 		.patch_count = 2,
 	};
-	struct mtk_wmt wmt;
 
-	/* A mandatory endpoint is only the vendor bootstrap phase, never DLM. */
-	mtk_wmt_init(&wmt, MTK_STP_MODE_MANDATORY, NULL, NULL);
+	/* Only bootstrap can create a production full-WMT transport capability. */
 	KUNIT_EXPECT_EQ(test,
-			mt6797_consys_wmt_patch_download_manifest(&wmt, &manifest),
-			-EPROTONOSUPPORT);
+			mt6797_consys_wmt_patch_download_manifest(NULL, &manifest),
+			-EINVAL);
 }
 
 static struct kunit_case mt6797_consys_wmt_patch_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_manifest_sequence),
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_fragment_tags),
-	KUNIT_CASE(mt6797_consys_wmt_patch_test_mandatory_endpoint_rejected),
+	KUNIT_CASE(mt6797_consys_wmt_patch_test_unowned_transport_rejected),
 	{ }
 };
 

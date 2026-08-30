@@ -168,8 +168,10 @@ config MTK_MT6797_BTIF_STP_BOOTSTRAP
 	  must provide an acquired PIO lease, exclusive long-lived CONSYS lifecycle
 	  lease, and synchronized IRQ close callback after independently
 	  establishing clocks, pads and firmware ownership. It never discovers
-	  hardware, requests firmware,
-	  downloads a patch, or enables Wi-Fi, Bluetooth, GNSS or FM.
+	  hardware, requests firmware, downloads a patch, or enables Wi-Fi,
+	  Bluetooth, GNSS or FM through its normal run API. A separately gated
+	  post-full callback can use its opaque transaction lease before the session
+	  is promoted; the bootstrap still owns STP framing, ACK, retry and recovery.
 
 config MTK_MT6797_BTIF_STP_BOOTSTRAP_KUNIT_TEST
 	bool "KUnit tests for the MT6797 BTIF STP bootstrap controller"
@@ -422,11 +424,15 @@ config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
 	depends on MTK_MT6797_CONSYS_RUNTIME=y
 	depends on MTK_MT6797_BTIF_PIO_PLATFORM=y
 	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
+	depends on MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD=y
 	help
 	  Build the default-disabled coordinator that joins separately reviewed
 	  MT6797 runtime and BTIF PIO platform providers through managed device
-	  links. An explicit in-kernel start operation acquires their leases and
-	  invokes only the exact mandatory-to-full STP bootstrap controller.
+	  links. It does not activate the resources-only runtime provider: an
+	  earlier true-chronology owner must already hold identity. An explicit
+	  in-kernel start then uses the held lease and invokes the exact
+	  mandatory-to-full STP bootstrap controller and its opaque, post-full
+	  firmware manifest stage before publishing a session.
 
 	  The shipped Gemini DT contains no matching node. A hand-authored,
 	  disabled-by-default node must carry mediatek,experimental-bootstrap and
@@ -434,8 +440,9 @@ config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
 	  enable_experimental_runtime_controller=1 parameter must be supplied.
 	  Each provider and the STP bootstrap retain their own independent gates.
 	  The coordinator creates no GNSS, Bluetooth, Wi-Fi, or FM function; it
-	  releases no CONMCU reset, accesses no AFE/shared EMI, requests no firmware,
-	  and has no userspace ABI.
+	  releases no CONMCU reset, accesses no AFE/shared EMI, or enables a radio
+	  function, and has no userspace ABI. Firmware request/download remains
+	  separately default-false gated by the patch controller.
 
 config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 CONSYS STP-bootstrap coordinator"
@@ -479,6 +486,7 @@ config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT_KUNIT_TEST
 config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD
 	tristate "Experimental MT6797 WMT patch-download controller"
 	depends on MTK_WMT && MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
+	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP
 	depends on FW_LOADER
 	help
 	  Build the bounded controller for the one captured Gemini WMT firmware
@@ -490,18 +498,18 @@ config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD
 
 	  This is deliberately not a Device Tree driver. It cannot acquire a
 	  transport, power domain, reset, clock, regulator, pad, or RF resource.
-	  A future WMT/STP owner must explicitly call it, and calls are rejected
-	  unless the supplied endpoint uses full STP; the MT6797 vendor sequence
-	  switches from mandatory to full STP before patch download. Full mode alone
-	  is not a session-capability proof: the caller must also own the full STP
-	  window, ACK, retry and recovery lifecycle. Calls are also rejected
+	  The bootstrap's post-full callback must explicitly call it; raw WMT
+	  endpoints are deliberately not accepted. The MT6797 vendor sequence
+	  switches from mandatory to full STP before patch download. The opaque
+	  bootstrap lease proves the one owner retains the full STP window, ACK,
+	  retry and recovery lifecycle. Calls are also rejected
 	  unless mt6797_consys_wmt_patch.enable_patch_download=1 is set at boot (or
 	  the equivalent read-only module parameter is supplied). It neither enables
 	  Wi-Fi, Bluetooth, GNSS, FM, nor any radio function.
 
 	  On a WMT timeout or transport error it leaves the WMT transaction fence in
-	  place. Only the transport owner may recover the underlying controller and
-	  call mtk_wmt_reset(); this controller never clears that safety fence.
+	  place. Only the bootstrap transport owner may recover the underlying
+	  controller; this controller never clears that safety fence.
 
 config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD_KUNIT_TEST
 	bool "KUnit tests for the MT6797 WMT patch-download controller"
@@ -509,10 +517,10 @@ config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD_KUNIT_TEST
 	depends on MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD=y
 	help
 	  Exercise the patch-header boundary, exact MT6797 address packets, body
-	  fragment tags and WMT reply matching with in-memory data and a fake
-	  full-STP data-frame codec. It does not model full-STP window/ACK/retry
-	  ownership, request firmware, bind Device Tree, access hardware, or enable
-	  a connectivity function.
+	  fragment tags, per-patch WMT reset and reply matching with in-memory data
+	  and a fake full-STP data-frame codec. It does not model full-STP
+	  window/ACK/retry ownership, request firmware, bind Device Tree, access
+	  hardware, or enable a connectivity function.
 
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"

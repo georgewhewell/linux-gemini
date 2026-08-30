@@ -67,6 +67,17 @@ int mt6797_btif_pio_qualify(const struct mt6797_btif_pio_lease *pio_lease,
 			    u32 *tri_level);
 
 /*
+ * Prepare exactly one AP-internal BTIF loopback byte.  The caller must leave
+ * its Linux IRQ masked until this returns successfully, then deliver that IRQ
+ * to mt6797_btif_pio_loopback_irq().  Neither function attaches STP nor
+ * permits a second byte; the latter always clears loopback and fences PIO.
+ */
+int mt6797_btif_pio_loopback_prepare(const struct mt6797_btif_pio_lease *pio_lease,
+				     u8 byte);
+int mt6797_btif_pio_loopback_irq(const struct mt6797_btif_pio_lease *pio_lease,
+				 u8 *byte);
+
+/*
  * Bind exactly one active full-STP lease and then perform the vendor PIO core
  * setup. runtime_lease must be the exclusive, long-lived CONSYS lifecycle
  * capability and remains pinned until close() fences this PIO owner. The

@@ -16,6 +16,11 @@ mt6797-gemini-pda-btif-pio-qualification-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-btif-pio-qualification.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-btif-pio-qualification.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-btif-pio-loopback.dtbo
+mt6797-gemini-pda-btif-pio-loopback-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-btif-pio-loopback.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-btif-pio-loopback.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-display.dtbo
 mt6797-gemini-pda-display-test-dtbs := \
 	mt6797-gemini-pda.dtb \

@@ -32,6 +32,14 @@ description: |
   write THR, enable the Linux IRQ, wake CONSYS, or send WMT/STP bytes. The
   adapter synchronously clears IER and releases btifc before probe returns.
 
+  A different, separately gated debug qualification can write precisely one
+  fixed byte to THR while the documented internal loopback route is selected.
+  It unmasks the already-requested core IRQ only after queuing that byte,
+  verifies the received RBR byte in the threaded IRQ, then fences PIO,
+  clears IER, masks/synchronizes the IRQ, and releases btifc. It has a local
+  safety deadline rather than a vendor timing contract and never wakes CONSYS
+  or sends a protocol frame.
+
 properties:
   compatible:
     const: mediatek,mt6797-btif-pio
@@ -58,6 +66,16 @@ properties:
       unless the independent read-only
       mt6797_btif_pio_platform.enable_experimental_pio_qualification=1
       parameter is supplied. This performs no CONSYS or radio operation.
+
+  mediatek,experimental-pio-loopback-qualification:
+    type: boolean
+    description: |
+      Permit the one-byte internal loopback and RX IRQ qualification. It is
+      rejected unless the independent read-only
+      mt6797_btif_pio_platform.enable_experimental_pio_loopback_qualification=1
+      parameter is supplied. It is mutually exclusive with
+      mediatek,experimental-pio-qualification and performs no CONSYS or radio
+      operation.
 
 required:
   - compatible

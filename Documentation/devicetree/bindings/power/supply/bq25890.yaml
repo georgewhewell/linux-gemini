@@ -12,6 +12,20 @@ maintainers:
 
 allOf:
   - $ref: power-supply.yaml#
+  - if:
+      required:
+        - ti,read-only
+    then: {}
+    else:
+      required:
+        - interrupts
+        - ti,battery-regulation-voltage
+        - ti,charge-current
+        - ti,termination-current
+        - ti,precharge-current
+        - ti,minimum-sys-voltage
+        - ti,boost-voltage
+        - ti,boost-max-current
 
 properties:
   compatible:
@@ -85,17 +99,21 @@ properties:
   ti,ibatcomp-clamp-microvolt:
     description: max. charging voltage adjustment due to expected voltage drop on in-series resistor
 
+  ti,read-only:
+    description: |
+      Do not write any charger register. This is intended for a bounded
+      identification and status-observation stage when the board charge
+      limits, interrupt wiring, or host-control ownership have not yet been
+      established. The driver reads only the chip ID and non-destructive
+      charge/online status fields; it does not reset the charger, configure
+      the watchdog or ADC, expose its OTG regulator, register an interrupt,
+      or accept writable power-supply properties. BQ2589x fault status bits
+      are read-to-clear and are intentionally not reported in this mode.
+    type: boolean
+
 required:
   - compatible
   - reg
-  - interrupts
-  - ti,battery-regulation-voltage
-  - ti,charge-current
-  - ti,termination-current
-  - ti,precharge-current
-  - ti,minimum-sys-voltage
-  - ti,boost-voltage
-  - ti,boost-max-current
 
 unevaluatedProperties: false
 

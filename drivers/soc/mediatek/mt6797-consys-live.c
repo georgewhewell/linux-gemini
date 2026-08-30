@@ -13,11 +13,13 @@
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
+#include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
+#include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/regulator/mt6351-regulator.h>
 #include <linux/reset.h>
@@ -25,8 +27,8 @@
 #include <linux/soc/mediatek/mt6797-consys.h>
 
 #define MT6797_CONSYS_MCU_CHIP_ID		0x8
-#define MT6797_CONSYS_TOPCKGEN_SLEEP_MASK	0x1350
-#define MT6797_CONSYS_TOPCKGEN_SLEEP_MASK_CONN	BIT(8)
+#define MT6797_CONSYS_INFRACFG_SLEEP_MASK	0x350
+#define MT6797_CONSYS_INFRACFG_SLEEP_MASK_CONN	BIT(8)
 #define MT6797_CONSYS_SPM_PWRON_CONFIG_EN	0x0
 #define MT6797_CONSYS_SPM_PWRON_CONFIG_VALUE	0x0b160001
 #define MT6797_CONSYS_SPM_PWR_STATUS		0x180
@@ -49,8 +51,8 @@ struct mt6797_consys_live_resource {
 struct mt6797_consys_live {
 	struct device *dev;
 	void __iomem *mcu;
-	void __iomem *topckgen;
-	void __iomem *spm;
+	struct regmap *infracfg;
+	struct regmap *spm;
 	struct regulator *vcn18;
 	struct regulator *vcn28;
 	struct reset_control *conn_mcu_reset;
@@ -85,9 +87,11 @@ static int mt6797_consys_live_map_resource(struct platform_device *pdev,
 		return dev_err_probe(&pdev->dev, -EINVAL,
 					     "invalid %s resource\n", expected->name);
 
-	*base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(*base))
-		return PTR_ERR(*base);
+	if (base) {
+		*base = devm_ioremap_resource(&pdev->dev, res);
+		if (IS_ERR(*base))
+			return PTR_ERR(*base);
+	}
 
 	return 0;
 }
@@ -176,13 +180,12 @@ static int mt6797_consys_live_disable_vcn28(void *context)
 static int mt6797_consys_live_configure_sleep_mask(void *context)
 {
 	struct mt6797_consys_live *consys = context;
-	u32 value;
 
-	value = readl(consys->topckgen + MT6797_CONSYS_TOPCKGEN_SLEEP_MASK);
-	value |= MT6797_CONSYS_TOPCKGEN_SLEEP_MASK_CONN;
-	writel(value, consys->topckgen + MT6797_CONSYS_TOPCKGEN_SLEEP_MASK);
-
-	return 0;
+	/* Vendor 0x10000000 + 0x1350 is INFRACFG offset 0x350. */
+	return regmap_update_bits(consys->infracfg,
+				  MT6797_CONSYS_INFRACFG_SLEEP_MASK,
+				  MT6797_CONSYS_INFRACFG_SLEEP_MASK_CONN,
+				  MT6797_CONSYS_INFRACFG_SLEEP_MASK_CONN);
 }
 
 static int mt6797_consys_live_assert_reset(void *context)
@@ -196,10 +199,8 @@ static int mt6797_consys_live_configure_pwron(void *context)
 {
 	struct mt6797_consys_live *consys = context;
 
-	writel(MT6797_CONSYS_SPM_PWRON_CONFIG_VALUE,
-	       consys->spm + MT6797_CONSYS_SPM_PWRON_CONFIG_EN);
-
-	return 0;
+	return regmap_write(consys->spm, MT6797_CONSYS_SPM_PWRON_CONFIG_EN,
+			    MT6797_CONSYS_SPM_PWRON_CONFIG_VALUE);
 }
 
 static int mt6797_consys_live_enable_scp_sys_conn(void *context)
@@ -236,9 +237,12 @@ static int mt6797_consys_live_disable_scp_sys_conn(void *context)
 	if (!consys->conn_domain_vote)
 		goto detach_domain;
 
-	ret = pm_runtime_put_sync(consys->dev);
-	if (ret < 0)
+	ret = pm_runtime_put_sync_suspend(consys->dev);
+	if (ret < 0) {
+		/* put_sync_suspend() drops the count even when suspend fails. */
+		pm_runtime_get_noresume(consys->dev);
 		return ret;
+	}
 	consys->conn_domain_vote = false;
 
 detach_domain:
@@ -278,20 +282,31 @@ static void mt6797_consys_live_log_state(struct mt6797_consys_live *consys,
 {
 	bool vcn18_hw = false;
 	bool vcn28_hw = false;
+	unsigned int pwron = U32_MAX;
+	unsigned int pwr_status = U32_MAX;
+	unsigned int pwr_status_2nd = U32_MAX;
 	int reset;
 	int ret18;
 	int ret28;
+	int ret_pwron;
+	int ret_status;
+	int ret_status_2nd;
 
 	reset = reset_control_status(consys->conn_mcu_reset);
 	ret18 = mt6351_regulator_get_hw_control(consys->vcn18, &vcn18_hw);
 	ret28 = mt6351_regulator_get_hw_control(consys->vcn28, &vcn28_hw);
+	ret_pwron = regmap_read(consys->spm,
+				MT6797_CONSYS_SPM_PWRON_CONFIG_EN, &pwron);
+	ret_status = regmap_read(consys->spm, MT6797_CONSYS_SPM_PWR_STATUS,
+				 &pwr_status);
+	ret_status_2nd = regmap_read(consys->spm,
+				     MT6797_CONSYS_SPM_PWR_STATUS_2ND,
+				     &pwr_status_2nd);
 	dev_info(consys->dev,
-		 "%s: reset=%d pwron=0x%08x pwr-status=0x%08x/0x%08x "
+		 "%s: reset=%d pwron=0x%08x(%d) pwr-status=0x%08x(%d)/0x%08x(%d) "
 		 "vcn18=enabled:%d hw:%d(%d) vcn28=enabled:%d hw:%d(%d)\n",
-		 stage, reset,
-		 readl(consys->spm + MT6797_CONSYS_SPM_PWRON_CONFIG_EN),
-		 readl(consys->spm + MT6797_CONSYS_SPM_PWR_STATUS),
-		 readl(consys->spm + MT6797_CONSYS_SPM_PWR_STATUS_2ND),
+		 stage, reset, pwron, ret_pwron, pwr_status, ret_status,
+		 pwr_status_2nd, ret_status_2nd,
 		 regulator_is_enabled(consys->vcn18), vcn18_hw, ret18,
 		 regulator_is_enabled(consys->vcn28), vcn28_hw, ret28);
 }
@@ -349,14 +364,26 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 		return ret;
 
 	ret = mt6797_consys_live_map_resource(pdev,
-					     &mt6797_consys_live_resources[1], &consys->topckgen);
+					     &mt6797_consys_live_resources[1], NULL);
 	if (ret)
 		return ret;
 
 	ret = mt6797_consys_live_map_resource(pdev,
-					     &mt6797_consys_live_resources[2], &consys->spm);
+					     &mt6797_consys_live_resources[2], NULL);
 	if (ret)
 		return ret;
+
+	consys->infracfg = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
+							   "mediatek,infracfg");
+	if (IS_ERR(consys->infracfg))
+		return dev_err_probe(&pdev->dev, PTR_ERR(consys->infracfg),
+				     "failed to acquire INFRACFG regmap\n");
+
+	consys->spm = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
+						      "mediatek,spm");
+	if (IS_ERR(consys->spm))
+		return dev_err_probe(&pdev->dev, PTR_ERR(consys->spm),
+				     "failed to acquire SPM regmap\n");
 
 	consys->vcn18 = devm_regulator_get(&pdev->dev, "vcn18");
 	if (IS_ERR(consys->vcn18))

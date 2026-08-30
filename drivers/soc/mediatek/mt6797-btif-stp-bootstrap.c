@@ -23,6 +23,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/completion.h>
 #include <linux/errno.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
@@ -33,7 +34,6 @@
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP_KUNIT_TEST)
 #include <kunit/test.h>
-#include <linux/completion.h>
 #include <linux/kthread.h>
 #endif
 
@@ -63,6 +63,8 @@ enum mt6797_btif_stp_bootstrap_state {
 
 struct mt6797_btif_stp_bootstrap {
 	struct mutex lifecycle_lock;
+	/* destroy() waits for the sole runner before it frees this object. */
+	struct completion run_complete;
 	const struct mt6797_btif_pio_lease *pio_lease;
 	struct mt6797_btif_stp_bootstrap_ops ops;
 	struct mtk_stp mandatory_stp;
@@ -73,6 +75,8 @@ struct mt6797_btif_stp_bootstrap {
 	const struct mt6797_consys_stp_session_lease *full_session;
 	struct delayed_work full_retry_work;
 	bool full_retry_armed;
+	bool run_in_progress;
+	bool destroy_requested;
 	enum mt6797_btif_stp_bootstrap_state state;
 };
 
@@ -193,6 +197,7 @@ mt6797_btif_stp_bootstrap_create(
 	if (!bootstrap)
 		return ERR_PTR(-ENOMEM);
 	mutex_init(&bootstrap->lifecycle_lock);
+	init_completion(&bootstrap->run_complete);
 	INIT_DELAYED_WORK(&bootstrap->full_retry_work,
 			  mt6797_btif_stp_bootstrap_full_retry);
 	bootstrap->pio_lease = pio_lease;
@@ -211,6 +216,10 @@ mt6797_btif_stp_bootstrap_run_unchecked(
 	int ret;
 
 	mutex_lock(&bootstrap->lifecycle_lock);
+	if (bootstrap->destroy_requested) {
+		session_lease = ERR_PTR(-ESHUTDOWN);
+		goto out_unlock;
+	}
 	if (bootstrap->state == MT6797_BTIF_STP_BOOTSTRAP_FENCED) {
 		session_lease = ERR_PTR(-EPIPE);
 		goto out_unlock;
@@ -219,6 +228,8 @@ mt6797_btif_stp_bootstrap_run_unchecked(
 		session_lease = ERR_PTR(-EBUSY);
 		goto out_unlock;
 	}
+	bootstrap->run_in_progress = true;
+	reinit_completion(&bootstrap->run_complete);
 
 	mtk_stp_init(&bootstrap->mandatory_stp, MTK_STP_MODE_MANDATORY);
 	mtk_wmt_init(&bootstrap->mandatory_wmt, MTK_STP_MODE_MANDATORY,
@@ -332,15 +343,24 @@ mt6797_btif_stp_bootstrap_run_unchecked(
 					      bootstrap);
 	if (ret)
 		goto fail;
-	return bootstrap->full_session;
+	session_lease = bootstrap->full_session;
+	goto out_complete;
 
 fail:
 	mt6797_btif_stp_bootstrap_fence(bootstrap, false);
-	return ERR_PTR(ret);
+	session_lease = ERR_PTR(ret);
+	goto out_complete;
 fail_locked:
 	mutex_unlock(&bootstrap->lifecycle_lock);
 	mt6797_btif_stp_bootstrap_fence(bootstrap, false);
-	return ERR_PTR(ret);
+	session_lease = ERR_PTR(ret);
+	goto out_complete;
+out_complete:
+	mutex_lock(&bootstrap->lifecycle_lock);
+	bootstrap->run_in_progress = false;
+	complete_all(&bootstrap->run_complete);
+	mutex_unlock(&bootstrap->lifecycle_lock);
+	return session_lease;
 out_unlock:
 	mutex_unlock(&bootstrap->lifecycle_lock);
 	return session_lease;
@@ -360,9 +380,23 @@ EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_run);
 void mt6797_btif_stp_bootstrap_destroy(
 		struct mt6797_btif_stp_bootstrap *bootstrap)
 {
+	bool run_in_progress;
+
 	if (!bootstrap || IS_ERR(bootstrap))
 		return;
 
+	/*
+	 * run() drops lifecycle_lock around bounded WMT transactions.  Publish the
+	 * terminal intent under that lock and wait for that runner before fencing
+	 * or freeing the embedded WMT/session objects it still uses.  The supplied
+	 * close() callback must not re-enter destroy().
+	 */
+	mutex_lock(&bootstrap->lifecycle_lock);
+	bootstrap->destroy_requested = true;
+	run_in_progress = bootstrap->run_in_progress;
+	mutex_unlock(&bootstrap->lifecycle_lock);
+	if (run_in_progress)
+		wait_for_completion(&bootstrap->run_complete);
 	mt6797_btif_stp_bootstrap_fence(bootstrap, false);
 	mt6797_consys_stp_session_destroy(bootstrap->session);
 	kfree(bootstrap);
@@ -400,6 +434,17 @@ struct mt6797_btif_stp_test_peer {
 	unsigned int stage;
 	unsigned int close_count;
 	int error;
+};
+
+struct mt6797_btif_stp_test_destroy_race {
+	struct mt6797_btif_stp_bootstrap *bootstrap;
+	struct mt6797_btif_pio *pio;
+	struct completion enable_irq_entered;
+	struct completion allow_enable_irq;
+	struct completion run_done;
+	struct completion destroy_done;
+	unsigned int close_count;
+	int run_result;
 };
 
 static u32 mt6797_btif_stp_test_read32(void *context, u32 offset)
@@ -541,6 +586,43 @@ static int mt6797_btif_stp_test_enable_irq(void *context)
 	return IS_ERR(peer->task) ? PTR_ERR(peer->task) : 0;
 }
 
+static int mt6797_btif_stp_test_block_enable_irq(void *context)
+{
+	struct mt6797_btif_stp_test_destroy_race *race = context;
+
+	complete(&race->enable_irq_entered);
+	wait_for_completion(&race->allow_enable_irq);
+	return -EIO;
+}
+
+static void mt6797_btif_stp_test_destroy_race_close(void *context)
+{
+	struct mt6797_btif_stp_test_destroy_race *race = context;
+
+	race->close_count++;
+	mt6797_btif_pio_close(race->pio);
+}
+
+static int mt6797_btif_stp_test_run_thread(void *context)
+{
+	struct mt6797_btif_stp_test_destroy_race *race = context;
+	const struct mt6797_consys_stp_session_lease *session_lease;
+
+	session_lease = mt6797_btif_stp_bootstrap_run_unchecked(race->bootstrap);
+	race->run_result = IS_ERR(session_lease) ? PTR_ERR(session_lease) : 0;
+	complete(&race->run_done);
+	return 0;
+}
+
+static int mt6797_btif_stp_test_destroy_thread(void *context)
+{
+	struct mt6797_btif_stp_test_destroy_race *race = context;
+
+	mt6797_btif_stp_bootstrap_destroy(race->bootstrap);
+	complete(&race->destroy_done);
+	return 0;
+}
+
 static void mt6797_btif_stp_test_close(void *context)
 {
 	struct mt6797_btif_stp_test_peer *peer = context;
@@ -640,9 +722,77 @@ static void mt6797_btif_stp_test_fence_is_one_shot(struct kunit *test)
 	mt6797_btif_pio_destroy(peer->pio);
 }
 
+static void mt6797_btif_stp_test_destroy_waits_for_runner(struct kunit *test)
+{
+	struct mt6797_btif_stp_test_destroy_race *race;
+	struct mt6797_btif_stp_test_peer *peer;
+	struct mt6797_btif_stp_test_bus *bus;
+	struct mt6797_btif_pio_io_ops io_ops;
+	struct mt6797_btif_stp_bootstrap_ops ops;
+	struct task_struct *destroy_task;
+	struct task_struct *run_task;
+	unsigned long waited;
+
+	race = kunit_kzalloc(test, sizeof(*race), GFP_KERNEL);
+	peer = kunit_kzalloc(test, sizeof(*peer), GFP_KERNEL);
+	bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, race);
+	KUNIT_ASSERT_NOT_NULL(test, peer);
+	KUNIT_ASSERT_NOT_NULL(test, bus);
+	peer->bus = bus;
+	bus->iir = MT6797_BTIF_STP_TEST_IIR_NINT;
+	init_completion(&race->enable_irq_entered);
+	init_completion(&race->allow_enable_irq);
+	init_completion(&race->run_done);
+	init_completion(&race->destroy_done);
+	io_ops = (struct mt6797_btif_pio_io_ops) {
+		.read32 = mt6797_btif_stp_test_read32,
+		.write32 = mt6797_btif_stp_test_write32,
+		.read8 = mt6797_btif_stp_test_read8,
+		.write8 = mt6797_btif_stp_test_write8,
+		.context = bus,
+	};
+	peer->pio = mt6797_btif_pio_create(&io_ops);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(peer->pio));
+	race->pio = peer->pio;
+	peer->pio_lease = mt6797_btif_pio_acquire(peer->pio);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(peer->pio_lease));
+	ops = (struct mt6797_btif_stp_bootstrap_ops) {
+		.enable_irq = mt6797_btif_stp_test_block_enable_irq,
+		.close = mt6797_btif_stp_test_destroy_race_close,
+		.context = race,
+	};
+	race->bootstrap = mt6797_btif_stp_bootstrap_create(peer->pio_lease, &ops);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(race->bootstrap));
+
+	run_task = kthread_run(mt6797_btif_stp_test_run_thread, race,
+				       "mt6797-stp-run");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(run_task));
+	waited = wait_for_completion_timeout(&race->enable_irq_entered,
+					     msecs_to_jiffies(1000));
+	KUNIT_ASSERT_NE(test, waited, 0UL);
+	destroy_task = kthread_run(mt6797_btif_stp_test_destroy_thread, race,
+					   "mt6797-stp-destroy");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(destroy_task));
+	/* destroy() must remain blocked until the in-flight runner returns. */
+	waited = wait_for_completion_timeout(&race->destroy_done,
+					     msecs_to_jiffies(20));
+	KUNIT_EXPECT_EQ(test, waited, 0UL);
+	complete(&race->allow_enable_irq);
+	waited = wait_for_completion_timeout(&race->run_done, msecs_to_jiffies(1000));
+	KUNIT_ASSERT_NE(test, waited, 0UL);
+	waited = wait_for_completion_timeout(&race->destroy_done,
+					     msecs_to_jiffies(1000));
+	KUNIT_ASSERT_NE(test, waited, 0UL);
+	KUNIT_EXPECT_EQ(test, race->run_result, -EIO);
+	KUNIT_EXPECT_EQ(test, race->close_count, 1U);
+	mt6797_btif_pio_destroy(peer->pio);
+}
+
 static struct kunit_case mt6797_btif_stp_bootstrap_test_cases[] = {
 	KUNIT_CASE(mt6797_btif_stp_test_exact_handoff),
 	KUNIT_CASE(mt6797_btif_stp_test_fence_is_one_shot),
+	KUNIT_CASE(mt6797_btif_stp_test_destroy_waits_for_runner),
 	{ }
 };
 

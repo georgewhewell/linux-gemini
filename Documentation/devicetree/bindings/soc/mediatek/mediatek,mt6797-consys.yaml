@@ -71,6 +71,14 @@ properties:
       standard power-domains property this is not attached by the device core;
       the driver attaches it only after its rail, reset, and PWRON prefix.
 
+  mediatek,infracfg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: INFRACFG syscon containing the connectivity sleep-mask bit.
+
+  mediatek,spm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: SPM syscon containing power-control and status registers.
+
   vcn18-supply:
     description: Shared 1.8 V connectivity supply.
 
@@ -110,6 +118,8 @@ allOf:
     then:
       required:
         - mediatek,conn-power-domain
+        - mediatek,infracfg
+        - mediatek,spm
         - vcn18-supply
         - vcn28-supply
 

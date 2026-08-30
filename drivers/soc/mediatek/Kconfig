@@ -144,6 +144,7 @@ config MTK_MT6797_CONSYS_LIVE
 	depends on PM_GENERIC_DOMAINS_OF && MTK_SCPSYS
 	depends on REGULATOR_MT6351 && RESET_CONTROLLER
 	depends on MTK_MT6797_CONSYS_CORE
+	select MFD_SYSCON
 	help
 	  Build the explicitly opt-in MT6797 CONSYS identity experiment. It uses
 	  the MT6351 VCN18/VCN28 regulator owner, the MT6797 SCPSYS CONN domain,

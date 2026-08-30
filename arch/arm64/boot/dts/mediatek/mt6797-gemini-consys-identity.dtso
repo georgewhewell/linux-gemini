@@ -18,6 +18,8 @@
 		__overlay__ {
 			compatible = "mediatek,mt6797-consys-identity";
 			mediatek,conn-power-domain = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+			mediatek,infracfg = <&infrasys>;
+			mediatek,spm = <&scpsys>;
 			status = "okay";
 		};
 	};

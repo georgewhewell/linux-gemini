@@ -686,6 +686,28 @@ config MTK_MT6797_CONSYS_WMT_BT_FUNCTION_CHOREOGRAPHY_KUNIT_TEST
 	  module parameter, platform driver, WMT endpoint, or callable live entry
 	  point, and cannot enable a regulator or a Bluetooth function on Gemini.
 
+config MTK_MT6797_CONSYS_G2D_VCN33_PREFLIGHT
+	tristate "Experimental MT6797 G2d VCN33 resource preflight"
+	depends on OF && REGULATOR
+	help
+	  Build the default-disabled G2d provider that acquires and validates the
+	  distinct MT6351 vcn33-bt and vcn33-wifi regulator handles. It has no
+	  regulator_enable(), voltage change, WMT, BTIF, calibration, radio, or
+	  userspace path. Binding needs its DT boolean and read-only parameter.
+
+	  Vendor MT6797 code performs an efuse-selected VCN33 voltage operation
+	  before calibration, but its wmt_set_pmic_voltage() implementation is not
+	  present in the vendor tree. This preflight deliberately cannot infer it.
+
+config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
+	bool "KUnit tests for MT6797 post-patch calibration choreography"
+	depends on KUNIT=y
+	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
+	help
+	  Exercise in memory the vendor order: efuse VCN33 read, distinct rails on,
+	  RF calibration, reverse rail release, then WMT_SOC.cfg antenna coexistence.
+	  It does not access a regulator, WMT endpoint, Device Tree, or Gemini.
+
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

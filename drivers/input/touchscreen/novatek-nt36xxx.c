@@ -276,7 +276,12 @@ static int nvt36xxx_resume(struct device *dev)
 		ret = nvt36xxx_wait_reset(data);
 	mutex_unlock(&data->lock);
 
-	enable_irq(data->client->irq);
+	/*
+	 * Do not expose post-suspend I2C traffic to the event handler until the
+	 * controller has passed the same bounded reset-state gate as probe.
+	 */
+	if (!ret)
+		enable_irq(data->client->irq);
 
 	return ret;
 }

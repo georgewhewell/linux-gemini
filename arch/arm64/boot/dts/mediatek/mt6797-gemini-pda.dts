@@ -444,13 +444,15 @@
 		reg = <0x5b>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&keyboard_soc_pins>;
-		interrupt-parent = <&pio>;
-		interrupts = <10 IRQ_TYPE_LEVEL_LOW>;
 		gpio-controller;
 		#gpio-cells = <2>;
 		gpio-ranges = <&aw9523 0 0 16>;
-		interrupt-controller;
-		#interrupt-cells = <2>;
+		/*
+		 * GPIO87/EINT10 is retained in keyboard_soc_pins as a hardware
+		 * fact, but this base candidate does not publish an AW9523 IRQ
+		 * domain. The reviewed keyboard path polls; an IRQ experiment must
+		 * add and validate the complete parent/domain contract explicitly.
+		 */
 		reset-gpios = <&pio 58 GPIO_ACTIVE_HIGH>;
 		status = "disabled";
 
@@ -474,7 +476,7 @@
 };
 
 &{/} {
-	keyboard-matrix {
+	keyboard_matrix: keyboard-matrix {
 		compatible = "gpio-matrix-keypad";
 		pinctrl-names = "default";
 		gpio-activelow;

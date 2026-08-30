@@ -7,8 +7,10 @@
  * changes and restores only the three SPM clock-buffer command fields used by
  * the exact vendor clk_buf_set_by_flightmode(false) path, then stops. Stage 4
  * holds the PMIC and clock-buffer changes while it clears MD_EXT_BUCK_ISO and
- * obtains the two PWR_STATUS acknowledgements, then unwinds in reverse. No
- * stage reaches reset release, boot vector, CLDMA, CCIF, SIM or RF.
+ * obtains the two PWR_STATUS acknowledgements, then unwinds in reverse. Stage
+ * 5 additionally releases internal clock/isolation/SRAM while reset remains
+ * held and bus protection remains set, then unwinds in reverse. No stage
+ * reaches reset release, boot vector, CLDMA, CCIF, SIM or RF.
  */
 
 #include <linux/device.h>
@@ -65,18 +67,25 @@ module_param_named(enable_experimental_md1_stage4_power_ack,
 MODULE_PARM_DESC(enable_experimental_md1_stage4_power_ack,
 		 "allow the reversible MT6797 MD1 stage-4 power ack transaction");
 
+static bool enable_experimental_md1_stage5_reset_held;
+module_param_named(enable_experimental_md1_stage5_reset_held,
+		   enable_experimental_md1_stage5_reset_held, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_md1_stage5_reset_held,
+		 "allow the reversible MT6797 MD1 stage-5 reset-held transaction");
+
 enum mt6797_md1_prerelease_stage {
 	MT6797_MD1_STAGE_INVENTORY = 1,
 	MT6797_MD1_STAGE_PMIC_ROLLBACK,
 	MT6797_MD1_STAGE_CLOCK_BUFFER_GATE,
 	MT6797_MD1_STAGE_POWER_ACK,
+	MT6797_MD1_STAGE_RESET_HELD,
 };
 
 static ushort experimental_md1_prerelease_stage;
 module_param_named(experimental_md1_prerelease_stage,
 			   experimental_md1_prerelease_stage, ushort, 0400);
 MODULE_PARM_DESC(experimental_md1_prerelease_stage,
-			 "MD1 stage: 1=inventory, 2=PMIC, 3=clock-buffer, 4=power ack, 5+=refuse");
+		 "MD1 stage: 1=inventory, 2=PMIC, 3=clock-buffer, 4=power ack, 5=reset-held, 6+=refuse");
 
 struct mt6797_md1_stage4_context {
 	struct regmap *pmic;
@@ -272,6 +281,30 @@ static int mt6797_md1_stage4_domain_off(void *context)
 		mt6797_md1_spm_restore(stage4->spm, &stage4->spm_snapshot) : 0;
 }
 
+static int mt6797_md1_stage5_domain_on(void *context)
+{
+	struct mt6797_md1_stage4_context *stage4 = context;
+	int ret;
+
+	ret = mt6797_md1_stage4_domain_on(context);
+	if (ret)
+		return ret;
+	return mt6797_md1_spm_release_internal_reset_held(stage4->spm,
+							  &stage4->spm_snapshot);
+}
+
+static int mt6797_md1_stage5_domain_off(void *context)
+{
+	struct mt6797_md1_stage4_context *stage4 = context;
+	struct mt6797_md1_spm_snapshot *snapshot = &stage4->spm_snapshot;
+	int internal_ret = 0, power_ret;
+
+	if (snapshot->internal_valid)
+		internal_ret = mt6797_md1_spm_restore_internal(stage4->spm, snapshot);
+	power_ret = mt6797_md1_stage4_domain_off(context);
+	return internal_ret ?: power_ret;
+}
+
 static int mt6797_md1_stage4_poll(void *context)
 {
 	(void)context;
@@ -287,6 +320,17 @@ static const struct mt6797_md1_prerelease_ops mt6797_md1_stage4_ops = {
 	.clock_off = mt6797_md1_stage4_clock_off,
 	.domain_on = mt6797_md1_stage4_domain_on,
 	.domain_off = mt6797_md1_stage4_domain_off,
+	.poll = mt6797_md1_stage4_poll,
+};
+
+static const struct mt6797_md1_prerelease_ops mt6797_md1_stage5_ops = {
+	.abi = MT6797_MD1_PRERELEASE_ABI,
+	.pmic_on = mt6797_md1_stage4_pmic_on,
+	.pmic_off = mt6797_md1_stage4_pmic_off,
+	.clock_on = mt6797_md1_stage4_clock_on,
+	.clock_off = mt6797_md1_stage4_clock_off,
+	.domain_on = mt6797_md1_stage5_domain_on,
+	.domain_off = mt6797_md1_stage5_domain_off,
 	.poll = mt6797_md1_stage4_poll,
 };
 
@@ -316,6 +360,36 @@ static int mt6797_md1_power_ack_stage(struct device *dev)
 		return dev_err_probe(dev, ret,
 			"stage-4 PMIC/clock/MD1 power-ack transaction failed\n");
 	dev_info(dev, "MD1 stage-4 power ack succeeded and all state was restored\n");
+	return 0;
+}
+
+static int mt6797_md1_reset_held_stage(struct device *dev)
+{
+	struct mt6797_md1_stage4_context context = { };
+	struct mt6797_md1_prerelease prerelease;
+	int ret;
+
+	if (!READ_ONCE(enable_experimental_md1_stage5_reset_held) ||
+	    !device_property_read_bool(dev, "mediatek,stage5-reset-held"))
+		return dev_err_probe(dev, -EPERM,
+			"stage 5 requires independent module and DT reset-held gates\n");
+	context.pmic = mt6797_md1_get_pmic_regmap(dev);
+	if (IS_ERR(context.pmic))
+		return dev_err_probe(dev, PTR_ERR(context.pmic),
+			"MT6351 PMIC regmap unavailable\n");
+	context.spm = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,spm");
+	if (IS_ERR(context.spm))
+		return dev_err_probe(dev, PTR_ERR(context.spm), "SPM syscon regmap unavailable\n");
+	ret = mt6797_md1_prerelease_init(&prerelease, &mt6797_md1_stage5_ops,
+					 &context);
+	if (ret)
+		return ret;
+	ret = mt6797_md1_prerelease_run(&prerelease);
+	if (ret)
+		return dev_err_probe(dev, ret,
+			"stage-5 reset-held MD1 transaction failed\n");
+	dev_info(dev,
+		 "MD1 stage-5 reset-held transaction succeeded and all state was restored\n");
 	return 0;
 }
 
@@ -366,9 +440,11 @@ static int mt6797_md1_prerelease_probe(struct platform_device *pdev)
 		return mt6797_md1_clkbuf_rollback_stage(dev);
 	case MT6797_MD1_STAGE_POWER_ACK:
 		return mt6797_md1_power_ack_stage(dev);
+	case MT6797_MD1_STAGE_RESET_HELD:
+		return mt6797_md1_reset_held_stage(dev);
 	default:
 		return dev_err_probe(dev, -EOPNOTSUPP,
-			"stopping after the reversible MD1 power-ack transaction\n");
+			"stopping after the reversible MD1 reset-held transaction\n");
 	}
 }
 

@@ -38,6 +38,9 @@
 #define MT6797_MD1_SPM_MD_EXT_BUCK_ISO_MD1	BIT(0)
 #define MT6797_MD1_SPM_MD1_PWR_CON_OWNED	(MT6797_MD1_SPM_PWR_ON | \
 						 MT6797_MD1_SPM_PWR_ON_2ND)
+#define MT6797_MD1_SPM_MD1_PWR_CON_INTERNAL	(MT6797_MD1_SPM_PWR_CLK_DIS | \
+							 MT6797_MD1_SPM_PWR_ISO | \
+							 MT6797_MD1_SPM_MD_SRAM_PDN)
 
 #define MT6797_MD1_SPM_MAX_POLLS	100
 #define MT6797_MD1_SPM_POLL_DELAY_US	10
@@ -308,6 +311,7 @@ int mt6797_md1_spm_snapshot(struct regmap *spm,
 
 	snapshot->pwr_con_owned = pwr_con & MT6797_MD1_SPM_MD1_PWR_CON_OWNED;
 	snapshot->ext_buck_iso = ext_buck_iso & MT6797_MD1_SPM_MD_EXT_BUCK_ISO_MD1;
+	snapshot->internal_valid = false;
 	snapshot->valid = true;
 	return 0;
 }
@@ -336,6 +340,86 @@ int mt6797_md1_spm_power_on(struct regmap *spm,
 		return ret;
 
 	return mt6797_md1_spm_wait(spm, true);
+}
+
+int mt6797_md1_spm_release_internal_reset_held(struct regmap *spm,
+					       struct mt6797_md1_spm_snapshot *snapshot)
+{
+	unsigned int pwr_con;
+	int ret;
+
+	if (!spm || !snapshot || !snapshot->valid || snapshot->internal_valid)
+		return -EINVAL;
+
+	ret = regmap_read(spm, MT6797_MD1_SPM_MD1_PWR_CON, &pwr_con);
+	if (ret)
+		return ret;
+	/*
+	 * Stage 5 starts only from the exact reset-held, bus-protected state
+	 * left by stage 4.  In particular, it never accepts a released reset.
+	 */
+	if ((pwr_con & MT6797_MD1_SPM_MD1_PWR_CON_OWNED) !=
+		MT6797_MD1_SPM_MD1_PWR_CON_OWNED ||
+	    (pwr_con & MT6797_MD1_SPM_MD1_PWR_CON_INTERNAL) !=
+		MT6797_MD1_SPM_MD1_PWR_CON_INTERNAL ||
+	    pwr_con & MT6797_MD1_SPM_PWR_RST_B)
+		return -EBUSY;
+
+	snapshot->pwr_con_internal = pwr_con & MT6797_MD1_SPM_MD1_PWR_CON_INTERNAL;
+	snapshot->internal_valid = true;
+
+	/* Vendor order after the two PWR_STATUS acknowledgements. */
+	ret = regmap_clear_bits(spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				MT6797_MD1_SPM_PWR_CLK_DIS);
+	if (ret)
+		return ret;
+	ret = regmap_clear_bits(spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				MT6797_MD1_SPM_PWR_ISO);
+	if (ret)
+		return ret;
+	ret = regmap_clear_bits(spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				MT6797_MD1_SPM_MD_SRAM_PDN);
+	if (ret)
+		return ret;
+
+	ret = regmap_read(spm, MT6797_MD1_SPM_MD1_PWR_CON, &pwr_con);
+	if (ret)
+		return ret;
+	if (pwr_con & (MT6797_MD1_SPM_MD1_PWR_CON_INTERNAL |
+		       MT6797_MD1_SPM_PWR_RST_B))
+		return -EIO;
+	return 0;
+}
+
+int mt6797_md1_spm_restore_internal(struct regmap *spm,
+				    struct mt6797_md1_spm_snapshot *snapshot)
+{
+	int ret, first_error = 0;
+
+	if (!spm || !snapshot || !snapshot->valid || !snapshot->internal_valid)
+		return -EINVAL;
+
+	/*
+	 * Reverse the vendor prefix before stage 4 removes PWR_ON.  Bus protection
+	 * was never released and PWR_RST_B was never asserted by this stage.
+	 */
+	ret = regmap_update_bits(spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				 MT6797_MD1_SPM_MD_SRAM_PDN,
+				 snapshot->pwr_con_internal & MT6797_MD1_SPM_MD_SRAM_PDN);
+	if (ret)
+		first_error = ret;
+	ret = regmap_update_bits(spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				 MT6797_MD1_SPM_PWR_ISO,
+				 snapshot->pwr_con_internal & MT6797_MD1_SPM_PWR_ISO);
+	if (ret && !first_error)
+		first_error = ret;
+	ret = regmap_update_bits(spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				 MT6797_MD1_SPM_PWR_CLK_DIS,
+				 snapshot->pwr_con_internal & MT6797_MD1_SPM_PWR_CLK_DIS);
+	if (ret && !first_error)
+		first_error = ret;
+	snapshot->internal_valid = false;
+	return first_error;
 }
 
 int mt6797_md1_spm_restore(struct regmap *spm,

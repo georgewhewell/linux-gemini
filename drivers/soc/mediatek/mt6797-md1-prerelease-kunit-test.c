@@ -284,7 +284,8 @@ struct mt6797_md1_spm_fake {
 	u32 registers[0x500 / sizeof(u32)];
 	unsigned int writes;
 	unsigned int fail_write;
-	unsigned int write_reg[8];
+	unsigned int write_reg[16];
+	unsigned int write_value[16];
 };
 
 static int mt6797_md1_spm_fake_read(void *context, unsigned int reg,
@@ -307,8 +308,10 @@ static int mt6797_md1_spm_fake_write(void *context, unsigned int reg,
 		return -EINVAL;
 	if (++fake->writes == fake->fail_write)
 		return -EIO;
-	if (fake->writes <= ARRAY_SIZE(fake->write_reg))
+	if (fake->writes <= ARRAY_SIZE(fake->write_reg)) {
 		fake->write_reg[fake->writes - 1] = reg;
+		fake->write_value[fake->writes - 1] = value;
+	}
 	fake->registers[reg / sizeof(u32)] = value;
 	return 0;
 }
@@ -443,6 +446,49 @@ static void mt6797_md1_test_spm_restore_attempts_isolation_after_power_failure(s
 	regmap_exit(map);
 }
 
+static void mt6797_md1_test_reset_held_prefix_is_ordered_and_restored(struct kunit *test)
+{
+	struct mt6797_md1_spm_snapshot snapshot;
+	struct mt6797_md1_spm_fake *fake;
+	struct regmap *map;
+
+	fake = kunit_kzalloc(test, sizeof(*fake), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, fake);
+	fake->registers[0x0 / sizeof(u32)] = BIT(0);
+	fake->registers[0x320 / sizeof(u32)] = BIT(1) | BIT(4) | BIT(8);
+	fake->registers[0x390 / sizeof(u32)] = BIT(0);
+	map = regmap_init(NULL, &mt6797_md1_spm_fake_bus, fake,
+			  &mt6797_md1_spm_fake_config);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+
+	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_snapshot(map, &snapshot), 0);
+	fake->registers[0x180 / sizeof(u32)] = BIT(0);
+	fake->registers[0x184 / sizeof(u32)] = BIT(0);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_power_on(map, &snapshot), 0);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_md1_spm_release_internal_reset_held(map, &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, fake->registers[0x320 / sizeof(u32)], BIT(2) | BIT(3));
+	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_restore_internal(map, &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, fake->registers[0x320 / sizeof(u32)],
+			BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(8));
+	/* Stage 4 writes [0..2]; stage 5 clears CLK_DIS, ISO, then SRAM. */
+	KUNIT_EXPECT_EQ(test, fake->write_reg[3], 0x320U);
+	KUNIT_EXPECT_EQ(test, fake->write_reg[4], 0x320U);
+	KUNIT_EXPECT_EQ(test, fake->write_reg[5], 0x320U);
+	KUNIT_EXPECT_EQ(test, fake->write_value[3], BIT(1) | BIT(2) | BIT(3) | BIT(8));
+	KUNIT_EXPECT_EQ(test, fake->write_value[4], BIT(2) | BIT(3) | BIT(8));
+	KUNIT_EXPECT_EQ(test, fake->write_value[5], BIT(2) | BIT(3));
+	/* Its reverse is SRAM, ISO, then CLK_DIS; reset and bus protection stay out. */
+	KUNIT_EXPECT_EQ(test, fake->write_reg[6], 0x320U);
+	KUNIT_EXPECT_EQ(test, fake->write_reg[7], 0x320U);
+	KUNIT_EXPECT_EQ(test, fake->write_reg[8], 0x320U);
+	KUNIT_EXPECT_EQ(test, fake->write_value[6], BIT(2) | BIT(3) | BIT(8));
+	KUNIT_EXPECT_EQ(test, fake->write_value[7], BIT(1) | BIT(2) | BIT(3) | BIT(8));
+	KUNIT_EXPECT_EQ(test, fake->write_value[8],
+			BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(8));
+	regmap_exit(map);
+}
+
 static struct kunit_case mt6797_md1_prerelease_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_test_success_unwinds),
 	KUNIT_CASE(mt6797_md1_test_timeout_is_bounded_and_unwinds),
@@ -455,6 +501,7 @@ static struct kunit_case mt6797_md1_prerelease_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_test_spm_timeout_is_explicitly_restored),
 	KUNIT_CASE(mt6797_md1_test_spm_rejects_shared_or_live_state),
 	KUNIT_CASE(mt6797_md1_test_spm_restore_attempts_isolation_after_power_failure),
+	KUNIT_CASE(mt6797_md1_test_reset_held_prefix_is_ordered_and_restored),
 	{ }
 };
 

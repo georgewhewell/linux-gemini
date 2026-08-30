@@ -31,7 +31,10 @@ struct mt6797_md1_spm_snapshot {
 	/* Stage 4 owns only MD1 PWR_ON/PWR_ON_2ND and MD_EXT_BUCK_ISO[0]. */
 	u32 pwr_con_owned;
 	u32 ext_buck_iso;
+	/* Stage 5 temporarily releases internal clock/isolation/SRAM only. */
+	u32 pwr_con_internal;
 	bool valid;
+	bool internal_valid;
 };
 
 /* Only SPM_MDBSI_CON[2:0] is owned by the vendor RF clock-buffer path. */
@@ -84,5 +87,9 @@ int mt6797_md1_spm_power_on(struct regmap *spm,
 			    struct mt6797_md1_spm_snapshot *snapshot);
 int mt6797_md1_spm_restore(struct regmap *spm,
 			    struct mt6797_md1_spm_snapshot *snapshot);
+int mt6797_md1_spm_release_internal_reset_held(struct regmap *spm,
+					       struct mt6797_md1_spm_snapshot *snapshot);
+int mt6797_md1_spm_restore_internal(struct regmap *spm,
+				    struct mt6797_md1_spm_snapshot *snapshot);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_MD1_PRERELEASE_H */

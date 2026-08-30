@@ -78,10 +78,11 @@ config MTK_MT6797_MD1_PRERELEASE
 	  Stage four additionally snapshots MD_EXT_BUCK_ISO[0] and the two owned
 	  MD1 power-request bits, requires the shared SPM control bit to be already
 	  enabled, gets both status acknowledgements with a finite retry count, then
-	  restores power, clock-buffer, and PMIC state in that order. It separately
-	  needs both a DT property and module parameter. No supplied stage reaches
-	  reset release, source-clock enable, CLDMA, CCIF, shared memory, firmware,
-	  SIM, or radio action.
+	  restores power, clock-buffer, and PMIC state in that order. Stage five is
+	  separately gated and releases only clock-disable, isolation, and SRAM
+	  power-down, before restoring them while reset stays held and bus protection
+	  stays set. No supplied stage reaches reset release, source-clock enable,
+	  CLDMA, CCIF, shared memory, firmware, SIM, or radio action.
 
 config MTK_MT6797_MD1_PRERELEASE_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 pre-release transaction core"

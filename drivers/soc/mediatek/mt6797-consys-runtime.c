@@ -73,6 +73,7 @@
 #define MT6797_CONSYS_RUNTIME_CHIP_POLL_TIMEOUT_US	200000
 #define MT6797_CONSYS_RUNTIME_MCU_CFG_ACR		0x110
 #define MT6797_CONSYS_RUNTIME_MCU_CFG_ACR_MBIST	BIT(18)
+#define MT6797_CONSYS_RUNTIME_MCU_CPUPCR		0x160
 #define MT6797_CONSYS_RUNTIME_AFE_BASE		0x180b6000
 #define MT6797_CONSYS_RUNTIME_AFE_SIZE		0x100
 
@@ -547,6 +548,33 @@ int mt6797_consys_runtime_postid_owner_init(struct device *dev,
 	return mt6797_consys_postid_init(owner, &runtime->lifecycle, ops, context);
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_postid_owner_init);
+
+int mt6797_consys_runtime_read_cpupcr(struct device *dev, u32 *cpupcr)
+{
+	struct mt6797_consys_runtime *runtime;
+	int ret = 0;
+
+	if (!dev || !cpupcr)
+		return -EINVAL;
+	runtime = dev_get_drvdata(dev);
+	if (!runtime || !runtime->mcu)
+		return -ENODEV;
+
+	mutex_lock(&runtime->provider_lock);
+	if (runtime->provider_state !=
+			MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD ||
+	    !runtime->lease_held ||
+	    !mt6797_consys_runtime_domain_vote_active(runtime) ||
+	    !mt6797_consys_runtime_lease_active(&runtime->lease))
+		ret = -ESHUTDOWN;
+	else
+		*cpupcr = readl(runtime->mcu +
+				MT6797_CONSYS_RUNTIME_MCU_CPUPCR);
+	mutex_unlock(&runtime->provider_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_read_cpupcr);
 
 static const struct mt6797_consys_ops mt6797_consys_runtime_ops = {
 	.abi = MT6797_CONSYS_LIFECYCLE_ABI,

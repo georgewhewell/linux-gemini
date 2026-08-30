@@ -15,6 +15,7 @@
  * not claim that a userspace or kernel deadline survives a system-wide stall.
  */
 
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
@@ -33,6 +34,32 @@ module_param_named(enable_experimental_g2b_owner, enable_experimental_g2b_owner,
 			   bool, 0400);
 MODULE_PARM_DESC(enable_experimental_g2b_owner,
 		"allow one MT6797 G2b no-firmware chronology diagnostic (default: false)");
+
+#define MT6797_CONSYS_G2B_CPUPCR_SAMPLES	5
+#define MT6797_CONSYS_G2B_CPUPCR_DELAY_US	5000
+
+static void mt6797_g2b_log_cpupcr(struct device *dev,
+				  struct device *runtime_dev,
+				  const char *phase, unsigned int samples)
+{
+	unsigned int i;
+	u32 cpupcr;
+	int ret;
+
+	for (i = 0; i < samples; i++) {
+		ret = mt6797_consys_runtime_read_cpupcr(runtime_dev, &cpupcr);
+		if (ret) {
+			dev_warn(dev, "G2b %s CPUPCR read failed: %d\n", phase,
+				 ret);
+			return;
+		}
+		dev_info(dev, "G2b %s CPUPCR[%u]=0x%08x\n", phase, i,
+			 cpupcr);
+		if (i + 1 < samples)
+			usleep_range(MT6797_CONSYS_G2B_CPUPCR_DELAY_US,
+				     MT6797_CONSYS_G2B_CPUPCR_DELAY_US + 250);
+	}
+}
 
 static int mt6797_consys_g2b_get_supplier(struct device *dev,
 		const char *property, struct device **supplier)
@@ -61,6 +88,8 @@ static int mt6797_consys_g2b_run(struct device *dev,
 	bool postid_initialized = false;
 	bool controller_active = false;
 	bool emi_claimed = false;
+	const char *cpupcr_phase;
+	unsigned int cpupcr_samples;
 	int ret;
 	int cleanup_ret;
 
@@ -108,9 +137,13 @@ static int mt6797_consys_g2b_run(struct device *dev,
 		goto out_postid;
 
 	/* This controller node must opt into mediatek,experimental-bootstrap-no-patch. */
+	mt6797_g2b_log_cpupcr(dev, runtime_dev, "pre-WMT", 1);
 	dev_info(dev, "G2b before raw/mandatory/full WMT sequence (no patch)\n");
 	ret = mt6797_consys_runtime_controller_start(controller_dev);
 	dev_info(dev, "G2b after raw/mandatory/full WMT sequence ret=%d\n", ret);
+	cpupcr_phase = ret ? "WMT-failure" : "post-WMT";
+	cpupcr_samples = ret ? MT6797_CONSYS_G2B_CPUPCR_SAMPLES : 1;
+	mt6797_g2b_log_cpupcr(dev, runtime_dev, cpupcr_phase, cpupcr_samples);
 	if (ret)
 		goto out_postid;
 	controller_active = true;

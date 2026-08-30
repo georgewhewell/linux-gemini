@@ -88,4 +88,7 @@ int mt6797_consys_runtime_postid_owner_init(struct device *dev,
 		const struct mt6797_consys_runtime_lease *identity,
 		struct mt6797_consys_postid_owner *owner);
 
+/* Read the vendor no-ack diagnostic register while identity remains held. */
+int mt6797_consys_runtime_read_cpupcr(struct device *dev, u32 *cpupcr);
+
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_CONSYS_RUNTIME_H */

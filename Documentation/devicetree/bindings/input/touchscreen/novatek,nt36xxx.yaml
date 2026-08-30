@@ -4,17 +4,24 @@
 $id: http://devicetree.org/schemas/input/touchscreen/novatek,nt36xxx.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Novatek NT36772 touchscreen controller
+title: Novatek legacy NT36xxx touchscreen controller
 
 maintainers:
   - Julien Etienne <julien.etienne@gmail.com>
+
+description: |
+  This controller uses I2C address 0x62 for hardware commands and address
+  0x01 as an alternate target for firmware and xdata accesses. The driver
+  reads a trim identifier during probe and rejects values not in its supported
+  table; the compatible therefore denotes the protocol family, not a specific
+  controller revision.
 
 allOf:
   - $ref: touchscreen.yaml#
 
 properties:
   compatible:
-    const: novatek,nt36772-ts
+    const: novatek,nt36xxx
 
   reg:
     const: 0x62
@@ -22,36 +29,25 @@ properties:
   interrupts:
     maxItems: 1
 
-  reset-gpios:
-    maxItems: 1
-
-  vcc-supply: true
-  iovcc-supply: true
-
 required:
   - compatible
   - reg
   - interrupts
-  - vcc-supply
-  - iovcc-supply
 
 unevaluatedProperties: false
 
 examples:
   - |
-    #include <dt-bindings/gpio/gpio.h>
     #include <dt-bindings/interrupt-controller/irq.h>
     i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 
         touchscreen@62 {
-            compatible = "novatek,nt36772-ts";
+            compatible = "novatek,nt36xxx";
             reg = <0x62>;
-            interrupts-extended = <&gpio 85 IRQ_TYPE_EDGE_RISING>;
-            reset-gpios = <&gpio 68 GPIO_ACTIVE_HIGH>;
-            vcc-supply = <&touch_vcc>;
-            iovcc-supply = <&touch_iovcc>;
+            interrupt-parent = <&gpio>;
+            interrupts = <8 IRQ_TYPE_EDGE_RISING>;
         };
     };
 ...

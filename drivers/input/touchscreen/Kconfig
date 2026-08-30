@@ -690,14 +690,24 @@ config TOUCHSCREEN_NOVATEK_NVT_TS
 	  module will be called novatek-nvt-ts.
 
 config TOUCHSCREEN_NOVATEK_NT36XXX
-	tristate "Novatek NT36772 touchscreen support"
+	tristate "Novatek legacy NT36xxx touchscreen support"
 	depends on I2C
 	help
-	  Say Y here for a Novatek NT36772 touchscreen using the NT36xxx
-	  reset, xdata, and alternate-target protocol.
+	  Say Y here for a Novatek NT36xxx touchscreen using the legacy
+	  reset, xdata, and alternate-target protocol. The driver validates the
+	  controller trim identifier and selects its xdata map at probe time.
 
 	  The driver has no firmware-update interface.  To compile it as a
 	  module, choose M here: the module will be called novatek-nt36xxx.
+
+config TOUCHSCREEN_NOVATEK_NT36XXX_KUNIT_TEST
+	bool "KUnit tests for Novatek legacy NT36xxx touchscreen support"
+	depends on KUNIT
+	depends on TOUCHSCREEN_NOVATEK_NT36XXX=y
+	default KUNIT_ALL_TESTS
+	help
+	  Tests the trim identity table and the wire-format decoder shared with
+	  the NT36xxx touchscreen driver.
 
 config TOUCHSCREEN_IMAGIS
 	tristate "Imagis touchscreen support"

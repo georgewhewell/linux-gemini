@@ -2,6 +2,10 @@
 #ifndef __LINUX_REGULATOR_MT6351_H
 #define __LINUX_REGULATOR_MT6351_H
 
+#include <linux/types.h>
+
+struct regulator;
+
 enum {
 	MT6351_ID_VCORE,
 	MT6351_ID_VGPU,
@@ -44,5 +48,11 @@ enum {
 	MT6351_ID_VLDO28_1,
 	MT6351_ID_VREG_MAX,
 };
+
+/*
+ * Select the MT6351 VCN18/VCN28 hardware-control path.  This does not vote
+ * the rail on or off; consumers must still use the regulator API for that.
+ */
+int mt6351_regulator_set_hw_control(struct regulator *regulator, bool enable);
 
 #endif /* __LINUX_REGULATOR_MT6351_H */

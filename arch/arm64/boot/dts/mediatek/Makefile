@@ -21,6 +21,11 @@ mt6797-gemini-pda-audio-test-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-audio.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-audio-test.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-power-observe.dtbo
+mt6797-gemini-pda-power-observe-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-power-observe.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-power-observe.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-dev.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-rfb1.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-bananapi-bpi-r64.dtb

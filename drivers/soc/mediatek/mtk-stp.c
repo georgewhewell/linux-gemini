@@ -95,6 +95,30 @@ void mtk_stp_unregister_client(struct mtk_stp *stp,
 }
 EXPORT_SYMBOL_GPL(mtk_stp_unregister_client);
 
+int mtk_stp_register_control(struct mtk_stp *stp,
+			     mtk_stp_control_cb_t receive, void *context)
+{
+	if (!stp || !receive)
+		return -EINVAL;
+	if (stp->control_receive)
+		return -EBUSY;
+
+	stp->control_receive = receive;
+	stp->control_context = context;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mtk_stp_register_control);
+
+void mtk_stp_unregister_control(struct mtk_stp *stp)
+{
+	if (!stp)
+		return;
+
+	stp->control_receive = NULL;
+	stp->control_context = NULL;
+}
+EXPORT_SYMBOL_GPL(mtk_stp_unregister_control);
+
 int mtk_stp_encode(enum mtk_stp_mode mode, enum mtk_stp_channel channel,
 		   u8 sequence, u8 ack, const u8 *payload, size_t payload_len,
 		   u8 *frame, size_t frame_size, size_t *frame_len)
@@ -140,10 +164,49 @@ int mtk_stp_encode(enum mtk_stp_mode mode, enum mtk_stp_channel channel,
 }
 EXPORT_SYMBOL_GPL(mtk_stp_encode);
 
-static int mtk_stp_parse_header(struct mtk_stp *stp)
+int mtk_stp_encode_ack(u8 ack, u8 *frame, size_t frame_size,
+		       size_t *frame_len)
+{
+	if (!frame || !frame_len)
+		return -EINVAL;
+	if (frame_size < MTK_STP_HEADER_SIZE)
+		return -ENOSPC;
+
+	/* stp_send_ack(): seq=0, type=0, length=0, and default NAK disabled. */
+	frame[0] = 0x80 | (ack & 0x7);
+	frame[1] = 0;
+	frame[2] = 0;
+	frame[3] = mtk_stp_header_checksum(frame);
+	*frame_len = MTK_STP_HEADER_SIZE;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mtk_stp_encode_ack);
+
+static int mtk_stp_finish_control(struct mtk_stp *stp, bool *callback_error)
+{
+	struct mtk_stp_control control = {
+		.sequence = stp->sequence,
+		.ack = stp->ack,
+		.nak = stp->nak,
+	};
+	int ret = 0;
+
+	*callback_error = false;
+	if (stp->control_receive)
+		ret = stp->control_receive(stp->control_context, &control);
+	if (ret)
+		*callback_error = true;
+	else
+		stp->control_frames++;
+
+	return ret;
+}
+
+static int mtk_stp_parse_header(struct mtk_stp *stp, bool *callback_error)
 {
 	u8 channel;
 	u16 payload_len;
+	int ret;
 
 	if (stp->mode == MTK_STP_MODE_FULL) {
 		if ((stp->header[0] & 0xc0) != 0x80 ||
@@ -158,13 +221,20 @@ static int mtk_stp_parse_header(struct mtk_stp *stp)
 	if (channel > MTK_STP_MAX_CHANNEL ||
 	    payload_len > mtk_stp_max_payload(stp->mode))
 		return -EMSGSIZE;
-	if (!payload_len)
-		return -EOPNOTSUPP;
-
 	stp->channel = channel;
-	stp->nak = stp->header[1] >> 7;
+	/* stp_core.c keeps fgEnableNak at zero in the full-STP parser. */
+	stp->nak = stp->mode == MTK_STP_MODE_FULL ? 0 : stp->header[1] >> 7;
 	stp->sequence = (stp->header[0] >> 3) & 0x7;
 	stp->ack = stp->header[0] & 0x7;
+	if (!payload_len) {
+		if (stp->mode != MTK_STP_MODE_FULL)
+			return -EOPNOTSUPP;
+
+		/* Full STP consumes the header only; it has no CRC trailer. */
+		ret = mtk_stp_finish_control(stp, callback_error);
+		mtk_stp_reset_frame(stp);
+		return ret;
+	}
 	stp->payload_len = payload_len;
 	stp->payload_pos = 0;
 	stp->rx_phase = MTK_STP_RX_PAYLOAD;
@@ -207,7 +277,8 @@ static void mtk_stp_record_error(struct mtk_stp *stp, int error,
 	stp->last_error = error;
 }
 
-static int mtk_stp_feed_header(struct mtk_stp *stp, u8 byte)
+static int mtk_stp_feed_header(struct mtk_stp *stp, u8 byte,
+				    bool *callback_error)
 {
 	int ret;
 
@@ -221,9 +292,11 @@ static int mtk_stp_feed_header(struct mtk_stp *stp, u8 byte)
 		if (stp->header_len < MTK_STP_HEADER_SIZE)
 			return 0;
 
-		ret = mtk_stp_parse_header(stp);
+		ret = mtk_stp_parse_header(stp, callback_error);
 		if (!ret)
 			return 0;
+		if (!stp->header_len)
+			return ret;
 
 		/* Slide one byte to consider overlapping sync candidates. */
 		memmove(stp->header, stp->header + 1, --stp->header_len);
@@ -251,7 +324,7 @@ int mtk_stp_rx(struct mtk_stp *stp, const u8 *data, size_t length)
 
 		switch (stp->rx_phase) {
 		case MTK_STP_RX_HEADER:
-			frame_ret = mtk_stp_feed_header(stp, data[i]);
+			frame_ret = mtk_stp_feed_header(stp, data[i], &callback_error);
 			break;
 		case MTK_STP_RX_PAYLOAD:
 			stp->payload[stp->payload_pos++] = data[i];

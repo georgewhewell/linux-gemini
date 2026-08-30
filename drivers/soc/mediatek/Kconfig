@@ -61,8 +61,9 @@ config MTK_STP_KUNIT_TEST
 	depends on KUNIT=y
 	depends on MTK_STP=y
 	help
-	  Exercise STP frame vectors, fragmented input, integrity failures, and
-	  WMT/GNSS channel isolation without hardware or firmware. This test uses
+	  Exercise STP data and header-only ACK vectors, fragmented input, integrity
+	  failures, control-callback recovery, and WMT/GNSS channel isolation without
+	  hardware or firmware. This test uses
 	  only the transport-neutral codec and can run without a MediaTek device.
 	  It does not open a serial link, a BTIF DMA engine, or a firmware image.
 

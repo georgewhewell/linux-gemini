@@ -19,6 +19,13 @@ struct mtk_stp_test_rx {
 	int error;
 };
 
+struct mtk_stp_test_control_rx {
+	struct mtk_stp_control control;
+	unsigned int calls;
+	unsigned int errors_left;
+	int error;
+};
+
 static int mtk_stp_test_receive(void *context, const u8 *payload,
 				size_t length)
 {
@@ -29,6 +36,21 @@ static int mtk_stp_test_receive(void *context, const u8 *payload,
 
 	memcpy(rx->payload, payload, length);
 	rx->length = length;
+	rx->calls++;
+	if (rx->errors_left) {
+		rx->errors_left--;
+		return rx->error;
+	}
+
+	return 0;
+}
+
+static int mtk_stp_test_receive_control(void *context,
+					const struct mtk_stp_control *control)
+{
+	struct mtk_stp_test_control_rx *rx = context;
+
+	rx->control = *control;
 	rx->calls++;
 	if (rx->errors_left) {
 		rx->errors_left--;
@@ -393,6 +415,103 @@ static void mtk_stp_test_zero_payload_is_unsupported(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, stp->rx_errors, 1U);
 }
 
+static void mtk_stp_test_full_ack_encode_and_fragmented_rx(struct kunit *test)
+{
+	static const u8 expected[] = { 0x85, 0x00, 0x00, 0x85 };
+	struct mtk_stp *stp;
+	struct mtk_stp_test_control_rx *rx;
+	u8 frame[MTK_STP_HEADER_SIZE];
+	size_t frame_len = 0;
+	size_t split;
+
+	KUNIT_ASSERT_EQ(test, mtk_stp_encode_ack(5, frame, sizeof(frame), &frame_len), 0);
+	KUNIT_EXPECT_EQ(test, frame_len, sizeof(expected));
+	KUNIT_EXPECT_MEMEQ(test, frame, expected, sizeof(expected));
+	KUNIT_EXPECT_EQ(test, mtk_stp_encode_ack(0, frame, sizeof(frame) - 1,
+						   &frame_len), -ENOSPC);
+
+	for (split = 0; split <= sizeof(frame); split++) {
+		stp = kunit_kzalloc(test, sizeof(*stp), GFP_KERNEL);
+		KUNIT_ASSERT_NOT_NULL(test, stp);
+		rx = kunit_kzalloc(test, sizeof(*rx), GFP_KERNEL);
+		KUNIT_ASSERT_NOT_NULL(test, rx);
+		mtk_stp_init(stp, MTK_STP_MODE_FULL);
+		KUNIT_ASSERT_EQ(test, mtk_stp_register_control(stp,
+						mtk_stp_test_receive_control, rx), 0);
+		KUNIT_EXPECT_EQ(test, mtk_stp_rx(stp, frame, split), 0);
+		KUNIT_EXPECT_EQ(test, rx->calls, split == sizeof(frame) ? 1U : 0U);
+		KUNIT_EXPECT_EQ(test, mtk_stp_rx(stp, frame + split,
+						sizeof(frame) - split), 0);
+		KUNIT_EXPECT_EQ(test, rx->calls, 1U);
+		KUNIT_EXPECT_EQ(test, rx->control.sequence, (u8)0);
+		KUNIT_EXPECT_EQ(test, rx->control.ack, (u8)5);
+		KUNIT_EXPECT_EQ(test, rx->control.nak, (u8)0);
+		KUNIT_EXPECT_EQ(test, stp->control_frames, 1U);
+	}
+}
+
+static void mtk_stp_test_control_callback_error_then_data(struct kunit *test)
+{
+	static const u8 payload[] = { 0x5a };
+	struct mtk_stp *stp;
+	struct mtk_stp_test_control_rx *control_rx;
+	struct mtk_stp_test_rx *data_rx;
+	u8 bytes[MTK_STP_HEADER_SIZE + MTK_STP_HEADER_SIZE + sizeof(payload) +
+		 MTK_STP_TRAILER_SIZE];
+	size_t ack_len;
+	size_t data_len;
+
+	stp = kunit_kzalloc(test, sizeof(*stp), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, stp);
+	control_rx = kunit_kzalloc(test, sizeof(*control_rx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, control_rx);
+	data_rx = kunit_kzalloc(test, sizeof(*data_rx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, data_rx);
+	mtk_stp_init(stp, MTK_STP_MODE_FULL);
+	KUNIT_ASSERT_EQ(test, mtk_stp_register_control(stp,
+					mtk_stp_test_receive_control, control_rx), 0);
+	KUNIT_ASSERT_EQ(test, mtk_stp_register_client(stp, MTK_STP_WMT,
+					mtk_stp_test_receive, data_rx), 0);
+	KUNIT_ASSERT_EQ(test, mtk_stp_encode_ack(7, bytes, sizeof(bytes), &ack_len), 0);
+	KUNIT_ASSERT_EQ(test, mtk_stp_encode(MTK_STP_MODE_FULL, MTK_STP_WMT, 1, 7,
+					payload, sizeof(payload), bytes + ack_len,
+					sizeof(bytes) - ack_len, &data_len), 0);
+	control_rx->errors_left = 1;
+	control_rx->error = -EIO;
+
+	KUNIT_EXPECT_EQ(test, mtk_stp_rx(stp, bytes, ack_len + data_len), -EIO);
+	KUNIT_EXPECT_EQ(test, control_rx->calls, 1U);
+	KUNIT_EXPECT_EQ(test, data_rx->calls, 1U);
+	KUNIT_EXPECT_EQ(test, stp->callback_errors, 1U);
+	KUNIT_EXPECT_EQ(test, stp->frames, 1U);
+	KUNIT_EXPECT_EQ(test, stp->control_frames, 0U);
+}
+
+static void mtk_stp_test_full_nak_is_masked_and_mandatory_control_rejected(
+									 struct kunit *test)
+{
+	static const u8 full_ack_with_nak[] = { 0x83, 0x80, 0x00, 0x03 };
+	static const u8 mandatory_zero_header[] = { 0x80, 0x00, 0x00, 0x00 };
+	struct mtk_stp *stp;
+	struct mtk_stp_test_control_rx *rx;
+
+	stp = kunit_kzalloc(test, sizeof(*stp), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, stp);
+	rx = kunit_kzalloc(test, sizeof(*rx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, rx);
+	mtk_stp_init(stp, MTK_STP_MODE_FULL);
+	KUNIT_ASSERT_EQ(test, mtk_stp_register_control(stp,
+					mtk_stp_test_receive_control, rx), 0);
+	KUNIT_EXPECT_EQ(test, mtk_stp_rx(stp, full_ack_with_nak,
+					sizeof(full_ack_with_nak)), 0);
+	KUNIT_EXPECT_EQ(test, rx->control.ack, (u8)3);
+	KUNIT_EXPECT_EQ(test, rx->control.nak, (u8)0);
+
+	mtk_stp_init(stp, MTK_STP_MODE_MANDATORY);
+	KUNIT_EXPECT_EQ(test, mtk_stp_rx(stp, mandatory_zero_header,
+					sizeof(mandatory_zero_header)), -EOPNOTSUPP);
+}
+
 static void mtk_stp_test_mandatory_is_permissive(struct kunit *test)
 {
 	static const u8 frame[] = {
@@ -449,6 +568,9 @@ static struct kunit_case mtk_stp_test_cases[] = {
 	KUNIT_CASE(mtk_stp_test_noise_prefix_then_valid_frame),
 	KUNIT_CASE(mtk_stp_test_nak_masks_channel),
 	KUNIT_CASE(mtk_stp_test_zero_payload_is_unsupported),
+	KUNIT_CASE(mtk_stp_test_full_ack_encode_and_fragmented_rx),
+	KUNIT_CASE(mtk_stp_test_control_callback_error_then_data),
+	KUNIT_CASE(mtk_stp_test_full_nak_is_masked_and_mandatory_control_rejected),
 	KUNIT_CASE(mtk_stp_test_mandatory_is_permissive),
 	KUNIT_CASE(mtk_stp_test_client_registration),
 	{ }

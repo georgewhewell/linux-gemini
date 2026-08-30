@@ -2,6 +2,8 @@
 /* Hardware-free ordering tests for the MT6797 MD1 pre-release core. */
 
 #include <linux/errno.h>
+#include <linux/mfd/mt6351/registers.h>
+#include <linux/regmap.h>
 #include <linux/soc/mediatek/mt6797-md1-prerelease.h>
 #include <kunit/test.h>
 
@@ -148,11 +150,147 @@ static void mt6797_md1_test_cleanup_failure_is_sticky(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_md1_prerelease_run(&prerelease), -EIO);
 }
 
+struct mt6797_md1_pmic_fake {
+	u16 registers[0x4000];
+	unsigned int writes;
+	unsigned int fail_write;
+};
+
+static int mt6797_md1_pmic_fake_read(void *context, unsigned int reg,
+				     unsigned int *value)
+{
+	struct mt6797_md1_pmic_fake *fake = context;
+
+	if (reg & 1 || reg > 0x7ffe)
+		return -EINVAL;
+	*value = fake->registers[reg / 2];
+	return 0;
+}
+
+static int mt6797_md1_pmic_fake_write(void *context, unsigned int reg,
+				      unsigned int value)
+{
+	struct mt6797_md1_pmic_fake *fake = context;
+
+	if (reg & 1 || reg > 0x7ffe)
+		return -EINVAL;
+	if (++fake->writes == fake->fail_write)
+		return -EIO;
+	fake->registers[reg / 2] = value;
+	return 0;
+}
+
+static const struct regmap_bus mt6797_md1_pmic_fake_bus = {
+	.reg_read = mt6797_md1_pmic_fake_read,
+	.reg_write = mt6797_md1_pmic_fake_write,
+};
+
+static const struct regmap_config mt6797_md1_pmic_fake_config = {
+	.reg_bits = 16,
+	.val_bits = 16,
+	.reg_stride = 2,
+	.max_register = 0x7ffe,
+};
+
+static void mt6797_md1_pmic_fake_seed(struct mt6797_md1_pmic_fake *fake)
+{
+	fake->registers[MT6351_BUCK_VMODEM_CON0 / 2] = 0xaaa8;
+	fake->registers[MT6351_BUCK_VMODEM_CON2 / 2] = 0xbbb0;
+	fake->registers[MT6351_BUCK_VMODEM_CON5 / 2] = 0xccc3;
+	fake->registers[MT6351_BUCK_VMODEM_CON9 / 2] = 0xddd0;
+	fake->registers[MT6351_BUCK_VMD1_CON0 / 2] = 0x1110;
+	fake->registers[MT6351_BUCK_VMD1_CON2 / 2] = 0x2220;
+	fake->registers[MT6351_BUCK_VMD1_CON5 / 2] = 0x3334;
+	fake->registers[MT6351_BUCK_VMD1_CON9 / 2] = 0x4440;
+	fake->registers[MT6351_BUCK_VSRAM_MD_CON0 / 2] = 0x5550;
+	fake->registers[MT6351_BUCK_VSRAM_MD_CON2 / 2] = 0x6660;
+	fake->registers[MT6351_BUCK_VSRAM_MD_CON5 / 2] = 0x7777;
+	fake->registers[MT6351_BUCK_VSRAM_MD_CON9 / 2] = 0x8880;
+}
+
+static void mt6797_md1_test_pmic_apply_restores_every_field(struct kunit *test)
+{
+	struct mt6797_md1_pmic_fake *fake;
+	struct mt6797_md1_pmic_snapshot snapshot;
+	struct regmap *map;
+
+	fake = kunit_kzalloc(test, sizeof(*fake), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, fake);
+	mt6797_md1_pmic_fake_seed(fake);
+	map = regmap_init(NULL, &mt6797_md1_pmic_fake_bus, fake,
+			  &mt6797_md1_pmic_fake_config);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+
+	KUNIT_ASSERT_EQ(test, mt6797_md1_pmic_snapshot(map, &snapshot), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_pmic_apply_vendor_values(map, &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VMODEM_CON5 / 2] & 0x7f,
+			0x40);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VSRAM_MD_CON5 / 2] & 0x7f,
+			0x50);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_pmic_restore(map, &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VMODEM_CON0 / 2], 0xaaa8);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VMODEM_CON2 / 2], 0xbbb0);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VMODEM_CON5 / 2], 0xccc3);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VMODEM_CON9 / 2], 0xddd0);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VMD1_CON0 / 2], 0x1110);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VMD1_CON2 / 2], 0x2220);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VMD1_CON5 / 2], 0x3334);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VMD1_CON9 / 2], 0x4440);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VSRAM_MD_CON0 / 2], 0x5550);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VSRAM_MD_CON2 / 2], 0x6660);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VSRAM_MD_CON5 / 2], 0x7777);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VSRAM_MD_CON9 / 2], 0x8880);
+	regmap_exit(map);
+}
+
+static void mt6797_md1_test_pmic_write_failure_can_be_rolled_back(struct kunit *test)
+{
+	struct mt6797_md1_pmic_fake *fake;
+	struct mt6797_md1_pmic_snapshot snapshot;
+	struct regmap *map;
+
+	fake = kunit_kzalloc(test, sizeof(*fake), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, fake);
+	mt6797_md1_pmic_fake_seed(fake);
+	map = regmap_init(NULL, &mt6797_md1_pmic_fake_bus, fake,
+			  &mt6797_md1_pmic_fake_config);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	KUNIT_ASSERT_EQ(test, mt6797_md1_pmic_snapshot(map, &snapshot), 0);
+	fake->fail_write = 4;
+	KUNIT_EXPECT_EQ(test, mt6797_md1_pmic_apply_vendor_values(map, &snapshot), -EIO);
+	fake->fail_write = 0;
+	KUNIT_ASSERT_EQ(test, mt6797_md1_pmic_restore(map, &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VMODEM_CON5 / 2], 0xccc3);
+	KUNIT_EXPECT_EQ(test, fake->registers[MT6351_BUCK_VSRAM_MD_CON5 / 2], 0x7777);
+	regmap_exit(map);
+}
+
+static void mt6797_md1_test_spm_timeout_is_explicitly_restored(struct kunit *test)
+{
+	struct mt6797_md1_spm_snapshot snapshot;
+	u32 *spm;
+
+	spm = kunit_kzalloc(test, 0x1000, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, spm);
+	/* The status registers remain clear: this is a bounded no-ack simulation. */
+	spm[0x320 / sizeof(*spm)] = BIT(1) | BIT(4);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_snapshot((void __iomem *)spm,
+							  &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_spm_power_on((void __iomem *)spm,
+							  &snapshot), -ETIMEDOUT);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_spm_restore((void __iomem *)spm,
+							 &snapshot), 0);
+	KUNIT_EXPECT_EQ(test, spm[0x320 / sizeof(*spm)], BIT(1) | BIT(4));
+}
+
 static struct kunit_case mt6797_md1_prerelease_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_test_success_unwinds),
 	KUNIT_CASE(mt6797_md1_test_timeout_is_bounded_and_unwinds),
 	KUNIT_CASE(mt6797_md1_test_failed_domain_setup_is_unwound),
 	KUNIT_CASE(mt6797_md1_test_cleanup_failure_is_sticky),
+	KUNIT_CASE(mt6797_md1_test_pmic_apply_restores_every_field),
+	KUNIT_CASE(mt6797_md1_test_pmic_write_failure_can_be_rolled_back),
+	KUNIT_CASE(mt6797_md1_test_spm_timeout_is_explicitly_restored),
 	{ }
 };
 

@@ -2,12 +2,12 @@
 /*
  * Fail-closed MT6797 MD1 pre-release platform adapter.
  *
- * This consumes no active resource. It validates the vendor DT inventory,
- * then stops before PMIC rails. The vendor on path changes VMODEM/VMD1/VSRAM
- * voltage selectors and hardware-control bits, while its off path only clears
- * enable/sleep bits (eccci/mt6797/cldma_platform.c:542-576). Current mainline
- * also has no MD1 SCPSYS power-domain provider. Neither contract has a safe
- * rollback, so this adapter must not bind the transaction core to hardware.
+ * Stage 1 consumes no active resource. Stage 2 snapshots, changes, and restores
+ * every MD1 rail field touched by the vendor, then stops. Stage 3 and above are
+ * refused before the vendor's required clk_buf_set_by_flightmode(false): there
+ * is no mainline clock-buffer owner or reversible interface for that call.
+ * The SPM primitive is intentionally not bound until that preceding contract
+ * exists. No stage reaches reset release, boot vector, CLDMA, CCIF, SIM or RF.
  */
 
 #include <linux/device.h>
@@ -16,8 +16,11 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/sizes.h>
+#include <linux/soc/mediatek/mt6797-md1-prerelease.h>
 #include <linux/string.h>
 
 struct mt6797_md1_prerelease_resource {
@@ -52,7 +55,19 @@ static bool enable_experimental_md1_prerelease;
 module_param_named(enable_experimental_md1_prerelease,
 			   enable_experimental_md1_prerelease, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_md1_prerelease,
-		 "allow MT6797 MD1 pre-release inventory only (default: false)");
+			 "allow MT6797 MD1 pre-release inventory only (default: false)");
+
+enum mt6797_md1_prerelease_stage {
+	MT6797_MD1_STAGE_INVENTORY = 1,
+	MT6797_MD1_STAGE_PMIC_ROLLBACK,
+	MT6797_MD1_STAGE_CLOCK_BUFFER_GATE,
+};
+
+static ushort experimental_md1_prerelease_stage;
+module_param_named(experimental_md1_prerelease_stage,
+			   experimental_md1_prerelease_stage, ushort, 0400);
+MODULE_PARM_DESC(experimental_md1_prerelease_stage,
+			 "MD1 stage: 1=inventory, 2=PMIC snapshot/apply/restore, 3+=refuse");
 
 static int mt6797_md1_validate_resource(struct platform_device *pdev,
 		const struct mt6797_md1_prerelease_resource *expected)
@@ -100,6 +115,55 @@ static int mt6797_md1_validate_carveout(struct device *dev, const char *compat,
 	return 0;
 }
 
+static struct regmap *mt6797_md1_get_pmic_regmap(struct device *dev)
+{
+	struct device_node *node;
+	struct platform_device *pdev;
+	struct regmap *regmap;
+
+	node = of_parse_phandle(dev->of_node, "mediatek,pmic", 0);
+	if (!node)
+		return ERR_PTR(-EINVAL);
+	pdev = of_find_device_by_node(node);
+	of_node_put(node);
+	if (!pdev)
+		return ERR_PTR(-EPROBE_DEFER);
+	/* MT6397's MFD driver obtains this same PMIC map from its pwrap parent. */
+	regmap = dev_get_regmap(pdev->dev.parent, NULL);
+	put_device(&pdev->dev);
+	return regmap ?: ERR_PTR(-EPROBE_DEFER);
+}
+
+static int mt6797_md1_pmic_rollback_stage(struct device *dev)
+{
+	struct mt6797_md1_pmic_snapshot snapshot;
+	struct regmap *pmic;
+	int apply_ret, restore_ret, ret;
+
+	if (!device_property_read_bool(dev, "mediatek,stage-pmic-rollback"))
+		return dev_err_probe(dev, -EPERM,
+			"PMIC stage requires an explicit rollback-only DT gate\n");
+
+	pmic = mt6797_md1_get_pmic_regmap(dev);
+	if (IS_ERR(pmic))
+		return dev_err_probe(dev, PTR_ERR(pmic), "MT6351 PMIC regmap unavailable\n");
+
+	ret = mt6797_md1_pmic_snapshot(pmic, &snapshot);
+	if (ret)
+		return dev_err_probe(dev, ret, "could not snapshot MD1 PMIC fields\n");
+
+	apply_ret = mt6797_md1_pmic_apply_vendor_values(pmic, &snapshot);
+	/* Restore after a partial write too. A PMIC transaction is never retained. */
+	restore_ret = mt6797_md1_pmic_restore(pmic, &snapshot);
+	if (apply_ret)
+		return dev_err_probe(dev, apply_ret, "MD1 PMIC rollback stage apply failed\n");
+	if (restore_ret)
+		return dev_err_probe(dev, restore_ret, "MD1 PMIC state restore failed\n");
+
+	dev_info(dev, "MD1 PMIC values restored; stopping before clock-buffer gate\n");
+	return 0;
+}
+
 static int mt6797_md1_prerelease_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -109,9 +173,12 @@ static int mt6797_md1_prerelease_probe(struct platform_device *pdev)
 
 	if (!READ_ONCE(enable_experimental_md1_prerelease) ||
 	    !device_property_read_bool(dev, "mediatek,experimental-md1-prerelease") ||
-	    !device_property_present(dev, "mediatek,stage-inventory-only"))
+	    !experimental_md1_prerelease_stage)
 		return dev_err_probe(dev, -EPERM,
-			"MD1 pre-release requires explicit inventory-only gates\n");
+			"MD1 pre-release requires explicit enable, DT, and stage gates\n");
+	if (experimental_md1_prerelease_stage == MT6797_MD1_STAGE_INVENTORY &&
+	    !device_property_present(dev, "mediatek,stage-inventory-only"))
+		return dev_err_probe(dev, -EPERM, "missing inventory-only DT gate\n");
 
 	for (i = 0; i < ARRAY_SIZE(mt6797_md1_resources); i++) {
 		ret = mt6797_md1_validate_resource(pdev, &mt6797_md1_resources[i]);
@@ -134,8 +201,16 @@ static int mt6797_md1_prerelease_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	return dev_err_probe(dev, -EOPNOTSUPP,
-		"inventory validated; stopping before unproven PMIC/MD1-power rollback\n");
+	switch (experimental_md1_prerelease_stage) {
+	case MT6797_MD1_STAGE_INVENTORY:
+		dev_info(dev, "MD1 inventory validated; no hardware operation requested\n");
+		return 0;
+	case MT6797_MD1_STAGE_PMIC_ROLLBACK:
+		return mt6797_md1_pmic_rollback_stage(dev);
+	default:
+		return dev_err_probe(dev, -EOPNOTSUPP,
+			"stopping before unimplemented reversible clk_buf_set_by_flightmode\n");
+	}
 }
 
 static const struct of_device_id mt6797_md1_prerelease_of_match[] = {

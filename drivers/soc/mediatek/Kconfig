@@ -73,23 +73,24 @@ config MTK_MT6797_MD1_PRERELEASE
 	  bootloader-owned MD1/shared-memory carve-outs, but has no matching Gemini
 	  node by default. The only supplied DT profile is disabled.
 
-	  The hardware-neutral transaction core models the only potentially
-	  reversible prefix: PMIC rails, the MD1 power-domain clock, a bounded
-	  observation, then reverse-order release. The Gemini platform adapter does
-	  not bind that core: the current MT6797 mainline SCPSYS binding has no MD1
-	  provider, while the vendor PMIC on sequence changes voltage selectors and
-	  hardware-control bits which its off sequence does not restore. It therefore
-	  stops after metadata validation, before any PMIC, clock, reset, power,
-	  CLDMA, CCIF, shared-memory, firmware, SIM, or radio action.
+	  The PMIC helper snapshots and restores every VMODEM/VMD1/VSRAM enable,
+	  sleep, selector, and hardware-control field before leaving stage two. The
+	  SPM helper snapshots MD1 power control, issues only PWR_ON/PWR_ON_2ND, and
+	  waits with a finite retry count before restoring it. The supplied profile
+	  enables stage one only. Stage two additionally needs a separate PMIC
+	  rollback DT gate; stage three stops before the vendor's unimplemented
+	  clk_buf_set_by_flightmode(false) contract. No supplied stage reaches reset
+	  release, source-clock enable, CLDMA, CCIF, shared memory, firmware, SIM,
+	  or radio action.
 
 config MTK_MT6797_MD1_PRERELEASE_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 pre-release transaction core"
 	depends on KUNIT=y
 	depends on MTK_MT6797_MD1_PRERELEASE=y
 	help
-	  Exercise hardware-free PMIC/domain ordering, bounded observation, and
-	  reverse-order failure cleanup using fake callbacks. The platform adapter
-	  is never instantiated and no Gemini hardware is accessed.
+	  Exercise hardware-free PMIC field capture/apply/restore, failure unwind,
+	  domain ordering and bounded observation using fake callbacks. The platform
+	  adapter is never instantiated and no Gemini hardware is accessed.
 
 config MTK_STP
 	tristate "MediaTek STP codec and WMT/GNSS multiplexer"

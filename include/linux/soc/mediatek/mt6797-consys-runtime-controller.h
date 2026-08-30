@@ -19,8 +19,9 @@ struct mt6797_consys_runtime_controller;
 struct mt6797_consys_stp_session_lease;
 
 /*
- * One controller-owned GNSS borrower.  The object is caller-owned and must
- * remain unchanged until mt6797_consys_runtime_controller_gnss_session_put().
+ * One controller-owned GNSS borrower.  The object is caller-owned, must be
+ * zero-initialized before its first get, and must remain unchanged until
+ * mt6797_consys_runtime_controller_gnss_session_put().
  * It is deliberately not a general STP capability: it exists to compose the
  * one channel-2 GNSS endpoint with the controller's retained full-STP lease.
  */

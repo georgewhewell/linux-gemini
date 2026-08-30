@@ -11,6 +11,8 @@
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_BTIF_PIO_PLATFORM_H
 #define __LINUX_SOC_MEDIATEK_MT6797_BTIF_PIO_PLATFORM_H
 
+#include <linux/kconfig.h>
+
 struct device;
 struct mt6797_btif_pio_platform_lease;
 struct mt6797_btif_stp_bootstrap;
@@ -24,6 +26,8 @@ struct mt6797_consys_stp_session_lease;
  */
 const struct mt6797_btif_pio_platform_lease *
 mt6797_btif_pio_platform_acquire(struct device *dev);
+
+#if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
 
 /*
  * Create the one mandatory-to-full STP handover object for a reserved
@@ -40,6 +44,8 @@ struct mt6797_btif_stp_bootstrap *
 mt6797_btif_pio_platform_bootstrap_create(
 		const struct mt6797_btif_pio_platform_lease *platform_lease,
 		const struct mt6797_consys_runtime_lease *runtime_lease);
+
+#endif /* CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP */
 
 /*
  * Bind one already-active full-STP session, initialize the vendor PIO subset,

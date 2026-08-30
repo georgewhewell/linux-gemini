@@ -41,7 +41,9 @@
 
 #include <linux/soc/mediatek/mt6797-btif-pio.h>
 #include <linux/soc/mediatek/mt6797-btif-pio-platform.h>
+#if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
 #include <linux/soc/mediatek/mt6797-btif-stp-bootstrap.h>
+#endif
 #include <linux/soc/mediatek/mt6797-consys.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
 #include <linux/soc/mediatek/mtk-stp.h>
@@ -253,6 +255,8 @@ mt6797_btif_pio_platform_acquire(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_pio_platform_acquire);
 
+#if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
+
 static int mt6797_btif_pio_platform_bootstrap_enable_irq(void *context)
 {
 	struct mt6797_btif_pio_platform *adapter = context;
@@ -328,6 +332,8 @@ mt6797_btif_pio_platform_bootstrap_create(
 	return bootstrap;
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_pio_platform_bootstrap_create);
+
+#endif /* CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP */
 
 int mt6797_btif_pio_platform_attach_full_stp(
 		const struct mt6797_btif_pio_platform_lease *platform_lease,
@@ -847,6 +853,8 @@ static void mt6797_btif_pio_platform_test_irq_fence(struct kunit *test)
 	mt6797_btif_pio_platform_test_stop(ctx);
 }
 
+#if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
+
 static void mt6797_btif_pio_platform_test_bootstrap_factory(struct kunit *test)
 {
 	struct mt6797_btif_pio_platform_test_context *ctx;
@@ -883,13 +891,17 @@ static void mt6797_btif_pio_platform_test_bootstrap_factory(struct kunit *test)
 	mt6797_btif_pio_platform_test_stop(ctx);
 }
 
+#endif /* CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP */
+
 static struct kunit_case mt6797_btif_pio_platform_test_cases[] = {
 	KUNIT_CASE(mt6797_btif_pio_platform_test_resource_bounds),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_contract),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_explicit_gate),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_activate_close_once),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_fence),
+#if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
 	KUNIT_CASE(mt6797_btif_pio_platform_test_bootstrap_factory),
+#endif
 	{ }
 };
 

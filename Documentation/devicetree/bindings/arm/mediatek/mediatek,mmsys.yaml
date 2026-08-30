@@ -87,6 +87,16 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle-array
     maxItems: 1
 
+  mediatek,drm-on-demand:
+    type: boolean
+    description: |
+      Do not create the mediatek-drm child during MMSYS probe.  The MMSYS
+      clock child is still created so all display resources can bind, but the
+      first DRM client modeset is deferred until userspace writes 1 to the
+      MMSYS activate_drm sysfs attribute.  This is a one-way board bring-up
+      control for platforms whose watchdog service must be established before
+      the panel is first initialized.
+
   "#clock-cells":
     const: 1
 

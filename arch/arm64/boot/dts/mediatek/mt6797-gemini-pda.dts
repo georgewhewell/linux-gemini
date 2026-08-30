@@ -159,6 +159,16 @@
 	clock-frequency = <1391000000>;
 };
 
+/*
+ * Keep the first DSI/panel modeset behind a userspace boundary.  MMSYS still
+ * publishes its clock provider at probe time; Stage1 releases DRM by writing
+ * 1 to the resulting activate_drm sysfs attribute after watchdog service is
+ * known good.
+ */
+&mmsys {
+	mediatek,drm-on-demand;
+};
+
 &cpu3 {
 	clock-frequency = <1391000000>;
 };

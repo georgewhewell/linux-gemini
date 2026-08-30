@@ -29,9 +29,8 @@ struct mt6797_consys_test_backend {
 	int fail_op;
 };
 
-static int mt6797_consys_test_record(
-	struct mt6797_consys_test_backend *backend,
-	enum mt6797_consys_test_op op)
+static int mt6797_consys_test_record(struct mt6797_consys_test_backend *backend,
+				     enum mt6797_consys_test_op op)
 {
 	backend->calls[backend->call_count++] = op;
 	return backend->fail_op == op ? -EIO : 0;
@@ -133,15 +132,17 @@ static void mt6797_consys_test_init(struct kunit *test,
 				    struct mt6797_consys_lifecycle *lifecycle,
 				    struct mt6797_consys_test_backend *backend)
 {
-	KUNIT_ASSERT_EQ(test,
-			mt6797_consys_lifecycle_init(lifecycle,
-				&mt6797_consys_test_ops, backend,
-				&mt6797_consys_test_timeouts), 0);
+	int ret;
+
+	ret = mt6797_consys_lifecycle_init(lifecycle, &mt6797_consys_test_ops,
+					   backend, &mt6797_consys_test_timeouts);
+	KUNIT_ASSERT_EQ(test, ret, 0);
 }
 
-static void mt6797_consys_test_expect_calls(
-	struct kunit *test, struct mt6797_consys_test_backend *backend,
-	const enum mt6797_consys_test_op *expected, u32 expected_count)
+static void mt6797_consys_test_expect_calls(struct kunit *test,
+					    struct mt6797_consys_test_backend *backend,
+					    const enum mt6797_consys_test_op *expected,
+					    u32 expected_count)
 {
 	u32 i;
 
@@ -247,10 +248,12 @@ static void mt6797_consys_test_one_interval_reaches_deadline(struct kunit *test)
 	};
 	struct mt6797_consys_lifecycle lifecycle;
 	struct mt6797_consys_timeouts timeouts = mt6797_consys_test_timeouts;
+	int ret;
 
 	timeouts.chip_ready_timeout_us = timeouts.poll_interval_us;
-	KUNIT_ASSERT_EQ(test, mt6797_consys_lifecycle_init(&lifecycle,
-				&mt6797_consys_test_ops, &backend, &timeouts), 0);
+	ret = mt6797_consys_lifecycle_init(&lifecycle, &mt6797_consys_test_ops,
+					   &backend, &timeouts);
+	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_identity_get(&lifecycle), -ETIMEDOUT);
 	KUNIT_EXPECT_EQ(test, backend.delay_count, 3U);
 	KUNIT_EXPECT_EQ(test, backend.delay_min[2], timeouts.poll_interval_us);
@@ -281,16 +284,15 @@ static void mt6797_consys_test_rejects_invalid_contract(struct kunit *test)
 	struct mt6797_consys_lifecycle lifecycle;
 	struct mt6797_consys_ops ops = mt6797_consys_test_ops;
 	struct mt6797_consys_timeouts timeouts = mt6797_consys_test_timeouts;
+	int ret;
 
 	ops.abi++;
-	KUNIT_EXPECT_EQ(test,
-			mt6797_consys_lifecycle_init(&lifecycle, &ops, NULL,
-				&timeouts), -EINVAL);
+	ret = mt6797_consys_lifecycle_init(&lifecycle, &ops, NULL, &timeouts);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 	ops = mt6797_consys_test_ops;
 	timeouts.chip_ready_timeout_us = 0;
-	KUNIT_EXPECT_EQ(test,
-			mt6797_consys_lifecycle_init(&lifecycle, &ops, NULL,
-				&timeouts), -EINVAL);
+	ret = mt6797_consys_lifecycle_init(&lifecycle, &ops, NULL, &timeouts);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 }
 
 static struct kunit_case mt6797_consys_core_test_cases[] = {

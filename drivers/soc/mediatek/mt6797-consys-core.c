@@ -14,7 +14,7 @@
 #include <linux/soc/mediatek/mt6797-consys.h>
 
 static void mt6797_consys_delay(struct mt6797_consys_lifecycle *lifecycle,
-				 u32 interval)
+				u32 interval)
 {
 	u32 slack = min(interval / 4, 50U);
 
@@ -27,9 +27,8 @@ static void mt6797_consys_delay(struct mt6797_consys_lifecycle *lifecycle,
 		usleep_range(interval, interval + slack);
 }
 
-static int mt6797_consys_wait(
-	struct mt6797_consys_lifecycle *lifecycle,
-	enum mt6797_consys_poll poll, u32 timeout_us)
+static int mt6797_consys_wait(struct mt6797_consys_lifecycle *lifecycle,
+			      enum mt6797_consys_poll poll, u32 timeout_us)
 {
 	u32 interval = lifecycle->timeouts.poll_interval_us;
 	u32 remaining_us = timeout_us;
@@ -52,9 +51,9 @@ static int mt6797_consys_wait(
 }
 
 /* Unwind only voted resources, preserving the first failure. */
-static int mt6797_consys_identity_unwind(
-	struct mt6797_consys_lifecycle *lifecycle, bool reset, bool scp_sys_conn,
-	bool vcn28, bool vcn18)
+static int mt6797_consys_identity_unwind(struct mt6797_consys_lifecycle *lifecycle,
+					 bool reset, bool scp_sys_conn, bool vcn28,
+					 bool vcn18)
 {
 	int ret;
 	int first_error = 0;
@@ -93,6 +92,7 @@ mt6797_consys_identity_acquire(struct mt6797_consys_lifecycle *lifecycle)
 	bool vcn28 = false;
 	bool scp_sys_conn = false;
 	bool reset = false;
+	int unwind_ret;
 	int ret;
 
 	vcn18 = true;
@@ -135,8 +135,9 @@ mt6797_consys_identity_acquire(struct mt6797_consys_lifecycle *lifecycle)
 	return 0;
 
 unwind:
-	if (mt6797_consys_identity_unwind(lifecycle, reset, scp_sys_conn,
-					   vcn28, vcn18))
+	unwind_ret = mt6797_consys_identity_unwind(lifecycle, reset,
+						   scp_sys_conn, vcn28, vcn18);
+	if (unwind_ret)
 		lifecycle->state = MT6797_CONSYS_ERROR;
 	return ret;
 }
@@ -158,10 +159,9 @@ mt6797_consys_timeouts_valid(const struct mt6797_consys_timeouts *timeouts)
 		timeouts->chip_ready_timeout_us >= timeouts->poll_interval_us;
 }
 
-int mt6797_consys_lifecycle_init(
-	struct mt6797_consys_lifecycle *lifecycle,
-	const struct mt6797_consys_ops *ops, void *context,
-	const struct mt6797_consys_timeouts *timeouts)
+int mt6797_consys_lifecycle_init(struct mt6797_consys_lifecycle *lifecycle,
+				 const struct mt6797_consys_ops *ops, void *context,
+				 const struct mt6797_consys_timeouts *timeouts)
 {
 	if (!lifecycle || !mt6797_consys_ops_valid(ops) ||
 	    !mt6797_consys_timeouts_valid(timeouts))

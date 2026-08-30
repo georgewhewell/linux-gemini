@@ -10,8 +10,9 @@
  * This provider deliberately stops one step before that mutation. The same
  * vendor build reads an efuse level after patching and calls the declared but
  * absent wmt_set_pmic_voltage(level) before calibration (wmt_ic_soc.c:
- * 1120-1138). No source proves the level-to-voltage mapping or restoration,
- * so enabling either rail here would be a guess.
+ * 1120-1138). The separately gated G2d owner combines the vendor's level-2
+ * 3.5 V default with the MT6351 selector table; this preflight still performs
+ * no voltage or enable operation.
  */
 
 #include <linux/device.h>
@@ -48,7 +49,7 @@ static int mt6797_consys_g2d_vcn33_preflight_probe(struct platform_device *pdev)
 	if (IS_ERR(wifi))
 		return dev_err_probe(&pdev->dev, PTR_ERR(wifi),
 			"missing vcn33-wifi supply\n");
-	if (bt == wifi)
+	if (regulator_is_equal(bt, wifi))
 		return dev_err_probe(&pdev->dev, -EINVAL,
 			"vendor MT6797 requires distinct BT/Wi-Fi VCN33 handles\n");
 

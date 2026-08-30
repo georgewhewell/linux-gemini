@@ -696,8 +696,9 @@ config MTK_MT6797_CONSYS_G2D_VCN33_PREFLIGHT
 	  userspace path. Binding needs its DT boolean and read-only parameter.
 
 	  Vendor MT6797 code performs an efuse-selected VCN33 voltage operation
-	  before calibration, but its wmt_set_pmic_voltage() implementation is not
-	  present in the vendor tree. This preflight deliberately cannot infer it.
+	  before calibration. Its helper body is absent, but the vendor's 3.5 V
+	  level-2 default and the MT6351 selector table establish the direct 0..3
+	  mapping used by the separately gated post-patch owner.
 
 config MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
 	tristate "Experimental MT6797 G2d fused-VCN33 post-patch owner"

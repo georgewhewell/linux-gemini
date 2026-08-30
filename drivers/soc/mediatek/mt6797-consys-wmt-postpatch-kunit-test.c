@@ -20,7 +20,7 @@ struct mt6797_postpatch_ops {
 	void *ctx;
 };
 static const u8 calibration_data[] = { 1 }, calibration_reply[] = { 0, 1 };
-static const u8 coex_data[] = { 1, 1 }, status_ok[] = { 0 };
+static const u8 coex_data[] = { 1, 0 }, status_ok[] = { 0 };
 static const struct mtk_wmt_match calibration_match = {
 	.opcode = 0x14, .data = calibration_reply, .data_len = sizeof(calibration_reply),
 };

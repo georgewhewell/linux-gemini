@@ -39,11 +39,16 @@ struct mt6797_g2d_rail {
 	bool enabled;
 	bool voltage_changed;
 };
-struct mt6797_g2d_owner { struct device *dev; struct mt6797_g2d_rail bt, wifi; };
+struct mt6797_g2d_owner {
+	struct device *dev;
+	struct mt6797_g2d_rail bt;
+	struct mt6797_g2d_rail wifi;
+	bool cleanup_failed;
+};
 
 static const u8 g2d_calibrate[] = { 1 };
 static const u8 g2d_calibrate_reply[] = { 0, 1 };
-static const u8 g2d_coex[] = { 1, 1 };
+static const u8 g2d_coex[] = { 1, 0 };
 static const u8 g2d_ok[] = { 0 };
 static const struct mtk_wmt_match g2d_calibrate_match = {
 	.opcode = 0x14, .data = g2d_calibrate_reply, .data_len = sizeof(g2d_calibrate_reply),
@@ -52,19 +57,26 @@ static const struct mtk_wmt_match g2d_coex_match = {
 	.opcode = 0x10, .data = g2d_ok, .data_len = sizeof(g2d_ok),
 };
 
-static int g2d_prepare_rail(struct mt6797_g2d_rail *rail, int uv)
+static int g2d_snapshot_rail(struct mt6797_g2d_rail *rail)
 {
 	int ret;
 
 	rail->original_uv = regulator_get_voltage(rail->reg);
-	if (rail->original_uv < 0)
-		return rail->original_uv;
+	if (rail->original_uv <= 0)
+		return rail->original_uv ?: -EINVAL;
 	ret = regulator_is_enabled(rail->reg);
 	if (ret < 0)
 		return ret;
 	/* A pre-existing consumer makes a transient selector change non-reversible. */
 	if (ret)
 		return -EBUSY;
+	return 0;
+}
+
+static int g2d_enable_rail(struct mt6797_g2d_rail *rail, int uv)
+{
+	int ret;
+
 	rail->enabled = false;
 	ret = regulator_set_voltage(rail->reg, uv, uv);
 	if (ret)
@@ -85,14 +97,16 @@ static int g2d_restore_rail(struct mt6797_g2d_rail *rail)
 		tmp = regulator_disable(rail->reg);
 		if (tmp)
 			ret = tmp;
-		rail->enabled = false;
+		else
+			rail->enabled = false;
 	}
-	if (rail->voltage_changed) {
+	if (rail->voltage_changed && !rail->enabled) {
 		tmp = regulator_set_voltage(rail->reg, rail->original_uv,
 					  rail->original_uv);
 		if (!ret && tmp)
 			ret = tmp;
-		rail->voltage_changed = false;
+		if (!tmp)
+			rail->voltage_changed = false;
 	}
 	return ret;
 }
@@ -116,10 +130,25 @@ static int mt6797_g2d_postpatch_stage(void *context,
 	if (ret)
 		return ret;
 	dev_info(owner->dev, "G2d efuse VCN33 level %u -> %duV\n", level, uv);
-	ret = g2d_prepare_rail(&owner->bt, uv);
+
+	/*
+	 * MT6351 exposes distinct BT/Wi-Fi enables but one shared VCN33 voltage
+	 * selector.  Capture both views before either consumer changes that
+	 * selector, then require the two snapshots to agree.
+	 */
+	ret = g2d_snapshot_rail(&owner->bt);
+	if (ret)
+		return ret;
+	ret = g2d_snapshot_rail(&owner->wifi);
+	if (ret)
+		return ret;
+	if (owner->bt.original_uv != owner->wifi.original_uv)
+		return -EUCLEAN;
+
+	ret = g2d_enable_rail(&owner->bt, uv);
 	if (ret)
 		goto out;
-	ret = g2d_prepare_rail(&owner->wifi, uv);
+	ret = g2d_enable_rail(&owner->wifi, uv);
 	if (ret)
 		goto out;
 	ret = mt6797_btif_stp_bootstrap_full_wmt_transaction(lease, 0x14,
@@ -127,9 +156,13 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		MT6797_G2D_TIMEOUT);
 out:
 	cleanup = g2d_restore_rail(&owner->wifi);
+	if (cleanup)
+		owner->cleanup_failed = true;
 	if (!ret)
 		ret = cleanup;
 	cleanup = g2d_restore_rail(&owner->bt);
+	if (cleanup)
+		owner->cleanup_failed = true;
 	if (!ret)
 		ret = cleanup;
 	if (ret)
@@ -161,6 +194,7 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	struct mt6797_consys_postid_owner postid;
 	bool postid_init = false;
 	bool controller_active = false;
+	bool emi_claimed = false;
 	int ret, cleanup;
 
 	if (!READ_ONCE(enable_experimental_g2d_postpatch_owner) ||
@@ -176,7 +210,7 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	owner->wifi.reg = devm_regulator_get(&pdev->dev, "vcn33-wifi");
 	if (IS_ERR(owner->wifi.reg))
 		return PTR_ERR(owner->wifi.reg);
-	if (owner->bt.reg == owner->wifi.reg)
+	if (regulator_is_equal(owner->bt.reg, owner->wifi.reg))
 		return -EINVAL;
 	ret = g2d_supplier(&pdev->dev, "mediatek,runtime-provider", &runtime);
 	if (ret)
@@ -184,12 +218,19 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	ret = g2d_supplier(&pdev->dev, "mediatek,controller", &controller);
 	if (ret)
 		goto put_runtime;
+	/* Resolve every reversible supplier before the persistent EMI claim. */
+	ret = mt6797_consys_runtime_resource_lease_acquire(runtime, &resources);
+	if (ret == -ENODEV)
+		ret = -EPROBE_DEFER;
+	if (ret)
+		goto put_controller;
+	ret = mt6797_consys_runtime_controller_preflight(controller);
+	if (ret)
+		goto resources;
 	ret = mt6797_consys_emi_mpu_claim(&pdev->dev);
 	if (ret)
-		goto put_controller;
-	ret = mt6797_consys_runtime_resource_lease_acquire(runtime, &resources);
-	if (ret)
-		goto put_controller;
+		goto resources;
+	emi_claimed = true;
 	ret = mt6797_consys_runtime_platform_identity_acquire(&resources, &identity);
 	if (ret)
 		goto resources;
@@ -225,6 +266,13 @@ resources:
 	cleanup = mt6797_consys_runtime_resource_lease_release(&resources);
 	if (!ret)
 		ret = cleanup;
+	if (emi_claimed && (ret || owner->cleanup_failed)) {
+		mt6797_consys_emi_mpu_latch_fatal();
+		dev_err(&pdev->dev,
+			"G2d failed after persistent EMI claim; reboot required\n");
+		if (!ret)
+			ret = -EIO;
+	}
 put_controller:
 	put_device(controller);
 put_runtime:

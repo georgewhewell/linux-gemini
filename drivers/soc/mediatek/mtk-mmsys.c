@@ -494,7 +494,7 @@ static ssize_t activate_drm_store(struct device *dev,
 {
 	struct mtk_mmsys *mmsys = dev_get_drvdata(dev);
 	bool activate;
-	int ret;
+	int ret = 0;
 
 	ret = kstrtobool(buf, &activate);
 	if (ret || !activate)

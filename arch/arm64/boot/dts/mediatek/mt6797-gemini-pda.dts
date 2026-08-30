@@ -216,6 +216,9 @@
 		interrupt-names = "bgf", "wdt";
 		resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
 		reset-names = "conn-mcu";
+		/* The domain stays dormant until this node is explicitly enabled. */
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+		power-domain-names = "conn";
 		memory-region = <&consys_reserved_memory>;
 		memory-region-names = "shared";
 		status = "disabled";

@@ -19,5 +19,7 @@
 #define MT6797_POWER_DOMAIN_MFG_CORE2		9
 #define MT6797_POWER_DOMAIN_MFG_CORE3		10
 #define MT6797_POWER_DOMAIN_MJC		11
+/* Keep existing IDs stable: the original binding omitted CONN. */
+#define MT6797_POWER_DOMAIN_CONN		12
 
 #endif /* _DT_BINDINGS_POWER_MT6797_POWER_H */

@@ -11,6 +11,11 @@ mt6797-gemini-pda-consys-identity-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-consys-identity.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-identity.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-runtime-preflight.dtbo
+mt6797-gemini-pda-consys-runtime-preflight-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-runtime-preflight.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-runtime-preflight.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-prepostid-observe.dtbo
 mt6797-gemini-pda-consys-prepostid-observe-dtbs := \
 	mt6797-gemini-pda.dtb \

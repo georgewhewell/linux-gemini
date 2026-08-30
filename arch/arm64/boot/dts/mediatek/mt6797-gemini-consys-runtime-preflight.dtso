@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * MT6797 CONSYS runtime resource-contract preflight.
+ *
+ * This overlay is inert unless it is explicitly loaded.  The provider also
+ * rejects probe without mt6797_consys_runtime.enable_experimental_runtime=1.
+ * A successful probe only validates the Gemini MMIO, shared-memory, IRQ,
+ * regulator, reset and CONN-domain descriptions, then registers BGF with
+ * IRQF_NO_AUTOEN.  It does not vote a rail or domain, release reset, access
+ * AFE/shared EMI, initialise BTIF, send STP/WMT, request firmware, or enable
+ * a Wi-Fi, Bluetooth, GNSS, or FM function.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/power/mt6797-power.h>
+
+/ {
+	fragment@0 {
+		target = <&consys>;
+		/* Describe the target's inherited root bus to dtc only. */
+		#address-cells = <2>;
+		#size-cells = <2>;
+
+		__overlay__ {
+			compatible = "mediatek,mt6797-consys-runtime";
+			reg = <0 0x18070000 0 0x200>,
+			      <0 0x10007000 0 0x100>,
+			      <0 0x10000000 0 0x2000>,
+			      <0 0x10006000 0 0x1000>,
+			      <0 0x180b6000 0 0x100>;
+			reg-names = "mcu", "ap-rgu", "topckgen", "spm", "afe";
+			mediatek,conn-power-domain = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+			mediatek,infracfg = <&infrasys>;
+			mediatek,spm = <&scpsys>;
+			mediatek,experimental-runtime;
+			status = "okay";
+		};
+	};
+};

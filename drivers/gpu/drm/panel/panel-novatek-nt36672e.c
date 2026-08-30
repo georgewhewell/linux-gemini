@@ -851,9 +851,12 @@ static const struct panel_desc gemini_panel_desc = {
 	/* The recovered vendor source does not state the active-area dimensions. */
 	.width_mm = 0,
 	.height_mm = 0,
-	/* Vendor parameters specify burst video and clk_lp_per_line_enable. */
-	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
-			MIPI_DSI_MODE_LPM,
+	/*
+	 * The vendor specifies burst video.  Its clk_lp_per_line_enable has no
+	 * demonstrated equivalent in the mainline MIPI DSI mode flags, so do not
+	 * infer MIPI_DSI_MODE_LPM from it.
+	 */
+	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST,
 	.format = MIPI_DSI_FMT_RGB888,
 	.lanes = 4,
 	.panel_name = "Gemini NT36672 1080x2160 panel",

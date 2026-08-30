@@ -16,6 +16,7 @@
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
@@ -56,6 +57,7 @@ struct mt6797_consys_live {
 	struct regulator *vcn18;
 	struct regulator *vcn28;
 	struct reset_control *conn_mcu_reset;
+	struct resource shared_mem;
 	struct mt6797_consys_lifecycle lifecycle;
 	bool vcn18_vote;
 	bool vcn28_vote;
@@ -68,6 +70,7 @@ struct mt6797_consys_live {
 static const struct mt6797_consys_live_resource
 	mt6797_consys_live_resources[] = {
 	{ "mcu", 0x18070000, SZ_512 },
+	{ "ap-rgu", 0x10007000, SZ_256 },
 	{ "topckgen", 0x10000000, SZ_8K },
 	{ "spm", 0x10006000, SZ_4K },
 };
@@ -92,6 +95,41 @@ static int mt6797_consys_live_map_resource(struct platform_device *pdev,
 		if (IS_ERR(*base))
 			return PTR_ERR(*base);
 	}
+
+	return 0;
+}
+
+/*
+ * Vendor power-on fails closed when its CONSYS EMI reservation is absent.
+ * Keep the same prerequisite for this earlier read-only identity slice.  The
+ * identity experiment neither maps nor clears the reservation.
+ */
+static int mt6797_consys_live_acquire_shared_mem(struct mt6797_consys_live *consys)
+{
+	struct device *dev = consys->dev;
+	struct device_node *memory_region;
+	int ret;
+
+	memory_region = of_parse_phandle(dev->of_node, "memory-region", 0);
+	if (!memory_region)
+		return dev_err_probe(dev, -EINVAL, "missing CONSYS shared memory\n");
+
+	if (!of_property_read_bool(memory_region, "no-map")) {
+		of_node_put(memory_region);
+		return dev_err_probe(dev, -EINVAL,
+				     "CONSYS shared memory must be no-map\n");
+	}
+	of_node_put(memory_region);
+
+	ret = of_reserved_mem_region_to_resource_byname(dev->of_node, "shared",
+							&consys->shared_mem);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to acquire CONSYS shared memory\n");
+
+	if (!mt6797_consys_shared_mem_valid(consys->shared_mem.start,
+					 resource_size(&consys->shared_mem)))
+		return dev_err_probe(dev, -EINVAL,
+				     "invalid CONSYS shared-memory geometry\n");
 
 	return 0;
 }
@@ -370,6 +408,15 @@ static int mt6797_consys_live_probe(struct platform_device *pdev)
 
 	ret = mt6797_consys_live_map_resource(pdev,
 					     &mt6797_consys_live_resources[2], NULL);
+	if (ret)
+		return ret;
+
+	ret = mt6797_consys_live_map_resource(pdev,
+					     &mt6797_consys_live_resources[3], NULL);
+	if (ret)
+		return ret;
+
+	ret = mt6797_consys_live_acquire_shared_mem(consys);
 	if (ret)
 		return ret;
 

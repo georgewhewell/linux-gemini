@@ -408,9 +408,9 @@ static void mt6797_consys_runtime_controller_stop_controller(
 	controller->platform_lease = NULL;
 	controller->runtime_lease = NULL;
 	controller->session_lease = NULL;
-	controller->state = MT6797_CONSYS_RUNTIME_CONTROLLER_FENCED;
 	mutex_unlock(&controller->lock);
 
+	/* Keep QUIESCING visible until bootstrap destroy and PIO close have returned. */
 	mt6797_consys_runtime_controller_abort(controller, bootstrap, platform_lease);
 	complete_all(&controller->stop_complete);
 }
@@ -606,12 +606,15 @@ struct mt6797_consys_runtime_controller_test_backend {
 	u8 session_token;
 	struct completion run_entered;
 	struct completion allow_run;
+	struct completion destroy_entered;
+	struct completion allow_destroy;
 	unsigned int call_count;
 	int runtime_error;
 	int platform_error;
 	int create_error;
 	int run_error;
 	bool block_run;
+	bool block_destroy;
 };
 
 struct mt6797_consys_runtime_controller_test_task {
@@ -688,8 +691,14 @@ mt6797_consys_runtime_controller_test_run(void *context,
 static void mt6797_consys_runtime_controller_test_destroy(void *context,
 		struct mt6797_btif_stp_bootstrap *bootstrap)
 {
-	mt6797_consys_runtime_controller_test_record(context,
+	struct mt6797_consys_runtime_controller_test_backend *backend = context;
+
+	mt6797_consys_runtime_controller_test_record(backend,
 		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_DESTROY);
+	if (backend->block_destroy) {
+		complete_all(&backend->destroy_entered);
+		wait_for_completion(&backend->allow_destroy);
+	}
 }
 
 static void mt6797_consys_runtime_controller_test_close(void *context,
@@ -720,6 +729,8 @@ mt6797_consys_runtime_controller_test_init(struct kunit *test,
 	KUNIT_ASSERT_NOT_NULL(test, backend);
 	init_completion(&backend->run_entered);
 	init_completion(&backend->allow_run);
+	init_completion(&backend->destroy_entered);
+	init_completion(&backend->allow_destroy);
 	controller = kunit_kzalloc(test, sizeof(*controller), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_NULL(test, controller);
 	KUNIT_ASSERT_EQ(test, mt6797_consys_runtime_controller_init(controller,
@@ -915,12 +926,68 @@ static void mt6797_consys_runtime_controller_test_gnss_lease_drains_before_stop(
 	KUNIT_EXPECT_MEMEQ(test, backend->calls, expected, sizeof(expected));
 }
 
+static void mt6797_consys_runtime_controller_test_concurrent_stop_waits_for_close(
+		struct kunit *test)
+{
+	static const enum mt6797_consys_runtime_controller_test_call expected[] = {
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUNTIME,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_PLATFORM,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CREATE,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUN,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_DESTROY,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CLOSE,
+	};
+	struct mt6797_consys_runtime_controller_test_backend *backend;
+	struct mt6797_consys_runtime_controller *controller;
+	struct mt6797_consys_runtime_controller_test_task first_stop = { };
+	struct mt6797_consys_runtime_controller_test_task second_stop = { };
+	struct task_struct *first_thread;
+	struct task_struct *second_thread;
+
+	controller = mt6797_consys_runtime_controller_test_init(test, &backend);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_controller_start_unchecked(controller), 0);
+	backend->block_destroy = true;
+	first_stop.controller = controller;
+	first_stop.stop = true;
+	init_completion(&first_stop.done);
+	first_thread = kthread_run(mt6797_consys_runtime_controller_test_thread,
+				   &first_stop, "mt6797-ctrl-first-stop");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(first_thread));
+	KUNIT_ASSERT_NE(test, wait_for_completion_timeout(&backend->destroy_entered,
+						  msecs_to_jiffies(1000)), 0UL);
+	KUNIT_EXPECT_EQ(test, controller->state,
+			MT6797_CONSYS_RUNTIME_CONTROLLER_QUIESCING);
+	KUNIT_EXPECT_EQ(test, backend->call_count, 5U);
+
+	second_stop.controller = controller;
+	second_stop.stop = true;
+	init_completion(&second_stop.done);
+	second_thread = kthread_run(mt6797_consys_runtime_controller_test_thread,
+				    &second_stop, "mt6797-ctrl-second-stop");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(second_thread));
+	usleep_range(10000, 20000);
+	KUNIT_EXPECT_FALSE(test, completion_done(&second_stop.done));
+	KUNIT_EXPECT_EQ(test, backend->call_count, 5U);
+
+	complete_all(&backend->allow_destroy);
+	KUNIT_ASSERT_NE(test, wait_for_completion_timeout(&first_stop.done,
+						  msecs_to_jiffies(1000)), 0UL);
+	KUNIT_ASSERT_NE(test, wait_for_completion_timeout(&second_stop.done,
+						  msecs_to_jiffies(1000)), 0UL);
+	KUNIT_EXPECT_EQ(test, controller->state,
+			MT6797_CONSYS_RUNTIME_CONTROLLER_FENCED);
+	KUNIT_EXPECT_EQ(test, backend->call_count, ARRAY_SIZE(expected));
+	KUNIT_EXPECT_MEMEQ(test, backend->calls, expected, sizeof(expected));
+}
+
 static struct kunit_case mt6797_consys_runtime_controller_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_order),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_failure_unwinds),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_gate),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_stop_waits_for_run),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_gnss_lease_drains_before_stop),
+	KUNIT_CASE(mt6797_consys_runtime_controller_test_concurrent_stop_waits_for_close),
 	{ }
 };
 

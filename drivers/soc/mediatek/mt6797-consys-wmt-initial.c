@@ -11,8 +11,14 @@
  * selecting an exact supported HVR table entry at :875-905.  The vendor
  * accidentally ignores the FVR transaction return at :1633-1636; this
  * controller does not reproduce that bug.
- * The vendor raw event is 16 bytes despite its retained length byte being
- * 0x04, so it cannot be handed to the generic strict WMT event decoder.
+ * The vendor raw event is 16 bytes.  Its checked-in static source template
+ * claims a length byte of 0x04, but the working Gemini vendor capture records
+ * the complete, self-consistent wire header as 02 08 0c 00 followed by the
+ * eight-byte register result (bsg100 H35, 105.258714--105.258966).  The
+ * latter is the only representation compatible with the actual 16-byte
+ * message and is the contract used here.  It still cannot be handed to the
+ * generic strict WMT event decoder because this bootstrap owns the raw
+ * register exchange itself.
  * This controller instead accepts only the complete vendor layout below.
  *
  * Only after this complete identity preflight, wmt_ic_soc.c:122-124 defines
@@ -101,9 +107,14 @@ static const u8 mt6797_consys_wmt_reg_read_template[] = {
 	0xff, 0xff, 0x00, 0x00,
 };
 
-/* wmt_core.c:221-228; address and value follow this fixed eight-byte prefix. */
+/*
+ * The vendor source's WMT_SET_REG_RD_EVT initializer has 0x04 here, but the
+ * live vendor DMA trace proves 0x0c: 12 bytes follow the WMT header (status,
+ * register descriptor, address, value).  Do not copy that stale initializer
+ * into a parser which otherwise requires all sixteen bytes.
+ */
 static const u8 mt6797_consys_wmt_reg_event_prefix[] = {
-	0x02, MT6797_CONSYS_WMT_REG_OPCODE, 0x04, 0x00,
+	0x02, MT6797_CONSYS_WMT_REG_OPCODE, 0x0c, 0x00,
 	0x00, 0x00, 0x00, 0x01,
 };
 
@@ -382,6 +393,8 @@ struct mt6797_consys_wmt_initial_test_transport {
 	enum mt6797_consys_wmt_initial_test_reply reply;
 	u8 raw_commands[3][MT6797_CONSYS_WMT_REG_COMMAND_SIZE];
 	size_t raw_command_lens[3];
+	u8 raw_events[3][MT6797_CONSYS_WMT_REG_EVENT_SIZE];
+	size_t raw_event_lens[3];
 	u8 wmt_commands[2][MTK_WMT_HEADER_SIZE +
 			   sizeof(mt6797_consys_wmt_set_chip_full_data)];
 	size_t wmt_command_lens[2];
@@ -439,18 +452,22 @@ static int mt6797_wmt_initial_test_raw_exchange(void *context,
 			value = 0x0326;
 		break;
 	case 1:
-		value = 0xa5a58b01;
+		/* Gemini vendor H35 capture: HVR read returned 0x00008a00. */
+		value = MT6797_CONSYS_WMT_HVR_E1;
 		if (transport->reply == MT6797_CONSYS_WMT_INITIAL_TEST_BAD_HVR)
 			value = 0xa5a58c00;
 		break;
 	case 2:
-		value = 0xa5a55a34;
+		/* Gemini vendor H35 capture: FVR read returned 0x00008a00. */
+		value = MT6797_CONSYS_WMT_HVR_E1;
 		break;
 	default:
 		return -EPROTO;
 	}
 	mt6797_consys_wmt_initial_test_reg_event(event, address, value);
 	*event_len = MT6797_CONSYS_WMT_REG_EVENT_SIZE;
+	memcpy(transport->raw_events[index], event, *event_len);
+	transport->raw_event_lens[index] = *event_len;
 	if (transport->reply == MT6797_CONSYS_WMT_INITIAL_TEST_RAW_HCR_MALFORMED)
 		event[8] ^= 1;
 	return 0;
@@ -560,6 +577,18 @@ static void mt6797_consys_wmt_initial_test_sequence(struct kunit *test)
 			0xff, 0xff, 0x00, 0x00,
 		},
 	};
+	static const u8 raw_events[][MT6797_CONSYS_WMT_REG_EVENT_SIZE] = {
+		{
+			0x02, 0x08, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x01,
+			0x08, 0x00, 0x00, 0x80, 0x79, 0x02, 0x00, 0x00,
+		}, {
+			0x02, 0x08, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x01,
+			0x00, 0x00, 0x00, 0x80, 0x00, 0x8a, 0x00, 0x00,
+		}, {
+			0x02, 0x08, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x01,
+			0x04, 0x00, 0x00, 0x80, 0x00, 0x8a, 0x00, 0x00,
+		},
+	};
 	static const u8 query_command[] = { 0x01, 0x04, 0x01, 0x00, 0x04 };
 	struct mt6797_consys_wmt_initial_test_transport *transport;
 	struct mt6797_consys_wmt_initial *initial;
@@ -574,8 +603,9 @@ static void mt6797_consys_wmt_initial_test_sequence(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_EXPECT_EQ(test, identity.chip_id, (u16)MT6797_CONSYS_WMT_CHIP_ID);
 	KUNIT_EXPECT_EQ(test, identity.hardware_version,
-			(u16)MT6797_CONSYS_WMT_HVR_E3);
-	KUNIT_EXPECT_EQ(test, identity.firmware_version, (u16)0x5a34);
+			(u16)MT6797_CONSYS_WMT_HVR_E1);
+	KUNIT_EXPECT_EQ(test, identity.firmware_version,
+			(u16)MT6797_CONSYS_WMT_HVR_E1);
 	KUNIT_EXPECT_EQ(test, transport->raw_count, 3U);
 	KUNIT_EXPECT_EQ(test, transport->default_query_count, 1U);
 	KUNIT_EXPECT_EQ(test, transport->set_count, 0U);
@@ -584,6 +614,10 @@ static void mt6797_consys_wmt_initial_test_sequence(struct kunit *test)
 				MT6797_CONSYS_WMT_REG_COMMAND_SIZE);
 		KUNIT_EXPECT_MEMEQ(test, transport->raw_commands[i], raw_commands[i],
 				   sizeof(raw_commands[i]));
+		KUNIT_EXPECT_EQ(test, transport->raw_event_lens[i],
+				MT6797_CONSYS_WMT_REG_EVENT_SIZE);
+		KUNIT_EXPECT_MEMEQ(test, transport->raw_events[i], raw_events[i],
+				   sizeof(raw_events[i]));
 	}
 	KUNIT_EXPECT_MEMEQ(test, transport->wmt_commands[0], query_command,
 			   sizeof(query_command));

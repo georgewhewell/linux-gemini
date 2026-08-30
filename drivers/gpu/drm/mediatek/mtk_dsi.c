@@ -191,12 +191,26 @@ struct mtk_dsi_driver_data {
 	const u32 reg_cmdq_off;
 	const u32 reg_vm_cmd_off;
 	const u32 reg_shadow_dbg_off;
+	const u32 *phy_timcon;
 	bool has_shadow_ctl;
 	bool has_size_ctl;
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
 	bool irq_needs_power;
 	bool force_cmd_mode_after_reset;
+};
+
+/*
+ * Stock Gemini's vendor 3.18 kernel programs these steady-state values for
+ * the MT6797 DSI controller at the panel's 880 MHz lane rate.  The generic
+ * timing formula below gives materially shorter LP timings on this hardware,
+ * so retain the measured values as an MT6797-only controller quirk.
+ */
+static const u32 mt6797_dsi_phy_timcon[] = {
+	0x0a12080a,
+	0x14320f28,
+	0x0d320100,
+	0x00141208,
 };
 
 struct mtk_dsi {
@@ -287,6 +301,13 @@ static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
 	timcon3 = FIELD_PREP(CLK_HS_PREP, timing->clk_hs_prepare) |
 		  FIELD_PREP(CLK_HS_POST, timing->clk_hs_post) |
 		  FIELD_PREP(CLK_HS_EXIT, timing->clk_hs_exit);
+
+	if (dsi->driver_data->phy_timcon) {
+		timcon0 = dsi->driver_data->phy_timcon[0];
+		timcon1 = dsi->driver_data->phy_timcon[1];
+		timcon2 = dsi->driver_data->phy_timcon[2];
+		timcon3 = dsi->driver_data->phy_timcon[3];
+	}
 
 	writel(timcon0, dsi->regs + DSI_PHY_TIMECON0);
 	writel(timcon1, dsi->regs + DSI_PHY_TIMECON1);
@@ -1290,6 +1311,7 @@ static const struct mtk_dsi_driver_data mt6797_dsi_driver_data = {
 	.reg_cmdq_off = 0x200,
 	.reg_vm_cmd_off = 0x130,
 	.reg_shadow_dbg_off = 0x190,
+	.phy_timcon = mt6797_dsi_phy_timcon,
 	.irq_needs_power = true,
 	.force_cmd_mode_after_reset = true,
 };

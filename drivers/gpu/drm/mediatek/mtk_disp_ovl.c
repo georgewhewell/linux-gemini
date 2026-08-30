@@ -640,6 +640,25 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	priv->data = of_device_get_match_data(dev);
 	platform_set_drvdata(pdev, priv);
 
+	/*
+	 * MT6797's bootloader can leave the OVL frame-done interrupt asserted
+	 * with its MM clock off.  Clear that inherited state while the clock is
+	 * available before installing the handler, otherwise a stale level IRQ
+	 * can reach the DRM callback before a CRTC has been configured.
+	 */
+	if (of_device_is_compatible(dev->of_node, "mediatek,mt6797-disp-ovl") ||
+	    of_device_is_compatible(dev->of_node,
+				    "mediatek,mt6797-disp-ovl-2l")) {
+		ret = clk_prepare_enable(priv->clk);
+		if (ret < 0)
+			return dev_err_probe(dev, ret,
+					     "failed to enable ovl clock to quiesce irq\n");
+
+		writel(0, priv->regs + DISP_REG_OVL_INTEN);
+		writel(0, priv->regs + DISP_REG_OVL_INTSTA);
+		clk_disable_unprepare(priv->clk);
+	}
+
 	ret = devm_request_irq(dev, irq, mtk_disp_ovl_irq_handler,
 			       IRQF_TRIGGER_NONE, dev_name(dev), priv);
 	if (ret < 0)

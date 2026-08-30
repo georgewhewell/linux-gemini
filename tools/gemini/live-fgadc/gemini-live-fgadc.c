@@ -99,7 +99,9 @@ static int gemini_find_fgadc_node(struct device_node **out)
 		return -ENODEV;
 	}
 
-	next = of_find_compatible_node(np, NULL, GEMINI_FGADC_COMPATIBLE);
+	/* The iterator drops its starting-node reference; retain our first match. */
+	next = of_find_compatible_node(of_node_get(np), NULL,
+				       GEMINI_FGADC_COMPATIBLE);
 	if (next) {
 		pr_err("gemini-live-fgadc: multiple %s nodes; refusing ambiguous target\n",
 		       GEMINI_FGADC_COMPATIBLE);

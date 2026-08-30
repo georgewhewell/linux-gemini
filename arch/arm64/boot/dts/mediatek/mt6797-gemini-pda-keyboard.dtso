@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA native keyboard overlay.
+ *
+ * The base Gemini DT leaves I2C5, its AW9523B expander, and the matrix
+ * consumer disabled. This opt-in overlay enables precisely that path with
+ * the upstream AW9523 GPIO/pinctrl provider and gpio-matrix-keypad driver.
+ *
+ * Evidence:
+ * - The AW9523 binding's own keyboard example uses GPIO0..7 as input rows
+ *   and GPIO8..15 as output columns:
+ *   Documentation/devicetree/bindings/pinctrl/awinic,aw9523-pinctrl.yaml.
+ * - The Gemini vendor driver defines port 0 as eight rows and port 1 bits
+ *   0..6 as seven columns, drives selected columns low and reads a low row
+ *   as a press: vendor/gemini-linux-kernel-3.18/drivers/misc/mediatek/
+ *   aw9523/aw9523_key.c.
+ * - A bounded mainline Gemini run bound 0-005b to aw9523-pinctrl and the
+ *   generic matrix driver with this 20 ms polling / 2 us settle policy;
+ *   it retained H/E/L/P/A/S/Enter press and release events:
+ *   ../gemini-pda-mainline/experiments/2026-07-19-keyboard-wrrd-diagnostic/
+ *   results/runtime-candidate-w-attempt-1-20260719.txt.
+ *
+ * The vendor EINT10 route is deliberately not enabled here. Polling avoids
+ * the untested AW9523 parent-IRQ and GPIO-row interrupt paths; it cannot
+ * wake a suspended system. LEDs, AW9120, flash, cameras, and sensors remain
+ * untouched.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&i2c5 {
+	/* The retained successful AW9523/matrix experiment used 400 kHz. */
+	clock-frequency = <400000>;
+	status = "okay";
+};
+
+&aw9523 {
+	/*
+	 * The base candidate intentionally does not publish the expander's
+	 * untested parent interrupt domain. gpio-matrix-keypad selects polling
+	 * below, so it will not request row GPIO interrupts either.
+	 */
+	status = "okay";
+};
+
+&keyboard_matrix {
+	/*
+	 * Keep the successful generic polling contract exact. There is no measured
+	 * bounce interval, so do not invent debounce-delay-ms.
+	 */
+	poll-interval = <20>;
+	col-scan-delay-us = <2>;
+	status = "okay";
+};

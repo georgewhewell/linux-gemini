@@ -43,6 +43,7 @@ obj-$(CONFIG_MTK_MT6797_CONSYS_CORE_KUNIT_TEST) += mt6797-consys-core-kunit-test
 obj-$(CONFIG_MTK_MT6797_CONSYS_LIVE) += mt6797-consys-live.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT) += mt6797-consys-firmware.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT_KUNIT_TEST) += mt6797-consys-firmware-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD) += mt6797-consys-wmt-patch.o
 obj-$(CONFIG_MTK_MT6797_BTIF_INVENTORY) += mt6797-btif-inventory.o
 obj-$(CONFIG_MTK_MT6797_BTIF_TRANSPORT) += mt6797-btif-transport.o
 obj-$(CONFIG_MTK_MT6797_BTIF_TRANSPORT_KUNIT_TEST) += mt6797-btif-transport-kunit-test.o

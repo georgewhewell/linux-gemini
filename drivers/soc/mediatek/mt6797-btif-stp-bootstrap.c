@@ -97,6 +97,9 @@ static void mt6797_btif_stp_bootstrap_fence(
 	mutex_lock(&bootstrap->lifecycle_lock);
 	if (bootstrap->state == MT6797_BTIF_STP_BOOTSTRAP_FENCED) {
 		mutex_unlock(&bootstrap->lifecycle_lock);
+		/* A retry worker may have set FENCED before finishing close(). */
+		if (!from_retry_work)
+			cancel_delayed_work_sync(&bootstrap->full_retry_work);
 		return;
 	}
 	started = bootstrap->state != MT6797_BTIF_STP_BOOTSTRAP_NEW;

@@ -2,10 +2,8 @@
 /*
  * MT6797 CONSYS runtime lifecycle provider interface.
  *
- * This is intentionally only a handoff of the already-held core capability.
- * It neither discovers the provider nor starts hardware. A future consumer
- * must resolve the explicitly enabled provider node, retain that platform
- * binding for its complete use, then pass this lease to the BTIF owner.
+ * Probe publishes validated resources only. Identity activation is a separate
+ * explicit operation owned by a coordinator; no probe path starts hardware.
  */
 
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_CONSYS_RUNTIME_H
@@ -20,12 +18,19 @@ enum mt6797_consys_runtime_provider_state {
 	MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY,
 	MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD,
 	MT6797_CONSYS_RUNTIME_PROVIDER_REMOVING,
+	MT6797_CONSYS_RUNTIME_PROVIDER_ERROR,
+};
+
+/* Caller-owned lease which pins the provider's mapped resources. */
+struct mt6797_consys_runtime_resource_lease {
+	struct device *device;
 };
 
 /* Caller-owned capability which pins the provider through its full lifetime. */
 struct mt6797_consys_runtime_provider_lease {
 	struct device *device;
 	const struct mt6797_consys_runtime_lease *identity;
+	bool owns_identity;
 };
 
 /*
@@ -39,6 +44,18 @@ mt6797_consys_runtime_platform_lease(struct device *dev);
 /* Read-only distinction between resource setup and identity ownership. */
 enum mt6797_consys_runtime_provider_state
 mt6797_consys_runtime_platform_state(struct device *dev);
+
+int mt6797_consys_runtime_resource_lease_acquire(struct device *dev,
+		struct mt6797_consys_runtime_resource_lease *lease);
+int mt6797_consys_runtime_resource_lease_release(
+		struct mt6797_consys_runtime_resource_lease *lease);
+
+/* Acquire identity only after EMI/setup work, returning the canonical lease. */
+int mt6797_consys_runtime_platform_identity_acquire(
+		struct mt6797_consys_runtime_resource_lease *resources,
+		struct mt6797_consys_runtime_provider_lease *lease);
+int mt6797_consys_runtime_platform_identity_release(
+		struct mt6797_consys_runtime_provider_lease *lease);
 
 /*
  * Borrow the already-held provider identity and block provider removal until

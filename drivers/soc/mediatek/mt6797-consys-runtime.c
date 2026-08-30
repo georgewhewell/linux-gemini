@@ -14,10 +14,12 @@
  * - :757-795 registers BGF then leaves it disabled. WDT recovery semantics
  *   are not established for this driver and its IRQ remains unrequested.
  *
- * The lifecycle core purposefully ends at identity observation. This provider
- * consequently never deasserts reset, touches AFE/shared EMI, starts BTIF,
- * loads firmware, sends WMT, or turns on a connectivity function. The shipped
- * Gemini DT has no compatible node for this driver and stays disabled.
+ * The lifecycle core is reusable for the explicit identity transaction, but
+ * probe stops at validated resources. A coordinator must perform shared EMI
+ * setup before calling that transaction. This provider consequently never
+ * deasserts reset, touches AFE/shared EMI, starts BTIF, loads firmware, sends
+ * WMT, or turns on a connectivity function by itself. The shipped Gemini DT
+ * has no compatible node for this driver and stays disabled.
  */
 
 #include <linux/bits.h>
@@ -51,6 +53,7 @@
 #endif
 
 #include <linux/soc/mediatek/mt6797-consys-runtime.h>
+#include <linux/soc/mediatek/mt6797-consys-handoff.h>
 
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
@@ -105,6 +108,7 @@ struct mt6797_consys_runtime {
 	wait_queue_head_t provider_wait;
 	unsigned int external_users;
 	enum mt6797_consys_runtime_provider_state provider_state;
+	bool identity_external;
 };
 
 /* The vendor DT order is MCU, AP-RGU, TOPCKGEN, then SPM. */
@@ -501,6 +505,14 @@ mt6797_consys_runtime_platform_lease(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_platform_lease);
 
+static struct mt6797_consys_runtime *
+mt6797_consys_runtime_from_lease_device(struct device *dev)
+{
+	if (!dev)
+		return NULL;
+	return dev_get_drvdata(dev);
+}
+
 enum mt6797_consys_runtime_provider_state
 mt6797_consys_runtime_platform_state(struct device *dev)
 {
@@ -518,6 +530,169 @@ mt6797_consys_runtime_platform_state(struct device *dev)
 	return state;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_platform_state);
+
+int mt6797_consys_runtime_resource_lease_acquire(struct device *dev,
+		struct mt6797_consys_runtime_resource_lease *lease)
+{
+	struct mt6797_consys_runtime *runtime;
+
+	if (!dev || !lease || lease->device)
+		return -EINVAL;
+	runtime = mt6797_consys_runtime_from_lease_device(dev);
+	if (!runtime)
+		return -ENODEV;
+
+	mutex_lock(&runtime->provider_lock);
+	if (runtime->provider_state !=
+			MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY)
+		goto unavailable;
+	if (runtime->external_users == UINT_MAX)
+		goto overflow;
+	lease->device = get_device(dev);
+	if (!lease->device)
+		goto unavailable;
+	runtime->external_users++;
+	mutex_unlock(&runtime->provider_lock);
+	return 0;
+
+overflow:
+	mutex_unlock(&runtime->provider_lock);
+	return -EOVERFLOW;
+unavailable:
+	mutex_unlock(&runtime->provider_lock);
+	return -ESHUTDOWN;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_resource_lease_acquire);
+
+int mt6797_consys_runtime_resource_lease_release(
+		struct mt6797_consys_runtime_resource_lease *lease)
+{
+	struct mt6797_consys_runtime *runtime;
+	struct device *dev;
+
+	if (!lease || !lease->device)
+		return -EINVAL;
+	dev = lease->device;
+	runtime = mt6797_consys_runtime_from_lease_device(dev);
+	if (!runtime)
+		return -ESHUTDOWN;
+
+	mutex_lock(&runtime->provider_lock);
+	if (runtime->identity_external || !runtime->external_users) {
+		mutex_unlock(&runtime->provider_lock);
+		return -EBUSY;
+	}
+	runtime->external_users--;
+	lease->device = NULL;
+	if (!runtime->external_users)
+		wake_up_all(&runtime->provider_wait);
+	mutex_unlock(&runtime->provider_lock);
+	put_device(dev);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_resource_lease_release);
+
+int mt6797_consys_runtime_platform_identity_acquire(
+		struct mt6797_consys_runtime_resource_lease *resources,
+		struct mt6797_consys_runtime_provider_lease *lease)
+{
+	struct mt6797_consys_runtime *runtime;
+	struct device *dev;
+	int ret;
+
+	if (!resources || !resources->device || !lease || lease->device)
+		return -EINVAL;
+	dev = resources->device;
+	runtime = mt6797_consys_runtime_from_lease_device(dev);
+	if (!runtime)
+		return -ESHUTDOWN;
+
+	mutex_lock(&runtime->provider_lock);
+	if (runtime->provider_state !=
+			MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY ||
+	    !runtime->external_users)
+		ret = -ESHUTDOWN;
+	else if (runtime->external_users == UINT_MAX)
+		ret = -EOVERFLOW;
+	else {
+		ret = mt6797_consys_runtime_lease_acquire(&runtime->lifecycle,
+							 &runtime->lease);
+		if (!ret) {
+			runtime->lease_held = true;
+			runtime->provider_state =
+				MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD;
+			lease->device = get_device(dev);
+			if (!lease->device) {
+				mt6797_consys_runtime_lease_unpin(&runtime->lease);
+				ret = mt6797_consys_runtime_lease_release(&runtime->lease);
+				runtime->lease_held = false;
+				runtime->provider_state = ret ?
+					MT6797_CONSYS_RUNTIME_PROVIDER_ERROR :
+					MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY;
+			} else {
+				ret = mt6797_consys_runtime_lease_pin(&runtime->lease);
+				if (ret) {
+					put_device(lease->device);
+					lease->device = NULL;
+					mt6797_consys_runtime_lease_release(&runtime->lease);
+					runtime->lease_held = false;
+					runtime->provider_state =
+						MT6797_CONSYS_RUNTIME_PROVIDER_ERROR;
+					goto identity_out;
+				}
+				lease->identity = &runtime->lease;
+				lease->owns_identity = true;
+				runtime->identity_external = true;
+				runtime->external_users++;
+			}
+		}
+	}
+identity_out:
+	mutex_unlock(&runtime->provider_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_platform_identity_acquire);
+
+int mt6797_consys_runtime_platform_identity_release(
+		struct mt6797_consys_runtime_provider_lease *lease)
+{
+	struct mt6797_consys_runtime *runtime;
+	struct device *dev;
+	int ret;
+
+	if (!lease || !lease->device || !lease->identity ||
+	    !lease->owns_identity)
+		return -EINVAL;
+	dev = lease->device;
+	runtime = mt6797_consys_runtime_from_lease_device(dev);
+	if (!runtime)
+		return -ESHUTDOWN;
+
+	mutex_lock(&runtime->provider_lock);
+	if (lease->identity != &runtime->lease || !runtime->identity_external) {
+		ret = -EINVAL;
+	} else {
+		mt6797_consys_runtime_lease_unpin(lease->identity);
+		ret = mt6797_consys_runtime_lease_release(&runtime->lease);
+		if (!ret) {
+			runtime->lease_held = false;
+			runtime->identity_external = false;
+			runtime->provider_state =
+				MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY;
+			lease->device = NULL;
+			lease->identity = NULL;
+			lease->owns_identity = false;
+			runtime->external_users--;
+			if (!runtime->external_users)
+				wake_up_all(&runtime->provider_wait);
+		}
+	}
+	mutex_unlock(&runtime->provider_lock);
+	if (!ret)
+		put_device(dev);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_platform_identity_release);
 
 int mt6797_consys_runtime_platform_lease_acquire(struct device *dev,
 		struct mt6797_consys_runtime_provider_lease *lease)
@@ -547,6 +722,7 @@ int mt6797_consys_runtime_platform_lease_acquire(struct device *dev,
 				ret = -ENODEV;
 			} else {
 				lease->identity = &runtime->lease;
+				lease->owns_identity = false;
 				runtime->external_users++;
 			}
 		}
@@ -571,13 +747,15 @@ int mt6797_consys_runtime_platform_lease_release(
 		return -ESHUTDOWN;
 
 	mutex_lock(&runtime->provider_lock);
-	if (lease->identity != &runtime->lease || !runtime->external_users) {
+	if (lease->owns_identity || lease->identity != &runtime->lease ||
+	    !runtime->external_users) {
 		ret = -EINVAL;
 	} else {
 		mt6797_consys_runtime_lease_unpin(lease->identity);
 		runtime->external_users--;
 		lease->device = NULL;
 		lease->identity = NULL;
+		lease->owns_identity = false;
 		if (!runtime->external_users)
 			wake_up_all(&runtime->provider_wait);
 	}
@@ -697,16 +875,8 @@ static int mt6797_consys_runtime_probe(struct platform_device *pdev)
 		goto put_domain_args;
 	runtime->provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY;
 
-	ret = mt6797_consys_runtime_lease_acquire(&runtime->lifecycle,
-							   &runtime->lease);
-	if (ret) {
-		mt6797_consys_runtime_log_state(runtime, "runtime identity", ret);
-		goto put_domain_args;
-	}
-	runtime->lease_held = true;
-	runtime->provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD;
 	platform_set_drvdata(pdev, runtime);
-	mt6797_consys_runtime_log_state(runtime, "runtime identity", 0);
+	mt6797_consys_runtime_log_state(runtime, "runtime resources", 0);
 	return 0;
 
 put_domain_args:
@@ -729,14 +899,15 @@ static void mt6797_consys_runtime_remove(struct platform_device *pdev)
 	mutex_unlock(&runtime->provider_lock);
 	mt6797_consys_runtime_wait_external(runtime);
 
-	ret = mt6797_consys_runtime_lease_release(&runtime->lease);
-	if (ret) {
-		/* No consumer is wired yet: failure means a future contract was broken. */
-		mt6797_consys_runtime_log_state(runtime, "runtime release", ret);
-		mt6797_consys_runtime_release_domain(runtime);
-		return;
+	if (runtime->lease_held) {
+		ret = mt6797_consys_runtime_lease_release(&runtime->lease);
+		if (ret) {
+			mt6797_consys_runtime_log_state(runtime, "runtime release", ret);
+			mt6797_consys_runtime_release_domain(runtime);
+			return;
+		}
+		runtime->lease_held = false;
 	}
-	runtime->lease_held = false;
 	platform_set_drvdata(pdev, NULL);
 	mt6797_consys_runtime_put_domain_args(runtime);
 	dev_info(&pdev->dev, "runtime lease released with reset asserted\n");
@@ -776,12 +947,21 @@ enum mt6797_consys_runtime_test_call {
 	MT6797_CONSYS_RUNTIME_TEST_VCN18_OFF,
 };
 
+struct mt6797_consys_handoff_test_trace {
+	unsigned int next;
+	unsigned int emi_complete;
+	unsigned int identity_first;
+	unsigned int identity_last;
+	unsigned int postid_first;
+};
+
 struct mt6797_consys_runtime_test_backend {
 	enum mt6797_consys_runtime_test_call calls[16];
 	u32 delays[2];
 	unsigned int call_count;
 	unsigned int delay_count;
 	int fail_call;
+	struct mt6797_consys_handoff_test_trace *trace;
 };
 
 static int mt6797_consys_runtime_test_record(void *context,
@@ -789,6 +969,14 @@ static int mt6797_consys_runtime_test_record(void *context,
 {
 	struct mt6797_consys_runtime_test_backend *backend = context;
 
+	if (backend->trace) {
+		unsigned int event = ++backend->trace->next;
+
+		if (call == MT6797_CONSYS_RUNTIME_TEST_VCN18_ON)
+			backend->trace->identity_first = event;
+		else if (call == MT6797_CONSYS_RUNTIME_TEST_POLL)
+			backend->trace->identity_last = event;
+	}
 	if (backend->call_count < ARRAY_SIZE(backend->calls))
 		backend->calls[backend->call_count++] = call;
 	return backend->fail_call == call ? -EIO : 0;
@@ -1009,6 +1197,388 @@ static void mt6797_consys_runtime_test_provider_setup(
 	runtime->lease_held = true;
 	runtime->provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD;
 }
+
+#if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_HANDOFF_KUNIT_TEST)
+
+static void mt6797_consys_runtime_test_resources_setup(
+		struct kunit *test, struct mt6797_consys_runtime *runtime,
+		struct device *dev, struct mt6797_consys_runtime_test_backend *backend)
+{
+	device_initialize(dev);
+	dev->release = mt6797_consys_runtime_test_device_release;
+	runtime->dev = dev;
+	mutex_init(&runtime->provider_lock);
+	init_waitqueue_head(&runtime->provider_wait);
+	runtime->provider_state =
+		MT6797_CONSYS_RUNTIME_PROVIDER_UNINITIALIZED;
+	dev_set_drvdata(dev, runtime);
+	mt6797_consys_runtime_test_init(test, &runtime->lifecycle, backend);
+	runtime->provider_state = MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY;
+}
+
+enum mt6797_consys_handoff_test_call {
+	MT6797_CONSYS_HANDOFF_TEST_EMI_PROTECT,
+	MT6797_CONSYS_HANDOFF_TEST_EMI_REMAP,
+	MT6797_CONSYS_HANDOFF_TEST_EMI_MAP_CLEAR,
+	MT6797_CONSYS_HANDOFF_TEST_MBIST,
+	MT6797_CONSYS_HANDOFF_TEST_AFE,
+	MT6797_CONSYS_HANDOFF_TEST_RELEASE_RESET,
+	MT6797_CONSYS_HANDOFF_TEST_ASSERT_RESET,
+};
+
+struct mt6797_consys_handoff_test_backend {
+	enum mt6797_consys_handoff_test_call calls[16];
+	unsigned int call_count;
+	enum mt6797_consys_handoff_test_call fail_call;
+	bool fail_assert_reset;
+	struct mt6797_consys_runtime *runtime;
+	unsigned int emi_external_users;
+	struct mt6797_consys_handoff_test_trace trace;
+};
+
+static int mt6797_consys_handoff_test_record(
+		struct mt6797_consys_handoff_test_backend *backend,
+		enum mt6797_consys_handoff_test_call call)
+{
+	unsigned int event;
+
+	if (backend->trace.next < UINT_MAX)
+		event = ++backend->trace.next;
+	else
+		event = UINT_MAX;
+	if (call == MT6797_CONSYS_HANDOFF_TEST_EMI_MAP_CLEAR)
+		backend->trace.emi_complete = event;
+	else if (call == MT6797_CONSYS_HANDOFF_TEST_MBIST)
+		backend->trace.postid_first = event;
+	if (call == MT6797_CONSYS_HANDOFF_TEST_EMI_PROTECT && backend->runtime)
+		backend->emi_external_users = backend->runtime->external_users;
+	if (backend->call_count < ARRAY_SIZE(backend->calls))
+		backend->calls[backend->call_count++] = call;
+	if (backend->fail_call == call ||
+		(backend->fail_assert_reset &&
+		 call == MT6797_CONSYS_HANDOFF_TEST_ASSERT_RESET))
+		return -EIO;
+	return 0;
+}
+
+static int mt6797_consys_handoff_test_emi_protect(
+		void *context, const struct mt6797_consys_emi_layout *layout)
+{
+	return mt6797_consys_handoff_test_record(context,
+		MT6797_CONSYS_HANDOFF_TEST_EMI_PROTECT);
+}
+
+static int mt6797_consys_handoff_test_emi_remap(
+		void *context, const struct mt6797_consys_emi_layout *layout)
+{
+	return mt6797_consys_handoff_test_record(context,
+		MT6797_CONSYS_HANDOFF_TEST_EMI_REMAP);
+}
+
+static int mt6797_consys_handoff_test_emi_map_clear(
+		void *context, const struct mt6797_consys_emi_layout *layout)
+{
+	return mt6797_consys_handoff_test_record(context,
+		MT6797_CONSYS_HANDOFF_TEST_EMI_MAP_CLEAR);
+}
+
+static const struct mt6797_consys_emi_ops mt6797_consys_handoff_test_emi_ops = {
+	.abi = MT6797_CONSYS_EMI_ABI,
+	.protect = mt6797_consys_handoff_test_emi_protect,
+	.remap = mt6797_consys_handoff_test_emi_remap,
+	.map_clear = mt6797_consys_handoff_test_emi_map_clear,
+};
+
+static int mt6797_consys_handoff_test_mbist(void *context)
+{
+	return mt6797_consys_handoff_test_record(context,
+		MT6797_CONSYS_HANDOFF_TEST_MBIST);
+}
+
+static int mt6797_consys_handoff_test_afe(void *context)
+{
+	return mt6797_consys_handoff_test_record(context,
+		MT6797_CONSYS_HANDOFF_TEST_AFE);
+}
+
+static int mt6797_consys_handoff_test_release_reset(void *context)
+{
+	return mt6797_consys_handoff_test_record(context,
+		MT6797_CONSYS_HANDOFF_TEST_RELEASE_RESET);
+}
+
+static int mt6797_consys_handoff_test_assert_reset(void *context)
+{
+	return mt6797_consys_handoff_test_record(context,
+		MT6797_CONSYS_HANDOFF_TEST_ASSERT_RESET);
+}
+
+static const struct mt6797_consys_postid_ops
+mt6797_consys_handoff_test_postid_ops = {
+	.abi = MT6797_CONSYS_POSTID_ABI,
+	.configure_mbist = mt6797_consys_handoff_test_mbist,
+	.configure_afe = mt6797_consys_handoff_test_afe,
+	.release_reset = mt6797_consys_handoff_test_release_reset,
+	.assert_reset = mt6797_consys_handoff_test_assert_reset,
+};
+
+static void mt6797_consys_handoff_test_setup(struct kunit *test,
+		struct mt6797_consys_handoff_owner *handoff,
+		struct mt6797_consys_runtime *runtime, struct device *dev,
+		struct mt6797_consys_runtime_test_backend *runtime_backend,
+		struct mt6797_consys_handoff_test_backend *backend,
+		struct mt6797_consys_emi_owner *emi,
+		struct mt6797_consys_postid_owner *postid,
+		struct mt6797_consys_emi_layout *layout)
+{
+	mt6797_consys_runtime_test_resources_setup(test, runtime, dev,
+		runtime_backend);
+	backend->runtime = runtime;
+	runtime_backend->trace = &backend->trace;
+	KUNIT_ASSERT_EQ(test, mt6797_consys_emi_init(emi,
+		&mt6797_consys_handoff_test_emi_ops, backend), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_init(postid,
+		&runtime->lifecycle, &mt6797_consys_handoff_test_postid_ops,
+		backend), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_emi_layout_build(0x40000000,
+		MT6797_CONSYS_SHARED_MEM_SIZE, layout), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_handoff_init(handoff, emi, postid,
+		dev), 0);
+}
+
+static void mt6797_consys_handoff_test_cleanup(
+		struct mt6797_consys_handoff_owner *handoff,
+		struct mt6797_consys_runtime *runtime, struct device *dev,
+		struct mt6797_consys_handoff_test_backend *backend,
+		struct mt6797_consys_postid_owner *postid)
+{
+	backend->fail_call = (enum mt6797_consys_handoff_test_call)-1;
+	backend->fail_assert_reset = false;
+	if (mt6797_consys_postid_state(postid) != MT6797_CONSYS_POSTID_IDLE)
+		mt6797_consys_postid_stop(postid);
+	if (handoff->identity_held)
+		mt6797_consys_runtime_platform_identity_release(&handoff->identity);
+	if (handoff->resources_held)
+		mt6797_consys_runtime_resource_lease_release(&handoff->resources);
+	put_device(dev);
+}
+
+static void mt6797_consys_handoff_test_order_and_fence(struct kunit *test)
+{
+	static const enum mt6797_consys_handoff_test_call expected[] = {
+		MT6797_CONSYS_HANDOFF_TEST_EMI_PROTECT,
+		MT6797_CONSYS_HANDOFF_TEST_EMI_REMAP,
+		MT6797_CONSYS_HANDOFF_TEST_EMI_MAP_CLEAR,
+		MT6797_CONSYS_HANDOFF_TEST_MBIST,
+		MT6797_CONSYS_HANDOFF_TEST_AFE,
+		MT6797_CONSYS_HANDOFF_TEST_RELEASE_RESET,
+		MT6797_CONSYS_HANDOFF_TEST_ASSERT_RESET,
+	};
+	struct mt6797_consys_runtime_test_backend runtime_backend = { };
+	struct mt6797_consys_handoff_test_backend backend = {
+		.fail_call = (enum mt6797_consys_handoff_test_call)-1,
+	};
+	struct mt6797_consys_handoff_owner handoff;
+	struct mt6797_consys_runtime runtime = { };
+	struct mt6797_consys_emi_owner emi;
+	struct mt6797_consys_postid_owner postid;
+	struct mt6797_consys_emi_layout layout;
+	struct device dev = { };
+	unsigned int i;
+
+	mt6797_consys_handoff_test_setup(test, &handoff, &runtime, &dev,
+		&runtime_backend, &backend, &emi, &postid, &layout);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_platform_state(&dev),
+		MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_handoff_start(&handoff, &layout,
+		false), -EPERM);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_handoff_start(&handoff, &layout,
+		true), 0);
+	KUNIT_EXPECT_EQ(test, backend.emi_external_users, 1U);
+	KUNIT_EXPECT_TRUE(test, backend.trace.emi_complete &&
+		backend.trace.identity_first > backend.trace.emi_complete &&
+		backend.trace.identity_last < backend.trace.postid_first);
+	KUNIT_EXPECT_EQ(test, runtime.provider_state,
+		MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD);
+	KUNIT_EXPECT_EQ(test, runtime.external_users, 2U);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_release(&runtime.lease),
+		-EBUSY);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_handoff_stop(&handoff), 0);
+	KUNIT_EXPECT_EQ(test, runtime.provider_state,
+		MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY);
+	KUNIT_EXPECT_EQ(test, runtime.external_users, 0U);
+	KUNIT_EXPECT_EQ(test, backend.call_count, ARRAY_SIZE(expected));
+	for (i = 0; i < ARRAY_SIZE(expected); i++)
+		KUNIT_EXPECT_EQ(test, backend.calls[i], expected[i]);
+	mt6797_consys_handoff_test_cleanup(&handoff, &runtime, &dev,
+		&backend, &postid);
+}
+
+static void mt6797_consys_handoff_test_identity_and_emi_failures(
+		struct kunit *test)
+{
+	static const enum mt6797_consys_handoff_test_call failures[] = {
+		MT6797_CONSYS_HANDOFF_TEST_EMI_PROTECT,
+		MT6797_CONSYS_HANDOFF_TEST_EMI_REMAP,
+		MT6797_CONSYS_HANDOFF_TEST_EMI_MAP_CLEAR,
+	};
+	struct mt6797_consys_runtime_test_backend runtime_backend;
+	struct mt6797_consys_handoff_test_backend backend;
+	struct mt6797_consys_handoff_owner handoff;
+	struct mt6797_consys_runtime runtime;
+	struct mt6797_consys_emi_owner emi;
+	struct mt6797_consys_postid_owner postid;
+	struct mt6797_consys_emi_layout layout;
+	struct device dev;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(failures); i++) {
+		runtime_backend = (struct mt6797_consys_runtime_test_backend){ };
+		backend = (struct mt6797_consys_handoff_test_backend){
+			.fail_call = failures[i],
+		};
+		runtime = (struct mt6797_consys_runtime){ };
+		dev = (struct device){ };
+		mt6797_consys_handoff_test_setup(test, &handoff, &runtime, &dev,
+			&runtime_backend, &backend, &emi, &postid, &layout);
+		KUNIT_EXPECT_EQ(test,
+			mt6797_consys_handoff_start(&handoff, &layout, true), -EIO);
+		KUNIT_EXPECT_EQ(test, mt6797_consys_emi_state(&emi),
+			MT6797_CONSYS_EMI_ERROR);
+		KUNIT_EXPECT_EQ(test, runtime.external_users, 0U);
+		mt6797_consys_handoff_test_cleanup(&handoff, &runtime, &dev,
+			&backend, &postid);
+	}
+
+	runtime_backend = (struct mt6797_consys_runtime_test_backend){ };
+	backend = (struct mt6797_consys_handoff_test_backend){
+		.fail_call = (enum mt6797_consys_handoff_test_call)-1,
+	};
+	runtime = (struct mt6797_consys_runtime){ };
+	dev = (struct device){ };
+	mt6797_consys_handoff_test_setup(test, &handoff, &runtime, &dev,
+		&runtime_backend, &backend, &emi, &postid, &layout);
+	runtime_backend.fail_call = MT6797_CONSYS_RUNTIME_TEST_DOMAIN_ON;
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_handoff_start(&handoff, &layout, true), -EIO);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_emi_state(&emi),
+		MT6797_CONSYS_EMI_ACTIVE);
+	KUNIT_EXPECT_EQ(test, backend.call_count, 3U);
+	KUNIT_EXPECT_EQ(test, runtime.external_users, 0U);
+	mt6797_consys_handoff_test_cleanup(&handoff, &runtime, &dev,
+		&backend, &postid);
+}
+
+static void mt6797_consys_handoff_test_postid_failures(struct kunit *test)
+{
+	static const enum mt6797_consys_handoff_test_call failures[] = {
+		MT6797_CONSYS_HANDOFF_TEST_MBIST,
+		MT6797_CONSYS_HANDOFF_TEST_AFE,
+		MT6797_CONSYS_HANDOFF_TEST_RELEASE_RESET,
+	};
+	struct mt6797_consys_runtime_test_backend runtime_backend;
+	struct mt6797_consys_handoff_test_backend backend;
+	struct mt6797_consys_handoff_owner handoff;
+	struct mt6797_consys_runtime runtime;
+	struct mt6797_consys_emi_owner emi;
+	struct mt6797_consys_postid_owner postid;
+	struct mt6797_consys_emi_layout layout;
+	struct device dev;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(failures); i++) {
+		runtime_backend = (struct mt6797_consys_runtime_test_backend){ };
+		backend = (struct mt6797_consys_handoff_test_backend){
+			.fail_call = failures[i],
+		};
+		runtime = (struct mt6797_consys_runtime){ };
+		dev = (struct device){ };
+		mt6797_consys_handoff_test_setup(test, &handoff, &runtime, &dev,
+			&runtime_backend, &backend, &emi, &postid, &layout);
+		KUNIT_EXPECT_EQ(test,
+			mt6797_consys_handoff_start(&handoff, &layout, true), -EIO);
+		KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&postid),
+			MT6797_CONSYS_POSTID_IDLE);
+		KUNIT_EXPECT_EQ(test, runtime.external_users, 0U);
+		KUNIT_EXPECT_EQ(test, backend.call_count,
+			(unsigned int)failures[i] + 2U);
+		KUNIT_EXPECT_EQ(test, backend.calls[backend.call_count - 1],
+			MT6797_CONSYS_HANDOFF_TEST_ASSERT_RESET);
+		mt6797_consys_handoff_test_cleanup(&handoff, &runtime, &dev,
+			&backend, &postid);
+	}
+}
+
+static void mt6797_consys_handoff_test_reset_failure_fences(
+		struct kunit *test)
+{
+	struct mt6797_consys_runtime_test_backend runtime_backend = { };
+	struct mt6797_consys_handoff_test_backend backend = {
+		.fail_call = MT6797_CONSYS_HANDOFF_TEST_MBIST,
+		.fail_assert_reset = true,
+	};
+	struct mt6797_consys_handoff_owner handoff;
+	struct mt6797_consys_runtime runtime = { };
+	struct mt6797_consys_emi_owner emi;
+	struct mt6797_consys_postid_owner postid;
+	struct mt6797_consys_emi_layout layout;
+	struct device dev = { };
+
+	mt6797_consys_handoff_test_setup(test, &handoff, &runtime, &dev,
+		&runtime_backend, &backend, &emi, &postid, &layout);
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_handoff_start(&handoff, &layout, true), -EIO);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&postid),
+		MT6797_CONSYS_POSTID_ERROR);
+	KUNIT_EXPECT_EQ(test, runtime.external_users, 2U);
+	mt6797_consys_handoff_test_cleanup(&handoff, &runtime, &dev,
+		&backend, &postid);
+}
+
+static void mt6797_consys_handoff_test_stop_reset_failure(
+		struct kunit *test)
+{
+	struct mt6797_consys_runtime_test_backend runtime_backend = { };
+	struct mt6797_consys_handoff_test_backend backend = {
+		.fail_call = (enum mt6797_consys_handoff_test_call)-1,
+	};
+	struct mt6797_consys_handoff_owner handoff;
+	struct mt6797_consys_runtime runtime = { };
+	struct mt6797_consys_emi_owner emi;
+	struct mt6797_consys_postid_owner postid;
+	struct mt6797_consys_emi_layout layout;
+	struct device dev = { };
+
+	mt6797_consys_handoff_test_setup(test, &handoff, &runtime, &dev,
+		&runtime_backend, &backend, &emi, &postid, &layout);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_handoff_start(&handoff, &layout, true), 0);
+	backend.fail_assert_reset = true;
+	KUNIT_EXPECT_EQ(test, mt6797_consys_handoff_stop(&handoff), -EIO);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_handoff_state(&handoff),
+		MT6797_CONSYS_HANDOFF_ERROR);
+	KUNIT_EXPECT_EQ(test, runtime.external_users, 2U);
+	mt6797_consys_handoff_test_cleanup(&handoff, &runtime, &dev,
+		&backend, &postid);
+}
+
+static struct kunit_case mt6797_consys_handoff_test_cases[] = {
+	KUNIT_CASE(mt6797_consys_handoff_test_order_and_fence),
+	KUNIT_CASE(mt6797_consys_handoff_test_identity_and_emi_failures),
+	KUNIT_CASE(mt6797_consys_handoff_test_postid_failures),
+	KUNIT_CASE(mt6797_consys_handoff_test_reset_failure_fences),
+	KUNIT_CASE(mt6797_consys_handoff_test_stop_reset_failure),
+	{ }
+};
+
+static struct kunit_suite mt6797_consys_handoff_test_suite = {
+	.name = "mt6797-consys-handoff",
+	.test_cases = mt6797_consys_handoff_test_cases,
+};
+
+kunit_test_suite(mt6797_consys_handoff_test_suite);
+
+#endif
 
 static void mt6797_consys_runtime_test_provider_lease_and_remove_fence(
 		struct kunit *test)

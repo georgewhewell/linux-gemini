@@ -339,6 +339,31 @@ config MTK_MT6797_CONSYS_EMI_LAYOUT_KUNIT_TEST
 	  It is suitable for test kernels and QEMU and has no Gemini hardware
 	  dependency.
 
+config MTK_MT6797_CONSYS_HANDOFF
+	tristate "Dormant MT6797 CONSYS true-chronology handoff owner"
+	depends on MTK_MT6797_CONSYS_RUNTIME
+	depends on MTK_MT6797_CONSYS_POSTID
+	depends on MTK_MT6797_CONSYS_EMI_LAYOUT
+	help
+	  Build the default-disabled coordinator which holds a resources-only
+	  provider lease, performs shared-EMI setup, activates identity, and then
+	  runs MBIST, AFE, and reset release through callback owners. It has no
+	  Device Tree caller and performs no hardware access by itself.
+
+config MTK_MT6797_CONSYS_HANDOFF_KUNIT_TEST
+	bool "KUnit tests for the MT6797 true-chronology handoff owner"
+	depends on KUNIT=y
+	depends on MTK_MT6797_CONSYS_HANDOFF=y
+	depends on MTK_MT6797_CONSYS_RUNTIME_KUNIT_TEST=y
+	default n
+	help
+	  Exercise resources-before-identity ordering, removal fencing, reverse
+	  unwind, and failure boundaries using only fake callback owners. No
+	  Device Tree, MMIO, firmware, transport, or radio is used.
+	  It is suitable for KUnit-compatible test kernels and has no hardware
+	  dependency.
+
+
 config MTK_MT6797_CONSYS_LIVE
 	tristate "MediaTek MT6797 CONSYS bounded identity experiment"
 	depends on ARM64 && ARCH_MEDIATEK && OF && PM
@@ -366,15 +391,17 @@ config MTK_MT6797_CONSYS_RUNTIME
 	help
 	  Build the separately named, default-disabled MT6797 CONSYS runtime
 	  lifecycle provider. It validates the exact Gemini resource layout and
-	  2 MiB no-map reservation, registers the BGF IRQ disabled, then holds one
-	  exclusive core runtime lease across the vendor-reviewed identity prefix:
-	  VCN18, 240 us, VCN28, sleep mask, CONMCU reset, PWRON configuration,
-	  SCPSYS CONN vote, 30 us, and chip ID 0x0279.
+	  2 MiB no-map reservation, registers the BGF IRQ disabled, and publishes
+	  validated resources. A separate coordinator may later acquire the
+	  exclusive core lease for the vendor identity prefix: VCN18, 240 us,
+	  VCN28, sleep mask, CONMCU reset, PWRON configuration, SCPSYS CONN vote,
+	  30 us, and chip ID 0x0279.
 
 	  The shipped Gemini node does not match this driver. A hand-authored node
 	  must be enabled, carry mediatek,experimental-runtime, and the read-only
 	  mt6797_consys_runtime.enable_experimental_runtime=1 parameter must be
-	  supplied. It never releases reset, maps or clears shared EMI, accesses AFE,
+	  supplied. The provider itself never activates identity, releases reset,
+	  maps or clears shared EMI, accesses AFE,
 	  requests the WDT IRQ, initializes BTIF, loads firmware, sends WMT, or
 	  enables Wi-Fi, Bluetooth, GNSS, or FM. A failed identity transaction
 	  unwinds rail and domain votes in reverse order but intentionally does not

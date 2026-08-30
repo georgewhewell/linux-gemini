@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA MT6351 fuel-gauge qualification.
+ *
+ * The MT6351 is instantiated by the mainline MT6797 PMIC wrapper. The vendor
+ * gauge first enables/configures FGADC and then uses a write/latch/clear
+ * sequence for a coherent current sample. This overlay only enables a child
+ * that performs the vendor's direct FG_R_CURR register read plus FGADC_CON0.
+ * It does not initialize, calibrate, latch, clear, reset, or service FGADC.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&mt6351fg {
+	status = "okay";
+};

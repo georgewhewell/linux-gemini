@@ -45,6 +45,16 @@ config GENERIC_ADC_BATTERY
 	  Say Y here to enable support for the generic battery driver
 	  which uses IIO framework to read adc.
 
+config MT6351_FG_READONLY
+	tristate "MediaTek MT6351 read-only fuel-gauge qualification"
+	depends on MFD_MT6397
+	help
+	  This driver provides an explicitly opt-in, read-only qualification path
+	  for the MT6351 fuel-gauge ADC. It exposes raw control and current values
+	  without initializing the gauge, latching a sample, or reporting calibrated
+	  battery capacity. Say M to keep this diagnostic separate from the normal
+	  boot path.
+
 config IP5XXX_POWER
 	tristate "Injoinic IP5xxx power bank IC driver"
 	depends on I2C

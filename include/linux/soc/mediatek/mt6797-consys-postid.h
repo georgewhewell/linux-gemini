@@ -34,7 +34,7 @@ struct mt6797_consys_postid_owner {
 	struct mt6797_consys_lifecycle *lifecycle;
 	const struct mt6797_consys_postid_ops *ops;
 	void *context;
-	struct mt6797_consys_runtime_lease *lease;
+	const struct mt6797_consys_runtime_lease *lease;
 	struct mutex lock;
 	enum mt6797_consys_postid_state state;
 };
@@ -47,7 +47,7 @@ int mt6797_consys_postid_init(
 /* @experiment_gate is independent of the identity provider's gate. */
 int mt6797_consys_postid_start(
 		struct mt6797_consys_postid_owner *owner,
-		struct mt6797_consys_runtime_lease *lease, bool experiment_gate);
+		const struct mt6797_consys_runtime_lease *lease, bool experiment_gate);
 int mt6797_consys_postid_stop(struct mt6797_consys_postid_owner *owner);
 enum mt6797_consys_postid_state
 mt6797_consys_postid_state(struct mt6797_consys_postid_owner *owner);

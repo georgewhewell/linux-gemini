@@ -49,6 +49,7 @@ obj-$(CONFIG_MTK_MT6797_CONSYS_POSTID) += mt6797-consys-postid.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_POSTID_KUNIT_TEST) += mt6797-consys-postid-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_EMI_LAYOUT) += mt6797-consys-emi.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_EMI_LAYOUT_KUNIT_TEST) += mt6797-consys-emi-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_CONSYS_HANDOFF) += mt6797-consys-handoff.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_LIVE) += mt6797-consys-live.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_RUNTIME) += mt6797-consys-runtime.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_RUNTIME_CONTROLLER) += mt6797-consys-runtime-controller.o

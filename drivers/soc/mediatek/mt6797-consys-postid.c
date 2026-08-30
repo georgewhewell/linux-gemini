@@ -24,7 +24,7 @@ static bool mt6797_consys_postid_ops_valid(
 static void mt6797_consys_postid_unpin(
 		struct mt6797_consys_postid_owner *owner)
 {
-	struct mt6797_consys_runtime_lease *lease = owner->lease;
+	const struct mt6797_consys_runtime_lease *lease = owner->lease;
 
 	if (!lease)
 		return;
@@ -70,7 +70,7 @@ EXPORT_SYMBOL_GPL(mt6797_consys_postid_init);
 
 int mt6797_consys_postid_start(
 		struct mt6797_consys_postid_owner *owner,
-		struct mt6797_consys_runtime_lease *lease, bool experiment_gate)
+		const struct mt6797_consys_runtime_lease *lease, bool experiment_gate)
 {
 	int ret;
 

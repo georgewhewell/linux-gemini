@@ -65,6 +65,12 @@ module_param_named(enable_experimental_platform_adapter,
 MODULE_PARM_DESC(enable_experimental_platform_adapter,
 		 "allow the dormant MT6797 BTIF PIO platform experiment (default: false)");
 
+static bool enable_experimental_pio_qualification;
+module_param_named(enable_experimental_pio_qualification,
+		   enable_experimental_pio_qualification, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_pio_qualification,
+		 "allow one MT6797 BTIF clocked PIO register qualification (default: false)");
+
 enum mt6797_btif_pio_platform_state {
 	MT6797_BTIF_PIO_PLATFORM_READY,
 	MT6797_BTIF_PIO_PLATFORM_LEASED,
@@ -625,7 +631,37 @@ static int mt6797_btif_pio_platform_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, adapter);
+	if (device_property_read_bool(dev,
+				      "mediatek,experimental-pio-qualification")) {
+		const struct mt6797_btif_pio_platform_lease *lease;
+		u32 tri_level;
+
+		if (!READ_ONCE(enable_experimental_pio_qualification)) {
+			ret = dev_err_probe(dev, -EPERM,
+					    "PIO qualification requires explicit parameter opt-in\n");
+			goto qualification_destroy;
+		}
+
+		lease = mt6797_btif_pio_platform_reserve(adapter);
+		if (IS_ERR(lease)) {
+			ret = PTR_ERR(lease);
+			goto qualification_destroy;
+		}
+		ret = mt6797_btif_pio_qualify(adapter->pio_lease, &tri_level);
+		mt6797_btif_pio_platform_close(lease);
+		if (ret)
+			goto qualification_destroy;
+
+		dev_info(dev,
+			 "BTIF PIO qualification passed; TRI_LVL=0x%08x, loopback disabled\n",
+			 tri_level);
+	}
 	return 0;
+
+qualification_destroy:
+	platform_set_drvdata(pdev, NULL);
+	mt6797_btif_pio_platform_destroy(adapter);
+	return ret;
 }
 
 static void mt6797_btif_pio_platform_remove(struct platform_device *pdev)
@@ -983,6 +1019,29 @@ static void mt6797_btif_pio_platform_test_clock_enable_failure(struct kunit *tes
 	mt6797_btif_pio_platform_test_stop(ctx);
 }
 
+static void mt6797_btif_pio_platform_test_qualification_releases_clock(struct kunit *test)
+{
+	struct mt6797_btif_pio_platform_test_context *ctx;
+	const struct mt6797_btif_pio_platform_lease *lease;
+	u32 tri_level;
+	int ret;
+
+	ctx = mt6797_btif_pio_platform_test_start(test);
+	lease = mt6797_btif_pio_platform_reserve(&ctx->adapter);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
+	ret = mt6797_btif_pio_qualify(ctx->adapter.pio_lease, &tri_level);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, tri_level, (u32)0x18);
+	KUNIT_EXPECT_EQ(test, ctx->bus->regs[0x04 / sizeof(u32)], BIT(0));
+	KUNIT_EXPECT_EQ(test, ctx->bus->regs[0x60 / sizeof(u32)], (u32)0x18);
+
+	mt6797_btif_pio_platform_close(lease);
+	KUNIT_EXPECT_EQ(test, ctx->bus->regs[0x04 / sizeof(u32)], 0U);
+	KUNIT_EXPECT_EQ(test, ctx->bus->clock_disable_count, 1U);
+	KUNIT_EXPECT_FALSE(test, ctx->bus->clock_disabled_before_pio_fence);
+	mt6797_btif_pio_platform_test_stop(ctx);
+}
+
 static void mt6797_btif_pio_platform_test_activate_close_once(struct kunit *test)
 {
 	struct mt6797_btif_pio_platform_test_context *ctx;
@@ -1091,6 +1150,7 @@ static struct kunit_case mt6797_btif_pio_platform_test_cases[] = {
 	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_contract),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_explicit_gate),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_clock_enable_failure),
+	KUNIT_CASE(mt6797_btif_pio_platform_test_qualification_releases_clock),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_activate_close_once),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_fence),
 #if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)

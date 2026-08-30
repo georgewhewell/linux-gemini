@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * One-shot MT6797 BTIF clocked PIO register qualification.
+ *
+ * Loading this overlay alone does not run the test: the platform adapter also
+ * rejects probe unless
+ * mt6797_btif_pio_platform.enable_experimental_pio_qualification=1 is set.
+ * It initialises only the vendor PIO core, checks the internal loopback bit
+ * can be set then cleared, clears IER, and drops btifc. It sends no BTIF,
+ * STP, WMT, firmware, or radio-function traffic and does not wake CONSYS.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/clock/mt6797-clk.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	fragment@0 {
+		target = <&btif>;
+		/* Describe the target's inherited root bus to dtc only. */
+		#address-cells = <2>;
+		#size-cells = <2>;
+		interrupt-parent = <&sysirq>;
+
+		__overlay__ {
+			compatible = "mediatek,mt6797-btif-pio";
+			reg = <0 0x1100c000 0 0x1000>;
+			interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&infrasys CLK_INFRA_BTIF>;
+			clock-names = "btifc";
+			/delete-property/ reg-shift;
+			/delete-property/ reg-io-width;
+			mediatek,experimental-pio-qualification;
+			status = "okay";
+		};
+	};
+};

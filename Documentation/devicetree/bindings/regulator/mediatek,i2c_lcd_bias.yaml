@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/mediatek,i2c_lcd_bias.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Planet Gemini PDA LP3101 display-bias regulator
+
+maintainers:
+  - Julien Etienne <julien.etienne@gmail.com>
+
+description: |
+  The Planet vendor kernel identifies the Gemini display-bias controller as
+  LP3101 on I2C1 address 0x3e.  The relevant vendor sources are
+  arch/arm64/boot/dts/cust_i2c.dtsi and
+  drivers/misc/mediatek/gpio/lp3101.c.  It enables the positive and negative
+  rails independently, waits 20 ms after both rails are enabled, then writes
+  0x0f to registers 0x00 and 0x01.  The vendor DT names this device
+  "mediatek,i2c_lcd_bias".  This binding retains that exact compatible string;
+  no independently sourced replacement compatible is known.
+
+  No LP3101 data sheet or output-voltage specification is available in the
+  recovered source.  Consequently this binding exposes only the two switched
+  outputs and deliberately has no voltage-range properties beyond the common
+  regulator constraints.
+
+allOf:
+  - $ref: /schemas/regulator/regulator.yaml#
+
+properties:
+  compatible:
+    const: mediatek,i2c_lcd_bias
+
+  reg:
+    maxItems: 1
+
+  outp:
+    type: object
+    $ref: /schemas/regulator/regulator.yaml#
+    unevaluatedProperties: false
+    description: Positive display-bias output.
+    properties:
+      enable-gpios:
+        maxItems: 1
+    required:
+      - regulator-name
+      - enable-gpios
+
+  outn:
+    type: object
+    $ref: /schemas/regulator/regulator.yaml#
+    unevaluatedProperties: false
+    description: Negative display-bias output.
+    properties:
+      enable-gpios:
+        maxItems: 1
+    required:
+      - regulator-name
+      - enable-gpios
+
+required:
+  - compatible
+  - reg
+  - outp
+  - outn
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        regulator@3e {
+            compatible = "mediatek,i2c_lcd_bias";
+            reg = <0x3e>;
+
+            outp {
+                regulator-name = "outp";
+                enable-gpios = <&gpio 60 GPIO_ACTIVE_HIGH>;
+            };
+
+            outn {
+                regulator-name = "outn";
+                enable-gpios = <&gpio 251 GPIO_ACTIVE_HIGH>;
+            };
+        };
+    };
+
+...

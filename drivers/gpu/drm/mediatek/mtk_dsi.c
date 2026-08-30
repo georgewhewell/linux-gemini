@@ -13,6 +13,7 @@
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
+#include <linux/soc/mediatek/mtk-mmsys.h>
 #include <linux/units.h>
 
 #include <video/mipi_display.h>
@@ -1198,6 +1199,9 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int irq_num;
 	int ret;
+
+	if (!mtk_mmsys_display_is_activated())
+		return -EPROBE_DEFER;
 
 	dsi = devm_drm_bridge_alloc(dev, struct mtk_dsi, bridge,
 				    &mtk_dsi_bridge_funcs);

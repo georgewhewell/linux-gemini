@@ -6,6 +6,7 @@
 #ifndef __MTK_MMSYS_H
 #define __MTK_MMSYS_H
 
+#include <linux/kconfig.h>
 #include <linux/mailbox_controller.h>
 #include <linux/mailbox/mtk-cmdq-mailbox.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
@@ -111,5 +112,19 @@ void mtk_mmsys_vpp_rsz_merge_config(struct device *dev, u32 id, bool enable,
 
 void mtk_mmsys_vpp_rsz_dcm_config(struct device *dev, bool enable,
 				  struct cmdq_pkt *cmdq_pkt);
+
+/*
+ * If a board describes mediatek,drm-on-demand on MMSYS, guarded display
+ * consumers remain inert until that MMSYS receives its one-way userspace
+ * activation request. Boards without the opt-in are unaffected.
+ */
+#if IS_REACHABLE(CONFIG_MTK_MMSYS)
+bool mtk_mmsys_display_is_activated(void);
+#else
+static inline bool mtk_mmsys_display_is_activated(void)
+{
+	return true;
+}
+#endif
 
 #endif /* __MTK_MMSYS_H */

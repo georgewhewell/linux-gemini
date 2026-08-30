@@ -9,6 +9,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
+#include <linux/soc/mediatek/mtk-mmsys.h>
 
 #include "mtk_crtc.h"
 #include "mtk_ddp_comp.h"
@@ -144,6 +145,9 @@ static int mtk_disp_ccorr_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct mtk_disp_ccorr *priv;
 	int ret;
+
+	if (!mtk_mmsys_display_is_activated())
+		return -EPROBE_DEFER;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)

@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/reset-controller.h>
 #include <linux/soc/mediatek/mtk-mmsys.h>
@@ -164,10 +165,41 @@ struct mtk_mmsys {
 	/* Serializes the one-way on-demand creation of the DRM child. */
 	struct mutex drm_lock;
 	bool drm_on_demand;
+	bool display_activated;
 	spinlock_t lock; /* protects mmsys_sw_rst_b reg */
 	struct reset_controller_dev rcdev;
 	struct cmdq_client_reg cmdq_base;
 };
+
+bool mtk_mmsys_display_is_activated(void)
+{
+	struct device_node *mmsys_np;
+	struct platform_device *mmsys_pdev;
+	struct mtk_mmsys *mmsys;
+	bool activated;
+
+	/*
+	 * MMSYS is the only binding which exposes drm-on-demand. Searching for
+	 * that opt-in rather than relying on every display binding to grow a
+	 * board-specific property lets the single gate cover IOMMU, SMI, DSI,
+	 * panel and DDP consumers alike.
+	 */
+	mmsys_np = of_find_node_with_property(NULL, "mediatek,drm-on-demand");
+	if (!mmsys_np)
+		return true;
+
+	mmsys_pdev = of_find_device_by_node(mmsys_np);
+	of_node_put(mmsys_np);
+	if (!mmsys_pdev)
+		return false;
+
+	mmsys = platform_get_drvdata(mmsys_pdev);
+	activated = mmsys && READ_ONCE(mmsys->display_activated);
+	put_device(&mmsys_pdev->dev);
+
+	return activated;
+}
+EXPORT_SYMBOL_GPL(mtk_mmsys_display_is_activated);
 
 static void mtk_mmsys_update_bits(struct mtk_mmsys *mmsys, u32 offset, u32 mask, u32 val,
 				  struct cmdq_pkt *cmdq_pkt)
@@ -407,10 +439,54 @@ static int mtk_mmsys_register_drm(struct mtk_mmsys *mmsys, struct device *dev)
 }
 
 /*
+ * The core deferred-probe trigger is deliberately private to driver core.
+ * Retry precisely the MT6797 consumers guarded by drm-on-demand instead of
+ * poking that internal mechanism or rescanning unrelated platform devices.
+ */
+static const struct of_device_id mtk_mmsys_on_demand_consumers[] = {
+	{ .compatible = "mediatek,mt6797-m4u" },
+	{ .compatible = "mediatek,mt6797-mipi-tx" },
+	{ .compatible = "mediatek,mt6797-smi-common" },
+	{ .compatible = "mediatek,mt6797-smi-larb" },
+	{ .compatible = "mediatek,mt6797-disp-mutex" },
+	{ .compatible = "mediatek,mt6797-disp-aal" },
+	{ .compatible = "mediatek,mt6797-disp-ccorr" },
+	{ .compatible = "mediatek,mt6797-disp-color" },
+	{ .compatible = "mediatek,mt6797-disp-gamma" },
+	{ .compatible = "mediatek,mt6797-disp-ovl" },
+	{ .compatible = "mediatek,mt6797-disp-ovl-2l" },
+	{ .compatible = "mediatek,mt6797-disp-rdma" },
+	{ .compatible = "mediatek,mt6797-dsi" },
+	{ /* sentinel */ },
+};
+
+static int mtk_mmsys_retry_consumer(struct device *dev, void *data)
+{
+	int ret;
+
+	if (!dev->driver && dev->of_node &&
+	    of_match_node(mtk_mmsys_on_demand_consumers, dev->of_node)) {
+		ret = device_attach(dev);
+		if (ret < 0 && ret != -EPROBE_DEFER)
+			dev_dbg(dev, "display activation retry failed: %d\n", ret);
+	}
+
+	return 0;
+}
+
+static void mtk_mmsys_retry_consumers(void)
+{
+	bus_for_each_dev(&platform_bus_type, NULL, NULL,
+			 mtk_mmsys_retry_consumer);
+}
+
+/*
  * Some boards need their early watchdog and userspace health checks alive
  * before the first DRM client modeset talks to the panel.  The clock child is
- * still created during probe, so the display components can bind normally;
- * only the mediatek-drm master is held until userspace explicitly releases it.
+ * still created during probe, while every guarded display consumer returns
+ * -EPROBE_DEFER. This keeps display clocks, power-domain users, SMI and
+ * panel control dormant until userspace explicitly releases the one-way
+ * boundary.
  */
 static ssize_t activate_drm_store(struct device *dev,
 				  struct device_attribute *attr, const char *buf,
@@ -427,9 +503,20 @@ static ssize_t activate_drm_store(struct device *dev,
 		return -EOPNOTSUPP;
 
 	mutex_lock(&mmsys->drm_lock);
-	if (!mmsys->drm_pdev)
+	if (!mmsys->drm_pdev) {
+		/*
+		 * Registering the master first can only defer while the gate is
+		 * closed.  Do not wake consumers until this succeeds, so a failed
+		 * request leaves the whole display path fail-closed.
+		 */
+		WRITE_ONCE(mmsys->display_activated, true);
 		ret = mtk_mmsys_register_drm(mmsys, dev);
+		if (ret)
+			WRITE_ONCE(mmsys->display_activated, false);
+	}
 	mutex_unlock(&mmsys->drm_lock);
+	if (!ret)
+		mtk_mmsys_retry_consumers();
 
 	return ret ? ret : count;
 }

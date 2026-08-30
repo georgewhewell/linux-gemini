@@ -26,6 +26,11 @@ mt6797-gemini-pda-power-observe-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-power-observe.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-power-observe.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-power-status.dtbo
+mt6797-gemini-pda-power-status-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-power-status.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-power-status.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-thermal-hall-observe.dtbo
 mt6797-gemini-pda-thermal-hall-observe-dtbs := \
 	mt6797-gemini-pda.dtb \

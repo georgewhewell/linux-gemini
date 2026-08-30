@@ -200,32 +200,35 @@ config MTK_WMT_KUNIT_TEST
 	  access an STP transport, or instantiate a connectivity device.
 
 config MTK_MT6797_CONSYS_WMT_INITIAL
-	tristate "Dormant MT6797 identity/default-query WMT controller"
+	tristate "Dormant MT6797 identity/chip-STP WMT controller"
 	depends on MTK_WMT
 	help
 	  Build the transport-neutral mandatory-STP WMT identity controller for
 	  MT6797. It emits only the vendor raw GEN_HCR, GEN_HVR, and GEN_FVR register
-	  reads followed by the first default-STP query/reply validation. The three
-	  masked results must identify chip ID 0x0279 and a known HVR. The sequence
-	  requires a future owner to supply an already-live mandatory-STP WMT endpoint
-	  and exact raw exchanges; the public entry is default-disabled.
+	  reads followed by the first default-STP query/reply validation and its
+	  exact chip-side set-full command/reply. The three masked results must
+	  identify chip ID 0x0279 and a known HVR. The sequence requires a future
+	  owner to supply an already-live mandatory-STP WMT endpoint and exact raw
+	  exchanges; the public entry is default-disabled.
 
 	  This has no Device Tree match and cannot acquire MMIO, power, clock, reset,
-	  firmware, patch, or radio resources. It does not switch STP mode or enable
-	  Wi-Fi, Bluetooth, GNSS, or FM. Any malformed, unexpected, or timed-out
-	  response permanently fences the instance; the transport owner must recover
-	  and provide a new endpoint.
+	  firmware, patch, or radio resources. It never switches local host STP
+	  mode, waits for a chip transition, or verifies full-mode STP. It cannot
+	  enable Wi-Fi, Bluetooth, GNSS, or FM. Any malformed, unexpected, timed-out,
+	  or out-of-order operation permanently fences the instance; the transport
+	  owner must recover and provide a new endpoint. It must not be composed with
+	  the PIO bootstrap controller, which owns the complete host/full handoff.
 
 config MTK_MT6797_CONSYS_WMT_INITIAL_KUNIT_TEST
-	bool "KUnit tests for MT6797 identity/default-query WMT controller"
+	bool "KUnit tests for MT6797 identity/chip-STP WMT controller"
 	depends on KUNIT=y
 	depends on MTK_MT6797_CONSYS_WMT_INITIAL=y
 	help
-	  Exercise exact HCR/HVR/FVR/default-query ordering and packet vectors,
-	  malformed reply rejection, unsupported chip/HVR rejection, stage timeout
-	  fencing, and the default-false public gate against an in-memory WMT
-	  transport. It does not instantiate a platform device or access Gemini
-	  hardware.
+	  Exercise exact HCR/HVR/FVR/default-query/set-full ordering and packet
+	  vectors, malformed reply rejection, unsupported chip/HVR rejection,
+	  stage timeout and out-of-order fencing, and the default-false public gate
+	  against an in-memory WMT transport. It does not instantiate a platform
+	  device or access Gemini hardware.
 
 config MTK_MT6797_A72_POWER
 	bool "MediaTek MT6797 Cortex-A72 power resource observer"

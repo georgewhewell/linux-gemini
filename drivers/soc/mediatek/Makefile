@@ -35,6 +35,7 @@ obj-$(CONFIG_MTK_INFRACFG) += mtk-infracfg.o
 obj-$(CONFIG_MTK_STP) += mtk-stp.o
 obj-$(CONFIG_MTK_STP_KUNIT_TEST) += mtk-stp-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_STP_SESSION) += mt6797-consys-stp-session.o
+obj-$(CONFIG_MTK_MT6797_BTIF_PIO) += mt6797-btif-pio.o
 obj-$(CONFIG_MTK_WMT) += mtk-wmt.o
 obj-$(CONFIG_MTK_WMT_KUNIT_TEST) += mtk-wmt-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_A72_POWER) += mt6797-a72-power.o

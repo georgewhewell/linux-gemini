@@ -98,6 +98,30 @@ config MTK_MT6797_CONSYS_STP_SESSION_KUNIT_TEST
 	  byte link. The test does not access Device Tree, MMIO, DMA, firmware or
 	  Gemini hardware.
 
+config MTK_MT6797_BTIF_PIO
+	tristate "MediaTek MT6797 dormant BTIF PIO transport owner"
+	depends on MTK_MT6797_CONSYS_STP_SESSION
+	help
+	  Build the default-disabled byte transport owner for the MT6797 BTIF PIO
+	  register protocol. It owns bounded PIO TX backpressure, RX framing input,
+	  and the single capability that may attach a full-STP session.
+
+	  This is not a platform driver. It does not map a register resource, obtain
+	  a clock, request or enable a Linux IRQ, wake/power/reset CONSYS, allocate
+	  DMA, request firmware, send WMT commands, enable a radio, or expose a
+	  userspace ABI. A separately reviewed owner must supply already-authorized
+	  register callbacks and a synchronized threaded IRQ boundary.
+
+config MTK_MT6797_BTIF_PIO_KUNIT_TEST
+	bool "KUnit tests for the MT6797 BTIF PIO transport owner"
+	depends on KUNIT=y
+	depends on MTK_MT6797_BTIF_PIO=y
+	help
+	  Exercise partial PIO TX, whole-frame backpressure, timeout fencing, RX
+	  fragmentation/overflow, full-STP lease attachment, and close fencing with
+	  an in-memory register model. The test has no Device Tree, MMIO, clock, DMA,
+	  firmware, WMT, CONSYS, or Gemini hardware dependency.
+
 config MTK_WMT
 	tristate "MediaTek WMT packet codec and transaction fence"
 	depends on MTK_STP

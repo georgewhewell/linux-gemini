@@ -19,10 +19,12 @@ description: |
 
   Keep this node disabled in the shipped Gemini DT. A hand-authored overlay
   must enable it, set mediatek,experimental-bootstrap, enable each referenced
-  provider's independent gates, and set the controller boot parameter. This
-  binding does not establish clock, pad, reset-release, AFE, firmware-patch,
-  or radio-function ownership. The controller registers no GNSS, HCI, Wi-Fi,
-  FM, or userspace endpoint.
+  provider's independent gates, and set the controller boot parameter. The
+  separately bound BTIF PIO provider exclusively owns its named btifc
+  (CLK_INFRA_BTIF) clock vote while its PIO platform lease is held. This
+  controller does not establish APDMA, pad, reset-release, AFE,
+  firmware-patch, or radio-function ownership. The controller registers no
+  GNSS, HCI, Wi-Fi, FM, or userspace endpoint.
 
 properties:
   compatible:
@@ -38,7 +40,8 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: |
       A separately enabled mediatek,mt6797-btif-pio platform adapter with its
-      BTIF IRQ registered but disabled.
+      BTIF IRQ registered but disabled. Its binding requires one btifc clock
+      consumer, CLK_INFRA_BTIF from the MT6797 infrasys provider.
 
   mediatek,experimental-bootstrap:
     type: boolean

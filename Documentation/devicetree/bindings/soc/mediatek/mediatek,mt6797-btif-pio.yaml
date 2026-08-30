@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-btif-pio.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 dormant BTIF PIO platform adapter
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  This binding describes the bounded PIO-only platform adapter for the
+  MT6797 BTIF core. The adapter maps one 4 KiB core window at 0x1100c000,
+  installs the one level-low GIC SPI 130 handler with IRQF_NO_AUTOEN, and
+  obtains the BTIF core clock named btifc. It enables that clock only while
+  its exclusive platform lease is held, before PIO MMIO, and disables it only
+  after synchronous IRQ quiesce and PIO fencing.
+
+  The provider must use the MT6797 infrasys CLK_INFRA_BTIF clock as its sole
+  clock. It deliberately has no APDMA resource or clock: the adapter owns
+  only the PIO core path. It does not establish CONSYS power, reset release,
+  pads, AFE, firmware, WMT, or radio-function ownership.
+
+  No shipped Gemini DT node uses this compatible. Any future hand-authored
+  provider node must remain disabled by default, and the adapter's independent
+  default-false module parameter still gates attachment. This binding alone
+  cannot start a BTIF, STP, firmware, or radio operation.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-btif-pio
+
+  reg:
+    maxItems: 1
+    description: The BTIF core window at 0x1100c000, sized 0x1000.
+
+  interrupts:
+    maxItems: 1
+    description: The BTIF core GIC SPI 130, level-low.
+
+  clocks:
+    maxItems: 1
+    description: The MT6797 infrasys CLK_INFRA_BTIF clock.
+
+  clock-names:
+    const: btifc
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    btif_pio: serial@1100c000 {
+        compatible = "mediatek,mt6797-btif-pio";
+        reg = <0 0x1100c000 0 0x1000>;
+        interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>;
+        clocks = <&infrasys CLK_INFRA_BTIF>;
+        clock-names = "btifc";
+        status = "disabled";
+    };
+...

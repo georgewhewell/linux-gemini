@@ -129,9 +129,11 @@ config MTK_MT6797_BTIF_PIO_PLATFORM
 	help
 	  Build the default-disabled platform acquisition adapter for the MT6797
 	  BTIF PIO transport owner. It validates and maps only the vendor-evidenced
-	  4 KiB BTIF core window, obtains one DT-described IRQ, and installs a
-	  threaded handler with IRQF_NO_AUTOEN. The adapter does not obtain, enable,
-	  or disable clocks; CONSYS power/reset/wake ownership is not yet proven.
+	  4 KiB BTIF core window, obtains its named btifc core clock and one
+	  DT-described IRQ, and installs a threaded handler with IRQF_NO_AUTOEN.
+	  It enables btifc only while its exclusive PIO lease is held, and disables
+	  it after synchronous IRQ quiesce and PIO fencing. It neither obtains nor
+	  votes APDMA; CONSYS power/reset/wake ownership is not yet proven.
 
 	  No Gemini Device Tree node matches this driver. A future separately
 	  reviewed node must remain disabled by default, and attachment still needs
@@ -145,10 +147,11 @@ config MTK_MT6797_BTIF_PIO_PLATFORM_KUNIT_TEST
 	depends on MTK_MT6797_BTIF_PIO_PLATFORM=y
 	help
 	  Exercise exact resource validation, the explicit experiment gate, the
-	  one-shot platform lease, threaded-IRQ activation ordering, and synchronized
-	  close using in-memory registers and a fake IRQ controller. The test does
-	  not instantiate a platform device or access Device Tree, MMIO, clock, DMA,
-	  firmware, CONSYS, or Gemini hardware.
+	  one-shot platform lease, btifc enable/disable ordering, threaded-IRQ
+	  activation ordering, and synchronized close using in-memory registers,
+	  fake IRQ, and fake clock controllers. The test does not instantiate a
+	  platform device or access Device Tree, MMIO, DMA, firmware, CONSYS, or
+	  Gemini hardware.
 
 config MTK_MT6797_BTIF_STP_BOOTSTRAP
 	tristate "MediaTek MT6797 dormant BTIF STP bootstrap controller"

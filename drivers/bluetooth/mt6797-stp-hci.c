@@ -233,6 +233,7 @@ static int mt6797_stp_hci_probe(struct platform_device *pdev)
 	hdev->flush = mt6797_stp_hci_flush;
 	hdev->send = mt6797_stp_hci_send_frame;
 	hci_set_quirk(hdev, HCI_QUIRK_BROKEN_LE_EVENT_MASK);
+	hci_set_quirk(hdev, HCI_QUIRK_BROKEN_LE_DATA_LEN);
 	ret = hci_register_dev(hdev);
 	if (ret) {
 		hci_free_dev(hdev);

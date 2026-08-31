@@ -127,6 +127,16 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_LE_EVENT_MASK,
 
+	/* When this quirk is set, accept an LE Read Maximum Data Length command
+	 * rejected as Unknown HCI Command even though the controller advertises
+	 * the LE Data Packet Length Extension feature.  The feature is cleared so
+	 * later data-length commands are skipped and the core's Bluetooth 4.0
+	 * minimum packet sizes remain in use.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_BROKEN_LE_DATA_LEN,
+
 	/* When this quirk is set, then no stored link key handling
 	 * is performed. This is mainly due to the fact that the
 	 * HCI Delete Stored Link Key command is advertised, but

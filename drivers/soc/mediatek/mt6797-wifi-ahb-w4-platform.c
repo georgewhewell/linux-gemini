@@ -51,6 +51,8 @@
 #define W4_CMD_ID_BASIC_CONFIG 0x02U
 #define W4_CMD_ID_SCAN_REQ_V2 0x03U
 #define W4_CMD_ID_BSS_ACTIVATE_CTRL 0x11U
+#define W4_CMD_ID_SET_BSS_INFO 0x12U
+#define W4_CMD_ID_UPDATE_STA_RECORD 0x13U
 #define W4_CMD_ID_CH_PRIVILEGE 0x1cU
 #define W4_CMD_PKT_TYPE 0x20U
 #define W4_SCAN_SSID_SLOT_LEN 36U
@@ -87,6 +89,16 @@
 #define W4_STA_STATE_1 0U
 #define W4_STA_STATE_2 1U
 #define W4_STA_STATE_3 2U
+#define W4_PHY_TYPE_HR_DSSS BIT(0)
+#define W4_PHY_TYPE_ERP BIT(1)
+#define W4_PHY_TYPE_HR_DSSS_INDEX 0U
+#define W4_PHY_TYPE_ERP_INDEX 1U
+#define W4_RATE_SET_HR_DSSS GENMASK(3, 0)
+#define W4_RATE_SET_OFDM GENMASK(13, 6)
+#define W4_RATE_SET_ERP (W4_RATE_SET_HR_DSSS | W4_RATE_SET_OFDM)
+#define W4_RATE_OFDM_6M 0x4bU
+#define W4_STA_RECORD_BODY_LEN 124U
+#define W4_BSS_INFO_BODY_LEN 88U
 
 static bool enable_experimental_wifi_w4_platform;
 module_param_named(enable_experimental_wifi_w4_platform,
@@ -124,8 +136,15 @@ struct mt6797_wifi_w4 {
 	u8 sta_index;
 	u8 join_ssid[IEEE80211_MAX_SSID_LEN];
 	u8 join_ssid_len;
-	u8 assoc_req_ies[IEEE80211_MAX_SSID_LEN + 16];
+	u8 assoc_req_ies[IEEE80211_MAX_SSID_LEN + 24];
 	u8 assoc_req_ie_len;
+	u16 candidate_capability;
+	u16 operational_rate_set;
+	u16 basic_rate_set;
+	u16 desired_rate_set;
+	u16 hw_default_rate_code;
+	u8 desired_phy_type_set;
+	u8 non_ht_basic_phy_type;
 	unsigned int scan_poll_count;
 	unsigned long scan_poll_deadline;
 	enum w4_join_state join_state;
@@ -133,14 +152,38 @@ struct mt6797_wifi_w4 {
 	bool controller_started, w1_retained, opened;
 };
 
+struct w4_bss_profile {
+	u8 bssid[ETH_ALEN];
+	u8 channel;
+	u8 desired_phy_type_set;
+	u8 non_ht_basic_phy_type;
+	u16 capability;
+	u16 operational_rate_set;
+	u16 basic_rate_set;
+	u16 desired_rate_set;
+	u16 hw_default_rate_code;
+};
+
 static const struct ieee80211_channel w4_channels[] = {
 	{ .band = NL80211_BAND_2GHZ, .center_freq = 2412, .hw_value = 1 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2417, .hw_value = 2 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2422, .hw_value = 3 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2427, .hw_value = 4 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2432, .hw_value = 5 },
 	{ .band = NL80211_BAND_2GHZ, .center_freq = 2437, .hw_value = 6 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2442, .hw_value = 7 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2447, .hw_value = 8 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2452, .hw_value = 9 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2457, .hw_value = 10 },
 	{ .band = NL80211_BAND_2GHZ, .center_freq = 2462, .hw_value = 11 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2467, .hw_value = 12 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2472, .hw_value = 13 },
+	{ .band = NL80211_BAND_2GHZ, .center_freq = 2484, .hw_value = 14 },
 };
 static struct ieee80211_rate w4_rates[] = {
 	{ .bitrate = 10 }, { .bitrate = 20 }, { .bitrate = 55 }, { .bitrate = 110 },
-	{ .bitrate = 60 }, { .bitrate = 120 }, { .bitrate = 240 }, { .bitrate = 540 },
+	{ .bitrate = 60 }, { .bitrate = 90 }, { .bitrate = 120 }, { .bitrate = 180 },
+	{ .bitrate = 240 }, { .bitrate = 360 }, { .bitrate = 480 }, { .bitrate = 540 },
 };
 static struct ieee80211_supported_band w4_band = {
 	.channels = (struct ieee80211_channel *)w4_channels,
@@ -661,6 +704,7 @@ static void w4_stop_locked(struct mt6797_wifi_w4 *w4)
 	if (!w4->opened) return;
 	w4->join_state = W4_JOIN_IDLE;
 	w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
+	netif_carrier_off(w4->ndev);
 	netif_tx_stop_all_queues(w4->ndev);
 	w4_release_channel(w4);
 	mt6797_wifi_ahb_w3_session_stop(&w4->session);
@@ -720,6 +764,7 @@ static int w4_open(struct net_device *ndev)
 	}
 	w4_diag_hif(w4, "hif-ready");
 	w4->opened = true;
+	netif_carrier_off(ndev);
 	netif_tx_start_all_queues(ndev);
 	dev_info(w4->dev, "W4 retained HIF session live: irq=%d whisr=%#x\n",
 		w4->irq, w4->session.last_whisr);
@@ -944,24 +989,200 @@ static void w4_release_channel(struct mt6797_wifi_w4 *w4)
 		 ret, cmd[9]);
 }
 
-static int w4_send_open_sta(struct mt6797_wifi_w4 *w4)
-{
-	u8 cmd[8 + 124] = { };
+/* rate.c's aucDataRate[] order is the firmware rate-set bit numbering. */
+static const u8 w4_rate_codes[] = {
+	0x02, 0x04, 0x0b, 0x16, 0x2c, 0x42, 0x0c,
+	0x12, 0x18, 0x24, 0x30, 0x48, 0x60, 0x6c,
+};
 
-	/* CMD_UPDATE_STA_RECORD_T: vendor state-1 allocation before Auth-1.
-	 * The 124-byte body is the exact 3.18 layout; its WLAN indices are at
-	 * offsets 54/55, not the earlier shortened-command offsets.
+static void w4_parse_rate_element(const struct element *elem, u16 *operational,
+				  u16 *basic, bool *unknown_basic)
+{
+	unsigned int i, j;
+
+	if (!elem)
+		return;
+	for (i = 0; i < elem->datalen; i++) {
+		u8 rate = elem->data[i] & 0x7f;
+
+		for (j = 0; j < ARRAY_SIZE(w4_rate_codes); j++)
+			if (rate == w4_rate_codes[j])
+				break;
+		if (j == ARRAY_SIZE(w4_rate_codes)) {
+			if (elem->data[i] & BIT(7))
+				*unknown_basic = true;
+			continue;
+		}
+		*operational |= BIT(j);
+		if (elem->data[i] & BIT(7))
+			*basic |= BIT(j);
+	}
+}
+
+static u16 w4_default_rate_code(u16 basic_rate_set, u8 non_ht_phy)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(w4_rate_codes); i++)
+		if (basic_rate_set & BIT(i))
+			return i < 4 ? i : W4_RATE_OFDM_6M;
+	return non_ht_phy == W4_PHY_TYPE_ERP_INDEX ? W4_RATE_OFDM_6M : 0;
+}
+
+static unsigned int w4_rate_set_to_codes(u16 rate_set, u8 *rates)
+{
+	unsigned int i, n = 0;
+
+	for (i = 0; i < ARRAY_SIZE(w4_rate_codes); i++)
+		if (rate_set & BIT(i))
+			rates[n++] = w4_rate_codes[i];
+	return n;
+}
+
+static int w4_bss_profile_from_cfg80211(struct cfg80211_bss *bss,
+					 struct w4_bss_profile *profile)
+{
+	const struct element *supported, *extended, *erp;
+	u16 operational = 0, basic = 0, supported_set;
+	bool unknown_basic = false, has_erp;
+	u8 phy_type_set = 0, non_ht_phy;
+
+	if (!bss->channel || bss->channel->band != NL80211_BAND_2GHZ)
+		return -EOPNOTSUPP;
+	rcu_read_lock();
+	supported = ieee80211_bss_get_elem(bss, WLAN_EID_SUPP_RATES);
+	extended = ieee80211_bss_get_elem(bss, WLAN_EID_EXT_SUPP_RATES);
+	erp = ieee80211_bss_get_elem(bss, WLAN_EID_ERP_INFO);
+	w4_parse_rate_element(supported, &operational, &basic, &unknown_basic);
+	w4_parse_rate_element(extended, &operational, &basic, &unknown_basic);
+	has_erp = !!erp;
+	rcu_read_unlock();
+	if (!operational || unknown_basic)
+		return -EOPNOTSUPP;
+
+	/* scan.c:1633-1653 and bss.c:319-347, restricted to this driver's
+	 * intentionally legacy 2.4-GHz association slice (it sends no HT IE).
 	 */
-	memset(cmd, 0, sizeof(cmd));
-	put_unaligned_le16(sizeof(cmd), cmd); put_unaligned_le16(0x8000, cmd + 2);
-	cmd[4] = 0x13; cmd[5] = 0x20; cmd[6] = 1; cmd[7] = 3;
+	if ((operational & W4_RATE_SET_OFDM) || has_erp)
+		phy_type_set |= W4_PHY_TYPE_ERP;
+	if (!(basic & W4_RATE_SET_OFDM) &&
+	    (operational & W4_RATE_SET_HR_DSSS))
+		phy_type_set |= W4_PHY_TYPE_HR_DSSS;
+	if (!phy_type_set)
+		return -EOPNOTSUPP;
+	non_ht_phy = phy_type_set & W4_PHY_TYPE_ERP ?
+		W4_PHY_TYPE_ERP_INDEX : W4_PHY_TYPE_HR_DSSS_INDEX;
+	supported_set = non_ht_phy == W4_PHY_TYPE_ERP_INDEX ?
+		W4_RATE_SET_ERP : W4_RATE_SET_HR_DSSS;
+	profile->desired_rate_set = operational & supported_set;
+	if (!profile->desired_rate_set ||
+	    (basic & profile->desired_rate_set) != basic)
+		return -EOPNOTSUPP;
+
+	ether_addr_copy(profile->bssid, bss->bssid);
+	profile->channel = ieee80211_frequency_to_channel(
+		bss->channel->center_freq);
+	if (!profile->channel)
+		return -EINVAL;
+	profile->capability = bss->capability;
+	profile->operational_rate_set = operational;
+	profile->basic_rate_set = basic;
+	profile->desired_phy_type_set = phy_type_set;
+	profile->non_ht_basic_phy_type = non_ht_phy;
+	profile->hw_default_rate_code = w4_default_rate_code(basic, non_ht_phy);
+	return 0;
+}
+
+static void w4_fill_sta_record(struct mt6797_wifi_w4 *w4, u8 *cmd,
+			       u8 sequence, u8 sta_state, u16 aid)
+{
+	/* CMD_UPDATE_STA_RECORD_T is a naturally aligned 124-byte vendor body.
+	 * Offsets below are validated against nic_cmd_event.h:963-1026.
+	 */
+	put_unaligned_le16(W4_WIFI_CMD_HEADER_LEN + W4_STA_RECORD_BODY_LEN, cmd);
+	put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = W4_CMD_ID_UPDATE_STA_RECORD;
+	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[6] = 1;
+	cmd[7] = sequence;
 	cmd[8] = w4->sta_index; cmd[9] = BIT(0) | BIT(6); /* legacy AP */
 	ether_addr_copy(cmd + 10, w4->candidate_bssid);
+	put_unaligned_le16(aid, cmd + 16);
+	if (sta_state == W4_STA_STATE_3)
+		put_unaligned_le16(10, cmd + 18); /* DEFAULT_LISTEN_INTERVAL */
 	cmd[20] = 0;                  /* AIS BSS index */
-	cmd[28] = W4_STA_STATE_1;
+	cmd[21] = w4->desired_phy_type_set;
+	put_unaligned_le16(w4->desired_rate_set, cmd + 22);
+	put_unaligned_le16(w4->basic_rate_set, cmd + 24);
+	cmd[28] = sta_state;
 	cmd[62] = w4->wlan_index;     /* ucWlanIndex */
 	cmd[63] = W4_BMC_WLAN_INDEX_AIS; /* ucBMCWlanIndex */
+	put_unaligned_le16(w4->hw_default_rate_code, cmd + 82);
+}
+
+static int w4_send_open_sta(struct mt6797_wifi_w4 *w4)
+{
+	u8 cmd[W4_WIFI_CMD_HEADER_LEN + W4_STA_RECORD_BODY_LEN] = { };
+
+	w4_fill_sta_record(w4, cmd, 3, W4_STA_STATE_1, 0);
 	return w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
+}
+
+static int w4_send_bss_info(struct mt6797_wifi_w4 *w4, bool connected,
+			    const u8 *assoc_ies, size_t assoc_ie_len)
+{
+	u8 cmd[W4_WIFI_CMD_HEADER_LEN + W4_BSS_INFO_BODY_LEN] = { };
+	u8 *body = cmd + W4_WIFI_CMD_HEADER_LEN;
+	const struct element *erp = NULL;
+	bool short_preamble;
+	int ret;
+
+	if (assoc_ies)
+		erp = cfg80211_find_elem(WLAN_EID_ERP_INFO, assoc_ies,
+					 assoc_ie_len);
+	short_preamble = w4->candidate_capability &
+		WLAN_CAPABILITY_SHORT_PREAMBLE;
+	if (erp && erp->datalen == 1 && (erp->data[0] & BIT(2)))
+		short_preamble = false; /* ERP_INFO_BARKER_PREAMBLE_MODE */
+
+	put_unaligned_le16(sizeof(cmd), cmd);
+	put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = W4_CMD_ID_SET_BSS_INFO;
+	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[6] = 1;
+	cmd[7] = 5;
+	body[0] = 0;                 /* AIS BSS index */
+	body[1] = connected ? 0 : 1; /* PARAM_MEDIA_STATE_* */
+	body[2] = 0;                 /* OP_MODE_INFRASTRUCTURE */
+	body[3] = w4->join_ssid_len;
+	memcpy(body + 4, w4->join_ssid, w4->join_ssid_len);
+	ether_addr_copy(body + 36, w4->candidate_bssid);
+	put_unaligned_le16(w4->operational_rate_set, body + 44);
+	put_unaligned_le16(w4->basic_rate_set, body + 46);
+	body[48] = w4->sta_index;
+	put_unaligned_le16(w4->hw_default_rate_code, body + 50);
+	body[52] = w4->non_ht_basic_phy_type;
+	body[53] = 0; /* AUTH_MODE_OPEN */
+	body[54] = 1; /* ENUM_ENCRYPTION_DISABLED */
+	body[55] = w4->desired_phy_type_set;
+	body[58] = W4_BMC_WLAN_INDEX_AIS;
+	/* Embedded CMD_SET_BSS_RLM_PARAM_T starts at body offset 68. */
+	body[68] = 0;
+	body[69] = W4_RF_BAND_2G4;
+	body[70] = w4->candidate_channel;
+	if (erp && erp->datalen == 1 && (erp->data[0] & BIT(1)))
+		body[72] = 1; /* ERP_INFO_USE_PROTECTION */
+	body[81] = short_preamble;
+	body[82] = !!(w4->candidate_capability &
+			      WLAN_CAPABILITY_SHORT_SLOT_TIME);
+	put_unaligned_le16(w4->basic_rate_set, body + 86);
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
+	dev_info(w4->dev,
+		 "W4_DIAG stage=bss-info ret=%d connected=%u sta=%u channel=%u operational=%#x basic=%#x phy=%#x\n",
+		 ret, connected, body[48], body[70],
+		 w4->operational_rate_set, w4->basic_rate_set,
+		 w4->desired_phy_type_set);
+	return ret;
 }
 /* The management descriptors follow nic_tx.c's 802.11-normal, long format. */
 static int w4_send_mgmt(struct mt6797_wifi_w4 *w4, const u8 *mgmt, size_t len)
@@ -1014,26 +1235,35 @@ static int w4_send_assoc1(struct mt6797_wifi_w4 *w4)
 {
 	u8 frame[IEEE80211_HDRLEN + 4 + IEEE80211_MAX_SSID_LEN + 20] = { };
 	u8 *ie = frame + IEEE80211_HDRLEN + 4;
-	static const u8 rates[] = { 0x82, 0x84, 0x8b, 0x96,
-		0x0c, 0x18, 0x30, 0x48, 0x60, 0x6c };
+	u8 rates[ARRAY_SIZE(w4_rate_codes)];
+	u16 capability = WLAN_CAPABILITY_ESS;
+	unsigned int n_rates, supported_rates;
 	size_t len;
 
 	/* assocComposeReAssocReqFrameHeaderAndFF(), non-reassociation case. */
 	w4_mgmt_header(w4, frame, IEEE80211_STYPE_ASSOC_REQ);
-	put_unaligned_le16(WLAN_CAPABILITY_ESS, frame + IEEE80211_HDRLEN);
+	if (w4->candidate_capability & WLAN_CAPABILITY_SHORT_PREAMBLE)
+		capability |= WLAN_CAPABILITY_SHORT_PREAMBLE;
+	if (w4->non_ht_basic_phy_type == W4_PHY_TYPE_ERP_INDEX)
+		capability |= WLAN_CAPABILITY_SHORT_SLOT_TIME;
+	put_unaligned_le16(capability, frame + IEEE80211_HDRLEN);
 	put_unaligned_le16(10, frame + IEEE80211_HDRLEN + 2);
 	*ie++ = WLAN_EID_SSID;
 	*ie++ = w4->join_ssid_len;
 	memcpy(ie, w4->join_ssid, w4->join_ssid_len);
 	ie += w4->join_ssid_len;
+	n_rates = w4_rate_set_to_codes(w4->desired_rate_set, rates);
+	supported_rates = min(n_rates, 8U);
 	*ie++ = WLAN_EID_SUPP_RATES;
-	*ie++ = 8;
-	memcpy(ie, rates, 8);
-	ie += 8;
-	*ie++ = WLAN_EID_EXT_SUPP_RATES;
-	*ie++ = sizeof(rates) - 8;
-	memcpy(ie, rates + 8, sizeof(rates) - 8);
-	ie += sizeof(rates) - 8;
+	*ie++ = supported_rates;
+	memcpy(ie, rates, supported_rates);
+	ie += supported_rates;
+	if (n_rates > supported_rates) {
+		*ie++ = WLAN_EID_EXT_SUPP_RATES;
+		*ie++ = n_rates - supported_rates;
+		memcpy(ie, rates + supported_rates, n_rates - supported_rates);
+		ie += n_rates - supported_rates;
+	}
 	len = ie - frame;
 	w4->assoc_req_ie_len = len - IEEE80211_HDRLEN - 4;
 	memcpy(w4->assoc_req_ies, frame + IEEE80211_HDRLEN + 4,
@@ -1043,18 +1273,9 @@ static int w4_send_assoc1(struct mt6797_wifi_w4 *w4)
 
 static int w4_send_sta_state(struct mt6797_wifi_w4 *w4, u8 sta_state, u16 aid)
 {
-	u8 cmd[8 + 124] = { };
+	u8 cmd[W4_WIFI_CMD_HEADER_LEN + W4_STA_RECORD_BODY_LEN] = { };
 
-	put_unaligned_le16(sizeof(cmd), cmd);
-	put_unaligned_le16(0x8000, cmd + 2);
-	cmd[4] = 0x13; cmd[5] = 0x20; cmd[6] = 1; cmd[7] = 4;
-	cmd[8] = w4->sta_index; cmd[9] = BIT(0) | BIT(6);
-	ether_addr_copy(cmd + 10, w4->candidate_bssid);
-	put_unaligned_le16(aid, cmd + 16);
-	cmd[20] = 0;
-	cmd[28] = sta_state;
-	cmd[62] = w4->wlan_index;
-	cmd[63] = W4_BMC_WLAN_INDEX_AIS;
+	w4_fill_sta_record(w4, cmd, 4, sta_state, aid);
 	return w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
 }
 
@@ -1115,15 +1336,35 @@ static void w4_rx_mgmt(struct mt6797_wifi_w4 *w4, const u8 *mgmt, size_t len)
 	}
 	if (w4->join_state == W4_JOIN_WAIT_ASSOC2 && len >= IEEE80211_HDRLEN + 6 &&
 	    (fc & 0x00fc) == IEEE80211_STYPE_ASSOC_RESP) {
+		const u8 *assoc_ies = mgmt + IEEE80211_HDRLEN + 6;
+		size_t assoc_ie_len = len - IEEE80211_HDRLEN - 6;
+
 		status = get_unaligned_le16(mgmt + IEEE80211_HDRLEN + 2);
 		cancel_delayed_work(&w4->join_timeout);
-		if (!status && w4_send_sta_state(w4, W4_STA_STATE_3,
-			get_unaligned_le16(mgmt + IEEE80211_HDRLEN + 4) & 0x3fff))
-			status = WLAN_STATUS_UNSPECIFIED_FAILURE;
+		if (!status) {
+			int ret;
+
+			/* aisUpdateBssInfoForJOIN() synchronises BSS info before
+			 * cnmStaRecChangeState(STA_STATE_3).
+			 */
+			ret = w4_send_bss_info(w4, true, assoc_ies, assoc_ie_len);
+			if (!ret)
+				ret = w4_send_sta_state(w4, W4_STA_STATE_3,
+					get_unaligned_le16(mgmt + IEEE80211_HDRLEN + 4) &
+					0x3fff);
+			if (ret) {
+				w4_send_bss_info(w4, false, NULL, 0);
+				status = WLAN_STATUS_UNSPECIFIED_FAILURE;
+			}
+		}
 		w4_release_channel(w4);
 		w4->join_state = status ? W4_JOIN_IDLE : W4_JOIN_CONNECTED;
 		if (status)
 			w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
+		if (status)
+			netif_carrier_off(w4->ndev);
+		else
+			netif_carrier_on(w4->ndev);
 		cfg80211_connect_result(w4->ndev, w4->candidate_bssid,
 			w4->assoc_req_ies, w4->assoc_req_ie_len,
 			mgmt + IEEE80211_HDRLEN + 6, len - IEEE80211_HDRLEN - 6,
@@ -1154,11 +1395,11 @@ static int w4_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 	return 0;
 }
 static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
-	struct cfg80211_connect_params *sme)
+		      struct cfg80211_connect_params *sme)
 {
 	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
 	struct cfg80211_bss *bss;
-	u8 bssid[ETH_ALEN], channel;
+	struct w4_bss_profile profile = { };
 	int ret;
 
 	if (!sme->ssid || sme->ssid_len > IEEE80211_MAX_SSID_LEN ||
@@ -1171,15 +1412,10 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 		IEEE80211_PRIVACY_OFF);
 	if (!bss)
 		return -ENETUNREACH;
-	if (!bss->channel || bss->channel->band != NL80211_BAND_2GHZ) {
-		cfg80211_put_bss(wiphy, bss);
-		return -EOPNOTSUPP;
-	}
-	channel = ieee80211_frequency_to_channel(bss->channel->center_freq);
-	ether_addr_copy(bssid, bss->bssid);
+	ret = w4_bss_profile_from_cfg80211(bss, &profile);
 	cfg80211_put_bss(wiphy, bss);
-	if (!channel)
-		return -EINVAL;
+	if (ret)
+		return ret;
 
 	mutex_lock(&w4->lock);
 	if (!w4->opened) {
@@ -1190,9 +1426,16 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 		mutex_unlock(&w4->lock);
 		return -EBUSY;
 	}
-	ether_addr_copy(w4->candidate_bssid, bssid);
-	w4->candidate_channel = channel;
+	ether_addr_copy(w4->candidate_bssid, profile.bssid);
+	w4->candidate_channel = profile.channel;
 	w4->candidate_valid = true;
+	w4->candidate_capability = profile.capability;
+	w4->operational_rate_set = profile.operational_rate_set;
+	w4->basic_rate_set = profile.basic_rate_set;
+	w4->desired_rate_set = profile.desired_rate_set;
+	w4->hw_default_rate_code = profile.hw_default_rate_code;
+	w4->desired_phy_type_set = profile.desired_phy_type_set;
+	w4->non_ht_basic_phy_type = profile.non_ht_basic_phy_type;
 	/* AIS activation reserves entry zero for BMC.  The vendor's subsequent
 	 * secPrivacySeekForEntry() therefore assigns entry one to the AP station.
 	 * Entry 31 is the non-StaRec TX default and must not carry AP data.
@@ -1202,6 +1445,12 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 	w4->join_ssid_len = sme->ssid_len;
 	memcpy(w4->join_ssid, sme->ssid, w4->join_ssid_len);
 	w4->assoc_req_ie_len = 0;
+	dev_info(w4->dev,
+		 "W4_DIAG stage=join-profile channel=%u capability=%#x operational=%#x basic=%#x desired=%#x phy=%#x nonht=%u rate=%#x\n",
+		 w4->candidate_channel, w4->candidate_capability,
+		 w4->operational_rate_set, w4->basic_rate_set,
+		 w4->desired_rate_set, w4->desired_phy_type_set,
+		 w4->non_ht_basic_phy_type, w4->hw_default_rate_code);
 	ret = w4_send_channel_request(w4);
 	if (ret) {
 		w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
@@ -1221,9 +1470,12 @@ static int w4_disconnect(struct wiphy *wiphy, struct net_device *ndev, u16 reaso
 
 	mutex_lock(&w4->lock);
 	connected = w4->join_state == W4_JOIN_CONNECTED;
+	if (connected)
+		w4_send_bss_info(w4, false, NULL, 0);
 	w4_release_channel(w4);
 	w4->join_state = W4_JOIN_IDLE;
 	w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
+	netif_carrier_off(ndev);
 	mutex_unlock(&w4->lock);
 	cancel_delayed_work_sync(&w4->join_timeout);
 	if (connected && netif_running(ndev))

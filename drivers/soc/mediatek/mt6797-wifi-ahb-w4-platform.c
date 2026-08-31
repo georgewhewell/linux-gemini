@@ -571,6 +571,16 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 	}
 	if (byte_count - off < ETH_HLEN)
 		goto out;
+	if (get_unaligned_be16(buf + off + 12) == ETH_P_PAE) {
+		u16 key_info = 0xffff;
+
+		if (byte_count - off >= ETH_HLEN + 7 &&
+		    buf[off + ETH_HLEN + 1] == 3)
+			key_info = get_unaligned_be16(buf + off + ETH_HLEN + 5);
+		dev_info(w4->dev,
+			 "W4_DIAG stage=eapol-rx len=%u key-info=%#x wlan=%u sec=%u status=%#x\n",
+			 byte_count - off, key_info, buf[8], buf[9] >> 4, status);
+	}
 	skb = netdev_alloc_skb_ip_align(w4->ndev, byte_count - off);
 	if (!skb) { ret = -ENOMEM; goto out; }
 	skb_put_data(skb, buf + off, byte_count - off);
@@ -883,7 +893,9 @@ static netdev_tx_t w4_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct mt6797_wifi_w4 *w4 = w4_ndev(ndev);
 	bool eapol = skb->protocol == htons(ETH_P_PAE);
+	u16 eapol_key_info = 0xffff;
 	bool protected;
+	u8 eapol_header[7];
 	u8 *frame;
 	const unsigned int txd_len = 28; /* NIC_TX_DESC_LONG_FORMAT_LENGTH */
 	const unsigned int wire_length = txd_len + skb->len;
@@ -900,6 +912,9 @@ static netdev_tx_t w4_xmit(struct sk_buff *skb, struct net_device *ndev)
 	if (READ_ONCE(w4->wpa2_ccmp) &&
 	    !READ_ONCE(w4->pairwise_key_installed) && !eapol)
 		goto drop;
+	if (eapol && !skb_copy_bits(skb, ETH_HLEN, eapol_header,
+				    sizeof(eapol_header)) && eapol_header[1] == 3)
+		eapol_key_info = get_unaligned_be16(eapol_header + 5);
 	/* ndo_start_xmit is atomic: bounded portal ownership, never sleep. */
 	if (!mutex_trylock(&w4->lock))
 		return NETDEV_TX_BUSY;
@@ -933,6 +948,10 @@ static netdev_tx_t w4_xmit(struct sk_buff *skb, struct net_device *ndev)
 		ret = -EFAULT;
 	else
 		ret = w4_cmd53(w4, true, W4_WTDR1, frame, length);
+	if (eapol)
+		dev_info(w4->dev,
+			 "W4_DIAG stage=eapol-tx ret=%d len=%u key-info=%#x protected=%u wlan=%u\n",
+			 ret, skb->len, eapol_key_info, protected, w4->wlan_index);
 	kfree(frame);
 	mutex_unlock(&w4->lock);
 	if (ret)
@@ -1492,6 +1511,9 @@ static void w4_rx_mgmt(struct mt6797_wifi_w4 *w4, const u8 *mgmt, size_t len)
 			netif_carrier_off(w4->ndev);
 		else
 			netif_carrier_on(w4->ndev);
+		dev_info(w4->dev,
+			 "W4_DIAG stage=link-result status=%u connected=%u carrier=%u\n",
+			 status, !status, netif_carrier_ok(w4->ndev));
 		cfg80211_connect_result(w4->ndev, w4->candidate_bssid,
 			w4->assoc_req_ies, w4->assoc_req_ie_len,
 			mgmt + IEEE80211_HDRLEN + 6, len - IEEE80211_HDRLEN - 6,

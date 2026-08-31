@@ -33,6 +33,9 @@ obj-$(CONFIG_MTK_DEVAPC) += mtk-devapc.o
 obj-$(CONFIG_MTK_DVFSRC) += mtk-dvfsrc.o
 obj-$(CONFIG_MTK_INFRACFG) += mtk-infracfg.o
 obj-$(CONFIG_MTK_MT6797_MD1_BOOT_STATUS_OBSERVE) += mt6797-md1-boot-status-observe.o
+obj-$(CONFIG_MTK_MT6797_MD1_FIRMWARE_PREFLIGHT) += mt6797-md1-firmware.o
+obj-$(CONFIG_MTK_MT6797_MD1_MPU_REMAP_PLAN) += mt6797-md1-mpu-remap-plan.o
+obj-$(CONFIG_MTK_MT6797_MD1_LK_HANDOFF) += mt6797-md1-lk-handoff.o
 obj-$(CONFIG_MTK_MT6797_MD1_LK_HANDOFF_PROBE) += mt6797-md1-lk-handoff-probe.o
 mt6797-md1-prerelease-driver-y := mt6797-md1-prerelease-core.o \
 	mt6797-md1-prepower.o mt6797-md1-prerelease.o

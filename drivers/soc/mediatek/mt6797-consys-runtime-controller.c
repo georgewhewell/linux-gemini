@@ -90,12 +90,14 @@ struct mt6797_consys_runtime_controller {
 	struct mutex lock;
 	struct completion run_complete;
 	struct completion gnss_released;
+	struct completion wifi_released;
 	struct completion stop_complete;
 	const struct mt6797_consys_runtime_lease *runtime_lease;
 	const struct mt6797_btif_pio_platform_lease *platform_lease;
 	struct mt6797_btif_stp_bootstrap *bootstrap;
 	const struct mt6797_consys_stp_session_lease *session_lease;
 	struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease_owner;
+	struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease_owner;
 	u64 session_generation;
 	bool run_in_progress;
 	bool stop_requested;
@@ -132,6 +134,8 @@ static int mt6797_consys_runtime_controller_init(
 	init_completion(&controller->run_complete);
 	init_completion(&controller->gnss_released);
 	complete_all(&controller->gnss_released);
+	init_completion(&controller->wifi_released);
+	complete_all(&controller->wifi_released);
 	init_completion(&controller->stop_complete);
 	complete_all(&controller->stop_complete);
 	return 0;
@@ -404,7 +408,7 @@ static int mt6797_consys_runtime_controller_gnss_session_get_controller(
 			-EAGAIN : -ESHUTDOWN;
 		goto unlock;
 	}
-	if (controller->gnss_lease_owner) {
+	if (controller->gnss_lease_owner || controller->wifi_lease_owner) {
 		ret = -EBUSY;
 		goto unlock;
 	}
@@ -465,6 +469,72 @@ void mt6797_consys_runtime_controller_gnss_session_put(
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_gnss_session_put);
 
+static int mt6797_consys_runtime_controller_wifi_session_get_controller(
+		struct mt6797_consys_runtime_controller *controller,
+		struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease,
+		const struct mt6797_consys_stp_session_lease **session_lease)
+{
+	int ret;
+
+	if (!controller || !wifi_lease || !session_lease)
+		return -EINVAL;
+	*session_lease = NULL;
+	if (wifi_lease->controller)
+		return -EBUSY;
+	mutex_lock(&controller->lock);
+	if (controller->state != MT6797_CONSYS_RUNTIME_CONTROLLER_ACTIVE ||
+	    controller->stop_requested || !controller->session_lease) {
+		ret = controller->state == MT6797_CONSYS_RUNTIME_CONTROLLER_READY ||
+			controller->state == MT6797_CONSYS_RUNTIME_CONTROLLER_STARTING ?
+			-EAGAIN : -ESHUTDOWN;
+		goto unlock;
+	}
+	if (controller->wifi_lease_owner || controller->gnss_lease_owner) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	reinit_completion(&controller->wifi_released);
+	controller->wifi_lease_owner = wifi_lease;
+	wifi_lease->controller = controller;
+	wifi_lease->generation = controller->session_generation;
+	*session_lease = controller->session_lease;
+	ret = 0;
+unlock:
+	mutex_unlock(&controller->lock);
+	return ret;
+}
+
+int mt6797_consys_runtime_controller_wifi_session_get(struct device *dev,
+		struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease,
+		const struct mt6797_consys_stp_session_lease **session_lease)
+{
+	if (!dev)
+		return -EINVAL;
+	return mt6797_consys_runtime_controller_wifi_session_get_controller(
+		dev_get_drvdata(dev), wifi_lease, session_lease);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_wifi_session_get);
+
+void mt6797_consys_runtime_controller_wifi_session_put(
+		struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease)
+{
+	struct mt6797_consys_runtime_controller *controller;
+
+	if (!wifi_lease || !wifi_lease->controller)
+		return;
+	controller = wifi_lease->controller;
+	mutex_lock(&controller->lock);
+	if (controller->wifi_lease_owner == wifi_lease &&
+	    controller->session_generation == wifi_lease->generation) {
+		controller->wifi_lease_owner = NULL;
+		complete_all(&controller->wifi_released);
+	}
+	wifi_lease->controller = NULL;
+	wifi_lease->generation = 0;
+	mutex_unlock(&controller->lock);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_wifi_session_put);
+
 static void mt6797_consys_runtime_controller_stop_controller(
 		struct mt6797_consys_runtime_controller *controller)
 {
@@ -505,6 +575,7 @@ static void mt6797_consys_runtime_controller_stop_controller(
 	reinit_completion(&controller->stop_complete);
 	mutex_unlock(&controller->lock);
 	wait_for_completion(&controller->gnss_released);
+	wait_for_completion(&controller->wifi_released);
 
 	mutex_lock(&controller->lock);
 	/* The active-stop winner alone owns bootstrap destruction and PIO close. */

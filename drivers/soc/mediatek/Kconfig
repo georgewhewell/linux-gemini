@@ -45,6 +45,20 @@ config MTK_INFRACFG
 	  INFRACFG controller contains various infrastructure registers not
 	  directly associated to any device.
 
+config MTK_MT6797_CACHE_OBSERVER
+	tristate "MT6797 target-local cache geometry observer"
+	depends on ARM64 && OF
+	help
+	  Build a read-only diagnostic at /sys/kernel/mt6797-cache/status. Each
+	  read samples CLIDR_EL1, CTR_EL0 and CCSIDR_EL1 on every online CPU.
+	  This lets an MT6797 bring-up kernel record implementation-selected L2
+	  capacity and associativity without guessing Device Tree properties.
+
+	  The observer changes no clock, rail, cache enable or CPU state. It only
+	  changes the target CPU's architected CSSELR_EL1 selector while local
+	  interrupts are masked, restores the original selector, and reports raw
+	  register values. Leave this disabled in a production kernel.
+
 config MTK_MT6797_MD1_BOOT_STATUS_OBSERVE
 	tristate "MT6797 MD1 boot-status observer"
 	depends on OF

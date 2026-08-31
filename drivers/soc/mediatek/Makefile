@@ -32,6 +32,7 @@ obj-$(CONFIG_MTK_CMDQ) += mtk-cmdq-helper.o
 obj-$(CONFIG_MTK_DEVAPC) += mtk-devapc.o
 obj-$(CONFIG_MTK_DVFSRC) += mtk-dvfsrc.o
 obj-$(CONFIG_MTK_INFRACFG) += mtk-infracfg.o
+obj-$(CONFIG_MTK_MT6797_CACHE_OBSERVER) += mt6797-cache-observer.o
 obj-$(CONFIG_MTK_MT6797_MD1_BOOT_STATUS_OBSERVE) += mt6797-md1-boot-status-observe.o
 obj-$(CONFIG_MTK_MT6797_MD1_FIRMWARE_PREFLIGHT) += mt6797-md1-firmware.o
 obj-$(CONFIG_MTK_MT6797_MD1_MPU_REMAP_PLAN) += mt6797-md1-mpu-remap-plan.o

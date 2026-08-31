@@ -113,6 +113,29 @@ struct mt6797_g2_bt_proof_ops {
 	void *context;
 };
 
+enum mt6797_g2_bt_proof_stage {
+	G2_BT_PALDO_ON,
+	G2_BT_FUNC_ON,
+	G2_BT_HCI_RESET,
+	G2_BT_HCI_VERSION,
+};
+
+struct mt6797_g2_bt_proof_state {
+	enum mt6797_g2_bt_proof_stage stage;
+	enum mt6797_g2_bt_proof_stage causal_stage;
+	int causal_error;
+	int func_off_error;
+	int paldo_off_error;
+	bool cleanup_attempted;
+};
+
+static const char * const mt6797_g2_bt_stage_name[] = {
+	[G2_BT_PALDO_ON] = "paldo-on",
+	[G2_BT_FUNC_ON] = "func-on",
+	[G2_BT_HCI_RESET] = "hci-reset",
+	[G2_BT_HCI_VERSION] = "hci-version",
+};
+
 /* Exact raw SDUs from wmt_ic_soc.c's MT6797 post-patch tables. */
 static const u8 g2d_lte_ext[] = { 0x0d, 0x00, 0x00 };
 static const u8 g2d_lte_filter[] = {
@@ -234,7 +257,8 @@ static int mt6797_g2d_gnss_probe_run(struct mt6797_g2d_gnss_ops *ops,
 
 /* Vendor wmt_func_bt_on/off: PALDO, FUNC_CTRL { BT, 1/0 }, PALDO. */
 static int mt6797_g2_bt_proof_run(struct mt6797_g2_bt_proof_ops *ops,
-				  bool hci_proof)
+				  bool hci_proof,
+				  struct mt6797_g2_bt_proof_state *state)
 {
 	static const u8 func_on[] = { 0x00, 0x01 };
 	static const u8 func_off[] = { 0x00, 0x00 };
@@ -242,34 +266,55 @@ static int mt6797_g2_bt_proof_run(struct mt6797_g2_bt_proof_ops *ops,
 	static const u8 hci_version[] = { 0x01, 0x01, 0x10, 0x00 };
 	u8 reply[15];
 	size_t reply_len;
-	bool function_on = false;
+	bool paldo_dirty = false, function_dirty = false;
 	int ret, cleanup;
 
-	if (!ops || !ops->paldo || !ops->wmt ||
+	if (!ops || !state || !ops->paldo || !ops->wmt ||
 	    (hci_proof && !ops->hci_exchange))
 		return -EINVAL;
+	memset(state, 0, sizeof(*state));
+	/* A failed operation may still have changed the hardware. */
+	state->stage = G2_BT_PALDO_ON;
+	paldo_dirty = true;
 	ret = ops->paldo(ops->context, true);
 	if (ret)
-		return ret;
+		goto out;
+	state->stage = G2_BT_FUNC_ON;
+	function_dirty = true;
 	ret = ops->wmt(ops->context, 6, func_on, sizeof(func_on),
 		       &g2_bt_func_match);
-	if (!ret)
-		function_on = true;
-	if (!ret && hci_proof)
+	if (ret)
+		goto out;
+	if (hci_proof) {
+		state->stage = G2_BT_HCI_RESET;
 		ret = ops->hci_exchange(ops->context, hci_reset, sizeof(hci_reset),
 					0x0c03, 7, reply, sizeof(reply), &reply_len);
-	if (!ret && hci_proof)
+	}
+	if (!ret && hci_proof) {
+		state->stage = G2_BT_HCI_VERSION;
 		ret = ops->hci_exchange(ops->context, hci_version, sizeof(hci_version),
 					0x1001, 15, reply, sizeof(reply), &reply_len);
-	if (function_on) {
+	}
+out:
+	if (ret) {
+		state->causal_stage = state->stage;
+		state->causal_error = ret;
+	}
+	if (function_dirty) {
+		state->cleanup_attempted = true;
 		cleanup = ops->wmt(ops->context, 6, func_off, sizeof(func_off),
 				   &g2_bt_func_match);
-		if (!ret)
-			ret = cleanup;
+		if (cleanup)
+			state->func_off_error = cleanup;
 	}
-	cleanup = ops->paldo(ops->context, false);
+	if (paldo_dirty) {
+		state->cleanup_attempted = true;
+		cleanup = ops->paldo(ops->context, false);
+		if (cleanup)
+			state->paldo_off_error = cleanup;
+	}
 	if (!ret)
-		ret = cleanup;
+		ret = state->func_off_error ?: state->paldo_off_error;
 	return ret;
 }
 
@@ -652,6 +697,7 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		.context = owner,
 	};
 	bool wcir_attempted = false;
+	struct mt6797_g2_bt_proof_state bt_state = { };
 	int ret;
 
 	owner->lease = lease;
@@ -669,17 +715,32 @@ static int mt6797_g2d_postpatch_stage(void *context,
 	if (!ret && owner->gnss_probe)
 		ret = mt6797_g2d_gnss_probe_run(&gnss_ops, &state);
 	if (!ret && (owner->bt_function_proof || owner->bt_hci_proof))
-		ret = mt6797_g2_bt_proof_run(&bt_ops, owner->bt_hci_proof);
+		ret = mt6797_g2_bt_proof_run(&bt_ops, owner->bt_hci_proof,
+					     &bt_state);
 	owner->lease = NULL;
 	if (ret && wcir_attempted)
 		dev_err(owner->dev,
 			"G2d Wi-Fi WCIR phase failed: %d; bootstrap must fence/reset\n", ret);
+	else if (ret && owner->bt_hci_proof && bt_state.causal_error)
+		dev_err(owner->dev,
+			"G2f causal stage %s failed: %d; FUNC_CTRL-off cleanup: %d; PALDO-off cleanup: %d; bootstrap must fence/reset\n",
+			mt6797_g2_bt_stage_name[bt_state.causal_stage],
+			bt_state.causal_error, bt_state.func_off_error,
+			bt_state.paldo_off_error);
+	else if (ret && owner->bt_function_proof && bt_state.causal_error)
+		dev_err(owner->dev,
+			"G2e causal stage %s failed: %d; FUNC_CTRL-off cleanup: %d; PALDO-off cleanup: %d; bootstrap must fence/reset\n",
+			mt6797_g2_bt_stage_name[bt_state.causal_stage],
+			bt_state.causal_error, bt_state.func_off_error,
+			bt_state.paldo_off_error);
 	else if (ret && owner->bt_hci_proof)
 		dev_err(owner->dev,
-			"G2f private H4 proof failed: %d; bootstrap must fence/reset\n", ret);
+			"G2f cleanup failed: FUNC_CTRL-off=%d PALDO-off=%d; bootstrap must fence/reset\n",
+			bt_state.func_off_error, bt_state.paldo_off_error);
 	else if (ret && owner->bt_function_proof)
 		dev_err(owner->dev,
-			"G2e BT function proof failed: %d; bootstrap must fence/reset\n", ret);
+			"G2e cleanup failed: FUNC_CTRL-off=%d PALDO-off=%d; bootstrap must fence/reset\n",
+			bt_state.func_off_error, bt_state.paldo_off_error);
 	else if (ret && state.causal_error && state.cleanup_attempted)
 		dev_err(owner->dev,
 			"G2d causal stage %s failed: %d; GNSS LNA-low cleanup: %d; bootstrap must fence/reset\n",
@@ -931,6 +992,87 @@ struct mt6797_g2d_test {
 	unsigned int events;
 	struct mt6797_g2d_test_command command[8];
 };
+
+struct mt6797_g2_bt_test {
+	bool paldo_on_before_fail;
+	bool func_on_before_fail;
+	bool paldo_enabled;
+	bool function_enabled;
+	int paldo_on_error;
+	int paldo_off_error;
+	int func_on_error;
+	int func_off_error;
+	int hci_error;
+	unsigned int paldo_on_calls;
+	unsigned int paldo_off_calls;
+	unsigned int func_on_calls;
+	unsigned int func_off_calls;
+};
+
+static int mt6797_g2_bt_test_paldo(void *context, bool enable)
+{
+	struct mt6797_g2_bt_test *test = context;
+
+	if (enable) {
+		test->paldo_on_calls++;
+		if (test->paldo_on_before_fail)
+			test->paldo_enabled = true;
+		if (test->paldo_on_error)
+			return test->paldo_on_error;
+		test->paldo_enabled = true;
+		return 0;
+	}
+	test->paldo_off_calls++;
+	test->paldo_enabled = false;
+	return test->paldo_off_error;
+}
+
+static int mt6797_g2_bt_test_wmt(void *context, u8 opcode, const u8 *data,
+				  size_t data_len,
+				  const struct mtk_wmt_match *expected)
+{
+	struct mt6797_g2_bt_test *test = context;
+
+	if (opcode != MT6797_G2D_WMT_FUNC_CTRL || data_len != 2 ||
+	    data[0] != 0 || !expected)
+		return -EPROTO;
+	if (data[1]) {
+		test->func_on_calls++;
+		if (test->func_on_before_fail)
+			test->function_enabled = true;
+		if (test->func_on_error)
+			return test->func_on_error;
+		test->function_enabled = true;
+		return 0;
+	}
+	test->func_off_calls++;
+	test->function_enabled = false;
+	return test->func_off_error;
+}
+
+static int mt6797_g2_bt_test_hci_exchange(void *context, const u8 *command,
+					    size_t command_len, u16 expected_opcode,
+					    size_t expected_reply_len, u8 *reply,
+					    size_t reply_size, size_t *reply_len)
+{
+	struct mt6797_g2_bt_test *test = context;
+
+	if (!command || command_len != 4 || expected_opcode != 0x0c03 ||
+	    expected_reply_len != 7 || !reply || reply_size < 7 || !reply_len)
+		return -EPROTO;
+	return test->hci_error;
+}
+
+static struct mt6797_g2_bt_proof_ops
+mt6797_g2_bt_test_ops(struct mt6797_g2_bt_test *test)
+{
+	return (struct mt6797_g2_bt_proof_ops) {
+		.paldo = mt6797_g2_bt_test_paldo,
+		.wmt = mt6797_g2_bt_test_wmt,
+		.hci_exchange = mt6797_g2_bt_test_hci_exchange,
+		.context = test,
+	};
+}
 
 static void mt6797_g2d_test_event(struct mt6797_g2d_test *test,
 		enum mt6797_g2d_test_event event)
@@ -1290,12 +1432,74 @@ static void mt6797_g2d_test_rejects_unsafe_entry(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, context.events, 0U);
 }
 
+static void mt6797_g2_bt_test_partial_on_failures_unwind(struct kunit *test)
+{
+	struct mt6797_g2_bt_test context = {
+		.paldo_on_before_fail = true,
+		.paldo_on_error = -ETIMEDOUT,
+	};
+	struct mt6797_g2_bt_proof_state state;
+	struct mt6797_g2_bt_proof_ops ops = mt6797_g2_bt_test_ops(&context);
+
+	KUNIT_EXPECT_EQ(test, mt6797_g2_bt_proof_run(&ops, false, &state),
+			-ETIMEDOUT);
+	KUNIT_EXPECT_FALSE(test, context.paldo_enabled);
+	KUNIT_EXPECT_EQ(test, context.paldo_on_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.paldo_off_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.func_on_calls, 0U);
+	KUNIT_EXPECT_EQ(test, context.func_off_calls, 0U);
+	KUNIT_EXPECT_EQ(test, state.causal_stage, G2_BT_PALDO_ON);
+	KUNIT_EXPECT_EQ(test, state.causal_error, -ETIMEDOUT);
+	KUNIT_EXPECT_TRUE(test, state.cleanup_attempted);
+	KUNIT_EXPECT_EQ(test, state.paldo_off_error, 0);
+
+	context = (struct mt6797_g2_bt_test) {
+		.func_on_before_fail = true,
+		.func_on_error = -ETIMEDOUT,
+	};
+	ops = mt6797_g2_bt_test_ops(&context);
+	KUNIT_EXPECT_EQ(test, mt6797_g2_bt_proof_run(&ops, false, &state),
+			-ETIMEDOUT);
+	KUNIT_EXPECT_FALSE(test, context.paldo_enabled);
+	KUNIT_EXPECT_FALSE(test, context.function_enabled);
+	KUNIT_EXPECT_EQ(test, context.paldo_off_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.func_off_calls, 1U);
+	KUNIT_EXPECT_EQ(test, state.causal_stage, G2_BT_FUNC_ON);
+	KUNIT_EXPECT_EQ(test, state.causal_error, -ETIMEDOUT);
+	KUNIT_EXPECT_EQ(test, state.func_off_error, 0);
+	KUNIT_EXPECT_EQ(test, state.paldo_off_error, 0);
+}
+
+static void mt6797_g2_bt_test_causal_and_cleanup_errors(struct kunit *test)
+{
+	struct mt6797_g2_bt_test context = {
+		.hci_error = -EIO,
+		.func_off_error = -ENOSPC,
+		.paldo_off_error = -EUCLEAN,
+	};
+	struct mt6797_g2_bt_proof_state state;
+	struct mt6797_g2_bt_proof_ops ops = mt6797_g2_bt_test_ops(&context);
+
+	KUNIT_EXPECT_EQ(test, mt6797_g2_bt_proof_run(&ops, true, &state), -EIO);
+	KUNIT_EXPECT_FALSE(test, context.paldo_enabled);
+	KUNIT_EXPECT_FALSE(test, context.function_enabled);
+	KUNIT_EXPECT_EQ(test, context.func_off_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.paldo_off_calls, 1U);
+	KUNIT_EXPECT_EQ(test, state.causal_stage, G2_BT_HCI_RESET);
+	KUNIT_EXPECT_EQ(test, state.causal_error, -EIO);
+	KUNIT_EXPECT_EQ(test, state.func_off_error, -ENOSPC);
+	KUNIT_EXPECT_EQ(test, state.paldo_off_error, -EUCLEAN);
+	KUNIT_EXPECT_TRUE(test, state.cleanup_attempted);
+}
+
 static struct kunit_case mt6797_g2d_postpatch_cases[] = {
 	KUNIT_CASE(mt6797_g2d_test_exact_order),
 	KUNIT_CASE(mt6797_g2d_test_every_wmt_failure_unwinds),
 	KUNIT_CASE(mt6797_g2d_test_setup_and_cleanup_failures),
 	KUNIT_CASE(mt6797_g2d_test_partial_mutations_unwind),
 	KUNIT_CASE(mt6797_g2d_test_rejects_unsafe_entry),
+	KUNIT_CASE(mt6797_g2_bt_test_partial_on_failures_unwind),
+	KUNIT_CASE(mt6797_g2_bt_test_causal_and_cleanup_errors),
 	{}
 };
 

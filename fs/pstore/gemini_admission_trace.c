@@ -63,6 +63,30 @@ gemini_admission_trace_slot_empty(const struct gemini_admission_trace_ops *ops,
 		ops->read_word(context, slot, 2) == 0;
 }
 
+/*
+ * ramoops does not pre-format an unused retained record: before its first
+ * writer it contains the reset all-ones header.  A raw header is therefore
+ * as available as the normal ramoops empty header, but a partial or foreign
+ * header is deliberately not.  The signature is committed last below so a
+ * reset in the middle remains visibly raw rather than a valid pstore record.
+ */
+static bool
+gemini_admission_trace_slot_raw(const struct gemini_admission_trace_ops *ops,
+				void *context, unsigned int slot)
+{
+	return ops->read_word(context, slot, 0) == ~0U &&
+		ops->read_word(context, slot, 1) == ~0U &&
+		ops->read_word(context, slot, 2) == ~0U;
+}
+
+static bool
+gemini_admission_trace_slot_available(const struct gemini_admission_trace_ops *ops,
+				      void *context, unsigned int slot)
+{
+	return gemini_admission_trace_slot_empty(ops, context, slot) ||
+		gemini_admission_trace_slot_raw(ops, context, slot);
+}
+
 static bool
 gemini_admission_trace_slot_exact(const struct gemini_admission_trace_ops *ops,
 				  void *context, unsigned int slot,
@@ -92,10 +116,13 @@ gemini_admission_trace_write(struct gemini_admission_trace_owner *owner,
 {
 	size_t length = strlen(record);
 	size_t index;
+	bool raw;
 
 	if (length > GEMINI_ADMISSION_TRACE_SLOT_SIZE -
-			     GEMINI_ADMISSION_TRACE_HEADER_SIZE ||
-	    !gemini_admission_trace_slot_empty(ops, context, slot))
+			     GEMINI_ADMISSION_TRACE_HEADER_SIZE)
+		return gemini_admission_trace_fault(owner);
+	raw = gemini_admission_trace_slot_raw(ops, context, slot);
+	if (!raw && !gemini_admission_trace_slot_empty(ops, context, slot))
 		return gemini_admission_trace_fault(owner);
 	for (index = 0; index < length; index++)
 		ops->write_byte(context, slot,
@@ -106,6 +133,11 @@ gemini_admission_trace_write(struct gemini_admission_trace_owner *owner,
 	ops->sync(context);
 	ops->write_word(context, slot, 2, length);
 	ops->sync(context);
+	if (raw) {
+		ops->write_word(context, slot, 0,
+				GEMINI_ADMISSION_TRACE_PSTORE_SIGNATURE);
+		ops->sync(context);
+	}
 	if (!gemini_admission_trace_slot_exact(ops, context, slot, record))
 		return gemini_admission_trace_fault(owner);
 	owner->commits++;
@@ -126,7 +158,7 @@ gemini_admission_trace_owner_entry(struct gemini_admission_trace_owner *owner,
 		return -EINVAL;
 	if (owner->failed || owner->terminal_committed)
 		return -EALREADY;
-	if (!gemini_admission_trace_slot_empty(ops, context, terminal_slot))
+	if (!gemini_admission_trace_slot_available(ops, context, terminal_slot))
 		return gemini_admission_trace_fault(owner);
 	if (gemini_admission_trace_slot_exact(ops, context, entry_slot, entry)) {
 		owner->entry_committed = true;

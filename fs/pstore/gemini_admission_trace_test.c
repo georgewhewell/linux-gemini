@@ -114,6 +114,15 @@ static struct trace_test_context *trace_test_context(struct kunit *test)
 	return context;
 }
 
+static struct trace_test_context *trace_test_raw_context(struct kunit *test)
+{
+	struct trace_test_context *context = trace_test_context(test);
+
+	if (context)
+		memset(context->slots, 0xff, sizeof(context->slots));
+	return context;
+}
+
 static void trace_test_expect_record(struct kunit *test,
 				     struct trace_test_context *context,
 				     unsigned int slot, const char *record)
@@ -170,6 +179,25 @@ static void gemini_admission_trace_entry_reentry_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, context->word_writes[0], 2U);
 }
 
+static void gemini_admission_trace_raw_entry_commit_test(struct kunit *test)
+{
+	struct gemini_admission_trace_owner owner = { };
+	struct trace_test_context *context = trace_test_raw_context(test);
+	int ret;
+
+	KUNIT_ASSERT_NOT_NULL(test, context);
+	ret = gemini_admission_trace_owner_entry(&owner, &trace_test_ops, context);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	KUNIT_EXPECT_TRUE(test, owner.entry_committed);
+	KUNIT_EXPECT_EQ(test, owner.commits, 1U);
+	KUNIT_EXPECT_EQ(test, context->word_writes[0], 3U);
+	KUNIT_EXPECT_EQ(test, context->syncs[0], 4U);
+	KUNIT_EXPECT_FALSE(test, context->payload_after_metadata);
+	KUNIT_EXPECT_FALSE(test, context->metadata_before_sync);
+	trace_test_expect_record(test, context, 0, trace_test_entry);
+	KUNIT_EXPECT_EQ(test, trace_test_read_word(context, 1, 0), ~0U);
+}
+
 static void gemini_admission_trace_foreign_refusal_test(struct kunit *test)
 {
 	struct gemini_admission_trace_owner owner = { };
@@ -209,6 +237,27 @@ static void gemini_admission_trace_terminal_records_test(struct kunit *test)
 		trace_test_expect_record(test, context, 1,
 					 trace_test_terminal[result]);
 	}
+}
+
+static void gemini_admission_trace_raw_terminal_commit_test(struct kunit *test)
+{
+	struct gemini_admission_trace_owner owner = { };
+	struct trace_test_context *context = trace_test_raw_context(test);
+	const enum gemini_admission_trace_zero_result result =
+		GEMINI_ADMISSION_TRACE_ZERO_DERIVE;
+	int ret;
+
+	KUNIT_ASSERT_NOT_NULL(test, context);
+	ret = gemini_admission_trace_owner_entry(&owner, &trace_test_ops, context);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	ret = gemini_admission_trace_owner_zero_request(&owner, &trace_test_ops,
+							 context, result);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	KUNIT_EXPECT_TRUE(test, owner.terminal_committed);
+	KUNIT_EXPECT_EQ(test, owner.commits, 2U);
+	KUNIT_EXPECT_EQ(test, context->word_writes[1], 3U);
+	KUNIT_EXPECT_EQ(test, context->syncs[1], 4U);
+	trace_test_expect_record(test, context, 1, trace_test_terminal[result]);
 }
 
 static void gemini_admission_trace_terminal_gates_test(struct kunit *test)
@@ -255,9 +304,11 @@ static void gemini_admission_trace_torn_write_test(struct kunit *test)
 
 static struct kunit_case gemini_admission_trace_cases[] = {
 	KUNIT_CASE(gemini_admission_trace_entry_commit_test),
+	KUNIT_CASE(gemini_admission_trace_raw_entry_commit_test),
 	KUNIT_CASE(gemini_admission_trace_entry_reentry_test),
 	KUNIT_CASE(gemini_admission_trace_foreign_refusal_test),
 	KUNIT_CASE(gemini_admission_trace_terminal_records_test),
+	KUNIT_CASE(gemini_admission_trace_raw_terminal_commit_test),
 	KUNIT_CASE(gemini_admission_trace_terminal_gates_test),
 	KUNIT_CASE(gemini_admission_trace_torn_write_test),
 	{ }

@@ -67,5 +67,6 @@ int mt6797_wifi_ahb_w3_session_start(struct mt6797_wifi_ahb_w3_session *session,
 
 /* Masks host then device IRQ, acknowledges/drains, and releases every owner. */
 int mt6797_wifi_ahb_w3_session_stop(struct mt6797_wifi_ahb_w3_session *session);
+bool mt6797_wifi_ahb_w3_session_enabled(void);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_WIFI_AHB_W3_SESSION_H */

@@ -37,6 +37,12 @@
 #define W4_STA_INDEX_AIS_AP 0U
 #define W4_JOIN_TIMEOUT_MS 1000U
 
+static bool enable_experimental_wifi_w4_platform;
+module_param_named(enable_experimental_wifi_w4_platform,
+		enable_experimental_wifi_w4_platform, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_wifi_w4_platform,
+	"allow MT6797 W4 retained WLAN platform ownership (default: false)");
+
 /* The vendor's AIS -> SAA chronology, condensed to the open-system path. */
 enum w4_join_state {
 	W4_JOIN_IDLE,
@@ -355,6 +361,12 @@ static int w4_open(struct net_device *ndev)
 	int ret;
 	mutex_lock(&w4->lock);
 	if (w4->opened) { ret = 0; goto out; }
+	if (!mt6797_wifi_ahb_w3_session_enabled() ||
+	    !device_property_read_bool(w4->dev,
+		"mediatek,experimental-wifi-w3-session")) {
+		ret = -EPERM;
+		goto out;
+	}
 	ret = mt6797_consys_runtime_controller_start_with_postpatch_stage(
 		w4->controller_dev, w4_firmware_stage, w4);
 	if (ret) goto out;
@@ -364,7 +376,11 @@ static int w4_open(struct net_device *ndev)
 	if (ret) goto fail;
 	ret = mt6797_wifi_ahb_w3_session_start(&w4->session, &w4_hif_ops, w4);
 	if (ret) { mt6797_consys_runtime_controller_wifi_session_put(&w4->runtime); goto fail; }
-	w4->opened = true; netif_tx_start_all_queues(ndev); goto out;
+	w4->opened = true;
+	netif_tx_start_all_queues(ndev);
+	dev_info(w4->dev, "W4 retained HIF session live: irq=%d whisr=%#x\n",
+		w4->irq, w4->session.last_whisr);
+	goto out;
 fail:
 	if (w4->w1_retained) mt6797_wifi_ahb_w1_firmware_stop_retained(w4->wifi_paldo);
 	w4->w1_retained = false;
@@ -718,7 +734,10 @@ static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 	struct device_node *node;
 	struct platform_device *controller;
 	int ret;
-	if (!device_property_read_bool(&pdev->dev, "mediatek,experimental-wifi-w4-platform")) return -EPERM;
+	if (!READ_ONCE(enable_experimental_wifi_w4_platform) ||
+	    !device_property_read_bool(&pdev->dev,
+		"mediatek,experimental-wifi-w4-platform"))
+		return -EPERM;
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res || res->start != MT6797_WIFI_AHB_HIF_BASE ||
 	    resource_size(res) != MT6797_WIFI_AHB_HIF_PORTAL_SIZE) return -EINVAL;

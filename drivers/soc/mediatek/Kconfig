@@ -686,6 +686,34 @@ config MTK_MT6797_WIFI_AHB_W2_NIC_CAPABILITY
 	  and proves neither an interrupt service loop nor a WLAN transport: it
 	  creates no netdev, MAC, DMA path, cfg80211 device, or user API.
 
+config MTK_MT6797_WIFI_AHB_W3_SESSION
+	bool "MT6797 WLAN GEN3 W3 persistent HIF-session core"
+	depends on MTK_MT6797_WIFI_AHB_W2_NIC_CAPABILITY=y
+	help
+	  Build the hardware-independent lifecycle core required by a future retained
+	  MT6797 WLAN HIF owner. It requires that owner to acquire the long-lived
+	  CONSYS/HIF session and request a masked Linux IRQ, acknowledges WHISR and
+	  accounts TX release state, drains both receive ports, performs the exact W2
+	  capability callback, applies basic/MAC configuration, switches WHCR to
+	  interrupt read-clear, writes WHLPCR INT_SET, and only then unmasks the host
+	  IRQ. Teardown masks host then device IRQ, acknowledges/drains and releases
+	  the owner in reverse order.
+
+	  This is not a platform driver: no backend calls it, it maps no register,
+	  requests no IRQ, retains no CONSYS lease, and creates no netdev, cfg80211
+	  device, DMA path, scan, association, or userspace API. Keep it default-off
+	  until a separately reviewed retained CONSYS/HIF owner exists.
+
+config MTK_MT6797_WIFI_AHB_W3_SESSION_KUNIT_TEST
+	bool "KUnit tests for MT6797 WLAN W3 persistent HIF session"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_W3_SESSION=y
+	help
+	  Exercise W3 ordering, TX accounting, both RX-port drain ownership,
+	  read-clear/WHLPCR/host-IRQ order and failure teardown through fake MMIO.
+	  It touches no Device Tree, IRQ, MMIO, CONSYS session or radio.
+
+	  No platform device, firmware, register or interrupt is used.
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

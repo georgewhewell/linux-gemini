@@ -694,38 +694,54 @@ static void w4_rx_work(struct work_struct *work)
 out:
 	mutex_unlock(&w4->lock);
 }
+
+static bool w4_join_rx_pending(struct mt6797_wifi_w4 *w4)
+{
+	return w4->join_state == W4_JOIN_WAIT_CHANNEL ||
+		w4->join_state == W4_JOIN_WAIT_AUTH2 ||
+		w4->join_state == W4_JOIN_WAIT_ASSOC2;
+}
+
 /*
- * Vendor nicRxWaitResponse() polls WRPLR/WRDR1 for command events.  Use the
- * same CMD53 mechanism only while one scan is pending: this diagnoses a
- * missing host EINT without guessing a GIC polarity or injecting an ACK.
+ * Vendor nicProcessIST() loops over interrupt status and nicRxProcessRFBs()
+ * drains the received queue.  Use the same bounded WRPLR/WRDR polling while
+ * scan or join is pending: the MT6797 host EINT does not reliably retrigger
+ * after scan completion, and a channel grant left in RX0 otherwise cannot
+ * advance authentication.
  */
 static void w4_scan_poll(struct work_struct *work)
 {
 	struct mt6797_wifi_w4 *w4 = container_of(to_delayed_work(work),
 		struct mt6797_wifi_w4, scan_poll);
+	unsigned int i;
 	u16 rx0, rx1;
 	int ret;
 
 	mutex_lock(&w4->lock);
-	if (!w4->opened || !w4->scan_request)
+	if (!w4->opened || (!w4->scan_request && !w4_join_rx_pending(w4)))
 		goto out;
-	w4->scan_poll_count++;
-	ret = w4_rx_lengths(w4, &rx0, &rx1);
-	if (ret) {
-		dev_err(w4->dev, "W4_DIAG stage=scan-poll ret=%d count=%u\n",
-			ret, w4->scan_poll_count);
-	} else if (rx0 || rx1) {
-		dev_info(w4->dev,
-			 "W4_DIAG stage=scan-poll ret=0 count=%u rx0=%u rx1=%u\n",
-			 w4->scan_poll_count, rx0, rx1);
+	if (w4->scan_request)
+		w4->scan_poll_count++;
+	for (i = 0; i < W4_RX_BUDGET; i++) {
+		ret = w4_rx_lengths(w4, &rx0, &rx1);
+		if (ret) {
+			dev_err(w4->dev,
+				"W4_DIAG stage=rx-poll ret=%d count=%u\n",
+				ret, w4->scan_poll_count);
+			break;
+		}
+		if (!rx0 && !rx1)
+			break;
+		dev_dbg(w4->dev,
+			"W4_DIAG stage=rx-poll ret=0 count=%u rx0=%u rx1=%u\n",
+			w4->scan_poll_count, rx0, rx1);
 		if (rx0)
 			w4_rx_deliver(w4, 0, rx0);
 		if (rx1)
 			w4_rx_deliver(w4, 1, rx1);
 	}
-	if (!w4->scan_request)
-		goto out;
-	if (time_after_eq(jiffies, w4->scan_poll_deadline)) {
+	if (w4->scan_request &&
+	    time_after_eq(jiffies, w4->scan_poll_deadline)) {
 		struct cfg80211_scan_info info = { .aborted = true };
 
 		w4_diag_hif(w4, "scan-poll-timeout");
@@ -733,10 +749,10 @@ static void w4_scan_poll(struct work_struct *work)
 			 w4->scan_poll_count);
 		cfg80211_scan_done(w4->scan_request, &info);
 		w4->scan_request = NULL;
-		goto out;
 	}
-	mod_delayed_work(system_wq, &w4->scan_poll,
-		msecs_to_jiffies(W4_SCAN_POLL_INTERVAL_MS));
+	if (w4->scan_request || w4_join_rx_pending(w4))
+		mod_delayed_work(system_wq, &w4->scan_poll,
+				 msecs_to_jiffies(W4_SCAN_POLL_INTERVAL_MS));
 out:
 	mutex_unlock(&w4->lock);
 }
@@ -1747,6 +1763,8 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 	w4->join_state = W4_JOIN_WAIT_CHANNEL;
 	mod_delayed_work(system_wq, &w4->join_timeout,
 		msecs_to_jiffies(W4_CHANNEL_TIMEOUT_MS));
+	mod_delayed_work(system_wq, &w4->scan_poll,
+			 msecs_to_jiffies(W4_SCAN_POLL_INTERVAL_MS));
 	mutex_unlock(&w4->lock);
 	return 0;
 }

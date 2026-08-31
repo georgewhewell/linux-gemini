@@ -813,7 +813,9 @@ static struct attribute *mt6797_g2g_gnss_attrs[] = {
 	&dev_attr_persistent_gnss_last_error.attr,
 	NULL,
 };
-ATTRIBUTE_GROUPS(mt6797_g2g_gnss);
+static const struct attribute_group mt6797_g2g_gnss_group = {
+	.attrs = mt6797_g2g_gnss_attrs,
+};
 
 int mt6797_consys_g2d_postpatch_owner_gnss_attach(struct device *dev)
 {

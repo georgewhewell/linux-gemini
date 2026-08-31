@@ -298,6 +298,35 @@ static const struct gemini_admission_trace_ops gemini_admission_trace_mmio_ops =
 static DEFINE_MUTEX(gemini_admission_trace_lock);
 static struct gemini_admission_trace_owner gemini_admission_trace_owner;
 
+int gemini_admission_trace_snapshot(struct gemini_admission_trace_snapshot *snapshot)
+{
+	void __iomem *slots;
+	unsigned int slot;
+	unsigned int word;
+
+	if (!snapshot)
+		return -EINVAL;
+	memset(snapshot, 0, sizeof(*snapshot));
+	if (!gemini_admission_trace_exact_dt())
+		return -ENODEV;
+	slots = ioremap_wc(GEMINI_ADMISSION_TRACE_BASE,
+			   GEMINI_ADMISSION_TRACE_BYTES);
+	if (!slots)
+		return -ENOMEM;
+	for (slot = GEMINI_ADMISSION_TRACE_ENTRY_SLOT;
+	     slot <= GEMINI_ADMISSION_TRACE_TERMINAL_SLOT; slot++) {
+		u32 *destination = slot == GEMINI_ADMISSION_TRACE_ENTRY_SLOT ?
+			snapshot->entry_words : snapshot->terminal_words;
+
+		for (word = 0; word < ARRAY_SIZE(snapshot->entry_words); word++)
+			destination[word] = gemini_admission_trace_mmio_read_word(
+				slots, slot, word);
+	}
+	iounmap(slots);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(gemini_admission_trace_snapshot);
+
 static int
 gemini_admission_trace_commit(enum gemini_admission_trace_zero_result result,
 			      bool entry)

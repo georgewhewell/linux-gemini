@@ -337,6 +337,25 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 			     READ_ONCE(controller->state.trace_entry_ret),
 			     READ_ONCE(controller->state.trace_ret));
 	len += sysfs_emit_at(buf, len,
+			     "trace_snapshot_ret=%d trace_entry_words=%08x/%08x/%08x/%08x/%08x/%08x/%08x ",
+			     READ_ONCE(controller->state.trace_snapshot_ret),
+			     READ_ONCE(controller->state.trace_snapshot.entry_words[0]),
+			     READ_ONCE(controller->state.trace_snapshot.entry_words[1]),
+			     READ_ONCE(controller->state.trace_snapshot.entry_words[2]),
+			     READ_ONCE(controller->state.trace_snapshot.entry_words[3]),
+			     READ_ONCE(controller->state.trace_snapshot.entry_words[4]),
+			     READ_ONCE(controller->state.trace_snapshot.entry_words[5]),
+			     READ_ONCE(controller->state.trace_snapshot.entry_words[6]));
+	len += sysfs_emit_at(buf, len,
+			     "trace_terminal_words=%08x/%08x/%08x/%08x/%08x/%08x/%08x ",
+			     READ_ONCE(controller->state.trace_snapshot.terminal_words[0]),
+			     READ_ONCE(controller->state.trace_snapshot.terminal_words[1]),
+			     READ_ONCE(controller->state.trace_snapshot.terminal_words[2]),
+			     READ_ONCE(controller->state.trace_snapshot.terminal_words[3]),
+			     READ_ONCE(controller->state.trace_snapshot.terminal_words[4]),
+			     READ_ONCE(controller->state.trace_snapshot.terminal_words[5]),
+			     READ_ONCE(controller->state.trace_snapshot.terminal_words[6]));
+	len += sysfs_emit_at(buf, len,
 			     "failure_stage=%u derive_stage=%u ",
 			     READ_ONCE(controller->state.failure_stage),
 			     READ_ONCE(controller->state.derive_stage));
@@ -474,6 +493,9 @@ static int mt6797_a72_admission_probe(struct platform_device *pdev)
 	controller->dev = dev;
 	mt6797_a72_admission_state_init(&controller->state);
 	mt6797_a72_admission_trigger_state_init(&controller->trigger);
+	/* Read-only retained-RAM evidence; no admission token or pstore write. */
+	controller->state.trace_snapshot_ret =
+		gemini_admission_trace_snapshot(&controller->state.trace_snapshot);
 	platform_set_drvdata(pdev, controller);
 
 	if (IS_ENABLED(CONFIG_MTK_MT6797_A72_ADMISSION_LIVE_TRIGGER)) {
@@ -484,7 +506,24 @@ static int mt6797_a72_admission_probe(struct platform_device *pdev)
 					     "live trigger unavailable\n");
 		dev_info(dev, MT6797_A72_ADMISSION_LIVE_TAG
 			 " state=armed trigger_consumed=0 trigger_executions=0 "
-			 "core_consumed=0 requests=0/0/0 retries=0\n");
+			 "core_consumed=0 requests=0/0/0 retries=0 trace_snapshot_ret=%d "
+			 "entry=%08x/%08x/%08x/%08x/%08x/%08x/%08x "
+			 "terminal=%08x/%08x/%08x/%08x/%08x/%08x/%08x\n",
+			 controller->state.trace_snapshot_ret,
+			 controller->state.trace_snapshot.entry_words[0],
+			 controller->state.trace_snapshot.entry_words[1],
+			 controller->state.trace_snapshot.entry_words[2],
+			 controller->state.trace_snapshot.entry_words[3],
+			 controller->state.trace_snapshot.entry_words[4],
+			 controller->state.trace_snapshot.entry_words[5],
+			 controller->state.trace_snapshot.entry_words[6],
+			 controller->state.trace_snapshot.terminal_words[0],
+			 controller->state.trace_snapshot.terminal_words[1],
+			 controller->state.trace_snapshot.terminal_words[2],
+			 controller->state.trace_snapshot.terminal_words[3],
+			 controller->state.trace_snapshot.terminal_words[4],
+			 controller->state.trace_snapshot.terminal_words[5],
+			 controller->state.trace_snapshot.terminal_words[6]);
 		return 0;
 	}
 

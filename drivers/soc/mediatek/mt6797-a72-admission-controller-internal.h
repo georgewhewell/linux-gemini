@@ -45,6 +45,8 @@ struct mt6797_a72_admission_controller_state {
 	u32 cpu_requests;
 	u32 failure_stage;
 	u32 derive_stage;
+	int trace_snapshot_ret;
+	struct gemini_admission_trace_snapshot trace_snapshot;
 	int trace_entry_ret;
 	int trace_ret;
 	int operation_ret;

@@ -415,7 +415,8 @@ static int mt6797_a72_admission_reset_baseline(
 			MT6797_A72_RECOVERY_BASELINE_VBUCKB_EXPECTED;
 	dev_info(controller->dev, MT6797_A72_ADMISSION_LIVE_TAG
 		 " baseline flags=0x%x/%x pwr_status=%08x/%08x mp2_cpu=%08x/%08x p27=%08x p28=%08x pwrap_asserted=%u buckb=%02x vsel=%02x\n",
-		 controller->state.baseline_flags, MT6797_A72_RECOVERY_BASELINE_ALL,
+		 controller->state.baseline_flags,
+		 (u32)MT6797_A72_RECOVERY_BASELINE_ALL,
 		 controller->state.baseline_pwr_status,
 		 controller->state.baseline_pwr_status_2nd,
 		 controller->state.baseline_mp2_cpu8,
@@ -497,7 +498,7 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 			     READ_ONCE(controller->state.baseline_checked),
 			     READ_ONCE(controller->state.baseline_ret),
 			     READ_ONCE(controller->state.baseline_flags),
-			     MT6797_A72_RECOVERY_BASELINE_ALL,
+			     (u32)MT6797_A72_RECOVERY_BASELINE_ALL,
 			     READ_ONCE(controller->state.baseline_pwr_status),
 			     READ_ONCE(controller->state.baseline_pwr_status_2nd),
 			     READ_ONCE(controller->state.baseline_mp2_cpu8),

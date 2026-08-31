@@ -11,6 +11,11 @@ mt6797-gemini-pda-a72-admission-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-a72-admission.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-a72-admission.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-lk-handoff-probe.dtbo
+mt6797-gemini-pda-md1-lk-handoff-probe-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-md1-lk-handoff-probe.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-lk-handoff-probe.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-boot-status-observe.dtbo
 mt6797-gemini-pda-md1-boot-status-observe-dtbs := \
 	mt6797-gemini-pda.dtb \

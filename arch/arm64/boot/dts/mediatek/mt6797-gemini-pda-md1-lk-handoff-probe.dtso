@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Disabled MT6797 Gemini MD1 LK hand-off profile.
+ *
+ * The driver also requires its module parameter and a stage-specific DT gate.
+ * With all defaults it does not bind. If every gate is independently enabled,
+ * it only reads the LK table after proving its address is inside a live CCCI
+ * no-map carve-out, then unmaps it before probe completion. It cannot access
+ * modem partitions, MPU/remap, clocks, power, reset, CCIF, CLDMA, DMA, SIM,
+ * RF or a modem boot vector.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/";
+
+		__overlay__ {
+			md1_lk_handoff_probe: modem-lk-handoff-probe {
+				compatible = "mediatek,mt6797-md1-lk-handoff-probe";
+				mediatek,experimental-md1-lk-handoff-probe;
+				mediatek,stage-lk-handoff-read-only;
+				status = "disabled";
+			};
+		};
+	};
+};

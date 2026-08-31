@@ -51,6 +51,15 @@ extern const struct cpu_operations cpu_psci_ops;
 	(ARM64_LATE_CPU_BLOCK_RUNTIME_BINDING)
 #endif
 
+/*
+ * Gemini's physical A72 cluster is r0p1.  CPU8 reported its full MIDR as
+ * 0x410fd081 during the controlled 2026-08-31 admission attempt.  This is a
+ * device capsule value, not a model matcher: generic erratum matching below
+ * must continue to use MIDR_CORTEX_A72.
+ */
+#define MT6797_A72_TARGET_MIDR \
+	(MIDR_CORTEX_A72 | MIDR_CPU_VAR_REV(0, 1))
+
 static const u64 mt6797_a72_source_parent_identity[ARM64_LATE_CPU_ID_WORDS] __initconst = {
 	0x78fcb018e5693cc2, 0x58127ea6e2655319,
 	0xf55b80135c1230cb, 0x42fbf70c6d2e6deb,
@@ -82,7 +91,7 @@ static const struct arm64_late_cpu_expected_pair mt6797_a72_expected_pair __init
 		0xe35596c52bc8b40b, 0x600c5e2d6733661d,
 	},
 	.mpidr = { 0x200, 0x201 },
-	.midr = MIDR_CORTEX_A72,
+	.midr = MT6797_A72_TARGET_MIDR,
 	.revidr = 0,
 	.cntfrq = 0x00c65d40,
 	.ctr = 0x8444c004,
@@ -156,7 +165,7 @@ mt6797_a72_classify_local_cap(const struct arm64_cpu_capabilities *cap,
 	    arm64_late_cpu_target_impl_override_active() ||
 	    evidence->target_cpu[target] != 8 + target ||
 	    evidence->expected_target_mpidr[target] != 0x200 + target ||
-	    evidence->expected_target_midr[target] != MIDR_CORTEX_A72 ||
+	    evidence->expected_target_midr[target] != MT6797_A72_TARGET_MIDR ||
 	    !mt6797_a72_cap_descriptor_shape(cap, match))
 		return ARM64_LATE_CPU_CAP_UNRESOLVED;
 
@@ -892,8 +901,8 @@ mt6797_a72_evidence_diag(const struct arm64_late_cpu_evidence *evidence)
 	if (evidence->expected_target_mpidr[0] != 0x200 ||
 	    evidence->expected_target_mpidr[1] != 0x201)
 		mask |= BIT_ULL(A72_EVD_EXPECTED_MPIDR);
-	if (evidence->expected_target_midr[0] != MIDR_CORTEX_A72 ||
-	    evidence->expected_target_midr[1] != MIDR_CORTEX_A72)
+	if (evidence->expected_target_midr[0] != MT6797_A72_TARGET_MIDR ||
+	    evidence->expected_target_midr[1] != MT6797_A72_TARGET_MIDR)
 		mask |= BIT_ULL(A72_EVD_EXPECTED_MIDR);
 	if (evidence->target_cpu[0] != 8 || evidence->target_cpu[1] != 9)
 		mask |= BIT_ULL(A72_EVD_TARGET_CPU);
@@ -973,8 +982,8 @@ mt6797_a72_evidence_is_bound_expectation(const struct arm64_late_cpu_evidence *e
 	    evidence->blocker_mask & ~allowed_blockers ||
 	    evidence->expected_target_mpidr[0] != 0x200 ||
 	    evidence->expected_target_mpidr[1] != 0x201 ||
-	    evidence->expected_target_midr[0] != MIDR_CORTEX_A72 ||
-	    evidence->expected_target_midr[1] != MIDR_CORTEX_A72 ||
+	    evidence->expected_target_midr[0] != MT6797_A72_TARGET_MIDR ||
+	    evidence->expected_target_midr[1] != MT6797_A72_TARGET_MIDR ||
 	    evidence->target_cpu[0] != 8 || evidence->target_cpu[1] != 9 ||
 	    !mt6797_a72_system_evidence_exact(&evidence->system_cap) ||
 	    !mt6797_a72_identity_empty(evidence->evidence_identity))
@@ -1145,7 +1154,7 @@ mt6797_a72_fixture_registers_exact(
 		&registers->aarch32;
 
 	return registers->ctr == 0x83338003 && !registers->cntfrq &&
-	       !registers->dczid && registers->midr == MIDR_CORTEX_A72 &&
+	       !registers->dczid && registers->midr == MT6797_A72_TARGET_MIDR &&
 	       !registers->revidr && !registers->aidr && !registers->gmid &&
 	       !registers->smidr && !registers->mpamidr &&
 	       !registers->id_aa64dfr0 && !registers->id_aa64dfr1 &&
@@ -1246,8 +1255,8 @@ mt6797_a72_evidence_is_fixture(
 		if (evidence->target_cpu[target] != 8 + target ||
 		    evidence->expected_target_mpidr[target] != 0x200 + target ||
 		    evidence->observed_target_mpidr[target] != 0x200 + target ||
-		    evidence->expected_target_midr[target] != MIDR_CORTEX_A72 ||
-		    evidence->observed_target_midr[target] != MIDR_CORTEX_A72 ||
+		    evidence->expected_target_midr[target] != MT6797_A72_TARGET_MIDR ||
+		    evidence->observed_target_midr[target] != MT6797_A72_TARGET_MIDR ||
 		    evidence->observed_target_revidr[target] ||
 		    !mt6797_a72_fixture_target_exact(
 			    &evidence->target_cap[target]) ||
@@ -1593,7 +1602,7 @@ mt6797_a72_populate_fixture(struct arm64_late_cpu_evidence *evidence)
 
 	for (target = 0; target < ARM64_LATE_CPU_MAX_TARGETS; target++) {
 		evidence->observed_target_mpidr[target] = 0x200 + target;
-		evidence->observed_target_midr[target] = MIDR_CORTEX_A72;
+		evidence->observed_target_midr[target] = MT6797_A72_TARGET_MIDR;
 		evidence->observed_target_revidr[target] = 0;
 
 		target_cap = &evidence->target_cap[target];
@@ -1604,7 +1613,7 @@ mt6797_a72_populate_fixture(struct arm64_late_cpu_evidence *evidence)
 			ARM64_LATE_CPU_TARGET_CAP_HYP_VALID |
 			ARM64_LATE_CPU_TARGET_CAP_WA1_VALID |
 			ARM64_LATE_CPU_TARGET_CAP_WA2_VALID;
-		target_cap->registers.midr = MIDR_CORTEX_A72;
+		target_cap->registers.midr = MT6797_A72_TARGET_MIDR;
 		target_cap->registers.ctr = 0x83338003;
 		target_cap->registers.id_aa64pfr0 = 0;
 		target_cap->registers.id_aa64pfr1 = 0;
@@ -1650,8 +1659,8 @@ mt6797_a72_profile_prepare(struct arm64_late_cpu_evidence *evidence,
 	evidence->target_cpu[1] = 9;
 	evidence->expected_target_mpidr[0] = 0x200;
 	evidence->expected_target_mpidr[1] = 0x201;
-	evidence->expected_target_midr[0] = MIDR_CORTEX_A72;
-	evidence->expected_target_midr[1] = MIDR_CORTEX_A72;
+	evidence->expected_target_midr[0] = MT6797_A72_TARGET_MIDR;
+	evidence->expected_target_midr[1] = MT6797_A72_TARGET_MIDR;
 #ifndef CONFIG_ARM64_MT6797_A72_FIXTURE_EVIDENCE
 	evidence->expected_pair = mt6797_a72_expected_pair;
 #endif

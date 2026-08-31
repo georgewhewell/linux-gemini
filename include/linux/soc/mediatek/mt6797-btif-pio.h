@@ -15,7 +15,11 @@
 #include <linux/types.h>
 
 #define MT6797_BTIF_PIO_TX_BUFFER_SIZE	4096
+/* Vendor btif_plat.c uses this as a local PIO callback buffer, not a cap. */
 #define MT6797_BTIF_PIO_RX_BUDGET		256
+/* One full MTK STP payload; a wire frame may span two threaded dispatches. */
+#define MT6797_BTIF_PIO_RX_WORK_CEILING	2048
+#define MT6797_BTIF_PIO_RX_EVIDENCE_SIZE	32
 
 struct mt6797_consys_stp_session_lease;
 struct mt6797_consys_runtime_lease;
@@ -60,6 +64,17 @@ struct mt6797_btif_pio_diagnostics {
 	u64 iir_spurious;
 	u64 rx_bytes;
 	u64 rx_callbacks;
+	u64 rx_chunks;
+	u64 rx_work_ceiling_yields;
+	u64 rx_callback_failures;
+	u64 rx_protocol_failures;
+	u64 rx_fences;
+	u32 rx_last_irq_bytes;
+	u32 rx_yield_evidence_bytes;
+	u8 rx_yield_prefix_length;
+	u8 rx_yield_tail_length;
+	u8 rx_yield_prefix[MT6797_BTIF_PIO_RX_EVIDENCE_SIZE];
+	u8 rx_yield_tail[MT6797_BTIF_PIO_RX_EVIDENCE_SIZE];
 	u32 tx_queued;
 	u32 ier;
 	u32 iir;
@@ -156,13 +171,17 @@ int mt6797_btif_pio_transmit(void *context, const u8 *frame,
 
 /*
  * Handle one already-delivered BTIF core interrupt in threaded-IRQ context.
- * RX bytes are passed as arbitrary fragments to exactly one attached consumer.
+ * RX bytes are passed in ordered, 256-byte-or-smaller fragments to exactly one
+ * attached consumer.  One invocation consumes at most the vendor-supported
+ * MTK STP payload ceiling; a still-asserted level IRQ is left enabled so it can
+ * retrigger without losing already-delivered fragments.
  */
 int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease);
 
 /*
- * Snapshot transport progress and only safe readable BTIF registers.  This
- * neither changes PIO state nor accesses write-only FIFOCTRL/WAK registers.
+ * Snapshot transport progress and only safe readable BTIF registers.  It may
+ * also report a fenced owner for post-fence diagnosis, but never changes PIO
+ * state or accesses write-only FIFOCTRL/WAK registers.
  */
 int mt6797_btif_pio_diagnostics_snapshot(
 		const struct mt6797_btif_pio_lease *lease,

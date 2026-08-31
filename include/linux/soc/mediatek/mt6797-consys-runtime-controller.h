@@ -25,7 +25,8 @@ typedef int (*mt6797_consys_runtime_controller_postpatch_stage_t)(void *context,
 /*
  * One controller-owned GNSS borrower.  The object is caller-owned, must be
  * zero-initialized before its first get, and must remain unchanged until
- * mt6797_consys_runtime_controller_gnss_session_put().
+ * mt6797_consys_runtime_controller_gnss_session_put().  It can coexist with
+ * the distinct retained WLAN borrower; full STP serializes their task streams.
  * It is deliberately not a general STP capability: it exists to compose the
  * one channel-2 GNSS endpoint with the controller's retained full-STP lease.
  */
@@ -73,8 +74,8 @@ void mt6797_consys_runtime_controller_stop(struct device *dev);
  * This neither registers /dev/gnssN nor issues WMT GPS function control.  The
  * returned session stays valid only until the matching put(); a GNSS caller
  * must detach its channel-2 callback (mtk_gnss_unregister()) before that put.
- * stop() rejects new borrows and waits for the outstanding borrower, then
- * destroys the bootstrap/session in the required reverse order.
+ * stop() rejects new borrows and waits for both outstanding task borrowers,
+ * then destroys the bootstrap/session in the required reverse order.
  *
  * The caller must keep @dev alive while this lease is held.  This is separate
  * from every runtime/DT gate; it cannot make a dormant controller runnable.

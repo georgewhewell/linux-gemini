@@ -600,6 +600,9 @@ static void w4_stop_locked(struct mt6797_wifi_w4 *w4)
 	mt6797_wifi_ahb_w3_session_stop(&w4->session);
 	/* Set before releasing the lock: a queued worker will only observe stop. */
 	w4->opened = false;
+	if (w4->retained_owner_dev)
+		mt6797_consys_g2d_postpatch_owner_gnss_detach(
+			w4->retained_owner_dev);
 	mt6797_consys_runtime_controller_wifi_session_put(&w4->runtime);
 	if (w4->w1_retained) mt6797_wifi_ahb_w1_firmware_stop_retained(w4->wifi_paldo);
 	w4->w1_retained = false;
@@ -633,8 +636,22 @@ static int w4_open(struct net_device *ndev)
 	ret = mt6797_consys_runtime_controller_wifi_session_get(w4->controller_dev,
 		&w4->runtime, &w4->stp_session);
 	if (ret) goto fail;
+	if (w4->retained_owner_dev) {
+		ret = mt6797_consys_g2d_postpatch_owner_gnss_attach(
+			w4->retained_owner_dev);
+		if (ret) {
+			mt6797_consys_runtime_controller_wifi_session_put(&w4->runtime);
+			goto fail;
+		}
+	}
 	ret = mt6797_wifi_ahb_w3_session_start(&w4->session, &w4_hif_ops, w4);
-	if (ret) { mt6797_consys_runtime_controller_wifi_session_put(&w4->runtime); goto fail; }
+	if (ret) {
+		if (w4->retained_owner_dev)
+			mt6797_consys_g2d_postpatch_owner_gnss_detach(
+				w4->retained_owner_dev);
+		mt6797_consys_runtime_controller_wifi_session_put(&w4->runtime);
+		goto fail;
+	}
 	w4_diag_hif(w4, "hif-ready");
 	w4->opened = true;
 	netif_tx_start_all_queues(ndev);
@@ -642,6 +659,8 @@ static int w4_open(struct net_device *ndev)
 		w4->irq, w4->session.last_whisr);
 	goto out;
 fail:
+	if (w4->retained_owner_dev)
+		mt6797_consys_g2d_postpatch_owner_gnss_detach(w4->retained_owner_dev);
 	if (w4->w1_retained) mt6797_wifi_ahb_w1_firmware_stop_retained(w4->wifi_paldo);
 	w4->w1_retained = false;
 	mt6797_consys_runtime_controller_stop(w4->controller_dev);

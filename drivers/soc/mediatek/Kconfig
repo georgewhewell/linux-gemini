@@ -739,18 +739,18 @@ config MTK_MT6797_CONSYS_G2G_GNSS_ENDPOINT
 	default n
 	help
 	  Extend the G2d chronology owner with a separately gated persistent GNSS
-	  endpoint. After the hardware-passed post-patch sequence, the owner retains
-	  the controller's full-STP session, initializes Gemini GPIO69 low, borrows
-	  the one GNSS lease and registers /dev/gnssN. Opening that device performs
-	  the exact GPS FUNC_CTRL-on transaction after raising the LNA; closing it
-	  lowers the LNA before the exact FUNC_CTRL-off transaction.
+	  endpoint. It attaches to the W4 owner after that owner has started the
+	  one shared full-STP session, initializes Gemini GPIO69 low, borrows the
+	  channel-2 lease and registers /dev/gnssN. Opening that device performs the
+	  exact GPS FUNC_CTRL-on transaction after raising the LNA; closing it lowers
+	  the LNA before the exact FUNC_CTRL-off transaction.
 
 	  The Device Tree property and
 	  mt6797_consys_g2d_postpatch_owner.enable_experimental_g2g_gnss_endpoint=1
 	  are both required in addition to every existing runtime, firmware and G2d
-	  gate. Any failed power transaction is terminal until reboot. This option
-	  cannot coexist with the old one-shot GNSS, Bluetooth or Wi-Fi proof in the
-	  same owner instance.
+	  gate. Any failed power transaction is terminal until reboot. It cannot
+	  coexist with one-shot GNSS or Bluetooth proofs, but shares the retained
+	  session with W4; controller stop drains both borrowers before teardown.
 
 config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
 	bool "KUnit tests for MT6797 post-patch calibration choreography"
@@ -1441,4 +1441,3 @@ config MTK_MT6797_MD1_LK_HANDOFF_PROBE
 	  CCCI reserved-memory ownership before reading the LK tag table, then
 	  unmaps it and stops before modem partition I/O, MPU/remap, clocks, power,
 	  reset, CCIF, CLDMA, DMA, SIM, RF or a modem boot request.
-

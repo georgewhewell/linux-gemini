@@ -248,7 +248,7 @@ static int mt6797_g2d_gnss_fail_low(struct mt6797_g2d_gnss_ops *ops,
 static int mt6797_g2d_gnss_probe_run(struct mt6797_g2d_gnss_ops *ops,
 		struct mt6797_g2d_state *state)
 {
-	int ret;
+	int ret, cleanup;
 
 	if (!ops || !state || !ops->lna_init || !ops->lna_set || !ops->wmt)
 		return -EINVAL;
@@ -287,7 +287,7 @@ static int mt6797_g2_bt_proof_run(struct mt6797_g2_bt_proof_ops *ops,
 	u8 reply[15];
 	size_t reply_len;
 	bool paldo_dirty = false, function_dirty = false;
-	int ret, cleanup;
+	int ret;
 
 	if (!ops || !state || !ops->paldo || !ops->wmt ||
 	    (hci_proof && !ops->hci_exchange))
@@ -535,6 +535,7 @@ struct mt6797_g2d_owner {
 	bool wifi_w0_dirty_fatal;
 	bool gnss_probe;
 	bool persistent_gnss;
+	bool persistent_gnss_registered;
 	bool persistent_gnss_faulted;
 	atomic64_t persistent_gnss_power_ons;
 	atomic64_t persistent_gnss_power_offs;
@@ -813,6 +814,89 @@ static struct attribute *mt6797_g2g_gnss_attrs[] = {
 	NULL,
 };
 ATTRIBUTE_GROUPS(mt6797_g2g_gnss);
+
+int mt6797_consys_g2d_postpatch_owner_gnss_attach(struct device *dev)
+{
+	struct mt6797_g2d_owner *owner;
+	const struct mt6797_consys_stp_session_lease *session_lease;
+	struct mtk_gnss_transport transport = {
+		.set_power = mt6797_g2g_gnss_set_power,
+	};
+	int ret;
+
+	if (!dev)
+		return -EINVAL;
+	owner = dev_get_drvdata(dev);
+	if (!owner)
+		return -ENODEV;
+	mutex_lock(&owner->w4_lock);
+	if (!owner->persistent_gnss) {
+		ret = 0;
+		goto unlock;
+	}
+	if (!owner->wifi_w4_retained_owner || !owner->controller ||
+	    !owner->w4_resources_held || !owner->w4_identity_held ||
+	    !owner->w4_postid_active) {
+		ret = -ESHUTDOWN;
+		goto unlock;
+	}
+	if (owner->persistent_gnss_registered) {
+		ret = 0;
+		goto unlock;
+	}
+	ret = mt6797_consys_runtime_controller_gnss_session_get(owner->controller,
+		&owner->gnss_lease, &session_lease);
+	if (ret)
+		goto unlock;
+	ret = mt6797_g2d_live_lna_init(owner);
+	if (ret)
+		goto put_lease;
+	transport.context = owner;
+	ret = mtk_gnss_register(&owner->gnss, owner->dev, session_lease,
+		&transport);
+	if (ret)
+		goto put_lease;
+	owner->persistent_gnss_registered = true;
+	dev_info(owner->dev, "G2g attached /dev/gnss0 to W4 full-STP session\n");
+	goto unlock;
+
+put_lease:
+	mt6797_consys_runtime_controller_gnss_session_put(&owner->gnss_lease);
+unlock:
+	mutex_unlock(&owner->w4_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_g2d_postpatch_owner_gnss_attach);
+
+void mt6797_consys_g2d_postpatch_owner_gnss_detach(struct device *dev)
+{
+	struct mt6797_g2d_owner *owner;
+
+	if (!dev)
+		return;
+	owner = dev_get_drvdata(dev);
+	if (!owner)
+		return;
+	mutex_lock(&owner->w4_lock);
+	if (owner->persistent_gnss_registered) {
+		mtk_gnss_unregister(&owner->gnss);
+		mt6797_consys_runtime_controller_gnss_session_put(&owner->gnss_lease);
+		owner->persistent_gnss_registered = false;
+	}
+	mutex_unlock(&owner->w4_lock);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_g2d_postpatch_owner_gnss_detach);
+#else
+int mt6797_consys_g2d_postpatch_owner_gnss_attach(struct device *dev)
+{
+	return dev ? 0 : -EINVAL;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_g2d_postpatch_owner_gnss_attach);
+
+void mt6797_consys_g2d_postpatch_owner_gnss_detach(struct device *dev)
+{
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_g2d_postpatch_owner_gnss_detach);
 #endif
 
 #if IS_REACHABLE(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_OBSERVE)
@@ -1085,9 +1169,9 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	    (owner->gnss_probe || owner->bt_function_proof || owner->bt_hci_proof))
 		return mt6797_g2d_probe_failure(&pdev->dev, -EINVAL,
 			"persistent GNSS mixed with one-shot proof");
-	if (owner->persistent_gnss && owner->wifi_w4_retained_owner)
+	if (owner->persistent_gnss && !owner->wifi_w4_retained_owner)
 		return mt6797_g2d_probe_failure(&pdev->dev, -EINVAL,
-			"persistent GNSS mixed with W4 retained owner");
+			"persistent GNSS requires W4 retained owner");
 	if (owner->gnss_probe || owner->persistent_gnss) {
 		owner->pinctrl = devm_pinctrl_get(&pdev->dev);
 		if (IS_ERR(owner->pinctrl))
@@ -1100,6 +1184,13 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 		    IS_ERR(owner->gps_lna_off))
 			return mt6797_g2d_probe_failure(&pdev->dev, -EINVAL,
 				"GNSS LNA pinctrl state");
+		if (owner->persistent_gnss) {
+			ret = devm_device_add_group(&pdev->dev,
+				&mt6797_g2g_gnss_group);
+			if (ret)
+				return mt6797_g2d_probe_failure(&pdev->dev, ret,
+					"persistent GNSS diagnostics");
+		}
 	}
 	owner->bt = devm_regulator_get(&pdev->dev, "vcn33-bt");
 	if (IS_ERR(owner->bt))
@@ -1181,47 +1272,6 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 			"controller start or post-patch stage");
 	if (!ret)
 		controller_active = true;
-	if (!ret && owner->persistent_gnss) {
-#if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_G2G_GNSS_ENDPOINT)
-		const struct mt6797_consys_stp_session_lease *session_lease;
-		struct mtk_gnss_transport transport = {
-			.set_power = mt6797_g2g_gnss_set_power,
-			.context = owner,
-		};
-
-		ret = mt6797_consys_runtime_controller_gnss_session_get(
-			owner->controller, &owner->gnss_lease, &session_lease);
-		if (ret) {
-			ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
-				"persistent GNSS session lease");
-			goto postid;
-		}
-		ret = mt6797_g2d_live_lna_init(owner);
-		if (ret) {
-			ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
-				"persistent GNSS LNA init");
-			goto postid;
-		}
-		ret = mtk_gnss_register(&owner->gnss, &pdev->dev, session_lease,
-			&transport);
-		if (ret) {
-			ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
-				"persistent GNSS endpoint registration");
-			goto postid;
-		}
-		ret = devm_device_add_groups(&pdev->dev, mt6797_g2g_gnss_groups);
-		if (ret) {
-			mtk_gnss_unregister(&owner->gnss);
-			ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
-				"persistent GNSS diagnostics");
-			goto postid;
-		}
-		platform_set_drvdata(pdev, owner);
-		dev_info(&pdev->dev,
-			 "G2g retained full STP and registered persistent GNSS endpoint\n");
-		return 0;
-#endif
-	}
 postid:
 	if (owner->gnss_lease.controller)
 		mt6797_consys_runtime_controller_gnss_session_put(&owner->gnss_lease);
@@ -1261,33 +1311,13 @@ put_runtime:
 static void mt6797_g2d_postpatch_owner_remove(struct platform_device *pdev)
 {
 	struct mt6797_g2d_owner *owner = platform_get_drvdata(pdev);
-	int ret, cleanup;
+	int ret;
 
 	if (!owner)
 		return;
-	if (owner->persistent_gnss) {
-		mtk_gnss_unregister(&owner->gnss);
-		mt6797_consys_runtime_controller_gnss_session_put(&owner->gnss_lease);
-		mt6797_consys_runtime_controller_stop(owner->controller);
-		ret = mt6797_consys_postid_stop(&owner->postid);
-		cleanup = mt6797_consys_runtime_platform_identity_release(&owner->identity);
-		if (!ret)
-			ret = cleanup;
-		cleanup = mt6797_consys_runtime_resource_lease_release(&owner->resources);
-		if (!ret)
-			ret = cleanup;
-		put_device(owner->controller);
-		owner->controller = NULL;
-		put_device(owner->runtime);
-		owner->runtime = NULL;
-		if (ret) {
-			mt6797_consys_emi_mpu_latch_fatal();
-			dev_err(&pdev->dev, "G2g retained GNSS teardown failed: %d\n", ret);
-		}
-		return;
-	}
 	if (!owner->wifi_w4_retained_owner)
 		return;
+	mt6797_consys_g2d_postpatch_owner_gnss_detach(&pdev->dev);
 	if (owner->controller)
 		mt6797_consys_runtime_controller_stop(owner->controller);
 	ret = mt6797_consys_g2d_postpatch_owner_w4_release(&pdev->dev);

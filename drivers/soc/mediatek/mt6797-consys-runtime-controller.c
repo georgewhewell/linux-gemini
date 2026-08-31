@@ -435,7 +435,7 @@ static int mt6797_consys_runtime_controller_gnss_session_get_controller(
 			-EAGAIN : -ESHUTDOWN;
 		goto unlock;
 	}
-	if (controller->gnss_lease_owner || controller->wifi_lease_owner) {
+	if (controller->gnss_lease_owner) {
 		ret = -EBUSY;
 		goto unlock;
 	}
@@ -578,7 +578,7 @@ static int mt6797_consys_runtime_controller_wifi_session_get_controller(
 			-EAGAIN : -ESHUTDOWN;
 		goto unlock;
 	}
-	if (controller->wifi_lease_owner || controller->gnss_lease_owner) {
+	if (controller->wifi_lease_owner) {
 		ret = -EBUSY;
 		goto unlock;
 	}
@@ -1389,6 +1389,54 @@ static void mt6797_consys_runtime_controller_test_gnss_lease_drains_before_stop(
 	KUNIT_EXPECT_MEMEQ(test, backend->calls, expected, sizeof(expected));
 }
 
+static void mt6797_consys_runtime_controller_test_shared_leases_drain_before_stop(
+		struct kunit *test)
+{
+	struct mt6797_consys_runtime_controller_test_backend *backend;
+	struct mt6797_consys_runtime_controller *controller;
+	struct mt6797_consys_runtime_controller_gnss_lease gnss_lease = { };
+	struct mt6797_consys_runtime_controller_wifi_lease wifi_lease = { };
+	const struct mt6797_consys_stp_session_lease *session_lease = NULL;
+	struct mt6797_consys_runtime_controller_test_task stop_task = { };
+	struct task_struct *stop_thread;
+	unsigned int retries;
+
+	controller = mt6797_consys_runtime_controller_test_init(test, &backend);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_controller_start_unchecked(controller), 0);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_controller_gnss_session_get_controller(controller,
+			&gnss_lease, &session_lease), 0);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_controller_wifi_session_get_controller(controller,
+			&wifi_lease, &session_lease), 0);
+
+	stop_task.controller = controller;
+	stop_task.stop = true;
+	init_completion(&stop_task.done);
+	stop_thread = kthread_run(mt6797_consys_runtime_controller_test_thread,
+		&stop_task, "mt6797-ctrl-shared-stop");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(stop_thread));
+	for (retries = 0; retries < 100; retries++) {
+		if (READ_ONCE(controller->state) ==
+		    MT6797_CONSYS_RUNTIME_CONTROLLER_QUIESCING)
+			break;
+		usleep_range(1000, 2000);
+	}
+	KUNIT_ASSERT_EQ(test, READ_ONCE(controller->state),
+		MT6797_CONSYS_RUNTIME_CONTROLLER_QUIESCING);
+
+	mt6797_consys_runtime_controller_gnss_session_put_controller(&gnss_lease);
+	usleep_range(10000, 20000);
+	KUNIT_EXPECT_FALSE(test, completion_done(&stop_task.done));
+	mt6797_consys_runtime_controller_wifi_session_put(&wifi_lease);
+	KUNIT_ASSERT_NE(test, wait_for_completion_timeout(&stop_task.done,
+		msecs_to_jiffies(1000)), 0UL);
+	KUNIT_EXPECT_EQ(test, controller->state,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_FENCED);
+	KUNIT_EXPECT_EQ(test, backend->call_count, 7U);
+}
+
 static void mt6797_consys_runtime_controller_test_gnss_power_sequence(
 		struct kunit *test)
 {
@@ -1545,6 +1593,7 @@ static struct kunit_case mt6797_consys_runtime_controller_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_stop_waits_for_run),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_stop_waits_for_patch_stage),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_gnss_lease_drains_before_stop),
+	KUNIT_CASE(mt6797_consys_runtime_controller_test_shared_leases_drain_before_stop),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_gnss_power_sequence),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_gnss_power_fault_fences),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_concurrent_stop_waits_for_close),

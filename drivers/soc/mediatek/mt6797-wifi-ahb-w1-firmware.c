@@ -930,7 +930,7 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 			MT6797_WIFI_W1_WHLPCR_INT_CLR);
 		dev_info(power->owner,
 			 "W1_DIAG stage=interrupt-clear ret=%d value=%#08x\n", ret,
-			 MT6797_WIFI_W1_WHLPCR_INT_CLR);
+			 (u32)MT6797_WIFI_W1_WHLPCR_INT_CLR);
 	}
 	for (i = 0; !ret && i < 2; i++) {
 		memset(&ack, 0, sizeof(ack));

@@ -248,7 +248,7 @@ static int mt6797_g2d_gnss_fail_low(struct mt6797_g2d_gnss_ops *ops,
 static int mt6797_g2d_gnss_probe_run(struct mt6797_g2d_gnss_ops *ops,
 		struct mt6797_g2d_state *state)
 {
-	int ret, cleanup;
+	int ret;
 
 	if (!ops || !state || !ops->lna_init || !ops->lna_set || !ops->wmt)
 		return -EINVAL;
@@ -287,7 +287,7 @@ static int mt6797_g2_bt_proof_run(struct mt6797_g2_bt_proof_ops *ops,
 	u8 reply[15];
 	size_t reply_len;
 	bool paldo_dirty = false, function_dirty = false;
-	int ret;
+	int ret, cleanup;
 
 	if (!ops || !state || !ops->paldo || !ops->wmt ||
 	    (hci_proof && !ops->hci_exchange))

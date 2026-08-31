@@ -158,20 +158,23 @@ static int mt6797_stp_hci_flush(struct hci_dev *hdev)
 	return 0;
 }
 
+static void mt6797_stp_hci_complete_tx(struct sk_buff *skb, int ret)
+{
+	/* hci_core owns and frees a failed frame; the driver consumes success. */
+	if (!ret)
+		kfree_skb(skb);
+}
+
 static int mt6797_stp_hci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 {
 	struct mt6797_stp_hci *data = hci_get_drvdata(hdev);
 	u8 type = hci_skb_pkt_type(skb);
 	int ret;
 
-	if (!mt6797_stp_hci_tx_type_valid(type)) {
-		ret = -EILSEQ;
-		goto free;
-	}
-	if (skb_cow_head(skb, 1)) {
-		ret = -ENOMEM;
-		goto free;
-	}
+	if (!mt6797_stp_hci_tx_type_valid(type))
+		return -EILSEQ;
+	if (skb_cow_head(skb, 1))
+		return -ENOMEM;
 	*(u8 *)skb_push(skb, 1) = type;
 	mutex_lock(&data->lock);
 	ret = data->function_on && data->stp_lease ?
@@ -182,8 +185,7 @@ static int mt6797_stp_hci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 		hdev->stat.err_tx++;
 	else
 		hdev->stat.byte_tx += skb->len;
-free:
-	kfree_skb(skb);
+	mt6797_stp_hci_complete_tx(skb, ret);
 	return ret;
 }
 
@@ -248,8 +250,6 @@ static void mt6797_stp_hci_remove(struct platform_device *pdev)
 
 	if (!data)
 		return;
-	/* close() unbinds under the session lock before hdev can be destroyed. */
-	mt6797_stp_hci_close(data->hdev);
 	hci_unregister_dev(data->hdev);
 	hci_free_dev(data->hdev);
 	put_device(data->controller);
@@ -276,8 +276,31 @@ static void mt6797_stp_hci_test_packet_types(struct kunit *test)
 	KUNIT_EXPECT_TRUE(test, mt6797_stp_hci_tx_type_valid(HCI_SCODATA_PKT));
 	KUNIT_EXPECT_FALSE(test, mt6797_stp_hci_tx_type_valid(HCI_EVENT_PKT));
 }
+
+static void mt6797_stp_hci_test_tx_ownership(struct kunit *test)
+{
+	struct sk_buff *skb;
+
+	skb = alloc_skb(1, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, skb);
+	skb_get(skb);
+	mt6797_stp_hci_complete_tx(skb, -EIO);
+	KUNIT_EXPECT_EQ(test, refcount_read(&skb->users), 2);
+	kfree_skb(skb);
+	kfree_skb(skb);
+
+	skb = alloc_skb(1, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, skb);
+	skb_get(skb);
+	mt6797_stp_hci_complete_tx(skb, 0);
+	KUNIT_EXPECT_EQ(test, refcount_read(&skb->users), 1);
+	kfree_skb(skb);
+}
+
 static struct kunit_case mt6797_stp_hci_test_cases[] = {
-	KUNIT_CASE(mt6797_stp_hci_test_packet_types), {}
+	KUNIT_CASE(mt6797_stp_hci_test_packet_types),
+	KUNIT_CASE(mt6797_stp_hci_test_tx_ownership),
+	{}
 };
 static struct kunit_suite mt6797_stp_hci_test_suite = {
 	.name = "mt6797-stp-hci", .test_cases = mt6797_stp_hci_test_cases,

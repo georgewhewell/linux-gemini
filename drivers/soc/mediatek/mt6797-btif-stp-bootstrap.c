@@ -79,6 +79,8 @@ struct mt6797_btif_stp_bootstrap_full_wmt_lease {
 
 struct mt6797_btif_stp_bootstrap {
 	struct mutex lifecycle_lock;
+	/* Covers retry arm/disarm as well as the serialized WMT transaction. */
+	struct mutex wmt_transaction_lock;
 	/* destroy() waits for the sole runner before it frees this object. */
 	struct completion run_complete;
 	/* Active WMT callers pin the embedded endpoint across destroy(). */
@@ -433,8 +435,12 @@ static int mt6797_btif_stp_bootstrap_wmt_transaction_unchecked(
 
 	if (!bootstrap || !expected || (!data && data_len) || !timeout)
 		return -EINVAL;
-	if (READ_ONCE(bootstrap->state) != required_state)
-		return -ESHUTDOWN;
+
+	mutex_lock(&bootstrap->wmt_transaction_lock);
+	if (READ_ONCE(bootstrap->state) != required_state) {
+		ret = -ESHUTDOWN;
+		goto unlock;
+	}
 
 	/*
 	 * Vendor stp_core.c:632-754 retries retained full-STP frames every
@@ -448,6 +454,9 @@ static int mt6797_btif_stp_bootstrap_wmt_transaction_unchecked(
 	WRITE_ONCE(bootstrap->full_retry_armed, false);
 	cancel_delayed_work_sync(&bootstrap->full_retry_work);
 	mt6797_btif_stp_bootstrap_log_full_wmt_failure(bootstrap, opcode, ret);
+
+unlock:
+	mutex_unlock(&bootstrap->wmt_transaction_lock);
 	return ret;
 }
 
@@ -675,6 +684,7 @@ mt6797_btif_stp_bootstrap_create(
 	if (!bootstrap)
 		return ERR_PTR(-ENOMEM);
 	mutex_init(&bootstrap->lifecycle_lock);
+	mutex_init(&bootstrap->wmt_transaction_lock);
 	init_completion(&bootstrap->run_complete);
 	init_completion(&bootstrap->active_wmt_idle);
 	complete_all(&bootstrap->active_wmt_idle);

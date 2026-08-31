@@ -45,11 +45,13 @@
 #define W4_RX_STATUS_ERROR_MASK 0x07f8U
 #define W4_WIFI_EVENT_HEADER_LEN 8U
 #define W4_EVENT_ID_SCAN_DONE 0x0dU
+#define W4_EVENT_ID_CH_PRIVILEGE 0x10U
 #define W4_SCAN_SEQUENCE 1U
 #define W4_WIFI_CMD_HEADER_LEN 8U
 #define W4_CMD_ID_BASIC_CONFIG 0x02U
 #define W4_CMD_ID_SCAN_REQ_V2 0x03U
 #define W4_CMD_ID_BSS_ACTIVATE_CTRL 0x11U
+#define W4_CMD_ID_CH_PRIVILEGE 0x1cU
 #define W4_CMD_PKT_TYPE 0x20U
 #define W4_SCAN_SSID_SLOT_LEN 36U
 #define W4_SCAN_REQ_V2_IE_OFFSET 226U
@@ -62,9 +64,11 @@
 #define W4_SCAN_REQ_V2_IE_LEN_OFFSET (W4_SCAN_REQ_V2_BASE_LEN - sizeof(u16))
 #define W4_SCAN_CHANNEL_2G4 1U
 #define W4_SCAN_CHANNEL_SPECIFIED 4U
+#define W4_RF_BAND_2G4 1U
 #define W4_CMD_SEQUENCE_BASIC_CONFIG 1U
 #define W4_CMD_SEQUENCE_ACTIVATE 2U
 #define W4_CMD_SEQUENCE_SCAN 3U
+#define W4_CMD_SEQUENCE_CHANNEL 4U
 #define W4_EVENT_ID_DEBUG_MSG 0x27U
 #define W4_DEBUG_MSG_HEADER_LEN 12U
 #define W4_DEBUG_MSG_TYPE_ASCII 3U
@@ -72,6 +76,9 @@
 #define W4_WLAN_INDEX_DEFAULT 31U
 #define W4_STA_INDEX_AIS_AP 0U
 #define W4_JOIN_TIMEOUT_MS 1000U
+#define W4_CHANNEL_TIMEOUT_MS 4500U
+#define W4_CHANNEL_TOKEN 1U
+#define W4_CHANNEL_REQUEST_INTERVAL_MS 4000U
 #define W4_SCAN_POLL_INTERVAL_MS 20U
 #define W4_SCAN_POLL_TIMEOUT_MS 1500U
 
@@ -90,6 +97,7 @@ MODULE_PARM_DESC(enable_experimental_wifi_w4_platform,
 /* The vendor's AIS -> SAA chronology, condensed to the open-system path. */
 enum w4_join_state {
 	W4_JOIN_IDLE,
+	W4_JOIN_WAIT_CHANNEL,
 	W4_JOIN_WAIT_AUTH2,
 	W4_JOIN_WAIT_ASSOC2,
 	W4_JOIN_CONNECTED,
@@ -121,7 +129,7 @@ struct mt6797_wifi_w4 {
 	unsigned int scan_poll_count;
 	unsigned long scan_poll_deadline;
 	enum w4_join_state join_state;
-	bool candidate_valid, retained_owner_released;
+	bool candidate_valid, channel_requested, retained_owner_released;
 	bool controller_started, w1_retained, opened;
 };
 
@@ -147,6 +155,10 @@ static struct mt6797_wifi_w4 *w4_wiphy(struct wiphy *wiphy)
 {
 	return *(struct mt6797_wifi_w4 **)wiphy_priv(wiphy);
 }
+
+static int w4_send_open_sta(struct mt6797_wifi_w4 *w4);
+static int w4_send_auth1(struct mt6797_wifi_w4 *w4);
+static void w4_release_channel(struct mt6797_wifi_w4 *w4);
 
 /* Vendor ahb.c kalDevPort{Read,Write}: fixed function-one CMD53 portal. */
 static int w4_cmd53(struct mt6797_wifi_w4 *w4, bool write, u16 port,
@@ -315,6 +327,50 @@ static int w4_rx_event(struct mt6797_wifi_w4 *w4, u16 len, const u8 *buf)
 					       DUMP_PREFIX_NONE, 16, 1,
 					       debug + W4_DEBUG_MSG_HEADER_LEN, copied, false);
 		}
+		return 0;
+	}
+	if (event_id == W4_EVENT_ID_CH_PRIVILEGE) {
+		const u8 *grant = buf + W4_WIFI_EVENT_HEADER_LEN;
+		int ret;
+
+		if (packet_length < W4_WIFI_EVENT_HEADER_LEN + 16)
+			return -EPROTO;
+		dev_info(w4->dev,
+			 "W4_DIAG stage=channel-grant bss=%u token=%u status=%u channel=%u sco=%u band=%u width=%u req-type=%u interval=%u pending=%u\n",
+			 grant[0], grant[1], grant[2], grant[3], grant[4],
+			 grant[5], grant[6], grant[9],
+			 get_unaligned_le32(grant + 12),
+			 w4->join_state == W4_JOIN_WAIT_CHANNEL);
+		if (w4->join_state != W4_JOIN_WAIT_CHANNEL ||
+		    grant[0] != 0 || grant[1] != W4_CHANNEL_TOKEN)
+			return 0;
+		if (grant[2] || grant[3] != w4->candidate_channel ||
+		    grant[5] != W4_RF_BAND_2G4 || grant[9] != 0) {
+			w4_release_channel(w4);
+			w4->join_state = W4_JOIN_IDLE;
+			w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
+			cancel_delayed_work(&w4->join_timeout);
+			cfg80211_connect_result(w4->ndev, w4->candidate_bssid,
+				NULL, 0, NULL, 0, WLAN_STATUS_UNSPECIFIED_FAILURE,
+				GFP_KERNEL);
+			return 0;
+		}
+		ret = w4_send_open_sta(w4);
+		if (!ret)
+			ret = w4_send_auth1(w4);
+		if (ret) {
+			w4_release_channel(w4);
+			w4->join_state = W4_JOIN_IDLE;
+			w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
+			cancel_delayed_work(&w4->join_timeout);
+			cfg80211_connect_result(w4->ndev, w4->candidate_bssid,
+				NULL, 0, NULL, 0, WLAN_STATUS_UNSPECIFIED_FAILURE,
+				GFP_KERNEL);
+			return 0;
+		}
+		w4->join_state = W4_JOIN_WAIT_AUTH2;
+		mod_delayed_work(system_wq, &w4->join_timeout,
+			msecs_to_jiffies(W4_JOIN_TIMEOUT_MS));
 		return 0;
 	}
 	if (event_id != W4_EVENT_ID_SCAN_DONE)
@@ -606,6 +662,7 @@ static void w4_stop_locked(struct mt6797_wifi_w4 *w4)
 	w4->join_state = W4_JOIN_IDLE;
 	w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
 	netif_tx_stop_all_queues(w4->ndev);
+	w4_release_channel(w4);
 	mt6797_wifi_ahb_w3_session_stop(&w4->session);
 	/* Set before releasing the lock: a queued worker will only observe stop. */
 	w4->opened = false;
@@ -818,7 +875,8 @@ static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 	cmd[W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET + 1] = n;
 	for (i = 0; i < n; i++) {
 		cmd[W4_SCAN_REQ_V2_CHANNEL_LIST_OFFSET + 2 * i] =
-			req->channels[i]->band == NL80211_BAND_2GHZ ? 1 : 2;
+				req->channels[i]->band == NL80211_BAND_2GHZ ?
+				W4_RF_BAND_2G4 : 2;
 		cmd[W4_SCAN_REQ_V2_CHANNEL_LIST_OFFSET + 2 * i + 1] =
 			ieee80211_frequency_to_channel(req->channels[i]->center_freq);
 	}
@@ -834,11 +892,62 @@ static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 	kfree(cmd);
 	return ret;
 }
+
+static int w4_send_channel_request(struct mt6797_wifi_w4 *w4)
+{
+	u8 cmd[W4_WIFI_CMD_HEADER_LEN + 16] = { };
+	int ret;
+
+	put_unaligned_le16(sizeof(cmd), cmd);
+	put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = W4_CMD_ID_CH_PRIVILEGE;
+	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[6] = 1;
+	cmd[7] = W4_CMD_SEQUENCE_CHANNEL;
+	cmd[8] = 0;                         /* AIS BSS index */
+	cmd[9] = W4_CHANNEL_TOKEN;
+	cmd[10] = 0;                        /* CMD_CH_ACTION_REQ */
+	cmd[11] = w4->candidate_channel;
+	cmd[12] = 0;                        /* CHNL_EXT_SCN */
+	cmd[13] = W4_RF_BAND_2G4;
+	cmd[14] = 0;                        /* CW_20_40MHZ */
+	cmd[17] = 0;                        /* CH_REQ_TYPE_JOIN */
+	put_unaligned_le32(W4_CHANNEL_REQUEST_INTERVAL_MS, cmd + 20);
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
+	if (!ret)
+		w4->channel_requested = true;
+	dev_info(w4->dev,
+		 "W4_DIAG stage=channel-request ret=%d token=%u channel=%u interval=%u\n",
+		 ret, cmd[9], cmd[11], W4_CHANNEL_REQUEST_INTERVAL_MS);
+	return ret;
+}
+
+static void w4_release_channel(struct mt6797_wifi_w4 *w4)
+{
+	u8 cmd[W4_WIFI_CMD_HEADER_LEN + 16] = { };
+	int ret;
+
+	if (!w4->channel_requested)
+		return;
+	put_unaligned_le16(sizeof(cmd), cmd);
+	put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = W4_CMD_ID_CH_PRIVILEGE;
+	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[6] = 1;
+	cmd[7] = W4_CMD_SEQUENCE_CHANNEL;
+	cmd[8] = 0;
+	cmd[9] = W4_CHANNEL_TOKEN;
+	cmd[10] = 1;                       /* CMD_CH_ACTION_ABORT */
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
+	w4->channel_requested = false;
+	dev_info(w4->dev, "W4_DIAG stage=channel-release ret=%d token=%u\n",
+		 ret, cmd[9]);
+}
+
 static int w4_send_open_sta(struct mt6797_wifi_w4 *w4)
 {
 	u8 cmd[8 + 124] = { };
-	if (w4_activate_ais(w4, W4_CMD_SEQUENCE_ACTIVATE))
-		return -EIO;
+
 	/* CMD_UPDATE_STA_RECORD_T: vendor state-1 allocation before Auth-1.
 	 * The 124-byte body is the exact 3.18 layout; its WLAN indices are at
 	 * offsets 54/55, not the earlier shortened-command offsets.
@@ -956,11 +1065,17 @@ static void w4_join_timeout(struct work_struct *work)
 	enum nl80211_timeout_reason reason;
 
 	mutex_lock(&w4->lock);
-	if (w4->join_state != W4_JOIN_WAIT_AUTH2 &&
+	if (w4->join_state != W4_JOIN_WAIT_CHANNEL &&
+	    w4->join_state != W4_JOIN_WAIT_AUTH2 &&
 	    w4->join_state != W4_JOIN_WAIT_ASSOC2)
 		goto out;
-	reason = w4->join_state == W4_JOIN_WAIT_AUTH2 ?
-		NL80211_TIMEOUT_AUTH : NL80211_TIMEOUT_ASSOC;
+	if (w4->join_state == W4_JOIN_WAIT_CHANNEL)
+		reason = NL80211_TIMEOUT_UNSPECIFIED;
+	else if (w4->join_state == W4_JOIN_WAIT_AUTH2)
+		reason = NL80211_TIMEOUT_AUTH;
+	else
+		reason = NL80211_TIMEOUT_ASSOC;
+	w4_release_channel(w4);
 	w4->join_state = W4_JOIN_IDLE;
 	w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
 	cfg80211_connect_timeout(w4->ndev, w4->candidate_bssid,
@@ -985,6 +1100,7 @@ static void w4_rx_mgmt(struct mt6797_wifi_w4 *w4, const u8 *mgmt, size_t len)
 		/* saaFsmRunEventRxAuth synchronises STA_STATE_2 before Assoc-1. */
 		if (status || w4_send_sta_state(w4, W4_STA_STATE_2, 0) ||
 		    w4_send_assoc1(w4)) {
+			w4_release_channel(w4);
 			w4->join_state = W4_JOIN_IDLE;
 			w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
 			cancel_delayed_work(&w4->join_timeout);
@@ -1004,6 +1120,7 @@ static void w4_rx_mgmt(struct mt6797_wifi_w4 *w4, const u8 *mgmt, size_t len)
 		if (!status && w4_send_sta_state(w4, W4_STA_STATE_3,
 			get_unaligned_le16(mgmt + IEEE80211_HDRLEN + 4) & 0x3fff))
 			status = WLAN_STATUS_UNSPECIFIED_FAILURE;
+		w4_release_channel(w4);
 		w4->join_state = status ? W4_JOIN_IDLE : W4_JOIN_CONNECTED;
 		if (status)
 			w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
@@ -1040,20 +1157,42 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 	struct cfg80211_connect_params *sme)
 {
 	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
+	struct cfg80211_bss *bss;
+	u8 bssid[ETH_ALEN], channel;
+	int ret;
 
-	if (!sme->ssid || sme->ssid_len > 32 || sme->key || sme->crypto.n_akm_suites)
+	if (!sme->ssid || sme->ssid_len > IEEE80211_MAX_SSID_LEN ||
+	    sme->key || sme->privacy || sme->crypto.n_akm_suites ||
+	    (sme->auth_type != NL80211_AUTHTYPE_OPEN_SYSTEM &&
+	     sme->auth_type != NL80211_AUTHTYPE_AUTOMATIC))
 		return -EOPNOTSUPP; /* bounded first slice: open-network AIS only */
-	mutex_lock(&w4->lock);
-	if (!w4->opened || !w4->candidate_valid ||
-	    (sme->bssid && !ether_addr_equal(sme->bssid, w4->candidate_bssid))) {
-		mutex_unlock(&w4->lock);
+	bss = cfg80211_get_bss(wiphy, sme->channel, sme->bssid,
+		sme->ssid, sme->ssid_len, IEEE80211_BSS_TYPE_ESS,
+		IEEE80211_PRIVACY_OFF);
+	if (!bss)
 		return -ENETUNREACH;
+	if (!bss->channel || bss->channel->band != NL80211_BAND_2GHZ) {
+		cfg80211_put_bss(wiphy, bss);
+		return -EOPNOTSUPP;
 	}
-	if (w4->join_state == W4_JOIN_WAIT_AUTH2 ||
-	    w4->join_state == W4_JOIN_WAIT_ASSOC2) {
+	channel = ieee80211_frequency_to_channel(bss->channel->center_freq);
+	ether_addr_copy(bssid, bss->bssid);
+	cfg80211_put_bss(wiphy, bss);
+	if (!channel)
+		return -EINVAL;
+
+	mutex_lock(&w4->lock);
+	if (!w4->opened) {
+		mutex_unlock(&w4->lock);
+		return -ENETDOWN;
+	}
+	if (w4->scan_request || w4->join_state != W4_JOIN_IDLE) {
 		mutex_unlock(&w4->lock);
 		return -EBUSY;
 	}
+	ether_addr_copy(w4->candidate_bssid, bssid);
+	w4->candidate_channel = channel;
+	w4->candidate_valid = true;
 	/* AIS activation reserves entry zero for BMC.  The vendor's subsequent
 	 * secPrivacySeekForEntry() therefore assigns entry one to the AP station.
 	 * Entry 31 is the non-StaRec TX default and must not carry AP data.
@@ -1063,14 +1202,15 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 	w4->join_ssid_len = sme->ssid_len;
 	memcpy(w4->join_ssid, sme->ssid, w4->join_ssid_len);
 	w4->assoc_req_ie_len = 0;
-	if (w4_send_open_sta(w4) || w4_send_auth1(w4)) {
+	ret = w4_send_channel_request(w4);
+	if (ret) {
 		w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
 		mutex_unlock(&w4->lock);
-		return -EIO;
+		return ret;
 	}
-	w4->join_state = W4_JOIN_WAIT_AUTH2;
+	w4->join_state = W4_JOIN_WAIT_CHANNEL;
 	mod_delayed_work(system_wq, &w4->join_timeout,
-		msecs_to_jiffies(W4_JOIN_TIMEOUT_MS));
+		msecs_to_jiffies(W4_CHANNEL_TIMEOUT_MS));
 	mutex_unlock(&w4->lock);
 	return 0;
 }
@@ -1081,6 +1221,7 @@ static int w4_disconnect(struct wiphy *wiphy, struct net_device *ndev, u16 reaso
 
 	mutex_lock(&w4->lock);
 	connected = w4->join_state == W4_JOIN_CONNECTED;
+	w4_release_channel(w4);
 	w4->join_state = W4_JOIN_IDLE;
 	w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
 	mutex_unlock(&w4->lock);

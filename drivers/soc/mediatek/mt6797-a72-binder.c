@@ -40,6 +40,14 @@
 #define MT6797_A72_BINDER_DCM_COMPLETE \
 	(MT6797_A72_BINDER_ISOLATION_COMPLETE | \
 	 MT6797_A72_EFFECT_DCM_TOGGLE | MT6797_A72_EFFECT_DCM_FINAL)
+#define MT6797_A72_BINDER_SRAM_COMPLETE \
+	(MT6797_BIGIDVFS_SRAM_SERVICE | MT6797_BIGIDVFS_SRAM_SETTLE | \
+	 MT6797_BIGIDVFS_SRAM_SELECTOR_FIRST | \
+	 MT6797_BIGIDVFS_SRAM_CALIBRATION_FIRST | \
+	 MT6797_BIGIDVFS_SRAM_SELECTOR_SECOND | \
+	 MT6797_BIGIDVFS_SRAM_CALIBRATION_SECOND | \
+	 MT6797_BIGIDVFS_SRAM_SELECTOR_VALID | \
+	 MT6797_BIGIDVFS_SRAM_CALIBRATION_VALID)
 
 static DEFINE_MUTEX(mt6797_a72_binder_publish_lock);
 static struct mt6797_a72_binder *mt6797_a72_ready_binder;
@@ -57,6 +65,39 @@ bool mt6797_a72_binder_available(void)
 	available = !!mt6797_a72_binder_ready();
 	mutex_unlock(&mt6797_a72_binder_publish_lock);
 	return available;
+}
+
+static u32
+mt6797_a72_binder_sram_match_mask(const struct mt6797_a72_binder *binder)
+{
+	const struct mt6797_bigidvfs_sram_result *sram = &binder->sram;
+	u32 mask = 0;
+
+	if (sram->abi == MT6797_BIGIDVFS_SRAM_OWNER_ABI)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_ABI;
+	if (sram->attempted_steps == MT6797_A72_BINDER_SRAM_COMPLETE)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_ATTEMPTED;
+	if (sram->completed_steps == MT6797_A72_BINDER_SRAM_COMPLETE)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_COMPLETED;
+	if (sram->requested_mv_x100 == MT6797_BIGIDVFS_SRAM_TARGET_MV_X100)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_VOLTAGE;
+	if (sram->selector_first == MT6797_BIGIDVFS_SRAM_SELECTOR_EXPECTED)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_SELECTOR_FIRST;
+	if (sram->selector_second == MT6797_BIGIDVFS_SRAM_SELECTOR_EXPECTED)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_SELECTOR_SECOND;
+	if (sram->attempt_id == binder->transaction.identity.generation)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_ATTEMPT_ID;
+	if (sram->cookie == binder->transaction.identity.cookie)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_COOKIE;
+	if (!sram->error)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_ERROR;
+	if (sram->effect_attempted)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_EFFECT;
+	if (sram->verified)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_VERIFIED;
+	if (sram->sealed)
+		mask |= MT6797_A72_BINDER_SRAM_MATCH_SEALED;
+	return mask;
 }
 
 static void
@@ -98,6 +139,29 @@ mt6797_a72_binder_fill_diagnostic(const struct mt6797_a72_binder *binder,
 	snapshot->p27_release_bpll = release->bpll_ordering_value;
 	snapshot->p27_release_owned = release->p27_owned;
 	snapshot->p27_release_sealed = release->sealed;
+	snapshot->p28_begin_attempted = binder->p28_begin_attempted;
+	snapshot->p28_begin_ret = binder->p28_begin_ret;
+	snapshot->p28_begun = binder->p28_begun;
+	snapshot->sram_returned = binder->sram_returned;
+	snapshot->sram_ret = binder->sram_ret;
+	snapshot->sram_match_mask = mt6797_a72_binder_sram_match_mask(binder);
+	snapshot->sram_required_mask = MT6797_A72_BINDER_SRAM_REQUIRED_MASK;
+	snapshot->p28_complete_attempted = binder->p28_complete_attempted;
+	snapshot->p28_complete_ret = binder->p28_complete_ret;
+	snapshot->sram_abi = binder->sram.abi;
+	snapshot->sram_attempted = binder->sram.attempted_steps;
+	snapshot->sram_completed = binder->sram.completed_steps;
+	snapshot->sram_requested_mv_x100 = binder->sram.requested_mv_x100;
+	snapshot->sram_selector_first = binder->sram.selector_first;
+	snapshot->sram_calibration_first = binder->sram.calibration_first;
+	snapshot->sram_selector_second = binder->sram.selector_second;
+	snapshot->sram_calibration_second = binder->sram.calibration_second;
+	snapshot->sram_attempt_id = binder->sram.attempt_id;
+	snapshot->sram_cookie = binder->sram.cookie;
+	snapshot->sram_error = binder->sram.error;
+	snapshot->sram_effect_attempted = binder->sram.effect_attempted;
+	snapshot->sram_verified = binder->sram.verified;
+	snapshot->sram_sealed = binder->sram.sealed;
 }
 
 int
@@ -394,7 +458,9 @@ static int mt6797_a72_binder_isolation(void *context)
 	struct mt6797_a72_provider_handle provider;
 	int ret;
 
+	binder->p28_begin_attempted = true;
 	ret = binder->backend->membership_begin_p28(&binder->transaction);
+	binder->p28_begin_ret = ret;
 	if (ret)
 		return ret;
 	binder->p28_begun = true;
@@ -425,14 +491,6 @@ static int mt6797_a72_binder_sram(void *context)
 	struct mt6797_a72_binder *binder = context;
 	struct mt6797_a72_p28_preparation preparation = { };
 	struct mt6797_bigidvfs_sram_request request = { };
-	u32 all_steps = MT6797_BIGIDVFS_SRAM_SERVICE |
-		MT6797_BIGIDVFS_SRAM_SETTLE |
-		MT6797_BIGIDVFS_SRAM_SELECTOR_FIRST |
-		MT6797_BIGIDVFS_SRAM_CALIBRATION_FIRST |
-		MT6797_BIGIDVFS_SRAM_SELECTOR_SECOND |
-		MT6797_BIGIDVFS_SRAM_CALIBRATION_SECOND |
-		MT6797_BIGIDVFS_SRAM_SELECTOR_VALID |
-		MT6797_BIGIDVFS_SRAM_CALIBRATION_VALID;
 	int ret;
 
 	if (!binder->p28_begun)
@@ -443,21 +501,19 @@ static int mt6797_a72_binder_sram(void *context)
 	request.cookie = binder->transaction.identity.cookie;
 	request.provider_held = true;
 	request.isolation_crossed = true;
+	memset(&binder->sram, 0, sizeof(binder->sram));
+	binder->sram_returned = false;
+	binder->sram_ret = 0;
+	binder->p28_complete_attempted = false;
+	binder->p28_complete_ret = 0;
 	ret = binder->backend->sram_enable(binder->bigidvfs, &request,
 					   &binder->sram);
+	binder->sram_ret = ret;
+	binder->sram_returned = true;
 	if (ret)
 		return ret;
-	if (binder->sram.abi != MT6797_BIGIDVFS_SRAM_OWNER_ABI ||
-	    binder->sram.attempted_steps != all_steps ||
-	    binder->sram.completed_steps != all_steps ||
-	    binder->sram.requested_mv_x100 !=
-		    MT6797_BIGIDVFS_SRAM_TARGET_MV_X100 ||
-	    binder->sram.selector_first != MT6797_BIGIDVFS_SRAM_SELECTOR_EXPECTED ||
-	    binder->sram.selector_second != MT6797_BIGIDVFS_SRAM_SELECTOR_EXPECTED ||
-	    binder->sram.attempt_id != binder->transaction.identity.generation ||
-	    binder->sram.cookie != binder->transaction.identity.cookie ||
-	    binder->sram.error || !binder->sram.effect_attempted ||
-	    !binder->sram.verified || !binder->sram.sealed)
+	if (mt6797_a72_binder_sram_match_mask(binder) !=
+	    MT6797_A72_BINDER_SRAM_REQUIRED_MASK)
 		return -EPROTO;
 
 	preparation.abi = MT6797_A72_P28_PREPARATION_ABI;
@@ -478,8 +534,11 @@ static int mt6797_a72_binder_sram(void *context)
 	preparation.transaction_generation =
 		binder->transaction.identity.generation;
 	preparation.transaction_cookie = binder->transaction.identity.cookie;
-	return binder->backend->membership_complete_p28(&binder->transaction,
-							&preparation);
+	binder->p28_complete_attempted = true;
+	ret = binder->backend->membership_complete_p28(&binder->transaction,
+						       &preparation);
+	binder->p28_complete_ret = ret;
+	return ret;
 }
 
 static int mt6797_a72_binder_cpu_on(void *context, unsigned int cpu)

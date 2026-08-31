@@ -2,6 +2,7 @@
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_A72_BINDER_H
 #define __LINUX_SOC_MEDIATEK_MT6797_A72_BINDER_H
 
+#include <linux/bits.h>
 #include <linux/cpuhotplug.h>
 #include <linux/errno.h>
 #include <linux/kconfig.h>
@@ -9,7 +10,21 @@
 
 typedef int (*mt6797_a72_cpu_boot_fn)(unsigned int cpu);
 
-#define MT6797_A72_BINDER_DIAGNOSTIC_ABI 1U
+#define MT6797_A72_BINDER_DIAGNOSTIC_ABI 2U
+
+#define MT6797_A72_BINDER_SRAM_MATCH_ABI		BIT(0)
+#define MT6797_A72_BINDER_SRAM_MATCH_ATTEMPTED	BIT(1)
+#define MT6797_A72_BINDER_SRAM_MATCH_COMPLETED	BIT(2)
+#define MT6797_A72_BINDER_SRAM_MATCH_VOLTAGE	BIT(3)
+#define MT6797_A72_BINDER_SRAM_MATCH_SELECTOR_FIRST	BIT(4)
+#define MT6797_A72_BINDER_SRAM_MATCH_SELECTOR_SECOND	BIT(5)
+#define MT6797_A72_BINDER_SRAM_MATCH_ATTEMPT_ID	BIT(6)
+#define MT6797_A72_BINDER_SRAM_MATCH_COOKIE	BIT(7)
+#define MT6797_A72_BINDER_SRAM_MATCH_ERROR		BIT(8)
+#define MT6797_A72_BINDER_SRAM_MATCH_EFFECT		BIT(9)
+#define MT6797_A72_BINDER_SRAM_MATCH_VERIFIED	BIT(10)
+#define MT6797_A72_BINDER_SRAM_MATCH_SEALED		BIT(11)
+#define MT6797_A72_BINDER_SRAM_REQUIRED_MASK		GENMASK(11, 0)
 
 struct mt6797_a72_binder_diagnostic {
 	u32 abi;
@@ -42,6 +57,29 @@ struct mt6797_a72_binder_diagnostic {
 	u32 p27_release_bpll;
 	u32 p27_release_owned;
 	u32 p27_release_sealed;
+	u32 p28_begin_attempted;
+	s32 p28_begin_ret;
+	u32 p28_begun;
+	u32 sram_returned;
+	s32 sram_ret;
+	u32 sram_match_mask;
+	u32 sram_required_mask;
+	u32 p28_complete_attempted;
+	s32 p28_complete_ret;
+	u32 sram_abi;
+	u32 sram_attempted;
+	u32 sram_completed;
+	u32 sram_requested_mv_x100;
+	u32 sram_selector_first;
+	u32 sram_calibration_first;
+	u32 sram_selector_second;
+	u32 sram_calibration_second;
+	u64 sram_attempt_id;
+	u64 sram_cookie;
+	s32 sram_error;
+	u32 sram_effect_attempted;
+	u32 sram_verified;
+	u32 sram_sealed;
 };
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_A72_DEFAULT_OFF_BINDER)

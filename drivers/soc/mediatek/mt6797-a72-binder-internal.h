@@ -87,8 +87,14 @@ struct mt6797_a72_binder {
 	struct mt6797_a72_provider_response provider;
 	mt6797_a72_cpu_boot_fn cpu_boot;
 	atomic_t boot_claimed;
+	s32 p28_begin_ret;
+	s32 sram_ret;
+	s32 p28_complete_ret;
 	bool ledger_begun;
+	bool p28_begin_attempted;
 	bool p28_begun;
+	bool sram_returned;
+	bool p28_complete_attempted;
 };
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_A72_DEFAULT_OFF_BINDER_KUNIT_TEST)

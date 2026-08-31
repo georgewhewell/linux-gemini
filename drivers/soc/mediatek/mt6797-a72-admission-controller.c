@@ -379,11 +379,48 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 	len += sysfs_emit_at(buf, len, "p27r_spm_before=0x%x p27r_spm_after=0x%x ",
 			     diagnostic.p27_release_spm_before,
 			     diagnostic.p27_release_spm_after);
+	len += sysfs_emit_at(buf, len,
+			     "p27r_bpll=0x%x p27r_owned=%u p27r_sealed=%u ",
+			     diagnostic.p27_release_bpll,
+			     diagnostic.p27_release_owned,
+			     diagnostic.p27_release_sealed);
+	len += sysfs_emit_at(buf, len,
+			     "p28_begin_attempted=%u p28_begin_ret=%d p28_begun=%u ",
+			     diagnostic.p28_begin_attempted,
+			     diagnostic.p28_begin_ret, diagnostic.p28_begun);
+	len += sysfs_emit_at(buf, len,
+			     "sram_returned=%u sram_ret=%d sram_match=0x%x ",
+			     diagnostic.sram_returned, diagnostic.sram_ret,
+			     diagnostic.sram_match_mask);
+	len += sysfs_emit_at(buf, len,
+			     "sram_required=0x%x p28_complete_attempted=%u ",
+			     diagnostic.sram_required_mask,
+			     diagnostic.p28_complete_attempted);
+	len += sysfs_emit_at(buf, len,
+			     "p28_complete_ret=%d sram_abi=%u ",
+			     diagnostic.p28_complete_ret, diagnostic.sram_abi);
+	len += sysfs_emit_at(buf, len,
+			     "sram_attempted=0x%x sram_completed=0x%x sram_mv=%u ",
+			     diagnostic.sram_attempted, diagnostic.sram_completed,
+			     diagnostic.sram_requested_mv_x100);
+	len += sysfs_emit_at(buf, len,
+			     "sram_selector_first=0x%x sram_calibration_first=0x%x ",
+			     diagnostic.sram_selector_first,
+			     diagnostic.sram_calibration_first);
+	len += sysfs_emit_at(buf, len,
+			     "sram_selector_second=0x%x sram_calibration_second=0x%x ",
+			     diagnostic.sram_selector_second,
+			     diagnostic.sram_calibration_second);
+	len += sysfs_emit_at(buf, len,
+			     "sram_attempt_id=%llu sram_cookie=%llu sram_error=%d ",
+			     (unsigned long long)diagnostic.sram_attempt_id,
+			     (unsigned long long)diagnostic.sram_cookie,
+			     diagnostic.sram_error);
 	return len + sysfs_emit_at(buf, len,
-				   "p27r_bpll=0x%x p27r_owned=%u p27r_sealed=%u\n",
-				   diagnostic.p27_release_bpll,
-				   diagnostic.p27_release_owned,
-				   diagnostic.p27_release_sealed);
+				   "sram_effect_attempted=%u sram_verified=%u sram_sealed=%u\n",
+				   diagnostic.sram_effect_attempted,
+				   diagnostic.sram_verified,
+				   diagnostic.sram_sealed);
 }
 
 static ssize_t trigger_store(struct device *dev,

@@ -639,12 +639,61 @@ static void mt6797_binder_p27_diagnostic_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, diagnostic.p27_release_sealed, 1U);
 }
 
+static void mt6797_binder_sram_diagnostic_test(struct kunit *test)
+{
+	struct mt6797_binder_test_state *state = test->priv;
+	struct mt6797_a72_binder_diagnostic diagnostic;
+	u32 expected = MT6797_A72_BINDER_SRAM_REQUIRED_MASK &
+		~MT6797_A72_BINDER_SRAM_MATCH_SEALED;
+	int ret;
+
+	state->malformed = TEST_MALFORMED_SRAM;
+	ret = mt6797_a72_binder_test_boot(&state->binder, 8,
+					  mt6797_binder_test_cpu_boot);
+	KUNIT_ASSERT_EQ(test, ret, -EPROTO);
+	mt6797_a72_binder_test_diagnostic(&state->binder, &diagnostic);
+	KUNIT_EXPECT_EQ(test, diagnostic.abi,
+			MT6797_A72_BINDER_DIAGNOSTIC_ABI);
+	KUNIT_EXPECT_EQ(test, diagnostic.terminal,
+			(u32)MT6797_A72_TRANSITION_FAULT_RETAIN_POSTISO);
+	KUNIT_EXPECT_EQ(test, diagnostic.last_stage,
+			(u32)MT6797_A72_TRANSITION_STAGE_SRAM);
+	KUNIT_EXPECT_EQ(test, diagnostic.stage_errno, -EPROTO);
+	KUNIT_EXPECT_EQ(test, diagnostic.p28_begin_attempted, 1U);
+	KUNIT_EXPECT_EQ(test, diagnostic.p28_begin_ret, 0);
+	KUNIT_EXPECT_EQ(test, diagnostic.p28_begun, 1U);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_returned, 1U);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_ret, 0);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_match_mask, expected);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_required_mask,
+			MT6797_A72_BINDER_SRAM_REQUIRED_MASK);
+	KUNIT_EXPECT_EQ(test, diagnostic.p28_complete_attempted, 0U);
+	KUNIT_EXPECT_EQ(test, diagnostic.p28_complete_ret, 0);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_attempt_id, TEST_GENERATION);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_cookie, TEST_COOKIE);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_error, 0);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_effect_attempted, 1U);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_verified, 1U);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_sealed, 0U);
+}
+
 static void mt6797_binder_one_shot_test(struct kunit *test)
 {
 	struct mt6797_binder_test_state *state = test->priv;
+	struct mt6797_a72_binder_diagnostic diagnostic;
 	int ret;
 
 	KUNIT_ASSERT_EQ(test, mt6797_binder_test_run_to_completion(state), 0);
+	mt6797_a72_binder_test_diagnostic(&state->binder, &diagnostic);
+	KUNIT_EXPECT_EQ(test, diagnostic.p28_begin_attempted, 1U);
+	KUNIT_EXPECT_EQ(test, diagnostic.p28_begin_ret, 0);
+	KUNIT_EXPECT_EQ(test, diagnostic.p28_begun, 1U);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_returned, 1U);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_ret, 0);
+	KUNIT_EXPECT_EQ(test, diagnostic.sram_match_mask,
+			MT6797_A72_BINDER_SRAM_REQUIRED_MASK);
+	KUNIT_EXPECT_EQ(test, diagnostic.p28_complete_attempted, 1U);
+	KUNIT_EXPECT_EQ(test, diagnostic.p28_complete_ret, 0);
 	ret = mt6797_a72_binder_test_boot(&state->binder, 8,
 					  mt6797_binder_test_cpu_boot);
 	KUNIT_EXPECT_EQ(test, ret, -EALREADY);
@@ -657,6 +706,7 @@ static struct kunit_case mt6797_binder_test_cases[] = {
 	KUNIT_CASE(mt6797_binder_preiso_checkpoint_test),
 	KUNIT_CASE(mt6797_binder_malformed_owners_test),
 	KUNIT_CASE(mt6797_binder_p27_diagnostic_test),
+	KUNIT_CASE(mt6797_binder_sram_diagnostic_test),
 	KUNIT_CASE(mt6797_binder_one_shot_test),
 	{}
 };

@@ -123,7 +123,7 @@ late_cpu_expected_field_valid(const struct arm64_late_cpu_expected_pair *expecte
 	       field < ARM64_LATE_CPU_EXPECT_FIELD_COUNT &&
 	       !(expected->valid & ~ARM64_LATE_CPU_EXPECTED_PAIR_VALID_MASK) &&
 	       expected->valid & BIT_ULL(field) &&
-	       expected->midr == MIDR_CORTEX_A72;
+	       (expected->midr & MIDR_CPU_MODEL_MASK) == MIDR_CORTEX_A72;
 }
 
 static enum arm64_late_cpu_cap_state __init

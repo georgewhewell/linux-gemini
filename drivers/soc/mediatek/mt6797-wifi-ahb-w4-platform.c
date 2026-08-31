@@ -20,6 +20,7 @@
 #include <net/cfg80211.h>
 
 #include <linux/soc/mediatek/mt6797-consys-runtime-controller.h>
+#include <linux/soc/mediatek/mt6797-consys-g2d-postpatch-owner.h>
 #include <linux/soc/mediatek/mt6797-wifi-ahb.h>
 #include <linux/soc/mediatek/mt6797-wifi-ahb-w3-session.h>
 
@@ -52,7 +53,7 @@ enum w4_join_state {
 };
 
 struct mt6797_wifi_w4 {
-	struct device *dev, *controller_dev;
+	struct device *dev, *controller_dev, *retained_owner_dev;
 	void __iomem *portal;
 	struct regulator *bt_paldo, *wifi_paldo;
 	struct wiphy *wiphy;
@@ -75,7 +76,7 @@ struct mt6797_wifi_w4 {
 	u8 assoc_req_ies[IEEE80211_MAX_SSID_LEN + 16];
 	u8 assoc_req_ie_len;
 	enum w4_join_state join_state;
-	bool candidate_valid;
+	bool candidate_valid, retained_owner_released;
 	bool controller_started, w1_retained, opened;
 };
 
@@ -354,6 +355,14 @@ static void w4_stop_locked(struct mt6797_wifi_w4 *w4)
 	w4->w1_retained = false;
 	if (w4->controller_started) mt6797_consys_runtime_controller_stop(w4->controller_dev);
 	w4->controller_started = false;
+	if (w4->retained_owner_dev && !w4->retained_owner_released) {
+		int ret = mt6797_consys_g2d_postpatch_owner_w4_release(
+			w4->retained_owner_dev);
+		if (ret)
+			dev_err(w4->dev, "W4 retained owner teardown failed: %d\n", ret);
+		else
+			w4->retained_owner_released = true;
+	}
 }
 static int w4_open(struct net_device *ndev)
 {
@@ -386,6 +395,15 @@ fail:
 	w4->w1_retained = false;
 	mt6797_consys_runtime_controller_stop(w4->controller_dev);
 	w4->controller_started = false;
+	if (w4->retained_owner_dev && !w4->retained_owner_released) {
+		int cleanup = mt6797_consys_g2d_postpatch_owner_w4_release(
+			w4->retained_owner_dev);
+		if (!cleanup)
+			w4->retained_owner_released = true;
+		else
+			dev_err(w4->dev, "W4 retained owner abort teardown failed: %d\n",
+				cleanup);
+	}
 out:
 	mutex_unlock(&w4->lock);
 	return ret;
@@ -750,15 +768,24 @@ static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 	node = of_parse_phandle(pdev->dev.of_node, "mediatek,controller", 0); if (!node) return -EINVAL;
 	controller = of_find_device_by_node(node); of_node_put(node); if (!controller) return -EPROBE_DEFER;
 	w4->controller_dev = &controller->dev;
+	node = of_parse_phandle(pdev->dev.of_node, "mediatek,retained-owner", 0);
+	if (!node) { ret = -EINVAL; goto put_controller; }
+	controller = of_find_device_by_node(node); of_node_put(node);
+	if (!controller) { ret = -EPROBE_DEFER; goto put_controller; }
+	w4->retained_owner_dev = &controller->dev;
+	ret = mt6797_consys_g2d_postpatch_owner_w4_validate(w4->retained_owner_dev);
+	if (ret) goto put_owner;
+	if (!device_link_add(&pdev->dev, w4->retained_owner_dev,
+		DL_FLAG_AUTOREMOVE_CONSUMER)) { ret = -ENOMEM; goto put_owner; }
 	w4->bt_paldo = devm_regulator_get(&pdev->dev, "bt-paldo");
-	if (IS_ERR(w4->bt_paldo)) { ret = PTR_ERR(w4->bt_paldo); goto put_controller; }
+	if (IS_ERR(w4->bt_paldo)) { ret = PTR_ERR(w4->bt_paldo); goto put_owner; }
 	w4->wifi_paldo = devm_regulator_get(&pdev->dev, "wifi-paldo");
-	if (IS_ERR(w4->wifi_paldo)) { ret = PTR_ERR(w4->wifi_paldo); goto put_controller; }
+	if (IS_ERR(w4->wifi_paldo)) { ret = PTR_ERR(w4->wifi_paldo); goto put_owner; }
 	ret = devm_request_threaded_irq(&pdev->dev, w4->irq, NULL, w4_irq_thread,
 		IRQF_ONESHOT | IRQF_NO_AUTOEN, dev_name(&pdev->dev), w4);
-	if (ret) goto put_controller;
+	if (ret) goto put_owner;
 	w4->wiphy = wiphy_new(&w4_cfg80211_ops, sizeof(struct mt6797_wifi_w4 *));
-	if (!w4->wiphy) { ret = -ENOMEM; goto put_controller; }
+	if (!w4->wiphy) { ret = -ENOMEM; goto put_owner; }
 	*(struct mt6797_wifi_w4 **)wiphy_priv(w4->wiphy) = w4;
 	w4->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
 	w4->wiphy->bands[NL80211_BAND_2GHZ] = &w4_band; set_wiphy_dev(w4->wiphy, &pdev->dev);
@@ -786,6 +813,7 @@ free_wdev: kfree(w4->wdev);
 free_netdev: free_netdev(w4->ndev);
 unregister_wiphy: wiphy_unregister(w4->wiphy);
 free_wiphy: wiphy_free(w4->wiphy);
+put_owner: put_device(w4->retained_owner_dev);
 put_controller: put_device(w4->controller_dev); return ret;
 }
 static void mt6797_wifi_w4_remove(struct platform_device *pdev)
@@ -794,7 +822,15 @@ static void mt6797_wifi_w4_remove(struct platform_device *pdev)
 	if (!w4) return;
 	/* unregister_netdev() takes RTNL and drives cfg80211's notifier teardown. */
 	unregister_netdev(w4->ndev); kfree(w4->wdev); free_netdev(w4->ndev);
-	wiphy_unregister(w4->wiphy); wiphy_free(w4->wiphy); put_device(w4->controller_dev);
+	wiphy_unregister(w4->wiphy); wiphy_free(w4->wiphy);
+	mutex_lock(&w4->lock);
+	if (!w4->retained_owner_released) {
+		mt6797_consys_runtime_controller_stop(w4->controller_dev);
+		if (!mt6797_consys_g2d_postpatch_owner_w4_release(w4->retained_owner_dev))
+			w4->retained_owner_released = true;
+	}
+	mutex_unlock(&w4->lock);
+	put_device(w4->retained_owner_dev); put_device(w4->controller_dev);
 }
 static const struct of_device_id mt6797_wifi_w4_of_match[] = {
 	{ .compatible = "mediatek,mt6797-wifi-ahb-w4-platform" }, { }

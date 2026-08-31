@@ -1066,12 +1066,17 @@ static int mt6797_wifi_w2_query_capability(struct device *owner,
 			goto out_summary;
 		capability.rx0_drained++;
 	}
-	/* Do not discard a port-1 packet that appeared before the command. */
+	/*
+	 * nicRxWaitResponse() polls only the selected RX1 port.  RX0 carries
+	 * asynchronous firmware traffic (the post-READY 0x59-byte frame observed
+	 * on MT6797 is one such packet), so it cannot impersonate this response.
+	 * A stale RX1 packet still can, and must fail the retained handoff.
+	 */
 	ret = mt6797_wifi_w1_reg_read(portal, MT6797_WIFI_W1_MCR_WRPLR,
 				      &drained_wrplr);
 	if (ret)
 		goto out_summary;
-	if (drained_wrplr) {
+	if (drained_wrplr >> 16) {
 		ret = -EUCLEAN;
 		goto out_summary;
 	}

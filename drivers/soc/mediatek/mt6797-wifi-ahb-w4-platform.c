@@ -44,6 +44,7 @@
 #define W4_EVENT_ID_SCAN_DONE 0x0dU
 #define W4_SCAN_SEQUENCE 1U
 #define W4_WIFI_CMD_HEADER_LEN 8U
+#define W4_CMD_ID_BASIC_CONFIG 0x02U
 #define W4_CMD_ID_SCAN_REQ_V2 0x03U
 #define W4_CMD_ID_BSS_ACTIVATE_CTRL 0x11U
 #define W4_CMD_PKT_TYPE 0x20U
@@ -57,8 +58,12 @@
 #define W4_SCAN_REQ_V2_CHANNEL_LIST_OFFSET (W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET + 2U)
 #define W4_SCAN_CHANNEL_2G4 1U
 #define W4_SCAN_CHANNEL_SPECIFIED 4U
-#define W4_CMD_SEQUENCE_ACTIVATE 1U
-#define W4_CMD_SEQUENCE_SCAN 2U
+#define W4_CMD_SEQUENCE_BASIC_CONFIG 1U
+#define W4_CMD_SEQUENCE_ACTIVATE 2U
+#define W4_CMD_SEQUENCE_SCAN 3U
+#define W4_EVENT_ID_DEBUG_MSG 0x27U
+#define W4_DEBUG_MSG_HEADER_LEN 12U
+#define W4_DEBUG_MSG_TYPE_ASCII 3U
 #define IEEE80211_HDRLEN 24U
 #define W4_WLAN_INDEX_DEFAULT 31U
 #define W4_STA_INDEX_AIS_AP 0U
@@ -276,6 +281,32 @@ static int w4_rx_event(struct mt6797_wifi_w4 *w4, u16 len, const u8 *buf)
 	dev_info(w4->dev,
 		 "W4_DIAG stage=rx-event len=%u packet-len=%u eid=%#x event-seq=%u\n",
 		 len, packet_length, event_id, event_sequence);
+	if (event_id == W4_EVENT_ID_DEBUG_MSG) {
+		const u8 *debug = buf + W4_WIFI_EVENT_HEADER_LEN;
+		u16 message_size;
+		size_t available, copied;
+
+		if (packet_length < W4_WIFI_EVENT_HEADER_LEN + W4_DEBUG_MSG_HEADER_LEN)
+			return -EPROTO;
+		message_size = get_unaligned_le16(debug + 8);
+		available = packet_length - W4_WIFI_EVENT_HEADER_LEN -
+			W4_DEBUG_MSG_HEADER_LEN;
+		copied = min_t(size_t, message_size, available);
+		dev_info(w4->dev,
+			 "W4_DIAG stage=fw-debug id=%u type=%u flags=%#x value=%#x declared=%u available=%zu\n",
+			 get_unaligned_le16(debug), debug[2], debug[3],
+			 get_unaligned_le32(debug + 4), message_size, available);
+		if (copied) {
+			if (debug[2] == W4_DEBUG_MSG_TYPE_ASCII)
+				dev_info(w4->dev, "W4_DIAG stage=fw-debug-ascii text=%.*s\n",
+					 (int)copied, debug + W4_DEBUG_MSG_HEADER_LEN);
+			else
+				print_hex_dump(KERN_INFO, "W4_DIAG stage=fw-debug-data ",
+					       DUMP_PREFIX_NONE, 16, 1,
+					       debug + W4_DEBUG_MSG_HEADER_LEN, copied, false);
+		}
+		return 0;
+	}
 	if (event_id != W4_EVENT_ID_SCAN_DONE)
 		return 0;
 	/* scnEventScanDone() matches the scan command sequence in the body, not
@@ -386,6 +417,25 @@ static int w4_capability(void *ctx)
 	/* W1 retained stream contains the exact vendor W2 NIC-capability poll. */
 	return ctx && ((struct mt6797_wifi_w4 *)ctx)->w1_retained ? 0 : -EPIPE;
 }
+/* wlanUpdateBasicConfig(): CMD_BASIC_CONFIG has the eight-byte WIFI_CMD_T and
+ * an eight-byte body: Native80211=0, reserved=0, RX/TX checksum masks=0. */
+static int w4_send_basic_config(struct mt6797_wifi_w4 *w4)
+{
+	u8 cmd[W4_WIFI_CMD_HEADER_LEN + 8] = { };
+	int ret;
+
+	put_unaligned_le16(sizeof(cmd), cmd);
+	put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = W4_CMD_ID_BASIC_CONFIG;
+	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[6] = 1;
+	cmd[7] = W4_CMD_SEQUENCE_BASIC_CONFIG;
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
+	dev_info(w4->dev, "W4_DIAG stage=basic-config ret=%d cmd-seq=%u native80211=%u rx-csum=%u tx-csum=%u\n",
+		 ret, cmd[7], cmd[8], get_unaligned_le16(cmd + 12),
+		 get_unaligned_le16(cmd + 14));
+	return ret;
+}
 static int w4_configure(void *ctx)
 {
 	struct mt6797_wifi_w4 *w4 = ctx;
@@ -407,7 +457,12 @@ static int w4_configure(void *ctx)
 	if (ret)
 		return ret;
 	/* nic.c's normal interrupt enable mask, before W3 writes INT_SET. */
-	return w4_mcr_write(w4, W4_WHIER, W4_WHIER_DEFAULT);
+	ret = w4_mcr_write(w4, W4_WHIER, W4_WHIER_DEFAULT);
+	if (ret)
+		return ret;
+	/* wlanAdapterStart() issues this immediately after NIC capability, before
+	 * network-address application and the later interrupt enable. */
+	return w4_send_basic_config(w4);
 }
 static const struct mt6797_wifi_ahb_w3_ops w4_hif_ops = {
 	.hif_get = w4_hif_get, .hif_put = w4_hif_put,

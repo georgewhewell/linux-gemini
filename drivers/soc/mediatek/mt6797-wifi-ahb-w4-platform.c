@@ -43,6 +43,22 @@
 #define W4_WIFI_EVENT_PACKET_TYPE 0xe000U
 #define W4_EVENT_ID_SCAN_DONE 0x0dU
 #define W4_SCAN_SEQUENCE 1U
+#define W4_WIFI_CMD_HEADER_LEN 8U
+#define W4_CMD_ID_SCAN_REQ_V2 0x03U
+#define W4_CMD_ID_BSS_ACTIVATE_CTRL 0x11U
+#define W4_CMD_PKT_TYPE 0x20U
+#define W4_SCAN_SSID_SLOT_LEN 36U
+#define W4_SCAN_REQ_V2_IE_OFFSET 226U
+#define W4_SCAN_REQ_V2_LEN (W4_WIFI_CMD_HEADER_LEN + W4_SCAN_REQ_V2_IE_OFFSET)
+#define W4_SCAN_REQ_V2_WIRE_LEN ALIGN(W4_SCAN_REQ_V2_LEN, sizeof(u32))
+#define W4_SCAN_REQ_V2_SSID0_OFFSET (W4_WIFI_CMD_HEADER_LEN + 8U)
+#define W4_SCAN_REQ_V2_TIMER_OFFSET (W4_SCAN_REQ_V2_SSID0_OFFSET + 4U * W4_SCAN_SSID_SLOT_LEN)
+#define W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET (W4_SCAN_REQ_V2_TIMER_OFFSET + 6U)
+#define W4_SCAN_REQ_V2_CHANNEL_LIST_OFFSET (W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET + 2U)
+#define W4_SCAN_CHANNEL_2G4 1U
+#define W4_SCAN_CHANNEL_SPECIFIED 4U
+#define W4_CMD_SEQUENCE_ACTIVATE 1U
+#define W4_CMD_SEQUENCE_SCAN 2U
 #define IEEE80211_HDRLEN 24U
 #define W4_WLAN_INDEX_DEFAULT 31U
 #define W4_STA_INDEX_AIS_AP 0U
@@ -645,47 +661,84 @@ drop:
 static const struct net_device_ops w4_netdev_ops = {
 	.ndo_open = w4_open, .ndo_stop = w4_stop, .ndo_start_xmit = w4_xmit,
 };
+static int w4_activate_ais(struct mt6797_wifi_w4 *w4, u8 command_sequence)
+{
+	u8 cmd[W4_WIFI_CMD_HEADER_LEN + 12] = { };
+	int ret;
+
+	/* nicActivateNetwork() makes AIS BSS zero active before AIS asks SCN to
+	 * scan.  The W4 scan path needs the same independent BSS activation. */
+	put_unaligned_le16(sizeof(cmd), cmd);
+	put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = W4_CMD_ID_BSS_ACTIVATE_CTRL;
+	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[6] = 1;
+	cmd[7] = command_sequence;
+	cmd[8] = 0;                 /* AIS BSS index */
+	cmd[9] = 1;                 /* active */
+	cmd[10] = 0;                /* AIS network type */
+	cmd[11] = 0;                /* own-MAC index */
+	ether_addr_copy(cmd + 12, w4->ndev->dev_addr);
+	cmd[18] = W4_WLAN_INDEX_DEFAULT;
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
+	dev_info(w4->dev, "W4_DIAG stage=ais-activate ret=%d cmd-seq=%u\n",
+		 ret, command_sequence);
+	return ret;
+}
 static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 			const struct cfg80211_scan_request *req)
 {
-	u8 cmd[8 + 48 + 64 + 2] = { };
+	u8 cmd[W4_SCAN_REQ_V2_WIRE_LEN] = { };
 	unsigned int i, n = min_t(unsigned int, req->n_channels, 32);
-	unsigned int body = 48 + n * 2;
-	u16 total = 8 + body;
+	u8 ssid_num = req->n_ssids ? 1 : 0;
+	u32 ssid_len = ssid_num ?
+		min_t(unsigned int, req->ssids[0].ssid_len, IEEE80211_MAX_SSID_LEN) : 0;
+	u8 channel_type = n ? W4_SCAN_CHANNEL_SPECIFIED : W4_SCAN_CHANNEL_2G4;
+	int ret;
 
-	/* WIFI_CMD_T + CMD_SCAN_REQ from vendor scan_fsm.c:174-246. */
-	put_unaligned_le16(total, cmd);
+	/* AIS emits WIFI_CMD_T + CMD_SCAN_REQ_V2, not the obsolete short request.
+	 * Keep the full fixed 4-SSID/32-channel prefix through aucIE even with no
+	 * optional IEs, exactly as scnSendScanReqV2()'s OFFSET_OF() length. */
+	put_unaligned_le16(W4_SCAN_REQ_V2_LEN, cmd);
 	put_unaligned_le16(0x8000, cmd + 2);
-	cmd[4] = 0x1a;       /* CMD_ID_SCAN_REQ */
-	cmd[5] = 0x20;       /* command packet */
+	cmd[4] = W4_CMD_ID_SCAN_REQ_V2;
+	cmd[5] = W4_CMD_PKT_TYPE;
 	cmd[6] = 1;          /* set */
-	cmd[7] = 1;          /* command sequence */
+	cmd[7] = W4_CMD_SEQUENCE_SCAN;
 	cmd[8] = W4_SCAN_SEQUENCE;
 	cmd[9] = 0;          /* AIS BSS index */
 	cmd[10] = 1;         /* active scan */
 	cmd[11] = req->n_ssids ? BIT(2) : BIT(0);
-	if (req->n_ssids) {
-		cmd[12] = min_t(unsigned int, req->ssids[0].ssid_len, 32);
-		memcpy(cmd + 20, req->ssids[0].ssid, cmd[12]);
-	}
-	put_unaligned_le16(30, cmd + 14); /* dwell ms */
-	cmd[52] = n ? 1 : 0;              /* specified channels/all */
-	cmd[53] = n;
+	cmd[12] = ssid_num;
+	put_unaligned_le32(ssid_len, cmd + W4_SCAN_REQ_V2_SSID0_OFFSET);
+	if (ssid_len)
+		memcpy(cmd + W4_SCAN_REQ_V2_SSID0_OFFSET + sizeof(ssid_len),
+		       req->ssids[0].ssid, ssid_len);
+	/* Vendor AIS uses zero for default probe delay, dwell and timeout. */
+	put_unaligned_le16(0, cmd + W4_SCAN_REQ_V2_TIMER_OFFSET);
+	put_unaligned_le16(0, cmd + W4_SCAN_REQ_V2_TIMER_OFFSET + 2);
+	put_unaligned_le16(0, cmd + W4_SCAN_REQ_V2_TIMER_OFFSET + 4);
+	cmd[W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET] = channel_type;
+	cmd[W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET + 1] = n;
 	for (i = 0; i < n; i++) {
-		cmd[56 + 2 * i] = req->channels[i]->band == NL80211_BAND_2GHZ ? 1 : 2;
-		cmd[57 + 2 * i] = ieee80211_frequency_to_channel(req->channels[i]->center_freq);
+		cmd[W4_SCAN_REQ_V2_CHANNEL_LIST_OFFSET + 2 * i] =
+			req->channels[i]->band == NL80211_BAND_2GHZ ? 1 : 2;
+		cmd[W4_SCAN_REQ_V2_CHANNEL_LIST_OFFSET + 2 * i + 1] =
+			ieee80211_frequency_to_channel(req->channels[i]->center_freq);
 	}
-	return w4_cmd53(w4, true, W4_WTDR1, cmd, ALIGN(total, 4));
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
+	dev_info(w4->dev,
+		 "W4_DIAG stage=scan-cmd ret=%d cid=%#x tx-len=%u wire-len=%zu cmd-seq=%u scan-seq=%u ssid-type=%#x ssid-num=%u ssid-len=%u ch-type=%u ch-count=%u\n",
+		 ret, cmd[4], W4_SCAN_REQ_V2_LEN, sizeof(cmd), cmd[7], cmd[8],
+		 cmd[11], cmd[12], ssid_len, cmd[W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET],
+		 cmd[W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET + 1]);
+	return ret;
 }
 static int w4_send_open_sta(struct mt6797_wifi_w4 *w4)
 {
 	u8 cmd[8 + 124] = { };
-	/* CMD_BSS_ACTIVATE_CTRL, vendor nic_cmd_event.h:899. */
-	put_unaligned_le16(8 + 12, cmd); put_unaligned_le16(0x8000, cmd + 2);
-	cmd[4] = 0x11; cmd[5] = 0x20; cmd[6] = 1; cmd[7] = 2;
-	cmd[8] = 0; cmd[9] = 1; cmd[10] = 0; cmd[11] = 0;
-	ether_addr_copy(cmd + 12, w4->ndev->dev_addr); cmd[18] = 31;
-	if (w4_cmd53(w4, true, W4_WTDR1, cmd, 20)) return -EIO;
+	if (w4_activate_ais(w4, W4_CMD_SEQUENCE_ACTIVATE))
+		return -EIO;
 	/* CMD_UPDATE_STA_RECORD_T: vendor state-1 allocation before Auth-1.
 	 * The 124-byte body is the exact 3.18 layout; its WLAN indices are at
 	 * offsets 54/55, not the earlier shortened-command offsets.
@@ -861,7 +914,9 @@ static int w4_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 	mutex_lock(&w4->lock);
 	if (!w4->opened || w4->scan_request) { mutex_unlock(&w4->lock); return -EBUSY; }
 	w4_diag_hif(w4, "scan-pre");
-	ret = w4_send_scan(w4, request);
+	ret = w4_activate_ais(w4, W4_CMD_SEQUENCE_ACTIVATE);
+	if (!ret)
+		ret = w4_send_scan(w4, request);
 	dev_info(w4->dev,
 		 "W4_DIAG stage=scan-submit ret=%d channels=%u ssids=%u\n",
 		 ret, request->n_channels, request->n_ssids);

@@ -676,9 +676,11 @@ config MTK_MT6797_WIFI_AHB_W2_NIC_CAPABILITY
 	  sequence 1), and its only accepted response is the exact 124-byte port-1
 	  EVENT_ID_NIC_CAPABILITY (EID 0x01, sequence 1). As in the vendor's
 	  wlanQueryNicCapability() route, the response is polled through WRPLR/WRDR1
-	  before device global interrupt delivery is enabled. A non-empty port-1
-	  length before the command, wrong event, length, sequence, or timeout fails
-	  closed.
+	  before device global interrupt delivery is enabled. Any stale RX0 packet is
+	  read and discarded with the vendor's bounded port framing while delivery is
+	  still disabled; a non-empty port-1 length before the command, a malformed
+	  packet, a non-quiescent bounded drain, wrong event, length, sequence, or
+	  timeout fails closed.
 
 	  This proves command acceptance only. It deliberately requests no Linux IRQ
 	  and proves neither an interrupt service loop nor a WLAN transport: it

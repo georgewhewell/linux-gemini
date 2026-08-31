@@ -103,6 +103,14 @@
 #define MT6797_WIFI_W2_CAPABILITY_SEQUENCE	1U
 #define MT6797_WIFI_W2_CAPABILITY_LENGTH	124U
 #define MT6797_WIFI_W2_RESPONSE_TIMEOUT_MS	1000U
+/*
+ * config.h:333-346 bounds a single non-aggregate receive packet at 2352
+ * bytes.  nicRxWaitResponse() reads four appended HIF bytes, and ahb.c:
+ * 810-837 rounds a block-mode transfer to the 512-byte function block size.
+ */
+#define MT6797_WIFI_W2_RX_PACKET_MAX		2352U
+#define MT6797_WIFI_W2_RX_DRAIN_MAX		2560U
+#define MT6797_WIFI_W2_RX_DRAIN_MAX_PACKETS	32U
 
 static const u8 mt6797_wifi_w1_firmware_sha256[] = {
 	0xa6, 0x93, 0x83, 0xd7, 0x4d, 0x82, 0x94, 0x30,
@@ -127,6 +135,8 @@ static const struct mt6797_wifi_ahb_w1_section mt6797_wifi_w1_sections[] = {
 		.key_index = 0, .encrypted = false,
 	},
 };
+
+static int mt6797_wifi_w1_reg_read(void __iomem *portal, u32 address, u32 *value);
 
 static DEFINE_MUTEX(mt6797_wifi_w1_portal_lock);
 static bool enable_experimental_wifi_w1_firmware_preflight;
@@ -161,11 +171,14 @@ struct mt6797_wifi_w2_capability_poll {
 	u8 sequence;
 	u8 event[MT6797_WIFI_W2_CAPABILITY_LENGTH];
 	u8 response[MT6797_WIFI_W2_CAPABILITY_LENGTH + sizeof(u32)];
+	u8 drain[MT6797_WIFI_W2_RX_DRAIN_MAX];
 	u32 pre_whisr;
 	u32 pre_wrplr;
 	u32 post_whisr;
 	u32 post_wrplr;
 	unsigned int polls;
+	unsigned int rx0_drained;
+	unsigned int rx1_drained;
 };
 
 bool mt6797_wifi_ahb_w1_firmware_enabled(struct device *owner)
@@ -341,13 +354,26 @@ static int mt6797_wifi_w1_cmd53_read(void __iomem *portal, u32 address,
 				      u8 *data, size_t length)
 {
 	u32 command;
+	u32 blocks;
 	size_t i;
 	int ret;
 
-	if (!data || !length || length & 3 ||
-	    length > MT6797_WIFI_AHB_CMD53_COUNT_MAX)
+	if (!data || !length || length & 3)
 		return -EINVAL;
-	ret = mt6797_wifi_ahb_cmd53_read_pack(address, length, &command);
+	if (length < MT6797_WIFI_AHB_SDIO_BLOCK_SIZE) {
+		ret = mt6797_wifi_ahb_cmd53_read_pack(address, length, &command);
+		goto out_command;
+	}
+	if (length % MT6797_WIFI_AHB_SDIO_BLOCK_SIZE)
+		return -EINVAL;
+	blocks = length / MT6797_WIFI_AHB_SDIO_BLOCK_SIZE;
+	if (blocks > MT6797_WIFI_AHB_CMD53_COUNT_MAX)
+		return -EINVAL;
+	/* Vendor sdio.h:76-87: fixed port, block mode, function 1, read. */
+	command = blocks | (address << MT6797_WIFI_AHB_CMD_ADDR_SHIFT) |
+		BIT(27) | BIT(MT6797_WIFI_AHB_CMD_FUNC_SHIFT);
+	ret = 0;
+out_command:
 	if (ret)
 		return ret;
 	writel(command, portal + MT6797_WIFI_AHB_CMD_SETUP);
@@ -355,6 +381,70 @@ static int mt6797_wifi_w1_cmd53_read(void __iomem *portal, u32 address,
 		put_unaligned_le32(readl(portal + MT6797_WIFI_AHB_CMD53_DATA),
 				   data + i);
 	return 0;
+}
+
+static size_t mt6797_wifi_w2_rx_transfer_size(u16 packet_length)
+{
+	size_t transfer;
+
+	transfer = ALIGN((size_t)packet_length + sizeof(u32), sizeof(u32));
+	if (transfer >= MT6797_WIFI_AHB_SDIO_BLOCK_SIZE)
+		transfer = ALIGN(transfer, MT6797_WIFI_AHB_SDIO_BLOCK_SIZE);
+	return transfer;
+}
+
+static int mt6797_wifi_w2_drain_port(struct mt6797_wifi_w2_capability_poll *capability,
+				     unsigned int port, u16 packet_length)
+{
+	size_t transfer;
+
+	if (!capability || port > 1 || !packet_length ||
+	    packet_length > MT6797_WIFI_W2_RX_PACKET_MAX)
+		return -EMSGSIZE;
+	transfer = mt6797_wifi_w2_rx_transfer_size(packet_length);
+	if (transfer > sizeof(capability->drain))
+		return -EOVERFLOW;
+	return mt6797_wifi_w1_cmd53_read(capability->portal,
+		port ? MT6797_WIFI_W1_MCR_WRDR1 : MT6797_WIFI_W1_MCR_WRDR0,
+		capability->drain, transfer);
+}
+
+static int
+mt6797_wifi_w2_drain_pending(struct mt6797_wifi_w2_capability_poll *capability,
+			     u32 *last_wrplr)
+{
+	unsigned int i;
+	int ret;
+
+	if (!capability || !last_wrplr)
+		return -EINVAL;
+	for (i = 0; i < MT6797_WIFI_W2_RX_DRAIN_MAX_PACKETS; i++) {
+		u16 rx0_length;
+		u16 rx1_length;
+
+		ret = mt6797_wifi_w1_reg_read(capability->portal,
+					      MT6797_WIFI_W1_MCR_WRPLR, last_wrplr);
+		if (ret)
+			return ret;
+		rx0_length = *last_wrplr & U16_MAX;
+		rx1_length = *last_wrplr >> 16;
+		if (!rx0_length && !rx1_length)
+			return 0;
+		/* Match nicRxWaitResponse(): port 0 first, then port 1. */
+		if (rx0_length) {
+			ret = mt6797_wifi_w2_drain_port(capability, 0, rx0_length);
+			if (ret)
+				return ret;
+			capability->rx0_drained++;
+		}
+		if (rx1_length) {
+			ret = mt6797_wifi_w2_drain_port(capability, 1, rx1_length);
+			if (ret)
+				return ret;
+			capability->rx1_drained++;
+		}
+	}
+	return -EOVERFLOW;
 }
 
 static int mt6797_wifi_w1_reg_write(void __iomem *portal, u32 address, u32 value)
@@ -950,21 +1040,36 @@ static int mt6797_wifi_w2_query_capability(struct device *owner,
 	};
 	struct mt6797_wifi_ahb_w2_capability parsed;
 	u8 command[MT6797_WIFI_W2_CAPABILITY_LENGTH];
+	u32 drained_wrplr;
 	int snapshot_ret;
 	int ret;
 
 	if (!owner || !portal)
 		return -EINVAL;
 
-	/*
-	 * Record the independent RX0 half but reject only a pre-existing port-1
-	 * packet, which could impersonate this query response.
-	 */
+	/* A pre-existing port-1 packet could impersonate the capability response. */
 	ret = mt6797_wifi_w1_reg_read(portal, MT6797_WIFI_W1_MCR_WRPLR,
 		&capability.pre_wrplr);
 	if (ret)
 		goto out_summary;
 	if (capability.pre_wrplr >> 16) {
+		ret = -EUCLEAN;
+		goto out_summary;
+	}
+	/* RX0 is independent of nicRxWaitResponse()'s RX1 transaction. */
+	if (capability.pre_wrplr & U16_MAX) {
+		ret = mt6797_wifi_w2_drain_port(&capability, 0,
+						capability.pre_wrplr & U16_MAX);
+		if (ret)
+			goto out_summary;
+		capability.rx0_drained++;
+	}
+	/* Do not discard a port-1 packet that appeared before the command. */
+	ret = mt6797_wifi_w1_reg_read(portal, MT6797_WIFI_W1_MCR_WRPLR,
+				      &drained_wrplr);
+	if (ret)
+		goto out_summary;
+	if (drained_wrplr) {
 		ret = -EUCLEAN;
 		goto out_summary;
 	}
@@ -978,8 +1083,12 @@ static int mt6797_wifi_w2_query_capability(struct device *owner,
 		command, sizeof(command));
 	if (!ret)
 		ret = mt6797_wifi_w2_poll_capability(&capability);
+	if (!ret)
+		capability.rx1_drained++;
+	if (!ret)
+		ret = mt6797_wifi_w2_drain_pending(&capability, &capability.post_wrplr);
 
-	/* Terminal instrumentation only: it never controls acceptance. */
+	/* Terminal instrumentation only: it never controls acceptance or acks. */
 	snapshot_ret = mt6797_wifi_w1_reg_read(portal,
 		MT6797_WIFI_W1_MCR_WHISR, &capability.post_whisr);
 	if (!ret && snapshot_ret)
@@ -997,10 +1106,10 @@ static int mt6797_wifi_w2_query_capability(struct device *owner,
 	}
 out_summary:
 	dev_info(owner,
-		 "W2_DIAG stage=capability-poll causal=%d pre-whisr=%#08x pre-wrplr=%#08x post-whisr=%#08x post-wrplr=%#08x polls=%u sequence=%u\n",
+		 "W2_DIAG stage=capability-poll causal=%d pre-whisr=%#08x pre-wrplr=%#08x post-whisr=%#08x post-wrplr=%#08x polls=%u rx0-drained=%u rx1-drained=%u sequence=%u\n",
 		 ret, capability.pre_whisr, capability.pre_wrplr,
 		 capability.post_whisr, capability.post_wrplr, capability.polls,
-		 capability.sequence);
+		 capability.rx0_drained, capability.rx1_drained, capability.sequence);
 	return ret;
 }
 

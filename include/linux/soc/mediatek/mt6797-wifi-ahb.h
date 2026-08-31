@@ -73,7 +73,7 @@ int mt6797_wifi_ahb_w1_idlm_transfer_account(
 		const struct mt6797_wifi_ahb_w1_image *image,
 		u32 *frame_count, size_t *transfer_bytes);
 
-/* W2 is the exact normal NIC-capability command/event exchange after W1. */
+/* W2 is the vendor-polled NIC-capability command/event exchange after W1. */
 #define MT6797_WIFI_AHB_W2_CAPABILITY_LENGTH	124U
 
 struct mt6797_wifi_ahb_w2_capability {

@@ -531,7 +531,16 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 			     READ_ONCE(controller->state.failure_stage),
 			     READ_ONCE(controller->state.derive_stage));
 	len += sysfs_emit_at(buf, len,
-			     "cpu_requests=%u cpu9_requests=0 ",
+			     "cpu8_success_acked=%u cpu9_trigger_consumed=%u cpu9_trigger_executions=%u cpu9_operation_ret=%d cpu9_core_consumed=%d cpu9_requests=%u cpu9_derive_stage=%u ",
+			     READ_ONCE(controller->cpu8_success_acked),
+			     atomic_read(&controller->cpu9_trigger.consumed),
+			     READ_ONCE(controller->cpu9_trigger.executions),
+			     READ_ONCE(controller->cpu9_trigger.operation_ret),
+			     atomic_read(&controller->cpu9_state.consumed),
+			     READ_ONCE(controller->cpu9_state.cpu_requests),
+			     READ_ONCE(controller->cpu9_state.derive_stage));
+	len += sysfs_emit_at(buf, len,
+			     "cpu8_requests=%u ",
 			     READ_ONCE(controller->state.cpu_requests));
 	len += sysfs_emit_at(buf, len, "cpu_off_requests=0 retries=0 ");
 	len += sysfs_emit_at(buf, len, "binder_snapshot_ret=%d binder_abi=%u ",

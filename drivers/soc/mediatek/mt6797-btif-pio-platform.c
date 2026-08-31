@@ -607,9 +607,12 @@ static irqreturn_t mt6797_btif_pio_platform_irq_thread(int irq, void *context)
 	ret = mt6797_btif_pio_irq(pio_lease);
 	if (ret == -EAGAIN)
 		return IRQ_NONE;
-	if (ret == -EOVERFLOW || ret == -EPROTO || ret == -ESHUTDOWN) {
+	if (ret) {
 		/*
-		 * These PIO paths already clear BTIF IER and invalidate its lease.
+		 * Every non-spurious mt6797_btif_pio_irq() error follows a PIO
+		 * fence: callback errors clear BTIF IER before being returned, as do
+		 * the transport's own protocol errors. Keep the Linux IRQ and clock
+		 * lifecycle in lockstep with that fenced owner.
 		 * Mask the Linux line from its own threaded handler without waiting on
 		 * ourselves; normal close/remove uses the synchronous variant.
 		 */
@@ -1257,6 +1260,38 @@ static void mt6797_btif_pio_platform_test_irq_fence(struct kunit *test)
 	mt6797_btif_pio_platform_test_stop(ctx);
 }
 
+static void mt6797_btif_pio_platform_test_irq_badmsg_fences(struct kunit *test)
+{
+	struct mt6797_btif_pio_platform_test_context *ctx;
+	const struct mt6797_btif_pio_platform_lease *lease;
+	bool enabled = READ_ONCE(enable_experimental_platform_adapter);
+	int irq_result;
+
+	ctx = mt6797_btif_pio_platform_test_start(test);
+	lease = mt6797_btif_pio_platform_reserve(&ctx->adapter);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
+	WRITE_ONCE(enable_experimental_platform_adapter, true);
+	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_platform_attach_full_stp(lease,
+								&ctx->runtime_lease,
+								ctx->stp_lease), 0);
+	/* The test RBR returns zero, which is not full-STP sync. */
+	ctx->bus->iir = BIT(1);
+	irq_result = mt6797_btif_pio_platform_irq_thread(ctx->adapter.irq,
+								 &ctx->adapter);
+	KUNIT_ASSERT_EQ(test, irq_result, IRQ_HANDLED);
+	flush_work(&ctx->adapter.fatal_close_work);
+	KUNIT_EXPECT_EQ(test, ctx->bus->disable_nosync_count, 1U);
+	KUNIT_EXPECT_EQ(test, ctx->bus->synchronize_count, 1U);
+	KUNIT_EXPECT_EQ(test, ctx->adapter.state,
+				MT6797_BTIF_PIO_PLATFORM_FENCED);
+	KUNIT_EXPECT_FALSE(test, ctx->adapter.irq_enabled);
+	KUNIT_EXPECT_EQ(test, ctx->bus->clock_disable_count, 1U);
+	KUNIT_EXPECT_FALSE(test, ctx->bus->clock_disabled_before_irq_quiesce);
+	KUNIT_EXPECT_FALSE(test, ctx->bus->clock_disabled_before_pio_fence);
+	WRITE_ONCE(enable_experimental_platform_adapter, enabled);
+	mt6797_btif_pio_platform_test_stop(ctx);
+}
+
 #if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
 
 static void mt6797_btif_pio_platform_test_bootstrap_factory(struct kunit *test)
@@ -1298,6 +1333,7 @@ static void mt6797_btif_pio_platform_test_bootstrap_factory(struct kunit *test)
 #endif /* CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP */
 
 static struct kunit_case mt6797_btif_pio_platform_test_cases[] = {
+	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_badmsg_fences),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_resource_bounds),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_contract),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_explicit_gate),

@@ -273,6 +273,10 @@ static int mt6797_consys_stp_finish_frame_locked(
 	crc = crc16(0, session->payload, session->payload_length);
 	if (session->crc[0] != (u8)crc || session->crc[1] != (u8)(crc >> 8)) {
 		session->diagnostics.rx_crc_failures++;
+		pr_warn_ratelimited("mt6797-consys-stp: full-STP CRC header=%*ph len=%u got=%*ph want=%04x\n",
+				    MTK_STP_HEADER_SIZE, session->header,
+				    session->payload_length, MTK_STP_TRAILER_SIZE,
+				    session->crc, crc);
 		return -EBADMSG;
 	}
 
@@ -329,9 +333,12 @@ static int mt6797_consys_stp_process_header_locked(
 	u8 ack;
 
 	if ((session->header[0] & 0xc0) != 0x80 ||
-	    session->header[3] != mt6797_consys_stp_header_checksum(session->header))
+	    session->header[3] != mt6797_consys_stp_header_checksum(session->header)) {
+		pr_warn_ratelimited("mt6797-consys-stp: full-STP header=%*ph want-csum=%02x\n",
+				    MTK_STP_HEADER_SIZE, session->header,
+				    mt6797_consys_stp_header_checksum(session->header));
 		return -EBADMSG;
-
+	}
 	/* Keep the vendor's effective default: the NAK bit is ignored. */
 	session->channel = (session->header[1] >> 4) & 0x7;
 	length = ((session->header[1] & 0x0f) << 8) | session->header[2];
@@ -371,6 +378,8 @@ static int mt6797_consys_stp_receive_byte_locked(
 		/* Vendor full mode accepts the optional 0x55 delimiter in SYNC. */
 		if (byte == 0x55)
 			return 0;
+		pr_warn_ratelimited("mt6797-consys-stp: RX full-STP sync mismatch byte=%02x\n",
+					    byte);
 		return -EBADMSG;
 	case MT6797_CONSYS_STP_RX_HEADER:
 		session->header[session->header_length++] = byte;

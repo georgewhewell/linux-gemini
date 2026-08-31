@@ -173,6 +173,52 @@ static int w4_rx_drain(void *ctx, unsigned int port, u16 len)
 	kfree(buf);
 	return ret;
 }
+/* nicRxFillRFB() distilled for header-translated Ethernet frames. */
+static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
+{
+	u8 *buf;
+	u16 byte_count, type;
+	u16 status;
+	unsigned int off = 16;
+	u8 groups, header_len;
+	struct sk_buff *skb;
+	int ret;
+
+	if (len < 16 || len > W4_RX_MAX)
+		return -EMSGSIZE;
+	buf = kzalloc(W4_RX_MAX + MT6797_WIFI_AHB_SDIO_BLOCK_SIZE, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	ret = w4_cmd53(w4, false, port ? W4_WRDR1 : W4_WRDR0, buf,
+			len + sizeof(u32));
+	if (ret)
+		goto out;
+	byte_count = get_unaligned_le16(buf);
+	type = get_unaligned_le16(buf + 2);
+	header_len = buf[6];
+	status = get_unaligned_le16(buf + 10);
+	groups = (type >> 9) & 0xf;
+	if (byte_count > len || byte_count < off || !(header_len & BIT(7)) || status)
+		goto out;
+	/* Vendor group order is 4,1,2,3 following HW_MAC_RX_DESC_T. */
+	if (groups & BIT(3)) off += 12;
+	if (groups & BIT(0)) off += 16;
+	if (groups & BIT(1)) off += 8;
+	if (groups & BIT(2)) off += 24;
+	if (header_len & BIT(6)) off += 2;
+	if (off >= byte_count || byte_count - off < ETH_HLEN)
+		goto out;
+	skb = netdev_alloc_skb_ip_align(w4->ndev, byte_count - off);
+	if (!skb) { ret = -ENOMEM; goto out; }
+	skb_put_data(skb, buf + off, byte_count - off);
+	skb->protocol = eth_type_trans(skb, w4->ndev);
+	netif_rx(skb);
+	w4->ndev->stats.rx_packets++;
+	w4->ndev->stats.rx_bytes += byte_count - off;
+out:
+	kfree(buf);
+	return ret;
+}
 static int w4_capability(void *ctx)
 {
 	/* W1 retained stream contains the exact vendor W2 NIC-capability poll. */
@@ -206,8 +252,8 @@ static void w4_rx_work(struct work_struct *work)
 	for (i = 0; i < W4_RX_BUDGET; i++) {
 		u16 rx0, rx1;
 		if (w4_rx_lengths(w4, &rx0, &rx1) || (!rx0 && !rx1)) break;
-		if (rx0) w4_rx_drain(w4, 0, rx0);
-		if (rx1) w4_rx_drain(w4, 1, rx1);
+		if (rx0) w4_rx_deliver(w4, 0, rx0);
+		if (rx1) w4_rx_deliver(w4, 1, rx1);
 	}
 out:
 	mutex_unlock(&w4->lock);

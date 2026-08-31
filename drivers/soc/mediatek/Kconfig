@@ -62,21 +62,35 @@ config MTK_MT6797_CACHE_OBSERVER
 config MTK_MT6797_MD1_BOOT_STATUS_OBSERVE
 	tristate "MT6797 MD1 boot-status observer"
 	depends on OF
+	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
 	help
 	  Build one explicitly gated, read-only observation of the two AP-visible
-	  MD1 boot-status registers. The vendor MT6797 CCCI driver reads these
-	  registers to report modem boot status, before it exposes a userspace
-	  transport.
+	  MD1 boot-status registers and the AP/SPM ownership words used by the active
+	  vendor MD1 power path. The resulting cold-off, powered-domain-reset-held,
+	  powered-domain-reset-deasserted, or inconsistent classification chooses the
+	  next experiment without changing hardware state. It never classifies the
+	  separate MD boot vector or execution state.
 
 	  The driver has no matching Gemini node by default. A separately loaded
 	  overlay must provide exactly the vendor 0x10201300/8 resource and the
 	  mediatek,experimental-md1-boot-status property. Probe also requires
 	  mt6797_md1_boot_status_observe.enable_experimental_boot_status=1.
-	  The one-shot probe performs exactly three reads of each status register;
-	  it does not acquire or enable clocks, power domains, resets, IRQs, DMA,
-	  shared memory, firmware, SIM, or radio functions, and contains no
-	  write/poll/retry path. It cannot make a fabric-wide stalled MMIO read
-	  recoverable.
+	  The one-shot probe performs exactly three reads of each boot-status
+	  register and one fixed SPM/infracfg snapshot. It does not acquire or enable
+	  clocks, power domains, resets, IRQs, DMA, shared memory, firmware, SIM, or
+	  radio functions, and contains no write/poll/retry path. It cannot make a
+	  fabric-wide stalled MMIO read recoverable.
+
+config MTK_MT6797_MD1_BOOT_STATUS_OBSERVE_KUNIT_TEST
+	bool "KUnit tests for MT6797 MD1 power-state observation"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_BOOT_STATUS_OBSERVE=y
+	help
+	  Exercise the read-only MD1 SPM/infracfg snapshot classifier, including
+	  active-path cold consistency, powered domain-reset-held, domain-reset-
+	  deasserted, and inconsistent states. Domain reset state never implies MD1
+	  boot-vector release or execution. The suite has no platform device and
+	  cannot access Gemini hardware.
 
 config MTK_MT6797_MD1_PRERELEASE
 	tristate "MT6797 MD1 pre-release controller foundation"
@@ -1230,16 +1244,16 @@ config MTK_MT6797_MD1_COLD_OWNER_CORE
 
 config MTK_MT6797_MD1_COLD_OWNER
 	tristate "MT6797 MD1 exclusive cold power/PLL/CCIF owner"
+	depends on BROKEN
 	depends on OF && ARM64
 	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
 	depends on MTK_MT6797_MD1_BOOT_STATUS_OBSERVE=y
 	depends on MTK_MT6797_MD1_PRERELEASE=y
 	select MTK_MT6797_MD1_COLD_OWNER_CORE
 	help
-	  Build the default-disabled MT6797 MD1 owner for one exact vendor cold,
-	  reset-held state. It requires the separately observed LK image-load flag
-	  and exactly three AP-visible reads of each boot-status word, but never
-	  interprets those values as an execution state.
+	  Quarantined legacy experiment. Its power sequence follows an MT6797 source
+	  file that the Gemini vendor build does not compile, rather than the active
+	  clk-mt6797-pg.c path. It must not be enabled or used on hardware.
 
 config MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 cold owner"

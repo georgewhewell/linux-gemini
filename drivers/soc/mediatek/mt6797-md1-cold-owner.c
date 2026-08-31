@@ -2,16 +2,13 @@
 /*
  * Default-disabled MT6797 MD1 cold power/PLL/CCIF owner.
  *
- * Primary vendor path: the MT6797 defconfig selects CONFIG_ARCH_MT6797, so
- * mt_spm_mtcmos.c takes its SPM-PCM branch rather than MD_PWRON_BY_CPU:
+ * QUARANTINED: this implementation was derived from mt_spm_mtcmos.c, but the
+ * Gemini vendor build comments that object out. The active power-domain owner
+ * is drivers/clk/mediatek/clk-mt6797-pg.c::spm_mtcmos_ctrl_md1(), whose bus
+ * protection and isolation sequence differs. Kconfig therefore depends on
+ * BROKEN. Do not instantiate this driver on hardware.
  *
- *   base/power/mt6797/mt_spm_mtcmos.c:1646-1673, 1677-1725
- *   eccci/mt6797/cldma_platform.c:555-575, 791-852
- *   eccci/mt6797/ccci_platform.c:932-962
- *
- * No function maps or writes MD_BOOT_VECTOR_EN (0x20000024).  A successful
- * one-shot operation remains a separately reviewed precondition for a future
- * boot-vector gate; it is not a modem release.
+ * No function maps or writes MD_BOOT_VECTOR_EN (0x20000024).
  */
 
 #include <linux/delay.h>

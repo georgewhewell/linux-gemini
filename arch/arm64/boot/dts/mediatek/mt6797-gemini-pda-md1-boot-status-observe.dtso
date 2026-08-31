@@ -7,8 +7,9 @@
  * mt6797_md1_boot_status_observe.enable_experimental_boot_status=1 is set at
  * boot. It describes only the two AP-visible status words used by the vendor
  * CCCI report path (0x10201300 and 0x10201304), followed only by the vendor
- * diagnostic BUSY/ACK reads of AP/MD CCIF. It adds no CLDMA, IRQ, DMA,
- * memory-region, clock, power-domain, reset, firmware, SIM, or radio resource.
+ * diagnostic BUSY/ACK reads of AP/MD CCIF and fixed read-only SPM/infracfg
+ * ownership words. It adds no CLDMA, IRQ, DMA, memory-region, clock,
+ * power-domain vote, reset, firmware, SIM, or radio resource.
  */
 
 /dts-v1/;
@@ -32,6 +33,8 @@
 				      <0 0x10209000 0 0x1000>,
 				      <0 0x1020a000 0 0x1000>;
 				reg-names = "md1-boot-status", "ap-ccif", "md-ccif";
+				mediatek,spm = <&scpsys>;
+				mediatek,infracfg = <&infrasys>;
 				mediatek,experimental-md1-boot-status;
 				status = "disabled";
 			};

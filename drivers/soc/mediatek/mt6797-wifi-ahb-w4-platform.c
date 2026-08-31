@@ -50,6 +50,8 @@
 #define W4_WIFI_CMD_HEADER_LEN 8U
 #define W4_CMD_ID_BASIC_CONFIG 0x02U
 #define W4_CMD_ID_SCAN_REQ_V2 0x03U
+#define W4_CMD_ID_ADD_REMOVE_KEY 0x07U
+#define W4_CMD_ID_DEFAULT_KEY_ID 0x08U
 #define W4_CMD_ID_BSS_ACTIVATE_CTRL 0x11U
 #define W4_CMD_ID_SET_BSS_INFO 0x12U
 #define W4_CMD_ID_UPDATE_STA_RECORD 0x13U
@@ -71,6 +73,8 @@
 #define W4_CMD_SEQUENCE_ACTIVATE 2U
 #define W4_CMD_SEQUENCE_SCAN 3U
 #define W4_CMD_SEQUENCE_CHANNEL 4U
+#define W4_CMD_SEQUENCE_KEY 6U
+#define W4_CMD_SEQUENCE_DEFAULT_KEY 7U
 #define W4_EVENT_ID_DEBUG_MSG 0x27U
 #define W4_DEBUG_MSG_HEADER_LEN 12U
 #define W4_DEBUG_MSG_TYPE_ASCII 3U
@@ -107,6 +111,9 @@
 #define W4_AUTH_MODE_WPA2_PSK 7U
 #define W4_ENCRYPTION_DISABLED 1U
 #define W4_ENCRYPTION3_ENABLED 6U
+#define W4_KEY_BODY_LEN 64U
+#define W4_DEFAULT_KEY_BODY_LEN 4U
+#define W4_CIPHER_SUITE_CCMP 4U
 
 static bool enable_experimental_wifi_w4_platform;
 module_param_named(enable_experimental_wifi_w4_platform,
@@ -148,6 +155,8 @@ struct mt6797_wifi_w4 {
 	u8 assoc_req_ie_len;
 	u8 auth_mode;
 	u8 encryption_status;
+	u8 pairwise_key_id;
+	u8 group_key_id;
 	u16 candidate_capability;
 	u16 operational_rate_set;
 	u16 basic_rate_set;
@@ -160,6 +169,7 @@ struct mt6797_wifi_w4 {
 	enum w4_join_state join_state;
 	bool candidate_valid, channel_requested, retained_owner_released;
 	bool controller_started, w1_retained, opened, wpa2_ccmp;
+	bool pairwise_key_installed, group_key_installed;
 };
 
 struct w4_bss_profile {
@@ -835,6 +845,8 @@ static int w4_stop(struct net_device *ndev)
 static netdev_tx_t w4_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct mt6797_wifi_w4 *w4 = w4_ndev(ndev);
+	bool eapol = skb->protocol == htons(ETH_P_PAE);
+	bool protected;
 	u8 *frame;
 	const unsigned int txd_len = 28; /* NIC_TX_DESC_LONG_FORMAT_LENGTH */
 	const unsigned int wire_length = txd_len + skb->len;
@@ -844,6 +856,13 @@ static netdev_tx_t w4_xmit(struct sk_buff *skb, struct net_device *ndev)
 	if (!READ_ONCE(w4->opened) || READ_ONCE(w4->join_state) != W4_JOIN_CONNECTED ||
 	    length > W4_RX_MAX)
 		goto drop;
+	/* secTxPortControlCheck() passes 802.1X while the controlled port is
+	 * blocked (vendor gen3/mgmt/privacy.c:308-339).  Do not leak ordinary
+	 * traffic before the pairwise key exists.
+	 */
+	if (READ_ONCE(w4->wpa2_ccmp) &&
+	    !READ_ONCE(w4->pairwise_key_installed) && !eapol)
+		goto drop;
 	/* ndo_start_xmit is atomic: bounded portal ownership, never sleep. */
 	if (!mutex_trylock(&w4->lock))
 		return NETDEV_TX_BUSY;
@@ -852,12 +871,27 @@ static netdev_tx_t w4_xmit(struct sk_buff *skb, struct net_device *ndev)
 	/* vendor HW_MAC_TX_DESC_T: LMAC/AC0, non-802.11 Ethernet-II, long TXD */
 	put_unaligned_le16(wire_length, frame);            /* u2TxByteCount */
 	frame[2] = (ETH_HLEN - ETH_TLEN + txd_len) >> 1;  /* EtherType word */
-	frame[3] = 0;                                     /* LMAC, AC0 */
+	frame[3] = eapol ? BIT(7) | BIT(3) : 0;           /* EAPOL uses MCU/TC4 */
 	frame[4] = READ_ONCE(w4->wlan_index);             /* AP STA-record WTBL index */
 	frame[5] = BIT(4) | BIT(7);                       /* Ethernet-II, long */
+	/* secIsProtected1xFrame() keys EAPOL protection from the AP STA-record's
+	 * transmit-key flag (privacy.c:564-581); ordinary protected-BSS traffic
+	 * receives the same TXD PF bit in nic_tx.c:1087-1091.
+	 */
+	protected = READ_ONCE(w4->wpa2_ccmp) &&
+		READ_ONCE(w4->pairwise_key_installed);
+	if (protected)
+		frame[6] |= BIT(7);                       /* TX_DESC_PROTECTED_FRAME */
 	frame[7] = 0;                                     /* own-MAC zero */
 	frame[10] = 0;                                    /* no lifetime limit */
 	put_unaligned_le16(30U << 11, frame + 12);        /* remaining retry count */
+	if (eapol) {
+		/* nicTxComposeSecurityFrameDesc() fixes security frames to the lowest
+		 * BSS basic rate (nic_tx.c:1220-1229).
+		 */
+		frame[11] |= BIT(7);                     /* fixed-rate enable */
+		put_unaligned_le16(w4->hw_default_rate_code << 2, frame + 26);
+	}
 	if (skb_copy_bits(skb, 0, frame + txd_len, skb->len))
 		ret = -EFAULT;
 	else
@@ -1457,6 +1491,142 @@ static int w4_validate_security(const struct cfg80211_connect_params *sme,
 	return 0;
 }
 
+static int w4_send_key(struct mt6797_wifi_w4 *w4, bool add, bool pairwise,
+		       u8 key_index, const u8 *key)
+{
+	u8 cmd[W4_WIFI_CMD_HEADER_LEN + W4_KEY_BODY_LEN] = { };
+	u8 *body = cmd + W4_WIFI_CMD_HEADER_LEN;
+	u8 wlan_index = pairwise ? W4_WLAN_INDEX_AIS_AP : W4_BMC_WLAN_INDEX_AIS;
+	int ret;
+
+	/* CMD_802_11_KEY is exactly 64 bytes (nic_cmd_event.h:374-389).
+	 * wlanoidSetAddKey() selects CCMP for a 16-byte WPA key and uses the AP
+	 * station WTBL for pairwise keys (wlan_oid.c:2347-2466).  Its first GTK
+	 * reuses the reserved key-id-0xff BMC entry (privacy.c:987-1016).
+	 */
+	put_unaligned_le16(sizeof(cmd), cmd);
+	put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = W4_CMD_ID_ADD_REMOVE_KEY;
+	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[6] = 1;
+	cmd[7] = W4_CMD_SEQUENCE_KEY;
+	body[0] = add;
+	body[1] = add && pairwise;            /* pairwise is the Tx key */
+	body[2] = pairwise;
+	ether_addr_copy(body + 4, w4->candidate_bssid);
+	body[10] = 0;                         /* AIS BSS index */
+	body[11] = add ? W4_CIPHER_SUITE_CCMP : 0;
+	body[12] = key_index;
+	body[13] = add ? 16 : 0;
+	body[14] = wlan_index;
+	if (add)
+		memcpy(body + 16, key, 16);
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
+	dev_info(w4->dev,
+		 "W4_DIAG stage=%s-key ret=%d pairwise=%u key-id=%u wlan-index=%u cipher=%u\n",
+		 add ? "add" : "remove", ret, pairwise, key_index,
+		 wlan_index, body[11]);
+	return ret;
+}
+
+static int w4_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
+		      int link_id, u8 key_index, bool pairwise,
+		      const u8 *mac_addr, struct key_params *params)
+{
+	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
+	int ret;
+
+	if (!wdev || wdev->netdev != w4->ndev || key_index >= 4 || !params ||
+	    !params->key || params->key_len != 16 ||
+	    params->cipher != WLAN_CIPHER_SUITE_CCMP ||
+	    params->mode != NL80211_KEY_RX_TX)
+		return -EOPNOTSUPP;
+	if (pairwise && (!mac_addr ||
+			 !ether_addr_equal(mac_addr, w4->candidate_bssid)))
+		return -EINVAL;
+
+	mutex_lock(&w4->lock);
+	if (!w4->opened || w4->join_state != W4_JOIN_CONNECTED || !w4->wpa2_ccmp) {
+		ret = -ENOTCONN;
+		goto unlock;
+	}
+	ret = w4_send_key(w4, true, pairwise, key_index, params->key);
+	if (!ret && pairwise) {
+		w4->pairwise_key_id = key_index;
+		w4->pairwise_key_installed = true;
+	} else if (!ret) {
+		w4->group_key_id = key_index;
+		w4->group_key_installed = true;
+	}
+unlock:
+	mutex_unlock(&w4->lock);
+	return ret;
+}
+
+static int w4_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
+		      int link_id, u8 key_index, bool pairwise, const u8 *mac_addr)
+{
+	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
+	bool installed;
+	int ret = 0;
+
+	if (!wdev || wdev->netdev != w4->ndev || key_index >= 4)
+		return -EINVAL;
+	mutex_lock(&w4->lock);
+	installed = pairwise ? w4->pairwise_key_installed :
+		w4->group_key_installed;
+	if (!installed)
+		goto unlock;
+	ret = w4_send_key(w4, false, pairwise, key_index, NULL);
+	if (!ret && pairwise)
+		w4->pairwise_key_installed = false;
+	else if (!ret)
+		w4->group_key_installed = false;
+unlock:
+	mutex_unlock(&w4->lock);
+	return ret;
+}
+
+static int w4_set_default_key(struct wiphy *wiphy, struct net_device *ndev,
+			      int link_id, u8 key_index, bool unicast,
+			      bool multicast)
+{
+	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
+	u8 cmd[W4_WIFI_CMD_HEADER_LEN + W4_DEFAULT_KEY_BODY_LEN] = { };
+	u8 *body = cmd + W4_WIFI_CMD_HEADER_LEN;
+	int ret;
+
+	if (ndev != w4->ndev || key_index >= 4)
+		return -EINVAL;
+	/* The vendor deliberately no-ops the pairwise-only case
+	 * (gl_cfg80211.c:327-341).  Multicast selects the active GTK.
+	 */
+	if (unicast && !multicast)
+		return 0;
+	mutex_lock(&w4->lock);
+	if (!w4->group_key_installed || key_index != w4->group_key_id) {
+		ret = -ENOENT;
+		goto unlock;
+	}
+	put_unaligned_le16(sizeof(cmd), cmd);
+	put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = W4_CMD_ID_DEFAULT_KEY_ID;
+	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[6] = 1;
+	cmd[7] = W4_CMD_SEQUENCE_DEFAULT_KEY;
+	body[0] = 0;
+	body[1] = key_index;
+	body[2] = unicast;
+	body[3] = multicast;
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
+	dev_info(w4->dev,
+		 "W4_DIAG stage=default-key ret=%d key-id=%u unicast=%u multicast=%u\n",
+		 ret, key_index, unicast, multicast);
+unlock:
+	mutex_unlock(&w4->lock);
+	return ret;
+}
+
 static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 		      struct cfg80211_connect_params *sme)
 {
@@ -1512,6 +1682,8 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 	memcpy(w4->join_ssid, sme->ssid, w4->join_ssid_len);
 	w4->assoc_req_ie_len = 0;
 	w4->wpa2_ccmp = wpa2_ccmp;
+	w4->pairwise_key_installed = false;
+	w4->group_key_installed = false;
 	w4->auth_mode = wpa2_ccmp ? W4_AUTH_MODE_WPA2_PSK : W4_AUTH_MODE_OPEN;
 	w4->encryption_status = wpa2_ccmp ? W4_ENCRYPTION3_ENABLED :
 		W4_ENCRYPTION_DISABLED;
@@ -1541,8 +1713,14 @@ static int w4_disconnect(struct wiphy *wiphy, struct net_device *ndev, u16 reaso
 
 	mutex_lock(&w4->lock);
 	connected = w4->join_state == W4_JOIN_CONNECTED;
+	if (connected && w4->pairwise_key_installed)
+		w4_send_key(w4, false, true, w4->pairwise_key_id, NULL);
+	if (connected && w4->group_key_installed)
+		w4_send_key(w4, false, false, w4->group_key_id, NULL);
 	if (connected)
 		w4_send_bss_info(w4, false, NULL, 0);
+	w4->pairwise_key_installed = false;
+	w4->group_key_installed = false;
 	w4_release_channel(w4);
 	w4->join_state = W4_JOIN_IDLE;
 	w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
@@ -1555,6 +1733,8 @@ static int w4_disconnect(struct wiphy *wiphy, struct net_device *ndev, u16 reaso
 }
 static const struct cfg80211_ops w4_cfg80211_ops = {
 	.scan = w4_scan, .connect = w4_connect, .disconnect = w4_disconnect,
+	.add_key = w4_add_key, .del_key = w4_del_key,
+	.set_default_key = w4_set_default_key,
 };
 static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 {

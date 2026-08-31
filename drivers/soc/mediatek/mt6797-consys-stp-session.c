@@ -714,6 +714,35 @@ out:
 	return ret;
 }
 
+int mt6797_consys_stp_session_transmit_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context,
+		const u8 *payload, size_t payload_length)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret;
+
+	if (!lease || !lease->session || !receive || (!payload && payload_length) ||
+	    !payload_length)
+		return -EINVAL;
+	if (payload_length > MTK_STP_MAX_PAYLOAD)
+		return -EMSGSIZE;
+
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else if (session->bt_receive != receive ||
+		 session->bt_receive_context != receive_context)
+		ret = -EACCES;
+	else
+		ret = mt6797_consys_stp_session_transmit_locked(session, MTK_STP_BT,
+			payload, payload_length);
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_transmit_bt);
+
 int mt6797_consys_stp_session_transmit(
 		const struct mt6797_consys_stp_session_lease *lease,
 		enum mtk_stp_channel channel, const u8 *payload, size_t payload_length)
@@ -1051,6 +1080,13 @@ static int mt6797_consys_stp_test_receive_gnss(void *context,
 {
 	return mt6797_consys_stp_test_receive(context, MTK_STP_GNSS, payload,
 						    payload_length);
+}
+
+static int mt6797_consys_stp_test_receive_bt(void *context,
+					       const u8 *payload, size_t payload_length)
+{
+	return mt6797_consys_stp_test_receive(context, MTK_STP_BT, payload,
+					    payload_length);
 }
 
 static struct mt6797_consys_stp_session *
@@ -1536,6 +1572,29 @@ static void mt6797_consys_stp_test_null_session_lease_is_rejected(
 	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_timeout(&invalid), -EINVAL);
 }
 
+static void mt6797_consys_stp_test_bt_transmit_is_binding_owned(
+		struct kunit *test)
+{
+	const struct mt6797_consys_stp_session_lease *lease;
+	struct mt6797_consys_stp_test_link *link;
+	struct mt6797_consys_stp_session *session;
+	u8 payload = 0x5a;
+
+	session = mt6797_consys_stp_test_session(test, &link, &lease);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_bind_bt(lease,
+		mt6797_consys_stp_test_receive_bt, link), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_transmit_bt(lease,
+		mt6797_consys_stp_test_receive_bt, session, &payload, sizeof(payload)),
+		-EACCES);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_transmit_bt(lease,
+		mt6797_consys_stp_test_receive_bt, link, &payload, sizeof(payload)), 0);
+	KUNIT_EXPECT_EQ(test, link->tx_count, 1U);
+	KUNIT_EXPECT_EQ(test, link->frames[0][1] >> 4, (u8)MTK_STP_BT);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_unbind_bt(lease,
+		mt6797_consys_stp_test_receive_bt, link), 0);
+	mt6797_consys_stp_session_destroy(session);
+}
+
 static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_wraparound),
 	KUNIT_CASE(mt6797_consys_stp_test_credit_exhaustion),
@@ -1552,6 +1611,7 @@ static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_bootstrap_promotes_without_reset),
 	KUNIT_CASE(mt6797_consys_stp_test_gnss_binding_is_lease_owned),
 	KUNIT_CASE(mt6797_consys_stp_test_null_session_lease_is_rejected),
+	KUNIT_CASE(mt6797_consys_stp_test_bt_transmit_is_binding_owned),
 	{ }
 };
 

@@ -10,10 +10,9 @@ config BT_MTK6797_STP
 	depends on REGULATOR
 	help
 	  Register one standard HCI device over the MT6797 controller-owned
-	  full-STP channel zero. Opening it exclusively borrows the retained
-	  controller, enables BT PALDO, and issues only vendor FUNC_CTRL(BT,on).
-	  Closing reverses FUNC_CTRL then PALDO. Both DT and a default-false
-	  read-only module parameter gate this experimental endpoint.
+	  full-STP channel-zero lease, enables BT PALDO, and issues only vendor
+	  FUNC_CTRL(BT,on). Closing reverses FUNC_CTRL then PALDO. Both DT and a
+	  default-false read-only module parameter gate this experimental endpoint.
 
 config BT_MTK6797_STP_KUNIT_TEST
 	bool "KUnit tests for MT6797 full-STP Bluetooth HCI endpoint"

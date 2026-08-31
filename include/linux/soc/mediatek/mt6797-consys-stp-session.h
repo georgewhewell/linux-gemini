@@ -160,6 +160,11 @@ int mt6797_consys_stp_session_bind_bt(
 int mt6797_consys_stp_session_unbind_bt(
 		const struct mt6797_consys_stp_session_lease *lease,
 		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context);
+/* Submit one H4 payload only from the endpoint currently bound to channel zero. */
+int mt6797_consys_stp_session_transmit_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context,
+		const u8 *payload, size_t payload_length);
 int mt6797_consys_stp_session_unbind_gnss(
 		const struct mt6797_consys_stp_session_lease *lease,
 		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* MT6797 HCI over the exclusive controller-owned full-STP channel zero. */
+/* MT6797 HCI over controller-owned full-STP channel zero. */
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
@@ -123,13 +123,15 @@ static int mt6797_stp_hci_open(struct hci_dev *hdev)
 	data->paldo_on = true;
 	ret = mt6797_consys_runtime_controller_bt_function_set(
 		&data->controller_lease, true);
-	if (ret)
+	if (ret) {
+		/* A failed WMT transaction leaves BT function state unknowable. */
+		terminal = true;
 		goto release;
+	}
 	data->function_on = true;
 	mutex_unlock(&data->lock);
 	return 0;
 release:
-	terminal = true;
 	mt6797_stp_hci_release_locked(data, &terminal);
 unlock:
 	mutex_unlock(&data->lock);
@@ -173,8 +175,8 @@ static int mt6797_stp_hci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 	*(u8 *)skb_push(skb, 1) = type;
 	mutex_lock(&data->lock);
 	ret = data->function_on && data->stp_lease ?
-		mt6797_consys_stp_session_transmit(data->stp_lease, MTK_STP_BT,
-			skb->data, skb->len) : -ESHUTDOWN;
+		mt6797_consys_stp_session_transmit_bt(data->stp_lease,
+			mt6797_stp_hci_receive, data, skb->data, skb->len) : -ESHUTDOWN;
 	mutex_unlock(&data->lock);
 	if (ret)
 		hdev->stat.err_tx++;
@@ -246,8 +248,9 @@ static void mt6797_stp_hci_remove(struct platform_device *pdev)
 
 	if (!data)
 		return;
-	hci_unregister_dev(data->hdev);
+	/* close() unbinds under the session lock before hdev can be destroyed. */
 	mt6797_stp_hci_close(data->hdev);
+	hci_unregister_dev(data->hdev);
 	hci_free_dev(data->hdev);
 	put_device(data->controller);
 }

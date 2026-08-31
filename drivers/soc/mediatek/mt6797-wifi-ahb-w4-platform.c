@@ -140,18 +140,29 @@ static int w4_cmd53(struct mt6797_wifi_w4 *w4, bool write, u16 port,
 static int w4_mcr_read(void *ctx, u32 off, u32 *val)
 {
 	struct mt6797_wifi_w4 *w4 = ctx;
-	if (!w4 || !val || off >= MT6797_WIFI_AHB_HIF_PORTAL_SIZE)
+	u8 data[sizeof(*val)];
+	int ret;
+
+	if (!w4 || !val || off > MT6797_WIFI_AHB_CMD_ADDR_MAX || off & 3)
 		return -EINVAL;
-	*val = readl(w4->portal + off);
-	return 0;
+	/* Vendor kalDevRegRead()/HAL_MCR_RD is a function-one CMD53 transfer.
+	 * The mapped AHB aperture holds only the command engine; MCR offsets are
+	 * SDIO register addresses, never MMIO offsets into that aperture.
+	 */
+	ret = w4_cmd53(w4, false, off, data, sizeof(data));
+	if (!ret)
+		*val = get_unaligned_le32(data);
+	return ret;
 }
 static int w4_mcr_write(void *ctx, u32 off, u32 val)
 {
 	struct mt6797_wifi_w4 *w4 = ctx;
-	if (!w4 || off >= MT6797_WIFI_AHB_HIF_PORTAL_SIZE)
+	u8 data[sizeof(val)];
+
+	if (!w4 || off > MT6797_WIFI_AHB_CMD_ADDR_MAX || off & 3)
 		return -EINVAL;
-	writel(val, w4->portal + off);
-	return 0;
+	put_unaligned_le32(val, data);
+	return w4_cmd53(w4, true, off, data, sizeof(data));
 }
 static int w4_hif_get(void *ctx) { return ctx ? 0 : -EINVAL; }
 static void w4_hif_put(void *ctx) { }
@@ -175,19 +186,27 @@ static int w4_tx_released(void *ctx, u32 released[])
 {
 	struct mt6797_wifi_w4 *w4 = ctx;
 	unsigned int i;
+	u32 word;
+	int ret;
 	if (!w4 || !released) return -EINVAL;
 	/* HAL_READ_TX_RELEASED_COUNT: four WTQCR words, two queues each. */
-	for (i = 0; i < MT6797_WIFI_AHB_W3_TX_QUEUE_COUNT; i++)
-		released[i] = (readl(w4->portal + W4_WTQCR0 + 4 * (i / 2)) >>
-				((i & 1) * 16)) & U16_MAX;
+	for (i = 0; i < MT6797_WIFI_AHB_W3_TX_QUEUE_COUNT; i++) {
+		ret = w4_mcr_read(w4, W4_WTQCR0 + 4 * (i / 2), &word);
+		if (ret)
+			return ret;
+		released[i] = (word >> ((i & 1) * 16)) & U16_MAX;
+	}
 	return 0;
 }
 static int w4_rx_lengths(void *ctx, u16 *rx0, u16 *rx1)
 {
 	struct mt6797_wifi_w4 *w4 = ctx;
 	u32 v;
+	int ret;
 	if (!w4 || !rx0 || !rx1) return -EINVAL;
-	v = readl(w4->portal + W4_WRPLR);
+	ret = w4_mcr_read(w4, W4_WRPLR, &v);
+	if (ret)
+		return ret;
 	*rx0 = v & U16_MAX; *rx1 = v >> 16;
 	return 0;
 }
@@ -296,8 +315,7 @@ static int w4_configure(void *ctx)
 	struct mt6797_wifi_w4 *w4 = ctx;
 	if (!w4) return -EINVAL;
 	/* nic.c's normal interrupt enable mask, before W3 writes INT_SET. */
-	writel(W4_WHIER_DEFAULT, w4->portal + W4_WHIER);
-	return 0;
+	return w4_mcr_write(w4, W4_WHIER, W4_WHIER_DEFAULT);
 }
 static const struct mt6797_wifi_ahb_w3_ops w4_hif_ops = {
 	.hif_get = w4_hif_get, .hif_put = w4_hif_put,
@@ -313,8 +331,20 @@ static void w4_rx_work(struct work_struct *work)
 {
 	struct mt6797_wifi_w4 *w4 = container_of(work, struct mt6797_wifi_w4, rx_work);
 	unsigned int i;
+	u32 whisr;
+	int ret;
 	mutex_lock(&w4->lock);
 	if (!w4->opened) goto out;
+	/* W3 selected vendor read-clear mode.  HAL_MCR_RD(MCR_WHISR) is the
+	 * acknowledgement which drops the level-triggered host line before RX. */
+	ret = w4_mcr_read(w4, MT6797_WIFI_AHB_W3_MCR_WHISR, &whisr);
+	if (ret) {
+		dev_err(w4->dev, "W4_DIAG stage=irq-ack ret=%d\n", ret);
+		goto out;
+	}
+	if (!whisr)
+		goto out;
+	dev_dbg(w4->dev, "W4_DIAG stage=irq-ack ret=0 whisr=%#x\n", whisr);
 	/* Bound the drain as nicRxProcessRFBs does; never leave a wedged port. */
 	for (i = 0; i < W4_RX_BUDGET; i++) {
 		u16 rx0, rx1;
@@ -685,6 +715,9 @@ static int w4_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 	mutex_lock(&w4->lock);
 	if (!w4->opened || w4->scan_request) { mutex_unlock(&w4->lock); return -EBUSY; }
 	ret = w4_send_scan(w4, request);
+	dev_info(w4->dev,
+		 "W4_DIAG stage=scan-submit ret=%d channels=%u ssids=%u\n",
+		 ret, request->n_channels, request->n_ssids);
 	if (ret) { mutex_unlock(&w4->lock); return ret; }
 	w4->scan_request = request;
 	mutex_unlock(&w4->lock);
@@ -796,6 +829,9 @@ static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 	if (!w4->wiphy) { ret = -ENOMEM; goto put_owner; }
 	*(struct mt6797_wifi_w4 **)wiphy_priv(w4->wiphy) = w4;
 	w4->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
+	/* iw's ordinary wildcard probe is one SSID entry; zero makes nl80211
+	 * reject it before ->scan() is reached.  CMD_SCAN_REQ implements one. */
+	w4->wiphy->max_scan_ssids = 1;
 	w4->wiphy->bands[NL80211_BAND_2GHZ] = &w4_band; set_wiphy_dev(w4->wiphy, &pdev->dev);
 	ret = wiphy_register(w4->wiphy); if (ret) goto free_wiphy;
 	w4->ndev = alloc_netdev(sizeof(struct mt6797_wifi_w4 *), "wlan%d", NET_NAME_ENUM, ether_setup);

@@ -11,7 +11,11 @@
  * it has installed a normal adapter/IST; it supplies no isolated post-enable
  * IRQ self-test event. W1 therefore clears the same status but leaves global
  * IRQ delivery off and reports READY only, rather than claiming an IRQ proof
- * from a stale TX_DONE level.
+ * from a stale TX_DONE level.  W1_DIAG messages deliberately retain the
+ * causal register snapshots for an enabled attempt.  They make a safe failure
+ * useful: the next build must distinguish CCCR function readiness, ownership,
+ * download acknowledgement, each transfer, EMI placement, start, READY, and
+ * portal cleanup before anyone considers another hardware cycle.
  *
  * This is not a WLAN driver. It has no netdev, MAC, DMA, cfg80211, retry, or
  * userspace API. It performs exactly one pinned image attempt inside the
@@ -30,6 +34,7 @@
 #include <linux/firmware.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -79,7 +84,8 @@
 #define MT6797_WIFI_W1_IMAGE_PACKET_SIZE	2048U
 #define MT6797_WIFI_W1_HIF_TRANSFER_MAX	2560U
 #define MT6797_WIFI_W1_RESPONSE_MAX		32U
-#define MT6797_WIFI_W1_OWN_POLLS		256U
+#define MT6797_WIFI_W1_OWN_TIMEOUT_MS		2048U
+#define MT6797_WIFI_W1_OWN_REISSUE_POLLS	256U
 #define MT6797_WIFI_W1_RESPONSE_POLLS		20000U
 #define MT6797_WIFI_W1_READY_POLLS		100U
 #define MT6797_WIFI_W1_IDLM_FRAME_COUNT	8U
@@ -123,6 +129,13 @@ struct mt6797_wifi_w1_power {
 	struct regulator *wifi_paldo;
 	const struct firmware *firmware;
 	struct mt6797_wifi_ahb_w1_image image;
+};
+
+struct mt6797_wifi_w1_config_ack {
+	u32 wrplr;
+	u16 length;
+	unsigned int polls;
+	u8 header[9];
 };
 
 bool mt6797_wifi_ahb_w1_firmware_enabled(struct device *owner)
@@ -323,12 +336,12 @@ static int mt6797_wifi_w1_reg_read(void __iomem *portal, u32 address, u32 *value
 }
 
 static int mt6797_wifi_w1_enable_function(void __iomem *portal, u8 *ioex_before,
+					   u8 *ioex_after, u8 *iorx_after,
 					   bool *enabled)
 {
-	u8 iorx;
 	int ret;
 
-	if (!ioex_before || !enabled)
+	if (!ioex_before || !ioex_after || !iorx_after || !enabled)
 		return -EINVAL;
 	ret = mt6797_wifi_w1_cmd52_read(portal,
 		MT6797_WIFI_AHB_SDIO_CCCR_IOEX, ioex_before);
@@ -336,25 +349,31 @@ static int mt6797_wifi_w1_enable_function(void __iomem *portal, u8 *ioex_before,
 		return ret;
 	if (*ioex_before & BIT(MT6797_WIFI_AHB_SDIO_FUNC_WIFI))
 		return -EBUSY;
+	/* A failed CMD52 write may still have reached the function-enable latch. */
+	*enabled = true;
 	ret = mt6797_wifi_w1_cmd52_write(portal,
 		MT6797_WIFI_AHB_SDIO_CCCR_IOEX,
 		*ioex_before | BIT(MT6797_WIFI_AHB_SDIO_FUNC_WIFI));
 	if (ret)
 		return ret;
-	*enabled = true;
 	ret = mt6797_wifi_w1_cmd52_read(portal,
-		MT6797_WIFI_AHB_SDIO_CCCR_IORX, &iorx);
+		MT6797_WIFI_AHB_SDIO_CCCR_IOEX, ioex_after);
 	if (ret)
 		return ret;
-	return iorx & BIT(MT6797_WIFI_AHB_SDIO_FUNC_WIFI) ? 0 : -ETIMEDOUT;
+	ret = mt6797_wifi_w1_cmd52_read(portal,
+		MT6797_WIFI_AHB_SDIO_CCCR_IORX, iorx_after);
+	if (ret)
+		return ret;
+	return *iorx_after & BIT(MT6797_WIFI_AHB_SDIO_FUNC_WIFI) ? 0 : -ETIMEDOUT;
 }
 
 static int mt6797_wifi_w1_set_block_size(void __iomem *portal, u8 *low_before,
-					  u8 *high_before, bool *changed)
+					  u8 *high_before, u8 *low_after,
+					  u8 *high_after, bool *changed)
 {
 	int ret;
 
-	if (!low_before || !high_before || !changed)
+	if (!low_before || !high_before || !low_after || !high_after || !changed)
 		return -EINVAL;
 	ret = mt6797_wifi_w1_cmd52_read(portal,
 		MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE, low_before);
@@ -364,89 +383,134 @@ static int mt6797_wifi_w1_set_block_size(void __iomem *portal, u8 *low_before,
 		MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE + 1, high_before);
 	if (ret)
 		return ret;
+	*changed = false;
 	if (*low_before) {
+		/* A CMD52 error does not prove that the writable CCCR was unchanged. */
+		*changed = true;
 		ret = mt6797_wifi_w1_cmd52_write(portal,
 			MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE, 0);
 		if (ret)
 			return ret;
-		*changed = true;
 	}
 	if (*high_before != MT6797_WIFI_AHB_SDIO_BLOCK_SIZE >> 8) {
+		*changed = true;
 		ret = mt6797_wifi_w1_cmd52_write(portal,
 			MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE + 1,
 			MT6797_WIFI_AHB_SDIO_BLOCK_SIZE >> 8);
 		if (ret)
 			return ret;
-		*changed = true;
 	}
-	return 0;
+	ret = mt6797_wifi_w1_cmd52_read(portal,
+		MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE, low_after);
+	if (ret)
+		return ret;
+	return mt6797_wifi_w1_cmd52_read(portal,
+		MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE + 1, high_after);
 }
 
 static int mt6797_wifi_w1_restore_block_size(void __iomem *portal,
-					      u8 low_before, u8 high_before)
+					      u8 low_before, u8 high_before,
+					      u8 *low_after, u8 *high_after)
 {
-	u8 low_after, high_after;
+	int cleanup = 0;
 	int ret;
+
+	if (!low_after || !high_after)
+		return -EINVAL;
 
 	if (high_before != MT6797_WIFI_AHB_SDIO_BLOCK_SIZE >> 8) {
 		ret = mt6797_wifi_w1_cmd52_write(portal,
 			MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE + 1, high_before);
 		if (ret)
-			return ret;
+			cleanup = ret;
 	}
 	if (low_before) {
 		ret = mt6797_wifi_w1_cmd52_write(portal,
 			MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE, low_before);
-		if (ret)
-			return ret;
+		if (!cleanup && ret)
+			cleanup = ret;
 	}
 	ret = mt6797_wifi_w1_cmd52_read(portal,
-		MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE, &low_after);
-	if (ret)
-		return ret;
+		MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE, low_after);
+	if (!cleanup && ret)
+		cleanup = ret;
 	ret = mt6797_wifi_w1_cmd52_read(portal,
-		MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE + 1, &high_after);
-	if (ret)
-		return ret;
-	return low_after == low_before && high_after == high_before ? 0 : -EUCLEAN;
+		MT6797_WIFI_AHB_SDIO_FBR1_BLKSIZE + 1, high_after);
+	if (!cleanup && ret)
+		cleanup = ret;
+	if (!cleanup && (*low_after != low_before || *high_after != high_before))
+		cleanup = -EUCLEAN;
+	return cleanup;
 }
 
 static int mt6797_wifi_w1_restore_function(void __iomem *portal,
-					     u8 ioex_before)
+					     u8 ioex_before, u8 *ioex_after)
 {
-	u8 ioex_after;
+	int cleanup = 0;
 	int ret;
+
+	if (!ioex_after)
+		return -EINVAL;
 
 	ret = mt6797_wifi_w1_cmd52_write(portal,
 		MT6797_WIFI_AHB_SDIO_CCCR_IOEX, ioex_before);
 	if (ret)
-		return ret;
+		cleanup = ret;
 	ret = mt6797_wifi_w1_cmd52_read(portal,
-		MT6797_WIFI_AHB_SDIO_CCCR_IOEX, &ioex_after);
-	if (ret)
-		return ret;
-	return ioex_after == ioex_before ? 0 : -EUCLEAN;
+		MT6797_WIFI_AHB_SDIO_CCCR_IOEX, ioex_after);
+	if (!cleanup && ret)
+		cleanup = ret;
+	if (!cleanup && *ioex_after != ioex_before)
+		cleanup = -EUCLEAN;
+	return cleanup;
 }
 
-static int mt6797_wifi_w1_driver_own(void __iomem *portal)
+static int mt6797_wifi_w1_driver_own(void __iomem *portal, u32 *before,
+					     u32 *first, u32 *last,
+					     unsigned int *polls, unsigned int *requests)
 {
-	u32 value;
 	unsigned int i;
+	unsigned long deadline;
 	int ret;
 
-	/* Vendor hal.h:384-408: request driver own and poll WHLPCR bit 8. */
-	ret = mt6797_wifi_w1_reg_write(portal, MT6797_WIFI_W1_MCR_WHLPCR,
-		MT6797_WIFI_W1_WHLPCR_OWN_CLR);
-	if (ret)
-		return ret;
-	for (i = 0; i < MT6797_WIFI_W1_OWN_POLLS; i++) {
+	if (!before || !first || !last || !polls || !requests)
+		return -EINVAL;
+	*before = 0;
+	*first = 0;
+	*last = 0;
+	*polls = 0;
+	*requests = 0;
+
+	/*
+	 * nic_pwr_mgt.c:147-223 nicpmSetDriverOwn(): read ownership first,
+	 * issue OWN_CLR on iterations 0, 256, ... and sleep one millisecond.
+	 * This has the vendor's 2048 ms time bound, but lacks an adapter state
+	 * through which to inspect its card/bus/no-ack early-exit predicates.
+	 */
+	deadline = jiffies + msecs_to_jiffies(MT6797_WIFI_W1_OWN_TIMEOUT_MS);
+	for (i = 0; ; i++) {
 		ret = mt6797_wifi_w1_reg_read(portal, MT6797_WIFI_W1_MCR_WHLPCR,
-			&value);
+			last);
 		if (ret)
 			return ret;
-		if (value & MT6797_WIFI_W1_WHLPCR_DRIVER_OWN)
+		*polls = i + 1;
+		if (!i) {
+			*before = *last;
+			*first = *last;
+		}
+		if (*last & MT6797_WIFI_W1_WHLPCR_DRIVER_OWN)
 			return 0;
-		udelay(8);
+		if (time_after(jiffies, deadline))
+			return -ETIMEDOUT;
+		if (!(i & (MT6797_WIFI_W1_OWN_REISSUE_POLLS - 1))) {
+			ret = mt6797_wifi_w1_reg_write(portal,
+				MT6797_WIFI_W1_MCR_WHLPCR,
+				MT6797_WIFI_W1_WHLPCR_OWN_CLR);
+			if (ret)
+				return ret;
+			(*requests)++;
+		}
+		usleep_range(900, 1000);
 	}
 	return -ETIMEDOUT;
 }
@@ -468,20 +532,29 @@ static void mt6797_wifi_w1_init_header(u8 *packet, u16 wire_length, u16 pq,
 	packet[7] = sequence;
 }
 
-static int mt6797_wifi_w1_wait_config_ack(void __iomem *portal, u8 sequence)
+static int mt6797_wifi_w1_wait_config_ack(void __iomem *portal, u8 sequence,
+					  struct mt6797_wifi_w1_config_ack *ack)
 {
 	u8 event[MT6797_WIFI_W1_RESPONSE_MAX] = { };
 	u32 response_length;
 	unsigned int i;
 	int ret;
 
-	/* wlan_lib.c:2769-2808 reads WRPLR's RX0 length and then WRDR0. */
+	if (!ack)
+		return -EINVAL;
+	ack->wrplr = 0;
+	ack->length = 0;
+	ack->polls = 0;
+	memset(ack->header, 0, sizeof(ack->header));
 	for (i = 0; i < MT6797_WIFI_W1_RESPONSE_POLLS; i++) {
 		ret = mt6797_wifi_w1_reg_read(portal, MT6797_WIFI_W1_MCR_WRPLR,
 			&response_length);
 		if (ret)
 			return ret;
+		ack->wrplr = response_length;
 		response_length &= U16_MAX;
+		ack->length = response_length;
+		ack->polls = i + 1;
 		if (response_length)
 			break;
 		udelay(50);
@@ -495,6 +568,7 @@ static int mt6797_wifi_w1_wait_config_ack(void __iomem *portal, u8 sequence)
 		event, ALIGN(response_length + 4, sizeof(u32)));
 	if (ret)
 		return ret;
+	memcpy(ack->header, event, sizeof(ack->header));
 	if (get_unaligned_le16(event) != response_length ||
 	    get_unaligned_le16(event + 2) != MT6797_WIFI_W1_EVENT_PACKET_TYPE ||
 	    event[4] != MT6797_WIFI_W1_EVENT_CMD_RESULT || event[5] != sequence ||
@@ -505,7 +579,8 @@ static int mt6797_wifi_w1_wait_config_ack(void __iomem *portal, u8 sequence)
 
 static int mt6797_wifi_w1_send_config(void __iomem *portal,
 				       const struct mt6797_wifi_ahb_w1_section *section,
-				       bool reset, u8 sequence)
+				       bool reset, u8 sequence,
+				       struct mt6797_wifi_w1_config_ack *ack)
 {
 	u8 packet[20] = { };
 	u32 mode = MT6797_WIFI_W1_DOWNLOAD_ACK;
@@ -528,7 +603,7 @@ static int mt6797_wifi_w1_send_config(void __iomem *portal,
 		packet, sizeof(packet));
 	if (ret)
 		return ret;
-	return mt6797_wifi_w1_wait_config_ack(portal, sequence);
+	return mt6797_wifi_w1_wait_config_ack(portal, sequence, ack);
 }
 
 static int mt6797_wifi_w1_send_image_packet(void __iomem *portal,
@@ -589,13 +664,15 @@ EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w1_idlm_transfer_account);
 
 static int mt6797_wifi_w1_send_idlm(void __iomem *portal, const u8 *image,
 				    const struct mt6797_wifi_ahb_w1_section *section,
-				    u8 *packet)
+				    u8 *packet, u32 *frames, u32 *bytes)
 {
 	u32 sent = 0;
 	int ret;
 
-	if (!image || !section)
+	if (!image || !section || !frames || !bytes)
 		return -EINVAL;
+	*frames = 0;
+	*bytes = 0;
 	while (sent < section->length) {
 		size_t chunk = min_t(u32, MT6797_WIFI_W1_IMAGE_PACKET_SIZE,
 			section->length - sent);
@@ -605,6 +682,8 @@ static int mt6797_wifi_w1_send_idlm(void __iomem *portal, const u8 *image,
 		if (ret)
 			return ret;
 		sent += chunk;
+		(*frames)++;
+		*bytes = sent;
 	}
 	return 0;
 }
@@ -614,6 +693,7 @@ static int mt6797_wifi_w1_copy_emi(struct device *owner, const u8 *image,
 {
 	struct resource window;
 	void __iomem *emi;
+	resource_size_t window_size;
 	unsigned int i;
 	int close_ret;
 	int ret;
@@ -622,15 +702,21 @@ static int mt6797_wifi_w1_copy_emi(struct device *owner, const u8 *image,
 		return -EINVAL;
 	/* The persistent region-19 owner serializes this temporary region-18 grant. */
 	ret = mt6797_consys_emi_mpu_wifi_window_open(owner, &window);
-	if (ret)
+	if (ret) {
+		dev_info(owner, "W1_DIAG stage=emi-open ret=%d\n", ret);
 		return ret;
-	if (resource_size(&window) != MT6797_WIFI_W1_EMI_SIZE) {
+	}
+	window_size = resource_size(&window);
+	dev_info(owner, "W1_DIAG stage=emi-open ret=0 start=%pa size=%pa\n",
+		 &window.start, &window_size);
+	if (window_size != MT6797_WIFI_W1_EMI_SIZE) {
 		ret = -EINVAL;
 		goto close_window;
 	}
-	emi = ioremap(window.start, resource_size(&window));
+	emi = ioremap(window.start, window_size);
 	if (!emi) {
 		ret = -ENOMEM;
+		dev_info(owner, "W1_DIAG stage=emi-map ret=%d\n", ret);
 		goto close_window;
 	}
 	for (i = 2; i < ARRAY_SIZE(parsed->section); i++) {
@@ -640,8 +726,15 @@ static int mt6797_wifi_w1_copy_emi(struct device *owner, const u8 *image,
 
 		if (offset > MT6797_WIFI_W1_EMI_SIZE - section->length) {
 			ret = -EFBIG;
+			dev_info(owner,
+				 "W1_DIAG stage=emi-copy section=%u ret=%d image=%#x dest=%#x length=%#x offset=%#x\n",
+				 i, ret, section->offset, section->destination,
+				 section->length, offset);
 			break;
 		}
+		dev_info(owner,
+			 "W1_DIAG stage=emi-copy section=%u ret=0 image=%#x dest=%#x length=%#x offset=%#x\n",
+			 i, section->offset, section->destination, section->length, offset);
 		memcpy_toio(emi + offset, image + section->offset, section->length);
 	}
 	/* Complete all mapped writes before region 18 is restored. */
@@ -649,6 +742,8 @@ static int mt6797_wifi_w1_copy_emi(struct device *owner, const u8 *image,
 	iounmap(emi);
 close_window:
 	close_ret = mt6797_consys_emi_mpu_wifi_window_close(owner);
+	dev_info(owner, "W1_DIAG stage=emi-close causal=%d cleanup=%d\n",
+		 ret, close_ret);
 	if (!ret)
 		ret = close_ret;
 	return ret;
@@ -665,19 +760,24 @@ static int mt6797_wifi_w1_send_start(void __iomem *portal, u8 sequence)
 		packet, sizeof(packet));
 }
 
-static int mt6797_wifi_w1_wait_ready(void __iomem *portal)
+static int mt6797_wifi_w1_wait_ready(void __iomem *portal, u32 *last_raw,
+				     unsigned int *polls)
 {
 	struct mt6797_wifi_ahb_wcir wcir;
-	u32 raw;
 	unsigned int i;
 	int ret;
 
+	if (!last_raw || !polls)
+		return -EINVAL;
+	*last_raw = 0;
+	*polls = 0;
 	for (i = 0; i < MT6797_WIFI_W1_READY_POLLS; i++) {
 		ret = mt6797_wifi_w1_reg_read(portal,
-			MT6797_WIFI_AHB_WCIR_OFFSET, &raw);
+			MT6797_WIFI_AHB_WCIR_OFFSET, last_raw);
 		if (ret)
 			return ret;
-		ret = mt6797_wifi_ahb_wcir_decode(raw, &wcir);
+		*polls = i + 1;
+		ret = mt6797_wifi_ahb_wcir_decode(*last_raw, &wcir);
 		if (ret)
 			return ret;
 		if (wcir.wlan_ready)
@@ -687,22 +787,25 @@ static int mt6797_wifi_w1_wait_ready(void __iomem *portal)
 	return -ETIMEDOUT;
 }
 
-static int mt6797_wifi_w1_clear_post_ready_status(void __iomem *portal)
+static int mt6797_wifi_w1_clear_post_ready_status(void __iomem *portal,
+					   u32 *status_out, u32 released_out[8])
 {
-	u32 status;
-	u32 released;
 	unsigned int i;
 	int ret;
 
+	if (!status_out || !released_out)
+		return -EINVAL;
+	*status_out = 0;
+	memset(released_out, 0, 8 * sizeof(*released_out));
 	/* nic_pwr_mgt.c:379-386: clear WHISR and consume TX release counts. */
-	ret = mt6797_wifi_w1_reg_read(portal, MT6797_WIFI_W1_MCR_WHISR, &status);
+	ret = mt6797_wifi_w1_reg_read(portal, MT6797_WIFI_W1_MCR_WHISR, status_out);
 	if (ret)
 		return ret;
-	if (!(status & BIT(0)))
+	if (!(*status_out & BIT(0)))
 		return 0;
 	for (i = 0; i < 8; i++) {
 		ret = mt6797_wifi_w1_reg_read(portal,
-			MT6797_WIFI_W1_MCR_WTQCR0 + i * sizeof(u32), &released);
+			MT6797_WIFI_W1_MCR_WTQCR0 + i * sizeof(u32), &released_out[i]);
 		if (ret)
 			return ret;
 	}
@@ -713,25 +816,49 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 {
 	struct device_node *wifi_np;
 	struct resource hif;
+	struct mt6797_wifi_w1_config_ack ack;
 	void __iomem *portal = NULL;
 	u8 *image_packet;
-	u8 ioex_before, block_low_before, block_high_before, sequence = 1;
+	u8 ioex_before = 0;
+	u8 ioex_after = 0;
+	u8 iorx_after = 0;
+	u8 block_low_before = 0;
+	u8 block_high_before = 0;
+	u8 block_low_after = 0;
+	u8 block_high_after = 0;
+	u8 block_low_restored = 0;
+	u8 block_high_restored = 0;
+	u8 ioex_restored = 0;
+	u8 sequence = 1;
 	bool function_enabled = false, block_size_set = false;
-	int cleanup_ret;
+	int block_cleanup_ret = 0;
+	int cleanup_ret = 0;
+	int function_cleanup_ret = 0;
 	int ret;
 	unsigned int i;
-	u32 frame_count;
-	size_t transfer_bytes;
+	unsigned int own_polls = 0;
+	unsigned int own_requests = 0;
+	unsigned int ready_polls = 0;
+	u32 expected_frames;
+	u32 idlm_frames = 0;
+	u32 idlm_payload = 0;
+	u32 own_before = 0;
+	u32 own_first = 0;
+	u32 own_last = 0;
+	u32 ready_raw = 0;
+	u32 status = 0;
+	u32 released[8] = { };
+	size_t expected_transfer_bytes;
 
 	if (!power || !power->owner || !power->lease || !power->firmware ||
 	    !mt6797_btif_stp_bootstrap_full_wmt_lease_active(power->lease))
 		return -EPERM;
 	ret = mt6797_wifi_ahb_w1_idlm_transfer_account(&power->image,
-		&frame_count, &transfer_bytes);
+		&expected_frames, &expected_transfer_bytes);
 	if (ret)
 		return ret;
-	if (frame_count != MT6797_WIFI_W1_IDLM_FRAME_COUNT ||
-	    transfer_bytes != MT6797_WIFI_W1_IDLM_TRANSFER_BYTES)
+	if (expected_frames != MT6797_WIFI_W1_IDLM_FRAME_COUNT ||
+	    expected_transfer_bytes != MT6797_WIFI_W1_IDLM_TRANSFER_BYTES)
 		return -EPROTO;
 	/* Allocate before the first portal mutation; it is reused for every frame. */
 	image_packet = kmalloc(MT6797_WIFI_W1_HIF_TRANSFER_MAX, GFP_KERNEL);
@@ -741,72 +868,138 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 	wifi_np = of_find_compatible_node(NULL, NULL, "mediatek,wifi");
 	if (!wifi_np) {
 		ret = -ENODEV;
+		dev_info(power->owner, "W1_DIAG stage=portal-node ret=%d\n", ret);
 		goto out_free_image_packet;
 	}
 	ret = of_address_to_resource(wifi_np, 0, &hif);
 	of_node_put(wifi_np);
 	if (ret)
+		dev_info(power->owner, "W1_DIAG stage=portal-resource ret=%d\n", ret);
+	if (ret)
 		goto out_free_image_packet;
 	if (hif.start != MT6797_WIFI_AHB_HIF_BASE ||
 	    resource_size(&hif) < MT6797_WIFI_AHB_HIF_PORTAL_SIZE) {
 		ret = -EINVAL;
+		dev_info(power->owner, "W1_DIAG stage=portal-resource ret=%d\n", ret);
 		goto out_free_image_packet;
 	}
 	if (!request_mem_region(hif.start, MT6797_WIFI_AHB_HIF_PORTAL_SIZE,
 		"mt6797-wifi-w1")) {
 		ret = -EBUSY;
+		dev_info(power->owner, "W1_DIAG stage=portal-request ret=%d\n", ret);
 		goto out_free_image_packet;
 	}
 	portal = ioremap(hif.start, MT6797_WIFI_AHB_HIF_PORTAL_SIZE);
 	if (!portal) {
 		ret = -ENOMEM;
+		dev_info(power->owner, "W1_DIAG stage=portal-map ret=%d\n", ret);
 		goto out_release_region;
 	}
 	mutex_lock(&mt6797_wifi_w1_portal_lock);
 	ret = mt6797_wifi_w1_enable_function(portal, &ioex_before,
-		&function_enabled);
+		&ioex_after, &iorx_after, &function_enabled);
+	dev_info(power->owner,
+		 "W1_DIAG stage=function-enable ret=%d ioex-before=%#02x ioex-after=%#02x iorx=%#02x mutation=%u\n",
+		 ret, ioex_before, ioex_after, iorx_after, function_enabled);
 	if (ret)
 		goto out_unlock;
 	ret = mt6797_wifi_w1_set_block_size(portal, &block_low_before,
-		&block_high_before, &block_size_set);
+		&block_high_before, &block_low_after, &block_high_after,
+		&block_size_set);
+	dev_info(power->owner,
+		 "W1_DIAG stage=block-size ret=%d before=%#02x/%#02x after=%#02x/%#02x mutation=%u\n",
+		 ret, block_low_before, block_high_before, block_low_after,
+		 block_high_after, block_size_set);
 	if (ret)
 		goto out_unlock;
-	ret = mt6797_wifi_w1_driver_own(portal);
+	ret = mt6797_wifi_w1_driver_own(portal, &own_before, &own_first,
+		&own_last, &own_polls, &own_requests);
+	dev_info(power->owner,
+		 "W1_DIAG stage=driver-own ret=%d whlpcr-before=%#08x first=%#08x last=%#08x polls=%u requests=%u\n",
+		 ret, own_before, own_first, own_last, own_polls, own_requests);
 	if (ret)
 		goto out_unlock;
 
 	/* nicInitializeAdapter() sets WHIER, then nicDisableInterrupt() gates it. */
 	ret = mt6797_wifi_w1_reg_write(portal, MT6797_WIFI_W1_MCR_WHIER,
 		MT6797_WIFI_W1_WHIER_DEFAULT);
-	if (!ret)
+	dev_info(power->owner, "W1_DIAG stage=whier ret=%d value=%#08x\n",
+		 ret, MT6797_WIFI_W1_WHIER_DEFAULT);
+	if (!ret) {
 		ret = mt6797_wifi_w1_reg_write(portal, MT6797_WIFI_W1_MCR_WHLPCR,
 			MT6797_WIFI_W1_WHLPCR_INT_CLR);
-	for (i = 0; !ret && i < 2; i++) {
-		ret = mt6797_wifi_w1_send_config(portal, &power->image.section[i],
-			!i, sequence++);
-		if (!ret)
-			ret = mt6797_wifi_w1_send_idlm(portal, power->firmware->data,
-				&power->image.section[i], image_packet);
+		dev_info(power->owner,
+			 "W1_DIAG stage=interrupt-clear ret=%d value=%#08x\n", ret,
+			 MT6797_WIFI_W1_WHLPCR_INT_CLR);
 	}
-	if (!ret)
+	for (i = 0; !ret && i < 2; i++) {
+		memset(&ack, 0, sizeof(ack));
+		ret = mt6797_wifi_w1_send_config(portal, &power->image.section[i],
+			!i, sequence, &ack);
+		dev_info(power->owner,
+			 "W1_DIAG stage=config section=%u ret=%d sequence=%u reset=%u encrypted=%u wrplr=%#08x length=%u polls=%u event-length=%u event-type=%#04x event-id=%u event-sequence=%u status=%u\n",
+			 i, ret, sequence, !i, power->image.section[i].encrypted,
+			 ack.wrplr, ack.length, ack.polls,
+			 get_unaligned_le16(ack.header),
+			 get_unaligned_le16(ack.header + 2), ack.header[4], ack.header[5],
+			 ack.header[8]);
+		sequence++;
+		if (!ret) {
+			ret = mt6797_wifi_w1_send_idlm(portal, power->firmware->data,
+				&power->image.section[i], image_packet, &idlm_frames,
+				&idlm_payload);
+			dev_info(power->owner,
+				 "W1_DIAG stage=idlm section=%u ret=%d frames=%u payload=%u expected=%#x\n",
+				 i, ret, idlm_frames, idlm_payload,
+				 power->image.section[i].length);
+		}
+	}
+	if (!ret) {
 		ret = mt6797_wifi_w1_copy_emi(power->owner, power->firmware->data,
 			&power->image);
-	if (!ret)
+		dev_info(power->owner, "W1_DIAG stage=emi ret=%d\n", ret);
+	}
+	if (!ret) {
 		ret = mt6797_wifi_w1_send_start(portal, sequence);
-	if (!ret)
-		ret = mt6797_wifi_w1_wait_ready(portal);
+		dev_info(power->owner,
+			 "W1_DIAG stage=wifi-start ret=%d sequence=%u\n", ret, sequence);
+	}
+	if (!ret) {
+		ret = mt6797_wifi_w1_wait_ready(portal, &ready_raw, &ready_polls);
+		dev_info(power->owner,
+			 "W1_DIAG stage=ready ret=%d raw=%#08x polls=%u\n", ret,
+			 ready_raw, ready_polls);
+	}
 	/* Do not enable IRQ: vendor has no isolated post-enable event source. */
-	if (!ret)
-		ret = mt6797_wifi_w1_clear_post_ready_status(portal);
+	if (!ret) {
+		ret = mt6797_wifi_w1_clear_post_ready_status(portal, &status, released);
+		dev_info(power->owner,
+			 "W1_DIAG stage=post-ready ret=%d whisr=%#08x released=%#08x/%#08x/%#08x/%#08x/%#08x/%#08x/%#08x/%#08x\n",
+			 ret, status, released[0], released[1], released[2], released[3],
+			 released[4], released[5], released[6], released[7]);
+	}
 out_unlock:
 	/* Every attempted mutable CCCR operation is read back after restoration. */
-	cleanup_ret = 0;
-	if (block_size_set)
-		cleanup_ret = mt6797_wifi_w1_restore_block_size(portal,
-			block_low_before, block_high_before);
-	if (function_enabled)
-		cleanup_ret = cleanup_ret ?: mt6797_wifi_w1_restore_function(portal,
-			ioex_before);
+	if (block_size_set) {
+		block_cleanup_ret = mt6797_wifi_w1_restore_block_size(portal,
+			block_low_before, block_high_before, &block_low_restored,
+			&block_high_restored);
+		dev_info(power->owner,
+			 "W1_DIAG stage=cleanup-block ret=%d restored=%#02x/%#02x expected=%#02x/%#02x\n",
+			 block_cleanup_ret, block_low_restored, block_high_restored,
+			 block_low_before, block_high_before);
+	}
+	if (function_enabled) {
+		function_cleanup_ret = mt6797_wifi_w1_restore_function(portal,
+			ioex_before, &ioex_restored);
+		dev_info(power->owner,
+			 "W1_DIAG stage=cleanup-function ret=%d ioex=%#02x expected=%#02x\n",
+			 function_cleanup_ret, ioex_restored, ioex_before);
+	}
+	cleanup_ret = block_cleanup_ret ?: function_cleanup_ret;
+	dev_info(power->owner,
+		 "W1_DIAG stage=stream-summary causal=%d cleanup=%d function-mutation=%u block-mutation=%u\n",
+		 ret, cleanup_ret, function_enabled, block_size_set);
 	mutex_unlock(&mt6797_wifi_w1_portal_lock);
 	if (cleanup_ret) {
 		dev_err(power->owner,
@@ -825,35 +1018,65 @@ out_free_image_packet:
 
 static int mt6797_wifi_w1_power_get_voltage(void *context)
 {
-	return regulator_get_voltage(((struct mt6797_wifi_w1_power *)context)->wifi_paldo);
+	struct mt6797_wifi_w1_power *power = context;
+	int ret;
+
+	ret = regulator_get_voltage(power->wifi_paldo);
+	dev_info(power->owner, "W1_DIAG stage=paldo-get-voltage ret=%d\n", ret);
+	return ret;
 }
 
 static int mt6797_wifi_w1_power_is_enabled(void *context, bool wifi)
 {
 	struct mt6797_wifi_w1_power *power = context;
+	int ret;
 
-	return regulator_is_enabled(wifi ? power->wifi_paldo : power->bt_paldo);
+	ret = regulator_is_enabled(wifi ? power->wifi_paldo : power->bt_paldo);
+	dev_info(power->owner, "W1_DIAG stage=paldo-is-enabled rail=%s ret=%d\n",
+		 wifi ? "wifi" : "bt", ret);
+	return ret;
 }
 
 static int mt6797_wifi_w1_power_set_voltage(void *context, int microvolts)
 {
-	return regulator_set_voltage(((struct mt6797_wifi_w1_power *)context)->wifi_paldo,
-		microvolts, microvolts);
+	struct mt6797_wifi_w1_power *power = context;
+	int ret;
+
+	ret = regulator_set_voltage(power->wifi_paldo, microvolts, microvolts);
+	dev_info(power->owner,
+		 "W1_DIAG stage=paldo-set-voltage ret=%d target=%d\n", ret,
+		 microvolts);
+	return ret;
 }
 
 static int mt6797_wifi_w1_power_enable(void *context)
 {
-	return regulator_enable(((struct mt6797_wifi_w1_power *)context)->wifi_paldo);
+	struct mt6797_wifi_w1_power *power = context;
+	int ret;
+
+	ret = regulator_enable(power->wifi_paldo);
+	dev_info(power->owner, "W1_DIAG stage=paldo-enable ret=%d\n", ret);
+	return ret;
 }
 
 static int mt6797_wifi_w1_power_disable(void *context)
 {
-	return regulator_disable(((struct mt6797_wifi_w1_power *)context)->wifi_paldo);
+	struct mt6797_wifi_w1_power *power = context;
+	int ret;
+
+	ret = regulator_disable(power->wifi_paldo);
+	dev_info(power->owner, "W1_DIAG stage=paldo-disable ret=%d\n", ret);
+	return ret;
 }
 
 static int mt6797_wifi_w1_power_stream(void *context)
 {
-	return mt6797_wifi_w1_stream(context);
+	struct mt6797_wifi_w1_power *power = context;
+	int ret;
+
+	ret = mt6797_wifi_w1_stream(power);
+	dev_info(power->owner, "W1_DIAG stage=paldo-observe ret=%d\n", ret);
+	return ret;
 }
 
 static void mt6797_wifi_w1_power_fatal(void *context, int causal, int cleanup)
@@ -885,7 +1108,8 @@ int mt6797_wifi_ahb_w1_firmware_preflight(struct device *owner,
 		.fatal = mt6797_wifi_w1_power_fatal,
 		.context = &power,
 	};
-	struct mt6797_wifi_ahb_w0_result power_result;
+	struct mt6797_wifi_ahb_w0_result power_result = { };
+	bool power_ran = false;
 	int ret;
 
 	if (!owner || !lease || !bt_paldo || !wifi_paldo)
@@ -903,8 +1127,16 @@ int mt6797_wifi_ahb_w1_firmware_preflight(struct device *owner,
 	if (!ret)
 		ret = mt6797_wifi_ahb_w1_firmware_parse(power.firmware->data,
 			power.firmware->size, &power.image);
-	if (!ret)
+	if (!ret) {
+		power_ran = true;
 		ret = mt6797_wifi_ahb_w0_run(&power_ops, &power_result, 3300000);
+		dev_info(owner,
+			 "W1_DIAG stage=paldo-summary ret=%d causal=%d cleanup=%d fatal=%u selector-dirty=%u\n",
+			 ret, power_result.causal, power_result.cleanup, power_result.fatal,
+			 power_result.selector_dirty);
+	}
+	if (!power_ran && ret)
+		dev_info(owner, "W1_DIAG stage=image-preflight ret=%d\n", ret);
 	if (ret)
 		dev_err(owner, "W1 firmware proof failed: %d; reset/fence required\n", ret);
 	else

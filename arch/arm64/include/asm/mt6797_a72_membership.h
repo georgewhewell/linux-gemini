@@ -567,6 +567,8 @@ mt6797_a72_membership_derive_cpu8(const struct arm64_late_cpu_ready_token *ready
 				  struct mt6797_a72_transaction *transaction);
 int
 mt6797_a72_membership_derive_cpu8_diagnostic(const struct arm64_late_cpu_ready_token *ready, struct mt6797_a72_transaction *transaction, u32 *derive_stage);
+int
+mt6797_a72_membership_derive_cpu9_diagnostic(const struct arm64_late_cpu_ready_token *ready, struct mt6797_a72_transaction *transaction, u32 *derive_stage);
 #else
 static inline int
 mt6797_a72_membership_derive_cpu8_diagnostic(const struct arm64_late_cpu_ready_token *ready, struct mt6797_a72_transaction *transaction, u32 *derive_stage)

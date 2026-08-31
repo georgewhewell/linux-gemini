@@ -2522,6 +2522,82 @@ out_unlock:
 	return ret;
 }
 
+/* CPU9 inherits the live A72 cluster; it must not replay CPU8 power work. */
+int
+mt6797_a72_membership_derive_cpu9_diagnostic(
+	const struct arm64_late_cpu_ready_token *ready,
+	struct mt6797_a72_transaction *transaction, u32 *derive_stage)
+{
+	struct mt6797_a72_direct_state_snapshot direct = { };
+	struct mt6797_a72_entry_snapshot entry = { };
+	struct mt6797_a72_a36_prestate prestate = { };
+	int ret;
+
+	mt6797_a72_derive_stage_set(derive_stage, MT6797_A72_DERIVE_NONE);
+	if (!transaction)
+		return -EINVAL;
+	memset(transaction, 0, sizeof(*transaction));
+	if (nr_cpu_ids <= 9)
+		return -ENODEV;
+
+	cpus_read_lock();
+	ret = mt6797_a72_direct_state_snapshot(&direct);
+	if (ret)
+		goto out_unlock;
+	mt6797_a72_derive_stage_set(derive_stage, MT6797_A72_DERIVE_READY_TOKEN);
+	ret = mt6797_a72_ready_token_validate(9, ready);
+	if (ret)
+		goto out_unlock;
+	mt6797_a72_derive_cpu8_entry(&direct, &entry);
+	prestate.abi = MT6797_A72_A36_PRESTATE_ABI;
+	prestate.operation = ARM64_LATE_CPU_STARTUP_OP_CPU9_UP;
+	prestate.observer_window = MT6797_A72_OBSERVER_WINDOW_OPEN;
+	prestate.call_shape = MT6797_A72_A36_CALL_SHAPE_TWO_ARG;
+	prestate.cpu8_online = direct.cpu8_online;
+	prestate.cpu9_online = direct.cpu9_online;
+	prestate.target_mpidr = direct.cpu9_mpidr;
+	prestate.secondary_entry_pa = __pa_symbol(secondary_entry);
+
+	mt6797_a72_derive_stage_set(derive_stage, MT6797_A72_DERIVE_P31_CONSUME);
+	ret = mt6797_a72_membership_p31_consume_attempt(9, CPUHP_ONLINE,
+							MT6797_A72_ATTEMPT_CPU9_UP, &entry);
+	if (ret)
+		goto out_unlock;
+	mt6797_a72_derive_stage_set(derive_stage, MT6797_A72_DERIVE_ENTRY_VALIDATE);
+	ret = mt6797_a72_membership_validate_entry(9, CPUHP_ONLINE,
+						       MT6797_A72_ATTEMPT_CPU9_UP, &entry);
+	if (ret)
+		goto out_unlock;
+	mt6797_a72_derive_stage_set(derive_stage, MT6797_A72_DERIVE_TOKEN_MINT);
+	ret = mt6797_a72_membership_mint_up_token(9, CPUHP_ONLINE,
+						       MT6797_A72_ATTEMPT_CPU9_UP, &entry, ready,
+						       transaction);
+	if (ret)
+		goto out_unlock;
+	prestate.generation = transaction->identity.generation;
+	prestate.cookie = transaction->identity.cookie;
+	mt6797_a72_derive_stage_set(derive_stage, MT6797_A72_DERIVE_PRESTATE_VALIDATE);
+	ret = mt6797_a72_membership_validate_up_prestate(transaction, &prestate);
+	if (ret)
+		goto reject_frozen;
+	mt6797_a72_derive_stage_set(derive_stage, MT6797_A72_DERIVE_PRESTATE_BIND);
+	ret = mt6797_a72_membership_bind_a36_prestate(&transaction->identity,
+							      &prestate, transaction);
+	if (ret)
+		goto reject_frozen;
+	mt6797_a72_derive_stage_set(derive_stage, MT6797_A72_DERIVE_COMPLETE);
+	goto out_unlock;
+reject_frozen:
+	mt6797_a72_membership_reject_frozen(&transaction->identity);
+	memset(transaction, 0, sizeof(*transaction));
+out_unlock:
+	memset(&direct, 0, sizeof(direct));
+	memset(&entry, 0, sizeof(entry));
+	memset(&prestate, 0, sizeof(prestate));
+	cpus_read_unlock();
+	return ret;
+}
+
 int
 mt6797_a72_membership_derive_cpu8(const struct arm64_late_cpu_ready_token *ready,
 				  struct mt6797_a72_transaction *transaction)

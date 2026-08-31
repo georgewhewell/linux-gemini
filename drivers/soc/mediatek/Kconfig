@@ -650,11 +650,10 @@ config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT
 	  property and read-only module parameter are both required, in addition to
 	  the corrected W0 HIF observation gate.
 
-	  W1 clears post-ready status and TX release counters, but deliberately
-	  leaves global IRQ delivery disabled: the vendor only enables the IRQ after
-	  its full normal adapter/IST setup and provides no isolated post-enable
-	  event that could prove an IRQ without accepting stale status. It creates no
-	  WLAN transport, netdev, DMA path, cfg80211 device, or user API.
+	  W1 clears post-ready status and TX release counters, then leaves global IRQ
+	  delivery disabled unless the separately gated W2 NIC-capability proof is
+	  selected. It creates no WLAN transport, netdev, DMA path, cfg80211 device,
+	  or user API.
 
 config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_KUNIT_TEST
 	bool "KUnit tests for MT6797 WLAN W1 firmware preflight"
@@ -666,6 +665,23 @@ config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_KUNIT_TEST
 	  The fixture rejects every changed section field even after its CRC is
 	  recomputed. No firmware request, Device Tree, MMIO, regulator, WMT, or
 	  radio is used.
+
+config MTK_MT6797_WIFI_AHB_W2_NIC_CAPABILITY
+	bool "MT6797 WLAN GEN3 W2 NIC-capability fresh-RX1 IRQ proof"
+	depends on MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT=y
+	help
+	  After the complete W1 firmware start/READY sequence has cleared WHISR and
+	  TX release counts, issue the vendor's ordinary CMD_ID_GET_NIC_CAPABILITY
+	  query. The command is the exact 124-byte port-1 command (CID 0x80,
+	  sequence 1); its only accepted response is the exact 124-byte port-1
+	  EVENT_ID_NIC_CAPABILITY (EID 0x01, sequence 1) delivered through the real
+	  Wi-Fi IRQ with WHISR_RX1_DONE set. A non-empty port-1 length before the
+	  command, any other IRQ source, event, length, or timeout fails closed.
+
+	  It enables and requests the IRQ only for that bounded fresh event, then
+	  disables and frees it before cleanup. This proves neither an interrupt
+	  service loop nor a WLAN transport: it creates no netdev, MAC, DMA path,
+	  cfg80211 device, or user API.
 
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"

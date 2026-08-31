@@ -125,6 +125,79 @@ static void mt6797_wifi_w1_accounts_for_every_idlm_frame(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, bytes, 18432UL);
 }
 
+static void mt6797_wifi_w2_capability_fixture(u8 *event)
+{
+	static const u8 mac[] = { 0x02, 0x79, 0x67, 0x00, 0x00, 0x01 };
+
+	memset(event, 0, MT6797_WIFI_AHB_W2_CAPABILITY_LENGTH);
+	put_unaligned_le16(MT6797_WIFI_AHB_W2_CAPABILITY_LENGTH, event);
+	put_unaligned_le16(0xe000, event + 2);
+	event[4] = 0x01;
+	event[5] = 1;
+	put_unaligned_le16(0x0279, event + 8);
+	put_unaligned_le16(0x1234, event + 10);
+	put_unaligned_le16(0x5678, event + 12);
+	memcpy(event + 16, mac, sizeof(mac));
+	put_unaligned_le32(0x11223344, event + 44);
+	put_unaligned_le32(0x55667788, event + 48);
+	put_unaligned_le32(0x99aabbcc, event + 52);
+	put_unaligned_le32(0xddeeff00, event + 56);
+}
+
+static void mt6797_wifi_w2_builds_exact_capability_command(struct kunit *test)
+{
+	u8 command[MT6797_WIFI_AHB_W2_CAPABILITY_LENGTH];
+
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_w2_capability_command_build(command,
+		sizeof(command), 1), 0);
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(command), 124U);
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(command + 2), 0x8000U);
+	KUNIT_EXPECT_EQ(test, command[4], 0x80U);
+	KUNIT_EXPECT_EQ(test, command[5], 0xa0U);
+	KUNIT_EXPECT_EQ(test, command[6], 0U);
+	KUNIT_EXPECT_EQ(test, command[7], 1U);
+	KUNIT_EXPECT_EQ(test, command[123], 0U);
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w2_capability_command_build(command,
+		sizeof(command) - 1, 1), -EMSGSIZE);
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w2_capability_command_build(command,
+		sizeof(command), 2), -EINVAL);
+}
+
+static void mt6797_wifi_w2_parses_only_exact_capability_event(struct kunit *test)
+{
+	struct mt6797_wifi_ahb_w2_capability capability;
+	u8 event[MT6797_WIFI_AHB_W2_CAPABILITY_LENGTH];
+
+	mt6797_wifi_w2_capability_fixture(event);
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_w2_capability_event_parse(event,
+		sizeof(event), 1, &capability), 0);
+	KUNIT_EXPECT_EQ(test, capability.product_id, 0x0279U);
+	KUNIT_EXPECT_EQ(test, capability.firmware_version, 0x1234U);
+	KUNIT_EXPECT_EQ(test, capability.driver_version, 0x5678U);
+	KUNIT_EXPECT_EQ(test, capability.mac_address[0], 0x02U);
+	KUNIT_EXPECT_EQ(test, capability.mac_address[5], 0x01U);
+	KUNIT_EXPECT_EQ(test, capability.feature_flag0, 0x11223344U);
+	KUNIT_EXPECT_EQ(test, capability.feature_flag1, 0x55667788U);
+	KUNIT_EXPECT_EQ(test, capability.compile_flag0, 0x99aabbccU);
+	KUNIT_EXPECT_EQ(test, capability.compile_flag1, 0xddeeff00U);
+
+	put_unaligned_le16(123, event);
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w2_capability_event_parse(event,
+		sizeof(event), 1, &capability), -EMSGSIZE);
+	mt6797_wifi_w2_capability_fixture(event);
+	put_unaligned_le16(0x0000, event + 2);
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w2_capability_event_parse(event,
+		sizeof(event), 1, &capability), -EPROTO);
+	mt6797_wifi_w2_capability_fixture(event);
+	event[4] = 2;
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w2_capability_event_parse(event,
+		sizeof(event), 1, &capability), -EPROTO);
+	mt6797_wifi_w2_capability_fixture(event);
+	event[5] = 2;
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w2_capability_event_parse(event,
+		sizeof(event), 1, &capability), -EPROTO);
+}
+
 struct mt6797_wifi_w1_cleanup_test {
 	int voltage;
 	int bt_enabled;
@@ -226,6 +299,8 @@ static struct kunit_case mt6797_wifi_w1_test_cases[] = {
 	KUNIT_CASE(mt6797_wifi_w1_rejects_wrong_digest),
 	KUNIT_CASE(mt6797_wifi_w1_parses_only_exact_divided_header),
 	KUNIT_CASE(mt6797_wifi_w1_accounts_for_every_idlm_frame),
+	KUNIT_CASE(mt6797_wifi_w2_builds_exact_capability_command),
+	KUNIT_CASE(mt6797_wifi_w2_parses_only_exact_capability_event),
 	KUNIT_CASE(mt6797_wifi_w1_stream_failure_unwinds_paldo),
 	KUNIT_CASE(mt6797_wifi_w1_cleanup_failure_is_fatal),
 	{}

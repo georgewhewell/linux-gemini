@@ -358,6 +358,15 @@ static int w4_rx_lengths(void *ctx, u16 *rx0, u16 *rx1)
 	*rx0 = v & U16_MAX; *rx1 = v >> 16;
 	return 0;
 }
+
+/*
+ * nicRxReadBuffer() reads a dword-aligned packet followed by one appended
+ * checksum-status dword (nic_rx.c:2873-2877).
+ */
+static size_t w4_rx_transfer_len(u16 packet_len)
+{
+	return ALIGN(packet_len, sizeof(u32)) + sizeof(u32);
+}
 static int w4_rx_drain(void *ctx, unsigned int port, u16 len)
 {
 	struct mt6797_wifi_w4 *w4 = ctx;
@@ -367,7 +376,7 @@ static int w4_rx_drain(void *ctx, unsigned int port, u16 len)
 	buf = kzalloc(W4_RX_MAX + MT6797_WIFI_AHB_SDIO_BLOCK_SIZE, GFP_KERNEL);
 	if (!buf) return -ENOMEM;
 	ret = w4_cmd53(w4, false, port ? W4_WRDR1 : W4_WRDR0, buf,
-			len + sizeof(u32));
+			w4_rx_transfer_len(len));
 	kfree(buf);
 	return ret;
 }
@@ -499,7 +508,7 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 	if (!buf)
 		return -ENOMEM;
 	ret = w4_cmd53(w4, false, port ? W4_WRDR1 : W4_WRDR0, buf,
-			len + sizeof(u32));
+			w4_rx_transfer_len(len));
 	if (ret)
 		goto out;
 	/* SW-defined firmware events carry WIFI_EVENT_T directly, no RXD. */

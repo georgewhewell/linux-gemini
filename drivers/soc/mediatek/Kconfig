@@ -1075,3 +1075,331 @@ config MTK_MT6797_A72_ADMISSION_LIVE_TRIGGER
 	depends on MTK_MT6797_A72_ADMISSION_CONTROLLER
 	depends on SYSFS
 	default n
+config MTK_MT6797_WIFI_AHB_WCIR_OBSERVE
+	tristate "MT6797 WLAN GEN3 AHB post-patch WCIR observer"
+	depends on ARM64 && ARCH_MEDIATEK && OF && REGULATOR
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	help
+	  Build the smallest live MT6797 WLAN AHB milestone. A corrected G2d
+	  post-patch owner must call it synchronously while retaining its full WMT
+	  lease and enabled Wi-Fi PALDO. It sends one fixed-port CMD53 WCIR read.
+	  The owner DT property and its read-only module parameter are both required.
+	  It never creates a WLAN transport, IRQ, DMA path, firmware load, or netdev.
+
+config MTK_MT6797_WIFI_AHB_WCIR_KUNIT_TEST
+	bool "KUnit tests for the MT6797 WLAN AHB WCIR observer"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_WCIR_OBSERVE=y
+	help
+	  Exercise WCIR decoding, guards, command encoding, and fault cleanup in
+	  memory only. No Device Tree, MMIO, regulator, WMT, or radio is accessed.
+
+config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT
+	tristate "MT6797 WLAN GEN3 AHB W1 pinned firmware/READY proof"
+	depends on ARM64 && ARCH_MEDIATEK && OF && FW_LOADER
+	depends on CRYPTO_SHA256
+	depends on MTK_MT6797_WIFI_AHB_WCIR_OBSERVE
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	help
+	  Verify and parse the exact WIFI_RAM_CODE_6797 image, send both IDLM
+	  sections through the vendor HIF framing, copy both EMI sections through
+	  the provider-owned temporary region-18 window, start firmware and poll
+	  WCIR.READY while the completed G2d full-WMT lease is active. Its own DT
+	  property and read-only module parameter are both required, in addition to
+	  the corrected W0 HIF observation gate.
+
+config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_KUNIT_TEST
+	bool "KUnit tests for MT6797 WLAN W1 firmware preflight"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT=y
+	help
+	  Exercise the exact firmware size/SHA-256 pin policy, divided-header parser,
+	  complete IDLM frame accounting, and cleanup-failure fencing in memory only.
+	  The fixture rejects every changed section field even after its CRC is
+	  recomputed. No firmware request, Device Tree, MMIO, regulator, WMT, or
+	  radio is used.
+
+config MTK_MT6797_WIFI_AHB_W2_NIC_CAPABILITY
+	bool "MT6797 WLAN GEN3 W2 vendor-polled NIC-capability proof"
+	depends on MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT=y
+	help
+	  After the complete W1 firmware start/READY sequence has cleared WHISR and
+	  TX release counts, issue the vendor's ordinary CMD_ID_GET_NIC_CAPABILITY
+	  query. The command is the exact 124-byte port-1 command (CID 0x80,
+	  sequence 1), and its only accepted response is the exact 124-byte port-1
+	  EVENT_ID_NIC_CAPABILITY (EID 0x01, sequence 1). As in the vendor's
+	  wlanQueryNicCapability() route, the response is polled through WRPLR/WRDR1
+	  before device global interrupt delivery is enabled. Any stale RX0 packet is
+	  read and discarded with the vendor's bounded port framing while delivery is
+	  still disabled; a non-empty port-1 length before the command, a malformed
+	  packet, a non-quiescent bounded drain, wrong event, length, sequence, or
+	  timeout fails closed.
+
+config MTK_MT6797_WIFI_AHB_W3_SESSION
+	bool "MT6797 WLAN GEN3 W3 persistent HIF-session core"
+	depends on MTK_MT6797_WIFI_AHB_W2_NIC_CAPABILITY=y
+	help
+	  Build the hardware-independent lifecycle core required by a future retained
+	  MT6797 WLAN HIF owner. It requires that owner to acquire the long-lived
+	  CONSYS/HIF session and request a masked Linux IRQ, acknowledges WHISR and
+	  accounts TX release state, drains both receive ports, performs the exact W2
+	  capability callback, applies basic/MAC configuration, switches WHCR to
+	  interrupt read-clear, writes WHLPCR INT_SET, and only then unmasks the host
+	  IRQ. Teardown masks host then device IRQ, acknowledges/drains and releases
+	  the owner in reverse order.
+
+config MTK_MT6797_WIFI_AHB_W3_SESSION_KUNIT_TEST
+	bool "KUnit tests for MT6797 WLAN W3 persistent HIF session"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_W3_SESSION=y
+	help
+	  Exercise W3 ordering, TX accounting, both RX-port drain ownership,
+	  read-clear/WHLPCR/host-IRQ order and failure teardown through fake MMIO.
+	  It touches no Device Tree, IRQ, MMIO, CONSYS session or radio.
+
+config MTK_MT6797_WIFI_AHB_W4_PLATFORM
+	tristate "MT6797 WLAN GEN3 retained AHB HIF platform owner"
+	depends on MTK_MT6797_WIFI_AHB_W3_SESSION
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
+	depends on CFG80211
+	help
+	  Build the opt-in live owner of the exact 0x180f0000/0x1100 GEN3
+	  AHB SDIO-like portal. It starts the retained W1/W2 firmware transaction,
+	  borrows the controller full-STP lease, performs the vendor HIF IRQ/TX
+	  accounting/RX drain ordering, and registers a station wiphy/netdev.
+
+config MTK_MT6797_MD1_COLD_OWNER_CORE
+	bool
+	help
+	  Internal, hardware-neutral one-shot state machine for the separately
+	  gated MT6797 MD1 cold owner. It has no Device Tree, MMIO, PMIC, clock,
+	  reset, CCIF, firmware, partition, transport, SIM, RF, or boot-vector path.
+
+config MTK_MT6797_MD1_COLD_OWNER
+	tristate "MT6797 MD1 exclusive cold power/PLL/CCIF owner"
+	depends on OF && ARM64
+	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
+	depends on MTK_MT6797_MD1_BOOT_STATUS_OBSERVE=y
+	depends on MTK_MT6797_MD1_PRERELEASE=y
+	select MTK_MT6797_MD1_COLD_OWNER_CORE
+	help
+	  Build the default-disabled MT6797 MD1 owner for one exact vendor cold,
+	  reset-held state. It requires the separately observed LK image-load flag
+	  and exactly three AP-visible reads of each boot-status word, but never
+	  interprets those values as an execution state.
+
+config MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST
+	bool "KUnit tests for the MT6797 MD1 cold owner"
+	depends on KUNIT=y
+	select MTK_MT6797_MD1_COLD_OWNER_CORE
+	help
+	  Exercise no-side-effect preflight refusal, exact CCIF/power/clock order,
+	  bounded PLL status capture, one-shot success, and fatal latching after
+	  every partial-operation failure. The suite uses fake callbacks only and
+	  has no platform device or MD1 hardware path.
+
+config MTK_MT6797_MD1_WDT_GATE_CORE
+	bool
+	help
+	  Internal, hardware-neutral one-shot gate for the MT6797 MD1 WDT key
+	  commands. It has no Device Tree, MMIO, reset, power, PLL, RGU, MPU,
+	  remap, firmware, transport, partition, SIM, RF, or boot-vector path.
+
+config MTK_MT6797_MD1_WDT_GATE_KUNIT_TEST
+	bool "KUnit tests for the MT6797 MD1 WDT key gate"
+	depends on KUNIT=y
+	select MTK_MT6797_MD1_WDT_GATE_CORE
+	help
+	  Exercise preflight refusal, diagnostic status observation, exact MD/L1
+	  key-write order, one-shot success, and fatal latching after each attempted
+	  key-write failure using fake callbacks. The core labels success only as
+	  commands attempted: vendor source supplies no MODE acknowledgement or
+	  inverse. The suite has no platform device and cannot access MD1 hardware.
+
+config MTK_MT6797_MD1_REMAP_ATTEST_CORE
+	bool
+	help
+	  Internal, data-only classifier for an independently acquired MT6797 MD1
+	  bank4/remap-lock snapshot. It has no MMIO, Device Tree, MPU, remap writer,
+	  SMC, clock, power, reset, WDT, firmware, partition, transport, SIM, RF,
+	  or boot-vector path.
+
+config MTK_MT6797_MD1_REMAP_ATTEST_KUNIT_TEST
+	bool "KUnit tests for MT6797 MD1 LK remap preconditions"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_MPU_REMAP_PLAN=y
+	select MTK_MT6797_MD1_REMAP_ATTEST_CORE
+	help
+	  Exercise exact LK-plan bank4 matching for both source-selected address
+	  modes, MD1 lock refusal, mismatch refusal, and output atomicity. It does
+	  not acquire a snapshot itself and cannot access MD1 hardware.
+
+config MTK_MT6797_MD1_REMAP_OBSERVE_CORE
+	bool
+	select MTK_MT6797_MD1_REMAP_ATTEST_CORE
+	help
+	  Internal reader-callback core for the separately gated MT6797 MD1
+	  infracfg remap observer. It has no MMIO mapping, Device Tree, MPU, remap
+	  writer, SMC, WDT, reset, power, clock, CCIF, firmware, partition,
+	  transport, SIM, RF, or boot-vector path.
+
+config MTK_MT6797_MD1_REMAP_OBSERVE
+	tristate "MT6797 MD1 read-only infracfg remap observer"
+	depends on OF && ARM64
+	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
+	depends on MTK_MT6797_MD1_MPU_REMAP_PLAN=y
+	select MTK_MT6797_MD1_REMAP_OBSERVE_CORE
+	help
+	  Build the default-disabled, one-shot MT6797 MD1 observer. It copies only
+	  a validated LK hand-off plan, then reads exactly bank0, bank4 and the MD1
+	  remap lock from a fixed infracfg-AO resource. It reports the raw values and
+	  their exact public-LK classifier result. A mismatch or absent lock is a
+	  refusal observation, never ownership to rewrite it.
+
+config MTK_MT6797_MD1_REMAP_OBSERVE_KUNIT_TEST
+	bool "KUnit tests for MT6797 MD1 remap observer"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_MPU_REMAP_PLAN=y
+	select MTK_MT6797_MD1_REMAP_OBSERVE_CORE
+	help
+	  Exercise the exact five read offsets, both public-LK bank4 classifications,
+	  rejected lock/mismatch reporting, and plan rejection before a callback is
+	  reached. The suite uses fake reads only and has no platform device or MD1
+	  hardware path.
+
+config MTK_MT6797_MD1_FIRMWARE_PREFLIGHT
+	bool "MT6797 MD1 firmware hand-off preflight"
+	help
+	  Build a hardware-free parser for the MT6797 MD1 CCCI check-header handed
+	  from LK to the vendor loader. It validates only an already-acquired header
+	  together with an independently supplied, coherent raw-image and reserved
+	  memory contract. It cannot locate a header in a padded partition by itself.
+
+config MTK_MT6797_MD1_FIRMWARE_PREFLIGHT_KUNIT_TEST
+	bool "KUnit tests for MT6797 MD1 firmware hand-off preflight"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_FIRMWARE_PREFLIGHT=y
+	help
+	  Exercise known check-header layouts, identity binding, trailing-size,
+	  integer-overflow and image/reserved-memory fencing without Device Tree,
+	  block I/O, firmware, MMIO, DMA or Gemini hardware. The suite has no
+	  platform driver and cannot access modem power, reset, CCCI, SIM or RF.
+
+config MTK_MT6797_MD1_MPU_REMAP_PLAN
+	bool "MT6797 MD1 RMPU/remap diagnostic plan"
+	depends on MTK_MT6797_MD1_FIRMWARE_PREFLIGHT=y
+	help
+	  Build a hardware-free calculation of the final MT6797 vendor MD1 EMI MPU
+	  descriptors and both source-selected remap encodings from an already
+	  validated check-header and LK layout. It has no resource discovery, MMIO,
+	  register-write, clock, power, reset, DMA, CCCI, SIM or RF path.
+
+config MTK_MT6797_MD1_MPU_REMAP_PLAN_KUNIT_TEST
+	bool "KUnit tests for the MT6797 MD1 RMPU/remap diagnostic plan"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_MPU_REMAP_PLAN=y
+	help
+	  Exercise source-derived RMPU mapping, header-domain fallback, both remap
+	  encodings, empty regions and output atomicity without Device Tree, MMIO,
+	  firmware acquisition or Gemini hardware. The suite cannot access MD1.
+
+config MTK_MT6797_MD1_BRINGUP_FENCE
+	bool "MT6797 MD1 source-order bring-up fence"
+	depends on MTK_MT6797_MD1_MPU_REMAP_PLAN=y
+	help
+	  Build a hardware-neutral transaction core for the vendor prerequisite
+	  order: remap, initial MPU, CCIF before/clear/after observation, reset-held
+	  power, source-clock readback, bounded PLL polls, and stage-one MPU. It
+	  requires explicit,
+	  independently-attested ownership/failure-fence facts for every operation.
+
+config MTK_MT6797_MD1_BRINGUP_FENCE_KUNIT_TEST
+	bool "KUnit tests for the MT6797 MD1 bring-up fence"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_BRINGUP_FENCE=y
+	help
+	  Exercise initial MPU-phase enforcement, explicit ownership refusal, remap
+	  through CCIF/power/PLL/stage-one source ordering, bounded PLL timeout,
+	  reset-held cleanup and permanent failure fencing using fake callbacks.
+	  The suite has no platform driver and cannot access Gemini hardware.
+
+config MTK_MT6797_MD1_EMI_MPU_CORE
+	bool
+
+config MTK_MT6797_MD1_EMI_MPU
+	bool "MT6797 MD1 one-way secure EMI-MPU provider"
+	depends on OF && ARM64
+	depends on MTK_MT6797_MD1_MPU_REMAP_PLAN=y
+	select MTK_MT6797_MD1_EMI_MPU_CORE
+	help
+	  Build the default-disabled MD1 secure-monitor EMI-MPU provider. It uses
+	  vendor SIP SET 0x82000209 for the exact initial and stage-one region
+	  sequence, captures every return status, and has no readback or inverse.
+	  Any attempted error permanently latches a reset/reboot requirement.
+
+config MTK_MT6797_MD1_EMI_MPU_KUNIT_TEST
+	bool "KUnit tests for the MT6797 MD1 secure EMI-MPU provider core"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_MPU_REMAP_PLAN=y
+	select MTK_MT6797_MD1_EMI_MPU_CORE
+	help
+	  Exercise exact vendor region/permission order, captured fake-SMC failure
+	  handling, fatal latching and strict hand-off-plan validation without SMC,
+	  Device Tree, MMIO, firmware acquisition, Gemini hardware or MD1 release.
+	  The suite cannot reach secure firmware or alter modem state.
+
+config MTK_MT6797_MD1_BRINGUP_BACKEND
+	bool "MT6797 MD1 source-backed pre-release backend inventory"
+	depends on OF
+	depends on MTK_MT6797_MD1_EMI_MPU=y
+	depends on MTK_MT6797_MD1_BRINGUP_FENCE=y
+	depends on MTK_MT6797_MD1_PRERELEASE=y
+	help
+	  Build a default-disabled platform inventory plus exact source-backed MMIO
+	  helper callbacks for MD1 remap, CCIF observation/clear, reset-held power,
+	  source-clock readback, and bounded PLL status observations. The supplied
+	  profile has status disabled and the driver additionally requires an
+	  explicit read-only module gate before it maps any resource.
+
+config MTK_MT6797_MD1_BRINGUP_BACKEND_KUNIT_TEST
+	bool "KUnit tests for the MT6797 MD1 pre-release backend"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_BRINGUP_BACKEND=y
+	help
+	  Exercise resource-independent remap write/readback, CCIF clear and
+	  before/after observations, source-clock restoration, bounded vendor PLL
+	  status progression, and MPU refusal on allocated memory only. No platform
+	  device is instantiated and the suite cannot access Gemini hardware.
+
+config MTK_MT6797_MD1_LK_HANDOFF
+	bool "MT6797 MD1 LK CCCI hand-off parser"
+	help
+	  Build a hardware-free parser for the MT6797 CCCI LK hand-off metadata
+	  and linked v2 tag table. It validates acquired bytes only; it has no
+	  Device Tree, physical-memory, firmware, block I/O, MMIO, DMA, power,
+	  reset, clock, interrupt, CCCI, SIM or RF access.
+
+config MTK_MT6797_MD1_LK_HANDOFF_KUNIT_TEST
+	bool "KUnit tests for MT6797 MD1 LK CCCI hand-off parser"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_LK_HANDOFF=y
+	help
+	  Exercise the fixed v2 hand-off shape and malformed linked-tag boundaries
+	  without Device Tree, physical-memory, block I/O or Gemini hardware. The
+	  suite has no platform driver and cannot access MD1 power, reset or CCCI.
+	  It also exercises parsed memory and shared-memory boundary records.
+
+config MTK_MT6797_MD1_LK_HANDOFF_PROBE
+	bool "MT6797 MD1 read-only LK CCCI hand-off probe"
+	depends on OF
+	depends on MTK_MT6797_MD1_FIRMWARE_PREFLIGHT=y
+	depends on MTK_MT6797_MD1_MPU_REMAP_PLAN=y
+	depends on MTK_MT6797_MD1_LK_HANDOFF=y
+	help
+	  Build the separately-gated MT6797 MD1 LK hand-off probe. It requires a
+	  disabled-by-default Device Tree node and an explicit read-only boot/module
+	  parameter. When all gates are enabled, it validates /chosen metadata and
+	  CCCI reserved-memory ownership before reading the LK tag table, then
+	  unmaps it and stops before modem partition I/O, MPU/remap, clocks, power,
+	  reset, CCIF, CLDMA, DMA, SIM, RF or a modem boot request.
+

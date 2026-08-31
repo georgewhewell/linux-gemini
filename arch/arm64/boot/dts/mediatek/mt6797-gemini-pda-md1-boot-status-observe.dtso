@@ -2,12 +2,13 @@
 /*
  * One-shot, read-only MT6797 MD1 boot-status observation.
  *
- * This overlay is inert unless explicitly loaded. Its driver also refuses to
- * probe unless mt6797_md1_boot_status_observe.enable_experimental_boot_status=1
- * is set at boot.  It describes only the two AP-visible status words used by
- * the vendor CCCI report path (0x10201300 and 0x10201304).  It does not add
- * CLDMA, CCIF, MD-side, memory-region, clock, power-domain, reset, IRQ, DMA,
- * firmware, SIM, or radio resources.
+ * This overlay is inert unless explicitly loaded and then changed to okay by
+ * the reviewed image builder. Its driver also refuses to probe unless
+ * mt6797_md1_boot_status_observe.enable_experimental_boot_status=1 is set at
+ * boot. It describes only the two AP-visible status words used by the vendor
+ * CCCI report path (0x10201300 and 0x10201304), followed only by the vendor
+ * diagnostic BUSY/ACK reads of AP/MD CCIF. It adds no CLDMA, IRQ, DMA,
+ * memory-region, clock, power-domain, reset, firmware, SIM, or radio resource.
  */
 
 /dts-v1/;
@@ -27,10 +28,12 @@
 
 			md1_boot_status_observe: modem-boot-status@10201300 {
 				compatible = "mediatek,mt6797-md1-boot-status-observe";
-				reg = <0 0x10201300 0 0x8>;
-				reg-names = "md1-boot-status";
+				reg = <0 0x10201300 0 0x8>,
+				      <0 0x10209000 0 0x1000>,
+				      <0 0x1020a000 0 0x1000>;
+				reg-names = "md1-boot-status", "ap-ccif", "md-ccif";
 				mediatek,experimental-md1-boot-status;
-				status = "okay";
+				status = "disabled";
 			};
 		};
 	};

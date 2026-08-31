@@ -208,6 +208,36 @@ int mt6797_md1_pmic_snapshot(struct regmap *pmic,
 	return 0;
 }
 
+int mt6797_md1_pmic_verify_cold(struct regmap *pmic)
+{
+	static const unsigned int cold_fields[] = {
+		MT6797_MD1_VMODEM_ENABLE,
+		MT6797_MD1_VMODEM_SLEEP_ENABLE,
+		MT6797_MD1_VMD1_ENABLE,
+		MT6797_MD1_VMD1_SLEEP_ENABLE,
+		MT6797_MD1_VSRAM_MD_ENABLE,
+		MT6797_MD1_VSRAM_MD_SLEEP_ENABLE,
+	};
+	unsigned int value;
+	int i, ret;
+
+	if (!pmic)
+		return -EINVAL;
+
+	/* LK md1_power_down() writes these six fields to zero before cold start. */
+	for (i = 0; i < ARRAY_SIZE(cold_fields); i++) {
+		const struct mt6797_md1_pmic_field *field =
+			&mt6797_md1_pmic_fields[cold_fields[i]];
+
+		ret = regmap_read(pmic, field->reg, &value);
+		if (ret)
+			return ret;
+		if (value & field->mask)
+			return -EBUSY;
+	}
+	return 0;
+}
+
 static int mt6797_md1_pmic_update(struct regmap *pmic, unsigned int field,
 				   u16 value)
 {

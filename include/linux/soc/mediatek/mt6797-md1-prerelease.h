@@ -69,6 +69,8 @@ mt6797_md1_prerelease_state(struct mt6797_md1_prerelease *prerelease);
 
 int mt6797_md1_pmic_snapshot(struct regmap *pmic,
 			     struct mt6797_md1_pmic_snapshot *snapshot);
+/* Require the six MD rail enable/sleep fields left by vendor md1_power_down(). */
+int mt6797_md1_pmic_verify_cold(struct regmap *pmic);
 int mt6797_md1_pmic_apply_vendor_values(struct regmap *pmic,
 					 struct mt6797_md1_pmic_snapshot *snapshot);
 int mt6797_md1_pmic_restore(struct regmap *pmic,

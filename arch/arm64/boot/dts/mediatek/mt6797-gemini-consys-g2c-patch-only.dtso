@@ -110,9 +110,9 @@
 
 	/*
 	 * Vendor aeon6797_6m_n.dts:1275-1310 assigns host GNSS LNA to GPIO69.
-		 * MT6797 needs no GPS_SYNC (wmt_ic_soc.c:1508-1521), so deliberately model
-		 * only the observed LNA states. Generic pinconf carries every evidenced
-		 * electrical property here.
+	 * MT6797 needs no GPS_SYNC (wmt_ic_soc.c:1508-1521), so deliberately model
+	 * only the observed LNA states. Its pinctrl register map provides MODE,
+	 * DIR, DI and DO only: do not request unsupported slew or bias controls.
 	 */
 	fragment@4 {
 		target = <&pio>;
@@ -121,8 +121,6 @@
 			g2d_gnss_lna_init: g2d-gnss-lna-init-pins {
 				pin-lna {
 					pinmux = <MT6797_GPIO69__FUNC_GPIO69>;
-					slew-rate = <0>;
-					bias-disable;
 					output-low;
 				};
 			};
@@ -130,7 +128,6 @@
 			g2d_gnss_lna_on: g2d-gnss-lna-on-pins {
 				pin-lna {
 					pinmux = <MT6797_GPIO69__FUNC_GPIO69>;
-					slew-rate = <1>;
 					output-high;
 				};
 			};
@@ -138,7 +135,6 @@
 			g2d_gnss_lna_off: g2d-gnss-lna-off-pins {
 				pin-lna {
 					pinmux = <MT6797_GPIO69__FUNC_GPIO69>;
-					slew-rate = <1>;
 					output-low;
 				};
 			};

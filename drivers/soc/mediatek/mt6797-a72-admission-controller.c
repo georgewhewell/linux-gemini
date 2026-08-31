@@ -32,8 +32,13 @@
 #define MT6797_A72_RECOVERY_P27_RESET		0x00010132U
 #define MT6797_A72_RECOVERY_P28_ISOLATION	0x00000002U
 #define MT6797_A72_RECOVERY_DA9213_VBUCKB	0x46U
-/* Vendor MTCMOS: CA15 CPU0/1 (CPU8/9) plus the MP2 CPUTOP domain. */
-#define MT6797_A72_RECOVERY_PWR_STATUS_MASK	(BIT(20) | BIT(19) | BIT(16))
+/*
+ * MP2 CPU0/1 PWR_CON reset state, from the MT6797 register definitions.
+ * The vendor CPU-off sequence asserts ISO and CLK_DIS, enables SRAM_CKISO,
+ * and clears RST_B, PWR_ON, PWR_ON_2ND, and SRAM_ISOINT_B.
+ */
+#define MT6797_A72_RECOVERY_MP2_CPU_RESET_MASK	GENMASK(6, 0)
+#define MT6797_A72_RECOVERY_MP2_CPU_RESET_VALUE	(BIT(1) | BIT(4) | BIT(5))
 #define MT6797_A72_RECOVERY_ISOLATION_MASK	GENMASK(1, 0)
 #define MT6797_A72_RECOVERY_BUCKB_ENABLE	BIT(0)
 #define MT6797_A72_RECOVERY_BASELINE_PLATFORM_VALID	BIT(0)
@@ -366,6 +371,8 @@ static int mt6797_a72_admission_reset_baseline(
 		return ret;
 	controller->state.baseline_p27 = platform.spm_mp2_cpusys_pwr_con;
 	controller->state.baseline_p28 = platform.spm_cpu_ext_buck_iso;
+	controller->state.baseline_mp2_cpu8 = platform.spm_mp2_cpu0_pwr_con;
+	controller->state.baseline_mp2_cpu9 = platform.spm_mp2_cpu1_pwr_con;
 	controller->state.baseline_pwr_status = platform.spm_pwr_status;
 	controller->state.baseline_pwr_status_2nd = platform.spm_pwr_status_2nd;
 	controller->state.baseline_buckb_cont = provider.buckb_cont;
@@ -375,10 +382,14 @@ static int mt6797_a72_admission_reset_baseline(
 	if (platform.valid)
 		controller->state.baseline_flags |=
 			MT6797_A72_RECOVERY_BASELINE_PLATFORM_VALID;
-	if (!(platform.spm_pwr_status & MT6797_A72_RECOVERY_PWR_STATUS_MASK))
+	if ((platform.spm_mp2_cpu0_pwr_con &
+	     MT6797_A72_RECOVERY_MP2_CPU_RESET_MASK) ==
+	    MT6797_A72_RECOVERY_MP2_CPU_RESET_VALUE)
 		controller->state.baseline_flags |=
 			MT6797_A72_RECOVERY_BASELINE_CPU_POWER_0_OFF;
-	if (!(platform.spm_pwr_status_2nd & MT6797_A72_RECOVERY_PWR_STATUS_MASK))
+	if ((platform.spm_mp2_cpu1_pwr_con &
+	     MT6797_A72_RECOVERY_MP2_CPU_RESET_MASK) ==
+	    MT6797_A72_RECOVERY_MP2_CPU_RESET_VALUE)
 		controller->state.baseline_flags |=
 			MT6797_A72_RECOVERY_BASELINE_CPU_POWER_1_OFF;
 	if (platform.spm_mp2_cpusys_pwr_con == MT6797_A72_RECOVERY_P27_RESET)
@@ -399,10 +410,12 @@ static int mt6797_a72_admission_reset_baseline(
 		controller->state.baseline_flags |=
 			MT6797_A72_RECOVERY_BASELINE_VBUCKB_EXPECTED;
 	dev_info(controller->dev, MT6797_A72_ADMISSION_LIVE_TAG
-		 " baseline flags=0x%x/%x pwr_status=%08x/%08x p27=%08x p28=%08x pwrap_asserted=%u buckb=%02x vsel=%02x\n",
+		 " baseline flags=0x%x/%x pwr_status=%08x/%08x mp2_cpu=%08x/%08x p27=%08x p28=%08x pwrap_asserted=%u buckb=%02x vsel=%02x\n",
 		 controller->state.baseline_flags, MT6797_A72_RECOVERY_BASELINE_ALL,
 		 controller->state.baseline_pwr_status,
 		 controller->state.baseline_pwr_status_2nd,
+		 controller->state.baseline_mp2_cpu8,
+		 controller->state.baseline_mp2_cpu9,
 		 controller->state.baseline_p27, controller->state.baseline_p28,
 		 platform.pwrap_reset_asserted,
 		 controller->state.baseline_buckb_cont,
@@ -476,13 +489,15 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 			     READ_ONCE(controller->state.archived_ledger.stage),
 			     READ_ONCE(controller->state.archived_ledger.terminal));
 	len += sysfs_emit_at(buf, len,
-			     "baseline_checked=%u baseline_ret=%d baseline_flags=0x%x/0x%x baseline_pwr_status=0x%x/0x%x baseline_p27=0x%x baseline_p28=0x%x baseline_pwrap_asserted=%u baseline_buckb_cont=0x%x baseline_buckb_vsel=0x%x ",
+			     "baseline_checked=%u baseline_ret=%d baseline_flags=0x%x/0x%x baseline_pwr_status=0x%x/0x%x baseline_mp2_cpu8=0x%x baseline_mp2_cpu9=0x%x baseline_p27=0x%x baseline_p28=0x%x baseline_pwrap_asserted=%u baseline_buckb_cont=0x%x baseline_buckb_vsel=0x%x ",
 			     READ_ONCE(controller->state.baseline_checked),
 			     READ_ONCE(controller->state.baseline_ret),
 			     READ_ONCE(controller->state.baseline_flags),
 			     MT6797_A72_RECOVERY_BASELINE_ALL,
 			     READ_ONCE(controller->state.baseline_pwr_status),
 			     READ_ONCE(controller->state.baseline_pwr_status_2nd),
+			     READ_ONCE(controller->state.baseline_mp2_cpu8),
+			     READ_ONCE(controller->state.baseline_mp2_cpu9),
 			     READ_ONCE(controller->state.baseline_p27),
 			     READ_ONCE(controller->state.baseline_p28),
 			     READ_ONCE(controller->state.baseline_pwrap_asserted),

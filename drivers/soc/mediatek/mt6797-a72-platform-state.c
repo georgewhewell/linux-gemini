@@ -30,12 +30,9 @@
 #define MT6797_SPM_MP2_CPU1_PWR_CON		0x244
 #define MT6797_SPM_CPU_EXT_BUCK_ISO		0x290
 
-/*
- * The vendor MT6797 MTCMOS code uses PWR_STATUS/PWR_STATUS_2ND for
- * power-domain completion, rather than CPU_PWR_STATUS*.  CA15 CPU0/1 are
- * the two MP2 (CPU8/CPU9) cores and CA15_CPUTOP is their shared MP2 domain.
- */
-#define MT6797_A72_A72_PWR_STATUS_MASK	(BIT(20) | BIT(19) | BIT(16))
+/* Legacy global status is retained as a transition-race diagnostic only.
+ * MP2 CPU8/9 reset proof uses the dedicated CPU0/1 PWR_CON registers. */
+#define MT6797_A72_LEGACY_PWR_STATUS_MASK	(BIT(20) | BIT(19) | BIT(16))
 
 #define MT6797_MCUCFG_MP2_SYNC_DCM		0x274
 #define MT6797_MCUCFG_MP2_SYNC_DCM_MASK		GENMASK(6, 0)
@@ -130,10 +127,10 @@ mt6797_state_movement_mask(const struct mt6797_a72_platform_state *first,
 	u32 movement = 0;
 
 	if ((first->spm_pwr_status ^ second->spm_pwr_status) &
-	    MT6797_A72_A72_PWR_STATUS_MASK)
+	    MT6797_A72_LEGACY_PWR_STATUS_MASK)
 		movement |= MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS;
 	if ((first->spm_pwr_status_2nd ^ second->spm_pwr_status_2nd) &
-	    MT6797_A72_A72_PWR_STATUS_MASK)
+	    MT6797_A72_LEGACY_PWR_STATUS_MASK)
 		movement |= MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS_2ND;
 	if (first->spm_mp2_cpusys_pwr_con != second->spm_mp2_cpusys_pwr_con)
 		movement |= MT6797_A72_PLATFORM_MOVED_MP2_CPUSYS_PWR_CON;

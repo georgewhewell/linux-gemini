@@ -59,6 +59,8 @@ struct mt6797_a72_admission_controller_state {
 	struct gemini_transition_ledger_snapshot archived_ledger;
 	u32 baseline_p27;
 	u32 baseline_p28;
+	u32 baseline_mp2_cpu8;
+	u32 baseline_mp2_cpu9;
 	u32 baseline_pwr_status;
 	u32 baseline_pwr_status_2nd;
 	u32 baseline_buckb_cont;

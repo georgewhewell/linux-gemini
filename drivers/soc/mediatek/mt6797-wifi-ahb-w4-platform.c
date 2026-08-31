@@ -695,19 +695,20 @@ out:
 	mutex_unlock(&w4->lock);
 }
 
-static bool w4_join_rx_pending(struct mt6797_wifi_w4 *w4)
+static bool w4_rx_poll_needed(struct mt6797_wifi_w4 *w4)
 {
 	return w4->join_state == W4_JOIN_WAIT_CHANNEL ||
 		w4->join_state == W4_JOIN_WAIT_AUTH2 ||
-		w4->join_state == W4_JOIN_WAIT_ASSOC2;
+		w4->join_state == W4_JOIN_WAIT_ASSOC2 ||
+		w4->join_state == W4_JOIN_CONNECTED;
 }
 
 /*
  * Vendor nicProcessIST() loops over interrupt status and nicRxProcessRFBs()
  * drains the received queue.  Use the same bounded WRPLR/WRDR polling while
- * scan or join is pending: the MT6797 host EINT does not reliably retrigger
- * after scan completion, and a channel grant left in RX0 otherwise cannot
- * advance authentication.
+ * scan, join or a link is active: the MT6797 host EINT does not reliably
+ * retrigger after scan completion.  Without the fallback, channel grants and
+ * post-association EAPOL/data can remain unread in RX0 indefinitely.
  */
 static void w4_scan_poll(struct work_struct *work)
 {
@@ -718,7 +719,7 @@ static void w4_scan_poll(struct work_struct *work)
 	int ret;
 
 	mutex_lock(&w4->lock);
-	if (!w4->opened || (!w4->scan_request && !w4_join_rx_pending(w4)))
+	if (!w4->opened || (!w4->scan_request && !w4_rx_poll_needed(w4)))
 		goto out;
 	if (w4->scan_request)
 		w4->scan_poll_count++;
@@ -750,7 +751,7 @@ static void w4_scan_poll(struct work_struct *work)
 		cfg80211_scan_done(w4->scan_request, &info);
 		w4->scan_request = NULL;
 	}
-	if (w4->scan_request || w4_join_rx_pending(w4))
+	if (w4->scan_request || w4_rx_poll_needed(w4))
 		mod_delayed_work(system_wq, &w4->scan_poll,
 				 msecs_to_jiffies(W4_SCAN_POLL_INTERVAL_MS));
 out:

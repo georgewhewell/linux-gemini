@@ -32,6 +32,9 @@
 #define W4_WRPLR 0x0090
 #define W4_WTQCR0 0x0130
 #define W4_WHIER_DEFAULT 0xffffff47U
+#define W4_RX_PKT_TYPE_SW_MASK 0xe00fU
+#define W4_RX_PKT_TYPE_SW_EVENT 0xe000U
+#define W4_RX_PKT_TYPE_SW_FRAME 0xe001U
 #define W4_WHCR_RX_ENHANCE_MODE_EN BIT(16)
 #define W4_WHCR_MAX_HIF_RX_LEN_NUM 0x00003f00U
 #define W4_WHCR_RECV_MAILBOX_RD_CLR_EN BIT(2)
@@ -40,7 +43,6 @@
 #define W4_RX_BUDGET 32U
 #define W4_RX_DESCRIPTOR_MIN 16U
 #define W4_WIFI_EVENT_HEADER_LEN 8U
-#define W4_WIFI_EVENT_PACKET_TYPE 0xe000U
 #define W4_EVENT_ID_SCAN_DONE 0x0dU
 #define W4_SCAN_SEQUENCE 1U
 #define W4_WIFI_CMD_HEADER_LEN 8U
@@ -352,7 +354,7 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 		goto out;
 	/* SW-defined firmware events carry WIFI_EVENT_T directly, no RXD. */
 	if (len >= W4_WIFI_EVENT_HEADER_LEN &&
-	    get_unaligned_le16(buf + 2) == W4_WIFI_EVENT_PACKET_TYPE) {
+	    get_unaligned_le16(buf + 2) == W4_RX_PKT_TYPE_SW_EVENT) {
 		ret = w4_rx_event(w4, len, buf);
 		goto out;
 	}
@@ -375,8 +377,10 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 	if (header_len & BIT(6)) off += 2;
 	if (off >= byte_count)
 		goto out;
-	/* Vendor scan results are SW-defined management RX records, not events. */
-	if (!(header_len & BIT(7)) && ((type >> 13) & 7) == 3 &&
+	/* Vendor RXM_RXD_PKT_TYPE_SW_FRAME is (u2PktTYpe & 0xe00f) == 0xe001.
+	 * Beacon/probe responses are SW-defined raw management records, not events. */
+	if (!(header_len & BIT(7)) &&
+	    (type & W4_RX_PKT_TYPE_SW_MASK) == W4_RX_PKT_TYPE_SW_FRAME &&
 	    byte_count - off >= 36 && ((buf[off] & 0xf0) == 0x80 ||
 					 (buf[off] & 0xf0) == 0x50)) {
 		struct ieee80211_channel *chan;
@@ -395,7 +399,8 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 		}
 		goto out;
 	}
-	if (!(header_len & BIT(7)) && ((type >> 13) & 7) == 3) {
+	if (!(header_len & BIT(7)) &&
+	    (type & W4_RX_PKT_TYPE_SW_MASK) == W4_RX_PKT_TYPE_SW_FRAME) {
 		w4_rx_mgmt(w4, buf + off, byte_count - off);
 		goto out;
 	}

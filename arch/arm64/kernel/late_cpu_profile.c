@@ -1754,32 +1754,43 @@ late_expected_target_matches(const struct arm64_late_cpu_expected_pair *expected
 	const struct cpuinfo_32bit *aarch32 = &info->aarch32;
 	u64 mpidr = read_cpuid_mpidr() & MPIDR_HWID_BITMASK;
 
-	return expected->mpidr[target] == mpidr &&
-	       expected->midr == info->reg_midr &&
-	       expected->revidr == info->reg_revidr &&
-	       expected->cntfrq == info->reg_cntfrq &&
-	       expected->ctr == read_cpuid_cachetype() &&
-	       expected->dczid == info->reg_dczid &&
-	       expected->clidr_el1 == read_sysreg(clidr_el1) &&
-	       expected->id_aa64dfr0 == info->reg_id_aa64dfr0 &&
-	       expected->id_aa64isar0 == info->reg_id_aa64isar0 &&
-	       expected->id_aa64isar1 == info->reg_id_aa64isar1 &&
-	       expected->id_aa64mmfr0 == info->reg_id_aa64mmfr0 &&
-	       expected->id_aa64mmfr1 == info->reg_id_aa64mmfr1 &&
-	       expected->id_aa64pfr0 == info->reg_id_aa64pfr0 &&
-	       expected->id_aa64pfr1 == info->reg_id_aa64pfr1 &&
-	       expected->id_isar0 == aarch32->reg_id_isar0 &&
-	       expected->id_isar1 == aarch32->reg_id_isar1 &&
-	       expected->id_isar2 == aarch32->reg_id_isar2 &&
-	       expected->id_isar3 == aarch32->reg_id_isar3 &&
-	       expected->id_isar4 == aarch32->reg_id_isar4 &&
-	       expected->id_isar5 == aarch32->reg_id_isar5 &&
-	       expected->id_mmfr0 == aarch32->reg_id_mmfr0 &&
-	       expected->id_mmfr1 == aarch32->reg_id_mmfr1 &&
-	       expected->id_mmfr2 == aarch32->reg_id_mmfr2 &&
-	       expected->id_mmfr3 == aarch32->reg_id_mmfr3 &&
-	       expected->id_pfr0 == aarch32->reg_id_pfr0 &&
-	       expected->id_pfr1 == aarch32->reg_id_pfr1;
+#define LATE_EXPECT_MATCH(_name, _expected, _observed) do {                 \
+	if ((_expected) != (_observed)) {                                      \
+		pr_crit("CPU%u: late target %s expected=%#018llx observed=%#018llx\\n", \
+			smp_processor_id(), _name, (unsigned long long)(_expected),  \
+			(unsigned long long)(_observed));                         \
+		return false;                                                   \
+	}                                                                  \
+} while (0)
+
+	LATE_EXPECT_MATCH("mpidr", expected->mpidr[target], mpidr);
+	LATE_EXPECT_MATCH("midr", expected->midr, info->reg_midr);
+	LATE_EXPECT_MATCH("revidr", expected->revidr, info->reg_revidr);
+	LATE_EXPECT_MATCH("cntfrq", expected->cntfrq, info->reg_cntfrq);
+	LATE_EXPECT_MATCH("ctr", expected->ctr, read_cpuid_cachetype());
+	LATE_EXPECT_MATCH("dczid", expected->dczid, info->reg_dczid);
+	LATE_EXPECT_MATCH("clidr_el1", expected->clidr_el1, read_sysreg(clidr_el1));
+	LATE_EXPECT_MATCH("id_aa64dfr0", expected->id_aa64dfr0, info->reg_id_aa64dfr0);
+	LATE_EXPECT_MATCH("id_aa64isar0", expected->id_aa64isar0, info->reg_id_aa64isar0);
+	LATE_EXPECT_MATCH("id_aa64isar1", expected->id_aa64isar1, info->reg_id_aa64isar1);
+	LATE_EXPECT_MATCH("id_aa64mmfr0", expected->id_aa64mmfr0, info->reg_id_aa64mmfr0);
+	LATE_EXPECT_MATCH("id_aa64mmfr1", expected->id_aa64mmfr1, info->reg_id_aa64mmfr1);
+	LATE_EXPECT_MATCH("id_aa64pfr0", expected->id_aa64pfr0, info->reg_id_aa64pfr0);
+	LATE_EXPECT_MATCH("id_aa64pfr1", expected->id_aa64pfr1, info->reg_id_aa64pfr1);
+	LATE_EXPECT_MATCH("id_isar0", expected->id_isar0, aarch32->reg_id_isar0);
+	LATE_EXPECT_MATCH("id_isar1", expected->id_isar1, aarch32->reg_id_isar1);
+	LATE_EXPECT_MATCH("id_isar2", expected->id_isar2, aarch32->reg_id_isar2);
+	LATE_EXPECT_MATCH("id_isar3", expected->id_isar3, aarch32->reg_id_isar3);
+	LATE_EXPECT_MATCH("id_isar4", expected->id_isar4, aarch32->reg_id_isar4);
+	LATE_EXPECT_MATCH("id_isar5", expected->id_isar5, aarch32->reg_id_isar5);
+	LATE_EXPECT_MATCH("id_mmfr0", expected->id_mmfr0, aarch32->reg_id_mmfr0);
+	LATE_EXPECT_MATCH("id_mmfr1", expected->id_mmfr1, aarch32->reg_id_mmfr1);
+	LATE_EXPECT_MATCH("id_mmfr2", expected->id_mmfr2, aarch32->reg_id_mmfr2);
+	LATE_EXPECT_MATCH("id_mmfr3", expected->id_mmfr3, aarch32->reg_id_mmfr3);
+	LATE_EXPECT_MATCH("id_pfr0", expected->id_pfr0, aarch32->reg_id_pfr0);
+	LATE_EXPECT_MATCH("id_pfr1", expected->id_pfr1, aarch32->reg_id_pfr1);
+#undef LATE_EXPECT_MATCH
+	return true;
 }
 
 int arm64_validate_late_cpu_expected_target(unsigned int cpu)

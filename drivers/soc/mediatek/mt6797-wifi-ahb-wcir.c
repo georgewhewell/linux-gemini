@@ -39,11 +39,13 @@ int mt6797_wifi_ahb_wcir_decode(u32 raw, struct mt6797_wifi_ahb_wcir *wcir)
 	wcir->raw = raw;
 	wcir->chip_id = raw & GENMASK(15, 0);
 	wcir->revision = FIELD_GET(GENMASK(19, 16), raw);
+	wcir->por_indicator = !!(raw & BIT(20));
 	wcir->wlan_ready = !!(raw & BIT(21));
 
 	if (!wcir->chip_id || wcir->chip_id == U16_MAX)
 		return -ENODEV;
-	if (raw != 0x00000279)
+	/* Vendor ahb.c maps raw Everest 0x0279 to logical MT6797 0x6797. */
+	if (wcir->chip_id != 0x0279 || wcir->revision != 0)
 		return -EPROTO;
 	return 0;
 }
@@ -250,19 +252,19 @@ release_region:
 		if (ret == -ENODEV)
 			dev_err(owner, "WCIR invalid raw=%#08x\n", wcir->raw);
 		else if (ret == -EPROTO)
-			dev_err(owner, "WCIR unexpected raw=%#08x; expected 0x00000279\n",
+			dev_err(owner, "WCIR unexpected raw=%#08x; expected Everest 0x0279 rev0\n",
 				wcir->raw);
 		return ret;
 	}
 
 	/* Wi-Fi RAM firmware is deliberately not loaded by the G2d milestone. */
 	if (wcir->wlan_ready) {
-		dev_err(owner, "WCIR raw=%#08x chip=%#06x rev=%u ready=1\n",
-			wcir->raw, wcir->chip_id, wcir->revision);
+		dev_err(owner, "WCIR raw=%#08x chip=%#06x rev=%u por=%u ready=1\n",
+			wcir->raw, wcir->chip_id, wcir->revision, wcir->por_indicator);
 		return -EUCLEAN;
 	}
-	dev_info(owner, "WCIR raw=%#08x chip=%#06x rev=%u ready=0\n",
-		 wcir->raw, wcir->chip_id, wcir->revision);
+	dev_info(owner, "WCIR raw=%#08x chip=%#06x rev=%u por=%u ready=0\n",
+		 wcir->raw, wcir->chip_id, wcir->revision, wcir->por_indicator);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_wcir_observe);

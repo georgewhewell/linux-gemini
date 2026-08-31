@@ -560,6 +560,103 @@ config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD_KUNIT_TEST
 	  window/ACK/retry ownership, request firmware, bind Device Tree, access
 	  hardware, or enable a connectivity function.
 
+config MTK_MT6797_CONSYS_WMT_BT_FUNCTION_CHOREOGRAPHY_KUNIT_TEST
+	bool "KUnit tests for MT6797 Bluetooth WMT function choreography"
+	depends on KUNIT=y
+	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
+	help
+	  Exercise the vendor MT6797 SoC Bluetooth function sequence with an
+	  in-memory PALDO and WMT transport: BT VCN33/PALDO on, WMT FUNC_CTRL BT
+	  on/status, WMT FUNC_CTRL BT off/status, then PALDO off. Every command
+	  timeout or cleanup failure is terminal and requires the outer CONSYS/BTIF
+	  owner to fence and recover the hardware before another attempt.
+
+	  This is deliberately test-only choreography. It has no Device Tree node,
+	  module parameter, platform driver, WMT endpoint, or callable live entry
+	  point, and cannot enable a regulator or a Bluetooth function on Gemini.
+
+config MTK_MT6797_CONSYS_G2D_VCN33_PREFLIGHT
+	tristate "Experimental MT6797 G2d VCN33 resource preflight"
+	depends on OF && REGULATOR
+	help
+	  Build the default-disabled G2d provider that acquires and validates the
+	  distinct MT6351 vcn33-bt and vcn33-wifi regulator handles. It has no
+	  regulator_enable(), voltage change, WMT, BTIF, calibration, radio, or
+	  userspace path. Binding needs its DT boolean and read-only parameter.
+
+	  Vendor MT6797 uses a fixed 3.3 V selector for both PALDO paths. The
+	  MT6580-only efuse VCN33 operation is deliberately not part of MT6797 G2d.
+
+config MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	tristate "Experimental MT6797 G2d post-patch owner"
+	depends on OF && REGULATOR && MTK_MT6797_CONSYS_G2C_PATCH_OWNER
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
+	help
+	  Default-disabled one-shot post-patch experiment. It uses the vendor
+	  MT6797 fixed 3.3 V VCN33 selector over the controller-owned full-STP WMT
+	  lease, rejects pre-enabled or disagreeing rail snapshots, runs the exact
+	  LTE coexistence and RF calibration transactions, then disables BT and
+	  Wi-Fi before restoring their shared selector. Both its DT property and
+	  read-only module parameter are required. Its distinct G2e and G2f
+	  compatibles each require their own DT property and read-only module
+	  parameter, then reuse the completed G2d sequence for a one-shot BT
+	  PALDO/FUNC_CTRL proof; G2f additionally sends private H4 Reset and Read
+	  Local Version commands with exact Command Complete checks. Every path
+	  returns to the bootstrap fence/reset unwind; no HCI device or radio
+	  endpoint is exposed.
+
+config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
+	bool "KUnit tests for MT6797 post-patch calibration choreography"
+	depends on KUNIT=y
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER=y
+	help
+	  Exercise the exact MT6797 post-patch sequence in memory: vendor 5-ms
+	  delay, five LTE coexistence packets, fixed-3.3-V BT/Wi-Fi PALDOs, RF
+	  calibration, BT-then-Wi-Fi release, antenna coexistence, and the firmware
+	  FM strap. It checks every WMT and rail failure path and proves the shared
+	  MT6351 selector is not restored until both consumers are off. It does not
+	  access a regulator, WMT endpoint, Device Tree, or Gemini.
+
+config MTK_MT6797_WIFI_AHB_WCIR_OBSERVE
+	tristate "MT6797 WLAN GEN3 AHB post-patch WCIR observer"
+	depends on ARM64 && ARCH_MEDIATEK && OF && REGULATOR
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	help
+	  Build the smallest live MT6797 WLAN AHB milestone. A corrected G2d
+	  post-patch owner must call it synchronously while retaining its full WMT
+	  lease and enabled Wi-Fi PALDO. It sends one fixed-port CMD53 WCIR read.
+	  The owner DT property and its read-only module parameter are both required.
+	  It never creates a WLAN transport, IRQ, DMA path, firmware load, or netdev.
+
+config MTK_MT6797_WIFI_AHB_WCIR_KUNIT_TEST
+	bool "KUnit tests for the MT6797 WLAN AHB WCIR observer"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_WCIR_OBSERVE=y
+	help
+	  Exercise WCIR decoding, guards, command encoding, and fault cleanup in
+	  memory only. No Device Tree, MMIO, regulator, WMT, or radio is accessed.
+
+config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT
+	tristate "MT6797 WLAN GEN3 AHB W1 pinned firmware preflight"
+	depends on ARM64 && ARCH_MEDIATEK && OF && FW_LOADER
+	depends on CRYPTO_SHA256
+	depends on MTK_MT6797_WIFI_AHB_WCIR_OBSERVE
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	help
+	  Verify the exact WIFI_RAM_CODE_6797 image size and SHA-256 while the
+	  completed G2d full-WMT lease is active.  Its own DT property and read-only
+	  module parameter are both required, in addition to the corrected W0 HIF
+	  observation gate.  It does not stream firmware, start Wi-Fi, request an
+	  IRQ, instantiate a WLAN transport, create a netdev, or transmit packets.
+
+config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_KUNIT_TEST
+	bool "KUnit tests for MT6797 WLAN W1 firmware preflight"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT=y
+	help
+	  Exercise the exact firmware size and SHA-256 pin policy in memory only.
+	  No firmware request, Device Tree, MMIO, regulator, WMT, or radio is used.
+
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

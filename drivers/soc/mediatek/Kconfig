@@ -148,7 +148,7 @@ config MTK_MT6797_CONSYS_STP_SESSION_KUNIT_TEST
 	  Gemini hardware.
 
 config MTK_MT6797_BT_H4_COLLECTOR
-	tristate "Bounded MT6797 Bluetooth H4 command collector"
+	bool "Bounded MT6797 Bluetooth H4 command collector"
 	depends on MTK_MT6797_CONSYS_STP_SESSION
 	help
 	  Build the transport-neutral, bounded H4 receiver used only by a future

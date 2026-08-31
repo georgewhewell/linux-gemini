@@ -32,6 +32,10 @@
 #define W4_WRPLR 0x0090
 #define W4_WTQCR0 0x0130
 #define W4_WHIER_DEFAULT 0xffffff47U
+#define W4_WHCR_RX_ENHANCE_MODE_EN BIT(16)
+#define W4_WHCR_MAX_HIF_RX_LEN_NUM 0x00003f00U
+#define W4_WHCR_RECV_MAILBOX_RD_CLR_EN BIT(2)
+#define W4_WHCR_W_INT_CLR_CTRL BIT(1)
 #define W4_RX_MAX 2352U
 #define W4_RX_BUDGET 32U
 #define IEEE80211_HDRLEN 24U
@@ -114,6 +118,7 @@ static int w4_cmd53(struct mt6797_wifi_w4 *w4, bool write, u16 port,
 {
 	u32 cmd;
 	size_t transfer, i;
+	int ret;
 	if (!w4 || !buf || !len || len > W4_RX_MAX + sizeof(u32))
 		return -EINVAL;
 	transfer = ALIGN(len, sizeof(u32));
@@ -123,12 +128,16 @@ static int w4_cmd53(struct mt6797_wifi_w4 *w4, bool write, u16 port,
 		return -EMSGSIZE;
 	if (transfer < MT6797_WIFI_AHB_SDIO_BLOCK_SIZE) {
 		if (write)
-			return mt6797_wifi_ahb_cmd53_write_pack(port, transfer, &cmd);
-		return mt6797_wifi_ahb_cmd53_read_pack(port, transfer, &cmd);
+			ret = mt6797_wifi_ahb_cmd53_write_pack(port, transfer, &cmd);
+		else
+			ret = mt6797_wifi_ahb_cmd53_read_pack(port, transfer, &cmd);
+		if (ret)
+			return ret;
+	} else {
+		cmd = transfer / MT6797_WIFI_AHB_SDIO_BLOCK_SIZE |
+			((u32)port << MT6797_WIFI_AHB_CMD_ADDR_SHIFT) | BIT(27) |
+			BIT(MT6797_WIFI_AHB_CMD_FUNC_SHIFT) | (write ? BIT(31) : 0);
 	}
-	cmd = transfer / MT6797_WIFI_AHB_SDIO_BLOCK_SIZE |
-		((u32)port << MT6797_WIFI_AHB_CMD_ADDR_SHIFT) | BIT(27) |
-		BIT(MT6797_WIFI_AHB_CMD_FUNC_SHIFT) | (write ? BIT(31) : 0);
 	writel(cmd, w4->portal + MT6797_WIFI_AHB_CMD_SETUP);
 	wmb();
 	if (write) {
@@ -318,7 +327,23 @@ static int w4_capability(void *ctx)
 static int w4_configure(void *ctx)
 {
 	struct mt6797_wifi_w4 *w4 = ctx;
-	if (!w4) return -EINVAL;
+	u32 whcr;
+	int ret;
+
+	if (!w4)
+		return -EINVAL;
+	/* Vendor nicSDIOInit() selects the ordinary, non-enhanced RX report
+	 * format used below (one WRPLR length pair), with the default 16 slots.
+	 * wlanAdapterStart() then leaves mailbox and interrupt status in read-clear
+	 * mode before nicEnableInterrupt() writes WHLPCR.INT_SET. */
+	ret = w4_mcr_read(w4, MT6797_WIFI_AHB_W3_MCR_WHCR, &whcr);
+	if (ret)
+		return ret;
+	whcr &= ~(W4_WHCR_RX_ENHANCE_MODE_EN | W4_WHCR_MAX_HIF_RX_LEN_NUM |
+		  W4_WHCR_RECV_MAILBOX_RD_CLR_EN | W4_WHCR_W_INT_CLR_CTRL);
+	ret = w4_mcr_write(w4, MT6797_WIFI_AHB_W3_MCR_WHCR, whcr);
+	if (ret)
+		return ret;
 	/* nic.c's normal interrupt enable mask, before W3 writes INT_SET. */
 	return w4_mcr_write(w4, W4_WHIER, W4_WHIER_DEFAULT);
 }
@@ -488,6 +513,7 @@ static int w4_open(struct net_device *ndev)
 	if (ret) goto fail;
 	ret = mt6797_wifi_ahb_w3_session_start(&w4->session, &w4_hif_ops, w4);
 	if (ret) { mt6797_consys_runtime_controller_wifi_session_put(&w4->runtime); goto fail; }
+	w4_diag_hif(w4, "hif-ready");
 	w4->opened = true;
 	netif_tx_start_all_queues(ndev);
 	dev_info(w4->dev, "W4 retained HIF session live: irq=%d whisr=%#x\n",

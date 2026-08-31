@@ -103,7 +103,8 @@ int mt6797_wifi_ahb_w1_firmware_preflight(struct device *owner,
  */
 int mt6797_wifi_ahb_w1_firmware_start_retained(struct device *owner,
 		  const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
-		  struct regulator *bt_paldo, struct regulator *wifi_paldo);
+		  struct regulator *bt_paldo, struct regulator *wifi_paldo,
+		  void __iomem *retained_portal);
 int mt6797_wifi_ahb_w1_firmware_stop_retained(struct regulator *wifi_paldo);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_WIFI_AHB_H */

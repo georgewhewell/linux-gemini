@@ -573,7 +573,6 @@ int mt6797_btif_stp_bootstrap_full_bt_hci_exchange(
 		size_t *reply_len, unsigned long timeout)
 {
 	struct mt6797_btif_stp_bootstrap *bootstrap;
-	bool valid;
 	int ret;
 
 	if (!lease || !lease->bootstrap || !command || command_len < 4 ||
@@ -582,12 +581,7 @@ int mt6797_btif_stp_bootstrap_full_bt_hci_exchange(
 	    expected_reply_len > reply_size)
 		return -EINVAL;
 	bootstrap = lease->bootstrap;
-	mutex_lock(&bootstrap->lifecycle_lock);
-	valid = bootstrap->run_in_progress && bootstrap->full_wmt_stage_running &&
-		!bootstrap->destroy_requested &&
-		bootstrap->state == MT6797_BTIF_STP_BOOTSTRAP_FULL_VERIFY;
-	mutex_unlock(&bootstrap->lifecycle_lock);
-	if (!valid)
+	if (!mt6797_btif_stp_bootstrap_full_wmt_lease_active(lease))
 		return -ESHUTDOWN;
 	*reply_len = 0;
 	ret = mt6797_bt_h4_collector_begin(&bootstrap->h4_collector, expected_opcode);
@@ -599,6 +593,8 @@ int mt6797_btif_stp_bootstrap_full_bt_hci_exchange(
 	if (!ret)
 		ret = mt6797_bt_h4_collector_wait(&bootstrap->h4_collector, timeout,
 					  reply, reply_size, reply_len);
+	if (ret)
+		mt6797_bt_h4_collector_fence(&bootstrap->h4_collector);
 	WRITE_ONCE(bootstrap->full_retry_armed, false);
 	cancel_delayed_work_sync(&bootstrap->full_retry_work);
 	if (!ret && *reply_len != expected_reply_len)

@@ -952,6 +952,8 @@ mt6797_a72_membership_snapshot(struct mt6797_a72_owner_snapshot *snapshot)
 void mt6797_a72_membership_test_reset(void);
 void mt6797_a72_membership_test_seed_available(void);
 void mt6797_a72_membership_test_seed_available_cpu9(void);
+int mt6797_a72_membership_test_claim_cpu8(
+	struct mt6797_a72_transaction *transaction);
 int mt6797_a72_membership_test_publish_cpu8_success(struct mt6797_a72_transaction *transaction,
 						    bool cpu8_online, bool cpu9_online);
 int mt6797_a72_membership_test_finalize_cpu8_success(struct mt6797_a72_transaction *transaction,

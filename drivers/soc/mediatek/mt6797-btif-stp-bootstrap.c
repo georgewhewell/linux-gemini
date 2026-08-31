@@ -452,11 +452,12 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction(
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_full_wmt_transaction);
 
-int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
+static int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_common(
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
 		u8 opcode, const u8 *data, size_t data_len,
-		u8 expected_opcode, size_t expected_data_len,
-		u8 *reply, size_t reply_len, unsigned long timeout)
+		u8 expected_opcode, size_t min_data_len, size_t max_data_len,
+		u8 *reply, size_t reply_len, size_t *actual_data_len,
+		unsigned long timeout)
 {
 	struct mt6797_btif_stp_bootstrap *bootstrap;
 	struct mt6797_btif_pio_diagnostics pio_before, pio_after;
@@ -467,8 +468,9 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
 	bool valid;
 	int ret;
 
-	if (!lease || !lease->bootstrap || !reply || reply_len != expected_data_len ||
-	    (!data && data_len) || !timeout)
+	if (!lease || !lease->bootstrap || (!reply && reply_len) ||
+	    !actual_data_len || reply_len > min_data_len ||
+	    min_data_len > max_data_len || (!data && data_len) || !timeout)
 		return -EINVAL;
 	bootstrap = lease->bootstrap;
 	mutex_lock(&bootstrap->lifecycle_lock);
@@ -490,9 +492,9 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
 		}
 	}
 	WRITE_ONCE(bootstrap->full_retry_armed, true);
-	ret = mtk_wmt_transaction_capture(&bootstrap->full_wmt, opcode, data,
-			data_len, expected_opcode, expected_data_len, reply, reply_len,
-			timeout);
+	ret = mtk_wmt_transaction_capture_range(&bootstrap->full_wmt, opcode, data,
+			data_len, expected_opcode, min_data_len, max_data_len, reply,
+			reply_len, actual_data_len, timeout);
 	WRITE_ONCE(bootstrap->full_retry_armed, false);
 	cancel_delayed_work_sync(&bootstrap->full_retry_work);
 	if (trace_ready) {
@@ -508,7 +510,36 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
 	}
 	return ret;
 }
+
+int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		u8 opcode, const u8 *data, size_t data_len,
+		u8 expected_opcode, size_t expected_data_len,
+		u8 *reply, size_t reply_len, unsigned long timeout)
+{
+	size_t actual_data_len;
+
+	if (reply_len != expected_data_len)
+		return -EINVAL;
+	return mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_common(
+		lease, opcode, data, data_len, expected_opcode,
+		expected_data_len, expected_data_len, reply, reply_len,
+		&actual_data_len, timeout);
+}
 EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_full_wmt_transaction_capture);
+
+int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		u8 opcode, const u8 *data, size_t data_len,
+		u8 expected_opcode, size_t min_data_len, size_t max_data_len,
+		u8 *reply, size_t reply_len, size_t *actual_data_len,
+		unsigned long timeout)
+{
+	return mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_common(
+		lease, opcode, data, data_len, expected_opcode, min_data_len,
+		max_data_len, reply, reply_len, actual_data_len, timeout);
+}
+EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range);
 
 struct mt6797_btif_stp_bootstrap *
 mt6797_btif_stp_bootstrap_create(

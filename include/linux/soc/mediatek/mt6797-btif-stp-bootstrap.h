@@ -87,6 +87,13 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
 		u8 expected_opcode, size_t expected_data_len,
 		u8 *reply, size_t reply_len, unsigned long timeout);
 
+int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		u8 opcode, const u8 *data, size_t data_len,
+		u8 expected_opcode, size_t min_data_len, size_t max_data_len,
+		u8 *reply, size_t reply_len, size_t *actual_data_len,
+		unsigned long timeout);
+
 /*
  * The returned full session remains owned by bootstrap until destroy().
  * destroy() prevents another run and waits for an in-progress run to finish

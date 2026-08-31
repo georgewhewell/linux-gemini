@@ -38,7 +38,7 @@ struct mtk_wmt_test_payload_transport {
 	struct mtk_wmt *wmt;
 	u8 packet[MTK_WMT_HEADER_SIZE + 3];
 	size_t packet_len;
-	u8 reply[MTK_WMT_HEADER_SIZE + 2];
+	u8 reply[MTK_WMT_HEADER_SIZE + 384];
 	size_t reply_len;
 	unsigned int transmits;
 };
@@ -443,6 +443,62 @@ static void mtk_wmt_test_capture_rejects_wrong_opcode_or_length(struct kunit *te
 						     reply, sizeof(reply), 1), -ETIMEDOUT);
 }
 
+static void mtk_wmt_test_capture_range_accepts_large_event(struct kunit *test)
+{
+	struct mtk_wmt_test_payload_transport transport = { };
+	struct mtk_wmt wmt;
+	u8 command[] = { 1 };
+	u8 prefix[2] = { };
+	size_t actual_data_len = 0;
+	size_t i;
+
+	mtk_wmt_init_payload_transport(&wmt, MTK_STP_MODE_FULL,
+				       mtk_wmt_test_payload_transmit, &transport);
+	transport.wmt = &wmt;
+	transport.reply[0] = MTK_WMT_DIR_EVENT;
+	transport.reply[1] = 0x14;
+	transport.reply[2] = 378 & 0xff;
+	transport.reply[3] = 378 >> 8;
+	for (i = 0; i < 378; i++)
+		transport.reply[MTK_WMT_HEADER_SIZE + i] = i;
+	transport.reply_len = MTK_WMT_HEADER_SIZE + 378;
+
+	KUNIT_ASSERT_EQ(test,
+		mtk_wmt_transaction_capture_range(&wmt, 0x14, command,
+			sizeof(command), 0x14, 2, MTK_WMT_MAX_DATA,
+			prefix, sizeof(prefix), &actual_data_len,
+			msecs_to_jiffies(100)), 0);
+	KUNIT_EXPECT_EQ(test, actual_data_len, (size_t)378);
+	KUNIT_EXPECT_EQ(test, prefix[0], (u8)0);
+	KUNIT_EXPECT_EQ(test, prefix[1], (u8)1);
+}
+
+static void mtk_wmt_test_capture_range_rejects_short_event(struct kunit *test)
+{
+	struct mtk_wmt_test_payload_transport transport = { };
+	struct mtk_wmt wmt;
+	u8 command[] = { 1 };
+	u8 prefix[2] = { };
+	size_t actual_data_len = 99;
+
+	mtk_wmt_init_payload_transport(&wmt, MTK_STP_MODE_FULL,
+				       mtk_wmt_test_payload_transmit, &transport);
+	transport.wmt = &wmt;
+	transport.reply[0] = MTK_WMT_DIR_EVENT;
+	transport.reply[1] = 0x14;
+	transport.reply[2] = 1;
+	transport.reply[3] = 0;
+	transport.reply[4] = 0;
+	transport.reply_len = MTK_WMT_HEADER_SIZE + 1;
+
+	KUNIT_EXPECT_EQ(test,
+		mtk_wmt_transaction_capture_range(&wmt, 0x14, command,
+			sizeof(command), 0x14, 2, MTK_WMT_MAX_DATA,
+			prefix, sizeof(prefix), &actual_data_len, 1),
+		-ETIMEDOUT);
+	KUNIT_EXPECT_EQ(test, actual_data_len, (size_t)0);
+}
+
 static void mtk_wmt_test_trace_preserves_bounded_event_and_malformed_evidence(
 		struct kunit *test)
 {
@@ -481,6 +537,8 @@ static struct kunit_case mtk_wmt_test_cases[] = {
 	KUNIT_CASE(mtk_wmt_test_unmatched_is_unsolicited),
 	KUNIT_CASE(mtk_wmt_test_capture_variable_reply),
 	KUNIT_CASE(mtk_wmt_test_capture_rejects_wrong_opcode_or_length),
+	KUNIT_CASE(mtk_wmt_test_capture_range_accepts_large_event),
+	KUNIT_CASE(mtk_wmt_test_capture_range_rejects_short_event),
 	KUNIT_CASE(mtk_wmt_test_trace_preserves_bounded_event_and_malformed_evidence),
 	{}
 };

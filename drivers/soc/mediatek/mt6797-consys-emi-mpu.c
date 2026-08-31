@@ -11,6 +11,7 @@
 #include <linux/arm-smccc.h>
 #include <linux/device.h>
 #include <linux/io.h>
+#include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -28,6 +29,13 @@
 #define MT6797_TOPCKGEN_SIZE			SZ_8K
 #define MT6797_CONSYS_EMI_REMAP_FIELD_MASK	GENMASK(12, 0)
 #define MT6797_EMI_MPU_SMC_SET			0x82000209
+
+/* wlan_lib.c:844-850 opens region 18 over exactly the first 512 KiB. */
+#define MT6797_CONSYS_EMI_WIFI_WINDOW_SIZE	SZ_512K
+#define MT6797_CONSYS_EMI_WIFI_REGION		18
+#define MT6797_CONSYS_EMI_WIFI_OPEN_PERMISSION	0x00000000
+/* wlan_lib.c:873-877: F,F,F,F,F,N,F,F. */
+#define MT6797_CONSYS_EMI_WIFI_CLOSED_PERMISSION	0x00b6da2d
 
 /* Vendor SET_ACCESS_PERMISSON(FORBIDDEN, FORBIDDEN, FORBIDDEN, FORBIDDEN,
  * FORBIDDEN, NO_PROTECTION, FORBIDDEN, NO_PROTECTION), for region 19.
@@ -52,6 +60,9 @@ struct mt6797_consys_emi_mpu {
 	struct resource shared_mem;
 	struct mt6797_consys_emi_layout layout;
 	struct mt6797_consys_emi_owner owner;
+	struct mutex wifi_window_lock;
+	struct device *wifi_window_consumer;
+	bool wifi_window_open;
 };
 
 /*
@@ -69,6 +80,14 @@ enum mt6797_consys_emi_mpu_boot_state {
 static DEFINE_MUTEX(mt6797_consys_emi_mpu_boot_lock);
 static enum mt6797_consys_emi_mpu_boot_state mt6797_consys_emi_mpu_boot_state;
 static bool mt6797_consys_emi_mpu_boot_module_pinned;
+
+static void mt6797_consys_emi_mpu_mark_fatal(void)
+{
+	mutex_lock(&mt6797_consys_emi_mpu_boot_lock);
+	if (mt6797_consys_emi_mpu_boot_state != MT6797_CONSYS_EMI_MPU_BOOT_IDLE)
+		mt6797_consys_emi_mpu_boot_state = MT6797_CONSYS_EMI_MPU_BOOT_FATAL;
+	mutex_unlock(&mt6797_consys_emi_mpu_boot_lock);
+}
 
 static const struct mt6797_consys_emi_mpu_resource mt6797_consys_emi_mpu_resources[] = {
 	{ "emi", MT6797_EMI_MPU_BASE, MT6797_EMI_MPU_SIZE },
@@ -269,12 +288,129 @@ int mt6797_consys_emi_mpu_claim(struct device *consumer)
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_emi_mpu_claim);
 
+/* Return a locked provider whose devm state cannot change during this call. */
+static int mt6797_consys_emi_mpu_from_consumer(struct device *consumer,
+						struct platform_device **provider,
+						struct mt6797_consys_emi_mpu **mpu)
+{
+	struct device_node *np;
+	struct platform_device *pdev;
+
+	if (!consumer || !consumer->of_node || !provider || !mpu)
+		return -EINVAL;
+	np = of_parse_phandle(consumer->of_node, "mediatek,emi-mpu", 0);
+	if (!np)
+		return -EINVAL;
+	pdev = of_find_device_by_node(np);
+	of_node_put(np);
+	if (!pdev)
+		return -EPROBE_DEFER;
+	device_lock(&pdev->dev);
+	*mpu = platform_get_drvdata(pdev);
+	if (!*mpu) {
+		device_unlock(&pdev->dev);
+		put_device(&pdev->dev);
+		return -EPROBE_DEFER;
+	}
+	*provider = pdev;
+	return 0;
+}
+
+static int mt6797_consys_emi_mpu_wifi_window_protect(
+		struct mt6797_consys_emi_mpu *mpu, u32 permission)
+{
+	struct arm_smccc_res res;
+	long status;
+
+	arm_smccc_smc(MT6797_EMI_MPU_SMC_SET, mpu->shared_mem.start,
+		mpu->shared_mem.start + MT6797_CONSYS_EMI_WIFI_WINDOW_SIZE - 1,
+		permission | (MT6797_CONSYS_EMI_WIFI_REGION << 27),
+		0, 0, 0, 0, &res);
+	status = (long)res.a0;
+	if (!status)
+		return 0;
+	return status < 0 ? status : -EIO;
+}
+
+int mt6797_consys_emi_mpu_wifi_window_open(struct device *consumer,
+					   struct resource *window)
+{
+	struct platform_device *provider;
+	struct mt6797_consys_emi_mpu *mpu;
+	int ret;
+
+	if (!window)
+		return -EINVAL;
+	ret = mt6797_consys_emi_mpu_from_consumer(consumer, &provider, &mpu);
+	if (ret)
+		return ret;
+	mutex_lock(&mt6797_consys_emi_mpu_boot_lock);
+	if (mt6797_consys_emi_mpu_boot_state != MT6797_CONSYS_EMI_MPU_BOOT_COMMITTED)
+		ret = -ESHUTDOWN;
+	mutex_unlock(&mt6797_consys_emi_mpu_boot_lock);
+	if (ret)
+		goto out_provider;
+
+	mutex_lock(&mpu->wifi_window_lock);
+	if (mpu->wifi_window_open) {
+		ret = -EBUSY;
+		goto out_window;
+	}
+	/* Vendor wlan_lib.c:844-850: open all eight domains before ioremap. */
+	ret = mt6797_consys_emi_mpu_wifi_window_protect(mpu,
+		MT6797_CONSYS_EMI_WIFI_OPEN_PERMISSION);
+	if (ret) {
+		/* SIP can alter protection before returning an error. */
+		mt6797_consys_emi_mpu_mark_fatal();
+		goto out_window;
+	}
+	window->name = "mt6797-wifi-emi";
+	window->start = mpu->shared_mem.start;
+	window->end = mpu->shared_mem.start + MT6797_CONSYS_EMI_WIFI_WINDOW_SIZE - 1;
+	window->flags = IORESOURCE_MEM;
+	mpu->wifi_window_consumer = consumer;
+	mpu->wifi_window_open = true;
+out_window:
+	mutex_unlock(&mpu->wifi_window_lock);
+out_provider:
+	device_unlock(&provider->dev);
+	put_device(&provider->dev);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_emi_mpu_wifi_window_open);
+
+int mt6797_consys_emi_mpu_wifi_window_close(struct device *consumer)
+{
+	struct platform_device *provider;
+	struct mt6797_consys_emi_mpu *mpu;
+	int ret;
+
+	ret = mt6797_consys_emi_mpu_from_consumer(consumer, &provider, &mpu);
+	if (ret)
+		return ret;
+	mutex_lock(&mpu->wifi_window_lock);
+	if (!mpu->wifi_window_open || mpu->wifi_window_consumer != consumer) {
+		ret = -EPERM;
+		goto out_window;
+	}
+	/* Vendor wlan_lib.c:873-877 restores the protected region before return. */
+	ret = mt6797_consys_emi_mpu_wifi_window_protect(mpu,
+		MT6797_CONSYS_EMI_WIFI_CLOSED_PERMISSION);
+	mpu->wifi_window_open = false;
+	mpu->wifi_window_consumer = NULL;
+	if (ret)
+		mt6797_consys_emi_mpu_mark_fatal();
+out_window:
+	mutex_unlock(&mpu->wifi_window_lock);
+	device_unlock(&provider->dev);
+	put_device(&provider->dev);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_emi_mpu_wifi_window_close);
+
 void mt6797_consys_emi_mpu_latch_fatal(void)
 {
-	mutex_lock(&mt6797_consys_emi_mpu_boot_lock);
-	if (mt6797_consys_emi_mpu_boot_state != MT6797_CONSYS_EMI_MPU_BOOT_IDLE)
-		mt6797_consys_emi_mpu_boot_state = MT6797_CONSYS_EMI_MPU_BOOT_FATAL;
-	mutex_unlock(&mt6797_consys_emi_mpu_boot_lock);
+	mt6797_consys_emi_mpu_mark_fatal();
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_emi_mpu_latch_fatal);
 
@@ -295,6 +431,7 @@ static int mt6797_consys_emi_mpu_probe(struct platform_device *pdev)
 	if (!mpu)
 		return -ENOMEM;
 	mpu->dev = &pdev->dev;
+	mutex_init(&mpu->wifi_window_lock);
 
 	ret = mt6797_consys_emi_mpu_get_resource(pdev,
 						 &mt6797_consys_emi_mpu_resources[0], NULL);

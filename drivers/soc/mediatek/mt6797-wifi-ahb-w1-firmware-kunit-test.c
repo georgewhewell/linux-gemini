@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include <kunit/test.h>
+#include <linux/crc32.h>
 #include <linux/errno.h>
+#include <linux/slab.h>
+#include <linux/unaligned.h>
 
 #include <linux/soc/mediatek/mt6797-wifi-ahb.h>
+#include <linux/soc/mediatek/mt6797-wifi-ahb-w0-phase.h>
+
+#define MT6797_WIFI_W1_FIXTURE_SIZE	411632U
 
 static const u8 mt6797_wifi_w1_sha256_abc[32] = {
 	0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
@@ -45,10 +51,183 @@ static void mt6797_wifi_w1_rejects_wrong_digest(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EBADMSG);
 }
 
+static void mt6797_wifi_w1_fixture_header(u8 *fixture)
+{
+	static const struct mt6797_wifi_ahb_w1_section section[] = {
+		{ .offset = 0x58, .length = 0x16d0, .destination = 0x020a0000,
+		  .key_index = 0, .encrypted = true },
+		{ .offset = 0x1728, .length = 0x2320, .destination = 0x000a2800,
+		  .key_index = 0, .encrypted = true },
+		{ .offset = 0x3a48, .length = 0x50e20, .destination = 0xf0000000,
+		  .key_index = 0, .encrypted = false },
+		{ .offset = 0x54868, .length = 0xff70, .destination = 0xf005c000,
+		  .key_index = 0, .encrypted = false },
+	};
+	unsigned int i;
+
+	put_unaligned_le32(0x454b544d, fixture);
+	put_unaligned_le32(ARRAY_SIZE(section), fixture + 8);
+	for (i = 0; i < ARRAY_SIZE(section); i++) {
+		u8 *entry = fixture + 24 + i * 16;
+
+		put_unaligned_le32(section[i].offset, entry);
+		entry[4] = section[i].key_index;
+		entry[5] = section[i].encrypted;
+		put_unaligned_le32(section[i].length, entry + 8);
+		put_unaligned_le32(section[i].destination, entry + 12);
+	}
+	put_unaligned_le32(~crc32_le(~0, fixture + 8,
+		MT6797_WIFI_W1_FIXTURE_SIZE - 8), fixture + 4);
+}
+
+static void mt6797_wifi_w1_parses_only_exact_divided_header(struct kunit *test)
+{
+	struct mt6797_wifi_ahb_w1_image image;
+	u8 *fixture;
+
+	fixture = kunit_kzalloc(test, MT6797_WIFI_W1_FIXTURE_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, fixture);
+	mt6797_wifi_w1_fixture_header(fixture);
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_w1_firmware_parse(fixture,
+		MT6797_WIFI_W1_FIXTURE_SIZE, &image), 0);
+	KUNIT_EXPECT_EQ(test, image.section[0].length, 0x16d0U);
+	KUNIT_EXPECT_TRUE(test, image.section[0].encrypted);
+	KUNIT_EXPECT_EQ(test, image.section[1].length, 0x2320U);
+	KUNIT_EXPECT_TRUE(test, image.section[1].encrypted);
+
+	fixture[24 + 16 + 5] = 2;
+	put_unaligned_le32(~crc32_le(~0, fixture + 8,
+		MT6797_WIFI_W1_FIXTURE_SIZE - 8), fixture + 4);
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w1_firmware_parse(fixture,
+		MT6797_WIFI_W1_FIXTURE_SIZE, &image), -EBADMSG);
+
+	mt6797_wifi_w1_fixture_header(fixture);
+	fixture[12] = 1;
+	put_unaligned_le32(~crc32_le(~0, fixture + 8,
+		MT6797_WIFI_W1_FIXTURE_SIZE - 8), fixture + 4);
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w1_firmware_parse(fixture,
+		MT6797_WIFI_W1_FIXTURE_SIZE, &image), -EBADMSG);
+}
+
+static void mt6797_wifi_w1_accounts_for_every_idlm_frame(struct kunit *test)
+{
+	struct mt6797_wifi_ahb_w1_image image = {
+		.section = {
+			{ .length = 0x16d0 }, { .length = 0x2320 },
+		},
+	};
+	u32 frames;
+	size_t bytes;
+
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_w1_idlm_transfer_account(&image,
+		&frames, &bytes), 0);
+	KUNIT_EXPECT_EQ(test, frames, 8U);
+	KUNIT_EXPECT_EQ(test, bytes, 18432UL);
+}
+
+struct mt6797_wifi_w1_cleanup_test {
+	int voltage;
+	int bt_enabled;
+	int wifi_enabled;
+	unsigned int disables;
+	int disable_fail;
+};
+
+static int mt6797_wifi_w1_cleanup_voltage(void *context)
+{
+	return ((struct mt6797_wifi_w1_cleanup_test *)context)->voltage;
+}
+
+static int mt6797_wifi_w1_cleanup_enabled(void *context, bool wifi)
+{
+	struct mt6797_wifi_w1_cleanup_test *fake = context;
+
+	return wifi ? fake->wifi_enabled : fake->bt_enabled;
+}
+
+static int mt6797_wifi_w1_cleanup_set(void *context, int voltage)
+{
+	((struct mt6797_wifi_w1_cleanup_test *)context)->voltage = voltage;
+	return 0;
+}
+
+static int mt6797_wifi_w1_cleanup_enable(void *context)
+{
+	((struct mt6797_wifi_w1_cleanup_test *)context)->wifi_enabled = 1;
+	return 0;
+}
+
+static int mt6797_wifi_w1_cleanup_disable(void *context)
+{
+	struct mt6797_wifi_w1_cleanup_test *fake = context;
+
+	fake->disables++;
+	if (fake->disable_fail)
+		return fake->disable_fail;
+	fake->wifi_enabled = 0;
+	return 0;
+}
+
+static int mt6797_wifi_w1_cleanup_stream_fails(void *context)
+{
+	return -EPROTO;
+}
+
+static void mt6797_wifi_w1_stream_failure_unwinds_paldo(struct kunit *test)
+{
+	struct mt6797_wifi_w1_cleanup_test fake = { .voltage = 1800000 };
+	struct mt6797_wifi_ahb_w0_result result;
+	struct mt6797_wifi_ahb_w0_ops ops = {
+		.get_voltage = mt6797_wifi_w1_cleanup_voltage,
+		.is_enabled = mt6797_wifi_w1_cleanup_enabled,
+		.set_voltage = mt6797_wifi_w1_cleanup_set,
+		.enable = mt6797_wifi_w1_cleanup_enable,
+		.disable = mt6797_wifi_w1_cleanup_disable,
+		.observe = mt6797_wifi_w1_cleanup_stream_fails,
+		.context = &fake,
+	};
+
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w0_run(&ops, &result, 3300000),
+		-EPROTO);
+	KUNIT_EXPECT_EQ(test, fake.disables, 1U);
+	KUNIT_EXPECT_EQ(test, fake.voltage, 1800000);
+	KUNIT_EXPECT_EQ(test, result.cleanup, 0);
+	KUNIT_EXPECT_FALSE(test, result.fatal);
+}
+
+static void mt6797_wifi_w1_cleanup_failure_is_fatal(struct kunit *test)
+{
+	struct mt6797_wifi_w1_cleanup_test fake = {
+		.voltage = 1800000,
+		.disable_fail = -EIO,
+	};
+	struct mt6797_wifi_ahb_w0_result result;
+	struct mt6797_wifi_ahb_w0_ops ops = {
+		.get_voltage = mt6797_wifi_w1_cleanup_voltage,
+		.is_enabled = mt6797_wifi_w1_cleanup_enabled,
+		.set_voltage = mt6797_wifi_w1_cleanup_set,
+		.enable = mt6797_wifi_w1_cleanup_enable,
+		.disable = mt6797_wifi_w1_cleanup_disable,
+		.observe = mt6797_wifi_w1_cleanup_stream_fails,
+		.context = &fake,
+	};
+
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w0_run(&ops, &result, 3300000),
+		-EPROTO);
+	KUNIT_EXPECT_EQ(test, result.causal, -EPROTO);
+	KUNIT_EXPECT_EQ(test, result.cleanup, -EIO);
+	KUNIT_EXPECT_TRUE(test, result.fatal);
+	KUNIT_EXPECT_TRUE(test, result.selector_dirty);
+}
+
 static struct kunit_case mt6797_wifi_w1_test_cases[] = {
 	KUNIT_CASE(mt6797_wifi_w1_accepts_exact_size_and_digest),
 	KUNIT_CASE(mt6797_wifi_w1_rejects_wrong_size_before_digest),
 	KUNIT_CASE(mt6797_wifi_w1_rejects_wrong_digest),
+	KUNIT_CASE(mt6797_wifi_w1_parses_only_exact_divided_header),
+	KUNIT_CASE(mt6797_wifi_w1_accounts_for_every_idlm_frame),
+	KUNIT_CASE(mt6797_wifi_w1_stream_failure_unwinds_paldo),
+	KUNIT_CASE(mt6797_wifi_w1_cleanup_failure_is_fatal),
 	{}
 };
 

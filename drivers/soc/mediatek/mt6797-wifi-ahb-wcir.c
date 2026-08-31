@@ -199,7 +199,7 @@ int mt6797_wifi_ahb_wcir_observe(struct device *owner,
 		return -EHOSTDOWN;
 	guard.wifi_paldo_held = true;
 
-	wifi_np = of_find_compatible_node(NULL, NULL, "mediatek,WIFI");
+	wifi_np = of_find_compatible_node(NULL, NULL, "mediatek,wifi");
 	if (!wifi_np)
 		return -ENODEV;
 	ret = of_address_to_resource(wifi_np, 0, &hif);

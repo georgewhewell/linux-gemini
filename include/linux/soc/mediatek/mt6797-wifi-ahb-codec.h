@@ -47,4 +47,18 @@ static inline int mt6797_wifi_ahb_cmd53_read_pack(unsigned int address,
 	return 0;
 }
 
+/* Fixed-port CMD53 write, as used by the vendor AHB HIF data path. */
+static inline int mt6797_wifi_ahb_cmd53_write_pack(unsigned int address,
+					    unsigned int count,
+					    unsigned int *word)
+{
+	int ret;
+
+	ret = mt6797_wifi_ahb_cmd53_read_pack(address, count, word);
+	if (ret)
+		return ret;
+	*word |= 1U << 31;
+	return 0;
+}
+
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_WIFI_AHB_CODEC_H */

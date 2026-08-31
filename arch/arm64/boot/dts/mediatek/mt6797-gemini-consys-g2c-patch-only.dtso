@@ -69,6 +69,15 @@
 		target-path = "/";
 
 		__overlay__ {
+			/* Vendor mt6797.dtsi:3775-3780; selected only by W0/W1 profile. */
+			wifi_hif: wifi@180f0000 {
+				compatible = "mediatek,wifi";
+				reg = <0 0x180f0000 0 0x1100>;
+				interrupt-parent = <&sysirq>;
+				interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
+				status = "disabled";
+			};
+
 			consys_g2c_controller: consys-g2c-controller {
 				compatible = "mediatek,mt6797-consys-runtime-controller";
 				mediatek,runtime-provider = <&consys>;
@@ -97,7 +106,7 @@
 				mediatek,experimental-g2d-postpatch-owner;
 				/* A third DT + command-line gate controls the W0 observation. */
 				mediatek,experimental-wifi-wcir-observe;
-				/* W1 additionally pins the initramfs image; it still cannot stream it. */
+				/* W1 pins and sends the image, but does not expose a netdev. */
 				mediatek,experimental-wifi-w1-firmware-preflight;
 				/* A second DT + command-line gate controls this GNSS probe. */
 				mediatek,experimental-g2d-gnss-probe;

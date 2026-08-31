@@ -719,7 +719,8 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		if (!mt6797_wifi_ahb_wcir_enabled(owner->dev))
 			ret = -EPERM;
 		else
-			ret = mt6797_wifi_ahb_w1_firmware_preflight(owner->dev, lease);
+			ret = mt6797_wifi_ahb_w1_firmware_preflight(owner->dev, lease,
+				owner->bt, owner->wifi);
 	}
 #endif
 	if (!ret && owner->gnss_probe)
@@ -772,7 +773,7 @@ static int mt6797_g2d_postpatch_stage(void *context,
 			 "G2e BT function proof passed; bootstrap will fence/reset\n");
 	else if (w1_attempted)
 		dev_info(owner->dev,
-			 "Wi-Fi W1 firmware preflight passed; HIF stream/IRQ/netdev remain fenced; bootstrap will fence/reset\n");
+			 "Wi-Fi W1 HIF/EMI/start/READY passed; IRQ/netdev remain fenced; bootstrap will fence/reset\n");
 	else
 		dev_info(owner->dev, "G2d passed; bootstrap will fence/reset\n");
 	if (state.calibration_reply_valid)

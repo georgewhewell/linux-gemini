@@ -21,7 +21,7 @@ struct gemini_admission_trace_snapshot {
 int gemini_admission_trace_entry(void);
 int
 gemini_admission_trace_zero_request(enum gemini_admission_trace_zero_result result);
-int gemini_admission_trace_snapshot(struct gemini_admission_trace_snapshot *snapshot);
+int gemini_admission_trace_prepare(struct gemini_admission_trace_snapshot *snapshot);
 #else
 static inline int gemini_admission_trace_entry(void)
 {
@@ -35,7 +35,7 @@ gemini_admission_trace_zero_request(enum gemini_admission_trace_zero_result resu
 }
 
 static inline int
-gemini_admission_trace_snapshot(struct gemini_admission_trace_snapshot *snapshot)
+gemini_admission_trace_prepare(struct gemini_admission_trace_snapshot *snapshot)
 {
 	return -EOPNOTSUPP;
 }

@@ -337,8 +337,8 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 			     READ_ONCE(controller->state.trace_entry_ret),
 			     READ_ONCE(controller->state.trace_ret));
 	len += sysfs_emit_at(buf, len,
-			     "trace_snapshot_ret=%d trace_entry_words=%08x/%08x/%08x/%08x/%08x/%08x/%08x ",
-			     READ_ONCE(controller->state.trace_snapshot_ret),
+			     "trace_prepare_ret=%d trace_entry_words=%08x/%08x/%08x/%08x/%08x/%08x/%08x ",
+			     READ_ONCE(controller->state.trace_prepare_ret),
 			     READ_ONCE(controller->state.trace_snapshot.entry_words[0]),
 			     READ_ONCE(controller->state.trace_snapshot.entry_words[1]),
 			     READ_ONCE(controller->state.trace_snapshot.entry_words[2]),
@@ -493,9 +493,9 @@ static int mt6797_a72_admission_probe(struct platform_device *pdev)
 	controller->dev = dev;
 	mt6797_a72_admission_state_init(&controller->state);
 	mt6797_a72_admission_trigger_state_init(&controller->trigger);
-	/* Read-only retained-RAM evidence; no admission token or pstore write. */
-	controller->state.trace_snapshot_ret =
-		gemini_admission_trace_snapshot(&controller->state.trace_snapshot);
+	/* Private trace-page initialization precedes exposure of the trigger ABI. */
+	controller->state.trace_prepare_ret =
+		gemini_admission_trace_prepare(&controller->state.trace_snapshot);
 	platform_set_drvdata(pdev, controller);
 
 	if (IS_ENABLED(CONFIG_MTK_MT6797_A72_ADMISSION_LIVE_TRIGGER)) {
@@ -506,10 +506,10 @@ static int mt6797_a72_admission_probe(struct platform_device *pdev)
 					     "live trigger unavailable\n");
 		dev_info(dev, MT6797_A72_ADMISSION_LIVE_TAG
 			 " state=armed trigger_consumed=0 trigger_executions=0 "
-			 "core_consumed=0 requests=0/0/0 retries=0 trace_snapshot_ret=%d "
+			 "core_consumed=0 requests=0/0/0 retries=0 trace_node=444f0000/1000 trace_prepare_ret=%d "
 			 "entry=%08x/%08x/%08x/%08x/%08x/%08x/%08x "
 			 "terminal=%08x/%08x/%08x/%08x/%08x/%08x/%08x\n",
-			 controller->state.trace_snapshot_ret,
+			 controller->state.trace_prepare_ret,
 			 controller->state.trace_snapshot.entry_words[0],
 			 controller->state.trace_snapshot.entry_words[1],
 			 controller->state.trace_snapshot.entry_words[2],

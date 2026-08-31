@@ -79,8 +79,14 @@
 			no-map;
 		};
 
-		memory@444f0000 {
-			reg = <0 0x444f0000 0 0x10000>;
+		a72_admission_trace: a72-admission-trace@444f0000 {
+			compatible = "planet,gemini-a72-admission-trace";
+			reg = <0 0x444f0000 0 0x1000>;
+			no-map;
+		};
+
+		memory@444f1000 {
+			reg = <0 0x444f1000 0 0xf000>;
 			no-map;
 		};
 

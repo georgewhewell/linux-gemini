@@ -5,8 +5,8 @@
 #include <linux/gemini_admission_trace.h>
 #include <linux/types.h>
 
-#define GEMINI_ADMISSION_TRACE_PSTORE_SIGNATURE 0x43474244U
-#define GEMINI_ADMISSION_TRACE_SLOT_SIZE 0x1000U
+#define GEMINI_ADMISSION_TRACE_SIGNATURE 0x31544147U /* "GAT1" */
+#define GEMINI_ADMISSION_TRACE_SLOT_SIZE 0x800U
 #define GEMINI_ADMISSION_TRACE_HEADER_SIZE 12U
 #define GEMINI_ADMISSION_TRACE_SLOT_COUNT 2U
 
@@ -35,6 +35,9 @@ int
 gemini_admission_trace_owner_zero_request(struct gemini_admission_trace_owner *owner,
 					  const struct gemini_admission_trace_ops *ops,
 					  void *context,
-					  enum gemini_admission_trace_zero_result result);
+				  enum gemini_admission_trace_zero_result result);
+int
+gemini_admission_trace_initialize(const struct gemini_admission_trace_ops *ops,
+				  void *context);
 
 #endif /* __GEMINI_ADMISSION_TRACE_INTERNAL_H */

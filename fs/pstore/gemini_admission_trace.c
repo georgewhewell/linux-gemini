@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Candidate-only immutable Gemini CPU8 admission trace records. */
+/* Candidate-only Gemini CPU8 admission trace in an exclusive reserved page. */
 
 #include <linux/gemini_admission_trace.h>
 #include <linux/io.h>
@@ -11,9 +11,11 @@
 
 #include "gemini_admission_trace_internal.h"
 
-#define GEMINI_ADMISSION_TRACE_RESERVE_BASE 0x44410000ULL
-#define GEMINI_ADMISSION_TRACE_RESERVE_SIZE 0x000e0000ULL
-#define GEMINI_ADMISSION_TRACE_BASE 0x44411000ULL
+#define GEMINI_RAMOOPS_RESERVE_BASE 0x44410000ULL
+#define GEMINI_RAMOOPS_RESERVE_SIZE 0x000e0000ULL
+#define GEMINI_ADMISSION_TRACE_RESERVE_BASE 0x444f0000ULL
+#define GEMINI_ADMISSION_TRACE_RESERVE_SIZE 0x00001000ULL
+#define GEMINI_ADMISSION_TRACE_BASE GEMINI_ADMISSION_TRACE_RESERVE_BASE
 #define GEMINI_ADMISSION_TRACE_BYTES \
 	(GEMINI_ADMISSION_TRACE_SLOT_COUNT * GEMINI_ADMISSION_TRACE_SLOT_SIZE)
 #define GEMINI_ADMISSION_TRACE_ENTRY_SLOT 0U
@@ -58,33 +60,9 @@ gemini_admission_trace_slot_empty(const struct gemini_admission_trace_ops *ops,
 				  void *context, unsigned int slot)
 {
 	return ops->read_word(context, slot, 0) ==
-			GEMINI_ADMISSION_TRACE_PSTORE_SIGNATURE &&
+			GEMINI_ADMISSION_TRACE_SIGNATURE &&
 		ops->read_word(context, slot, 1) == 0 &&
 		ops->read_word(context, slot, 2) == 0;
-}
-
-/*
- * ramoops does not pre-format an unused retained record: before its first
- * writer it contains the reset all-ones header.  A raw header is therefore
- * as available as the normal ramoops empty header, but a partial or foreign
- * header is deliberately not.  The signature is committed last below so a
- * reset in the middle remains visibly raw rather than a valid pstore record.
- */
-static bool
-gemini_admission_trace_slot_raw(const struct gemini_admission_trace_ops *ops,
-				void *context, unsigned int slot)
-{
-	return ops->read_word(context, slot, 0) == ~0U &&
-		ops->read_word(context, slot, 1) == ~0U &&
-		ops->read_word(context, slot, 2) == ~0U;
-}
-
-static bool
-gemini_admission_trace_slot_available(const struct gemini_admission_trace_ops *ops,
-				      void *context, unsigned int slot)
-{
-	return gemini_admission_trace_slot_empty(ops, context, slot) ||
-		gemini_admission_trace_slot_raw(ops, context, slot);
 }
 
 static bool
@@ -96,7 +74,7 @@ gemini_admission_trace_slot_exact(const struct gemini_admission_trace_ops *ops,
 	size_t index;
 
 	if (ops->read_word(context, slot, 0) !=
-			GEMINI_ADMISSION_TRACE_PSTORE_SIGNATURE ||
+			GEMINI_ADMISSION_TRACE_SIGNATURE ||
 	    ops->read_word(context, slot, 1) != length ||
 	    ops->read_word(context, slot, 2) != length)
 		return false;
@@ -116,13 +94,11 @@ gemini_admission_trace_write(struct gemini_admission_trace_owner *owner,
 {
 	size_t length = strlen(record);
 	size_t index;
-	bool raw;
 
 	if (length > GEMINI_ADMISSION_TRACE_SLOT_SIZE -
 			     GEMINI_ADMISSION_TRACE_HEADER_SIZE)
 		return gemini_admission_trace_fault(owner);
-	raw = gemini_admission_trace_slot_raw(ops, context, slot);
-	if (!raw && !gemini_admission_trace_slot_empty(ops, context, slot))
+	if (!gemini_admission_trace_slot_empty(ops, context, slot))
 		return gemini_admission_trace_fault(owner);
 	for (index = 0; index < length; index++)
 		ops->write_byte(context, slot,
@@ -133,14 +109,42 @@ gemini_admission_trace_write(struct gemini_admission_trace_owner *owner,
 	ops->sync(context);
 	ops->write_word(context, slot, 2, length);
 	ops->sync(context);
-	if (raw) {
-		ops->write_word(context, slot, 0,
-				GEMINI_ADMISSION_TRACE_PSTORE_SIGNATURE);
-		ops->sync(context);
-	}
 	if (!gemini_admission_trace_slot_exact(ops, context, slot, record))
 		return gemini_admission_trace_fault(owner);
 	owner->commits++;
+	return 0;
+}
+
+/*
+ * The trace page is a private no-map reservation, not a ramoops record.  Do
+ * not infer a cold-reset fill pattern: reset both slots explicitly and make
+ * the signature the final visible word.  A reset during this sequence can
+ * only leave an invalid or empty slot; it can never resurrect an old record.
+ */
+int gemini_admission_trace_initialize(const struct gemini_admission_trace_ops *ops,
+				      void *context)
+{
+	unsigned int slot;
+	unsigned int offset;
+
+	if (!gemini_admission_trace_ops_valid(ops))
+		return -EINVAL;
+	for (slot = GEMINI_ADMISSION_TRACE_ENTRY_SLOT;
+	     slot <= GEMINI_ADMISSION_TRACE_TERMINAL_SLOT; slot++) {
+		for (offset = 0; offset < GEMINI_ADMISSION_TRACE_SLOT_SIZE;
+		     offset++)
+			ops->write_byte(context, slot, offset, 0);
+		ops->sync(context);
+		ops->write_word(context, slot, 1, 0);
+		ops->sync(context);
+		ops->write_word(context, slot, 2, 0);
+		ops->sync(context);
+		ops->write_word(context, slot, 0,
+				GEMINI_ADMISSION_TRACE_SIGNATURE);
+		ops->sync(context);
+		if (!gemini_admission_trace_slot_empty(ops, context, slot))
+			return -EIO;
+	}
 	return 0;
 }
 
@@ -158,7 +162,7 @@ gemini_admission_trace_owner_entry(struct gemini_admission_trace_owner *owner,
 		return -EINVAL;
 	if (owner->failed || owner->terminal_committed)
 		return -EALREADY;
-	if (!gemini_admission_trace_slot_available(ops, context, terminal_slot))
+	if (!gemini_admission_trace_slot_empty(ops, context, terminal_slot))
 		return gemini_admission_trace_fault(owner);
 	if (gemini_admission_trace_slot_exact(ops, context, entry_slot, entry)) {
 		owner->entry_committed = true;
@@ -206,8 +210,10 @@ gemini_admission_trace_owner_zero_request(struct gemini_admission_trace_owner *o
 
 static bool gemini_admission_trace_exact_dt(void)
 {
-	struct device_node *node;
-	struct resource resource;
+	struct device_node *ramoops;
+	struct device_node *trace;
+	struct resource ramoops_resource;
+	struct resource trace_resource;
 	const char *model;
 	u32 value;
 	bool exact = false;
@@ -216,28 +222,39 @@ static bool gemini_admission_trace_exact_dt(void)
 	    of_property_read_string(of_root, "model", &model) ||
 	    strcmp(model, "MT6797X"))
 		return false;
-	node = of_find_node_by_path("/reserved-memory/ramoops@44410000");
-	if (!node)
-		return false;
-	if (!of_device_is_compatible(node, "ramoops") ||
-	    of_address_to_resource(node, 0, &resource) ||
-	    resource.start != GEMINI_ADMISSION_TRACE_RESERVE_BASE ||
-	    resource_size(&resource) != GEMINI_ADMISSION_TRACE_RESERVE_SIZE ||
-	    !of_property_read_bool(node, "no-map"))
+	ramoops = of_find_node_by_path("/reserved-memory/ramoops@44410000");
+	trace = of_find_compatible_node(NULL, NULL,
+					"planet,gemini-a72-admission-trace");
+	if (!ramoops || !trace)
 		goto out;
-	if (of_property_read_u32(node, "record-size", &value) ||
-	    value != GEMINI_ADMISSION_TRACE_SLOT_SIZE ||
-	    of_property_read_u32(node, "console-size", &value) ||
-	    value != 0x10000 ||
-	    of_property_read_u32(node, "ftrace-size", &value) ||
+	if (!of_device_is_compatible(ramoops, "ramoops") ||
+	    of_address_to_resource(ramoops, 0, &ramoops_resource) ||
+	    ramoops_resource.start != GEMINI_RAMOOPS_RESERVE_BASE ||
+	    resource_size(&ramoops_resource) != GEMINI_RAMOOPS_RESERVE_SIZE ||
+	    !of_property_read_bool(ramoops, "no-map") ||
+	    of_address_to_resource(trace, 0, &trace_resource) ||
+	    trace_resource.start != GEMINI_ADMISSION_TRACE_RESERVE_BASE ||
+	    resource_size(&trace_resource) != GEMINI_ADMISSION_TRACE_RESERVE_SIZE ||
+	    !of_property_read_bool(trace, "no-map") ||
+	    (ramoops_resource.start + resource_size(&ramoops_resource) >
+		trace_resource.start &&
+	     trace_resource.start + resource_size(&trace_resource) >
+		ramoops_resource.start))
+		goto out;
+	if (of_property_read_u32(ramoops, "record-size", &value) ||
 	    value != 0x1000 ||
-	    of_property_read_u32(node, "pmsg-size", &value) ||
+	    of_property_read_u32(ramoops, "console-size", &value) ||
+	    value != 0x10000 ||
+	    of_property_read_u32(ramoops, "ftrace-size", &value) ||
+	    value != 0x1000 ||
+	    of_property_read_u32(ramoops, "pmsg-size", &value) ||
 	    value != 0x20000 ||
-	    of_property_read_u32(node, "mem-type", &value) || value)
+	    of_property_read_u32(ramoops, "mem-type", &value) || value)
 		goto out;
 	exact = true;
 out:
-	of_node_put(node);
+	of_node_put(trace);
+	of_node_put(ramoops);
 	return exact;
 }
 
@@ -298,21 +315,27 @@ static const struct gemini_admission_trace_ops gemini_admission_trace_mmio_ops =
 static DEFINE_MUTEX(gemini_admission_trace_lock);
 static struct gemini_admission_trace_owner gemini_admission_trace_owner;
 
-int gemini_admission_trace_snapshot(struct gemini_admission_trace_snapshot *snapshot)
+int gemini_admission_trace_prepare(struct gemini_admission_trace_snapshot *snapshot)
 {
 	void __iomem *slots;
 	unsigned int slot;
 	unsigned int word;
+	int ret;
 
 	if (!snapshot)
 		return -EINVAL;
 	memset(snapshot, 0, sizeof(*snapshot));
+	mutex_lock(&gemini_admission_trace_lock);
 	if (!gemini_admission_trace_exact_dt())
-		return -ENODEV;
+		goto out_enodev;
 	slots = ioremap_wc(GEMINI_ADMISSION_TRACE_BASE,
 			   GEMINI_ADMISSION_TRACE_BYTES);
 	if (!slots)
-		return -ENOMEM;
+		goto out_enomem;
+	ret = gemini_admission_trace_initialize(&gemini_admission_trace_mmio_ops,
+					       slots);
+	if (ret)
+		goto out_unmap;
 	for (slot = GEMINI_ADMISSION_TRACE_ENTRY_SLOT;
 	     slot <= GEMINI_ADMISSION_TRACE_TERMINAL_SLOT; slot++) {
 		u32 *destination = slot == GEMINI_ADMISSION_TRACE_ENTRY_SLOT ?
@@ -322,10 +345,21 @@ int gemini_admission_trace_snapshot(struct gemini_admission_trace_snapshot *snap
 			destination[word] = gemini_admission_trace_mmio_read_word(
 				slots, slot, word);
 	}
+	ret = 0;
+out_unmap:
 	iounmap(slots);
-	return 0;
+	mutex_unlock(&gemini_admission_trace_lock);
+	return ret;
+out_enomem:
+	ret = -ENOMEM;
+	goto out_unlock;
+out_enodev:
+	ret = -ENODEV;
+out_unlock:
+	mutex_unlock(&gemini_admission_trace_lock);
+	return ret;
 }
-EXPORT_SYMBOL_GPL(gemini_admission_trace_snapshot);
+EXPORT_SYMBOL_GPL(gemini_admission_trace_prepare);
 
 static int
 gemini_admission_trace_commit(enum gemini_admission_trace_zero_result result,

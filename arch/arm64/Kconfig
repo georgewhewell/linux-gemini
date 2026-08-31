@@ -2598,6 +2598,18 @@ config ARM64_MT6797_A72_P30E_WIRE
 	  does not modify secondary_entry, and cannot issue CPU_ON/OFF or make
 	  a Linux membership result reachable.
 
+config ARM64_MT6797_A72_SMPEN
+	bool "Set Cortex-A72 SMPEN on MT6797 secondary entry"
+	depends on ARM64_MT6797_A72_P30E_WIRE
+	depends on !CPU_BIG_ENDIAN
+	help
+	  Set CPUECTLR_EL1.SMPEN before enabling the MMU on an A72 secondary.
+	  Arm Trusted Firmware-A performs the same operation in the Cortex-A72
+	  reset function; it is required for intra-cluster coherency. This
+	  narrowly-scoped compatibility hook is for MT6797 firmware whose PSCI
+	  CPU_ON path does not establish that architectural prerequisite. It
+	  does not issue CPU_ON and leaves every non-A72 secondary unchanged.
+
 source "arch/arm64/kvm/Kconfig"
 
 source "kernel/livepatch/Kconfig"

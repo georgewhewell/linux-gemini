@@ -1075,8 +1075,21 @@ static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 			 w4->irq, irq_get_trigger_type(w4->irq), spec_ret,
 			 spec[0], spec[1], spec[2]);
 	}
-	node = of_parse_phandle(pdev->dev.of_node, "mediatek,controller", 0); if (!node) return -EINVAL;
-	controller = of_find_device_by_node(node); of_node_put(node); if (!controller) return -EPROBE_DEFER;
+	node = of_parse_phandle(pdev->dev.of_node, "mediatek,controller", 0);
+	if (!node)
+		return dev_err_probe(&pdev->dev, -EINVAL,
+			"missing mediatek,controller phandle\n");
+	controller = of_find_device_by_node(node);
+	if (!controller) {
+		ret = dev_err_probe(&pdev->dev, -EPROBE_DEFER,
+			"controller %pOF has no platform device\n", node);
+		of_node_put(node);
+		return ret;
+	}
+	dev_info(&pdev->dev,
+		 "W4_DIAG stage=controller-provider node=%pOF dev=%s driver=%s\n",
+		 node, dev_name(&controller->dev), dev_driver_string(&controller->dev));
+	of_node_put(node);
 	w4->controller_dev = &controller->dev;
 	/*
 	 * G2d is the one matching true-chronology owner in this profile.  Do not

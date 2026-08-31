@@ -102,6 +102,11 @@
 #define W4_RATE_OFDM_6M 0x4bU
 #define W4_STA_RECORD_BODY_LEN 124U
 #define W4_BSS_INFO_BODY_LEN 88U
+#define W4_ASSOC_REQ_MAX_IES 80U
+#define W4_AUTH_MODE_OPEN 0U
+#define W4_AUTH_MODE_WPA2_PSK 7U
+#define W4_ENCRYPTION_DISABLED 1U
+#define W4_ENCRYPTION3_ENABLED 6U
 
 static bool enable_experimental_wifi_w4_platform;
 module_param_named(enable_experimental_wifi_w4_platform,
@@ -139,8 +144,10 @@ struct mt6797_wifi_w4 {
 	u8 sta_index;
 	u8 join_ssid[IEEE80211_MAX_SSID_LEN];
 	u8 join_ssid_len;
-	u8 assoc_req_ies[IEEE80211_MAX_SSID_LEN + 24];
+	u8 assoc_req_ies[W4_ASSOC_REQ_MAX_IES];
 	u8 assoc_req_ie_len;
+	u8 auth_mode;
+	u8 encryption_status;
 	u16 candidate_capability;
 	u16 operational_rate_set;
 	u16 basic_rate_set;
@@ -152,7 +159,7 @@ struct mt6797_wifi_w4 {
 	unsigned long scan_poll_deadline;
 	enum w4_join_state join_state;
 	bool candidate_valid, channel_requested, retained_owner_released;
-	bool controller_started, w1_retained, opened;
+	bool controller_started, w1_retained, opened, wpa2_ccmp;
 };
 
 struct w4_bss_profile {
@@ -182,6 +189,23 @@ static const struct ieee80211_channel w4_channels[] = {
 	{ .band = NL80211_BAND_2GHZ, .center_freq = 2467, .hw_value = 12 },
 	{ .band = NL80211_BAND_2GHZ, .center_freq = 2472, .hw_value = 13 },
 	{ .band = NL80211_BAND_2GHZ, .center_freq = 2484, .hw_value = 14 },
+};
+
+static const u32 w4_cipher_suites[] = {
+	WLAN_CIPHER_SUITE_CCMP,
+};
+
+/* rsnGenerateRSNIE() emits the selected group, pairwise and AKM suites in
+ * that order (vendor gen3/mgmt/rsn.c:1253-1274).  This is its fixed WPA2-PSK
+ * CCMP form without PMKID caching or management-frame protection.
+ */
+static const u8 w4_rsn_ccmp_psk[] = {
+	WLAN_EID_RSN, 20,
+	0x01, 0x00,                         /* version 1 */
+	0x00, 0x0f, 0xac, 0x04,             /* group CCMP */
+	0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, /* one pairwise: CCMP */
+	0x01, 0x00, 0x00, 0x0f, 0xac, 0x02, /* one AKM: PSK */
+	0x00, 0x00,                         /* capabilities */
 };
 static struct ieee80211_rate w4_rates[] = {
 	{ .bitrate = 10 }, { .bitrate = 20 }, { .bitrate = 55 }, { .bitrate = 110 },
@@ -1165,8 +1189,8 @@ static int w4_send_bss_info(struct mt6797_wifi_w4 *w4, bool connected,
 	body[48] = w4->sta_index;
 	put_unaligned_le16(w4->hw_default_rate_code, body + 50);
 	body[52] = w4->non_ht_basic_phy_type;
-	body[53] = 0; /* AUTH_MODE_OPEN */
-	body[54] = 1; /* ENUM_ENCRYPTION_DISABLED */
+	body[53] = w4->auth_mode;
+	body[54] = w4->encryption_status;
 	body[55] = w4->desired_phy_type_set;
 	body[58] = W4_BMC_WLAN_INDEX_AIS;
 	/* Embedded CMD_SET_BSS_RLM_PARAM_T starts at body offset 68. */
@@ -1181,10 +1205,10 @@ static int w4_send_bss_info(struct mt6797_wifi_w4 *w4, bool connected,
 	put_unaligned_le16(w4->basic_rate_set, body + 86);
 	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
 	dev_info(w4->dev,
-		 "W4_DIAG stage=bss-info ret=%d connected=%u sta=%u channel=%u operational=%#x basic=%#x phy=%#x\n",
+		 "W4_DIAG stage=bss-info ret=%d connected=%u sta=%u channel=%u operational=%#x basic=%#x phy=%#x auth=%u enc=%u\n",
 		 ret, connected, body[48], body[70],
 		 w4->operational_rate_set, w4->basic_rate_set,
-		 w4->desired_phy_type_set);
+		 w4->desired_phy_type_set, body[53], body[54]);
 	return ret;
 }
 /* The management descriptors follow nic_tx.c's 802.11-normal, long format. */
@@ -1236,7 +1260,7 @@ static int w4_send_auth1(struct mt6797_wifi_w4 *w4)
 
 static int w4_send_assoc1(struct mt6797_wifi_w4 *w4)
 {
-	u8 frame[IEEE80211_HDRLEN + 4 + IEEE80211_MAX_SSID_LEN + 20] = { };
+	u8 frame[IEEE80211_HDRLEN + 4 + W4_ASSOC_REQ_MAX_IES] = { };
 	u8 *ie = frame + IEEE80211_HDRLEN + 4;
 	u8 rates[ARRAY_SIZE(w4_rate_codes)];
 	u16 capability = WLAN_CAPABILITY_ESS;
@@ -1249,6 +1273,8 @@ static int w4_send_assoc1(struct mt6797_wifi_w4 *w4)
 		capability |= WLAN_CAPABILITY_SHORT_PREAMBLE;
 	if (w4->non_ht_basic_phy_type == W4_PHY_TYPE_ERP_INDEX)
 		capability |= WLAN_CAPABILITY_SHORT_SLOT_TIME;
+	if (w4->wpa2_ccmp)
+		capability |= WLAN_CAPABILITY_PRIVACY;
 	put_unaligned_le16(capability, frame + IEEE80211_HDRLEN);
 	put_unaligned_le16(10, frame + IEEE80211_HDRLEN + 2);
 	*ie++ = WLAN_EID_SSID;
@@ -1266,6 +1292,10 @@ static int w4_send_assoc1(struct mt6797_wifi_w4 *w4)
 		*ie++ = n_rates - supported_rates;
 		memcpy(ie, rates + supported_rates, n_rates - supported_rates);
 		ie += n_rates - supported_rates;
+	}
+	if (w4->wpa2_ccmp) {
+		memcpy(ie, w4_rsn_ccmp_psk, sizeof(w4_rsn_ccmp_psk));
+		ie += sizeof(w4_rsn_ccmp_psk);
 	}
 	len = ie - frame;
 	w4->assoc_req_ie_len = len - IEEE80211_HDRLEN - 4;
@@ -1397,22 +1427,55 @@ static int w4_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 	mutex_unlock(&w4->lock);
 	return 0;
 }
+
+static int w4_validate_security(const struct cfg80211_connect_params *sme,
+				bool *wpa2_ccmp)
+{
+	if (sme->key || sme->mfp != NL80211_MFP_NO ||
+	    sme->crypto.control_port_over_nl80211)
+		return -EOPNOTSUPP;
+	if (!sme->privacy) {
+		if (sme->crypto.wpa_versions || sme->crypto.cipher_group ||
+		    sme->crypto.n_ciphers_pairwise || sme->crypto.n_akm_suites)
+			return -EINVAL;
+		*wpa2_ccmp = false;
+		return 0;
+	}
+
+	/* gl_cfg80211.c:699-795 maps this exact userspace selection to
+	 * AUTH_MODE_WPA2_PSK; 16-byte WPA keys then select CCMP in
+	 * common/wlan_oid.c:2370-2396.  Keep the first protected slice narrow.
+	 */
+	if (sme->crypto.wpa_versions != NL80211_WPA_VERSION_2 ||
+	    sme->crypto.cipher_group != WLAN_CIPHER_SUITE_CCMP ||
+	    sme->crypto.n_ciphers_pairwise != 1 ||
+	    sme->crypto.ciphers_pairwise[0] != WLAN_CIPHER_SUITE_CCMP ||
+	    sme->crypto.n_akm_suites != 1 ||
+	    sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK)
+		return -EOPNOTSUPP;
+	*wpa2_ccmp = true;
+	return 0;
+}
+
 static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 		      struct cfg80211_connect_params *sme)
 {
 	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
 	struct cfg80211_bss *bss;
 	struct w4_bss_profile profile = { };
+	bool wpa2_ccmp;
 	int ret;
 
 	if (!sme->ssid || sme->ssid_len > IEEE80211_MAX_SSID_LEN ||
-	    sme->key || sme->privacy || sme->crypto.n_akm_suites ||
 	    (sme->auth_type != NL80211_AUTHTYPE_OPEN_SYSTEM &&
 	     sme->auth_type != NL80211_AUTHTYPE_AUTOMATIC))
-		return -EOPNOTSUPP; /* bounded first slice: open-network AIS only */
+		return -EOPNOTSUPP;
+	ret = w4_validate_security(sme, &wpa2_ccmp);
+	if (ret)
+		return ret;
 	bss = cfg80211_get_bss(wiphy, sme->channel, sme->bssid,
 		sme->ssid, sme->ssid_len, IEEE80211_BSS_TYPE_ESS,
-		IEEE80211_PRIVACY_OFF);
+		wpa2_ccmp ? IEEE80211_PRIVACY_ON : IEEE80211_PRIVACY_OFF);
 	if (!bss)
 		return -ENETUNREACH;
 	ret = w4_bss_profile_from_cfg80211(bss, &profile);
@@ -1448,12 +1511,17 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 	w4->join_ssid_len = sme->ssid_len;
 	memcpy(w4->join_ssid, sme->ssid, w4->join_ssid_len);
 	w4->assoc_req_ie_len = 0;
+	w4->wpa2_ccmp = wpa2_ccmp;
+	w4->auth_mode = wpa2_ccmp ? W4_AUTH_MODE_WPA2_PSK : W4_AUTH_MODE_OPEN;
+	w4->encryption_status = wpa2_ccmp ? W4_ENCRYPTION3_ENABLED :
+		W4_ENCRYPTION_DISABLED;
 	dev_info(w4->dev,
-		 "W4_DIAG stage=join-profile channel=%u capability=%#x operational=%#x basic=%#x desired=%#x phy=%#x nonht=%u rate=%#x\n",
+		 "W4_DIAG stage=join-profile channel=%u capability=%#x operational=%#x basic=%#x desired=%#x phy=%#x nonht=%u rate=%#x security=%s\n",
 		 w4->candidate_channel, w4->candidate_capability,
 		 w4->operational_rate_set, w4->basic_rate_set,
 		 w4->desired_rate_set, w4->desired_phy_type_set,
-		 w4->non_ht_basic_phy_type, w4->hw_default_rate_code);
+		 w4->non_ht_basic_phy_type, w4->hw_default_rate_code,
+		 wpa2_ccmp ? "wpa2-psk-ccmp" : "open");
 	ret = w4_send_channel_request(w4);
 	if (ret) {
 		w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
@@ -1562,6 +1630,8 @@ static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 	if (!w4->wiphy) { ret = -ENOMEM; goto put_owner; }
 	*(struct mt6797_wifi_w4 **)wiphy_priv(w4->wiphy) = w4;
 	w4->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
+	w4->wiphy->cipher_suites = w4_cipher_suites;
+	w4->wiphy->n_cipher_suites = ARRAY_SIZE(w4_cipher_suites);
 	/* iw's ordinary wildcard probe is one SSID entry; zero makes nl80211
 	 * reject it before ->scan() is reached.  CMD_SCAN_REQ implements one. */
 	w4->wiphy->max_scan_ssids = 1;

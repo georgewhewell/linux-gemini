@@ -148,7 +148,20 @@ static void mt6797_wifi_ahb_wcir_accepts_only_everest_raw_id(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00000279, &wcir), 0);
 	KUNIT_EXPECT_EQ(test, wcir.chip_id, (u16)0x0279);
 	KUNIT_EXPECT_EQ(test, wcir.revision, (u8)0);
+	KUNIT_EXPECT_FALSE(test, wcir.power_on_reset);
 	KUNIT_EXPECT_FALSE(test, wcir.wlan_ready);
+
+	/* Hardware W0-v6: Everest with the independent POR indicator set. */
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00100279, &wcir), 0);
+	KUNIT_EXPECT_EQ(test, wcir.chip_id, (u16)0x0279);
+	KUNIT_EXPECT_EQ(test, wcir.revision, (u8)0);
+	KUNIT_EXPECT_TRUE(test, wcir.power_on_reset);
+	KUNIT_EXPECT_FALSE(test, wcir.wlan_ready);
+
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00230279, &wcir), 0);
+	KUNIT_EXPECT_EQ(test, wcir.revision, (u8)3);
+	KUNIT_EXPECT_FALSE(test, wcir.power_on_reset);
+	KUNIT_EXPECT_TRUE(test, wcir.wlan_ready);
 }
 
 static void mt6797_wifi_ahb_wcir_rejects_unexpected_nonzero_raw_id(struct kunit *test)
@@ -157,7 +170,7 @@ static void mt6797_wifi_ahb_wcir_rejects_unexpected_nonzero_raw_id(struct kunit 
 
 	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00006582, &wcir),
 			-EPROTO);
-	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00200279, &wcir),
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00400279, &wcir),
 			-EPROTO);
 }
 

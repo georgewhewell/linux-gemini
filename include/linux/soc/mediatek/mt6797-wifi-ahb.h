@@ -36,6 +36,7 @@ struct mt6797_wifi_ahb_wcir {
 	u32 raw;
 	u16 chip_id;
 	u8 revision;
+	bool power_on_reset;
 	bool wlan_ready;
 };
 

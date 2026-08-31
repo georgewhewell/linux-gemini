@@ -55,6 +55,9 @@ struct mt6797_g2d_ops {
 	int (*disable)(void *context, bool wifi);
 	int (*wmt)(void *context, u8 opcode, const u8 *data, size_t data_len,
 		   const struct mtk_wmt_match *expected);
+	int (*wmt_capture)(void *context, u8 opcode, const u8 *data,
+			   size_t data_len, u8 expected_opcode,
+			   size_t expected_data_len, u8 *reply, size_t reply_len);
 	void (*delay_ms)(void *context, unsigned int milliseconds);
 	void *context;
 };
@@ -64,6 +67,9 @@ struct mt6797_g2d_state {
 	bool selector_dirty;
 	bool bt_enabled;
 	bool wifi_enabled;
+	bool calibration_reply_valid;
+	u8 calibration_reply[2];
+	int cleanup_error;
 	enum mt6797_g2d_stage stage;
 };
 
@@ -93,15 +99,10 @@ static const u8 g2d_calibrate[] = { 0x01 };
 static const u8 g2d_coex[] = { 0x01, 0x01 };
 static const u8 g2d_fm_strap[] = { 0x02, 0x02 };
 static const u8 g2d_ok[] = { 0x00 };
-static const u8 g2d_calibrate_reply[] = { 0x00, 0x01 };
 static const u8 g2d_fm_strap_reply[] = { 0x00, 0x02 };
 
 static const struct mtk_wmt_match g2d_ok_10 = {
 	.opcode = 0x10, .data = g2d_ok, .data_len = sizeof(g2d_ok),
-};
-static const struct mtk_wmt_match g2d_calibrate_match = {
-	.opcode = 0x14, .data = g2d_calibrate_reply,
-	.data_len = sizeof(g2d_calibrate_reply),
 };
 static const struct mtk_wmt_match g2d_fm_strap_match = {
 	.opcode = 0x05, .data = g2d_fm_strap_reply,
@@ -127,6 +128,20 @@ static int mt6797_g2d_wmt(struct mt6797_g2d_ops *ops,
 {
 	state->stage = stage;
 	return ops->wmt(ops->context, opcode, data, data_len, expected);
+}
+
+static int mt6797_g2d_calibrate(struct mt6797_g2d_ops *ops,
+		struct mt6797_g2d_state *state)
+{
+	int ret;
+
+	state->stage = G2D_CALIBRATE;
+	ret = ops->wmt_capture(ops->context, 0x14, g2d_calibrate,
+			sizeof(g2d_calibrate), 0x14, sizeof(state->calibration_reply),
+			state->calibration_reply, sizeof(state->calibration_reply));
+	if (!ret)
+		state->calibration_reply_valid = true;
+	return ret;
 }
 
 static int mt6797_g2d_snapshot(struct mt6797_g2d_ops *ops,
@@ -197,6 +212,24 @@ static int mt6797_g2d_cleanup(struct mt6797_g2d_ops *ops,
 	return 0;
 }
 
+static int mt6797_g2d_enable(struct mt6797_g2d_ops *ops,
+		struct mt6797_g2d_state *state, bool wifi)
+{
+	bool *enabled = wifi ? &state->wifi_enabled : &state->bt_enabled;
+	int ret, on;
+
+	ret = ops->enable(ops->context, wifi);
+	if (!ret) {
+		*enabled = true;
+		return 0;
+	}
+	/* A regulator enable may have taken effect before reporting an error. */
+	on = ops->is_enabled(ops->context, wifi);
+	if (on > 0)
+		*enabled = true;
+	return ret;
+}
+
 static int mt6797_g2d_postpatch_run(struct mt6797_g2d_ops *ops,
 		struct mt6797_g2d_state *state)
 {
@@ -205,6 +238,7 @@ static int mt6797_g2d_postpatch_run(struct mt6797_g2d_ops *ops,
 
 	if (!ops || !state || !ops->get_voltage || !ops->is_enabled ||
 	    !ops->set_voltage || !ops->enable || !ops->disable || !ops->wmt ||
+	    !ops->wmt_capture ||
 	    !ops->delay_ms)
 		return -EINVAL;
 	ret = mt6797_g2d_snapshot(ops, state);
@@ -233,30 +267,29 @@ static int mt6797_g2d_postpatch_run(struct mt6797_g2d_ops *ops,
 	if (ret)
 		goto out_cleanup;
 	state->stage = G2D_SET_BT;
+	/* set_voltage() can change the shared selector before reporting failure. */
+	state->selector_dirty = true;
 	ret = ops->set_voltage(ops->context, false, MT6797_G2D_VCN33_UV);
 	if (ret)
-		return ret;
-	state->selector_dirty = true;
+		goto out_cleanup;
 	state->stage = G2D_SET_WIFI;
 	ret = ops->set_voltage(ops->context, true, MT6797_G2D_VCN33_UV);
 	if (ret)
 		goto out_cleanup;
 	state->stage = G2D_ENABLE_BT;
-	ret = ops->enable(ops->context, false);
+	ret = mt6797_g2d_enable(ops, state, false);
 	if (ret)
 		goto out_cleanup;
-	state->bt_enabled = true;
 	state->stage = G2D_ENABLE_WIFI;
-	ret = ops->enable(ops->context, true);
+	ret = mt6797_g2d_enable(ops, state, true);
 	if (ret)
 		goto out_cleanup;
-	state->wifi_enabled = true;
 
-	ret = mt6797_g2d_wmt(ops, state, G2D_CALIBRATE, 0x14,
-		g2d_calibrate, sizeof(g2d_calibrate), &g2d_calibrate_match);
+	ret = mt6797_g2d_calibrate(ops, state);
 out_cleanup:
 	stage_before_cleanup = state->stage;
 	cleanup_ret = mt6797_g2d_cleanup(ops, state);
+	state->cleanup_error = cleanup_ret;
 	/* Preserve the causal stage in logs when cleanup itself succeeds. */
 	if (ret)
 		state->stage = stage_before_cleanup;
@@ -319,6 +352,17 @@ static int mt6797_g2d_live_wmt(void *context, u8 opcode, const u8 *data,
 		data, data_len, expected, MT6797_G2D_TIMEOUT);
 }
 
+static int mt6797_g2d_live_wmt_capture(void *context, u8 opcode,
+		const u8 *data, size_t data_len, u8 expected_opcode,
+		size_t expected_data_len, u8 *reply, size_t reply_len)
+{
+	struct mt6797_g2d_owner *owner = context;
+
+	return mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(owner->lease,
+		opcode, data, data_len, expected_opcode, expected_data_len, reply,
+		reply_len, MT6797_G2D_TIMEOUT);
+}
+
 static void mt6797_g2d_live_delay_ms(void *context, unsigned int milliseconds)
 {
 	msleep(milliseconds);
@@ -335,6 +379,7 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		.enable = mt6797_g2d_live_enable,
 		.disable = mt6797_g2d_live_disable,
 		.wmt = mt6797_g2d_live_wmt,
+		.wmt_capture = mt6797_g2d_live_wmt_capture,
 		.delay_ms = mt6797_g2d_live_delay_ms,
 		.context = owner,
 	};
@@ -346,10 +391,14 @@ static int mt6797_g2d_postpatch_stage(void *context,
 	ret = mt6797_g2d_postpatch_run(&ops, &state);
 	owner->lease = NULL;
 	if (ret)
-		dev_err(owner->dev, "G2d stage %s failed: %d; bootstrap must fence/reset\n",
-			mt6797_g2d_stage_name[state.stage], ret);
+		dev_err(owner->dev,
+			"G2d stage %s failed: %d cleanup=%d; bootstrap must fence/reset\n",
+			mt6797_g2d_stage_name[state.stage], ret, state.cleanup_error);
 	else
 		dev_info(owner->dev, "G2d passed; bootstrap will fence/reset\n");
+	if (state.calibration_reply_valid)
+		dev_info(owner->dev, "G2d RF calibration event: %*ph\n",
+			 (int)sizeof(state.calibration_reply), state.calibration_reply);
 	return ret;
 }
 
@@ -543,6 +592,9 @@ struct mt6797_g2d_test {
 	bool wmt_before_delay;
 	unsigned int restore_calls;
 	bool restore_while_enabled;
+	bool set_before_fail;
+	bool enable_before_fail;
+	u8 calibration_reply[2];
 	enum mt6797_g2d_test_event event[24];
 	unsigned int events;
 	struct mt6797_g2d_test_command command[8];
@@ -578,8 +630,13 @@ static int mt6797_g2d_test_set_voltage(void *context, bool wifi, int uv)
 
 	if (uv == MT6797_G2D_VCN33_UV) {
 		mt6797_g2d_test_event(test, wifi ? G2D_TEST_SET_WIFI : G2D_TEST_SET_BT);
-		if (test->fail_set == wifi)
+		if (test->fail_set == wifi) {
+			if (test->set_before_fail) {
+				test->voltage[false] = uv;
+				test->voltage[true] = uv;
+			}
 			return -ETIMEDOUT;
+		}
 	} else {
 		mt6797_g2d_test_event(test, G2D_TEST_RESTORE);
 		test->restore_calls++;
@@ -595,8 +652,11 @@ static int mt6797_g2d_test_enable(void *context, bool wifi)
 	struct mt6797_g2d_test *test = context;
 
 	mt6797_g2d_test_event(test, wifi ? G2D_TEST_ENABLE_WIFI : G2D_TEST_ENABLE_BT);
-	if (test->fail_enable == wifi)
+	if (test->fail_enable == wifi) {
+		if (test->enable_before_fail)
+			test->enabled[wifi] = true;
 		return -ETIMEDOUT;
+	}
 	test->enabled[wifi] = true;
 	return 0;
 }
@@ -646,6 +706,30 @@ static int mt6797_g2d_test_wmt(void *context, u8 opcode, const u8 *data,
 	return 0;
 }
 
+static int mt6797_g2d_test_wmt_capture(void *context, u8 opcode,
+		const u8 *data, size_t data_len, u8 expected_opcode,
+		size_t expected_data_len, u8 *reply, size_t reply_len)
+{
+	struct mt6797_g2d_test *test = context;
+	unsigned int call = test->wmt_calls++;
+
+	if (opcode != 0x14 || data != g2d_calibrate ||
+	    data_len != sizeof(g2d_calibrate) || expected_opcode != 0x14 ||
+	    expected_data_len != sizeof(test->calibration_reply) ||
+	    reply_len != sizeof(test->calibration_reply))
+		return -EPROTO;
+	mt6797_g2d_test_event(test, G2D_TEST_CALIBRATE);
+	if (call < ARRAY_SIZE(test->command))
+		test->command[call] = (struct mt6797_g2d_test_command) {
+			.opcode = opcode, .data = data, .data_len = data_len,
+			.expected = NULL,
+		};
+	if (test->fail_wmt >= 0 && call == test->fail_wmt)
+		return -ETIMEDOUT;
+	memcpy(reply, test->calibration_reply, reply_len);
+	return 0;
+}
+
 static void mt6797_g2d_test_delay(void *context, unsigned int milliseconds)
 {
 	struct mt6797_g2d_test *test = context;
@@ -664,6 +748,7 @@ static struct mt6797_g2d_ops mt6797_g2d_test_ops(struct mt6797_g2d_test *test)
 		.enable = mt6797_g2d_test_enable,
 		.disable = mt6797_g2d_test_disable,
 		.wmt = mt6797_g2d_test_wmt,
+		.wmt_capture = mt6797_g2d_test_wmt_capture,
 		.delay_ms = mt6797_g2d_test_delay,
 		.context = test,
 	};
@@ -685,6 +770,7 @@ static void mt6797_g2d_test_exact_order(struct kunit *test)
 		.voltage = { 3500000, 3500000 },
 		.fail_set = -1, .fail_enable = -1, .fail_disable = -1,
 		.fail_wmt = -1, .fail_enabled_call = -1,
+		.calibration_reply = { 0x7a, 0xc3 },
 	};
 	struct mt6797_g2d_state state = { };
 	struct mt6797_g2d_ops ops = mt6797_g2d_test_ops(&context);
@@ -705,7 +791,10 @@ static void mt6797_g2d_test_exact_order(struct kunit *test)
 	mt6797_g2d_test_expect_command(test, &context.command[4], 0x10,
 		g2d_lte_l, sizeof(g2d_lte_l), &g2d_ok_10);
 	mt6797_g2d_test_expect_command(test, &context.command[5], 0x14,
-		g2d_calibrate, sizeof(g2d_calibrate), &g2d_calibrate_match);
+		g2d_calibrate, sizeof(g2d_calibrate), NULL);
+	KUNIT_EXPECT_TRUE(test, state.calibration_reply_valid);
+	KUNIT_EXPECT_MEMEQ(test, state.calibration_reply, context.calibration_reply,
+			   sizeof(state.calibration_reply));
 	mt6797_g2d_test_expect_command(test, &context.command[6], 0x10,
 		g2d_coex, sizeof(g2d_coex), &g2d_ok_10);
 	mt6797_g2d_test_expect_command(test, &context.command[7], 0x05,
@@ -768,7 +857,7 @@ static void mt6797_g2d_test_setup_and_cleanup_failures(struct kunit *test)
 		KUNIT_EXPECT_EQ(test, mt6797_g2d_postpatch_run(&ops, &state), -ETIMEDOUT);
 		KUNIT_EXPECT_FALSE(test, context.enabled[false]);
 		KUNIT_EXPECT_FALSE(test, context.enabled[true]);
-		KUNIT_EXPECT_EQ(test, context.restore_calls, fail_set ? 1U : 0U);
+		KUNIT_EXPECT_EQ(test, context.restore_calls, 1U);
 	}
 	for (fail_enable = 0; fail_enable < 2; fail_enable++) {
 		struct mt6797_g2d_test context = {
@@ -814,6 +903,35 @@ static void mt6797_g2d_test_setup_and_cleanup_failures(struct kunit *test)
 	}
 }
 
+static void mt6797_g2d_test_partial_mutations_unwind(struct kunit *test)
+{
+	struct mt6797_g2d_test context = {
+		.voltage = { 3500000, 3500000 }, .fail_set = 0,
+		.fail_enable = -1, .fail_disable = -1, .fail_wmt = -1,
+		.fail_enabled_call = -1, .set_before_fail = true,
+	};
+	struct mt6797_g2d_state state = { };
+	struct mt6797_g2d_ops ops = mt6797_g2d_test_ops(&context);
+
+	KUNIT_EXPECT_EQ(test, mt6797_g2d_postpatch_run(&ops, &state), -ETIMEDOUT);
+	KUNIT_EXPECT_EQ(test, context.restore_calls, 1U);
+	KUNIT_EXPECT_FALSE(test, context.restore_while_enabled);
+	KUNIT_EXPECT_EQ(test, context.voltage[false], 3500000);
+
+	context = (struct mt6797_g2d_test) {
+		.voltage = { 3500000, 3500000 }, .fail_set = -1,
+		.fail_enable = 0, .fail_disable = -1, .fail_wmt = -1,
+		.fail_enabled_call = -1, .enable_before_fail = true,
+	};
+	state = (struct mt6797_g2d_state) { };
+	ops = mt6797_g2d_test_ops(&context);
+	KUNIT_EXPECT_EQ(test, mt6797_g2d_postpatch_run(&ops, &state), -ETIMEDOUT);
+	KUNIT_EXPECT_FALSE(test, context.enabled[false]);
+	KUNIT_EXPECT_FALSE(test, context.enabled[true]);
+	KUNIT_EXPECT_EQ(test, context.restore_calls, 1U);
+	KUNIT_EXPECT_FALSE(test, context.restore_while_enabled);
+}
+
 static void mt6797_g2d_test_rejects_unsafe_entry(struct kunit *test)
 {
 	struct mt6797_g2d_test context = {
@@ -836,6 +954,7 @@ static struct kunit_case mt6797_g2d_postpatch_cases[] = {
 	KUNIT_CASE(mt6797_g2d_test_exact_order),
 	KUNIT_CASE(mt6797_g2d_test_every_wmt_failure_unwinds),
 	KUNIT_CASE(mt6797_g2d_test_setup_and_cleanup_failures),
+	KUNIT_CASE(mt6797_g2d_test_partial_mutations_unwind),
 	KUNIT_CASE(mt6797_g2d_test_rejects_unsafe_entry),
 	{}
 };

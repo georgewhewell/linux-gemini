@@ -410,6 +410,39 @@ static void mtk_wmt_test_capture_variable_reply(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, reply[1], (u8)2);
 }
 
+static void mtk_wmt_test_capture_rejects_wrong_opcode_or_length(struct kunit *test)
+{
+	struct mtk_wmt_test_payload_transport transport = { };
+	struct mtk_wmt wmt;
+	u8 command[] = { 4, 0 };
+	u8 reply[] = { 0, 0 };
+
+	mtk_wmt_init_payload_transport(&wmt, MTK_STP_MODE_FULL,
+				       mtk_wmt_test_payload_transmit, &transport);
+	transport.wmt = &wmt;
+	transport.reply[0] = MTK_WMT_DIR_EVENT;
+	transport.reply[1] = 0x13;
+	transport.reply[2] = 2;
+	transport.reply[3] = 0;
+	transport.reply_len = 4;
+	KUNIT_EXPECT_EQ(test, mtk_wmt_transaction_capture(&wmt, 0x14, command,
+						     sizeof(command), 0x14, 2,
+						     reply, sizeof(reply), 1), -ETIMEDOUT);
+
+	transport = (struct mtk_wmt_test_payload_transport) { };
+	mtk_wmt_init_payload_transport(&wmt, MTK_STP_MODE_FULL,
+				       mtk_wmt_test_payload_transmit, &transport);
+	transport.wmt = &wmt;
+	transport.reply[0] = MTK_WMT_DIR_EVENT;
+	transport.reply[1] = 0x14;
+	transport.reply[2] = 1;
+	transport.reply[3] = 0;
+	transport.reply_len = 4;
+	KUNIT_EXPECT_EQ(test, mtk_wmt_transaction_capture(&wmt, 0x14, command,
+						     sizeof(command), 0x14, 2,
+						     reply, sizeof(reply), 1), -ETIMEDOUT);
+}
+
 static struct kunit_case mtk_wmt_test_cases[] = {
 	KUNIT_CASE(mtk_wmt_test_packet_codec),
 	KUNIT_CASE(mtk_wmt_test_zero_sdu_event),
@@ -420,6 +453,7 @@ static struct kunit_case mtk_wmt_test_cases[] = {
 	KUNIT_CASE(mtk_wmt_test_sync_reply_transport_error_fences),
 	KUNIT_CASE(mtk_wmt_test_unmatched_is_unsolicited),
 	KUNIT_CASE(mtk_wmt_test_capture_variable_reply),
+	KUNIT_CASE(mtk_wmt_test_capture_rejects_wrong_opcode_or_length),
 	{}
 };
 

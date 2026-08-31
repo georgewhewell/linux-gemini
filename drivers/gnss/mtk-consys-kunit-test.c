@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Hardware-free coverage for the opaque-full-STP MediaTek CONSYS GNSS endpoint. */
 
-#include <kunit/device.h>
 #include <kunit/test.h>
 #include <linux/completion.h>
+#include <linux/device.h>
 #include <linux/errno.h>
 #include <linux/gnss.h>
 #include <linux/jiffies.h>
@@ -97,7 +97,7 @@ static int mtk_gnss_test_init(struct kunit *test)
 	if (!ctx)
 		return -ENOMEM;
 	test->priv = ctx;
-	ctx->dev = kunit_device_register(test, "mtk-gnss-test");
+	ctx->dev = root_device_register("mtk-gnss-test");
 	if (IS_ERR(ctx->dev))
 		return PTR_ERR(ctx->dev);
 	session_ops = (struct mt6797_consys_stp_session_ops) {
@@ -144,6 +144,7 @@ static void mtk_gnss_test_exit(struct kunit *test)
 
 	mtk_gnss_unregister(&ctx->gnss);
 	mt6797_consys_stp_session_destroy(ctx->session);
+	root_device_unregister(ctx->dev);
 }
 
 static size_t mtk_gnss_test_full_frame(struct kunit *test, u8 *frame,
@@ -203,6 +204,8 @@ static void mtk_gnss_test_tx_failure_requires_reset(struct kunit *test)
 	ctx->backend.tx_result = -EIO;
 	KUNIT_EXPECT_EQ(test, mtk_gnss_write(&ctx->gnss, payload,
 					     sizeof(payload)), -EIO);
+	KUNIT_EXPECT_EQ(test, ctx->backend.power_off_calls, 1U);
+	KUNIT_EXPECT_FALSE(test, ctx->gnss.active);
 	KUNIT_EXPECT_TRUE(test, ctx->gnss.faulted);
 	KUNIT_EXPECT_EQ(test, mtk_gnss_start(&ctx->gnss), -EIO);
 

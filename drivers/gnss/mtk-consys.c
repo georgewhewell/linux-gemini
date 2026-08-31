@@ -171,7 +171,16 @@ int mtk_gnss_write(struct mtk_gnss *gnss, const u8 *data, size_t data_len)
 						 MTK_STP_GNSS, data, data_len);
 	mutex_lock(&gnss->lock);
 	if (ret) {
-		/* A failed opaque full-STP submit has no endpoint-local recovery. */
+		/*
+		 * A failed opaque full-STP submit has no endpoint-local recovery,
+		 * but it must not strand the owner\'s GPS function/LNA vote.  Hold
+		 * transitioning across the unclocked fail-low callback so close() and
+		 * unregister() cannot race it, then preserve the transmit failure as
+		 * this endpoint\'s terminal fault.
+		 */
+		mutex_unlock(&gnss->lock);
+		gnss->transport.set_power(gnss->transport.context, false);
+		mutex_lock(&gnss->lock);
 		gnss->active = false;
 		gnss->faulted = true;
 	} else {

@@ -1294,9 +1294,24 @@ static int w4_send_mgmt(struct mt6797_wifi_w4 *w4, const u8 *mgmt, size_t len)
 	frame[5] = BIT(7) | (2 << 5) | (IEEE80211_HDRLEN >> 1);
 	frame[8] = ((mgmt[0] >> 4) & 0xf) | ((mgmt[0] & 0x0c) << 2);
 	frame[10] = 0;
-	put_unaligned_le16(30U << 11, frame + 12);
+	/*
+	 * The active vendor path applies nicTxSetPktLowestFixedRate() to every
+	 * management MSDU in nicTxProcessMngPacket() (nic_tx.c:2350-2372).
+	 * Authentication and association additionally set
+	 * MSDU_CONTROL_FLAG_FORCE_TX (auth.c:261-277; assoc.c:573-586), which
+	 * nicTxFillDescByPktControl() mirrors into TXD DW3's SW-reserved bit zero
+	 * (nic_tx.c:2869-2885). These are pre-link frames: do not leave either
+	 * property to an as-yet-unusable peer WTBL entry.
+	 */
+	frame[11] = BIT(7); /* TX_DESC_FIXED_RATE */
+	put_unaligned_le16((30U << 11) | BIT(0), frame + 12);
+	put_unaligned_le16(w4->hw_default_rate_code << 2, frame + 26);
 	memcpy(frame + txd_len, mgmt, len);
 	ret = w4_cmd53(w4, true, W4_WTDR1, frame, total);
+	dev_info(w4->dev,
+		 "W4_DIAG stage=mgmt-tx subtype=%#x ret=%d len=%zu wire=%u transfer=%u wlan=%u rate=%#x force=1\n",
+		 (mgmt[0] >> 4) & 0xf, ret, len, wire_len, total,
+		 w4->wlan_index, w4->hw_default_rate_code);
 	kfree(frame);
 	return ret;
 }

@@ -455,9 +455,6 @@ int gemini_transition_ledger_snapshot(struct gemini_transition_ledger_snapshot *
 	u32 signature;
 	u32 start;
 	u32 size;
-	u32 signature;
-	u32 start;
-	u32 size;
 	int ret;
 
 	if (!snapshot)
@@ -511,6 +508,9 @@ int gemini_transition_ledger_ack_terminal(
 	struct gemini_transition_ledger_record record;
 	void __iomem *slot;
 	u32 copy;
+	u32 signature;
+	u32 start;
+	u32 size;
 	int ret;
 
 	if (!expected || !expected->attempt_id ||

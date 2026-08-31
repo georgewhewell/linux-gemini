@@ -722,7 +722,14 @@ static int mt6797_consys_stp_session_receive_locked(
 
 	for (index = 0; index < length; index++) {
 		ret = mt6797_consys_stp_receive_byte_locked(session, data[index]);
-		if (ret && !first_error)
+		/*
+		 * Vendor btif_rx_irq_handler() invokes a void receive callback
+		 * (btif_plat.c:816-859), while stp_core.c:2069-2074 leaves an
+		 * unexpected byte in SYNC for a later frame.  Keep that local,
+		 * recoverable framing fault out of the PIO fence path; endpoint and
+		 * protocol failures remain terminal to this dispatch.
+		 */
+		if (ret && ret != -EBADMSG && !first_error)
 			first_error = ret;
 		if (ret) {
 			session->diagnostics.rx_parser_failures++;
@@ -1229,7 +1236,7 @@ static void mt6797_consys_stp_test_malformed_and_quiesce(struct kunit *test)
 
 	session = mt6797_consys_stp_test_session(test, &link, &lease);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session, malformed,
-							 sizeof(malformed)), -EBADMSG);
+								 sizeof(malformed)), 0);
 	KUNIT_EXPECT_EQ(test, link->rx_count, 0U);
 	mt6797_consys_stp_session_quiesce(session);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_transmit(lease,
@@ -1292,7 +1299,7 @@ static void mt6797_consys_stp_test_fragmented_delimiter_resync_and_crc_recovery(
 	bytes[frame_length - 1] ^= 1;
 	memcpy(bytes + frame_length, frame, frame_length);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session, bytes,
-									2 * frame_length), -EBADMSG);
+									2 * frame_length), 0);
 	/* The CRC-rejected seq=1 did not advance expected_rxseq. */
 	KUNIT_EXPECT_EQ(test, link->rx_count, 2U);
 	mt6797_consys_stp_session_destroy(session);

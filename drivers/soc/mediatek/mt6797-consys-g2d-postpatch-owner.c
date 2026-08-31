@@ -13,6 +13,7 @@
  */
 
 #include <linux/device.h>
+#include <linux/atomic.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/jiffies.h>
@@ -535,6 +536,10 @@ struct mt6797_g2d_owner {
 	bool gnss_probe;
 	bool persistent_gnss;
 	bool persistent_gnss_faulted;
+	atomic64_t persistent_gnss_power_ons;
+	atomic64_t persistent_gnss_power_offs;
+	atomic64_t persistent_gnss_failures;
+	atomic_t persistent_gnss_last_error;
 	bool bt_function_proof;
 	bool bt_hci_proof;
 	bool wifi_w4_retained_owner;
@@ -701,14 +706,28 @@ static int mt6797_g2d_live_lna_set(void *context, bool enable)
 }
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_G2G_GNSS_ENDPOINT)
+static void mt6797_g2g_gnss_record_power(struct mt6797_g2d_owner *owner,
+		bool enable, int error)
+{
+	if (error)
+		atomic64_inc(&owner->persistent_gnss_failures);
+	else if (enable)
+		atomic64_inc(&owner->persistent_gnss_power_ons);
+	else
+		atomic64_inc(&owner->persistent_gnss_power_offs);
+	atomic_set(&owner->persistent_gnss_last_error, error);
+}
+
 static int mt6797_g2g_gnss_set_power(void *context, bool enable)
 {
 	struct mt6797_g2d_owner *owner = context;
 	int cleanup;
 	int ret;
 
-	if (READ_ONCE(owner->persistent_gnss_faulted))
+	if (READ_ONCE(owner->persistent_gnss_faulted)) {
+		mt6797_g2g_gnss_record_power(owner, enable, -EIO);
 		return -EIO;
+	}
 
 	if (enable) {
 		ret = mt6797_g2d_live_lna_set(owner, true);
@@ -716,15 +735,19 @@ static int mt6797_g2g_gnss_set_power(void *context, bool enable)
 			goto fault_and_lower_lna;
 		ret = mt6797_consys_runtime_controller_gnss_set_power(
 			owner->controller, &owner->gnss_lease, true);
-		if (!ret)
+		if (!ret) {
+			mt6797_g2g_gnss_record_power(owner, true, 0);
 			return 0;
+		}
 fault_and_lower_lna:
 		cleanup = mt6797_g2d_live_lna_set(owner, false);
 		WRITE_ONCE(owner->persistent_gnss_faulted, true);
 		dev_err(owner->dev,
 			"persistent GNSS-on failed=%d LNA-low cleanup=%d; reboot required\n",
 			ret, cleanup);
-		return ret ?: cleanup ?: -EIO;
+		ret = ret ?: cleanup ?: -EIO;
+		mt6797_g2g_gnss_record_power(owner, true, ret);
+		return ret;
 	}
 
 	/* The hardware-passed shutdown order lowers the external LNA first. */
@@ -737,8 +760,59 @@ fault_and_lower_lna:
 			"persistent GNSS-off failed: LNA-low=%d FUNC_CTRL-off=%d; reboot required\n",
 			ret, cleanup);
 	}
-	return ret ?: cleanup;
+	ret = ret ?: cleanup;
+	mt6797_g2g_gnss_record_power(owner, false, ret);
+	return ret;
 }
+
+static ssize_t persistent_gnss_power_ons_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct mt6797_g2d_owner *owner = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n",
+		atomic64_read(&owner->persistent_gnss_power_ons));
+}
+static DEVICE_ATTR_RO(persistent_gnss_power_ons);
+
+static ssize_t persistent_gnss_power_offs_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct mt6797_g2d_owner *owner = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n",
+		atomic64_read(&owner->persistent_gnss_power_offs));
+}
+static DEVICE_ATTR_RO(persistent_gnss_power_offs);
+
+static ssize_t persistent_gnss_failures_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct mt6797_g2d_owner *owner = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n",
+		atomic64_read(&owner->persistent_gnss_failures));
+}
+static DEVICE_ATTR_RO(persistent_gnss_failures);
+
+static ssize_t persistent_gnss_last_error_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct mt6797_g2d_owner *owner = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n",
+		atomic_read(&owner->persistent_gnss_last_error));
+}
+static DEVICE_ATTR_RO(persistent_gnss_last_error);
+
+static struct attribute *mt6797_g2g_gnss_attrs[] = {
+	&dev_attr_persistent_gnss_power_ons.attr,
+	&dev_attr_persistent_gnss_power_offs.attr,
+	&dev_attr_persistent_gnss_failures.attr,
+	&dev_attr_persistent_gnss_last_error.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(mt6797_g2g_gnss);
 #endif
 
 #if IS_REACHABLE(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_OBSERVE)
@@ -969,6 +1043,10 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 		return mt6797_g2d_probe_failure(&pdev->dev, -ENOMEM, "owner allocation");
 	owner->dev = &pdev->dev;
 	mutex_init(&owner->w4_lock);
+	atomic64_set(&owner->persistent_gnss_power_ons, 0);
+	atomic64_set(&owner->persistent_gnss_power_offs, 0);
+	atomic64_set(&owner->persistent_gnss_failures, 0);
+	atomic_set(&owner->persistent_gnss_last_error, 0);
 	platform_set_drvdata(pdev, owner);
 	owner->bt_function_proof = device_property_read_bool(&pdev->dev,
 		"mediatek,experimental-g2e-bt-function-owner") &&
@@ -1129,6 +1207,13 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 		if (ret) {
 			ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
 				"persistent GNSS endpoint registration");
+			goto postid;
+		}
+		ret = devm_device_add_groups(&pdev->dev, mt6797_g2g_gnss_groups);
+		if (ret) {
+			mtk_gnss_unregister(&owner->gnss);
+			ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
+				"persistent GNSS diagnostics");
 			goto postid;
 		}
 		platform_set_drvdata(pdev, owner);

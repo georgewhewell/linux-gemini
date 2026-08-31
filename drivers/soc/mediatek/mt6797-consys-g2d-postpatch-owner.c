@@ -18,6 +18,7 @@
 #include <linux/kconfig.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -27,6 +28,7 @@
 
 #include <linux/soc/mediatek/mt6797-btif-stp-bootstrap.h>
 #include <linux/soc/mediatek/mt6797-consys-emi-mpu.h>
+#include <linux/soc/mediatek/mt6797-consys-g2d-postpatch-owner.h>
 #include <linux/soc/mediatek/mt6797-consys-postid.h>
 #include <linux/soc/mediatek/mt6797-consys-runtime-controller.h>
 #include <linux/soc/mediatek/mt6797-consys-runtime.h>
@@ -511,12 +513,87 @@ struct mt6797_g2d_owner {
 	struct pinctrl_state *gps_lna_on;
 	struct pinctrl_state *gps_lna_off;
 	const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease;
+	struct device *runtime_dev;
+	struct device *controller_dev;
+	struct mt6797_consys_runtime_resource_lease resources;
+	struct mt6797_consys_runtime_provider_lease identity;
+	struct mt6797_consys_postid_owner postid;
+	struct mutex w4_lock;
 	bool wifi_w0_dirty_fatal;
 	bool gnss_probe;
 	bool bt_function_proof;
 	bool bt_hci_proof;
 	bool wifi_w4_retained_owner;
+	bool w4_resources_held;
+	bool w4_identity_held;
+	bool w4_postid_active;
 };
+
+static int mt6797_g2d_w4_release_locked(struct mt6797_g2d_owner *owner)
+{
+	int ret;
+
+	if (!owner->w4_resources_held && !owner->w4_identity_held &&
+	    !owner->w4_postid_active)
+		return 0;
+	if (!owner->w4_resources_held || !owner->w4_identity_held ||
+	    !owner->w4_postid_active)
+		return -EIO;
+	ret = mt6797_consys_postid_stop(&owner->postid);
+	if (ret)
+		return ret;
+	owner->w4_postid_active = false;
+	ret = mt6797_consys_runtime_platform_identity_release(&owner->identity);
+	if (ret)
+		return ret;
+	owner->w4_identity_held = false;
+	ret = mt6797_consys_runtime_resource_lease_release(&owner->resources);
+	if (ret)
+		return ret;
+	owner->w4_resources_held = false;
+	put_device(owner->controller_dev);
+	owner->controller_dev = NULL;
+	put_device(owner->runtime_dev);
+	owner->runtime_dev = NULL;
+	return 0;
+}
+
+int mt6797_consys_g2d_postpatch_owner_w4_validate(struct device *dev)
+{
+	struct mt6797_g2d_owner *owner;
+	int ret = 0;
+
+	if (!dev)
+		return -EINVAL;
+	owner = dev_get_drvdata(dev);
+	if (!owner)
+		return -EPROBE_DEFER;
+	mutex_lock(&owner->w4_lock);
+	if (!owner->wifi_w4_retained_owner || !owner->w4_resources_held ||
+	    !owner->w4_identity_held || !owner->w4_postid_active)
+		ret = -ESHUTDOWN;
+	mutex_unlock(&owner->w4_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_g2d_postpatch_owner_w4_validate);
+
+int mt6797_consys_g2d_postpatch_owner_w4_release(struct device *dev)
+{
+	struct mt6797_g2d_owner *owner;
+	int ret;
+
+	if (!dev)
+		return -EINVAL;
+	owner = dev_get_drvdata(dev);
+	if (!owner)
+		return -ENODEV;
+	mutex_lock(&owner->w4_lock);
+	ret = owner->wifi_w4_retained_owner ?
+		mt6797_g2d_w4_release_locked(owner) : -EPERM;
+	mutex_unlock(&owner->w4_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_g2d_postpatch_owner_w4_release);
 
 static struct regulator *mt6797_g2d_regulator(struct mt6797_g2d_owner *owner,
 		bool wifi)
@@ -827,6 +904,8 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	if (!owner)
 		return mt6797_g2d_probe_failure(&pdev->dev, -ENOMEM, "owner allocation");
 	owner->dev = &pdev->dev;
+	mutex_init(&owner->w4_lock);
+	platform_set_drvdata(pdev, owner);
 	owner->bt_function_proof = device_property_read_bool(&pdev->dev,
 		"mediatek,experimental-g2e-bt-function-owner") &&
 		READ_ONCE(enable_experimental_g2e_bt_function_owner);
@@ -920,9 +999,27 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 		goto postid;
 	}
 	if (owner->wifi_w4_retained_owner) {
-		/* W4 is the sole controller/HIF owner; G2d must not fence it here. */
+		/*
+		 * The controller consumes the canonical provider identity, while W4
+		 * owns the controller/HIF session.  Keep this true-chronology prefix
+		 * alive until W4 has stopped the controller and calls w4_release().
+		 */
+		owner->resources = resources;
+		resources = (struct mt6797_consys_runtime_resource_lease) { };
+		owner->w4_resources_held = true;
+		owner->identity = identity;
+		identity = (struct mt6797_consys_runtime_provider_lease) { };
+		owner->w4_identity_held = true;
+		owner->postid = postid;
+		postid = (struct mt6797_consys_postid_owner) { };
+		owner->w4_postid_active = true;
+		owner->runtime_dev = runtime;
+		runtime = NULL;
+		owner->controller_dev = controller;
+		controller = NULL;
 		dev_info(&pdev->dev,
-			"G2d W4 retained handoff: controller left READY for W4\n");
+			"G2d W4 retained handoff: post-ID identity held; controller READY for W4\n");
+		return 0;
 	} else {
 		ret = mt6797_consys_runtime_controller_start_with_postpatch_stage(controller,
 			mt6797_g2d_postpatch_stage, owner);
@@ -964,6 +1061,22 @@ put_runtime:
 	return ret;
 }
 
+static void mt6797_g2d_postpatch_owner_remove(struct platform_device *pdev)
+{
+	struct mt6797_g2d_owner *owner = platform_get_drvdata(pdev);
+	int ret;
+
+	if (!owner || !owner->wifi_w4_retained_owner)
+		return;
+	if (owner->controller_dev)
+		mt6797_consys_runtime_controller_stop(owner->controller_dev);
+	ret = mt6797_consys_g2d_postpatch_owner_w4_release(&pdev->dev);
+	if (ret) {
+		mt6797_consys_emi_mpu_latch_fatal();
+		dev_err(&pdev->dev, "G2d W4 retained handoff teardown failed: %d\n", ret);
+	}
+}
+
 static const struct of_device_id mt6797_g2d_postpatch_owner_of_match[] = {
 	{ .compatible = "mediatek,mt6797-consys-g2d-postpatch-owner" },
 	{ .compatible = "mediatek,mt6797-consys-g2e-bt-function-owner" },
@@ -974,6 +1087,7 @@ MODULE_DEVICE_TABLE(of, mt6797_g2d_postpatch_owner_of_match);
 
 static struct platform_driver mt6797_g2d_postpatch_owner_driver = {
 	.probe = mt6797_g2d_postpatch_owner_probe,
+	.remove = mt6797_g2d_postpatch_owner_remove,
 	.driver = {
 		.name = "mt6797-consys-g2d-postpatch-owner",
 		.of_match_table = mt6797_g2d_postpatch_owner_of_match,

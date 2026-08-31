@@ -11,12 +11,15 @@
 #include <linux/errno.h>
 #include <linux/gemini_transition_ledger.h>
 #include <linux/init.h>
+#include <linux/mt6797-a72-provider.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/soc/mediatek/mt6797-a72-binder.h>
+#include <linux/soc/mediatek/mt6797-a72-platform-state.h>
 #include <linux/string.h>
 #include <linux/sysfs.h>
 
@@ -26,6 +29,12 @@
 #define MT6797_A72_ADMISSION_TAG "GEMINI_A72_ADMISSION_V1"
 #define MT6797_A72_ADMISSION_LIVE_TAG "GEMINI_A72_ADMISSION_LIVE_V1"
 #define MT6797_A72_ADMISSION_CPU 8
+#define MT6797_A72_RECOVERY_P27_RESET		0x00010132U
+#define MT6797_A72_RECOVERY_P28_ISOLATION	0x00000002U
+#define MT6797_A72_RECOVERY_DA9213_VBUCKB	0x46U
+#define MT6797_A72_RECOVERY_CPU_POWER_MASK	GENMASK(7, 6)
+#define MT6797_A72_RECOVERY_ISOLATION_MASK	GENMASK(1, 0)
+#define MT6797_A72_RECOVERY_BUCKB_ENABLE	BIT(0)
 
 struct mt6797_a72_admission_controller {
 	struct device *dev;
@@ -34,6 +43,7 @@ struct mt6797_a72_admission_controller {
 	struct mt6797_a72_admission_controller_state state;
 	struct mt6797_a72_admission_trigger_state trigger;
 	int ledger_prepare_ret;
+	struct mutex live_lock;
 };
 
 static bool
@@ -298,6 +308,69 @@ static int mt6797_a72_admission_execute(void *context)
 					controller);
 }
 
+static int mt6797_a72_admission_retained_ledger_refresh(
+	struct mt6797_a72_admission_controller *controller,
+	struct gemini_transition_ledger_snapshot *snapshot)
+{
+	int ret;
+
+	ret = gemini_transition_ledger_snapshot(snapshot);
+	controller->state.ledger_snapshot_ret = ret;
+	if (!ret)
+		controller->state.ledger_snapshot = *snapshot;
+	else
+		controller->state.ledger_snapshot =
+			(struct gemini_transition_ledger_snapshot){};
+	return ret;
+}
+
+static const char *
+mt6797_a72_admission_ledger_state(int ret,
+	const struct gemini_transition_ledger_snapshot *snapshot)
+{
+	if (ret == -ENODATA)
+		return "empty";
+	if (ret)
+		return "unreadable";
+	return snapshot->phase == GEMINI_TRANSITION_LEDGER_TERMINAL &&
+	       snapshot->terminal ? "retained-terminal" : "retained-incomplete";
+}
+
+/* Read-only reset proof for retiring a completed prior attempt. */
+static int mt6797_a72_admission_reset_baseline(
+	struct mt6797_a72_admission_controller *controller)
+{
+	struct mt6797_a72_platform_state platform;
+	struct mt6797_a72_provider_snapshot provider;
+	int ret;
+
+	ret = mt6797_a72_admission_prepare(controller);
+	if (ret)
+		return ret;
+	ret = mt6797_a72_platform_state_snapshot(controller->source.platform,
+					  &platform);
+	if (ret)
+		return ret;
+	ret = mt6797_a72_provider_snapshot(&provider);
+	if (ret)
+		return ret;
+	controller->state.baseline_p27 = platform.spm_mp2_cpusys_pwr_con;
+	controller->state.baseline_p28 = platform.spm_cpu_ext_buck_iso;
+	controller->state.baseline_buckb_cont = provider.buckb_cont;
+	controller->state.baseline_buckb_vsel = provider.vbuckb_b;
+	if (!platform.valid ||
+	    (platform.spm_cpu_pwr_status & MT6797_A72_RECOVERY_CPU_POWER_MASK) ||
+	    (platform.spm_cpu_pwr_status_2nd & MT6797_A72_RECOVERY_CPU_POWER_MASK) ||
+	    platform.spm_mp2_cpusys_pwr_con != MT6797_A72_RECOVERY_P27_RESET ||
+	    (platform.spm_cpu_ext_buck_iso & MT6797_A72_RECOVERY_ISOLATION_MASK) !=
+		MT6797_A72_RECOVERY_P28_ISOLATION ||
+	    !platform.pwrap_reset_asserted ||
+	    provider.buckb_cont & MT6797_A72_RECOVERY_BUCKB_ENABLE ||
+	    provider.vbuckb_b != MT6797_A72_RECOVERY_DA9213_VBUCKB)
+		return -EUCLEAN;
+	return 0;
+}
+
 static const struct mt6797_a72_admission_trigger_ops
 mt6797_a72_admission_trigger_production_ops = {
 	.execute = mt6797_a72_admission_execute,
@@ -308,8 +381,11 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 {
 	struct mt6797_a72_admission_controller *controller = dev_get_drvdata(dev);
 	struct mt6797_a72_binder_diagnostic diagnostic;
+	struct gemini_transition_ledger_snapshot ledger_snapshot;
 	bool complete;
 	bool consumed;
+	const char *ledger_state;
+	int ledger_ret;
 	const char *trigger_state;
 	int diagnostic_ret;
 	ssize_t len;
@@ -325,6 +401,10 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 	else
 		trigger_state = "terminal";
 	diagnostic_ret = mt6797_a72_binder_diagnostic_snapshot(&diagnostic);
+	ledger_ret = mt6797_a72_admission_retained_ledger_refresh(controller,
+							     &ledger_snapshot);
+	ledger_state = mt6797_a72_admission_ledger_state(ledger_ret,
+								 &ledger_snapshot);
 	len = sysfs_emit(buf, "%s state=%s ",
 			 MT6797_A72_ADMISSION_LIVE_TAG, trigger_state);
 	len += sysfs_emit_at(buf, len,
@@ -341,13 +421,28 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 	len += sysfs_emit_at(buf, len, "ledger_prepare_ret=%d ",
 			     READ_ONCE(controller->ledger_prepare_ret));
 	len += sysfs_emit_at(buf, len,
-			     "ledger_snapshot_ret=%d ledger_attempt=%llu ledger_generation=%u ledger_phase=%u ledger_stage=%u ledger_terminal=%u ",
-			     READ_ONCE(controller->state.ledger_snapshot_ret),
-			     (unsigned long long)READ_ONCE(controller->state.ledger_snapshot.attempt_id),
-			     READ_ONCE(controller->state.ledger_snapshot.generation),
-			     READ_ONCE(controller->state.ledger_snapshot.phase),
-			     READ_ONCE(controller->state.ledger_snapshot.stage),
-			     READ_ONCE(controller->state.ledger_snapshot.terminal));
+			     "ledger_snapshot_ret=%d ledger_state=%s ledger_attempt=%llu ledger_generation=%u ledger_phase=%u ledger_stage=%u ledger_terminal=%u ",
+			     ledger_ret, ledger_state,
+			     (unsigned long long)ledger_snapshot.attempt_id,
+			     ledger_snapshot.generation, ledger_snapshot.phase,
+			     ledger_snapshot.stage, ledger_snapshot.terminal);
+	len += sysfs_emit_at(buf, len,
+			     "ledger_ack_ret=%d ledger_acknowledged=%u archived_attempt=%llu archived_generation=%u archived_phase=%u archived_stage=%u archived_terminal=%u ",
+			     READ_ONCE(controller->state.ledger_ack_ret),
+			     READ_ONCE(controller->state.ledger_acknowledged),
+			     (unsigned long long)READ_ONCE(controller->state.archived_ledger.attempt_id),
+			     READ_ONCE(controller->state.archived_ledger.generation),
+			     READ_ONCE(controller->state.archived_ledger.phase),
+			     READ_ONCE(controller->state.archived_ledger.stage),
+			     READ_ONCE(controller->state.archived_ledger.terminal));
+	len += sysfs_emit_at(buf, len,
+			     "baseline_checked=%u baseline_ret=%d baseline_p27=0x%x baseline_p28=0x%x baseline_buckb_cont=0x%x baseline_buckb_vsel=0x%x ",
+			     READ_ONCE(controller->state.baseline_checked),
+			     READ_ONCE(controller->state.baseline_ret),
+			     READ_ONCE(controller->state.baseline_p27),
+			     READ_ONCE(controller->state.baseline_p28),
+			     READ_ONCE(controller->state.baseline_buckb_cont),
+			     READ_ONCE(controller->state.baseline_buckb_vsel));
 	len += sysfs_emit_at(buf, len,
 			     "trace_prepare_ret=%d trace_entry_words=%08x/%08x/%08x/%08x/%08x/%08x/%08x ",
 			     READ_ONCE(controller->state.trace_prepare_ret),
@@ -462,9 +557,16 @@ static ssize_t trigger_store(struct device *dev,
 	int ret;
 
 	(void)attr;
-	ret = mt6797_a72_admission_trigger_run(&controller->trigger,
-					       &mt6797_a72_admission_trigger_production_ops,
-					       controller, buf, count);
+	mutex_lock(&controller->live_lock);
+	ret = mt6797_a72_admission_retained_ledger_refresh(
+		controller, &controller->state.ledger_snapshot);
+	if (!ret)
+		ret = -EUCLEAN;
+	else if (ret == -ENODATA)
+		ret = mt6797_a72_admission_trigger_run(&controller->trigger,
+			       &mt6797_a72_admission_trigger_production_ops,
+			       controller, buf, count);
+	mutex_unlock(&controller->live_lock);
 	if (ret)
 		return ret;
 	dev_info(dev, MT6797_A72_ADMISSION_LIVE_TAG
@@ -479,12 +581,68 @@ static ssize_t trigger_store(struct device *dev,
 	return count;
 }
 
+static ssize_t recover_store(struct device *dev,
+			    struct device_attribute *attr,
+			    const char *buf, size_t count)
+{
+	struct mt6797_a72_admission_controller *controller = dev_get_drvdata(dev);
+	struct gemini_transition_ledger_snapshot ledger;
+	int ret;
+
+	(void)attr;
+	if (count != sizeof(MT6797_A72_ADMISSION_RECOVER_TOKEN) - 1 ||
+	    memcmp(buf, MT6797_A72_ADMISSION_RECOVER_TOKEN, count))
+		return -EINVAL;
+	mutex_lock(&controller->live_lock);
+	if (atomic_read(&controller->trigger.consumed)) {
+		ret = -EALREADY;
+		goto out_unlock;
+	}
+	ret = mt6797_a72_admission_retained_ledger_refresh(controller, &ledger);
+	if (ret)
+		goto out_unlock;
+	if (ledger.phase != GEMINI_TRANSITION_LEDGER_TERMINAL ||
+	    !ledger.terminal) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+	controller->state.baseline_checked = true;
+	controller->state.baseline_ret =
+		mt6797_a72_admission_reset_baseline(controller);
+	if (controller->state.baseline_ret) {
+		ret = controller->state.baseline_ret;
+		goto out_unlock;
+	}
+	controller->state.archived_ledger = ledger;
+	controller->state.ledger_ack_ret =
+		gemini_transition_ledger_ack_terminal(&ledger);
+	ret = controller->state.ledger_ack_ret;
+	if (!ret) {
+		controller->state.ledger_acknowledged = true;
+		mt6797_a72_admission_retained_ledger_refresh(controller,
+							     &controller->state.ledger_snapshot);
+		dev_info(dev, MT6797_A72_ADMISSION_LIVE_TAG
+			 " ledger=acknowledged attempt=%llu generation=%u phase=%u stage=%u terminal=%u baseline=p27:%08x,p28:%08x,buckb:%02x,vsel:%02x\n",
+			 (unsigned long long)ledger.attempt_id, ledger.generation,
+			 ledger.phase, ledger.stage, ledger.terminal,
+			 controller->state.baseline_p27,
+			 controller->state.baseline_p28,
+			 controller->state.baseline_buckb_cont,
+			 controller->state.baseline_buckb_vsel);
+	}
+out_unlock:
+	mutex_unlock(&controller->live_lock);
+	return ret ? ret : count;
+}
+
 static DEVICE_ATTR_RO(status);
 static DEVICE_ATTR_WO(trigger);
+static DEVICE_ATTR_WO(recover);
 
 static struct attribute *mt6797_a72_admission_live_attrs[] = {
 	&dev_attr_status.attr,
 	&dev_attr_trigger.attr,
+	&dev_attr_recover.attr,
 	NULL,
 };
 
@@ -503,6 +661,7 @@ static int mt6797_a72_admission_probe(struct platform_device *pdev)
 	if (!controller)
 		return -ENOMEM;
 	controller->dev = dev;
+	mutex_init(&controller->live_lock);
 	mt6797_a72_admission_state_init(&controller->state);
 	mt6797_a72_admission_trigger_state_init(&controller->trigger);
 	/* Private retained pages are prepared before exposing the one-shot ABI. */

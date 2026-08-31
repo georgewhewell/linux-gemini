@@ -455,6 +455,9 @@ int gemini_transition_ledger_snapshot(struct gemini_transition_ledger_snapshot *
 	u32 signature;
 	u32 start;
 	u32 size;
+	u32 signature;
+	u32 start;
+	u32 size;
 	int ret;
 
 	if (!snapshot)
@@ -494,6 +497,63 @@ out_unlock:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(gemini_transition_ledger_snapshot);
+
+/*
+ * A completed retained record is evidence, never boot-time garbage.  It may
+ * be retired only by an explicit controller acknowledgement after the caller
+ * has independently proved that the physical cluster is back at its reset
+ * baseline.  Match the complete public snapshot under the ledger lock so a
+ * stale userspace read cannot acknowledge a different record.
+ */
+int gemini_transition_ledger_ack_terminal(
+	const struct gemini_transition_ledger_snapshot *expected)
+{
+	struct gemini_transition_ledger_record record;
+	void __iomem *slot;
+	u32 copy;
+	int ret;
+
+	if (!expected || !expected->attempt_id ||
+	    expected->phase != GEMINI_TRANSITION_LEDGER_TERMINAL ||
+	    !expected->terminal)
+		return -EINVAL;
+
+	mutex_lock(&gemini_transition_ledger_lock);
+	if (gemini_transition_ledger_slot || gemini_transition_ledger_owner.active ||
+	    gemini_transition_ledger_owner.sealed) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+	if (!gemini_transition_ledger_exact_dt()) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
+	slot = ioremap_wc(GEMINI_TRANSITION_LEDGER_BASE,
+			  GEMINI_TRANSITION_LEDGER_SLOT_SIZE);
+	if (!slot) {
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+	signature = gemini_transition_ledger_mmio_read(slot, 0);
+	start = gemini_transition_ledger_mmio_read(slot, 1);
+	size = gemini_transition_ledger_mmio_read(slot, 2);
+	if (signature != GEMINI_TRANSITION_LEDGER_PSTORE_SIGNATURE ||
+	    start != GEMINI_TRANSITION_LEDGER_PAYLOAD_BYTES || start != size ||
+	    !gemini_transition_ledger_read_latest(
+		    &gemini_transition_ledger_mmio_ops, slot, &record, &copy) ||
+	    record.attempt_id != expected->attempt_id ||
+	    record.generation != expected->generation ||
+	    record.phase != expected->phase || record.stage != expected->stage ||
+	    record.terminal != expected->terminal)
+		ret = -ESTALE;
+	else
+		ret = gemini_transition_ledger_initialize(slot);
+	iounmap(slot);
+out_unlock:
+	mutex_unlock(&gemini_transition_ledger_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(gemini_transition_ledger_ack_terminal);
 
 int gemini_transition_ledger_begin(u64 attempt_id)
 {

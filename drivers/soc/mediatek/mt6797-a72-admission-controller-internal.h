@@ -29,6 +29,8 @@ struct mt6797_a72_admission_controller_ops {
 
 #define MT6797_A72_ADMISSION_TRIGGER_TOKEN \
 	"run-a72-admission-20260828-a\n"
+#define MT6797_A72_ADMISSION_RECOVER_TOKEN \
+	"ack-terminal-ledger-v1\n"
 
 struct mt6797_a72_admission_trigger_ops {
 	int (*execute)(void *context);
@@ -49,6 +51,15 @@ struct mt6797_a72_admission_controller_state {
 	int trace_prepare_ret;
 	int ledger_snapshot_ret;
 	struct gemini_transition_ledger_snapshot ledger_snapshot;
+	int ledger_ack_ret;
+	int baseline_ret;
+	bool ledger_acknowledged;
+	bool baseline_checked;
+	struct gemini_transition_ledger_snapshot archived_ledger;
+	u32 baseline_p27;
+	u32 baseline_p28;
+	u32 baseline_buckb_cont;
+	u32 baseline_buckb_vsel;
 	struct gemini_admission_trace_snapshot trace_snapshot;
 	int trace_entry_ret;
 	int trace_ret;

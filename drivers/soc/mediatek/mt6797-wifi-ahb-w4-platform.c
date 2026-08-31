@@ -754,7 +754,12 @@ static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 	w4->wdev->iftype = NL80211_IFTYPE_STATION;
 	w4->wdev->netdev = w4->ndev;
 	w4->ndev->ieee80211_ptr = w4->wdev;
-	ret = cfg80211_register_netdevice(w4->ndev); if (ret) goto free_wdev;
+	/*
+	 * This probe does not run under RTNL or the wiphy mutex.  Let the normal
+	 * netdev notifier establish the wireless_dev instead of calling the
+	 * cfg80211-only registration helper, which explicitly requires both locks.
+	 */
+	ret = register_netdev(w4->ndev); if (ret) goto free_wdev;
 	platform_set_drvdata(pdev, w4);
 	dev_info(&pdev->dev, "GEN3 HIF owner registered %s\n", w4->ndev->name);
 	return 0;
@@ -768,7 +773,8 @@ static void mt6797_wifi_w4_remove(struct platform_device *pdev)
 {
 	struct mt6797_wifi_w4 *w4 = platform_get_drvdata(pdev);
 	if (!w4) return;
-	cfg80211_unregister_netdevice(w4->ndev); kfree(w4->wdev); free_netdev(w4->ndev);
+	/* unregister_netdev() takes RTNL and drives cfg80211's notifier teardown. */
+	unregister_netdev(w4->ndev); kfree(w4->wdev); free_netdev(w4->ndev);
 	wiphy_unregister(w4->wiphy); wiphy_free(w4->wiphy); put_device(w4->controller_dev);
 }
 static const struct of_device_id mt6797_wifi_w4_of_match[] = {

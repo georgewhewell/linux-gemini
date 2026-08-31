@@ -4,8 +4,9 @@
  *
  * This stays inside the bootstrap's retained full-STP callback.  It completes
  * the vendor post-patch transactions, then leaves BTIF fenced and CONSYS
- * reset-held.  It issues no WMT function-control command and creates no
- * Wi-Fi, Bluetooth, GNSS, or FM client.
+ * reset-held.  Its separately gated GNSS probe issues one bounded GPS
+ * FUNC_CTRL on/off pair and creates no durable Wi-Fi, Bluetooth, GNSS, or FM
+ * client.
  *
  * MT6797 uses fixed 3.3 V VCN33 PALDOs.  The old efuse opcode 0x12 sequence
  * was MT6580-only and must not be sent here.
@@ -100,6 +101,9 @@ struct mt6797_g2d_state {
 	enum mt6797_g2d_stage causal_stage;
 	int causal_error;
 	bool cleanup_attempted;
+	int gnss_lna_off_error;
+	int gnss_func_off_error;
+	bool gnss_func_off_attempted;
 	enum mt6797_g2d_stage stage;
 };
 
@@ -215,19 +219,34 @@ struct mt6797_g2d_gnss_ops {
 		   const struct mtk_wmt_match *expected);
 	void *context;
 };
-static int mt6797_g2d_gnss_fail_low(struct mt6797_g2d_gnss_ops *ops,
-		struct mt6797_g2d_state *state, enum mt6797_g2d_stage stage, int error)
+/*
+ * A timed-out FUNC_CTRL-on can have reached firmware.  Once it has been sent,
+ * lower the LNA and make one bounded FUNC_CTRL-off attempt before returning to
+ * the bootstrap's terminal fence/reset path.  Do not repeat an already sent
+ * FUNC_CTRL-off: its timeout is likewise fenced by the outer lifecycle.
+ */
+static int mt6797_g2d_gnss_fail_safe(struct mt6797_g2d_gnss_ops *ops,
+		struct mt6797_g2d_state *state, enum mt6797_g2d_stage stage,
+		int error, bool function_maybe_on, bool func_off_already_attempted)
 {
 	state->causal_stage = stage;
 	state->causal_error = error;
 	state->cleanup_attempted = true;
-	state->cleanup_error = ops->lna_set(ops->context, false);
+	state->gnss_lna_off_error = ops->lna_set(ops->context, false);
+	state->cleanup_error = state->gnss_lna_off_error;
+	if (function_maybe_on && !func_off_already_attempted) {
+		state->gnss_func_off_attempted = true;
+		state->gnss_func_off_error = ops->wmt(ops->context,
+			MT6797_G2D_WMT_FUNC_CTRL, g2d_gnss_off,
+			sizeof(g2d_gnss_off), &g2d_gnss_func_match);
+	}
 	state->stage = stage;
 	return error;
 }
 static int mt6797_g2d_gnss_probe_run(struct mt6797_g2d_gnss_ops *ops,
 		struct mt6797_g2d_state *state)
 {
+	bool function_maybe_on = false;
 	int ret;
 
 	if (!ops || !state || !ops->lna_init || !ops->lna_set || !ops->wmt)
@@ -235,24 +254,36 @@ static int mt6797_g2d_gnss_probe_run(struct mt6797_g2d_gnss_ops *ops,
 	state->stage = G2D_GNSS_LNA_INIT;
 	ret = ops->lna_init(ops->context);
 	if (ret)
-		return mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret);
+		return mt6797_g2d_gnss_fail_safe(ops, state, state->stage, ret,
+			false, false);
 	state->stage = G2D_GNSS_LNA_ON;
 	ret = ops->lna_set(ops->context, true);
 	if (ret)
-		return mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret);
+		return mt6797_g2d_gnss_fail_safe(ops, state, state->stage, ret,
+			false, false);
 	state->stage = G2D_GNSS_FUNC_ON;
+	/* The command may take effect even if its acknowledgement times out. */
+	function_maybe_on = true;
 	ret = ops->wmt(ops->context, MT6797_G2D_WMT_FUNC_CTRL, g2d_gnss_on,
 		       sizeof(g2d_gnss_on), &g2d_gnss_func_match);
 	if (ret)
-		return mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret);
+		return mt6797_g2d_gnss_fail_safe(ops, state, state->stage, ret,
+			function_maybe_on, false);
 	state->stage = G2D_GNSS_LNA_OFF;
 	ret = ops->lna_set(ops->context, false);
 	if (ret)
-		return mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret);
+		return mt6797_g2d_gnss_fail_safe(ops, state, state->stage, ret,
+			function_maybe_on, false);
 	state->stage = G2D_GNSS_FUNC_OFF;
+	state->gnss_func_off_attempted = true;
 	ret = ops->wmt(ops->context, MT6797_G2D_WMT_FUNC_CTRL, g2d_gnss_off,
 		       sizeof(g2d_gnss_off), &g2d_gnss_func_match);
-	return ret ? mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret) : 0;
+	if (ret) {
+		state->gnss_func_off_error = ret;
+		return mt6797_g2d_gnss_fail_safe(ops, state, state->stage, ret,
+			function_maybe_on, true);
+	}
+	return 0;
 }
 
 /* Vendor wmt_func_bt_on/off: PALDO, FUNC_CTRL { BT, 1/0 }, PALDO. */
@@ -704,7 +735,8 @@ static int mt6797_g2d_postpatch_stage(void *context,
 	dev_info(owner->dev, "G2d start: fixed 3.3V%s\n",
 		owner->bt_hci_proof ? ", then G2f private H4 proof" :
 		(owner->bt_function_proof ? ", then G2e function proof" :
-		 ", no function control"));
+		 (owner->gnss_probe ? ", then GNSS FUNC_CTRL probe" :
+		  ", no function control")));
 	ret = mt6797_g2d_postpatch_run(&ops, &state);
 #if IS_REACHABLE(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_OBSERVE)
 	if (!ret && mt6797_wifi_ahb_wcir_enabled(owner->dev)) {
@@ -743,9 +775,10 @@ static int mt6797_g2d_postpatch_stage(void *context,
 			bt_state.func_off_error, bt_state.paldo_off_error);
 	else if (ret && state.causal_error && state.cleanup_attempted)
 		dev_err(owner->dev,
-			"G2d causal stage %s failed: %d; GNSS LNA-low cleanup: %d; bootstrap must fence/reset\n",
+			"G2d GNSS causal stage %s failed: %d; cleanup LNA-low=%d FUNC_CTRL-off-attempted=%u result=%d; bootstrap must fence/reset\n",
 			mt6797_g2d_stage_name[state.causal_stage], state.causal_error,
-			state.cleanup_error);
+			state.gnss_lna_off_error, state.gnss_func_off_attempted,
+			state.gnss_func_off_error);
 	else if (ret)
 		dev_err(owner->dev,
 			"G2d stage %s failed: %d cleanup=%d; bootstrap must fence/reset\n",
@@ -756,6 +789,9 @@ static int mt6797_g2d_postpatch_stage(void *context,
 	else if (owner->bt_function_proof)
 		dev_info(owner->dev,
 			 "G2e BT function proof passed; bootstrap will fence/reset\n");
+	else if (owner->gnss_probe)
+		dev_info(owner->dev,
+			 "G2d GNSS probe passed: GPIO69 LNA init/on/off and GPS FUNC_CTRL on/off acknowledged; bootstrap will fence/reset\n");
 	else
 		dev_info(owner->dev, "G2d passed; bootstrap will fence/reset\n");
 	if (state.calibration_reply_valid)
@@ -1070,6 +1106,80 @@ mt6797_g2_bt_test_ops(struct mt6797_g2_bt_test *test)
 		.paldo = mt6797_g2_bt_test_paldo,
 		.wmt = mt6797_g2_bt_test_wmt,
 		.hci_exchange = mt6797_g2_bt_test_hci_exchange,
+		.context = test,
+	};
+}
+
+struct mt6797_g2d_gnss_test {
+	int lna_init_error;
+	int lna_on_error;
+	int lna_off_error;
+	int func_on_error;
+	int func_off_error;
+	bool func_on_before_fail;
+	bool lna_high;
+	bool function_enabled;
+	unsigned int lna_init_calls;
+	unsigned int lna_on_calls;
+	unsigned int lna_off_calls;
+	unsigned int func_on_calls;
+	unsigned int func_off_calls;
+};
+
+static int mt6797_g2d_gnss_test_lna_init(void *context)
+{
+	struct mt6797_g2d_gnss_test *test = context;
+
+	test->lna_init_calls++;
+	test->lna_high = false;
+	return test->lna_init_error;
+}
+
+static int mt6797_g2d_gnss_test_lna_set(void *context, bool enable)
+{
+	struct mt6797_g2d_gnss_test *test = context;
+
+	if (enable) {
+		test->lna_on_calls++;
+		if (test->lna_on_error)
+			return test->lna_on_error;
+		test->lna_high = true;
+		return 0;
+	}
+	test->lna_off_calls++;
+	test->lna_high = false;
+	return test->lna_off_error;
+}
+
+static int mt6797_g2d_gnss_test_wmt(void *context, u8 opcode,
+		const u8 *data, size_t data_len, const struct mtk_wmt_match *expected)
+{
+	struct mt6797_g2d_gnss_test *test = context;
+
+	if (opcode != MT6797_G2D_WMT_FUNC_CTRL || !data || data_len != 2 ||
+	    data[0] != MT6797_G2D_WMT_GNSS_TYPE || expected != &g2d_gnss_func_match)
+		return -EPROTO;
+	if (data[1]) {
+		test->func_on_calls++;
+		if (test->func_on_before_fail)
+			test->function_enabled = true;
+		if (test->func_on_error)
+			return test->func_on_error;
+		test->function_enabled = true;
+		return 0;
+	}
+	test->func_off_calls++;
+	test->function_enabled = false;
+	return test->func_off_error;
+}
+
+static struct mt6797_g2d_gnss_ops
+mt6797_g2d_gnss_test_ops(struct mt6797_g2d_gnss_test *test)
+{
+	return (struct mt6797_g2d_gnss_ops) {
+		.lna_init = mt6797_g2d_gnss_test_lna_init,
+		.lna_set = mt6797_g2d_gnss_test_lna_set,
+		.wmt = mt6797_g2d_gnss_test_wmt,
 		.context = test,
 	};
 }
@@ -1492,6 +1602,88 @@ static void mt6797_g2_bt_test_causal_and_cleanup_errors(struct kunit *test)
 	KUNIT_EXPECT_TRUE(test, state.cleanup_attempted);
 }
 
+static void mt6797_g2d_gnss_test_exact_order(struct kunit *test)
+{
+	struct mt6797_g2d_gnss_test context = { };
+	struct mt6797_g2d_state state = { };
+	struct mt6797_g2d_gnss_ops ops = mt6797_g2d_gnss_test_ops(&context);
+
+	KUNIT_ASSERT_EQ(test, mt6797_g2d_gnss_probe_run(&ops, &state), 0);
+	KUNIT_EXPECT_EQ(test, context.lna_init_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.lna_on_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.func_on_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.lna_off_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.func_off_calls, 1U);
+	KUNIT_EXPECT_FALSE(test, context.lna_high);
+	KUNIT_EXPECT_FALSE(test, context.function_enabled);
+	KUNIT_EXPECT_TRUE(test, state.gnss_func_off_attempted);
+	KUNIT_EXPECT_EQ(test, state.gnss_func_off_error, 0);
+	KUNIT_EXPECT_FALSE(test, state.cleanup_attempted);
+}
+
+static void mt6797_g2d_gnss_test_func_on_timeout_compensates(struct kunit *test)
+{
+	struct mt6797_g2d_gnss_test context = {
+		.func_on_before_fail = true,
+		.func_on_error = -ETIMEDOUT,
+	};
+	struct mt6797_g2d_state state = { };
+	struct mt6797_g2d_gnss_ops ops = mt6797_g2d_gnss_test_ops(&context);
+
+	KUNIT_EXPECT_EQ(test, mt6797_g2d_gnss_probe_run(&ops, &state), -ETIMEDOUT);
+	KUNIT_EXPECT_EQ(test, context.func_on_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.lna_off_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.func_off_calls, 1U);
+	KUNIT_EXPECT_FALSE(test, context.lna_high);
+	KUNIT_EXPECT_FALSE(test, context.function_enabled);
+	KUNIT_EXPECT_EQ(test, state.causal_stage, G2D_GNSS_FUNC_ON);
+	KUNIT_EXPECT_EQ(test, state.causal_error, -ETIMEDOUT);
+	KUNIT_EXPECT_TRUE(test, state.cleanup_attempted);
+	KUNIT_EXPECT_TRUE(test, state.gnss_func_off_attempted);
+	KUNIT_EXPECT_EQ(test, state.gnss_lna_off_error, 0);
+	KUNIT_EXPECT_EQ(test, state.gnss_func_off_error, 0);
+}
+
+static void mt6797_g2d_gnss_test_lna_off_timeout_compensates(struct kunit *test)
+{
+	struct mt6797_g2d_gnss_test context = {
+		.lna_off_error = -EIO,
+	};
+	struct mt6797_g2d_state state = { };
+	struct mt6797_g2d_gnss_ops ops = mt6797_g2d_gnss_test_ops(&context);
+
+	KUNIT_EXPECT_EQ(test, mt6797_g2d_gnss_probe_run(&ops, &state), -EIO);
+	KUNIT_EXPECT_EQ(test, context.func_on_calls, 1U);
+	/* The failed functional LNA-low and the conservative cleanup are distinct. */
+	KUNIT_EXPECT_EQ(test, context.lna_off_calls, 2U);
+	KUNIT_EXPECT_EQ(test, context.func_off_calls, 1U);
+	KUNIT_EXPECT_FALSE(test, context.function_enabled);
+	KUNIT_EXPECT_EQ(test, state.causal_stage, G2D_GNSS_LNA_OFF);
+	KUNIT_EXPECT_TRUE(test, state.gnss_func_off_attempted);
+	KUNIT_EXPECT_EQ(test, state.gnss_lna_off_error, -EIO);
+	KUNIT_EXPECT_EQ(test, state.gnss_func_off_error, 0);
+}
+
+static void mt6797_g2d_gnss_test_func_off_timeout_does_not_repeat(struct kunit *test)
+{
+	struct mt6797_g2d_gnss_test context = {
+		.func_off_error = -ENOSPC,
+	};
+	struct mt6797_g2d_state state = { };
+	struct mt6797_g2d_gnss_ops ops = mt6797_g2d_gnss_test_ops(&context);
+
+	KUNIT_EXPECT_EQ(test, mt6797_g2d_gnss_probe_run(&ops, &state), -ENOSPC);
+	KUNIT_EXPECT_EQ(test, context.func_on_calls, 1U);
+	KUNIT_EXPECT_EQ(test, context.lna_off_calls, 2U);
+	KUNIT_EXPECT_EQ(test, context.func_off_calls, 1U);
+	KUNIT_EXPECT_FALSE(test, context.lna_high);
+	KUNIT_EXPECT_EQ(test, state.causal_stage, G2D_GNSS_FUNC_OFF);
+	KUNIT_EXPECT_TRUE(test, state.cleanup_attempted);
+	KUNIT_EXPECT_TRUE(test, state.gnss_func_off_attempted);
+	KUNIT_EXPECT_EQ(test, state.gnss_lna_off_error, 0);
+	KUNIT_EXPECT_EQ(test, state.gnss_func_off_error, -ENOSPC);
+}
+
 static struct kunit_case mt6797_g2d_postpatch_cases[] = {
 	KUNIT_CASE(mt6797_g2d_test_exact_order),
 	KUNIT_CASE(mt6797_g2d_test_every_wmt_failure_unwinds),
@@ -1500,6 +1692,10 @@ static struct kunit_case mt6797_g2d_postpatch_cases[] = {
 	KUNIT_CASE(mt6797_g2d_test_rejects_unsafe_entry),
 	KUNIT_CASE(mt6797_g2_bt_test_partial_on_failures_unwind),
 	KUNIT_CASE(mt6797_g2_bt_test_causal_and_cleanup_errors),
+	KUNIT_CASE(mt6797_g2d_gnss_test_exact_order),
+	KUNIT_CASE(mt6797_g2d_gnss_test_func_on_timeout_compensates),
+	KUNIT_CASE(mt6797_g2d_gnss_test_lna_off_timeout_compensates),
+	KUNIT_CASE(mt6797_g2d_gnss_test_func_off_timeout_does_not_repeat),
 	{}
 };
 

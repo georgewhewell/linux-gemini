@@ -33,6 +33,10 @@ need "$driver" 'READ_ONCE(enable_experimental_g2d_gnss_probe)'
 need "$driver" 'g2d_gnss_on[] = { MT6797_G2D_WMT_GNSS_TYPE, 1 }'
 need "$driver" 'g2d_gnss_off[] = { MT6797_G2D_WMT_GNSS_TYPE, 0 }'
 need "$driver" 'MT6797_G2D_WMT_FUNC_CTRL'
-need "$driver" 'G2d causal stage %s failed: %d; GNSS LNA-low cleanup: %d;'
+need "$driver" 'G2d GNSS causal stage %s failed: %d; cleanup LNA-low=%d FUNC_CTRL-off-attempted=%u result=%d;'
+need "$driver" 'A timed-out FUNC_CTRL-on can have reached firmware.'
+need "$driver" 'function_maybe_on = true;'
+need "$driver" 'MT6797_G2D_WMT_FUNC_CTRL, g2d_gnss_off,'
+need "$driver" 'G2d GNSS probe passed: GPIO69 LNA init/on/off and GPS FUNC_CTRL on/off acknowledged;'
 
 echo "G2d probe dependency and attribution contract: PASS"

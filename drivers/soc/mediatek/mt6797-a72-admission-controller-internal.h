@@ -55,11 +55,15 @@ struct mt6797_a72_admission_controller_state {
 	int baseline_ret;
 	bool ledger_acknowledged;
 	bool baseline_checked;
+	bool baseline_pwrap_asserted;
 	struct gemini_transition_ledger_snapshot archived_ledger;
 	u32 baseline_p27;
 	u32 baseline_p28;
+	u32 baseline_cpu_pwr;
+	u32 baseline_cpu_pwr_2nd;
 	u32 baseline_buckb_cont;
 	u32 baseline_buckb_vsel;
+	u32 baseline_flags;
 	struct gemini_admission_trace_snapshot trace_snapshot;
 	int trace_entry_ret;
 	int trace_ret;

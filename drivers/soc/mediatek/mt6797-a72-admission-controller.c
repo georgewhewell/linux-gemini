@@ -35,6 +35,15 @@
 #define MT6797_A72_RECOVERY_CPU_POWER_MASK	GENMASK(7, 6)
 #define MT6797_A72_RECOVERY_ISOLATION_MASK	GENMASK(1, 0)
 #define MT6797_A72_RECOVERY_BUCKB_ENABLE	BIT(0)
+#define MT6797_A72_RECOVERY_BASELINE_PLATFORM_VALID	BIT(0)
+#define MT6797_A72_RECOVERY_BASELINE_CPU_POWER_0_OFF	BIT(1)
+#define MT6797_A72_RECOVERY_BASELINE_CPU_POWER_1_OFF	BIT(2)
+#define MT6797_A72_RECOVERY_BASELINE_P27_RESET		BIT(3)
+#define MT6797_A72_RECOVERY_BASELINE_P28_RESET		BIT(4)
+#define MT6797_A72_RECOVERY_BASELINE_PWRAP_UNLATCHED	BIT(5)
+#define MT6797_A72_RECOVERY_BASELINE_BUCKB_DISABLED	BIT(6)
+#define MT6797_A72_RECOVERY_BASELINE_VBUCKB_EXPECTED	BIT(7)
+#define MT6797_A72_RECOVERY_BASELINE_ALL			GENMASK(7, 0)
 
 struct mt6797_a72_admission_controller {
 	struct device *dev;
@@ -356,19 +365,49 @@ static int mt6797_a72_admission_reset_baseline(
 		return ret;
 	controller->state.baseline_p27 = platform.spm_mp2_cpusys_pwr_con;
 	controller->state.baseline_p28 = platform.spm_cpu_ext_buck_iso;
+	controller->state.baseline_cpu_pwr = platform.spm_cpu_pwr_status;
+	controller->state.baseline_cpu_pwr_2nd = platform.spm_cpu_pwr_status_2nd;
 	controller->state.baseline_buckb_cont = provider.buckb_cont;
 	controller->state.baseline_buckb_vsel = provider.vbuckb_b;
-	if (!platform.valid ||
-	    (platform.spm_cpu_pwr_status & MT6797_A72_RECOVERY_CPU_POWER_MASK) ||
-	    (platform.spm_cpu_pwr_status_2nd & MT6797_A72_RECOVERY_CPU_POWER_MASK) ||
-	    platform.spm_mp2_cpusys_pwr_con != MT6797_A72_RECOVERY_P27_RESET ||
-	    (platform.spm_cpu_ext_buck_iso & MT6797_A72_RECOVERY_ISOLATION_MASK) !=
-		MT6797_A72_RECOVERY_P28_ISOLATION ||
-	    !platform.pwrap_reset_asserted ||
-	    provider.buckb_cont & MT6797_A72_RECOVERY_BUCKB_ENABLE ||
-	    provider.vbuckb_b != MT6797_A72_RECOVERY_DA9213_VBUCKB)
-		return -EUCLEAN;
-	return 0;
+	controller->state.baseline_pwrap_asserted = platform.pwrap_reset_asserted;
+	controller->state.baseline_flags = 0;
+	if (platform.valid)
+		controller->state.baseline_flags |=
+			MT6797_A72_RECOVERY_BASELINE_PLATFORM_VALID;
+	if (!(platform.spm_cpu_pwr_status & MT6797_A72_RECOVERY_CPU_POWER_MASK))
+		controller->state.baseline_flags |=
+			MT6797_A72_RECOVERY_BASELINE_CPU_POWER_0_OFF;
+	if (!(platform.spm_cpu_pwr_status_2nd & MT6797_A72_RECOVERY_CPU_POWER_MASK))
+		controller->state.baseline_flags |=
+			MT6797_A72_RECOVERY_BASELINE_CPU_POWER_1_OFF;
+	if (platform.spm_mp2_cpusys_pwr_con == MT6797_A72_RECOVERY_P27_RESET)
+		controller->state.baseline_flags |=
+			MT6797_A72_RECOVERY_BASELINE_P27_RESET;
+	if ((platform.spm_cpu_ext_buck_iso & MT6797_A72_RECOVERY_ISOLATION_MASK) ==
+	    MT6797_A72_RECOVERY_P28_ISOLATION)
+		controller->state.baseline_flags |=
+			MT6797_A72_RECOVERY_BASELINE_P28_RESET;
+	/* Vendor PSCI latches PWRAP only around P27/P28, then unlatches it. */
+	if (!platform.pwrap_reset_asserted)
+		controller->state.baseline_flags |=
+			MT6797_A72_RECOVERY_BASELINE_PWRAP_UNLATCHED;
+	if (!(provider.buckb_cont & MT6797_A72_RECOVERY_BUCKB_ENABLE))
+		controller->state.baseline_flags |=
+			MT6797_A72_RECOVERY_BASELINE_BUCKB_DISABLED;
+	if (provider.vbuckb_b == MT6797_A72_RECOVERY_DA9213_VBUCKB)
+		controller->state.baseline_flags |=
+			MT6797_A72_RECOVERY_BASELINE_VBUCKB_EXPECTED;
+	dev_info(controller->dev, MT6797_A72_ADMISSION_LIVE_TAG
+		 " baseline flags=0x%x/%x cpu_pwr=%08x/%08x p27=%08x p28=%08x pwrap_asserted=%u buckb=%02x vsel=%02x\n",
+		 controller->state.baseline_flags, MT6797_A72_RECOVERY_BASELINE_ALL,
+		 controller->state.baseline_cpu_pwr,
+		 controller->state.baseline_cpu_pwr_2nd,
+		 controller->state.baseline_p27, controller->state.baseline_p28,
+		 platform.pwrap_reset_asserted,
+		 controller->state.baseline_buckb_cont,
+		 controller->state.baseline_buckb_vsel);
+	return controller->state.baseline_flags == MT6797_A72_RECOVERY_BASELINE_ALL ?
+		0 : -EUCLEAN;
 }
 
 static const struct mt6797_a72_admission_trigger_ops
@@ -436,11 +475,16 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 			     READ_ONCE(controller->state.archived_ledger.stage),
 			     READ_ONCE(controller->state.archived_ledger.terminal));
 	len += sysfs_emit_at(buf, len,
-			     "baseline_checked=%u baseline_ret=%d baseline_p27=0x%x baseline_p28=0x%x baseline_buckb_cont=0x%x baseline_buckb_vsel=0x%x ",
+			     "baseline_checked=%u baseline_ret=%d baseline_flags=0x%x/0x%x baseline_cpu_pwr=0x%x/0x%x baseline_p27=0x%x baseline_p28=0x%x baseline_pwrap_asserted=%u baseline_buckb_cont=0x%x baseline_buckb_vsel=0x%x ",
 			     READ_ONCE(controller->state.baseline_checked),
 			     READ_ONCE(controller->state.baseline_ret),
+			     READ_ONCE(controller->state.baseline_flags),
+			     MT6797_A72_RECOVERY_BASELINE_ALL,
+			     READ_ONCE(controller->state.baseline_cpu_pwr),
+			     READ_ONCE(controller->state.baseline_cpu_pwr_2nd),
 			     READ_ONCE(controller->state.baseline_p27),
 			     READ_ONCE(controller->state.baseline_p28),
+			     READ_ONCE(controller->state.baseline_pwrap_asserted),
 			     READ_ONCE(controller->state.baseline_buckb_cont),
 			     READ_ONCE(controller->state.baseline_buckb_vsel));
 	len += sysfs_emit_at(buf, len,

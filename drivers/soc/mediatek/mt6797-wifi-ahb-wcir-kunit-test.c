@@ -13,6 +13,7 @@ struct mt6797_wifi_ahb_w0_test {
 	int wifi_on;
 	int set_fail;
 	int restore_fail;
+	int failed_voltage;
 	int enable_fail;
 	bool enable_sets_on;
 	int disable_fail;
@@ -38,10 +39,16 @@ static int mt6797_wifi_ahb_w0_test_set(void *context, int uv)
 {
 	struct mt6797_wifi_ahb_w0_test *test = context;
 
-	if ((test->set_fail && uv == 3300000) ||
-	    (test->restore_fail && uv != 3300000))
-		return test->set_fail;
+	/* A regulator may change the shared selector before reporting failure. */
 	test->voltage = uv;
+	if (test->set_fail && uv == 3300000) {
+		test->failed_voltage = uv;
+		return test->set_fail;
+	}
+	if (test->restore_fail && uv != 3300000) {
+		test->failed_voltage = uv;
+		return test->restore_fail;
+	}
 	return 0;
 }
 static int mt6797_wifi_ahb_w0_test_enable(void *context)
@@ -106,20 +113,32 @@ static void mt6797_wifi_ahb_w0_fault_paths(struct kunit *test)
 	/* A partial selector failure still proves rails off and restores selector. */
 	memset(&fake, 0, sizeof(fake)); fake.voltage = 1800000; fake.set_fail = -EIO;
 	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w0_run(&ops, &result, 3300000), -EIO);
+	KUNIT_EXPECT_EQ(test, result.causal, -EIO);
+	KUNIT_EXPECT_EQ(test, result.cleanup, 0);
+	KUNIT_EXPECT_EQ(test, fake.failed_voltage, 3300000);
+	KUNIT_EXPECT_EQ(test, fake.voltage, 1800000);
 	KUNIT_EXPECT_FALSE(test, result.fatal);
 	KUNIT_EXPECT_FALSE(test, result.selector_dirty);
 
 	/* Failed disable/unknown off state is dirty and asks the owner to reboot. */
 	memset(&fake, 0, sizeof(fake)); fake.voltage = 1800000; fake.disable_fail = -EIO;
 	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w0_run(&ops, &result, 3300000), -EIO);
+	KUNIT_EXPECT_EQ(test, result.causal, 0);
+	KUNIT_EXPECT_EQ(test, result.cleanup, -EIO);
+	KUNIT_EXPECT_EQ(test, fake.voltage, 3300000);
 	KUNIT_EXPECT_TRUE(test, result.fatal);
 	KUNIT_EXPECT_TRUE(test, fake.fatal);
 
 	/* A selector restore failure is also fatal after rails are proven off. */
 	memset(&fake, 0, sizeof(fake)); fake.voltage = 1800000; fake.restore_fail = -EIO;
 	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_w0_run(&ops, &result, 3300000), -EIO);
+	KUNIT_EXPECT_EQ(test, result.causal, 0);
+	KUNIT_EXPECT_EQ(test, result.cleanup, -EIO);
+	KUNIT_EXPECT_EQ(test, fake.failed_voltage, 1800000);
+	KUNIT_EXPECT_EQ(test, fake.voltage, 1800000);
 	KUNIT_EXPECT_TRUE(test, result.fatal);
 	KUNIT_EXPECT_TRUE(test, result.selector_dirty);
+	KUNIT_EXPECT_TRUE(test, fake.fatal);
 }
 
 static void mt6797_wifi_ahb_wcir_accepts_only_everest_raw_id(struct kunit *test)

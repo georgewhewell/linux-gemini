@@ -31,6 +31,7 @@
 #define MT6797_MD1_LK_MD1_LOAD_FLAG		(1U << MT6797_MD1_LK_MD1_INDEX)
 
 struct mt6797_md1_mpu_remap_plan;
+struct mt6797_md1_mpu_remap_layout;
 
 struct mt6797_md1_lk_info {
 	u64 table_phys;
@@ -93,6 +94,13 @@ bool mt6797_md1_lk_handoff_image_loaded(void);
  * a hardware readback or MPU/remap ownership transfer.
  */
 int mt6797_md1_lk_handoff_plan_get(struct mt6797_md1_mpu_remap_plan *plan);
+
+/*
+ * Copy the exact MD1 and AP-shared-memory ranges that the read-only probe
+ * already checked against LK's live CCCI mblocks. This remains diagnostic
+ * source data, never a mapping, lease, DMA, or MMIO ownership transfer.
+ */
+int mt6797_md1_lk_handoff_layout_get(struct mt6797_md1_mpu_remap_layout *layout);
 
 /*
  * LK exposes ccci,modem_info_v2 as native little-endian bytes, not standard

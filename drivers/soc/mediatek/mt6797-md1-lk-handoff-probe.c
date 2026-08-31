@@ -62,6 +62,7 @@ MODULE_PARM_DESC(enable_experimental_md1_lk_handoff_probe,
 static bool mt6797_md1_lk_handoff_image_loaded_attested;
 static DEFINE_MUTEX(mt6797_md1_lk_handoff_plan_lock);
 static struct mt6797_md1_mpu_remap_plan mt6797_md1_lk_handoff_plan;
+static struct mt6797_md1_mpu_remap_layout mt6797_md1_lk_handoff_layout;
 static bool mt6797_md1_lk_handoff_plan_attested;
 
 bool mt6797_md1_lk_handoff_image_loaded(void)
@@ -85,6 +86,23 @@ int mt6797_md1_lk_handoff_plan_get(struct mt6797_md1_mpu_remap_plan *plan)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_lk_handoff_plan_get);
+
+int mt6797_md1_lk_handoff_layout_get(
+	struct mt6797_md1_mpu_remap_layout *layout)
+{
+	if (!layout)
+		return -EINVAL;
+
+	mutex_lock(&mt6797_md1_lk_handoff_plan_lock);
+	if (!mt6797_md1_lk_handoff_plan_attested) {
+		mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
+		return -ENODATA;
+	}
+	*layout = mt6797_md1_lk_handoff_layout;
+	mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_lk_handoff_layout_get);
 
 static bool mt6797_md1_phys_range_valid(u64 start, u64 size, u64 limit_start,
 					u64 limit_size)
@@ -483,6 +501,7 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 	/* Publish only the already-validated diagnostic plan, never an authority. */
 	mutex_lock(&mt6797_md1_lk_handoff_plan_lock);
 	mt6797_md1_lk_handoff_plan = plan;
+	mt6797_md1_lk_handoff_layout = plan_layout;
 	mt6797_md1_lk_handoff_plan_attested = true;
 	mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
 	/* This remains only a verified image-load attestation; execution is unknown. */

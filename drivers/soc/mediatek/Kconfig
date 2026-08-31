@@ -1299,6 +1299,23 @@ config MTK_MT6797_MD1_HS_KUNIT_TEST
       HIF, IRQ, CLDMA, DMA, shared-memory, runtime-data, power, reset, SIM, or
       RF path.
 
+config MTK_MT6797_MD1_CLDMA_CORE
+	bool
+	help
+	  Internal hardware-neutral MT6797 MD1 CLDMA topology and 16-byte GPD
+	  builder. It has no Device Tree, MMIO, IRQ, DMA allocation/mapping,
+	  shared-memory mapping, CCCI, power, reset, firmware, SIM, or RF path.
+
+config MTK_MT6797_MD1_CLDMA_KUNIT_TEST
+	bool "KUnit tests for the MT6797 MD1 CLDMA contract"
+	depends on KUNIT=y
+	select MTK_MT6797_MD1_CLDMA_CORE
+	help
+	  Exercise the exact vendor CLDMA regions, source interrupts, LK-attested
+	  Gemini carve-out shape, 36-bit packed GPD pointers and cyclic ring setup.
+	  The suite has no platform device and cannot map DMA, install IRQs, touch
+	  CLDMA/CCIF registers, write shared memory, or alter modem state.
+
 config MTK_MT6797_MD1_WDT_GATE_CORE
 	bool
 	help

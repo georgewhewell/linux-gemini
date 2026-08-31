@@ -83,8 +83,25 @@ static const u8 da9213_legacy_cont_reg[DA9213_LEGACY_BUCK_COUNT] = {
 	0x5d, 0x5e,
 };
 
-static int da9213_legacy_read_reg(struct da9213_legacy *chip, u8 reg,
-				  unsigned int *value)
+/*
+ * A72 admission consumes a stable, read-only DA9213 state snapshot.  Keep
+ * this separate from regulator consumer operations: it does not request a
+ * vote, select a voltage, or write any register.
+ */
+#define DA9213_LEGACY_CONTROL_A_REG	0x56
+#define DA9213_LEGACY_STATUS_B_REG	0x51
+#define DA9213_LEGACY_PROVIDER_SNAPSHOT_PASSES	2
+
+static const u8 da9213_legacy_provider_snapshot_regs[] = {
+	DA9213_LEGACY_CONTROL_A_REG,
+	DA9213_LEGACY_STATUS_B_REG,
+	0x5e, /* BUCKB_CONT */
+	0xd9, /* VBUCKB_A */
+	0xda, /* VBUCKB_B */
+};
+
+static int da9213_legacy_read_reg_locked(struct da9213_legacy *chip, u8 reg,
+					 unsigned int *value)
 {
 	struct i2c_msg msgs[2] = { };
 	u8 pointer = reg;
@@ -99,9 +116,7 @@ static int da9213_legacy_read_reg(struct da9213_legacy *chip, u8 reg,
 	msgs[1].len = 1;
 	msgs[1].buf = &data;
 
-	i2c_lock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
 	ret = __i2c_transfer(chip->client->adapter, msgs, ARRAY_SIZE(msgs));
-	i2c_unlock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
 	if (ret < 0)
 		return ret;
 	if (ret != ARRAY_SIZE(msgs))
@@ -109,6 +124,17 @@ static int da9213_legacy_read_reg(struct da9213_legacy *chip, u8 reg,
 
 	*value = data;
 	return 0;
+}
+
+static int da9213_legacy_read_reg(struct da9213_legacy *chip, u8 reg,
+				  unsigned int *value)
+{
+	int ret;
+
+	i2c_lock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+	ret = da9213_legacy_read_reg_locked(chip, reg, value);
+	i2c_unlock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+	return ret;
 }
 
 static int da9213_legacy_get_voltage_sel(struct regulator_dev *rdev)
@@ -336,6 +362,54 @@ static void da9213_legacy_observer_publish(struct da9213_legacy *chip)
 
 #if IS_ENABLED(CONFIG_ARM64_MT6797_A72_PROVIDER_OWNER)
 
+static int da9213_legacy_provider_snapshot(
+	void *context, struct mt6797_a72_provider_snapshot *state)
+{
+	struct da9213_legacy *chip = context;
+	unsigned int sample[DA9213_LEGACY_PROVIDER_SNAPSHOT_PASSES]
+		[ARRAY_SIZE(da9213_legacy_provider_snapshot_regs)] = { };
+	unsigned int pass;
+	unsigned int reg;
+	int ret = 0;
+
+	if (!chip || !chip->client || !state)
+		return -EINVAL;
+	memset(state, 0, sizeof(*state));
+
+	/* One root-adapter lock encloses both samples; each transfer is read-only. */
+	i2c_lock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+	for (pass = 0; pass < DA9213_LEGACY_PROVIDER_SNAPSHOT_PASSES; pass++) {
+		for (reg = 0; reg < ARRAY_SIZE(da9213_legacy_provider_snapshot_regs);
+		     reg++) {
+			ret = da9213_legacy_read_reg_locked(chip,
+				da9213_legacy_provider_snapshot_regs[reg],
+				&sample[pass][reg]);
+			if (ret)
+				goto out_unlock;
+		}
+	}
+	i2c_unlock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+
+	for (reg = 0; reg < ARRAY_SIZE(da9213_legacy_provider_snapshot_regs);
+	     reg++)
+		if (sample[0][reg] != sample[1][reg])
+			return -EAGAIN;
+
+	state->abi = MT6797_A72_PROVIDER_STATE_ABI;
+	state->valid = 1;
+	state->control_a = sample[0][0];
+	state->status_b = sample[0][1];
+	state->buckb_cont = sample[0][2];
+	state->vbuckb_a = sample[0][3];
+	state->vbuckb_b = sample[0][4];
+	return 0;
+
+out_unlock:
+	i2c_unlock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+	memset(state, 0, sizeof(*state));
+	return ret;
+}
+
 static int da9213_legacy_provider_acquire(void *context,
 	const struct mt6797_a72_provider_request *request,
 	struct mt6797_a72_provider_response *response)
@@ -384,6 +458,7 @@ static int da9213_legacy_provider_release(void *context,
 static const struct mt6797_a72_provider_ops da9213_legacy_provider_ops = {
 	.acquire = da9213_legacy_provider_acquire,
 	.release = da9213_legacy_provider_release,
+	.snapshot = da9213_legacy_provider_snapshot,
 };
 
 static void da9213_legacy_provider_unregister(void *context)

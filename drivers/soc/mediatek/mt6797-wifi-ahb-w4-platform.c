@@ -964,7 +964,11 @@ static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 	/* AIS emits WIFI_CMD_T + CMD_SCAN_REQ_V2, not the obsolete short request.
 	 * Keep the full fixed 4-SSID/32-channel prefix through aucIE even with no
 	 * optional IEs, exactly as scnSendScanReqV2()'s OFFSET_OF() length. */
-	put_unaligned_le16(command_len, cmd);
+	/*
+	 * nicTxCmd() writes the dword-aligned HIF transfer length into
+	 * WIFI_CMD_T.u2TxByteCount, not the unpadded command allocation length.
+	 */
+	put_unaligned_le16(wire_len, cmd);
 	put_unaligned_le16(0x8000, cmd + 2);
 	cmd[4] = W4_CMD_ID_SCAN_REQ_V2;
 	cmd[5] = W4_CMD_PKT_TYPE;

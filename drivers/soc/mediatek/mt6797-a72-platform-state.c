@@ -36,11 +36,13 @@
 
 #define MT6797_MCUCFG_MP2_SYNC_DCM		0x274
 #define MT6797_MCUCFG_MP2_SYNC_DCM_MASK		GENMASK(6, 0)
+#define MT6797_MCUCFG_MP2_AXI_CONFIG		0x20c
 
 #define MT6797_CCI_STATUS			0x000c
 #define MT6797_CCI_CHANGE_PENDING		BIT(0)
 #define MT6797_CCI_MP2_PORT_CONTROL		0x6000
 #define MT6797_CCI_MP2_REQUEST_MASK		GENMASK(1, 0)
+#define MT6797_CCI_SI_CONTROL(_index)		(0x1000 * ((_index) + 1))
 
 struct mt6797_a72_platform_state_source {
 	struct regmap *spm;
@@ -247,6 +249,38 @@ int mt6797_a72_platform_state_snapshot(struct device *dev,
 						     &failure);
 }
 EXPORT_SYMBOL_GPL(mt6797_a72_platform_state_snapshot);
+
+int mt6797_a72_platform_fabric_snapshot(struct device *dev,
+					struct mt6797_a72_fabric_state *snapshot)
+{
+	struct mt6797_a72_platform_state_source *source;
+	unsigned int i;
+
+	if (!snapshot)
+		return -EINVAL;
+	*snapshot = (struct mt6797_a72_fabric_state){};
+	if (!dev)
+		return -EINVAL;
+	source = dev_get_drvdata(dev);
+	if (!source)
+		return -ENODEV;
+
+	mutex_lock(&source->lock);
+	snapshot->mp2_axi_config = readl(source->mcucfg +
+						 MT6797_MCUCFG_MP2_AXI_CONFIG);
+	snapshot->cci_status_before = readl(source->cci + MT6797_CCI_STATUS);
+	for (i = 0; i < MT6797_A72_CCI400_SI_COUNT; i++)
+		snapshot->cci_si_control[i] = readl(source->cci +
+						       MT6797_CCI_SI_CONTROL(i));
+	snapshot->cci_status_after = readl(source->cci + MT6797_CCI_STATUS);
+	snapshot->valid = !((snapshot->cci_status_before |
+			     snapshot->cci_status_after) &
+			    MT6797_CCI_CHANGE_PENDING);
+	mutex_unlock(&source->lock);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_a72_platform_fabric_snapshot);
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_A72_PLATFORM_EFFECTS)
 static bool

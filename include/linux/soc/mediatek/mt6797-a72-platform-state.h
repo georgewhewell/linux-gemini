@@ -76,6 +76,28 @@ struct mt6797_a72_platform_state_failure {
 	bool samples_valid;
 };
 
+#define MT6797_A72_CCI400_SI_COUNT 5U
+
+/**
+ * struct mt6797_a72_fabric_state - read-only post-CPU_ON fabric evidence
+ * @mp2_axi_config: raw MT6797 MP2 AXI configuration word
+ * @cci_status_before: CCI-400 status before reading slave interfaces
+ * @cci_si_control: raw CCI-400 SI0..SI4 snoop/DVM request words
+ * @cci_status_after: CCI-400 status after reading slave interfaces
+ * @valid: no CCI change was pending across the bounded read
+ *
+ * No SI index is assigned to an MT6797 CPU cluster here. The vendor source
+ * proves SI3 and SI4 users but does not name the A72-facing interface. Keeping
+ * all five raw words avoids turning an unproven port mapping into policy.
+ */
+struct mt6797_a72_fabric_state {
+	u32 mp2_axi_config;
+	u32 cci_status_before;
+	u32 cci_si_control[MT6797_A72_CCI400_SI_COUNT];
+	u32 cci_status_after;
+	bool valid;
+};
+
 struct mt6797_a72_provider_handle;
 
 #define MT6797_A72_PLATFORM_EFFECT_ABI 1U
@@ -204,6 +226,8 @@ int mt6797_a72_platform_state_snapshot_detailed(struct device *dev,
 						struct mt6797_a72_platform_state_failure *failure);
 int mt6797_a72_platform_state_snapshot(struct device *dev,
 				       struct mt6797_a72_platform_state *snapshot);
+int mt6797_a72_platform_fabric_snapshot(struct device *dev,
+					struct mt6797_a72_fabric_state *snapshot);
 #else
 static inline int
 mt6797_a72_platform_state_snapshot_detailed(struct device *dev,
@@ -224,6 +248,16 @@ static inline int mt6797_a72_platform_state_snapshot(struct device *dev,
 	(void)dev;
 	if (snapshot)
 		*snapshot = (struct mt6797_a72_platform_state){};
+	return -EOPNOTSUPP;
+}
+
+static inline int
+mt6797_a72_platform_fabric_snapshot(struct device *dev,
+				    struct mt6797_a72_fabric_state *snapshot)
+{
+	(void)dev;
+	if (snapshot)
+		*snapshot = (struct mt6797_a72_fabric_state){};
 	return -EOPNOTSUPP;
 }
 #endif

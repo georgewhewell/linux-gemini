@@ -3,6 +3,7 @@
 
 #include <asm/late_cpu_profile.h>
 #include <asm/mt6797_a72_membership.h>
+#include <asm/sysreg.h>
 
 #include <linux/atomic.h>
 #include <linux/compiler.h>
@@ -18,8 +19,10 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/smp.h>
 #include <linux/soc/mediatek/mt6797-a72-binder.h>
 #include <linux/soc/mediatek/mt6797-a72-platform-state.h>
+#include <linux/soc/mediatek/mt6797-dvfsp-clock-backend.h>
 #include <linux/string.h>
 #include <linux/sysfs.h>
 
@@ -29,6 +32,8 @@
 #define MT6797_A72_ADMISSION_TAG "GEMINI_A72_ADMISSION_V1"
 #define MT6797_A72_ADMISSION_LIVE_TAG "GEMINI_A72_ADMISSION_LIVE_V1"
 #define MT6797_A72_ADMISSION_CPU 8
+#define MT6797_A72_ECTLR_EL1 sys_reg(3, 1, 15, 2, 1)
+#define MT6797_A72_ECTLR_SMPEN BIT_ULL(6)
 #define MT6797_A72_RECOVERY_P27_RESET		0x00010132U
 #define MT6797_A72_RECOVERY_P28_ISOLATION	0x00000002U
 #define MT6797_A72_RECOVERY_DA9213_VBUCKB	0x46U
@@ -51,6 +56,24 @@
 #define MT6797_A72_RECOVERY_BASELINE_VBUCKB_EXPECTED	BIT(7)
 #define MT6797_A72_RECOVERY_BASELINE_ALL			GENMASK(7, 0)
 
+struct mt6797_a72_post_online_diagnostic {
+	struct mt6797_a72_fabric_state fabric;
+	struct mt6797_dvfsp_clock_readback clock;
+	u64 midr;
+	u64 mpidr;
+	u64 sctlr;
+	u64 ectlr;
+	u64 cntfrq;
+	u64 cntvct;
+	u64 cntv_ctl;
+	u32 requested_cpu;
+	u32 observed_cpu;
+	int smp_call_ret;
+	int fabric_ret;
+	int clock_ret;
+	bool attempted;
+};
+
 struct mt6797_a72_admission_controller {
 	struct device *dev;
 	struct device *binder;
@@ -60,6 +83,7 @@ struct mt6797_a72_admission_controller {
 	/* CPU9 is explicit and cannot reuse CPU8 trace or trigger state. */
 	struct mt6797_a72_admission_controller_state cpu9_state;
 	struct mt6797_a72_admission_trigger_state cpu9_trigger;
+	struct mt6797_a72_post_online_diagnostic post_online[2];
 	bool cpu8_success_acked;
 	int ledger_prepare_ret;
 	struct mutex live_lock;
@@ -228,10 +252,62 @@ mt6797_a72_admission_publish_up(void *context,
 	return mt6797_a72_membership_publish_up(transaction);
 }
 
+static void mt6797_a72_post_online_cpu_read(void *data)
+{
+	struct mt6797_a72_post_online_diagnostic *diagnostic = data;
+
+	diagnostic->observed_cpu = raw_smp_processor_id();
+	diagnostic->midr = read_sysreg(midr_el1);
+	diagnostic->mpidr = read_sysreg(mpidr_el1);
+	diagnostic->sctlr = read_sysreg(sctlr_el1);
+	diagnostic->ectlr = read_sysreg_s(MT6797_A72_ECTLR_EL1);
+	diagnostic->cntfrq = read_sysreg(cntfrq_el0);
+	diagnostic->cntvct = read_sysreg(cntvct_el0);
+	diagnostic->cntv_ctl = read_sysreg(cntv_ctl_el0);
+}
+
 static int mt6797_a72_admission_add_cpu(void *context, unsigned int cpu)
 {
-	(void)context;
-	return add_cpu(cpu);
+	struct mt6797_a72_admission_controller *controller = context;
+	struct mt6797_a72_post_online_diagnostic *diagnostic;
+	int ret;
+
+	ret = add_cpu(cpu);
+	if (ret || cpu < 8 || cpu > 9)
+		return ret;
+
+	diagnostic = &controller->post_online[cpu - 8];
+	memset(diagnostic, 0, sizeof(*diagnostic));
+	diagnostic->attempted = true;
+	diagnostic->requested_cpu = cpu;
+	diagnostic->smp_call_ret = smp_call_function_single(cpu,
+		mt6797_a72_post_online_cpu_read, diagnostic, true);
+	diagnostic->fabric_ret = mt6797_a72_platform_fabric_snapshot(
+		controller->source.platform, &diagnostic->fabric);
+	diagnostic->clock_ret = mt6797_dvfsp_clock_backend_read(
+		controller->source.clock, &diagnostic->clock);
+
+	dev_info(controller->dev,
+		 "GEMINI_A72_POST_ONLINE_V1 cpu=%u/%u smp_ret=%d midr=%016llx mpidr=%016llx sctlr=%016llx ectlr=%016llx smpen=%u cntfrq=%llu cntvct=%llu cntv_ctl=%llx fabric_ret=%d valid=%u mp2_axi=%08x cci=%08x/%08x si=%08x/%08x/%08x/%08x/%08x clock_ret=%d mux=%08x div=%08x\n",
+		 diagnostic->requested_cpu, diagnostic->observed_cpu,
+		 diagnostic->smp_call_ret,
+		 diagnostic->midr, diagnostic->mpidr, diagnostic->sctlr,
+		 diagnostic->ectlr,
+		 !!(diagnostic->ectlr & MT6797_A72_ECTLR_SMPEN),
+		 diagnostic->cntfrq, diagnostic->cntvct, diagnostic->cntv_ctl,
+		 diagnostic->fabric_ret, diagnostic->fabric.valid,
+		 diagnostic->fabric.mp2_axi_config,
+		 diagnostic->fabric.cci_status_before,
+		 diagnostic->fabric.cci_status_after,
+		 diagnostic->fabric.cci_si_control[0],
+		 diagnostic->fabric.cci_si_control[1],
+		 diagnostic->fabric.cci_si_control[2],
+		 diagnostic->fabric.cci_si_control[3],
+		 diagnostic->fabric.cci_si_control[4],
+		 diagnostic->clock_ret, diagnostic->clock.armplldiv_muxsel,
+		 diagnostic->clock.armplldiv_ckdiv);
+
+	return 0;
 }
 
 static const struct mt6797_a72_admission_controller_ops

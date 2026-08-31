@@ -30,6 +30,12 @@ struct mt6797_consys_runtime_controller_gnss_lease {
 	u64 generation;
 };
 
+/* One retained WLAN HIF borrower; zero-initialize and return it before stop. */
+struct mt6797_consys_runtime_controller_wifi_lease {
+	struct mt6797_consys_runtime_controller *controller;
+	u64 generation;
+};
+
 /*
  * Both the controller DT property and its default-false parameter gate start.
  * The caller must retain @dev and serialize this operation with controller
@@ -56,5 +62,11 @@ int mt6797_consys_runtime_controller_gnss_session_get(struct device *dev,
 		const struct mt6797_consys_stp_session_lease **session_lease);
 void mt6797_consys_runtime_controller_gnss_session_put(
 		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease);
+
+int mt6797_consys_runtime_controller_wifi_session_get(struct device *dev,
+		struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease,
+		const struct mt6797_consys_stp_session_lease **session_lease);
+void mt6797_consys_runtime_controller_wifi_session_put(
+		struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_CONSYS_RUNTIME_CONTROLLER_H */

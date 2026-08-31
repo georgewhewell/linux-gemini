@@ -714,6 +714,22 @@ config MTK_MT6797_WIFI_AHB_W3_SESSION_KUNIT_TEST
 	  It touches no Device Tree, IRQ, MMIO, CONSYS session or radio.
 
 	  No platform device, firmware, register or interrupt is used.
+
+config MTK_MT6797_WIFI_AHB_W4_PLATFORM
+	tristate "Dormant MT6797 WLAN GEN3 W4 HIF platform owner"
+	depends on MTK_MT6797_WIFI_AHB_W3_SESSION
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
+	help
+	  Build the default-disabled platform adapter for a future retained WLAN HIF
+	  session. It validates and maps only the exact 0x180f0000/0x1100 portal,
+	  requests the DT IRQ with IRQF_NO_AUTOEN, and can borrow the controller's
+	  retained full-STP session only while W3 owns it. No Gemini DT node enables
+	  this driver. It never starts W3 because current W1 is a one-shot proof that
+	  restores function/power before its full-WMT stage expires.
+
+	  The adapter has no cfg80211/netdev, scan, association, TX submission or RX
+	  packet delivery. A later review must supply a durable W1-to-W4 readiness
+	  handoff before these mapped callbacks may operate hardware.
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

@@ -31,6 +31,11 @@ mt6797-gemini-pda-md1-cold-owner-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-md1-cold-owner.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-cold-owner.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-boot-candidate.dtbo
+mt6797-gemini-pda-md1-boot-candidate-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-md1-boot-candidate.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-boot-candidate.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-vgpu-identity.dtbo
 mt6797-gemini-pda-gpu-vgpu-identity-dtbs := \
 	mt6797-gemini-pda.dtb \

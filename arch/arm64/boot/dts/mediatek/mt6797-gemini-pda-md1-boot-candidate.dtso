@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * MT6797 Gemini MD1 p22 boot-candidate profile.
+ *
+ * This is the one explicit enable overlay for the bounded MD1 boot-vector
+ * experiment. The normal source overlay remains disabled and no ordinary
+ * image applies this file. This profile combines the five platform drivers
+ * in dependency order: LK evidence, AP-side baseline, locked remap evidence,
+ * the secure EMI-MPU provider, then the cold owner. It is inert without all
+ * six built-in command-line gates. The owner stops after one boot-vector
+ * write and a 100 ms bounded AP/CCIF observation; it installs no IRQ, CLDMA,
+ * shared-memory, CCCI, SIM, RF, or modem firmware transport.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		#address-cells = <2>;
+		#size-cells = <2>;
+
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <2>;
+
+			md1_lk_handoff_probe: modem-lk-handoff-probe {
+				compatible = "mediatek,mt6797-md1-lk-handoff-probe";
+				mediatek,experimental-md1-lk-handoff-probe;
+				mediatek,stage-lk-handoff-read-only;
+				status = "okay";
+			};
+
+			md1_boot_status_observe: modem-boot-status@10201300 {
+				compatible = "mediatek,mt6797-md1-boot-status-observe";
+				reg = <0 0x10201300 0 0x8>,
+				      <0 0x10209000 0 0x1000>,
+				      <0 0x1020a000 0 0x1000>;
+				reg-names = "md1-boot-status", "ap-ccif", "md-ccif";
+				mediatek,spm = <&scpsys>;
+				mediatek,infracfg = <&infrasys>;
+				mediatek,experimental-md1-boot-status;
+				status = "okay";
+			};
+
+			md1_remap_observe: modem-remap-observe {
+				compatible = "mediatek,mt6797-md1-remap-observe";
+				reg = <0 0x10001000 0 0x1000>;
+				reg-names = "infracfg-ao";
+				mediatek,experimental-md1-remap-observe;
+				mediatek,stage-lk-remap-observe-read-only;
+				status = "okay";
+			};
+
+			md1_emi_mpu: modem-emi-mpu {
+				compatible = "mediatek,mt6797-md1-emi-mpu";
+				mediatek,experimental-md1-emi-mpu;
+				status = "okay";
+			};
+
+			md1_cold_owner: modem-cold-owner {
+				compatible = "mediatek,mt6797-md1-cold-owner";
+				reg = <0 0x10001000 0 0x1000>,
+				      <0 0x10209000 0 0x1000>,
+				      <0 0x1020a000 0 0x1000>,
+				      <0 0x1000c000 0 0x1000>,
+				      <0 0x20150000 0 0x118>,
+				      <0 0x20130000 0 0x1004>,
+				      <0 0x20060000 0 0xd0>,
+				      <0 0x260f0000 0 0x200>,
+				      <0 0x20140000 0 0x18>,
+				      <0 0x20120000 0 0xd0>,
+				      <0 0x200f0100 0 0x300>,
+				      <0 0x26010000 0 0x40>,
+				      <0 0x20000024 0 0x4>,
+				      <0 0x10201300 0 0x8>;
+				reg-names = "infracfg", "ap-ccif", "md-ccif", "apmixed",
+					    "md-clksw", "md-dcm", "md-peri-misc", "md-l1-a0",
+					    "md-top-pll", "md-sys-clk", "md-rgu", "l1-rgu",
+					    "boot-vector", "boot-status";
+				mediatek,experimental-md1-cold-owner;
+				mediatek,stage-cold-reset-held;
+				mediatek,pmic = <&pmic>;
+				mediatek,spm = <&scpsys>;
+				mediatek,emi-mpu = <&md1_emi_mpu>;
+				mediatek,stage-md1-boot-vector-release;
+				status = "okay";
+			};
+		};
+	};
+};

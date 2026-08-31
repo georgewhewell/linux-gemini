@@ -84,6 +84,16 @@ mt6797-gemini-pda-consys-g2d-vcn33-preflight-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-consys-g2d-vcn33-preflight.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2d-vcn33-preflight.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-g2e-bt-function.dtbo
+mt6797-gemini-pda-consys-g2e-bt-function-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-g2e-bt-function.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2e-bt-function.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-g2f-bt-hci-proof.dtbo
+mt6797-gemini-pda-consys-g2f-bt-hci-proof-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-g2f-bt-hci-proof.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2f-bt-hci-proof.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-display.dtbo
 mt6797-gemini-pda-display-test-dtbs := \
 	mt6797-gemini-pda.dtb \

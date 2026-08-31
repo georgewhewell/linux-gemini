@@ -127,7 +127,8 @@ static u8 mt6797_consys_stp_sequence_next(u8 sequence)
 
 static bool mt6797_consys_stp_channel_supported(enum mtk_stp_channel channel)
 {
-	return channel == MTK_STP_WMT || channel == MTK_STP_GNSS;
+	return channel == MTK_STP_BT || channel == MTK_STP_WMT ||
+		channel == MTK_STP_GNSS;
 }
 
 static u8 mt6797_consys_stp_header_checksum(const u8 header[MTK_STP_HEADER_SIZE])
@@ -655,6 +656,9 @@ int mt6797_consys_stp_session_transmit(
 	if (!lease || !lease->session || (!payload && payload_length) ||
 	    !payload_length)
 		return -EINVAL;
+	/* Channel zero is never published to a normal full-STP client. */
+	if (channel == MTK_STP_BT)
+		return -EOPNOTSUPP;
 	if (!mt6797_consys_stp_channel_supported(channel))
 		return -EOPNOTSUPP;
 	if (payload_length > MTK_STP_MAX_PAYLOAD)

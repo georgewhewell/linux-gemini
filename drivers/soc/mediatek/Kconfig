@@ -224,7 +224,7 @@ config MTK_MT6797_BTIF_PIO_PLATFORM_KUNIT_TEST
 
 config MTK_MT6797_BTIF_STP_BOOTSTRAP
 	tristate "MediaTek MT6797 dormant BTIF STP bootstrap controller"
-	depends on MTK_MT6797_BTIF_PIO && MTK_WMT
+	depends on MTK_MT6797_BTIF_PIO && MTK_WMT && MTK_MT6797_BT_H4_COLLECTOR
 	depends on MTK_MT6797_CONSYS_WMT_INITIAL
 	help
 	  Build the single-owner controller for the exact vendor BTIF handover:
@@ -730,10 +730,13 @@ config MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
 	  lease, rejects pre-enabled or disagreeing rail snapshots, runs the exact
 	  LTE coexistence and RF calibration transactions, then disables BT and
 	  Wi-Fi before restoring their shared selector. Both its DT property and
-	  read-only module parameter are required. A second pair of default-false
-	  GNSS gates can run exactly one GPS FUNC_CTRL on/off probe, with GPIO69
-	  LNA init-low/high/low sequencing, before the same terminal fence/reset.
-	  It creates no durable radio endpoint.
+	  read-only module parameter are required. Its distinct G2e and G2f
+	  compatibles each require their own DT property and read-only module
+	  parameter, then reuse the completed G2d sequence for a one-shot BT
+	  PALDO/FUNC_CTRL proof; G2f additionally sends private H4 Reset and Read
+	  Local Version commands with exact Command Complete checks. Every path
+	  returns to the bootstrap fence/reset unwind; no HCI device or radio
+	  endpoint is exposed.
 
 config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
 	bool "KUnit tests for MT6797 post-patch calibration choreography"
@@ -743,12 +746,9 @@ config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
 	  Exercise the exact MT6797 post-patch sequence in memory: vendor 5-ms
 	  delay, five LTE coexistence packets, fixed-3.3-V BT/Wi-Fi PALDOs, RF
 	  calibration, BT-then-Wi-Fi release, antenna coexistence, and the firmware
-	  FM strap. It additionally checks the separately gated GNSS sequence:
-	  GPIO69 LNA init-low/high, FUNC_CTRL GPS { 2, 1 }, LNA low, then
-	  FUNC_CTRL GPS { 2, 0 }, with exact status matching and fault fencing.
-	  It checks every WMT and rail failure path and proves the shared MT6351
-	  selector is not restored until both consumers are off. It does not access
-	  a regulator, WMT endpoint, Device Tree, or Gemini.
+	  FM strap. It checks every WMT and rail failure path and proves the shared
+	  MT6351 selector is not restored until both consumers are off. It does not
+	  access a regulator, WMT endpoint, Device Tree, or Gemini.
 
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"

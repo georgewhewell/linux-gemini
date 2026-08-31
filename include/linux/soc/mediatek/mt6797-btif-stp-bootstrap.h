@@ -99,6 +99,18 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range(
 		unsigned long timeout);
 
 /*
+ * Send one syntactically complete H4 command through private STP channel zero.
+ * This is valid only in the synchronous post-full stage.  The supplied matcher
+ * requires the exact Command Complete opcode, zero status, and total H4 event
+ * length; it neither registers nor exposes an HCI endpoint.
+ */
+int mt6797_btif_stp_bootstrap_full_bt_hci_exchange(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		const u8 *command, size_t command_len, u16 expected_opcode,
+		size_t expected_reply_len, u8 *reply, size_t reply_size,
+		size_t *reply_len, unsigned long timeout);
+
+/*
  * The returned full session remains owned by bootstrap until destroy().
  * destroy() prevents another run and waits for an in-progress run to finish
  * before freeing the controller; its supplied close() callback must not call

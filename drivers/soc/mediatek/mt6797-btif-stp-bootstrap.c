@@ -46,6 +46,7 @@
 #endif
 
 #include <linux/soc/mediatek/mt6797-btif-pio.h>
+#include <linux/soc/mediatek/mt6797-bt-h4-collector.h>
 #include <linux/soc/mediatek/mt6797-btif-stp-bootstrap.h>
 #include <linux/soc/mediatek/mt6797-consys.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
@@ -97,6 +98,7 @@ struct mt6797_btif_stp_bootstrap {
 	u64 raw_wmt_events;
 	u64 raw_wmt_event_bytes;
 	struct mtk_wmt full_wmt;
+	struct mt6797_bt_h4_collector h4_collector;
 	struct mt6797_consys_stp_session *session;
 	const struct mt6797_consys_stp_session_bootstrap_lease *full_bootstrap;
 	const struct mt6797_consys_stp_session_lease *full_session;
@@ -135,6 +137,7 @@ static void mt6797_btif_stp_bootstrap_fence(
 	if (!from_retry_work)
 		cancel_delayed_work_sync(&bootstrap->full_retry_work);
 	mt6797_consys_stp_session_quiesce(bootstrap->session);
+	mt6797_bt_h4_collector_fence(&bootstrap->h4_collector);
 	/* close() is the only supplied path that synchronizes the Linux IRQ. */
 	if (started)
 		bootstrap->ops.close(bootstrap->ops.context);
@@ -296,9 +299,12 @@ static int mt6797_btif_stp_bootstrap_full_wmt_receive(void *context,
 {
 	struct mt6797_btif_stp_bootstrap *bootstrap = context;
 
-	if (channel != MTK_STP_WMT)
-		return -EOPNOTSUPP;
-	return mtk_wmt_receive(&bootstrap->full_wmt, payload, payload_length);
+	if (channel == MTK_STP_WMT)
+		return mtk_wmt_receive(&bootstrap->full_wmt, payload, payload_length);
+	if (channel == MTK_STP_BT)
+		return mt6797_bt_h4_collector_receive(&bootstrap->h4_collector,
+					      payload, payload_length);
+	return -EOPNOTSUPP;
 }
 
 static int mt6797_btif_stp_bootstrap_full_wmt_transmit(void *context,
@@ -541,6 +547,47 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range(
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range);
 
+int mt6797_btif_stp_bootstrap_full_bt_hci_exchange(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		const u8 *command, size_t command_len, u16 expected_opcode,
+		size_t expected_reply_len, u8 *reply, size_t reply_size,
+		size_t *reply_len, unsigned long timeout)
+{
+	struct mt6797_btif_stp_bootstrap *bootstrap;
+	bool valid;
+	int ret;
+
+	if (!lease || !lease->bootstrap || !command || command_len < 4 ||
+	    command[0] != 0x01 || command_len != 4 + command[3] || !reply ||
+	    !reply_len || !timeout || !expected_reply_len ||
+	    expected_reply_len > reply_size)
+		return -EINVAL;
+	bootstrap = lease->bootstrap;
+	mutex_lock(&bootstrap->lifecycle_lock);
+	valid = bootstrap->run_in_progress && bootstrap->full_wmt_stage_running &&
+		!bootstrap->destroy_requested &&
+		bootstrap->state == MT6797_BTIF_STP_BOOTSTRAP_FULL_VERIFY;
+	mutex_unlock(&bootstrap->lifecycle_lock);
+	if (!valid)
+		return -ESHUTDOWN;
+	*reply_len = 0;
+	ret = mt6797_bt_h4_collector_begin(&bootstrap->h4_collector, expected_opcode);
+	if (ret)
+		return ret;
+	WRITE_ONCE(bootstrap->full_retry_armed, true);
+	ret = mt6797_consys_stp_session_bootstrap_transmit(
+		bootstrap->full_bootstrap, MTK_STP_BT, command, command_len);
+	if (!ret)
+		ret = mt6797_bt_h4_collector_wait(&bootstrap->h4_collector, timeout,
+					  reply, reply_size, reply_len);
+	WRITE_ONCE(bootstrap->full_retry_armed, false);
+	cancel_delayed_work_sync(&bootstrap->full_retry_work);
+	if (!ret && *reply_len != expected_reply_len)
+		ret = -EPROTO;
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_full_bt_hci_exchange);
+
 struct mt6797_btif_stp_bootstrap *
 mt6797_btif_stp_bootstrap_create(
 		const struct mt6797_btif_pio_lease *pio_lease,
@@ -559,6 +606,7 @@ mt6797_btif_stp_bootstrap_create(
 	init_completion(&bootstrap->run_complete);
 	init_completion(&bootstrap->raw_response);
 	spin_lock_init(&bootstrap->raw_lock);
+	mt6797_bt_h4_collector_init(&bootstrap->h4_collector);
 	INIT_DELAYED_WORK(&bootstrap->full_retry_work,
 			  mt6797_btif_stp_bootstrap_full_retry);
 	bootstrap->pio_lease = pio_lease;
@@ -705,6 +753,8 @@ mt6797_btif_stp_bootstrap_run_unchecked(
 		mutex_lock(&bootstrap->lifecycle_lock);
 		bootstrap->full_wmt_stage_running = false;
 		mutex_unlock(&bootstrap->lifecycle_lock);
+		/* Channel zero is private to this callback, never the promoted session. */
+		mt6797_bt_h4_collector_fence(&bootstrap->h4_collector);
 		if (ret)
 			goto fail;
 	}

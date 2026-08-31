@@ -21,6 +21,7 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/property.h>
 #include <linux/regulator/consumer.h>
 
@@ -43,11 +44,19 @@ module_param_named(enable_experimental_g2d_postpatch_owner,
 MODULE_PARM_DESC(enable_experimental_g2d_postpatch_owner,
 	"allow one MT6797 G2d fixed-3.3V post-patch experiment (default: false)");
 
+static bool enable_experimental_g2d_gnss_probe;
+module_param_named(enable_experimental_g2d_gnss_probe,
+		enable_experimental_g2d_gnss_probe, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_g2d_gnss_probe,
+	"allow one MT6797 G2d GPS FUNC_CTRL probe after post-patch (default: false)");
+
 enum mt6797_g2d_stage {
 	G2D_SNAPSHOT, G2D_SET_BT, G2D_SET_WIFI, G2D_ENABLE_BT, G2D_ENABLE_WIFI,
 	G2D_LTE_EXT, G2D_LTE_FILTER, G2D_LTE_FREQ, G2D_LTE_UNSAFE, G2D_LTE_L,
 	G2D_CALIBRATE, G2D_DISABLE_BT, G2D_DISABLE_WIFI, G2D_VERIFY_OFF,
 	G2D_RESTORE_SELECTOR, G2D_COEX, G2D_FM_STRAP,
+	G2D_GNSS_LNA_INIT, G2D_GNSS_LNA_ON, G2D_GNSS_FUNC_ON,
+	G2D_GNSS_LNA_OFF, G2D_GNSS_FUNC_OFF,
 };
 
 struct mt6797_g2d_ops {
@@ -76,6 +85,9 @@ struct mt6797_g2d_state {
 	u8 calibration_reply[2];
 	size_t calibration_event_len;
 	int cleanup_error;
+	enum mt6797_g2d_stage causal_stage;
+	int causal_error;
+	bool cleanup_attempted;
 	enum mt6797_g2d_stage stage;
 };
 
@@ -125,6 +137,9 @@ static const char * const mt6797_g2d_stage_name[] = {
 	[G2D_DISABLE_WIFI] = "disable-vcn33-wifi", [G2D_VERIFY_OFF] = "verify-vcn33-off",
 	[G2D_RESTORE_SELECTOR] = "restore-vcn33-selector", [G2D_COEX] = "coex-antenna",
 	[G2D_FM_STRAP] = "fm-strap",
+	[G2D_GNSS_LNA_INIT] = "gnss-lna-init", [G2D_GNSS_LNA_ON] = "gnss-lna-on",
+	[G2D_GNSS_FUNC_ON] = "gnss-func-on", [G2D_GNSS_LNA_OFF] = "gnss-lna-off",
+	[G2D_GNSS_FUNC_OFF] = "gnss-func-off",
 };
 
 static int mt6797_g2d_wmt(struct mt6797_g2d_ops *ops,
@@ -134,6 +149,61 @@ static int mt6797_g2d_wmt(struct mt6797_g2d_ops *ops,
 {
 	state->stage = stage;
 	return ops->wmt(ops->context, opcode, data, data_len, expected);
+}
+
+#define MT6797_G2D_WMT_FUNC_CTRL	6
+#define MT6797_G2D_WMT_GNSS_TYPE	2
+static const u8 g2d_gnss_on[] = { MT6797_G2D_WMT_GNSS_TYPE, 1 };
+static const u8 g2d_gnss_off[] = { MT6797_G2D_WMT_GNSS_TYPE, 0 };
+static const struct mtk_wmt_match g2d_gnss_func_match = {
+	.opcode = MT6797_G2D_WMT_FUNC_CTRL, .data = g2d_ok,
+	.data_len = sizeof(g2d_ok),
+};
+struct mt6797_g2d_gnss_ops {
+	int (*lna_init)(void *context);
+	int (*lna_set)(void *context, bool enable);
+	int (*wmt)(void *context, u8 opcode, const u8 *data, size_t data_len,
+		   const struct mtk_wmt_match *expected);
+	void *context;
+};
+static int mt6797_g2d_gnss_fail_low(struct mt6797_g2d_gnss_ops *ops,
+		struct mt6797_g2d_state *state, enum mt6797_g2d_stage stage, int error)
+{
+	state->causal_stage = stage;
+	state->causal_error = error;
+	state->cleanup_attempted = true;
+	state->cleanup_error = ops->lna_set(ops->context, false);
+	state->stage = stage;
+	return error;
+}
+static int mt6797_g2d_gnss_probe_run(struct mt6797_g2d_gnss_ops *ops,
+		struct mt6797_g2d_state *state)
+{
+	int ret;
+
+	if (!ops || !state || !ops->lna_init || !ops->lna_set || !ops->wmt)
+		return -EINVAL;
+	state->stage = G2D_GNSS_LNA_INIT;
+	ret = ops->lna_init(ops->context);
+	if (ret)
+		return mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret);
+	state->stage = G2D_GNSS_LNA_ON;
+	ret = ops->lna_set(ops->context, true);
+	if (ret)
+		return mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret);
+	state->stage = G2D_GNSS_FUNC_ON;
+	ret = ops->wmt(ops->context, MT6797_G2D_WMT_FUNC_CTRL, g2d_gnss_on,
+		       sizeof(g2d_gnss_on), &g2d_gnss_func_match);
+	if (ret)
+		return mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret);
+	state->stage = G2D_GNSS_LNA_OFF;
+	ret = ops->lna_set(ops->context, false);
+	if (ret)
+		return mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret);
+	state->stage = G2D_GNSS_FUNC_OFF;
+	ret = ops->wmt(ops->context, MT6797_G2D_WMT_FUNC_CTRL, g2d_gnss_off,
+		       sizeof(g2d_gnss_off), &g2d_gnss_func_match);
+	return ret ? mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret) : 0;
 }
 
 static int mt6797_g2d_calibrate(struct mt6797_g2d_ops *ops,
@@ -317,8 +387,13 @@ struct mt6797_g2d_owner {
 	struct device *dev;
 	struct regulator *bt;
 	struct regulator *wifi;
+	struct pinctrl *pinctrl;
+	struct pinctrl_state *gps_lna_init;
+	struct pinctrl_state *gps_lna_on;
+	struct pinctrl_state *gps_lna_off;
 	const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease;
 	bool wifi_w0_dirty_fatal;
+	bool gnss_probe;
 };
 
 static struct regulator *mt6797_g2d_regulator(struct mt6797_g2d_owner *owner,
@@ -377,6 +452,21 @@ static int mt6797_g2d_live_wmt_capture(void *context, u8 opcode,
 static void mt6797_g2d_live_delay_ms(void *context, unsigned int milliseconds)
 {
 	msleep(milliseconds);
+}
+
+static int mt6797_g2d_live_lna_init(void *context)
+{
+	struct mt6797_g2d_owner *owner = context;
+
+	return pinctrl_select_state(owner->pinctrl, owner->gps_lna_init);
+}
+
+static int mt6797_g2d_live_lna_set(void *context, bool enable)
+{
+	struct mt6797_g2d_owner *owner = context;
+
+	return pinctrl_select_state(owner->pinctrl,
+		enable ? owner->gps_lna_on : owner->gps_lna_off);
 }
 
 /* The W0 PALDO interval is independent of the completed G2d rail pair. */
@@ -464,6 +554,12 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		.context = owner,
 	};
 	struct mt6797_g2d_state state = { };
+	struct mt6797_g2d_gnss_ops gnss_ops = {
+		.lna_init = mt6797_g2d_live_lna_init,
+		.lna_set = mt6797_g2d_live_lna_set,
+		.wmt = mt6797_g2d_live_wmt,
+		.context = owner,
+	};
 	bool wcir_attempted = false;
 	int ret;
 
@@ -475,10 +571,17 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		wcir_attempted = true;
 		ret = mt6797_g2d_wifi_wcir_phase(owner, lease);
 	}
+	if (!ret && owner->gnss_probe)
+		ret = mt6797_g2d_gnss_probe_run(&gnss_ops, &state);
 	owner->lease = NULL;
 	if (ret && wcir_attempted)
 		dev_err(owner->dev,
 			"G2d Wi-Fi WCIR phase failed: %d; bootstrap must fence/reset\n", ret);
+	else if (ret && state.causal_error && state.cleanup_attempted)
+		dev_err(owner->dev,
+			"G2d causal stage %s failed: %d; GNSS LNA-low cleanup: %d; bootstrap must fence/reset\n",
+			mt6797_g2d_stage_name[state.causal_stage], state.causal_error,
+			state.cleanup_error);
 	else if (ret)
 		dev_err(owner->dev,
 			"G2d stage %s failed: %d cleanup=%d; bootstrap must fence/reset\n",
@@ -532,6 +635,22 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	if (!owner)
 		return mt6797_g2d_probe_failure(&pdev->dev, -ENOMEM, "owner allocation");
 	owner->dev = &pdev->dev;
+	owner->gnss_probe = device_property_read_bool(&pdev->dev,
+		"mediatek,experimental-g2d-gnss-probe") &&
+		READ_ONCE(enable_experimental_g2d_gnss_probe);
+	if (owner->gnss_probe) {
+		owner->pinctrl = devm_pinctrl_get(&pdev->dev);
+		if (IS_ERR(owner->pinctrl))
+			return mt6797_g2d_probe_failure(&pdev->dev, PTR_ERR(owner->pinctrl),
+				"GNSS pinctrl");
+		owner->gps_lna_init = pinctrl_lookup_state(owner->pinctrl, "gps-lna-init");
+		owner->gps_lna_on = pinctrl_lookup_state(owner->pinctrl, "gps-lna-on");
+		owner->gps_lna_off = pinctrl_lookup_state(owner->pinctrl, "gps-lna-off");
+		if (IS_ERR(owner->gps_lna_init) || IS_ERR(owner->gps_lna_on) ||
+		    IS_ERR(owner->gps_lna_off))
+			return mt6797_g2d_probe_failure(&pdev->dev, -EINVAL,
+				"GNSS LNA pinctrl state");
+	}
 	owner->bt = devm_regulator_get(&pdev->dev, "vcn33-bt");
 	if (IS_ERR(owner->bt))
 		return mt6797_g2d_probe_failure(&pdev->dev, PTR_ERR(owner->bt),

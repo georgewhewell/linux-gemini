@@ -23,5 +23,12 @@ need "$driver" 'regulator_is_equal(owner->bt, owner->wifi)'
 need "$driver" 'G2d probe %s failed\n'
 need "$driver" '"persistent EMI claim"'
 need "$driver" '"controller start or post-patch stage"'
+need "$overlay" 'mediatek,experimental-g2d-gnss-probe;'
+need "$overlay" 'MT6797_GPIO69__FUNC_GPIO69'
+need "$driver" 'device_property_read_bool(&pdev->dev,'
+need "$driver" 'READ_ONCE(enable_experimental_g2d_gnss_probe)'
+need "$driver" 'g2d_gnss_on[] = { MT6797_G2D_WMT_GNSS_TYPE, 1 }'
+need "$driver" 'g2d_gnss_off[] = { MT6797_G2D_WMT_GNSS_TYPE, 0 }'
+need "$driver" 'MT6797_G2D_WMT_FUNC_CTRL'
 
 echo "G2d probe dependency and attribution contract: PASS"

@@ -710,8 +710,10 @@ config MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
 	  lease, rejects pre-enabled or disagreeing rail snapshots, runs the exact
 	  LTE coexistence and RF calibration transactions, then disables BT and
 	  Wi-Fi before restoring their shared selector. Both its DT property and
-	  read-only module parameter are required. It never enables a radio
-	  function or exposes a radio endpoint.
+	  read-only module parameter are required. A second pair of default-false
+	  GNSS gates can run exactly one GPS FUNC_CTRL on/off probe, with GPIO69
+	  LNA init-low/high/low sequencing, before the same terminal fence/reset.
+	  It creates no durable radio endpoint.
 
 config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
 	bool "KUnit tests for MT6797 post-patch calibration choreography"
@@ -721,9 +723,12 @@ config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
 	  Exercise the exact MT6797 post-patch sequence in memory: vendor 5-ms
 	  delay, five LTE coexistence packets, fixed-3.3-V BT/Wi-Fi PALDOs, RF
 	  calibration, BT-then-Wi-Fi release, antenna coexistence, and the firmware
-	  FM strap. It checks every WMT and rail failure path and proves the shared
-	  MT6351 selector is not restored until both consumers are off. It does not
-	  access a regulator, WMT endpoint, Device Tree, or Gemini.
+	  FM strap. It additionally checks the separately gated GNSS sequence:
+	  GPIO69 LNA init-low/high, FUNC_CTRL GPS { 2, 1 }, LNA low, then
+	  FUNC_CTRL GPS { 2, 0 }, with exact status matching and fault fencing.
+	  It checks every WMT and rail failure path and proves the shared MT6351
+	  selector is not restored until both consumers are off. It does not access
+	  a regulator, WMT endpoint, Device Tree, or Gemini.
 
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"

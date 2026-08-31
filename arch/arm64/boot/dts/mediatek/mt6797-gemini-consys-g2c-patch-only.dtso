@@ -13,6 +13,7 @@
 #include <dt-bindings/clock/mt6797-clk.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/pinctrl/mt6797-pinfunc.h>
 #include <dt-bindings/power/mt6797-power.h>
 
 / {
@@ -94,7 +95,50 @@
 				vcn33-bt-supply = <&mt6351_vcn33_bt_reg>;
 				vcn33-wifi-supply = <&mt6351_vcn33_wifi_reg>;
 				mediatek,experimental-g2d-postpatch-owner;
+				/* A second DT + command-line gate controls this GNSS probe. */
+				mediatek,experimental-g2d-gnss-probe;
+				pinctrl-names = "gps-lna-init", "gps-lna-on", "gps-lna-off";
+				pinctrl-0 = <&g2d_gnss_lna_init>;
+				pinctrl-1 = <&g2d_gnss_lna_on>;
+				pinctrl-2 = <&g2d_gnss_lna_off>;
 				status = "disabled";
+			};
+		};
+	};
+
+	/*
+	 * Vendor aeon6797_6m_n.dts:1275-1310 assigns host GNSS LNA to GPIO69.
+		 * MT6797 needs no GPS_SYNC (wmt_ic_soc.c:1508-1521), so deliberately model
+		 * only the observed LNA states. Generic pinconf carries every evidenced
+		 * electrical property here.
+	 */
+	fragment@4 {
+		target = <&pio>;
+
+		__overlay__ {
+			g2d_gnss_lna_init: g2d-gnss-lna-init-pins {
+				pin-lna {
+					pinmux = <MT6797_GPIO69__FUNC_GPIO69>;
+					slew-rate = <0>;
+					bias-disable;
+					output-low;
+				};
+			};
+
+			g2d_gnss_lna_on: g2d-gnss-lna-on-pins {
+				pin-lna {
+					pinmux = <MT6797_GPIO69__FUNC_GPIO69>;
+					slew-rate = <1>;
+					output-high;
+				};
+			};
+
+			g2d_gnss_lna_off: g2d-gnss-lna-off-pins {
+				pin-lna {
+					pinmux = <MT6797_GPIO69__FUNC_GPIO69>;
+					slew-rate = <1>;
+					output-low;
+				};
 			};
 		};
 	};

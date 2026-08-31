@@ -11,6 +11,9 @@
 typedef int (*mt6797_a72_cpu_boot_fn)(unsigned int cpu);
 
 #define MT6797_A72_BINDER_DIAGNOSTIC_ABI 2U
+/* Durable ledger terminal ABI, kept public for the admission controller. */
+#define MT6797_A72_BINDER_LEDGER_CPU8_ONLINE_PROOF 5U
+#define MT6797_A72_BINDER_LEDGER_CPU9_ONLINE_PROOF 6U
 
 #define MT6797_A72_BINDER_SRAM_MATCH_ABI		BIT(0)
 #define MT6797_A72_BINDER_SRAM_MATCH_ATTEMPTED	BIT(1)

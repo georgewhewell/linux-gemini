@@ -679,7 +679,7 @@ static ssize_t ack_cpu8_store(struct device *dev,
 	if (ret)
 		goto out;
 	if (ledger.phase != GEMINI_TRANSITION_LEDGER_TERMINAL ||
-	    ledger.terminal != MT6797_A72_TRANSITION_CPU8_ONLINE_PROOF ||
+	    ledger.terminal != MT6797_A72_BINDER_LEDGER_CPU8_ONLINE_PROOF ||
 	    !mt6797_a72_binder_cpu8_success_ready() ||
 	    !cpu_online(8) || cpu_online(9)) {
 		ret = -EPERM;

@@ -20,8 +20,10 @@
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -185,6 +187,8 @@ static bool enable_experimental_md1_cold_owner;
 static bool enable_experimental_md1_boot_vector_release;
 /* A failed post-observation transaction may have changed MD1 state. */
 static atomic_t mt6797_md1_cold_owner_fatal_latch = ATOMIC_INIT(0);
+static DEFINE_MUTEX(mt6797_md1_post_vector_evidence_lock);
+static struct mt6797_md1_post_vector_evidence mt6797_md1_post_vector_evidence;
 module_param_named(enable_experimental_md1_cold_owner,
 			   enable_experimental_md1_cold_owner, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_md1_cold_owner,
@@ -193,6 +197,27 @@ module_param_named(enable_experimental_md1_boot_vector_release,
 			enable_experimental_md1_boot_vector_release, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_md1_boot_vector_release,
 	"allow the separately gated MT6797 MD1 WDT/boot-vector candidate (default: false)");
+
+int mt6797_md1_cold_owner_post_vector_evidence_get(
+	struct mt6797_md1_post_vector_evidence *evidence)
+{
+	if (!evidence)
+		return -EINVAL;
+
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	*evidence = mt6797_md1_post_vector_evidence;
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return evidence->observed ? 0 : -ENODATA;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_post_vector_evidence_get);
+
+static void mt6797_md1_cold_post_vector_publish(
+	const struct mt6797_md1_post_vector_evidence *evidence)
+{
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	mt6797_md1_post_vector_evidence = *evidence;
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+}
 
 static int mt6797_md1_cold_map_resource(struct platform_device *pdev,
 	enum mt6797_md1_cold_owner_resource_id id, void __iomem **base)
@@ -787,51 +812,113 @@ static int mt6797_md1_cold_wdt_run(struct mt6797_md1_cold_owner_backend *backend
 	return 0;
 }
 
-static bool mt6797_md1_cold_ccif_activity(
-	const struct mt6797_md1_cold_owner_ccif *ccif)
-{
-	return ccif->ap_busy || ccif->md_busy || ccif->ap_ack || ccif->md_ack ||
-		ccif->ap_sram_nonzero_words || ccif->md_sram_nonzero_words;
-}
-
 static int mt6797_md1_cold_boot_vector_release(
 	struct mt6797_md1_cold_owner_backend *backend,
 	const struct mt6797_md1_boot_status_evidence *before)
 {
-	struct mt6797_md1_cold_owner_ccif ccif;
+	struct mt6797_md1_post_vector_evidence evidence = { };
 	void __iomem *boot_vector = backend->base[MT6797_MD1_RES_BOOT_VECTOR];
 	void __iomem *boot_status = backend->base[MT6797_MD1_RES_BOOT_STATUS];
 	u32 vector, stats0, stats1;
 	unsigned int attempt;
 	int ret;
 
+	evidence.boot_status0_before = readl(boot_status + MT6797_MD1_BOOT_STATUS0);
+	evidence.boot_status1_before = readl(boot_status + MT6797_MD1_BOOT_STATUS1);
+	ret = mt6797_md1_cold_ccif_observe(backend, &evidence.ccif_before);
+	if (ret)
+		return ret;
+	evidence.baseline_boottime_ns = ktime_get_boottime_ns();
+	if (evidence.boot_status0_before != before->stats0_final ||
+	    evidence.boot_status1_before != before->stats1_final)
+		dev_info(backend->dev,
+			 "MD1 post-vector baseline: boot-status %#08x/%#08x -> %#08x/%#08x\n",
+			 before->stats0_final, before->stats1_final,
+			 evidence.boot_status0_before, evidence.boot_status1_before);
+
 	/* Vendor cldma_platform.c::md_cd_let_md_go(): MD_BOOT_VECTOR_EN <- 1. */
 	writel(MT6797_MD1_BOOT_VECTOR_ENABLE, boot_vector);
 	vector = readl(boot_vector);
-	if (vector != MT6797_MD1_BOOT_VECTOR_ENABLE)
+	evidence.boot_vector_readback = vector;
+	if (vector != MT6797_MD1_BOOT_VECTOR_ENABLE) {
+		evidence.boot_status0_after = evidence.boot_status0_before;
+		evidence.boot_status1_after = evidence.boot_status1_before;
+		evidence.ccif_after = evidence.ccif_before;
+		evidence.observed_boottime_ns = ktime_get_boottime_ns();
+		evidence.token = MT6797_MD1_POST_VECTOR_NO_GO;
+		evidence.observed = true;
+		mt6797_md1_cold_post_vector_publish(&evidence);
+		dev_crit(backend->dev,
+			 "MD1 post-vector oracle NO-GO: reg[0x%08x]=%#x expected=%#x; no IRQ, CLDMA or shared-memory access\n",
+			 MT6797_MD1_BOOT_VECTOR_BASE, vector,
+			 MT6797_MD1_BOOT_VECTOR_ENABLE);
 		return -EIO;
+	}
 
 	for (attempt = 0; attempt < MT6797_MD1_MAX_BOOT_OBSERVE_POLLS; attempt++) {
 		stats0 = readl(boot_status + MT6797_MD1_BOOT_STATUS0);
 		stats1 = readl(boot_status + MT6797_MD1_BOOT_STATUS1);
-		ret = mt6797_md1_cold_ccif_observe(backend, &ccif);
+		ret = mt6797_md1_cold_ccif_observe(backend, &evidence.ccif_after);
 		if (ret)
 			return ret;
-		if (stats0 != before->stats0_final || stats1 != before->stats1_final ||
-		    mt6797_md1_cold_ccif_activity(&ccif)) {
+
+		evidence.boot_status0_after = stats0;
+		evidence.boot_status1_after = stats1;
+		evidence.observed_boottime_ns = ktime_get_boottime_ns();
+		evidence.polls = attempt + 1;
+		evidence.boot_status_changed =
+			stats0 != evidence.boot_status0_before ||
+			stats1 != evidence.boot_status1_before;
+		evidence.ccif_changed =
+			mt6797_md1_cold_owner_post_vector_activity(
+				&(struct mt6797_md1_post_vector_evidence) {
+					.ccif_before = evidence.ccif_before,
+					.ccif_after = evidence.ccif_after,
+				});
+
+		if (mt6797_md1_cold_owner_post_vector_activity(&evidence)) {
+			evidence.token = MT6797_MD1_POST_VECTOR_GO;
+			evidence.observed = true;
+			mt6797_md1_cold_post_vector_publish(&evidence);
 			dev_info(backend->dev,
-				 "MD1 boot-vector readback=%#x after %u polls; boot=%#x/%#x CCIF busy=%#x/%#x ack=%#x/%#x sram=%u/%u\n",
-				 vector, attempt + 1, stats0, stats1, ccif.ap_busy,
-				 ccif.md_busy, ccif.ap_ack, ccif.md_ack,
-				 ccif.ap_sram_nonzero_words, ccif.md_sram_nonzero_words);
+				 "MD1 post-vector oracle GO: vector[0x%08x]=%#x polls=%u t=%llu..%llu stats[0x10201300]=%#08x->%#08x stats[0x10201304]=%#08x->%#08x CCIF busy=%#x/%#x->%#x/%#x ack=%#x/%#x->%#x/%#x sram=%u/%u->%u/%u; no IRQ, CLDMA or shared-memory access\n",
+				 MT6797_MD1_BOOT_VECTOR_BASE, vector, evidence.polls,
+				 (unsigned long long)evidence.baseline_boottime_ns,
+				 (unsigned long long)evidence.observed_boottime_ns,
+				 evidence.boot_status0_before, evidence.boot_status0_after,
+				 evidence.boot_status1_before, evidence.boot_status1_after,
+				 evidence.ccif_before.ap_busy, evidence.ccif_before.md_busy,
+				 evidence.ccif_after.ap_busy, evidence.ccif_after.md_busy,
+				 evidence.ccif_before.ap_ack, evidence.ccif_before.md_ack,
+				 evidence.ccif_after.ap_ack, evidence.ccif_after.md_ack,
+				 evidence.ccif_before.ap_sram_nonzero_words,
+				 evidence.ccif_before.md_sram_nonzero_words,
+				 evidence.ccif_after.ap_sram_nonzero_words,
+				 evidence.ccif_after.md_sram_nonzero_words);
 			return 0;
 		}
 		udelay(MT6797_MD1_BOOT_OBSERVE_DELAY_US);
 	}
 
+	evidence.token = MT6797_MD1_POST_VECTOR_NO_GO;
+	evidence.observed = true;
+	mt6797_md1_cold_post_vector_publish(&evidence);
+
 	dev_crit(backend->dev,
-		 "MD1 boot-vector readback=%#x but no boot-status or CCIF movement in %u bounded polls\n",
-		 vector, MT6797_MD1_MAX_BOOT_OBSERVE_POLLS);
+		 "MD1 post-vector oracle NO-GO: vector[0x%08x]=%#x polls=%u t=%llu..%llu stats[0x10201300]=%#08x->%#08x stats[0x10201304]=%#08x->%#08x CCIF busy=%#x/%#x->%#x/%#x ack=%#x/%#x->%#x/%#x sram=%u/%u->%u/%u; no IRQ, CLDMA or shared-memory access\n",
+		 MT6797_MD1_BOOT_VECTOR_BASE, vector, evidence.polls,
+		 (unsigned long long)evidence.baseline_boottime_ns,
+		 (unsigned long long)evidence.observed_boottime_ns,
+		 evidence.boot_status0_before, evidence.boot_status0_after,
+		 evidence.boot_status1_before, evidence.boot_status1_after,
+		 evidence.ccif_before.ap_busy, evidence.ccif_before.md_busy,
+		 evidence.ccif_after.ap_busy, evidence.ccif_after.md_busy,
+		 evidence.ccif_before.ap_ack, evidence.ccif_before.md_ack,
+		 evidence.ccif_after.ap_ack, evidence.ccif_after.md_ack,
+		 evidence.ccif_before.ap_sram_nonzero_words,
+		 evidence.ccif_before.md_sram_nonzero_words,
+		 evidence.ccif_after.ap_sram_nonzero_words,
+		 evidence.ccif_after.md_sram_nonzero_words);
 	return -ETIMEDOUT;
 }
 

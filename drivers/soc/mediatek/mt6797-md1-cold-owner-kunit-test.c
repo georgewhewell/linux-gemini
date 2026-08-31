@@ -255,12 +255,36 @@ static void mt6797_md1_cold_owner_pll_timeout_captures_last_status_and_latches(
 		8U + MT6797_MD1_COLD_OWNER_MAX_PLL_POLLS);
 }
 
+static void mt6797_md1_cold_owner_post_vector_activity_requires_delta(
+	struct kunit *test)
+{
+	struct mt6797_md1_post_vector_evidence evidence = {
+		.boot_status0_before = 0x10203040,
+		.boot_status1_before = 0x50607080,
+		.boot_status0_after = 0x10203040,
+		.boot_status1_after = 0x50607080,
+	};
+
+	KUNIT_EXPECT_FALSE(test,
+		mt6797_md1_cold_owner_post_vector_activity(&evidence));
+
+	evidence.ccif_after.md_ack = BIT(7);
+	KUNIT_EXPECT_TRUE(test,
+		mt6797_md1_cold_owner_post_vector_activity(&evidence));
+
+	evidence.ccif_after = evidence.ccif_before;
+	evidence.boot_status1_after++;
+	KUNIT_EXPECT_TRUE(test,
+		mt6797_md1_cold_owner_post_vector_activity(&evidence));
+}
+
 static struct kunit_case mt6797_md1_cold_owner_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_cold_owner_success_stops_before_boot_vector),
 	KUNIT_CASE(mt6797_md1_cold_owner_refuses_missing_observation_without_touching_hw),
 	KUNIT_CASE(mt6797_md1_cold_owner_cold_rejection_is_non_destructive),
 	KUNIT_CASE(mt6797_md1_cold_owner_every_post_observation_failure_is_fatal),
 	KUNIT_CASE(mt6797_md1_cold_owner_pll_timeout_captures_last_status_and_latches),
+	KUNIT_CASE(mt6797_md1_cold_owner_post_vector_activity_requires_delta),
 	{}
 };
 

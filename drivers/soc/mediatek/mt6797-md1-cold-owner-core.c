@@ -148,3 +148,23 @@ mt6797_md1_cold_owner_state(struct mt6797_md1_cold_owner *owner)
 	mutex_unlock(&owner->lock);
 	return state;
 }
+
+bool mt6797_md1_cold_owner_post_vector_activity(
+	const struct mt6797_md1_post_vector_evidence *evidence)
+{
+	const struct mt6797_md1_cold_owner_ccif *before, *after;
+
+	if (!evidence)
+		return false;
+
+	before = &evidence->ccif_before;
+	after = &evidence->ccif_after;
+	return evidence->boot_status0_before != evidence->boot_status0_after ||
+		evidence->boot_status1_before != evidence->boot_status1_after ||
+		before->ap_busy != after->ap_busy ||
+		before->md_busy != after->md_busy ||
+		before->ap_ack != after->ap_ack ||
+		before->md_ack != after->md_ack ||
+		before->ap_sram_nonzero_words != after->ap_sram_nonzero_words ||
+		before->md_sram_nonzero_words != after->md_sram_nonzero_words;
+}

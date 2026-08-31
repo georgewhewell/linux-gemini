@@ -78,6 +78,34 @@ struct mt6797_md1_cold_owner_ccif {
 	u32 md_sram_nonzero_words;
 };
 
+/*
+ * A terminal, AP-visible observation made immediately around the one vendor
+ * boot-vector write. It is an activity token only: it is not CCCI HS1, does
+ * not decode CCIF channel contents and grants no CLDMA/IRQ ownership.
+ */
+enum mt6797_md1_post_vector_token {
+	MT6797_MD1_POST_VECTOR_UNOBSERVED,
+	MT6797_MD1_POST_VECTOR_NO_GO,
+	MT6797_MD1_POST_VECTOR_GO,
+};
+
+struct mt6797_md1_post_vector_evidence {
+	u64 baseline_boottime_ns;
+	u64 observed_boottime_ns;
+	u32 polls;
+	u32 boot_status0_before;
+	u32 boot_vector_readback;
+	u32 boot_status1_before;
+	u32 boot_status0_after;
+	u32 boot_status1_after;
+	struct mt6797_md1_cold_owner_ccif ccif_before;
+	struct mt6797_md1_cold_owner_ccif ccif_after;
+	bool boot_status_changed;
+	bool ccif_changed;
+	enum mt6797_md1_post_vector_token token;
+	bool observed;
+};
+
 struct mt6797_md1_cold_owner_ops {
 	u32 abi;
 	int (*verify_cold_reset_held)(void *context,
@@ -114,5 +142,13 @@ int mt6797_md1_cold_owner_run(struct mt6797_md1_cold_owner *owner,
 	const struct mt6797_md1_boot_status_preflight *preflight);
 enum mt6797_md1_cold_owner_state
 mt6797_md1_cold_owner_state(struct mt6797_md1_cold_owner *owner);
+
+/* Pure comparison used by the bounded post-vector AP-only observer. */
+bool mt6797_md1_cold_owner_post_vector_activity(
+	const struct mt6797_md1_post_vector_evidence *evidence);
+
+/* Returns -ENODATA until the boot-vector observer reports GO or NO-GO. */
+int mt6797_md1_cold_owner_post_vector_evidence_get(
+	struct mt6797_md1_post_vector_evidence *evidence);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_MD1_COLD_OWNER_H */

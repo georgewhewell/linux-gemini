@@ -159,6 +159,8 @@ struct mt6797_wifi_w1_power {
 	struct mt6797_wifi_ahb_w1_image image;
 	/* W4 owns the resulting live function and drops PALDO on its stop path. */
 	bool retain_hif;
+	/* W4 owns the live HIF resource/mapping for the retained handoff. */
+	void __iomem *retained_portal;
 };
 
 struct mt6797_wifi_w1_config_ack {
@@ -1139,6 +1141,7 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 	u8 ioex_restored = 0;
 	u8 sequence = 1;
 	bool function_enabled = false, block_size_set = false;
+	bool portal_region_claimed = false, portal_mapped = false;
 	bool w2_capability;
 	int block_cleanup_ret = 0;
 	int cleanup_ret = 0;
@@ -1193,17 +1196,32 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 		dev_info(power->owner, "W1_DIAG stage=portal-resource ret=%d\n", ret);
 		goto out_free_image_packet;
 	}
-	if (!request_mem_region(hif.start, MT6797_WIFI_AHB_HIF_PORTAL_SIZE,
-		"mt6797-wifi-w1")) {
-		ret = -EBUSY;
-		dev_info(power->owner, "W1_DIAG stage=portal-request ret=%d\n", ret);
-		goto out_free_image_packet;
-	}
-	portal = ioremap(hif.start, MT6797_WIFI_AHB_HIF_PORTAL_SIZE);
-	if (!portal) {
-		ret = -ENOMEM;
-		dev_info(power->owner, "W1_DIAG stage=portal-map ret=%d\n", ret);
-		goto out_release_region;
+	/*
+	 * The one-shot W1 proof owns its portal transaction exclusively.  The live
+	 * W4 path has already reserved and devm-mapped that exact resource at its
+	 * platform probe, however, so reclaiming it here is a false EBUSY rather
+	 * than a hardware contention.  Reuse only the explicit W4-owned mapping;
+	 * all other W1 callers retain the original request/map/release lifecycle.
+	 */
+	portal = power->retained_portal;
+	if (portal) {
+		dev_info(power->owner,
+			 "W1_DIAG stage=portal-handoff ret=0 owner=W4\n");
+	} else {
+		if (!request_mem_region(hif.start, MT6797_WIFI_AHB_HIF_PORTAL_SIZE,
+			"mt6797-wifi-w1")) {
+			ret = -EBUSY;
+			dev_info(power->owner, "W1_DIAG stage=portal-request ret=%d\n", ret);
+			goto out_free_image_packet;
+		}
+		portal_region_claimed = true;
+		portal = ioremap(hif.start, MT6797_WIFI_AHB_HIF_PORTAL_SIZE);
+		if (!portal) {
+			ret = -ENOMEM;
+			dev_info(power->owner, "W1_DIAG stage=portal-map ret=%d\n", ret);
+			goto out_release_region;
+		}
+		portal_mapped = true;
 	}
 	mutex_lock(&mt6797_wifi_w1_portal_lock);
 	ret = mt6797_wifi_w1_enable_function(portal, &ioex_before,
@@ -1319,9 +1337,11 @@ out_unlock:
 		if (!ret)
 			ret = cleanup_ret;
 	}
-	iounmap(portal);
+	if (portal_mapped)
+		iounmap(portal);
 out_release_region:
-	release_mem_region(hif.start, MT6797_WIFI_AHB_HIF_PORTAL_SIZE);
+	if (portal_region_claimed)
+		release_mem_region(hif.start, MT6797_WIFI_AHB_HIF_PORTAL_SIZE);
 out_free_image_packet:
 	kfree(image_packet);
 	return ret;
@@ -1466,15 +1486,17 @@ EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w1_firmware_preflight);
  */
 int mt6797_wifi_ahb_w1_firmware_start_retained(struct device *owner,
 		  const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
-		  struct regulator *bt_paldo, struct regulator *wifi_paldo)
+		  struct regulator *bt_paldo, struct regulator *wifi_paldo,
+		  void __iomem *retained_portal)
 {
 	struct mt6797_wifi_w1_power power = {
 		.owner = owner, .lease = lease, .bt_paldo = bt_paldo,
 		.wifi_paldo = wifi_paldo, .retain_hif = true,
+		.retained_portal = retained_portal,
 	};
 	int ret;
 
-	if (!owner || !lease || !bt_paldo || !wifi_paldo)
+	if (!owner || !lease || !bt_paldo || !wifi_paldo || !retained_portal)
 		return -EINVAL;
 	if (!mt6797_btif_stp_bootstrap_full_wmt_lease_active(lease) ||
 	    !mt6797_wifi_ahb_w1_firmware_enabled(owner))

@@ -337,7 +337,7 @@ static int w4_firmware_stage(void *ctx,
 {
 	struct mt6797_wifi_w4 *w4 = ctx;
 	int ret = mt6797_wifi_ahb_w1_firmware_start_retained(w4->dev, lease,
-		w4->bt_paldo, w4->wifi_paldo);
+		w4->bt_paldo, w4->wifi_paldo, w4->portal);
 	if (!ret) w4->w1_retained = true;
 	return ret;
 }

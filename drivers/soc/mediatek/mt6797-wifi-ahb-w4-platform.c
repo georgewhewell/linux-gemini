@@ -47,6 +47,10 @@ struct mt6797_wifi_w4 {
 	const struct mt6797_consys_stp_session_lease *stp_session;
 	struct mt6797_wifi_ahb_w3_session session;
 	struct cfg80211_scan_request *scan_request;
+	u8 candidate_bssid[ETH_ALEN];
+	u8 candidate_channel;
+	u8 wlan_index;
+	bool candidate_valid;
 	bool controller_started, w1_retained, opened;
 };
 
@@ -232,6 +236,9 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 				-4500, GFP_KERNEL);
 			if (bss)
 				cfg80211_put_bss(w4->wiphy, bss);
+			ether_addr_copy(w4->candidate_bssid, buf + off + 16);
+			w4->candidate_channel = buf[5];
+			w4->candidate_valid = true;
 		}
 		goto out;
 	}
@@ -443,7 +450,23 @@ static int w4_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 	return 0;
 }
 static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
-	struct cfg80211_connect_params *sme) { return -EOPNOTSUPP; }
+	struct cfg80211_connect_params *sme)
+{
+	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
+
+	if (!sme->ssid || sme->ssid_len > 32 || sme->key || sme->crypto.n_akm_suites)
+		return -EOPNOTSUPP; /* bounded first slice: open-network AIS only */
+	mutex_lock(&w4->lock);
+	if (!w4->opened || !w4->candidate_valid ||
+	    (sme->bssid && !ether_addr_equal(sme->bssid, w4->candidate_bssid))) {
+		mutex_unlock(&w4->lock);
+		return -ENETUNREACH;
+	}
+	/* Candidate is now frozen for the vendor BSS_ACTIVATE/UPDATE_STA commands. */
+	w4->wlan_index = 31;
+	mutex_unlock(&w4->lock);
+	return 0;
+}
 static int w4_disconnect(struct wiphy *wiphy, struct net_device *ndev, u16 reason)
 {
 	if (netif_running(ndev)) cfg80211_disconnected(ndev, reason, NULL, 0, true, GFP_KERNEL);

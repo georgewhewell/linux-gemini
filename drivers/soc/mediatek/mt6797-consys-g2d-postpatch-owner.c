@@ -57,7 +57,9 @@ struct mt6797_g2d_ops {
 		   const struct mtk_wmt_match *expected);
 	int (*wmt_capture)(void *context, u8 opcode, const u8 *data,
 			   size_t data_len, u8 expected_opcode,
-			   size_t expected_data_len, u8 *reply, size_t reply_len);
+			   size_t min_data_len, size_t max_data_len,
+			   u8 *reply, size_t reply_len,
+			   size_t *actual_data_len);
 	void (*delay_ms)(void *context, unsigned int milliseconds);
 	void *context;
 };
@@ -69,6 +71,7 @@ struct mt6797_g2d_state {
 	bool wifi_enabled;
 	bool calibration_reply_valid;
 	u8 calibration_reply[2];
+	size_t calibration_event_len;
 	int cleanup_error;
 	enum mt6797_g2d_stage stage;
 };
@@ -137,8 +140,10 @@ static int mt6797_g2d_calibrate(struct mt6797_g2d_ops *ops,
 
 	state->stage = G2D_CALIBRATE;
 	ret = ops->wmt_capture(ops->context, 0x14, g2d_calibrate,
-			sizeof(g2d_calibrate), 0x14, sizeof(state->calibration_reply),
-			state->calibration_reply, sizeof(state->calibration_reply));
+			sizeof(g2d_calibrate), 0x14,
+			sizeof(state->calibration_reply), MTK_WMT_MAX_DATA,
+			state->calibration_reply, sizeof(state->calibration_reply),
+			&state->calibration_event_len);
 	if (!ret)
 		state->calibration_reply_valid = true;
 	return ret;
@@ -354,13 +359,15 @@ static int mt6797_g2d_live_wmt(void *context, u8 opcode, const u8 *data,
 
 static int mt6797_g2d_live_wmt_capture(void *context, u8 opcode,
 		const u8 *data, size_t data_len, u8 expected_opcode,
-		size_t expected_data_len, u8 *reply, size_t reply_len)
+		size_t min_data_len, size_t max_data_len, u8 *reply,
+		size_t reply_len, size_t *actual_data_len)
 {
 	struct mt6797_g2d_owner *owner = context;
 
-	return mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(owner->lease,
-		opcode, data, data_len, expected_opcode, expected_data_len, reply,
-		reply_len, MT6797_G2D_TIMEOUT);
+	return mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range(
+		owner->lease, opcode, data, data_len, expected_opcode,
+		min_data_len, max_data_len, reply, reply_len, actual_data_len,
+		MT6797_G2D_TIMEOUT);
 }
 
 static void mt6797_g2d_live_delay_ms(void *context, unsigned int milliseconds)
@@ -397,7 +404,8 @@ static int mt6797_g2d_postpatch_stage(void *context,
 	else
 		dev_info(owner->dev, "G2d passed; bootstrap will fence/reset\n");
 	if (state.calibration_reply_valid)
-		dev_info(owner->dev, "G2d RF calibration event: %*ph\n",
+		dev_info(owner->dev, "G2d RF calibration event: len=%zu prefix=%*ph\n",
+			 state.calibration_event_len,
 			 (int)sizeof(state.calibration_reply), state.calibration_reply);
 	return ret;
 }
@@ -595,6 +603,7 @@ struct mt6797_g2d_test {
 	bool set_before_fail;
 	bool enable_before_fail;
 	u8 calibration_reply[2];
+	size_t calibration_event_len;
 	enum mt6797_g2d_test_event event[24];
 	unsigned int events;
 	struct mt6797_g2d_test_command command[8];
@@ -708,15 +717,20 @@ static int mt6797_g2d_test_wmt(void *context, u8 opcode, const u8 *data,
 
 static int mt6797_g2d_test_wmt_capture(void *context, u8 opcode,
 		const u8 *data, size_t data_len, u8 expected_opcode,
-		size_t expected_data_len, u8 *reply, size_t reply_len)
+		size_t min_data_len, size_t max_data_len, u8 *reply,
+		size_t reply_len, size_t *actual_data_len)
 {
 	struct mt6797_g2d_test *test = context;
 	unsigned int call = test->wmt_calls++;
+	size_t event_len = test->calibration_event_len ?:
+			   sizeof(test->calibration_reply);
 
 	if (opcode != 0x14 || data != g2d_calibrate ||
 	    data_len != sizeof(g2d_calibrate) || expected_opcode != 0x14 ||
-	    expected_data_len != sizeof(test->calibration_reply) ||
-	    reply_len != sizeof(test->calibration_reply))
+	    min_data_len != sizeof(test->calibration_reply) ||
+	    max_data_len != MTK_WMT_MAX_DATA ||
+	    reply_len != sizeof(test->calibration_reply) || !actual_data_len ||
+	    event_len < min_data_len || event_len > max_data_len)
 		return -EPROTO;
 	mt6797_g2d_test_event(test, G2D_TEST_CALIBRATE);
 	if (call < ARRAY_SIZE(test->command))
@@ -727,6 +741,7 @@ static int mt6797_g2d_test_wmt_capture(void *context, u8 opcode,
 	if (test->fail_wmt >= 0 && call == test->fail_wmt)
 		return -ETIMEDOUT;
 	memcpy(reply, test->calibration_reply, reply_len);
+	*actual_data_len = event_len;
 	return 0;
 }
 
@@ -771,6 +786,7 @@ static void mt6797_g2d_test_exact_order(struct kunit *test)
 		.fail_set = -1, .fail_enable = -1, .fail_disable = -1,
 		.fail_wmt = -1, .fail_enabled_call = -1,
 		.calibration_reply = { 0x7a, 0xc3 },
+		.calibration_event_len = 378,
 	};
 	struct mt6797_g2d_state state = { };
 	struct mt6797_g2d_ops ops = mt6797_g2d_test_ops(&context);
@@ -793,6 +809,7 @@ static void mt6797_g2d_test_exact_order(struct kunit *test)
 	mt6797_g2d_test_expect_command(test, &context.command[5], 0x14,
 		g2d_calibrate, sizeof(g2d_calibrate), NULL);
 	KUNIT_EXPECT_TRUE(test, state.calibration_reply_valid);
+	KUNIT_EXPECT_EQ(test, state.calibration_event_len, (size_t)378);
 	KUNIT_EXPECT_MEMEQ(test, state.calibration_reply, context.calibration_reply,
 			   sizeof(state.calibration_reply));
 	mt6797_g2d_test_expect_command(test, &context.command[6], 0x10,

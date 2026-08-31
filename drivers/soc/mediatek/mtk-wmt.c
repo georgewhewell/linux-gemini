@@ -158,10 +158,16 @@ int mtk_wmt_receive(void *context, const u8 *payload, size_t payload_len)
 	spin_lock_irqsave(&wmt->state_lock, flags);
 	if (wmt->pending && ((wmt->capture_pending &&
 		    wmt->capture_opcode == event.opcode &&
-		    wmt->capture_data_len == event.data_len) ||
+		    event.data_len >= wmt->capture_min_data_len &&
+		    event.data_len <= wmt->capture_max_data_len) ||
 		   (!wmt->capture_pending && mtk_wmt_matches(&wmt->expected, &event)))) {
-		if (wmt->capture_pending && event.data_len)
-			memcpy(wmt->capture_data, event.data, event.data_len);
+		if (wmt->capture_pending) {
+			if (wmt->capture_copy_len)
+				memcpy(wmt->capture_data, event.data,
+				       wmt->capture_copy_len);
+			if (wmt->capture_actual_data_len)
+				*wmt->capture_actual_data_len = event.data_len;
+		}
 		wmt->pending = false;
 		wmt->result = 0;
 		matched = true;
@@ -245,8 +251,10 @@ static int mtk_wmt_finish(struct mtk_wmt *wmt, u32 generation, int error,
 static int mtk_wmt_transaction_common(struct mtk_wmt *wmt, u8 opcode,
 			const u8 *data, size_t data_len,
 			const struct mtk_wmt_match *expected,
-			bool capture, u8 capture_opcode, size_t capture_len,
-			u8 *capture_data, unsigned long timeout)
+			bool capture, u8 capture_opcode, size_t capture_min_len,
+			size_t capture_max_len, size_t capture_copy_len,
+			u8 *capture_data, size_t *capture_actual_len,
+			unsigned long timeout)
 {
 	u8 *packet;
 	u8 *frame;
@@ -263,7 +271,9 @@ static int mtk_wmt_transaction_common(struct mtk_wmt *wmt, u8 opcode,
 	if (!wmt || (!data && data_len) || !timeout ||
 	    (!capture && (!expected ||
 	     (!expected->data && expected->data_len))) ||
-	    (capture && !capture_data))
+	    (capture && ((!capture_data && capture_copy_len) ||
+	     capture_min_len > capture_max_len ||
+	     capture_copy_len > capture_min_len)))
 		return -EINVAL;
 	if (wmt->stp_mode != MTK_STP_MODE_MANDATORY &&
 	    wmt->stp_mode != MTK_STP_MODE_FULL)
@@ -271,7 +281,7 @@ static int mtk_wmt_transaction_common(struct mtk_wmt *wmt, u8 opcode,
 	if (!wmt->transmit && !wmt->transmit_payload)
 		return -ENODEV;
 	if (data_len > mtk_wmt_max_data(wmt->stp_mode) ||
-	    (capture ? capture_len : expected->data_len) >
+	    (capture ? capture_max_len : expected->data_len) >
 		mtk_wmt_max_data(wmt->stp_mode))
 		return -EMSGSIZE;
 
@@ -286,8 +296,13 @@ static int mtk_wmt_transaction_common(struct mtk_wmt *wmt, u8 opcode,
 	wmt->capture_pending = capture;
 	if (capture) {
 		wmt->capture_opcode = capture_opcode;
-		wmt->capture_data_len = capture_len;
+		wmt->capture_min_data_len = capture_min_len;
+		wmt->capture_max_data_len = capture_max_len;
+		wmt->capture_copy_len = capture_copy_len;
 		wmt->capture_data = capture_data;
+		wmt->capture_actual_data_len = capture_actual_len;
+		if (capture_actual_len)
+			*capture_actual_len = 0;
 	} else {
 		wmt->expected = *expected;
 	}
@@ -366,6 +381,7 @@ out_packet:
 	spin_lock_irqsave(&wmt->state_lock, flags);
 	wmt->capture_pending = false;
 	wmt->capture_data = NULL;
+	wmt->capture_actual_data_len = NULL;
 	spin_unlock_irqrestore(&wmt->state_lock, flags);
 	mutex_unlock(&wmt->transaction_lock);
 	return ret;
@@ -377,7 +393,8 @@ int mtk_wmt_transaction(struct mtk_wmt *wmt, u8 opcode,
 			unsigned long timeout)
 {
 	return mtk_wmt_transaction_common(wmt, opcode, data, data_len, expected,
-					  false, 0, 0, NULL, timeout);
+					  false, 0, 0, 0, 0, NULL, NULL,
+					  timeout);
 }
 EXPORT_SYMBOL_GPL(mtk_wmt_transaction);
 
@@ -391,9 +408,27 @@ int mtk_wmt_transaction_capture(struct mtk_wmt *wmt, u8 opcode,
 		return -EINVAL;
 	return mtk_wmt_transaction_common(wmt, opcode, data, data_len, NULL,
 					  true, expected_opcode, expected_data_len,
-					  reply, timeout);
+					  expected_data_len, reply_len, reply, NULL,
+					  timeout);
 }
 EXPORT_SYMBOL_GPL(mtk_wmt_transaction_capture);
+
+int mtk_wmt_transaction_capture_range(struct mtk_wmt *wmt, u8 opcode,
+				      const u8 *data, size_t data_len,
+				      u8 expected_opcode, size_t min_data_len,
+				      size_t max_data_len, u8 *reply,
+				      size_t reply_len, size_t *actual_data_len,
+				      unsigned long timeout)
+{
+	if (!wmt || (!reply && reply_len) || !actual_data_len ||
+	    min_data_len > max_data_len || reply_len > min_data_len)
+		return -EINVAL;
+	return mtk_wmt_transaction_common(wmt, opcode, data, data_len, NULL,
+					  true, expected_opcode, min_data_len,
+					  max_data_len, reply_len, reply,
+					  actual_data_len, timeout);
+}
+EXPORT_SYMBOL_GPL(mtk_wmt_transaction_capture_range);
 
 MODULE_DESCRIPTION("MediaTek WMT packet codec and single-flight transactions");
 MODULE_LICENSE("GPL");

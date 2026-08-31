@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2026 Julien Etienne
+ */
+
+#include "mt6797-gemini-pda.dts"
+
+/ {
+	model = "Planet Computers Gemini PDA (protected readback observer)";
+
+	protected-readback-observer {
+		compatible = "mediatek,mt6797-protected-readback-observer";
+		mediatek,clock-backend = <&dvfsp_clock_backend>;
+		mediatek,bigidvfs-backend = <&dvfsp_bigidvfs_backend>;
+		status = "okay";
+	};
+};
+
+&dvfsp_clock_backend {
+	status = "okay";
+};
+
+&dvfsp_bigidvfs_backend {
+	status = "okay";
+};

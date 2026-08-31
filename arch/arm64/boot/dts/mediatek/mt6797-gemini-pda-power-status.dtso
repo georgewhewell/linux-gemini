@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA BQ2589x charger status activation.
+ *
+ * The Gemini DWS routes SW_CHARGER to I2C0 at 7-bit address 0x6b.  GPIO37
+ * and GPIO38 are the matching I2C0 SCL/SDA pads in both the vendor DWS and
+ * mainline MT6797 pinctrl description.  The retained vendor capture bound a
+ * BQ25890-family driver at i2c-0/0x6b, though it did not record the exact part.
+ *
+ * This is an opt-in USB power-supply status source, not a charger policy.
+ * It polls only the BQ2589x non-destructive status registers every 30 seconds
+ * and emits a power-supply change event on a transition.  ti,read-only makes
+ * every register write fail: no charger reset, watchdog/ADC setup, OTG
+ * regulator, USB PHY notifier, charge limits, battery consumer, or CHR_STAT
+ * IRQ are enabled.  The physical CHR_STAT GPIO/EINT route and all battery and
+ * system-rail facts remain unproven, so they are intentionally absent.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	status = "okay";
+
+	bq2589x_status: charger@6b {
+		compatible = "ti,bq25896", "ti,bq25890";
+		reg = <0x6b>;
+		ti,read-only;
+		ti,status-poll-interval-ms = <30000>;
+		status = "okay";
+	};
+};

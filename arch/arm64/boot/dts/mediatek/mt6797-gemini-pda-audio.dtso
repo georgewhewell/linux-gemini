@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA MT6797/MT6351 audio smoke-test overlay.
+ *
+ * This overlay is deliberately not part of mt6797-gemini-pda.dtb.  It enables
+ * only the upstream MT6797 AFE, MT6351 codec and their upstream machine card;
+ * it does not describe the Gemini's unverified external amplifier, headphone
+ * depop GPIO, headset detection or UCM routing.
+ *
+ * Evidence:
+ * - The Gemini base DT identifies the parent PMIC as MT6351:
+ *   arch/arm64/boot/dts/mediatek/mt6797.dtsi:380-421.
+ * - The MT6351 binding requires its sound node to be a child of the PMIC
+ *   wrapper: Documentation/devicetree/bindings/sound/mt6351.txt:3-16.
+ * - The MT6797 machine binding pairs the AFE and codec phandles exactly as
+ *   below: Documentation/devicetree/bindings/sound/mt6797-mt6351.txt:3-14.
+ * - The vendor k57v1_64 DTS has legacy smart-amp and hp-depop pin states, but
+ *   it does not establish a safe Gemini mainline routing contract
+ *   (vendor/gemini-linux-kernel-3.18/arch/arm64/boot/dts/k57v1_64.dts:221-321).
+ *   Do not copy those states into this smoke test.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&afe {
+	status = "okay";
+};
+
+&pmic {
+	mt6351_sound: mt6351-sound {
+		compatible = "mediatek,mt6351-sound";
+		status = "okay";
+	};
+};
+
+&{/} {
+	gemini_audio: sound {
+		compatible = "mediatek,mt6797-mt6351-sound";
+		mediatek,platform = <&afe>;
+		mediatek,audio-codec = <&mt6351_sound>;
+		status = "okay";
+	};
+};

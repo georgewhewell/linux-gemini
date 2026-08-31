@@ -1,0 +1,178 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2021 Sebastian Reichel
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/bq25890.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Bq25890, bq25892, bq25895 and bq25896 Li-Ion Charger
+
+maintainers:
+  - Sebastian Reichel <sre@kernel.org>
+
+allOf:
+  - $ref: power-supply.yaml#
+  - if:
+      required:
+        - ti,status-poll-interval-ms
+    then:
+      required:
+        - ti,read-only
+  - if:
+      required:
+        - ti,read-only-adc
+    then:
+      required:
+        - ti,read-only
+  - if:
+      not:
+        required:
+          - ti,read-only
+    then:
+      required:
+        - interrupts
+        - ti,battery-regulation-voltage
+        - ti,charge-current
+        - ti,termination-current
+        - ti,precharge-current
+        - ti,minimum-sys-voltage
+        - ti,boost-voltage
+        - ti,boost-max-current
+
+properties:
+  compatible:
+    oneOf:
+      - enum:
+          - ti,bq25890
+      - items:
+          - enum:
+              - ti,bq25892
+              - ti,bq25895
+              - ti,bq25896
+          - const: ti,bq25890
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  ti,battery-regulation-voltage:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: maximum charging voltage (in uV)
+
+  ti,charge-current:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: maximum charging current (in uA)
+
+  ti,termination-current:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      charge will be terminated when current in constant-voltage phase
+      drops below this value (in uA)
+
+  ti,precharge-current:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: maximum charge current during precharge phase (in uA)
+
+  ti,minimum-sys-voltage:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      when battery is charging and it is below minimum system voltage,
+      the system will be regulated above minimum-sys-voltage setting (in uV)
+
+  ti,boost-voltage:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: VBUS voltage level in boost mode (in uV)
+
+  ti,boost-max-current:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: maximum allowed current draw in boost mode (in uA)
+
+  ti,boost-low-freq:
+    description: boost mode frequency will be 500kHz, otherwise 1.5MHz
+    type: boolean
+
+  ti,use-ilim-pin:
+    description: |
+      ILIM resistor will be used and the input current will be the lower
+      between the resistor setting and the IINLIM register setting
+    type: boolean
+
+  ti,thermal-regulation-threshold:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      temperature above which the charge current is lowered, to avoid overheating
+      (in degrees Celsius). If omitted, the default setting will be used (120 degrees)
+
+  ti,ibatcomp-micro-ohms:
+    description: value of a resistor in series with the battery (in Micro Ohms)
+
+  ti,ibatcomp-clamp-microvolt:
+    description: max. charging voltage adjustment due to expected voltage drop on in-series resistor
+
+  ti,read-only:
+    description: |
+      Do not write any charger register. This is intended for a bounded
+      identification and status-observation stage when the board charge
+      limits, interrupt wiring, or host-control ownership have not yet been
+      established. The driver reads only the chip ID and non-destructive
+      charge/online status fields (plus optional ADC results with
+      ti,read-only-adc); it does not reset the charger, configure the watchdog
+      or ADC, expose its OTG regulator, register an interrupt, or accept
+      writable power-supply properties. BQ2589x fault status bits are
+      read-to-clear and are intentionally not reported in this mode.
+    type: boolean
+
+  ti,status-poll-interval-ms:
+    description: |
+      Poll the non-destructive charge status fields at this interval and send
+      a power-supply change notification when the status changes. This is for
+      ti,read-only boards whose charger-status interrupt route is not known.
+      It does not enable the charger watchdog, ADC, OTG regulator, or any
+      writable power-supply property.
+    minimum: 1000
+    maximum: 3600000
+
+  ti,read-only-adc:
+    description: |
+      In ti,read-only mode, also expose VOLTAGE_NOW and CURRENT_NOW from the
+      BQ2589x ADC result registers. The driver never starts or configures ADC
+      conversion in this mode. It reports a sample only while the chip's
+      continuous-conversion bit is already set, otherwise these properties
+      return -ENODATA. This is intended for a bounded diagnostic stage where
+      charger policy and ADC ownership remain outside Linux.
+    type: boolean
+
+required:
+  - compatible
+  - reg
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+    i2c {
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      charger@6a {
+        compatible = "ti,bq25890";
+        reg = <0x6a>;
+
+        interrupt-parent = <&gpio1>;
+        interrupts = <16 IRQ_TYPE_EDGE_FALLING>;
+
+        ti,battery-regulation-voltage = <4200000>;
+        ti,charge-current = <1000000>;
+        ti,termination-current = <50000>;
+        ti,precharge-current = <128000>;
+        ti,minimum-sys-voltage = <3600000>;
+        ti,boost-voltage = <5000000>;
+        ti,boost-max-current = <1000000>;
+
+        ti,use-ilim-pin;
+        ti,thermal-regulation-threshold = <120>;
+      };
+    };

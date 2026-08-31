@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/planet,gemini-pda-nt36672.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Planet Gemini PDA NT36672 DSI Panel
+
+maintainers:
+  - Julien Etienne <julien.etienne@gmail.com>
+
+description: |
+  This is the 1080x2160 DSI panel described by the Planet vendor LCM source
+  drivers/misc/mediatek/lcm/aeon_nt36672_fhd_dsi_vdo_x600_xinli/
+  aeon_nt36672_fhd_dsi_vdo_x600_xinli.c.  The panel has two board-specific
+  display-bias supplies, and its reset sequence is supplied by reset-gpios.
+  The recovered source does not identify a physical panel module, active-area
+  dimensions, or the bias-output voltages; those facts are intentionally not
+  represented by this binding.
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    const: planet,gemini-pda-nt36672
+
+  reg:
+    maxItems: 1
+    description: DSI virtual channel
+
+  outp-supply: true
+  outn-supply: true
+  reset-gpios: true
+  backlight: true
+  port: true
+
+required:
+  - compatible
+  - reg
+  - outp-supply
+  - outn-supply
+  - reset-gpios
+  - port
+
+additionalProperties: false

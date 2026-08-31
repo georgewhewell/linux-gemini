@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * One-byte MT6797 BTIF PIO internal-loopback and IRQ qualification.
+ *
+ * Loading this overlay alone does not run the diagnostic: the platform
+ * adapter rejects probe unless
+ * mt6797_btif_pio_platform.enable_experimental_pio_loopback_qualification=1
+ * is set. It puts one fixed non-protocol byte through BTIF's documented
+ * internal loopback route and verifies its RX IRQ. It then clears loopback
+ * and IER, masks/synchronizes the IRQ, and drops btifc. It sends no STP, WMT,
+ * firmware, or radio-function traffic and does not wake CONSYS.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/clock/mt6797-clk.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	fragment@0 {
+		target = <&btif>;
+		/* Describe the target's inherited root bus to dtc only. */
+		#address-cells = <2>;
+		#size-cells = <2>;
+		interrupt-parent = <&sysirq>;
+
+		__overlay__ {
+			compatible = "mediatek,mt6797-btif-pio";
+			reg = <0 0x1100c000 0 0x1000>;
+			interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&infrasys CLK_INFRA_BTIF>;
+			clock-names = "btifc";
+			/delete-property/ reg-shift;
+			/delete-property/ reg-io-width;
+			mediatek,experimental-pio-loopback-qualification;
+			status = "okay";
+		};
+	};
+};

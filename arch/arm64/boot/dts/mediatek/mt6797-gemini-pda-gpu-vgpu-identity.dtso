@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA MT6797 GPU-rail identity experiment.
+ *
+ * This default-off overlay enables I2C7 and the existing RT5735 VGPU node so
+ * the mainline regulator driver can perform its one product-ID read.  It does
+ * not enable VSEL0.  The GPU and MFGSYS are explicitly kept disabled: Panfrost
+ * cannot bind, no GPU MMIO or IRQ is requested, and no MFG power domain votes.
+ *
+ * The operator must use a recovery-tested image and retain the dmesg result.
+ * A matching product ID only proves the rail controller's I2C identity; it
+ * does not validate voltage, power-good, MFG sequencing, Panfrost, or render.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&i2c7 {
+	status = "okay";
+};
+
+&rt5735_vgpu {
+	status = "okay";
+};
+
+&mfgsys {
+	status = "disabled";
+};
+
+&gpu {
+	status = "disabled";
+};

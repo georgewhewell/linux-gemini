@@ -1,0 +1,706 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config PSTORE
+	tristate "Persistent store support"
+	default n
+	help
+	   This option enables generic access to platform level
+	   persistent storage via "pstore" filesystem that can
+	   be mounted as /dev/pstore.  Only useful if you have
+	   a platform level driver that registers with pstore to
+	   provide the data, so you probably should just go say "Y"
+	   (or "M") to a platform specific persistent store driver
+	   (e.g. ACPI_APEI on X86) which will select this for you.
+	   If you don't have a platform persistent store driver,
+	   say N.
+
+config PSTORE_DEFAULT_KMSG_BYTES
+	int "Default kernel log storage space" if EXPERT
+	depends on PSTORE
+	default "10240"
+	help
+	  Defines default size of pstore kernel log storage.
+	  Can be enlarged if needed, not recommended to shrink it.
+
+config PSTORE_COMPRESS
+	bool "Pstore compression (deflate)"
+	depends on PSTORE
+	select ZLIB_INFLATE
+	select ZLIB_DEFLATE
+	default y
+	help
+	  Whether pstore records should be compressed before being written to
+	  the backing store. This is implemented using the zlib 'deflate'
+	  algorithm, using the library implementation instead of using the full
+	  blown crypto API. This reduces the risk of secondary oopses or other
+	  problems while pstore is recording panic metadata.
+
+config PSTORE_CONSOLE
+	bool "Log kernel console messages"
+	depends on PSTORE
+	help
+	  When the option is enabled, pstore will log all kernel
+	  messages, even if no oops or panic happened.
+
+config PSTORE_PMSG
+	bool "Log user space messages"
+	depends on PSTORE
+	select RT_MUTEXES
+	help
+	  When the option is enabled, pstore will export a character
+	  interface /dev/pmsg0 to log user space messages. On reboot
+	  data can be retrieved from /sys/fs/pstore/pmsg-ramoops-[ID].
+
+	  If unsure, say N.
+
+config PSTORE_FTRACE
+	bool "Persistent function tracer"
+	depends on PSTORE
+	depends on FUNCTION_TRACER
+	depends on DEBUG_FS
+	help
+	  With this option kernel traces function calls into a persistent
+	  ram buffer that can be decoded and dumped after reboot through
+	  pstore filesystem. It can be used to determine what function
+	  was last called before a reset or panic.
+
+	  If unsure, say N.
+
+config PSTORE_RAM
+	tristate "Log panic/oops to a RAM buffer"
+	depends on PSTORE
+	depends on HAS_IOMEM
+	select REED_SOLOMON
+	select REED_SOLOMON_ENC8
+	select REED_SOLOMON_DEC8
+	help
+	  This enables panic and oops messages to be logged to a circular
+	  buffer in RAM where it can be read back at some later point.
+
+	  Note that for historical reasons, the module will be named
+	  "ramoops.ko".
+
+	  For more information, see Documentation/admin-guide/ramoops.rst.
+
+config PSTORE_GEMINI_PRE_RAMOOPS_LEDGER
+	bool "Gemini pre-ramoops retained stage ledger"
+	depends on PSTORE_RAM=y
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	default n
+	help
+	  Write four short experiment records into four exact, otherwise unused
+	  dmesg zones in the existing Gemini ramoops reservation.  The records
+	  distinguish completion of the reserved-memory scan and the early,
+	  core, and postcore initcall levels before normal ramoops registration.
+
+	  The writer requires the exact Gemini DT reservation and four valid,
+	  empty persistent-RAM headers before its first write.  Any mismatch
+	  disarms later stages.  Normal ramoops registration is skipped only on
+	  the Gemini while this diagnostic is selected so a subsequent known-good
+	  boot can recover the records.
+
+	  This experiment-only option does not access device storage, regulators,
+	  CPU admission, timers, or restart controls.  If unsure, say N.
+
+config PSTORE_GEMINI_ARM64_ENTRY_LEDGER
+	bool "Gemini arm64 entry retained stage ledger"
+	depends on PSTORE_RAM=y
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on !PSTORE_GEMINI_PRE_RAMOOPS_LEDGER
+	default n
+	help
+	  Write four short experiment records into exact dmesg zones in the
+	  existing Gemini ramoops reservation.  Two call-free checkpoints run
+	  in the arm64 primary path before the MMU is enabled, followed by one
+	  after early ioremap setup and one after the reserved-memory scan.
+
+	  The MMU-off checkpoints accept only EL1 or EL2 with both translation
+	  and data caching disabled.  They require the exact four persistent-RAM
+	  headers and preserve every boot-path register outside x9 through x15.
+	  Later checkpoints accept each earlier slot only when empty or byte-
+	  exact.  Every writer commits data before length fields and performs a
+	  complete ordered readback.
+
+	  Normal ramoops registration is skipped only on the Gemini while this
+	  isolated diagnostic is selected, so a subsequent known-good boot can
+	  recover the records.  This option does not access storage, regulators,
+	  clocks, I2C, CPU admission, timers, watchdogs, or restart controls.
+	  If unsure, say N.
+
+config PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL
+	bool "Gemini protected-readback writer manual control"
+	depends on PSTORE_RAM=y
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on !MTK_MT6797_DVFSP_CLOCK_BACKEND
+	depends on !MTK_MT6797_PROTECTED_READBACK_OBSERVER
+	depends on !PSTORE_GEMINI_PRE_RAMOOPS_LEDGER
+	depends on !PSTORE_GEMINI_ARM64_ENTRY_LEDGER
+	default n
+	help
+	  Call the exact two-record retained writer once from an isolated late
+	  initcall, then report both local full-readback results in dmesg.  This
+	  separates the writer from clock-backend registration, platform-device
+	  population, and both protected readback transports.
+
+	  The experiment writes at most two short records to its existing owned
+	  persistent-RAM slots.  It never retries, clears, or overwrites a
+	  nonempty slot and performs no storage, firmware, I2C, regulator, clock,
+	  owner, CPU, timer, watchdog, reset, or power operation.  If unsure,
+	  say N.
+
+config PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_STAGE_CONTROL
+	bool "Gemini manual checkpoint live failure stage"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL=y
+	default n
+	help
+	  Expose one live result distinguishing sequence, exact-DT/resource,
+	  mapping, prefix/header, write-precondition, metadata-readback, and
+	  payload-readback refusal in the isolated manual checkpoint control.
+
+	  This changes no retained write, protected call, clock, I2C, regulator,
+	  owner, CPU, storage, timer, retry, reset, or power behavior. If unsure,
+	  say N.
+
+config PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_PREFIX_CONTROL
+	bool "Gemini manual checkpoint live prefix reason"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_STAGE_CONTROL=y
+	default n
+	help
+	  After the unchanged four-slot prefix predicate refuses the isolated
+	  manual checkpoint, snapshot the first rejected header and report its
+	  slot index, signature, start, size, and a fixed failure reason.
+
+	  This adds exactly three bounded retained-memory reads after refusal. It
+	  changes no predicate, write, protected call, clock, I2C, regulator,
+	  owner, CPU, storage, timer, retry, reset, or power behavior. If unsure,
+	  say N.
+
+config PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_MAP_CONTROL
+	bool "Gemini manual checkpoint ramoops mapping control"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_PREFIX_CONTROL=y
+	default n
+	help
+	  Compare the first rejected header through the ledger's parallel
+	  ioremap_wc() view and the read-only mapping model used by ramoops
+	  persistent RAM. Report both three-word snapshots and a fixed result.
+
+	  This mode bypasses the prefix predicate and retained writer. It performs
+	  at most three reads through each mapping, unmaps both views, and adds no
+	  write, ramoops registration, protected call, clock, I2C, regulator,
+	  transition owner, CPU, storage, timer, retry, reset, or power operation.
+	  If unsure, say N.
+
+config PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_RAW_WRITE_QUALIFICATION
+	bool "Gemini manual checkpoint raw-entry write qualification"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_STAGE_CONTROL=y
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_PREFIX_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_MAP_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	default n
+	help
+	  At the isolated serviceability-proven late initcall, require exact
+	  all-ones headers in records 171 through 174 and commit only record 173.
+	  Write payload, start, and size before the valid signature, then require
+	  a complete local readback and report the exact live stage.
+
+	  This mode makes checkpoint one unavailable and adds no second write,
+	  clear, retry, normal ramoops registration, protected call, clock,
+	  BigiDVFS, transition owner, CPU, storage, reset, or power operation.
+	  If unsure, say N.
+
+config PSTORE_GEMINI_PROTECTED_READBACK_FIRST_DMESG_WRITE_QUALIFICATION
+	bool "Gemini first dmesg raw-entry write qualification"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_STAGE_CONTROL=y
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_PREFIX_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_MAP_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_RAW_WRITE_QUALIFICATION
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	default n
+	help
+	  At the isolated serviceability-proven late initcall, require the exact
+	  all-ones header in first dmesg record 1 at physical 0x44410000 and
+	  commit only that record. Write payload, start, and size before the valid
+	  signature, then require a complete local readback and report the exact
+	  live stage.
+
+	  This mode is an enumeration-position qualification after a record at
+	  index 173 proved raw writing and warm retention but remained behind
+	  empty earlier dmesg records. It does not use the nonempty console ring.
+	  It makes checkpoint one unavailable and adds no second write, clear,
+	  retry, normal ramoops registration, protected call, clock, BigiDVFS,
+	  transition owner, CPU, storage, reset, or power operation. If unsure,
+	  say N.
+
+config PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	bool "Gemini protected-readback raw-entry ledger"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_LEDGER=y
+	depends on MTK_MT6797_PROTECTED_READBACK_OBSERVER=y
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_PROBE_GATE_LEDGER
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_ENTRY_LEDGER
+	default n
+	help
+	  Accept only an exact all-ones header for each not-yet-owned Gemini
+	  retained record. Commit payload, start, and size before writing the
+	  valid signature last, then fully read back the owned record.
+
+	  This mode preserves the parent's two-record ceiling and one protected
+	  clock read between records. It adds no clear, retry, normal ramoops
+	  registration, BigiDVFS read, owner, CPU, storage, reset, or power
+	  operation. If unsure, say N.
+
+config PSTORE_GEMINI_PROTECTED_CLOCK_FIRST_DMESG_CALL_QUALIFICATION
+	bool "Gemini protected-clock first-dmesg call qualification"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER=y
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_FIRST_DMESG_ENTRY_QUALIFICATION
+	default n
+	help
+	  Move the existing clock-only observer's before-call and after-return
+	  records from sparse dmesg zones 173 and 174 to consecutive records 1
+	  and 2. Retain the qualified all-ones entry-header gate, signature-last
+	  commit, full local readback, two-write ceiling, and no-clear/no-retry
+	  policy.
+
+	  The observer still makes exactly one protected clock read and zero
+	  BigiDVFS reads. This mode adds no caller, transport operation, secure
+	  call, owner registration, CPU request, storage, reset, or power action.
+	  If unsure, say N.
+
+config PSTORE_GEMINI_A72_PLATFORM_PROVIDER_CLOCK_LEDGER
+	bool "Gemini A72 platform/provider/protected-clock retained ledger"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_LEDGER=y
+	depends on MTK_MT6797_A72_PLATFORM_PROVIDER_CLOCK_OBSERVER=y
+	depends on !PSTORE_GEMINI_A72_PLATFORM_PROVIDER_SNAPSHOT_LEDGER
+	depends on !PSTORE_GEMINI_A72_PLATFORM_SNAPSHOT_LEDGER
+	depends on !PSTORE_GEMINI_A72_EARLY_INITCALL_LEDGER
+	depends on !PSTORE_GEMINI_A72_GLOBAL_INITCALL_LEDGER
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_LEDGER
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_PRECAPTURE_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_PROBE_GATE_LEDGER
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_FIRST_DMESG_WRITE_QUALIFICATION
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_FIRST_DMESG_ENTRY_QUALIFICATION
+	depends on !PSTORE_GEMINI_PROTECTED_CLOCK_FIRST_DMESG_CALL_QUALIFICATION
+	default n
+	help
+	  Give the candidate-only three-source observer one retained record after
+	  its platform and provider snapshots and immediately before its sole
+	  protected-clock call, then one record only after that call returns.
+
+	  Reuse the qualified signature-last, full-readback, two-write, no-clear,
+	  and no-retry protocol. The protected-clock call retains its bounded clock
+	  gate and CSPM power-on/semaphore writes. This mode adds no BigiDVFS,
+	  provider action, publisher, owner mutation, or CPU request. If unsure,
+	  say N.
+
+config PSTORE_GEMINI_A72_PLATFORM_PROVIDER_SNAPSHOT_LEDGER
+	bool "Gemini A72 platform/provider-snapshot retained ledger"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_LEDGER=y
+	depends on MTK_MT6797_A72_PLATFORM_PROVIDER_SNAPSHOT_OBSERVER=y
+	depends on !PSTORE_GEMINI_A72_PLATFORM_SNAPSHOT_LEDGER
+	depends on !PSTORE_GEMINI_A72_EARLY_INITCALL_LEDGER
+	depends on !PSTORE_GEMINI_A72_GLOBAL_INITCALL_LEDGER
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_LEDGER
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_PRECAPTURE_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_PROBE_GATE_LEDGER
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_FIRST_DMESG_WRITE_QUALIFICATION
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_FIRST_DMESG_ENTRY_QUALIFICATION
+	depends on !PSTORE_GEMINI_PROTECTED_CLOCK_FIRST_DMESG_CALL_QUALIFICATION
+	default n
+	help
+	  Give the candidate-only platform/provider observer one retained record
+	  immediately before its provider snapshot and one only after one valid
+	  two-sample provider result. Require both raw headers to be all ones.
+
+	  Reuse the qualified signature-last, full-readback, two-write, no-clear,
+	  and no-retry protocol. This mode adds no storage, register-data write,
+	  clock, BigiDVFS, owner, publisher, or CPU action. If unsure, say N.
+
+config PSTORE_GEMINI_A72_PLATFORM_SNAPSHOT_LEDGER
+	bool "Gemini A72 platform-snapshot retained ledger"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_LEDGER=y
+	depends on MTK_MT6797_A72_PLATFORM_SNAPSHOT_OBSERVER=y
+	depends on !PSTORE_GEMINI_A72_EARLY_INITCALL_LEDGER
+	depends on !PSTORE_GEMINI_A72_GLOBAL_INITCALL_LEDGER
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_LEDGER
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_PRECAPTURE_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_PROBE_GATE_LEDGER
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_FIRST_DMESG_WRITE_QUALIFICATION
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_FIRST_DMESG_ENTRY_QUALIFICATION
+	depends on !PSTORE_GEMINI_PROTECTED_CLOCK_FIRST_DMESG_CALL_QUALIFICATION
+	default n
+	help
+	  Give the candidate-only platform-snapshot observer one retained record
+	  immediately before its first platform read and one only after one stable
+	  two-sample result. Require both raw headers to be all ones before writing.
+
+	  Reuse the qualified signature-last, full-readback, two-write, no-clear,
+	  and no-retry protocol. This mode adds no storage, register-data write,
+	  provider, clock, BigiDVFS, owner, publisher, or CPU action. If unsure,
+	  say N.
+
+config PSTORE_GEMINI_A72_PHYSICAL_SOURCE_LEDGER
+	bool "Gemini A72 physical-source retained ledger"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_LEDGER=y
+	depends on MTK_MT6797_A72_PHYSICAL_SOURCE_OBSERVER=y
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_PROBE_GATE_LEDGER
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_FIRST_DMESG_WRITE_QUALIFICATION
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_FIRST_DMESG_ENTRY_QUALIFICATION
+	depends on !PSTORE_GEMINI_PROTECTED_CLOCK_FIRST_DMESG_CALL_QUALIFICATION
+	default n
+	help
+	  Give the candidate-only direct physical-source callback consecutive
+	  retained records 1 and 2 immediately before and after its one BigiDVFS
+	  read. Require both raw headers to be all ones before the first write.
+
+	  Reuse the qualified payload, start, size, signature-last, barrier, full
+	  readback, no-overwrite, no-clear, and no-retry protocol. This mode makes
+	  at most two short retained-RAM writes and adds no storage, firmware write,
+	  provider transaction, owner mutation, CPU request, reset, or power action.
+	  If unsure, say N.
+
+config PSTORE_GEMINI_A72_PHYSICAL_SOURCE_PRECAPTURE_LEDGER
+	bool "Gemini A72 physical-source pre-capture ledger"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_LEDGER=y
+	depends on MTK_MT6797_A72_PHYSICAL_SOURCE_OBSERVER=y
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_PROBE_GATE_LEDGER
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_FIRST_DMESG_WRITE_QUALIFICATION
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_FIRST_DMESG_ENTRY_QUALIFICATION
+	depends on !PSTORE_GEMINI_PROTECTED_CLOCK_FIRST_DMESG_CALL_QUALIFICATION
+	default n
+	help
+	  Give the physical-source observer one retained record in its built-in
+	  init before driver registration and one as the first probe operation.
+	  Return before allocation or source lookup after the second record.
+
+	  Reuse the qualified first-dmesg writer with at most two short writes and
+	  no overwrite, clear, retry, allocation, physical snapshot, provider
+	  transaction, owner mutation, CPU request, reset, reboot, or power action.
+	  If unsure, say N.
+
+config PSTORE_GEMINI_A72_GLOBAL_INITCALL_LEDGER
+	bool "Gemini A72 global initcall retained ledger"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_LEDGER=y
+	depends on MTK_MT6797_A72_PHYSICAL_SOURCE_OBSERVER=y
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_LEDGER
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_PRECAPTURE_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_PROBE_GATE_LEDGER
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_FIRST_DMESG_WRITE_QUALIFICATION
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_FIRST_DMESG_ENTRY_QUALIFICATION
+	depends on !PSTORE_GEMINI_PROTECTED_CLOCK_FIRST_DMESG_CALL_QUALIFICATION
+	default n
+	help
+	  Commit retained record 1 from a global subsys initcall and record 2
+	  from a later fs initcall. Do not register the physical-source observer.
+	  This localizes progress before its rejected device initcall boundary.
+
+	  Reuse the qualified first-dmesg writer with at most two short writes,
+	  no overwrite, clear, or retry, and no observer registration, allocation,
+	  source lookup, snapshot, provider transaction, clock or BigiDVFS call,
+	  publication, owner mutation, CPU request, reset, reboot, or power action.
+	  If unsure, say N.
+
+config PSTORE_GEMINI_A72_EARLY_INITCALL_LEDGER
+	bool "Gemini A72 early initcall retained ledger"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_LEDGER=y
+	depends on MTK_MT6797_A72_PHYSICAL_SOURCE_OBSERVER=y
+	depends on !PSTORE_GEMINI_A72_GLOBAL_INITCALL_LEDGER
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_LEDGER
+	depends on !PSTORE_GEMINI_A72_PHYSICAL_SOURCE_PRECAPTURE_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_PROBE_GATE_LEDGER
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_FIRST_DMESG_WRITE_QUALIFICATION
+	depends on !PSTORE_GEMINI_CLOCK_BACKEND_FIRST_DMESG_ENTRY_QUALIFICATION
+	depends on !PSTORE_GEMINI_PROTECTED_CLOCK_FIRST_DMESG_CALL_QUALIFICATION
+	default n
+	help
+	  Commit record 1 from pure initcall and record 2 from core initcall.
+	  If the pure checkpoint refuses, record one fixed refusal marker in
+	  slot 2 only after repeating the exact DT, map, and raw-header gates.
+	  Do not register the physical-source observer.
+
+	  Make at most two short retained write attempts with no overwrite,
+	  clear, or retry, and no observer registration, allocation, source
+	  lookup, snapshot, provider transaction, clock or BigiDVFS call,
+	  publication, owner mutation, CPU request, reset, reboot, or power
+	  action. If unsure, say N.
+
+config PSTORE_GEMINI_TRANSITION_LEDGER
+	bool "Gemini mutable retained transition ledger"
+	depends on PSTORE_RAM=y
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on !PSTORE_GEMINI_PRE_RAMOOPS_LEDGER
+	depends on !PSTORE_GEMINI_ARM64_ENTRY_LEDGER
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_LEDGER
+	select CRC32
+	default n
+	help
+	  Add a one-shot API that updates one compact retained CPU-transition
+	  ledger in the first exact Gemini ramoops dmesg zone. Two alternating
+	  copies preserve the last complete attempt, phase, stage, terminal,
+	  generation, and CRC32 while the older copy is replaced.
+
+	  The owner requires the exact Gemini model and reservation, accepts
+	  only an empty, raw all-ones, or previously valid ledger header, and
+	  seals on a write/readback fault or terminal record. Normal ramoops is
+	  bypassed only on the Gemini while this isolated option is selected.
+
+	  This option adds no caller, CPU request, watchdog action, SMC, device
+	  trigger, or boot policy. If unsure, say N.
+
+config PSTORE_GEMINI_ADMISSION_TRACE
+	bool "Gemini immutable CPU8 admission trace"
+	depends on PSTORE_GEMINI_TRANSITION_LEDGER=y
+	default n
+	help
+	  Own dmesg records 2 and 3 beside the existing record-1 transition
+	  ledger. Commit one fixed controller-entry record and at most one fixed
+	  consumed zero-request terminal record for source registration,
+	  derivation, or publication failure.
+
+	  Accept only exact logical-empty headers, write payload before metadata,
+	  fully read back each record, and never clear, repair, retry, or
+	  overwrite. This option adds no caller or CPU, watchdog, regulator,
+	  clock, firmware, storage, reset, or power operation. If unsure, say N.
+
+config PSTORE_GEMINI_TRANSITION_LEDGER_KUNIT_TEST
+	bool "KUnit tests for the Gemini transition ledger"
+	depends on KUNIT=y
+	depends on PSTORE_GEMINI_TRANSITION_LEDGER=y
+	default n
+	help
+	  Test all 18 ordered checkpoints plus terminal commit, raw-header
+	  signature-last ordering, refusal cases, torn-write preservation,
+	  corrupt-copy recovery, and one-shot sealing in an injected word array.
+
+	  No retained RAM, MMIO, watchdog, SMC, or CPU operation is used.
+
+config PSTORE_GEMINI_ADMISSION_TRACE_KUNIT_TEST
+	bool "KUnit tests for the Gemini CPU8 admission trace"
+	depends on KUNIT=y
+	depends on PSTORE_GEMINI_ADMISSION_TRACE=y
+	default n
+	help
+	  Test exact entry and terminal records, payload-before-metadata order,
+	  exact deferred-probe reentry, foreign and torn-record rejection,
+	  full readback, mutual exclusion, and the two-write ceiling in memory.
+
+	  No retained RAM, MMIO, CPU, watchdog, or device operation is used.
+
+config PSTORE_GEMINI_PROTECTED_READBACK_LEDGER
+	bool "Gemini protected-readback retained call ledger"
+	depends on PSTORE_RAM=y
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	depends on MTK_MT6797_PROTECTED_READBACK_OBSERVER=y || MTK_MT6797_A72_PLATFORM_SNAPSHOT_OBSERVER=y || MTK_MT6797_A72_PLATFORM_PROVIDER_SNAPSHOT_OBSERVER=y || MTK_MT6797_A72_PLATFORM_PROVIDER_CLOCK_OBSERVER=y || MTK_MT6797_A72_PHYSICAL_SOURCE_OBSERVER=y || MTK_MT6797_DVFSP_CLOCK_BACKEND=y || PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_CONTROL=y
+	depends on !PSTORE_GEMINI_PRE_RAMOOPS_LEDGER
+	depends on !PSTORE_GEMINI_ARM64_ENTRY_LEDGER
+	default n
+	help
+	  Write at most two short records into exact otherwise-unused dmesg
+	  zones in the existing Gemini ramoops reservation. The records bracket
+	  the first protected-clock read in the one-shot readback observer.
+
+	  The writer requires the exact candidate model, complete DT reservation
+	  contract, and valid empty persistent-RAM headers before its first write.
+	  It writes payload before metadata, fully reads back every record, never
+	  retries or clears, and stops the observer before the next protected read
+	  on any mismatch. Normal ramoops registration is skipped only for this
+	  isolated option so known-good Gemian can recover the records.
+
+	  This experiment-only option performs no storage, firmware, regulator,
+	  clock, CPU, timer, watchdog, reset, or power operation. If unsure, say N.
+
+config PSTORE_GEMINI_PROTECTED_READBACK_PROBE_GATE_LEDGER
+	bool "Gemini protected-readback probe/gate ledger mode"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_LEDGER=y
+	default n
+	help
+	  Move the isolated protected-readback ledger's two retained records to
+	  observer probe entry and the final exact gate immediately before the
+	  first protected read. The entry record requires only the exact Gemini
+	  compatibility, ramoops reservation, no-map property, and empty slots;
+	  the second retains the complete model, DT, prefix, and readback gates.
+
+	  This experiment-only mode adds no retained write, protected read, retry,
+	  owner, CPU, storage, firmware-write, reset, or power operation. The base
+	  call-ledger behavior is unchanged when this mode is disabled.
+
+config PSTORE_GEMINI_CLOCK_BACKEND_ENTRY_LEDGER
+	bool "Gemini clock-backend init/probe entry ledger"
+	depends on PSTORE_GEMINI_PROTECTED_READBACK_LEDGER=y
+	depends on MTK_MT6797_DVFSP_CLOCK_BACKEND=y
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_PROBE_GATE_LEDGER
+	default n
+	help
+	  Move the isolated retained records before clock-backend platform-driver
+	  registration and to the first clock-backend probe operation. The mode
+	  is intended for a derivative DT that enables only that read-free probe;
+	  it does not instantiate the observer or BigiDVFS backend and makes no
+	  protected call.
+
+	  Both records retain the exact Gemini reservation and empty-prefix gates,
+	  the existing payload-before-metadata writer, complete readback, two-write
+	  ceiling, and no-clear/no-retry policy. The historical call-ledger and
+	  probe/gate modes are unchanged when this mode is disabled.
+
+config PSTORE_GEMINI_CLOCK_BACKEND_FIRST_DMESG_ENTRY_QUALIFICATION
+	bool "Gemini clock-backend first-dmesg entry qualification"
+	depends on PSTORE_GEMINI_CLOCK_BACKEND_ENTRY_LEDGER=y
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_MANUAL_RAW_WRITE_QUALIFICATION
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_FIRST_DMESG_WRITE_QUALIFICATION
+	depends on !PSTORE_GEMINI_PROTECTED_READBACK_RAW_ENTRY_LEDGER
+	default n
+	help
+	  Move the existing protected-call-free clock driver-init and probe-entry
+	  checkpoints from sparse records 173 and 174 to consecutive dmesg records
+	  1 and 2. Require exact all-ones entry headers, commit each signature last,
+	  and fully read back both records.
+
+	  The intended derivative enables only the clock-backend node on the exact
+	  serviceability DT. The probe may allocate memory, map only its disjoint
+	  MCUMIXED resource, resolve the already-bound CSPM handoff supplier,
+	  acquire a clock handle without enabling it, initialize locks, and publish
+	  driver data. It makes no protected or BigiDVFS read, MMIO access, clock
+	  enable, owner registration, CPU request, retry, reset, or
+	  power operation. If unsure, say N.
+
+config PSTORE_GEMINI_POST_RAMOOPS_CHECKPOINT
+	bool "Gemini post-ramoops retained checkpoint"
+	depends on PSTORE_RAM=y
+	depends on PSTORE_CONSOLE && ARM64 && ARCH_MEDIATEK
+	default n
+	help
+	  Emit one attributable persistent-console marker immediately after a
+	  built-in ramoops backend with console storage registers successfully.
+	  This experiment-only diagnostic does not access device storage, read or
+	  write a regulator, change a transition owner, or admit CPU8 or CPU9.
+
+	  If unsure, say N.
+
+config PSTORE_ZONE
+	tristate
+	depends on PSTORE
+	help
+	  The common layer for pstore/blk (and pstore/ram in the future)
+	  to manage storage in zones.
+
+config PSTORE_BLK
+	tristate "Log panic/oops to a block device"
+	depends on PSTORE
+	depends on BLOCK
+	select PSTORE_ZONE
+	default n
+	help
+	  This enables panic and oops message to be logged to a block dev
+	  where it can be read back at some later point.
+
+	  For more information, see Documentation/admin-guide/pstore-blk.rst
+
+	  If unsure, say N.
+
+config PSTORE_BLK_BLKDEV
+	string "block device identifier"
+	depends on PSTORE_BLK
+	default ""
+	help
+	  Which block device should be used for pstore/blk.
+
+	  It accepts the following variants:
+	  1) <hex_major><hex_minor> device number in hexadecimal representation,
+	     with no leading 0x, for example b302.
+	  2) /dev/<disk_name> represents the device name of disk
+	  3) /dev/<disk_name><decimal> represents the device name and number
+	     of partition - device number of disk plus the partition number
+	  4) /dev/<disk_name>p<decimal> - same as the above, this form is
+	     used when disk name of partitioned disk ends with a digit.
+	  5) PARTUUID=00112233-4455-6677-8899-AABBCCDDEEFF representing the
+	     unique id of a partition if the partition table provides it.
+	     The UUID may be either an EFI/GPT UUID, or refer to an MSDOS
+	     partition using the format SSSSSSSS-PP, where SSSSSSSS is a zero-
+	     filled hex representation of the 32-bit "NT disk signature", and PP
+	     is a zero-filled hex representation of the 1-based partition number.
+	  6) PARTUUID=<UUID>/PARTNROFF=<int> to select a partition in relation
+	     to a partition with a known unique id.
+	  7) <major>:<minor> major and minor number of the device separated by
+	     a colon.
+
+	  NOTE that, both Kconfig and module parameters can configure
+	  pstore/blk, but module parameters have priority over Kconfig.
+
+config PSTORE_BLK_KMSG_SIZE
+	int "Size in Kbytes of kmsg dump log to store"
+	depends on PSTORE_BLK
+	default 64
+	help
+	  This just sets size of kmsg dump (oops, panic, etc) log for
+	  pstore/blk. The size is in KB and must be a multiple of 4.
+
+	  NOTE that, both Kconfig and module parameters can configure
+	  pstore/blk, but module parameters have priority over Kconfig.
+
+config PSTORE_BLK_MAX_REASON
+	int "Maximum kmsg dump reason to store"
+	depends on PSTORE_BLK
+	default 2
+	help
+	  The maximum reason for kmsg dumps to store. The default is
+	  2 (KMSG_DUMP_OOPS), see include/linux/kmsg_dump.h's
+	  enum kmsg_dump_reason for more details.
+
+	  NOTE that, both Kconfig and module parameters can configure
+	  pstore/blk, but module parameters have priority over Kconfig.
+
+config PSTORE_BLK_PMSG_SIZE
+	int "Size in Kbytes of pmsg to store"
+	depends on PSTORE_BLK
+	depends on PSTORE_PMSG
+	default 64
+	help
+	  This just sets size of pmsg (pmsg_size) for pstore/blk. The size is
+	  in KB and must be a multiple of 4.
+
+	  NOTE that, both Kconfig and module parameters can configure
+	  pstore/blk, but module parameters have priority over Kconfig.
+
+config PSTORE_BLK_CONSOLE_SIZE
+	int "Size in Kbytes of console log to store"
+	depends on PSTORE_BLK
+	depends on PSTORE_CONSOLE
+	default 64
+	help
+	  This just sets size of console log (console_size) to store via
+	  pstore/blk. The size is in KB and must be a multiple of 4.
+
+	  NOTE that, both Kconfig and module parameters can configure
+	  pstore/blk, but module parameters have priority over Kconfig.
+
+config PSTORE_BLK_FTRACE_SIZE
+	int "Size in Kbytes of ftrace log to store"
+	depends on PSTORE_BLK
+	depends on PSTORE_FTRACE
+	default 64
+	help
+	  This just sets size of ftrace log (ftrace_size) for pstore/blk. The
+	  size is in KB and must be a multiple of 4.
+
+	  NOTE that, both Kconfig and module parameters can configure
+	  pstore/blk, but module parameters have priority over Kconfig.

@@ -1,0 +1,261 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-consys.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 connectivity subsystem
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The MT6797 connectivity subsystem contains the shared control resources for
+  Bluetooth, Wi-Fi, GNSS, and FM. This binding initially describes an
+  inventory-only platform device. Its driver acquires and validates resource
+  metadata, but does not map or access registers; enable or disable a clock,
+  regulator, reset, interrupt, or power domain; access firmware; or map the
+  shared reserved memory.
+
+  A separately named, explicitly opt-in shared-memory preflight obtains the
+  boot-time reserved-memory record for the existing no-map CONSYS reservation
+  and validates its resolved geometry. It neither maps nor attaches the
+  reservation, and does not access registers, EMI MPU, regulators, reset, or
+  power domain. Its node must remain disabled in the shipped board DT.
+
+  A separately named, explicitly opt-in identity experiment first validates
+  the same 2 MiB no-map shared-memory reservation required by vendor power-on,
+  then may acquire the MT6797 CONN power domain, read chip ID 0x0279 while
+  CONMCU reset remains asserted, and release its votes again. It neither maps
+  nor clears that reservation, and never configures AFE, firmware, or a radio.
+  Its node must remain disabled in the shipped board DT; activation requires a
+  deliberate DT overlay and a boot-time kernel parameter.
+
+  A distinct runtime lifecycle provider uses the same bounded prefix but holds
+  its exclusive core lease for a later BTIF owner. Its node must likewise stay
+  disabled and needs both mediatek,experimental-runtime and its independent
+  default-false module or boot parameter gate. It registers the BGF IRQ with
+  Linux disabled, but does not request the WDT IRQ or perform any radio,
+  firmware, AFE, shared-memory, BTIF, or reset-release operation.
+
+  A third, separately named reset-held observation experiment may read the
+  vendor AFE setup locations only after that identity prefix succeeds. It
+  makes no AFE, MBIST, reset, firmware, shared-memory, or radio write and then
+  releases the identity lease. It needs its own overlay and boot parameter.
+
+  A fourth, separately named identity experiment may first claim the distinct
+  MT6797 shared-EMI MPU owner. That owner has no inverse; the identity driver
+  does not release it if subsequent identity work fails.
+
+  A fifth experiment first runs and unwinds the complete reset-held identity
+  path to qualify rails, CONN domain, and chip-ID polling, then extends that
+  owner through the vendor MBIST and AFE prefix. It releases CONMCU reset for
+  the vendor 20 ms delay, leaves the validated BGF IRQ unrequested, then
+  asserts reset and drops power votes. Its AFE and EMI writes remain
+  persistent; failed reset assertion or lifecycle unwind requires watchdog
+  recovery.
+
+properties:
+  compatible:
+    enum:
+      - mediatek,mt6797-consys
+      - mediatek,mt6797-consys-emi-preflight
+      - mediatek,mt6797-consys-identity
+      - mediatek,mt6797-consys-prepostid-observe
+      - mediatek,mt6797-consys-emi-identity
+      - mediatek,mt6797-consys-emi-reset-release
+      - mediatek,mt6797-consys-runtime
+
+  reg:
+    minItems: 4
+    items:
+      - description: Connectivity MCU configuration registers.
+      - description: AP reset generator registers.
+      - description: Top clock generator and connectivity remap registers.
+      - description: System power manager registers.
+      - description: ANA_WBG AFE registers used by the post-identity setup.
+
+  reg-names:
+    minItems: 4
+    items:
+      - const: mcu
+      - const: ap-rgu
+      - const: topckgen
+      - const: spm
+      - const: afe
+
+  interrupts:
+    minItems: 2
+    maxItems: 2
+
+  interrupt-names:
+    items:
+      - const: bgf
+      - const: wdt
+
+  resets:
+    maxItems: 1
+
+  reset-names:
+    const: conn-mcu
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: conn
+
+  mediatek,conn-power-domain:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    description: |
+      Deferred CONN domain attachment for the identity experiment. Unlike the
+      standard power-domains property this is not attached by the device core;
+      the driver attaches it only after its rail, reset, and PWRON prefix.
+
+  mediatek,experimental-runtime:
+    type: boolean
+    description: |
+      Explicitly permit the separately gated runtime lifecycle experiment.
+      This does not release reset, enable BTIF, load firmware, or enable a
+      connectivity function.
+
+  mediatek,emi-mpu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      Persistent MT6797 shared-EMI MPU owner for the EMI identity experiment.
+
+  mediatek,infracfg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: INFRACFG syscon containing the connectivity sleep-mask bit.
+
+  mediatek,spm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: SPM syscon containing power-control and status registers.
+
+  vcn18-supply:
+    description: Shared 1.8 V connectivity supply.
+
+  vcn28-supply:
+    description: Shared 2.8 V connectivity supply.
+
+  vcn33-bt-supply:
+    description: Bluetooth-specific 3.3 V connectivity supply.
+
+  vcn33-wifi-supply:
+    description: Wi-Fi-specific 3.3 V connectivity supply.
+
+  memory-region:
+    maxItems: 1
+    description: |
+      The 2 MiB, 2 MiB-aligned, no-map CONSYS shared-memory reservation.
+
+  memory-region-names:
+    const: shared
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - resets
+  - reset-names
+  - memory-region
+  - memory-region-names
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          enum:
+            - mediatek,mt6797-consys-identity
+            - mediatek,mt6797-consys-prepostid-observe
+            - mediatek,mt6797-consys-emi-identity
+            - mediatek,mt6797-consys-emi-reset-release
+    then:
+      required:
+        - mediatek,conn-power-domain
+        - mediatek,infracfg
+        - mediatek,spm
+        - vcn18-supply
+        - vcn28-supply
+  - if:
+      properties:
+        compatible:
+          enum:
+            - mediatek,mt6797-consys-emi-identity
+            - mediatek,mt6797-consys-emi-reset-release
+    then:
+      required:
+        - mediatek,emi-mpu
+  - if:
+      properties:
+        compatible:
+          const: mediatek,mt6797-consys-emi-reset-release
+    then:
+      properties:
+        reg-names:
+          contains:
+            const: afe
+  - if:
+      properties:
+        compatible:
+          const: mediatek,mt6797-consys-prepostid-observe
+    then:
+      properties:
+        reg-names:
+          contains:
+            const: afe
+  - if:
+      properties:
+        compatible:
+          const: mediatek,mt6797-consys-runtime
+    then:
+      properties:
+        reg-names:
+          contains:
+            const: afe
+      required:
+        - mediatek,conn-power-domain
+        - mediatek,infracfg
+        - mediatek,spm
+        - mediatek,experimental-runtime
+        - vcn18-supply
+        - vcn28-supply
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/reset/mt6797-resets.h>
+
+    / {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        gic: interrupt-controller {
+            interrupt-controller;
+            #interrupt-cells = <3>;
+        };
+
+        consys@18070000 {
+            compatible = "mediatek,mt6797-consys";
+            reg = <0 0x18070000 0 0x200>,
+                  <0 0x10007000 0 0x100>,
+                  <0 0x10000000 0 0x2000>,
+                  <0 0x10006000 0 0x1000>;
+            reg-names = "mcu", "ap-rgu", "topckgen", "spm";
+            interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>,
+                         <GIC_SPI 285 IRQ_TYPE_LEVEL_LOW>;
+            interrupt-names = "bgf", "wdt";
+            interrupt-parent = <&gic>;
+            resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
+            reset-names = "conn-mcu";
+            memory-region = <&consys_reserved_memory>;
+            memory-region-names = "shared";
+            status = "disabled";
+        };
+    };
+...

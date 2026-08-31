@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Default-disabled G2d VCN33 resource preflight.
+ *
+ * This creates no radio/WMT client and leaves both regulators disabled. It
+ * only lets the gated driver prove that the two distinct MT6351 consumers can
+ * be acquired before any later post-patch calibration experiment.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			consys_g2d_vcn33_preflight: consys-g2d-vcn33-preflight {
+				compatible = "mediatek,mt6797-consys-g2d-vcn33-preflight";
+				vcn33-bt-supply = <&mt6351_vcn33_bt_reg>;
+				vcn33-wifi-supply = <&mt6351_vcn33_wifi_reg>;
+				mediatek,experimental-g2d-vcn33-preflight;
+				status = "disabled";
+			};
+		};
+	};
+};

@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Release the Gemini display only after Stage1 watchdog service is alive.
+
+set -eu
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "gemini-display-activate: must run as root" >&2
+	exit 1
+fi
+
+for control in /sys/bus/platform/devices/*/activate_drm; do
+	[ -e "$control" ] || continue
+	echo 1 > "$control"
+	echo "gemini-display-activate: released DRM through $control"
+	exit 0
+done
+
+cat >&2 <<'EOF'
+gemini-display-activate: no MMSYS activate_drm control found
+Boot mt6797-gemini-pda.dtb together with mt6797-gemini-pda-display.dtbo and
+ensure CONFIG_COMMON_CLK_MT6797_MMSYS and DRM_MEDIATEK are built in.  Do not
+run this before the Stage1 watchdog service and a ramoops progress marker.
+EOF
+exit 1

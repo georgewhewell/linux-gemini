@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA MT6351 active fuel-gauge monitor.
+ *
+ * This is a deliberate, opt-in ownership transition. The vendor MT6797 DTS
+ * inherited by aeon6797_6m_n.dts specifies r_fg=10mOhm and base/slope=1000.
+ * It also specifies car_tune=118. Vendor MT6351 code uses 0x28 -> 0x29 and
+ * OSR 8. The trim is explicit: vendor code hard-codes source 0, which maps to
+ * unity (1000), rather than reading an established NVRAM cell.
+ *
+ * No capacity, voltage, charger policy, watchdog, OTG, or interrupt policy is
+ * enabled. Do not combine this overlay with the read-only FG overlay.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&mt6351fg {
+	status = "disabled";
+};
+
+&mt6351fgadc {
+	status = "okay";
+	mediatek,initialize-fgadc;
+	mediatek,fgadc-init-control = <0x28>;
+	mediatek,fgadc-osr = <8>;
+	mediatek,fg-resistance-milliohm = <10>;
+	mediatek,fg-board-base = <1000>;
+	mediatek,fg-board-slope = <1000>;
+	mediatek,car-tune = <118>;
+	mediatek,fg-trim-permille = <1000>;
+};

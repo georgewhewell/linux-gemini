@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2026 Julien Etienne
+ */
+
+#include "mt6797-gemini-pda.dts"
+
+/ {
+	model = "Planet Computers Gemini PDA (clock backend entry ledger)";
+};
+
+&dvfsp_clock_backend {
+	status = "okay";
+};

@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * One-shot MT6797 CONSYS reset-held pre-post-ID register observation.
+ *
+ * This overlay is inert unless it is explicitly loaded. The driver also
+ * rejects probe unless both mt6797_consys_live.identity_experiment=1 and
+ * mt6797_consys_live.prepostid_observe_experiment=1 are set at boot. It reads
+ * the vendor MBIST-control and AFE-setup locations after the bounded chip-ID
+ * sequence while reset remains asserted, then unwinds all votes. It neither
+ * writes AFE or MBIST nor releases reset, maps or clears shared EMI, loads
+ * firmware, enables BTIF, sends STP/WMT, or enables a radio function.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/power/mt6797-power.h>
+
+/ {
+	fragment@0 {
+		target = <&consys>;
+		/* Describe the target's inherited root bus to dtc only. */
+		#address-cells = <2>;
+		#size-cells = <2>;
+
+		__overlay__ {
+			compatible = "mediatek,mt6797-consys-prepostid-observe";
+			reg = <0 0x18070000 0 0x200>,
+			      <0 0x10007000 0 0x100>,
+			      <0 0x10000000 0 0x2000>,
+			      <0 0x10006000 0 0x1000>,
+			      <0 0x180b6000 0 0x100>;
+			reg-names = "mcu", "ap-rgu", "topckgen", "spm", "afe";
+			mediatek,conn-power-domain = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+			mediatek,infracfg = <&infrasys>;
+			mediatek,spm = <&scpsys>;
+			status = "okay";
+		};
+	};
+};

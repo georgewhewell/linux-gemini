@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-protected-readback-observer.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 one-shot protected-readback observer
+
+description: |
+  This experiment-only observer calls the separately described protected clock
+  and BigiDVFS read-only transports once after both have bound. It publishes
+  raw records only and is not a state owner, clock or regulator provider, or
+  CPU transition consumer.
+
+maintainers:
+  - Julien Etienne <julien.etienne@gmail.com>
+
+properties:
+  compatible:
+    const: mediatek,mt6797-protected-readback-observer
+
+  mediatek,clock-backend:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: MT6797 protected clock readback transport
+
+  mediatek,bigidvfs-backend:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: MT6797 secure BigiDVFS readback transport
+
+  status:
+    enum: [ disabled, okay ]
+
+required:
+  - compatible
+  - mediatek,clock-backend
+  - mediatek,bigidvfs-backend
+
+additionalProperties: false

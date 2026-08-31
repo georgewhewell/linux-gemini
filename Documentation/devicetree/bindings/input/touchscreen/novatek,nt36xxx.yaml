@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/touchscreen/novatek,nt36xxx.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Novatek legacy NT36xxx touchscreen controller
+
+maintainers:
+  - Julien Etienne <julien.etienne@gmail.com>
+
+description: |
+  This controller uses I2C address 0x62 for hardware commands and address
+  0x01 as an alternate target for firmware and xdata accesses. The driver
+  reads a trim identifier during probe and rejects values not in its supported
+  table; the compatible therefore denotes the protocol family, not a specific
+  controller revision.
+
+allOf:
+  - $ref: touchscreen.yaml#
+
+properties:
+  compatible:
+    const: novatek,nt36xxx
+
+  reg:
+    const: 0x62
+
+  interrupts:
+    maxItems: 1
+
+  touchscreen-inverted-x:
+    type: boolean
+
+  touchscreen-swapped-x-y:
+    type: boolean
+
+  novatek,identity-only:
+    type: boolean
+    description: |
+      Recovery-image bring-up mode. The driver performs its bounded trim
+      identification, restores the controller, and declines to register an
+      input device or request the interrupt. This is not a production board
+      operating mode and must be omitted for normal touchscreen activation.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        touchscreen@62 {
+            compatible = "novatek,nt36xxx";
+            reg = <0x62>;
+            interrupt-parent = <&gpio>;
+            interrupts = <8 IRQ_TYPE_EDGE_RISING>;
+        };
+    };
+...

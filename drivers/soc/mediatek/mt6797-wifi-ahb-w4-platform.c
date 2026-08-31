@@ -1501,7 +1501,8 @@ static int w4_send_key(struct mt6797_wifi_w4 *w4, bool add, bool pairwise,
 {
 	u8 cmd[W4_WIFI_CMD_HEADER_LEN + W4_KEY_BODY_LEN] = { };
 	u8 *body = cmd + W4_WIFI_CMD_HEADER_LEN;
-	u8 wlan_index = pairwise ? W4_WLAN_INDEX_AIS_AP : W4_BMC_WLAN_INDEX_AIS;
+	u8 wlan_index = pairwise ? W4_WLAN_INDEX_AIS_AP :
+		W4_STA_BMC_WLAN_INDEX_AIS_AP;
 	int ret;
 
 	/* CMD_802_11_KEY is exactly 64 bytes (nic_cmd_event.h:374-389).

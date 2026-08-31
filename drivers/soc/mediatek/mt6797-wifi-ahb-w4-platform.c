@@ -431,8 +431,8 @@ static int w4_send_basic_config(struct mt6797_wifi_w4 *w4)
 
 	put_unaligned_le16(sizeof(cmd), cmd);
 	put_unaligned_le16(0x8000, cmd + 2);
-	cmd[4] = W4_CMD_ID_BASIC_CONFIG;
-	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[4] = W4_CMD_PKT_TYPE;
+	cmd[5] = W4_CMD_ID_BASIC_CONFIG;
 	cmd[6] = 1;
 	cmd[7] = W4_CMD_SEQUENCE_BASIC_CONFIG;
 	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
@@ -730,8 +730,8 @@ static int w4_activate_ais(struct mt6797_wifi_w4 *w4, u8 command_sequence)
 	 * scan.  The W4 scan path needs the same independent BSS activation. */
 	put_unaligned_le16(sizeof(cmd), cmd);
 	put_unaligned_le16(0x8000, cmd + 2);
-	cmd[4] = W4_CMD_ID_BSS_ACTIVATE_CTRL;
-	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[4] = W4_CMD_PKT_TYPE;
+	cmd[5] = W4_CMD_ID_BSS_ACTIVATE_CTRL;
 	cmd[6] = 1;
 	cmd[7] = command_sequence;
 	cmd[8] = 0;                 /* AIS BSS index */
@@ -761,8 +761,8 @@ static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 	 * optional IEs, exactly as scnSendScanReqV2()'s OFFSET_OF() length. */
 	put_unaligned_le16(W4_SCAN_REQ_V2_LEN, cmd);
 	put_unaligned_le16(0x8000, cmd + 2);
-	cmd[4] = W4_CMD_ID_SCAN_REQ_V2;
-	cmd[5] = W4_CMD_PKT_TYPE;
+	cmd[4] = W4_CMD_PKT_TYPE;
+	cmd[5] = W4_CMD_ID_SCAN_REQ_V2;
 	cmd[6] = 1;          /* set */
 	cmd[7] = W4_CMD_SEQUENCE_SCAN;
 	cmd[8] = W4_SCAN_SEQUENCE;
@@ -789,7 +789,7 @@ static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
 	dev_info(w4->dev,
 		 "W4_DIAG stage=scan-cmd ret=%d cid=%#x tx-len=%u wire-len=%zu cmd-seq=%u scan-seq=%u ssid-type=%#x ssid-num=%u ssid-len=%u ch-type=%u ch-count=%u\n",
-		 ret, cmd[4], W4_SCAN_REQ_V2_LEN, sizeof(cmd), cmd[7], cmd[8],
+		 ret, cmd[5], W4_SCAN_REQ_V2_LEN, sizeof(cmd), cmd[7], cmd[8],
 		 cmd[11], cmd[12], ssid_len, cmd[W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET],
 		 cmd[W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET + 1]);
 	return ret;
@@ -805,7 +805,7 @@ static int w4_send_open_sta(struct mt6797_wifi_w4 *w4)
 	 */
 	memset(cmd, 0, sizeof(cmd));
 	put_unaligned_le16(sizeof(cmd), cmd); put_unaligned_le16(0x8000, cmd + 2);
-	cmd[4] = 0x13; cmd[5] = 0x20; cmd[6] = 1; cmd[7] = 3;
+	cmd[4] = W4_CMD_PKT_TYPE; cmd[5] = 0x13; cmd[6] = 1; cmd[7] = 3;
 	cmd[8] = w4->sta_index; cmd[9] = BIT(0) | BIT(6); /* legacy AP */
 	ether_addr_copy(cmd + 10, w4->candidate_bssid);
 	cmd[20] = 0;                  /* AIS BSS index */
@@ -893,7 +893,7 @@ static int w4_send_sta_state(struct mt6797_wifi_w4 *w4, u8 sta_state, u16 aid)
 
 	put_unaligned_le16(sizeof(cmd), cmd);
 	put_unaligned_le16(0x8000, cmd + 2);
-	cmd[4] = 0x13; cmd[5] = 0x20; cmd[6] = 1; cmd[7] = 4;
+	cmd[4] = W4_CMD_PKT_TYPE; cmd[5] = 0x13; cmd[6] = 1; cmd[7] = 4;
 	cmd[8] = w4->sta_index; cmd[9] = BIT(0) | BIT(6);
 	ether_addr_copy(cmd + 10, w4->candidate_bssid);
 	put_unaligned_le16(aid, cmd + 16);

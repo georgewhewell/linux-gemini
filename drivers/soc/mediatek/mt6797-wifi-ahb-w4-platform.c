@@ -38,6 +38,11 @@
 #define W4_WHCR_W_INT_CLR_CTRL BIT(1)
 #define W4_RX_MAX 2352U
 #define W4_RX_BUDGET 32U
+#define W4_RX_DESCRIPTOR_MIN 16U
+#define W4_WIFI_EVENT_HEADER_LEN 8U
+#define W4_WIFI_EVENT_PACKET_TYPE 0xe000U
+#define W4_EVENT_ID_SCAN_DONE 0x0dU
+#define W4_SCAN_SEQUENCE 1U
 #define IEEE80211_HDRLEN 24U
 #define W4_WLAN_INDEX_DEFAULT 31U
 #define W4_STA_INDEX_AIS_AP 0U
@@ -238,18 +243,58 @@ static int w4_rx_drain(void *ctx, unsigned int port, u16 len)
 	return ret;
 }
 static void w4_rx_mgmt(struct mt6797_wifi_w4 *w4, const u8 *mgmt, size_t len);
+/* WIFI_EVENT_T is an eight-byte HIF event header, followed by event body.
+ * Vendor nicRxProcessEventPacket() consumes the whole record before looking at
+ * its EID; the legacy scan-done body is only a four-byte EVENT_SCAN_DONE_T.
+ */
+static int w4_rx_event(struct mt6797_wifi_w4 *w4, u16 len, const u8 *buf)
+{
+	u16 packet_length;
+	u8 event_id, event_sequence;
+
+	packet_length = get_unaligned_le16(buf);
+	if (packet_length < W4_WIFI_EVENT_HEADER_LEN || packet_length > len)
+		return -EPROTO;
+	event_id = buf[4];
+	event_sequence = buf[5];
+	dev_info(w4->dev,
+		 "W4_DIAG stage=rx-event len=%u packet-len=%u eid=%#x event-seq=%u\n",
+		 len, packet_length, event_id, event_sequence);
+	if (event_id != W4_EVENT_ID_SCAN_DONE)
+		return 0;
+	/* scnEventScanDone() matches the scan command sequence in the body, not
+	 * WIFI_EVENT_T.ucSeqNum.  Reading even a stale/malformed event is enough to
+	 * release the RX0 queue; only a matching event completes this scan. */
+	if (packet_length < W4_WIFI_EVENT_HEADER_LEN + 1)
+		return -EPROTO;
+	if (!w4->scan_request || buf[W4_WIFI_EVENT_HEADER_LEN] != W4_SCAN_SEQUENCE) {
+		dev_info(w4->dev,
+			 "W4_DIAG stage=scan-done-ignore body-seq=%u pending=%u\n",
+			 buf[W4_WIFI_EVENT_HEADER_LEN], !!w4->scan_request);
+		return 0;
+	}
+	{
+		struct cfg80211_scan_info info = { };
+
+		cfg80211_scan_done(w4->scan_request, &info);
+		w4->scan_request = NULL;
+	}
+	dev_info(w4->dev, "W4_DIAG stage=scan-done body-seq=%u\n",
+		 buf[W4_WIFI_EVENT_HEADER_LEN]);
+	return 0;
+}
 /* nicRxFillRFB() distilled for header-translated Ethernet frames. */
 static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 {
 	u8 *buf;
 	u16 byte_count, type;
 	u16 status;
-	unsigned int off = 16;
+	unsigned int off = W4_RX_DESCRIPTOR_MIN;
 	u8 groups, header_len;
 	struct sk_buff *skb;
 	int ret;
 
-	if (len < 16 || len > W4_RX_MAX)
+	if (!len || len > W4_RX_MAX)
 		return -EMSGSIZE;
 	buf = kzalloc(W4_RX_MAX + MT6797_WIFI_AHB_SDIO_BLOCK_SIZE, GFP_KERNEL);
 	if (!buf)
@@ -259,12 +304,13 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 	if (ret)
 		goto out;
 	/* SW-defined firmware events carry WIFI_EVENT_T directly, no RXD. */
-	if (len >= 8 && get_unaligned_le16(buf + 2) == 0xe000) {
-		if (buf[4] == 0x0d && w4->scan_request) { /* EVENT_ID_SCAN_DONE */
-			struct cfg80211_scan_info info = { };
-			cfg80211_scan_done(w4->scan_request, &info);
-			w4->scan_request = NULL;
-		}
+	if (len >= W4_WIFI_EVENT_HEADER_LEN &&
+	    get_unaligned_le16(buf + 2) == W4_WIFI_EVENT_PACKET_TYPE) {
+		ret = w4_rx_event(w4, len, buf);
+		goto out;
+	}
+	if (len < W4_RX_DESCRIPTOR_MIN) {
+		ret = -EPROTO;
 		goto out;
 	}
 	byte_count = get_unaligned_le16(buf);
@@ -614,7 +660,7 @@ static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 	cmd[5] = 0x20;       /* command packet */
 	cmd[6] = 1;          /* set */
 	cmd[7] = 1;          /* command sequence */
-	cmd[8] = 1;          /* scan sequence */
+	cmd[8] = W4_SCAN_SEQUENCE;
 	cmd[9] = 0;          /* AIS BSS index */
 	cmd[10] = 1;         /* active scan */
 	cmd[11] = req->n_ssids ? BIT(2) : BIT(0);

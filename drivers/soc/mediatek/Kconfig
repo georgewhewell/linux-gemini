@@ -202,9 +202,28 @@ config MTK_MT6797_BTIF_PIO_PLATFORM_KUNIT_TEST
 	  platform device or access Device Tree, MMIO, DMA, firmware, CONSYS, or
 	  Gemini hardware.
 
+config MTK_MT6797_BT_H4_COLLECTOR
+	bool "Bounded MT6797 Bluetooth H4 command collector"
+	depends on MTK_MT6797_CONSYS_STP_SESSION
+	help
+	  Build the transport-neutral, bounded H4 receiver used only by a future
+	  one-shot Bluetooth proof. It handles arbitrary STP channel-zero fragments,
+	  Event/ACL/SCO framing, and exact Command Complete opcode/status matching.
+	  It owns no transport, Device Tree node, clock, IRQ, regulator, radio
+	  function or HCI device. Its synchronous STP-stage owner must quiesce RX
+	  before fencing and releasing the caller-owned collector.
+
+config MTK_MT6797_BT_H4_COLLECTOR_KUNIT_TEST
+	bool "KUnit tests for the MT6797 Bluetooth H4 command collector"
+	depends on KUNIT=y
+	depends on MTK_MT6797_BT_H4_COLLECTOR=y
+	help
+	  Exercise fragmented/coalesced H4 input, unrelated asynchronous packets,
+	  bounded malformed input, status validation, timeout fencing and an ACL
+	  packet larger than 256 bytes. No transport or Gemini hardware is used.
 config MTK_MT6797_BTIF_STP_BOOTSTRAP
 	tristate "MediaTek MT6797 dormant BTIF STP bootstrap controller"
-	depends on MTK_MT6797_BTIF_PIO && MTK_WMT
+	depends on MTK_MT6797_BTIF_PIO && MTK_WMT && MTK_MT6797_BT_H4_COLLECTOR
 	depends on MTK_MT6797_CONSYS_WMT_INITIAL
 	help
 	  Build the single-owner controller for the exact vendor BTIF handover:

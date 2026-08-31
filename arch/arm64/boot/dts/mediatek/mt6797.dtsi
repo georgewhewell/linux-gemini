@@ -34,11 +34,51 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
+		cpu-map {
+			cluster0 {
+				core0 { cpu = <&cpu0>; };
+				core1 { cpu = <&cpu1>; };
+				core2 { cpu = <&cpu2>; };
+				core3 { cpu = <&cpu3>; };
+			};
+
+			cluster1 {
+				core0 { cpu = <&cpu4>; };
+				core1 { cpu = <&cpu5>; };
+				core2 { cpu = <&cpu6>; };
+				core3 { cpu = <&cpu7>; };
+			};
+
+			cluster2 {
+				core0 { cpu = <&cpu8>; };
+				core1 { cpu = <&cpu9>; };
+			};
+		};
+
+		cluster0_l2: l2-cache0 {
+			compatible = "cache";
+			cache-unified;
+			cache-level = <2>;
+		};
+
+		cluster1_l2: l2-cache1 {
+			compatible = "cache";
+			cache-unified;
+			cache-level = <2>;
+		};
+
+		cluster2_l2: l2-cache2 {
+			compatible = "cache";
+			cache-unified;
+			cache-level = <2>;
+		};
+
 		cpu0: cpu@0 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x000>;
+			next-level-cache = <&cluster0_l2>;
 		};
 
 		cpu1: cpu@1 {
@@ -46,6 +86,7 @@
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x001>;
+			next-level-cache = <&cluster0_l2>;
 		};
 
 		cpu2: cpu@2 {
@@ -53,6 +94,7 @@
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x002>;
+			next-level-cache = <&cluster0_l2>;
 		};
 
 		cpu3: cpu@3 {
@@ -60,6 +102,7 @@
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x003>;
+			next-level-cache = <&cluster0_l2>;
 		};
 
 		cpu4: cpu@100 {
@@ -67,6 +110,7 @@
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x100>;
+			next-level-cache = <&cluster1_l2>;
 		};
 
 		cpu5: cpu@101 {
@@ -74,6 +118,7 @@
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x101>;
+			next-level-cache = <&cluster1_l2>;
 		};
 
 		cpu6: cpu@102 {
@@ -81,6 +126,7 @@
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x102>;
+			next-level-cache = <&cluster1_l2>;
 		};
 
 		cpu7: cpu@103 {
@@ -88,6 +134,7 @@
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x103>;
+			next-level-cache = <&cluster1_l2>;
 		};
 
 		cpu8: cpu@200 {
@@ -95,6 +142,7 @@
 			compatible = "arm,cortex-a72";
 			enable-method = "mediatek,mt6797-psci";
 			reg = <0x200>;
+			next-level-cache = <&cluster2_l2>;
 		};
 
 		cpu9: cpu@201 {
@@ -102,6 +150,7 @@
 			compatible = "arm,cortex-a72";
 			enable-method = "mediatek,mt6797-psci";
 			reg = <0x201>;
+			next-level-cache = <&cluster2_l2>;
 		};
 	};
 

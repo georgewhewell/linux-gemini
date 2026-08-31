@@ -44,6 +44,12 @@ mt6797-md1-prerelease-driver-y := mt6797-md1-prerelease-core.o \
 	mt6797-md1-prepower.o mt6797-md1-prerelease.o
 obj-$(CONFIG_MTK_MT6797_MD1_PRERELEASE) += mt6797-md1-prerelease-driver.o
 obj-$(CONFIG_MTK_MT6797_MD1_PRERELEASE_KUNIT_TEST) += mt6797-md1-prerelease-kunit-test.o
+mt6797-md1-cold-owner-driver-y := mt6797-md1-cold-owner-core.o \
+	mt6797-md1-cold-owner.o
+obj-$(CONFIG_MTK_MT6797_MD1_COLD_OWNER) += mt6797-md1-cold-owner-driver.o
+obj-$(CONFIG_MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST) += mt6797-md1-cold-owner-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_WDT_GATE_CORE) += mt6797-md1-wdt-gate-core.o
+obj-$(CONFIG_MTK_MT6797_MD1_WDT_GATE_KUNIT_TEST) += mt6797-md1-wdt-gate-kunit-test.o
 obj-$(CONFIG_MTK_STP) += mtk-stp.o
 obj-$(CONFIG_MTK_STP_KUNIT_TEST) += mtk-stp-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_STP_SESSION) += mt6797-consys-stp-session.o

@@ -1253,17 +1253,19 @@ config MTK_MT6797_MD1_COLD_OWNER_CORE
 	  reset, CCIF, firmware, partition, transport, SIM, RF, or boot-vector path.
 
 config MTK_MT6797_MD1_COLD_OWNER
-	tristate "MT6797 MD1 exclusive cold power/PLL/CCIF owner"
-	depends on BROKEN
+	tristate "MT6797 MD1 active-CCF cold-power/PLL/CCIF candidate"
 	depends on OF && ARM64
 	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
 	depends on MTK_MT6797_MD1_BOOT_STATUS_OBSERVE=y
 	depends on MTK_MT6797_MD1_PRERELEASE=y
 	select MTK_MT6797_MD1_COLD_OWNER_CORE
 	help
-	  Quarantined legacy experiment. Its power sequence follows an MT6797 source
-	  file that the Gemini vendor build does not compile, rather than the active
-	  clk-mt6797-pg.c path. It must not be enabled or used on hardware.
+	  Build the default-disabled owner for the active vendor CCF MD1 power
+	  sequence. It requires both an explicit module parameter and a disabled DT
+	  node to be changed before it can make hardware writes. The successful
+	  terminal state remains before WDT, remap/MPU, boot-vector, IRQ, CLDMA,
+	  shared-memory, transport, SIM and RF ownership; it does not claim a
+	  booted modem.
 
 config MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 cold owner"

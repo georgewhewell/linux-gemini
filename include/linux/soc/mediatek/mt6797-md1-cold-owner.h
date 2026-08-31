@@ -39,7 +39,6 @@ struct mt6797_md1_cold_state {
 	u32 pwr_status_2nd;
 	u32 infra_protect_en;
 	u32 infra_protect_sta;
-	u32 c2k_spm_ctrl;
 };
 
 /* The values are evidence only: their bit meanings are intentionally absent. */

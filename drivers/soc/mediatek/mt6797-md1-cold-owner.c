@@ -2,11 +2,10 @@
 /*
  * Default-disabled MT6797 MD1 cold power/PLL/CCIF owner.
  *
- * QUARANTINED: this implementation was derived from mt_spm_mtcmos.c, but the
- * Gemini vendor build comments that object out. The active power-domain owner
- * is drivers/clk/mediatek/clk-mt6797-pg.c::spm_mtcmos_ctrl_md1(), whose bus
- * protection and isolation sequence differs. Kconfig therefore depends on
- * BROKEN. Do not instantiate this driver on hardware.
+ * The MD1 power portion follows the active Gemini vendor CCF implementation,
+ * drivers/clk/mediatek/clk-mt6797-pg.c::spm_mtcmos_ctrl_md1(). In particular,
+ * it must not borrow the unbuilt mt_spm_mtcmos.c PCM/C2K path: the two paths
+ * use different isolation and bus-protection controls.
  *
  * No function maps or writes MD_BOOT_VECTOR_EN (0x20000024).
  */
@@ -52,19 +51,15 @@
 
 #define MT6797_MD1_INFRA_PROTECT_EN		0x220
 #define MT6797_MD1_INFRA_PROTECT_STA1		0x228
-#define MT6797_MD1_INFRA_C2K_SPM_CTRL		0x338
 #define MT6797_MD1_INFRA_SRC_CLKENA		0xf0c
-#define MT6797_MD1_INFRA_MD1_PROT_MASK	GENMASK(28, 24)
-#define MT6797_MD1_INFRA_C2K_LTE_LS_ISO	BIT(6)
+#define MT6797_MD1_INFRA_MD1_PROT_MASK	(BIT(3) | BIT(4) | BIT(5) | \
+					 BIT(7) | BIT(10) | BIT(16))
 
 #define MT6797_MD1_SPM_POWERON_CONFIG_EN	0x000
 #define MT6797_MD1_SPM_PWR_STATUS		0x180
 #define MT6797_MD1_SPM_PWR_STATUS_2ND		0x184
 #define MT6797_MD1_SPM_MD1_PWR_CON		0x320
-#define MT6797_MD1_SPM_PCM_IM_PTR		0x318
-#define MT6797_MD1_SPM_PCM_IM_LEN		0x31c
-#define MT6797_MD1_SPM_PCM_WAKEUP_EVENT	0x814
-#define MT6797_MD1_SPM_PCM_PASR_DPD_3		0xb6c
+#define MT6797_MD1_SPM_MD_EXT_BUCK_ISO		0x390
 #define MT6797_MD1_SPM_PWR_STATUS_MD1		BIT(0)
 #define MT6797_MD1_SPM_POWERON_CONFIG_EN_BIT	BIT(0)
 #define MT6797_MD1_SPM_PWR_RST_B		BIT(0)
@@ -73,6 +68,7 @@
 #define MT6797_MD1_SPM_PWR_ON_2ND		BIT(3)
 #define MT6797_MD1_SPM_PWR_CLK_DIS		BIT(4)
 #define MT6797_MD1_SPM_MD_SRAM_PDN		BIT(8)
+#define MT6797_MD1_SPM_MD_EXT_BUCK_ISO_MD1	BIT(0)
 #define MT6797_MD1_SPM_COLD_MASK		(MT6797_MD1_SPM_PWR_RST_B | \
 	MT6797_MD1_SPM_PWR_ISO | MT6797_MD1_SPM_PWR_ON | \
 	MT6797_MD1_SPM_PWR_ON_2ND | MT6797_MD1_SPM_PWR_CLK_DIS | \
@@ -90,8 +86,6 @@
 #define MT6797_MD1_CCIF_SRAM_BYTES		512
 
 #define MT6797_MD1_MAX_POWER_POLLS		100
-/* The vendor PCM path increments then stops only once count exceeds 1000. */
-#define MT6797_MD1_MAX_PCM_POLLS		1001
 
 struct mt6797_md1_cold_owner_resource {
 	const char *name;
@@ -144,9 +138,6 @@ struct mt6797_md1_cold_owner_backend {
 	struct mt6797_md1_pmic_snapshot pmic_snapshot;
 	struct mt6797_md1_clkbuf_snapshot clkbuf_snapshot;
 	enum mt6797_md1_cold_owner_pll_stage pll_stage;
-	u32 last_pcm;
-	u32 last_pcm_im_ptr;
-	u32 last_pcm_im_len;
 };
 
 static bool enable_experimental_md1_cold_owner;
@@ -215,28 +206,6 @@ static int mt6797_md1_cold_wait_power(struct mt6797_md1_cold_owner_backend *back
 	return -ETIMEDOUT;
 }
 
-static int mt6797_md1_cold_wait_pcm(struct mt6797_md1_cold_owner_backend *backend)
-{
-	unsigned int i, value;
-	int ret;
-
-	for (i = 0; i < MT6797_MD1_MAX_PCM_POLLS; i++) {
-		ret = regmap_read(backend->spm, MT6797_MD1_SPM_PCM_PASR_DPD_3,
-				  &value);
-		if (ret)
-			return ret;
-		backend->last_pcm = value;
-		if (!value)
-			return 0;
-		udelay(1);
-	}
-	regmap_read(backend->spm, MT6797_MD1_SPM_PCM_IM_PTR,
-		    &backend->last_pcm_im_ptr);
-	regmap_read(backend->spm, MT6797_MD1_SPM_PCM_IM_LEN,
-		    &backend->last_pcm_im_len);
-	return -ETIMEDOUT;
-}
-
 static int mt6797_md1_cold_wait_bus_protect(
 	struct mt6797_md1_cold_owner_backend *backend, bool asserted)
 {
@@ -287,9 +256,6 @@ static int mt6797_md1_cold_verify(void *context,
 		MT6797_MD1_INFRA_PROTECT_EN);
 	state->infra_protect_sta = readl(backend->base[MT6797_MD1_RES_INFRA] +
 		MT6797_MD1_INFRA_PROTECT_STA1);
-	state->c2k_spm_ctrl = readl(backend->base[MT6797_MD1_RES_INFRA] +
-		MT6797_MD1_INFRA_C2K_SPM_CTRL);
-
 	if (!(state->poweron_config & MT6797_MD1_SPM_POWERON_CONFIG_EN_BIT) ||
 	    (state->md1_pwr_con & MT6797_MD1_SPM_COLD_MASK) !=
 		MT6797_MD1_SPM_COLD_VALUE ||
@@ -298,8 +264,7 @@ static int mt6797_md1_cold_verify(void *context,
 	    (state->infra_protect_en & MT6797_MD1_INFRA_MD1_PROT_MASK) !=
 		MT6797_MD1_INFRA_MD1_PROT_MASK ||
 	    (state->infra_protect_sta & MT6797_MD1_INFRA_MD1_PROT_MASK) !=
-		MT6797_MD1_INFRA_MD1_PROT_MASK ||
-	    !(state->c2k_spm_ctrl & MT6797_MD1_INFRA_C2K_LTE_LS_ISO))
+		MT6797_MD1_INFRA_MD1_PROT_MASK)
 		return -EBUSY;
 	return 0;
 }
@@ -398,6 +363,11 @@ static int mt6797_md1_cold_power_on(void *context)
 	if (ret)
 		return ret;
 
+	/* Exact active CCF order: buck isolation, requests, both acknowledgements. */
+	ret = regmap_update_bits(backend->spm, MT6797_MD1_SPM_MD_EXT_BUCK_ISO,
+				 MT6797_MD1_SPM_MD_EXT_BUCK_ISO_MD1, 0);
+	if (ret)
+		return ret;
 	ret = regmap_update_bits(backend->spm, MT6797_MD1_SPM_MD1_PWR_CON,
 				 MT6797_MD1_SPM_PWR_ON, MT6797_MD1_SPM_PWR_ON);
 	if (ret)
@@ -410,23 +380,12 @@ static int mt6797_md1_cold_power_on(void *context)
 	if (ret)
 		return ret;
 
-	/* Exact MT6797 non-MD_PWRON_BY_CPU SPM-PCM request and completion word. */
-	ret = regmap_write(backend->spm, MT6797_MD1_SPM_PCM_PASR_DPD_3, 0xbeef);
-	if (ret)
-		return ret;
-	ret = regmap_write(backend->spm, MT6797_MD1_SPM_PCM_WAKEUP_EVENT, 0x1);
-	if (ret)
-		return ret;
-	ret = mt6797_md1_cold_wait_pcm(backend);
-	if (ret)
-		return ret;
-
-	value = readl(backend->base[MT6797_MD1_RES_INFRA] +
-		      MT6797_MD1_INFRA_C2K_SPM_CTRL);
-	writel(value & ~MT6797_MD1_INFRA_C2K_LTE_LS_ISO,
-	       backend->base[MT6797_MD1_RES_INFRA] + MT6797_MD1_INFRA_C2K_SPM_CTRL);
 	ret = regmap_update_bits(backend->spm, MT6797_MD1_SPM_MD1_PWR_CON,
-				 MT6797_MD1_SPM_PWR_RST_B, MT6797_MD1_SPM_PWR_RST_B);
+				 MT6797_MD1_SPM_PWR_CLK_DIS, 0);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(backend->spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				 MT6797_MD1_SPM_PWR_ISO, 0);
 	if (ret)
 		return ret;
 	ret = regmap_update_bits(backend->spm, MT6797_MD1_SPM_MD1_PWR_CON,
@@ -440,6 +399,11 @@ static int mt6797_md1_cold_power_on(void *context)
 	ret = mt6797_md1_cold_wait_bus_protect(backend, false);
 	if (ret)
 		return ret;
+	ret = regmap_update_bits(backend->spm, MT6797_MD1_SPM_MD1_PWR_CON,
+				 MT6797_MD1_SPM_PWR_RST_B, MT6797_MD1_SPM_PWR_RST_B);
+	if (ret)
+		return ret;
+
 	ret = regmap_read(backend->spm, MT6797_MD1_SPM_MD1_PWR_CON, &pwr_con);
 	if (ret)
 		return ret;
@@ -721,11 +685,10 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 		    MT6797_MD1_COLD_OWNER_FATAL)
 			atomic_set(&mt6797_md1_cold_owner_fatal_latch, 1);
 		dev_crit(&pdev->dev,
-			 "MD1 cold owner failed %d state=%u PCM=%#x IM=%#x/%#x PLL stage=%u off=%#x mask=%#x last=%#x; reset/reboot required, no boot vector\n",
-			 ret, mt6797_md1_cold_owner_state(owner), backend->last_pcm,
-			 backend->last_pcm_im_ptr, backend->last_pcm_im_len,
-			 owner->last_pll.stage, owner->last_pll.offset,
-			 owner->last_pll.mask, owner->last_pll.last_value);
+		 "MD1 cold owner failed %d state=%u PLL stage=%u off=%#x mask=%#x last=%#x; reset/reboot required, no boot vector\n",
+		 ret, mt6797_md1_cold_owner_state(owner),
+		 owner->last_pll.stage, owner->last_pll.offset,
+		 owner->last_pll.mask, owner->last_pll.last_value);
 		return ret;
 	}
 	platform_set_drvdata(pdev, owner);

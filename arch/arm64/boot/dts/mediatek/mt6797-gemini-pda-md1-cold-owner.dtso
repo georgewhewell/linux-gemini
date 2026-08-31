@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Disabled MT6797 MD1 active-CCF cold-start candidate.
+ *
+ * This overlay does not run on its own. The driver also needs the explicit
+ * mt6797_md1_cold_owner.enable_experimental_md1_cold_owner=1 module parameter.
+ * Its successful terminal state is before modem WDT, remap/MPU, boot-vector,
+ * IRQ, CLDMA, shared-memory, transport, SIM and RF ownership.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		#address-cells = <2>;
+		#size-cells = <2>;
+
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <2>;
+
+			md1_cold_owner: modem-cold-owner {
+				compatible = "mediatek,mt6797-md1-cold-owner";
+				reg = <0 0x10001000 0 0x1000>,
+				      <0 0x10209000 0 0x1000>,
+				      <0 0x1020a000 0 0x1000>,
+				      <0 0x1000c000 0 0x1000>,
+				      <0 0x20150000 0 0x118>,
+				      <0 0x20130000 0 0x1004>,
+				      <0 0x20060000 0 0xd0>,
+				      <0 0x260f0000 0 0x200>,
+				      <0 0x20140000 0 0x18>,
+				      <0 0x20120000 0 0xd0>;
+				reg-names = "infracfg", "ap-ccif", "md-ccif", "apmixed",
+					    "md-clksw", "md-dcm", "md-peri-misc", "md-l1-a0",
+					    "md-top-pll", "md-sys-clk";
+				mediatek,experimental-md1-cold-owner;
+				mediatek,stage-cold-reset-held;
+				mediatek,pmic = <&pmic>;
+				mediatek,spm = <&scpsys>;
+				status = "disabled";
+			};
+		};
+	};
+};

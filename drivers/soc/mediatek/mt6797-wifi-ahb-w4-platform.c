@@ -194,6 +194,15 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 			len + sizeof(u32));
 	if (ret)
 		goto out;
+	/* SW-defined firmware events carry WIFI_EVENT_T directly, no RXD. */
+	if (len >= 8 && get_unaligned_le16(buf + 2) == 0xe000) {
+		if (buf[4] == 0x0d && w4->scan_request) { /* EVENT_ID_SCAN_DONE */
+			struct cfg80211_scan_info info = { };
+			cfg80211_scan_done(w4->scan_request, &info);
+			w4->scan_request = NULL;
+		}
+		goto out;
+	}
 	byte_count = get_unaligned_le16(buf);
 	type = get_unaligned_le16(buf + 2);
 	header_len = buf[6];

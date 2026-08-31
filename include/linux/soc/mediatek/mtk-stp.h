@@ -18,8 +18,9 @@
 #define MTK_STP_MANDATORY_MAX_PAYLOAD	1999
 #define MTK_STP_MAX_CHANNEL	7
 
-/* The only clients exposed by this initial mux. */
+/* Channel zero remains private to the bootstrap's bounded H4 proof. */
 enum mtk_stp_channel {
+	MTK_STP_BT	= 0,
 	MTK_STP_GNSS	= 2,
 	MTK_STP_WMT	= 4,
 };

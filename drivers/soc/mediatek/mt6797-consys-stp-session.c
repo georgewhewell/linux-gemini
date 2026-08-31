@@ -84,6 +84,7 @@ struct mt6797_consys_stp_session {
 	u8 crc[MTK_STP_TRAILER_SIZE];
 	u8 crc_length;
 	u16 payload_length;
+	bool rx_integrity_fault;
 	u16 payload_position;
 	u8 channel;
 	bool last_rx_ok;
@@ -273,6 +274,7 @@ static int mt6797_consys_stp_finish_frame_locked(
 	crc = crc16(0, session->payload, session->payload_length);
 	if (session->crc[0] != (u8)crc || session->crc[1] != (u8)(crc >> 8)) {
 		session->diagnostics.rx_crc_failures++;
+		session->rx_integrity_fault = true;
 		pr_warn_ratelimited("mt6797-consys-stp: full-STP CRC header=%*ph len=%u got=%*ph want=%04x\n",
 				    MTK_STP_HEADER_SIZE, session->header,
 				    session->payload_length, MTK_STP_TRAILER_SIZE,
@@ -334,6 +336,7 @@ static int mt6797_consys_stp_process_header_locked(
 
 	if ((session->header[0] & 0xc0) != 0x80 ||
 	    session->header[3] != mt6797_consys_stp_header_checksum(session->header)) {
+		session->rx_integrity_fault = true;
 		pr_warn_ratelimited("mt6797-consys-stp: full-STP header=%*ph want-csum=%02x\n",
 				    MTK_STP_HEADER_SIZE, session->header,
 				    mt6797_consys_stp_header_checksum(session->header));
@@ -380,6 +383,7 @@ static int mt6797_consys_stp_receive_byte_locked(
 			return 0;
 		pr_warn_ratelimited("mt6797-consys-stp: RX full-STP sync mismatch byte=%02x\n",
 					    byte);
+		session->rx_integrity_fault = true;
 		return -EBADMSG;
 	case MT6797_CONSYS_STP_RX_HEADER:
 		session->header[session->header_length++] = byte;
@@ -719,17 +723,20 @@ static int mt6797_consys_stp_session_receive_locked(
 	int first_error = 0;
 	size_t index;
 	int ret;
+	bool integrity_fault;
 
 	for (index = 0; index < length; index++) {
+		session->rx_integrity_fault = false;
 		ret = mt6797_consys_stp_receive_byte_locked(session, data[index]);
+		integrity_fault = session->rx_integrity_fault;
 		/*
 		 * Vendor btif_rx_irq_handler() invokes a void receive callback
 		 * (btif_plat.c:816-859), while stp_core.c:2069-2074 leaves an
 		 * unexpected byte in SYNC for a later frame.  Keep that local,
-		 * recoverable framing fault out of the PIO fence path; endpoint and
-		 * protocol failures remain terminal to this dispatch.
+		 * parser-proven framing fault out of the PIO fence path.  An endpoint
+		 * error, including -EBADMSG, remains terminal to this dispatch.
 		 */
-		if (ret && ret != -EBADMSG && !first_error)
+		if (ret && (!integrity_fault || !first_error))
 			first_error = ret;
 		if (ret) {
 			session->diagnostics.rx_parser_failures++;
@@ -1181,6 +1188,35 @@ static void mt6797_consys_stp_test_receive_failure_retries_without_ack(
 	mt6797_consys_stp_session_destroy(session);
 }
 
+static void mt6797_consys_stp_test_endpoint_badmsg_is_terminal(struct kunit *test)
+{
+	const struct mt6797_consys_stp_session_lease *lease;
+	struct mt6797_consys_stp_test_link *link;
+	struct mt6797_consys_stp_session *session;
+	u8 *frame;
+	u8 payload = 0x37;
+	size_t frame_length;
+
+	session = mt6797_consys_stp_test_session(test, &link, &lease);
+	frame = kunit_kmalloc(test, MT6797_CONSYS_STP_MAX_FRAME_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, frame);
+	frame_length = mt6797_consys_stp_test_data_frame(frame, MTK_STP_WMT, 0, 7,
+								 &payload, sizeof(payload));
+
+	link->receive_error = -EBADMSG;
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(session, frame,
+								 frame_length), -EBADMSG);
+	KUNIT_EXPECT_EQ(test, link->rx_count, 1U);
+	KUNIT_EXPECT_EQ(test, link->tx_count, 0U);
+
+	link->receive_error = 0;
+	KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_receive(session, frame,
+								 frame_length), 0);
+	KUNIT_EXPECT_EQ(test, link->rx_count, 2U);
+	KUNIT_EXPECT_EQ(test, link->tx_count, 1U);
+	mt6797_consys_stp_session_destroy(session);
+}
+
 static void mt6797_consys_stp_test_nak_and_timeout_retry(struct kunit *test)
 {
 	const struct mt6797_consys_stp_session_lease *lease;
@@ -1452,6 +1488,7 @@ static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_cumulative_ack),
 	KUNIT_CASE(mt6797_consys_stp_test_duplicate_and_out_of_order),
 	KUNIT_CASE(mt6797_consys_stp_test_receive_failure_retries_without_ack),
+	KUNIT_CASE(mt6797_consys_stp_test_endpoint_badmsg_is_terminal),
 	KUNIT_CASE(mt6797_consys_stp_test_nak_and_timeout_retry),
 	KUNIT_CASE(mt6797_consys_stp_test_retry_limit_fences),
 	KUNIT_CASE(mt6797_consys_stp_test_malformed_and_quiesce),

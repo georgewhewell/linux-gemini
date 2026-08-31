@@ -41,8 +41,8 @@ config GNSS_MTK_CONSYS
 	  client endpoint; it neither probes a device nor accesses hardware.
 
 	  A separately reviewed controller must supply an active opaque full-STP
-	  lease plus an exact power callback before it can register /dev/gnssN.
-	  Keep it disabled until that owner exists. If unsure, say N.
+	  lease plus an exact power callback before it can register /dev/gnssN. The
+	  default-disabled MT6797 G2g owner is one such controller.
 
 config GNSS_MTK_CONSYS_KUNIT_TEST
 	tristate "KUnit tests for the MediaTek CONSYS GNSS endpoint"

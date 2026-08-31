@@ -112,6 +112,8 @@
 				mediatek,experimental-wifi-w2-nic-capability;
 				/* A second DT + command-line gate controls this GNSS probe. */
 				mediatek,experimental-g2d-gnss-probe;
+				/* A distinct gate retains STP and publishes /dev/gnssN. */
+				mediatek,experimental-g2g-gnss-endpoint;
 				pinctrl-names = "gps-lna-init", "gps-lna-on", "gps-lna-off";
 				pinctrl-0 = <&g2d_gnss_lna_init>;
 				pinctrl-1 = <&g2d_gnss_lna_on>;

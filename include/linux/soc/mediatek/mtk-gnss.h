@@ -5,8 +5,8 @@
  * This is a kernel-internal endpoint, not a hardware driver.  A transport
  * owner that has established the controller-specific WMT GPS transaction may
  * register one instance against an active opaque full-STP session. There is
- * intentionally no platform binding: neither the MT6797 GNSS control command
- * nor its required firmware state has been established for mainline.
+ * intentionally no generic platform binding: the separately gated MT6797 G2g
+ * owner supplies the board-specific transport, firmware and LNA chronology.
  */
 
 #ifndef __LINUX_SOC_MEDIATEK_MTK_GNSS_H

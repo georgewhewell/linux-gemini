@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * One-shot MT6797 G2d post-patch initialisation experiment.
+ * Gated MT6797 G2d post-patch initialisation and G2g GNSS owner.
  *
  * This stays inside the bootstrap's retained full-STP callback.  It completes
  * the vendor post-patch transactions, then leaves BTIF fenced and CONSYS
- * reset-held.  It issues no WMT function-control command and creates no
- * Wi-Fi, Bluetooth, GNSS, or FM client.
+ * reset-held.  Its separately gated GNSS probe issues one bounded GPS
+ * FUNC_CTRL on/off pair. A distinct G2g build, DT and command-line gate may
+ * instead retain the promoted full-STP session and register one GNSS client.
  *
  * MT6797 uses fixed 3.3 V VCN33 PALDOs.  The old efuse opcode 0x12 sequence
  * was MT6580-only and must not be sent here.
@@ -34,6 +35,7 @@
 #include <linux/soc/mediatek/mt6797-consys-runtime.h>
 #include <linux/soc/mediatek/mt6797-wifi-ahb.h>
 #include <linux/soc/mediatek/mt6797-wifi-ahb-w0-phase.h>
+#include <linux/soc/mediatek/mtk-gnss.h>
 #include <linux/soc/mediatek/mtk-wmt.h>
 
 #define MT6797_G2D_TIMEOUT		msecs_to_jiffies(3000)
@@ -51,6 +53,14 @@ module_param_named(enable_experimental_g2d_gnss_probe,
 		enable_experimental_g2d_gnss_probe, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_g2d_gnss_probe,
 	"allow one MT6797 G2d GPS FUNC_CTRL probe after post-patch (default: false)");
+
+#if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_G2G_GNSS_ENDPOINT)
+static bool enable_experimental_g2g_gnss_endpoint;
+module_param_named(enable_experimental_g2g_gnss_endpoint,
+		enable_experimental_g2g_gnss_endpoint, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_g2g_gnss_endpoint,
+	"retain MT6797 full STP and register one GNSS endpoint (default: false)");
+#endif
 
 static bool enable_experimental_g2e_bt_function_owner;
 module_param_named(enable_experimental_g2e_bt_function_owner,
@@ -506,21 +516,25 @@ out_cleanup:
 
 struct mt6797_g2d_owner {
 	struct device *dev;
+	struct device *runtime;
+	struct device *controller;
 	struct regulator *bt;
 	struct regulator *wifi;
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *gps_lna_init;
 	struct pinctrl_state *gps_lna_on;
 	struct pinctrl_state *gps_lna_off;
-	const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease;
-	struct device *runtime_dev;
-	struct device *controller_dev;
 	struct mt6797_consys_runtime_resource_lease resources;
 	struct mt6797_consys_runtime_provider_lease identity;
 	struct mt6797_consys_postid_owner postid;
+	struct mt6797_consys_runtime_controller_gnss_lease gnss_lease;
+	struct mtk_gnss gnss;
+	const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease;
 	struct mutex w4_lock;
 	bool wifi_w0_dirty_fatal;
 	bool gnss_probe;
+	bool persistent_gnss;
+	bool persistent_gnss_faulted;
 	bool bt_function_proof;
 	bool bt_hci_proof;
 	bool wifi_w4_retained_owner;
@@ -551,10 +565,10 @@ static int mt6797_g2d_w4_release_locked(struct mt6797_g2d_owner *owner)
 	if (ret)
 		return ret;
 	owner->w4_resources_held = false;
-	put_device(owner->controller_dev);
-	owner->controller_dev = NULL;
-	put_device(owner->runtime_dev);
-	owner->runtime_dev = NULL;
+	put_device(owner->controller);
+	owner->controller = NULL;
+	put_device(owner->runtime);
+	owner->runtime = NULL;
 	return 0;
 }
 
@@ -686,6 +700,47 @@ static int mt6797_g2d_live_lna_set(void *context, bool enable)
 		enable ? owner->gps_lna_on : owner->gps_lna_off);
 }
 
+#if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_G2G_GNSS_ENDPOINT)
+static int mt6797_g2g_gnss_set_power(void *context, bool enable)
+{
+	struct mt6797_g2d_owner *owner = context;
+	int cleanup;
+	int ret;
+
+	if (READ_ONCE(owner->persistent_gnss_faulted))
+		return -EIO;
+
+	if (enable) {
+		ret = mt6797_g2d_live_lna_set(owner, true);
+		if (ret)
+			goto fault_and_lower_lna;
+		ret = mt6797_consys_runtime_controller_gnss_set_power(
+			owner->controller, &owner->gnss_lease, true);
+		if (!ret)
+			return 0;
+fault_and_lower_lna:
+		cleanup = mt6797_g2d_live_lna_set(owner, false);
+		WRITE_ONCE(owner->persistent_gnss_faulted, true);
+		dev_err(owner->dev,
+			"persistent GNSS-on failed=%d LNA-low cleanup=%d; reboot required\n",
+			ret, cleanup);
+		return ret ?: cleanup ?: -EIO;
+	}
+
+	/* The hardware-passed shutdown order lowers the external LNA first. */
+	ret = mt6797_g2d_live_lna_set(owner, false);
+	cleanup = mt6797_consys_runtime_controller_gnss_set_power(
+		owner->controller, &owner->gnss_lease, false);
+	if (ret || cleanup) {
+		WRITE_ONCE(owner->persistent_gnss_faulted, true);
+		dev_err(owner->dev,
+			"persistent GNSS-off failed: LNA-low=%d FUNC_CTRL-off=%d; reboot required\n",
+			ret, cleanup);
+	}
+	return ret ?: cleanup;
+}
+#endif
+
 #if IS_REACHABLE(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_OBSERVE)
 /* The W0 PALDO interval is independent of the completed G2d rail pair. */
 static int mt6797_g2d_w0_get_voltage(void *context)
@@ -789,10 +844,17 @@ static int mt6797_g2d_postpatch_stage(void *context,
 	dev_info(owner->dev, "G2d start: fixed 3.3V%s\n",
 		owner->bt_hci_proof ? ", then G2f private H4 proof" :
 		(owner->bt_function_proof ? ", then G2e function proof" :
-		 ", no function control"));
+		 (owner->gnss_probe ? ", then GNSS FUNC_CTRL probe" :
+		  (owner->persistent_gnss ? ", then retain GNSS transport" :
+		   ", no function control"))));
 	ret = mt6797_g2d_postpatch_run(&ops, &state);
 #if IS_REACHABLE(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_OBSERVE)
-	if (!ret && mt6797_wifi_ahb_wcir_enabled(owner->dev)) {
+	if (!ret && owner->persistent_gnss &&
+	    mt6797_wifi_ahb_wcir_enabled(owner->dev)) {
+		dev_err(owner->dev,
+			"persistent GNSS conflicts with the one-shot Wi-Fi phase\n");
+		ret = -EBUSY;
+	} else if (!ret && mt6797_wifi_ahb_wcir_enabled(owner->dev)) {
 		wcir_attempted = true;
 		ret = mt6797_g2d_wifi_wcir_phase(owner, lease);
 	}
@@ -859,6 +921,12 @@ static int mt6797_g2d_postpatch_stage(void *context,
 	else if (w1_attempted)
 		dev_info(owner->dev,
 			 "Wi-Fi W1 HIF/EMI/start/READY passed; IRQ/netdev remain fenced; bootstrap will fence/reset\n");
+	else if (owner->gnss_probe)
+		dev_info(owner->dev,
+			 "G2d GNSS probe passed: GPIO69 LNA init/on/off and GPS FUNC_CTRL on/off acknowledged; bootstrap will fence/reset\n");
+	else if (owner->persistent_gnss)
+		dev_info(owner->dev,
+			 "G2g post-patch stage passed; requesting retained full-STP GNSS ownership\n");
 	else
 		dev_info(owner->dev, "G2d passed; bootstrap will fence/reset\n");
 	if (state.calibration_reply_valid)
@@ -893,10 +961,6 @@ static int mt6797_g2d_probe_failure(struct device *dev, int err,
 static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 {
 	struct mt6797_g2d_owner *owner;
-	struct device *runtime, *controller;
-	struct mt6797_consys_runtime_resource_lease resources = { };
-	struct mt6797_consys_runtime_provider_lease identity = { };
-	struct mt6797_consys_postid_owner postid;
 	bool postid_init = false, controller_active = false, emi_claimed = false;
 	int ret, cleanup;
 
@@ -924,10 +988,29 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	     !device_property_read_bool(&pdev->dev,
 		"mediatek,experimental-g2d-postpatch-owner")))
 		return mt6797_g2d_probe_failure(&pdev->dev, -EPERM, "opt-in gate");
+	if (device_property_read_bool(&pdev->dev,
+		"mediatek,experimental-g2g-gnss-endpoint")) {
+#if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_G2G_GNSS_ENDPOINT)
+		if (!READ_ONCE(enable_experimental_g2g_gnss_endpoint))
+			return mt6797_g2d_probe_failure(&pdev->dev, -EPERM,
+				"persistent GNSS opt-in gate");
+		owner->persistent_gnss = true;
+#else
+		return mt6797_g2d_probe_failure(&pdev->dev, -EOPNOTSUPP,
+			"persistent GNSS build gate");
+#endif
+	}
 	owner->gnss_probe = device_property_read_bool(&pdev->dev,
 		"mediatek,experimental-g2d-gnss-probe") &&
 		READ_ONCE(enable_experimental_g2d_gnss_probe);
-	if (owner->gnss_probe) {
+	if (owner->persistent_gnss &&
+	    (owner->gnss_probe || owner->bt_function_proof || owner->bt_hci_proof))
+		return mt6797_g2d_probe_failure(&pdev->dev, -EINVAL,
+			"persistent GNSS mixed with one-shot proof");
+	if (owner->persistent_gnss && owner->wifi_w4_retained_owner)
+		return mt6797_g2d_probe_failure(&pdev->dev, -EINVAL,
+			"persistent GNSS mixed with W4 retained owner");
+	if (owner->gnss_probe || owner->persistent_gnss) {
 		owner->pinctrl = devm_pinctrl_get(&pdev->dev);
 		if (IS_ERR(owner->pinctrl))
 			return mt6797_g2d_probe_failure(&pdev->dev, PTR_ERR(owner->pinctrl),
@@ -956,22 +1039,25 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	if (regulator_is_equal(owner->bt, owner->wifi))
 		return mt6797_g2d_probe_failure(&pdev->dev, -EINVAL,
 			"distinct VCN33 regulator check");
-	ret = mt6797_g2d_supplier(&pdev->dev, "mediatek,runtime-provider", &runtime);
+	ret = mt6797_g2d_supplier(&pdev->dev, "mediatek,runtime-provider",
+		&owner->runtime);
 	if (ret)
 		return mt6797_g2d_probe_failure(&pdev->dev, ret, "runtime provider");
-	ret = mt6797_g2d_supplier(&pdev->dev, "mediatek,controller", &controller);
+	ret = mt6797_g2d_supplier(&pdev->dev, "mediatek,controller",
+		&owner->controller);
 	if (ret) {
 		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "runtime controller");
 		goto put_runtime;
 	}
-	ret = mt6797_consys_runtime_resource_lease_acquire(runtime, &resources);
+	ret = mt6797_consys_runtime_resource_lease_acquire(owner->runtime,
+		&owner->resources);
 	if (ret == -ENODEV)
 		ret = -EPROBE_DEFER;
 	if (ret) {
 		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "runtime resource lease");
 		goto put_controller;
 	}
-	ret = mt6797_consys_runtime_controller_preflight(controller);
+	ret = mt6797_consys_runtime_controller_preflight(owner->controller);
 	if (ret) {
 		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "controller preflight");
 		goto resources;
@@ -982,72 +1068,98 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 		goto resources;
 	}
 	emi_claimed = true;
-	ret = mt6797_consys_runtime_platform_identity_acquire(&resources, &identity);
+	ret = mt6797_consys_runtime_platform_identity_acquire(&owner->resources,
+		&owner->identity);
 	if (ret) {
 		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "platform identity");
 		goto resources;
 	}
-	ret = mt6797_consys_runtime_postid_owner_init(runtime, identity.identity, &postid);
+	ret = mt6797_consys_runtime_postid_owner_init(owner->runtime,
+		owner->identity.identity, &owner->postid);
 	if (ret) {
 		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "post-ID owner init");
 		goto identity;
 	}
 	postid_init = true;
-	ret = mt6797_consys_postid_start(&postid, identity.identity, true);
+	ret = mt6797_consys_postid_start(&owner->postid,
+		owner->identity.identity, true);
 	if (ret) {
 		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "post-ID start");
 		goto postid;
 	}
 	if (owner->wifi_w4_retained_owner) {
-		/*
-		 * The controller consumes the canonical provider identity, while W4
-		 * owns the controller/HIF session.  Keep this true-chronology prefix
-		 * alive until W4 has stopped the controller and calls w4_release().
-		 */
-		owner->resources = resources;
-		resources = (struct mt6797_consys_runtime_resource_lease) { };
 		owner->w4_resources_held = true;
-		owner->identity = identity;
-		identity = (struct mt6797_consys_runtime_provider_lease) { };
 		owner->w4_identity_held = true;
-		owner->postid = postid;
-		postid = (struct mt6797_consys_postid_owner) { };
 		owner->w4_postid_active = true;
-		owner->runtime_dev = runtime;
-		runtime = NULL;
-		owner->controller_dev = controller;
-		controller = NULL;
 		dev_info(&pdev->dev,
 			"G2d W4 retained handoff: post-ID identity held; controller READY for W4\n");
 		return 0;
-	} else {
-		ret = mt6797_consys_runtime_controller_start_with_postpatch_stage(controller,
-			mt6797_g2d_postpatch_stage, owner);
-		if (ret)
+	}
+	ret = mt6797_consys_runtime_controller_start_with_postpatch_stage(
+		owner->controller,
+		mt6797_g2d_postpatch_stage, owner);
+	if (ret)
+		ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
+			"controller start or post-patch stage");
+	if (!ret)
+		controller_active = true;
+	if (!ret && owner->persistent_gnss) {
+#if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_G2G_GNSS_ENDPOINT)
+		const struct mt6797_consys_stp_session_lease *session_lease;
+		struct mtk_gnss_transport transport = {
+			.set_power = mt6797_g2g_gnss_set_power,
+			.context = owner,
+		};
+
+		ret = mt6797_consys_runtime_controller_gnss_session_get(
+			owner->controller, &owner->gnss_lease, &session_lease);
+		if (ret) {
 			ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
-				"controller start or post-patch stage");
-		if (!ret)
-			controller_active = true;
+				"persistent GNSS session lease");
+			goto postid;
+		}
+		ret = mt6797_g2d_live_lna_init(owner);
+		if (ret) {
+			ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
+				"persistent GNSS LNA init");
+			goto postid;
+		}
+		ret = mtk_gnss_register(&owner->gnss, &pdev->dev, session_lease,
+			&transport);
+		if (ret) {
+			ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
+				"persistent GNSS endpoint registration");
+			goto postid;
+		}
+		platform_set_drvdata(pdev, owner);
+		dev_info(&pdev->dev,
+			 "G2g retained full STP and registered persistent GNSS endpoint\n");
+		return 0;
+#endif
 	}
 postid:
+	if (owner->gnss_lease.controller)
+		mt6797_consys_runtime_controller_gnss_session_put(&owner->gnss_lease);
 	if (controller_active)
-		mt6797_consys_runtime_controller_stop(controller);
-	if (postid_init && mt6797_consys_postid_state(&postid) == MT6797_CONSYS_POSTID_ACTIVE) {
-		cleanup = mt6797_consys_postid_stop(&postid);
+		mt6797_consys_runtime_controller_stop(owner->controller);
+	if (postid_init && mt6797_consys_postid_state(&owner->postid) ==
+	    MT6797_CONSYS_POSTID_ACTIVE) {
+		cleanup = mt6797_consys_postid_stop(&owner->postid);
 		if (!ret)
 			ret = cleanup;
 	}
-	if (postid_init && mt6797_consys_postid_state(&postid) != MT6797_CONSYS_POSTID_IDLE) {
+	if (postid_init && mt6797_consys_postid_state(&owner->postid) !=
+	    MT6797_CONSYS_POSTID_IDLE) {
 		mt6797_consys_emi_mpu_latch_fatal();
 		if (!ret)
 			ret = -EIO;
 	}
 identity:
-	cleanup = mt6797_consys_runtime_platform_identity_release(&identity);
+	cleanup = mt6797_consys_runtime_platform_identity_release(&owner->identity);
 	if (!ret)
 		ret = cleanup;
 resources:
-	cleanup = mt6797_consys_runtime_resource_lease_release(&resources);
+	cleanup = mt6797_consys_runtime_resource_lease_release(&owner->resources);
 	if (!ret)
 		ret = cleanup;
 	if (emi_claimed && ret) {
@@ -1055,21 +1167,44 @@ resources:
 		dev_err(&pdev->dev, "G2d failed after persistent EMI claim; reboot required\n");
 	}
 put_controller:
-	put_device(controller);
+	put_device(owner->controller);
 put_runtime:
-	put_device(runtime);
+	put_device(owner->runtime);
 	return ret;
 }
 
 static void mt6797_g2d_postpatch_owner_remove(struct platform_device *pdev)
 {
 	struct mt6797_g2d_owner *owner = platform_get_drvdata(pdev);
-	int ret;
+	int ret, cleanup;
 
-	if (!owner || !owner->wifi_w4_retained_owner)
+	if (!owner)
 		return;
-	if (owner->controller_dev)
-		mt6797_consys_runtime_controller_stop(owner->controller_dev);
+	if (owner->persistent_gnss) {
+		mtk_gnss_unregister(&owner->gnss);
+		mt6797_consys_runtime_controller_gnss_session_put(&owner->gnss_lease);
+		mt6797_consys_runtime_controller_stop(owner->controller);
+		ret = mt6797_consys_postid_stop(&owner->postid);
+		cleanup = mt6797_consys_runtime_platform_identity_release(&owner->identity);
+		if (!ret)
+			ret = cleanup;
+		cleanup = mt6797_consys_runtime_resource_lease_release(&owner->resources);
+		if (!ret)
+			ret = cleanup;
+		put_device(owner->controller);
+		owner->controller = NULL;
+		put_device(owner->runtime);
+		owner->runtime = NULL;
+		if (ret) {
+			mt6797_consys_emi_mpu_latch_fatal();
+			dev_err(&pdev->dev, "G2g retained GNSS teardown failed: %d\n", ret);
+		}
+		return;
+	}
+	if (!owner->wifi_w4_retained_owner)
+		return;
+	if (owner->controller)
+		mt6797_consys_runtime_controller_stop(owner->controller);
 	ret = mt6797_consys_g2d_postpatch_owner_w4_release(&pdev->dev);
 	if (ret) {
 		mt6797_consys_emi_mpu_latch_fatal();
@@ -1097,7 +1232,7 @@ static struct platform_driver mt6797_g2d_postpatch_owner_driver = {
 };
 module_platform_driver(mt6797_g2d_postpatch_owner_driver);
 
-MODULE_DESCRIPTION("One-shot gated MT6797 CONSYS G2d post-patch owner");
+MODULE_DESCRIPTION("Gated MT6797 CONSYS G2d post-patch and G2g GNSS owner");
 MODULE_LICENSE("GPL");
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST)

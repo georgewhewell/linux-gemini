@@ -2,18 +2,21 @@
 /*
  * Read-only identification driver for legacy direct-address DA9213-DA9215.
  *
- * The default build is identification-only. An explicitly isolated provider
- * build may register read-only resource descriptors after the same fixed
- * transcript; it never exposes a writable regulator operation or A72 consumer.
+ * The default build is identification-only.  The isolated A72 owner follows
+ * the vendor PSCI BUCKB enable/disable transcript behind its transaction
+ * ledger; it is not a general writable regulator consumer interface.
  */
 
 #include <linux/i2c.h>
+#include <linux/delay.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/regulator/driver.h>
 
 #include "da9213-legacy-observer.h"
 #if IS_ENABLED(CONFIG_ARM64_MT6797_A72_PROVIDER_OWNER)
+#include <asm/mt6797_a72_membership.h>
 #include <linux/mt6797-a72-provider.h>
 #endif
 
@@ -43,6 +46,11 @@ struct da9213_legacy {
 	const struct da9213_legacy_variant *variant;
 #if IS_ENABLED(CONFIG_REGULATOR_DA9213_LEGACY_PROVIDER)
 	struct regulator_dev *rdev[2];
+	struct mutex provider_lock;
+	bool provider_held;
+	u8 provider_buckb_cont;
+	u64 provider_generation;
+	u64 provider_cookie;
 #if IS_ENABLED(CONFIG_REGULATOR_DA9213_LEGACY_OBSERVER)
 	unsigned int provider_count;
 	bool observer_bound;
@@ -124,6 +132,22 @@ static int da9213_legacy_read_reg_locked(struct da9213_legacy *chip, u8 reg,
 
 	*value = data;
 	return 0;
+}
+
+static int da9213_legacy_write_reg_locked(struct da9213_legacy *chip, u8 reg,
+					   u8 value)
+{
+	struct i2c_msg msg = { };
+	u8 data[] = { reg, value };
+	int ret;
+
+	msg.addr = chip->client->addr;
+	msg.len = sizeof(data);
+	msg.buf = data;
+	ret = __i2c_transfer(chip->client->adapter, &msg, 1);
+	if (ret < 0)
+		return ret;
+	return ret == 1 ? 0 : -EIO;
 }
 
 static int da9213_legacy_read_reg(struct da9213_legacy *chip, u8 reg,
@@ -415,6 +439,11 @@ static int da9213_legacy_provider_acquire(void *context,
 	struct mt6797_a72_provider_response *response)
 {
 	struct da9213_legacy *chip = context;
+	unsigned int buckb_cont;
+	unsigned int page;
+	unsigned int vsel;
+	bool rail_write = false;
+	int ret;
 
 	if (!chip || !request || !response)
 		return -EINVAL;
@@ -430,29 +459,150 @@ static int da9213_legacy_provider_acquire(void *context,
 	    request->reserved)
 		return -EINVAL;
 
-	/* The current provider is deliberately read-only: no vote or rail write. */
-	dev_dbg(chip->dev,
-		"provider-owner acquire refused: read-only resource boundary\n");
-	return -EOPNOTSUPP;
+	mutex_lock(&chip->provider_lock);
+	if (chip->provider_held) {
+		ret = -EALREADY;
+		goto out_unlock_provider;
+	}
+	i2c_lock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+	/* Vendor MT6797 PSCI selects page 0 before the BUCKB RMW. */
+	ret = da9213_legacy_read_reg_locked(chip, 0x00, &page);
+	if (ret)
+		goto out_unlock_bus;
+	ret = da9213_legacy_write_reg_locked(chip, 0x00, page & ~0x0f);
+	if (ret)
+		goto out_unlock_bus;
+	ret = da9213_legacy_read_reg_locked(chip, 0x00, &page);
+	if (ret || (page & 0x0f)) {
+		ret = ret ?: -EIO;
+		goto out_unlock_bus;
+	}
+	ret = da9213_legacy_read_reg_locked(chip, 0x5e, &buckb_cont);
+	if (ret)
+		goto out_unlock_bus;
+	if (buckb_cont & DA9213_LEGACY_ENABLE_MASK) {
+		ret = -EBUSY;
+		goto out_unlock_bus;
+	}
+	ret = da9213_legacy_read_reg_locked(chip, 0xd9, &vsel);
+	if (ret)
+		goto out_unlock_bus;
+	if ((vsel & DA9213_LEGACY_VSEL_MASK) != request->buckb_vsel) {
+		ret = -ERANGE;
+		goto out_unlock_bus;
+	}
+	ret = da9213_legacy_write_reg_locked(chip, 0x5e,
+					 buckb_cont | DA9213_LEGACY_ENABLE_MASK);
+	if (ret)
+		goto out_unlock_bus;
+	rail_write = true;
+	ret = da9213_legacy_read_reg_locked(chip, 0x5e, &page);
+	if (ret)
+		goto out_unlock_bus;
+	if (!(page & DA9213_LEGACY_ENABLE_MASK)) {
+		ret = -EIO;
+		goto out_unlock_bus;
+	}
+	i2c_unlock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+	usleep_range(request->settle_us, request->settle_us + 250);
+	chip->provider_buckb_cont = buckb_cont;
+	chip->provider_generation = request->transaction_generation;
+	chip->provider_cookie = request->transaction_cookie;
+	chip->provider_held = true;
+	response->vote_requested = 1;
+	response->provider_mutated = 1;
+	response->rail_mutated = 1;
+	response->settle_us = request->settle_us;
+	response->da921x_page = request->da921x_page;
+	response->buckb_enabled = 1;
+	response->buckb_vsel = request->buckb_vsel;
+	response->origin = MT6797_A72_PROVIDER_ORIGIN_M01;
+	response->origin_generation = request->transaction_generation;
+	response->held_handle.generation = request->transaction_generation;
+	response->held_handle.cookie = request->transaction_cookie;
+	mutex_unlock(&chip->provider_lock);
+	return 0;
+
+out_unlock_bus:
+	/* A failed acquire must not leave the vendor rail enabled unowned. */
+	if (rail_write)
+		da9213_legacy_write_reg_locked(chip, 0x5e, buckb_cont);
+	i2c_unlock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+out_unlock_provider:
+	mutex_unlock(&chip->provider_lock);
+	return ret;
 }
 
 static int da9213_legacy_provider_release(void *context,
 	const struct mt6797_a72_provider_handle *handle,
 	struct mt6797_a72_provider_response *response)
 {
-	if (!context || !handle || !response)
+	struct da9213_legacy *chip = context;
+	unsigned int buckb_cont;
+	unsigned int vsel;
+	int ret;
+
+	if (!chip || !handle || !response)
 		return -EINVAL;
 
 	memset(response, 0, sizeof(*response));
 	response->abi = MT6797_A72_PROVIDER_CALL_ABI;
 	response->returned = 1;
-	response->origin = 1;
-	response->reserved = 0;
+	mutex_lock(&chip->provider_lock);
+	if (!chip->provider_held ||
+	    handle->generation != chip->provider_generation ||
+	    handle->cookie != chip->provider_cookie) {
+		ret = -EACCES;
+		goto out_unlock_provider;
+	}
+	i2c_lock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+	ret = da9213_legacy_read_reg_locked(chip, 0x5e, &buckb_cont);
+	if (ret)
+		goto out_unlock_bus;
+	if (!(buckb_cont & DA9213_LEGACY_ENABLE_MASK)) {
+		ret = -EIO;
+		goto out_unlock_bus;
+	}
+	ret = da9213_legacy_write_reg_locked(chip, 0x5e,
+					 chip->provider_buckb_cont);
+	if (ret)
+		goto out_unlock_bus;
+	ret = da9213_legacy_read_reg_locked(chip, 0x5e, &buckb_cont);
+	if (ret)
+		goto out_unlock_bus;
+	if (buckb_cont != chip->provider_buckb_cont) {
+		ret = -EIO;
+		goto out_unlock_bus;
+	}
+	ret = da9213_legacy_read_reg_locked(chip, 0xd9, &vsel);
+	if (ret)
+		goto out_unlock_bus;
+	if ((vsel & DA9213_LEGACY_VSEL_MASK) != MT6797_A72_PROVIDER_CALL_BUCKB_VSEL) {
+		ret = -ERANGE;
+		goto out_unlock_bus;
+	}
+	i2c_unlock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+	usleep_range(MT6797_A72_PROVIDER_CALL_SETTLE_US,
+		     MT6797_A72_PROVIDER_CALL_SETTLE_US + 250);
+	response->vote_requested = 1;
+	response->provider_mutated = 1;
+	response->rail_mutated = 1;
+	response->settle_us = MT6797_A72_PROVIDER_CALL_SETTLE_US;
+	response->da921x_page = MT6797_A72_PROVIDER_CALL_DA921X_PAGE;
+	response->buckb_enabled = 0;
+	response->buckb_vsel = MT6797_A72_PROVIDER_CALL_BUCKB_VSEL;
+	response->origin = MT6797_A72_PROVIDER_ORIGIN_M01;
+	response->origin_generation = handle->generation;
+	response->held_handle = *handle;
+	chip->provider_held = false;
+	mutex_unlock(&chip->provider_lock);
+	return 0;
 
-	/* Page ownership, write readback, and inverse proof are still open. */
-	dev_dbg(((struct da9213_legacy *)context)->dev,
-		"provider-owner release refused: no rollback owner\n");
-	return -EOPNOTSUPP;
+out_unlock_bus:
+	i2c_unlock_bus(chip->client->adapter, I2C_LOCK_ROOT_ADAPTER);
+out_unlock_provider:
+	mutex_unlock(&chip->provider_lock);
+	return ret;
 }
 
 static const struct mt6797_a72_provider_ops da9213_legacy_provider_ops = {
@@ -574,12 +724,15 @@ static int da9213_legacy_probe(struct i2c_client *client)
 	chip->dev = &client->dev;
 	chip->client = client;
 	chip->variant = variant;
+#if IS_ENABLED(CONFIG_REGULATOR_DA9213_LEGACY_PROVIDER)
+	mutex_init(&chip->provider_lock);
+#endif
 	i2c_set_clientdata(client, chip);
 
 	ret = da9213_legacy_validate_node(client);
 	if (ret)
 		return dev_err_probe(&client->dev, ret,
-				     "invalid identification-only description\n");
+		 "invalid legacy regulator description\n");
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		return dev_err_probe(&client->dev, -EOPNOTSUPP,
@@ -639,7 +792,7 @@ out_unlock:
 #endif
 
 	dev_info(&client->dev,
-		 "%s legacy direct-address identity matched; provider is read-only\n",
+		 "%s legacy direct-address identity matched; A72 owner is ledger-gated\n",
 		 variant->name);
 
 	return 0;

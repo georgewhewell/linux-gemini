@@ -19,6 +19,7 @@
 #include <linux/soc/mediatek/mt6797-a72-platform-state.h>
 #include <linux/soc/mediatek/mt6797-bigidvfs-backend.h>
 #include <linux/soc/mediatek/mt6797-dvfsp-clock-backend.h>
+#include <linux/soc/mediatek/mt6797-dvfsp-clock-state.h>
 
 #include "mt6797-a72-physical-source-observer-internal.h"
 
@@ -179,6 +180,11 @@ mt6797_a72_physical_source_log(struct device *dev,
 	const struct mt6797_a72_platform_state *platform = &source->platform;
 	const struct mt6797_dvfsp_clock_readback *clock = &source->clock;
 	const struct mt6797_bigidvfs_readback *bigidvfs = &source->bigidvfs;
+	struct mt6797_dvfsp_clock_state decoded;
+	int decode_ret;
+
+	decode_ret = mt6797_dvfsp_clock_state_decode(clock, bigidvfs,
+						     &decoded);
 
 	dev_info(dev,
 		 MT6797_A72_PHYSICAL_SOURCE_TAG
@@ -236,6 +242,28 @@ mt6797_a72_physical_source_log(struct device *dev,
 		 (unsigned long long)bigidvfs->sample_generation,
 		 bigidvfs->pll_pcw, bigidvfs->pll_enable_posdiv,
 		 bigidvfs->sram_selector, bigidvfs->control);
+	if (decode_ret) {
+		dev_info(dev,
+			 MT6797_A72_PHYSICAL_SOURCE_TAG
+			 " decoded=retry error=%d\n", decode_ret);
+	} else {
+		dev_info(dev,
+			 MT6797_A72_PHYSICAL_SOURCE_TAG
+			 " decoded=valid ll=%u/%u/%u l=%u/%u/%u"
+			 " b=%u/%u/%u cci=%u/%u/%u unit=kHz/mux/ckdiv\n",
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_LL].frequency_khz,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_LL].mux_selector,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_LL].divider_selector,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_L].frequency_khz,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_L].mux_selector,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_L].divider_selector,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_B].frequency_khz,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_B].mux_selector,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_B].divider_selector,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_CCI].frequency_khz,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_CCI].mux_selector,
+			 decoded.cluster[MT6797_DVFSP_CLOCK_STATE_CLUSTER_CCI].divider_selector);
+	}
 	dev_info(dev,
 		 MT6797_A72_PHYSICAL_SOURCE_TAG
 		 " state=complete registrations=1 callbacks=1 unregisters=1"

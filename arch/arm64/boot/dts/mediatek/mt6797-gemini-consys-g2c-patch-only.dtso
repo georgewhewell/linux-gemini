@@ -95,6 +95,8 @@
 				vcn33-bt-supply = <&mt6351_vcn33_bt_reg>;
 				vcn33-wifi-supply = <&mt6351_vcn33_wifi_reg>;
 				mediatek,experimental-g2d-postpatch-owner;
+				/* A third DT + command-line gate controls the W0 observation. */
+				mediatek,experimental-wifi-wcir-observe;
 				/* A second DT + command-line gate controls this GNSS probe. */
 				mediatek,experimental-g2d-gnss-probe;
 				pinctrl-names = "gps-lna-init", "gps-lna-on", "gps-lna-off";

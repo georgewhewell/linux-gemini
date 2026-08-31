@@ -50,6 +50,18 @@ module_param_named(enable_experimental_g2d_gnss_probe,
 MODULE_PARM_DESC(enable_experimental_g2d_gnss_probe,
 	"allow one MT6797 G2d GPS FUNC_CTRL probe after post-patch (default: false)");
 
+static bool enable_experimental_g2e_bt_function_owner;
+module_param_named(enable_experimental_g2e_bt_function_owner,
+		enable_experimental_g2e_bt_function_owner, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_g2e_bt_function_owner,
+	"allow one MT6797 G2e Bluetooth PALDO/FUNC_CTRL proof (default: false)");
+
+static bool enable_experimental_g2f_bt_hci_proof_owner;
+module_param_named(enable_experimental_g2f_bt_hci_proof_owner,
+		enable_experimental_g2f_bt_hci_proof_owner, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_g2f_bt_hci_proof_owner,
+	"allow one MT6797 G2f private Bluetooth H4 proof (default: false)");
+
 enum mt6797_g2d_stage {
 	G2D_SNAPSHOT, G2D_SET_BT, G2D_SET_WIFI, G2D_ENABLE_BT, G2D_ENABLE_WIFI,
 	G2D_LTE_EXT, G2D_LTE_FILTER, G2D_LTE_FREQ, G2D_LTE_UNSAFE, G2D_LTE_L,
@@ -91,6 +103,16 @@ struct mt6797_g2d_state {
 	enum mt6797_g2d_stage stage;
 };
 
+struct mt6797_g2_bt_proof_ops {
+	int (*paldo)(void *context, bool enable);
+	int (*wmt)(void *context, u8 opcode, const u8 *data, size_t data_len,
+		   const struct mtk_wmt_match *expected);
+	int (*hci_exchange)(void *context, const u8 *command, size_t command_len,
+			    u16 expected_opcode, size_t expected_reply_len,
+			    u8 *reply, size_t reply_size, size_t *reply_len);
+	void *context;
+};
+
 /* Exact raw SDUs from wmt_ic_soc.c's MT6797 post-patch tables. */
 static const u8 g2d_lte_ext[] = { 0x0d, 0x00, 0x00 };
 static const u8 g2d_lte_filter[] = {
@@ -125,6 +147,10 @@ static const struct mtk_wmt_match g2d_ok_10 = {
 static const struct mtk_wmt_match g2d_fm_strap_match = {
 	.opcode = 0x05, .data = g2d_fm_strap_reply,
 	.data_len = sizeof(g2d_fm_strap_reply),
+};
+static const struct mtk_wmt_match g2_bt_func_match = {
+	.opcode = 6, .data = g2d_ok,
+	.data_len = sizeof(g2d_ok),
 };
 
 static const char * const mt6797_g2d_stage_name[] = {
@@ -204,6 +230,47 @@ static int mt6797_g2d_gnss_probe_run(struct mt6797_g2d_gnss_ops *ops,
 	ret = ops->wmt(ops->context, MT6797_G2D_WMT_FUNC_CTRL, g2d_gnss_off,
 		       sizeof(g2d_gnss_off), &g2d_gnss_func_match);
 	return ret ? mt6797_g2d_gnss_fail_low(ops, state, state->stage, ret) : 0;
+}
+
+/* Vendor wmt_func_bt_on/off: PALDO, FUNC_CTRL { BT, 1/0 }, PALDO. */
+static int mt6797_g2_bt_proof_run(struct mt6797_g2_bt_proof_ops *ops,
+				  bool hci_proof)
+{
+	static const u8 func_on[] = { 0x00, 0x01 };
+	static const u8 func_off[] = { 0x00, 0x00 };
+	static const u8 hci_reset[] = { 0x01, 0x03, 0x0c, 0x00 };
+	static const u8 hci_version[] = { 0x01, 0x01, 0x10, 0x00 };
+	u8 reply[15];
+	size_t reply_len;
+	bool function_on = false;
+	int ret, cleanup;
+
+	if (!ops || !ops->paldo || !ops->wmt ||
+	    (hci_proof && !ops->hci_exchange))
+		return -EINVAL;
+	ret = ops->paldo(ops->context, true);
+	if (ret)
+		return ret;
+	ret = ops->wmt(ops->context, 6, func_on, sizeof(func_on),
+		       &g2_bt_func_match);
+	if (!ret)
+		function_on = true;
+	if (!ret && hci_proof)
+		ret = ops->hci_exchange(ops->context, hci_reset, sizeof(hci_reset),
+					0x0c03, 7, reply, sizeof(reply), &reply_len);
+	if (!ret && hci_proof)
+		ret = ops->hci_exchange(ops->context, hci_version, sizeof(hci_version),
+					0x1001, 15, reply, sizeof(reply), &reply_len);
+	if (function_on) {
+		cleanup = ops->wmt(ops->context, 6, func_off, sizeof(func_off),
+				   &g2_bt_func_match);
+		if (!ret)
+			ret = cleanup;
+	}
+	cleanup = ops->paldo(ops->context, false);
+	if (!ret)
+		ret = cleanup;
+	return ret;
 }
 
 static int mt6797_g2d_calibrate(struct mt6797_g2d_ops *ops,
@@ -394,6 +461,8 @@ struct mt6797_g2d_owner {
 	const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease;
 	bool wifi_w0_dirty_fatal;
 	bool gnss_probe;
+	bool bt_function_proof;
+	bool bt_hci_proof;
 };
 
 static struct regulator *mt6797_g2d_regulator(struct mt6797_g2d_owner *owner,
@@ -449,6 +518,24 @@ static int mt6797_g2d_live_wmt_capture(void *context, u8 opcode,
 		MT6797_G2D_TIMEOUT);
 }
 
+static int mt6797_g2d_live_paldo(void *context, bool enable)
+{
+	struct mt6797_g2d_owner *owner = context;
+
+	return enable ? regulator_enable(owner->bt) : regulator_disable(owner->bt);
+}
+
+static int mt6797_g2d_live_hci_exchange(void *context, const u8 *command,
+		size_t command_len, u16 expected_opcode, size_t expected_reply_len,
+		u8 *reply, size_t reply_size, size_t *reply_len)
+{
+	struct mt6797_g2d_owner *owner = context;
+
+	return mt6797_btif_stp_bootstrap_full_bt_hci_exchange(owner->lease,
+		command, command_len, expected_opcode, expected_reply_len, reply,
+		reply_size, reply_len, MT6797_G2D_TIMEOUT);
+}
+
 static void mt6797_g2d_live_delay_ms(void *context, unsigned int milliseconds)
 {
 	msleep(milliseconds);
@@ -469,6 +556,7 @@ static int mt6797_g2d_live_lna_set(void *context, bool enable)
 		enable ? owner->gps_lna_on : owner->gps_lna_off);
 }
 
+#if IS_REACHABLE(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_OBSERVE)
 /* The W0 PALDO interval is independent of the completed G2d rail pair. */
 static int mt6797_g2d_w0_get_voltage(void *context)
 {
@@ -517,7 +605,6 @@ static void mt6797_g2d_w0_fatal(void *context, int causal, int cleanup)
 static int mt6797_g2d_wifi_wcir_phase(struct mt6797_g2d_owner *owner,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
 {
-#if IS_REACHABLE(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_OBSERVE)
 	struct mt6797_wifi_ahb_w0_ops ops = {
 		.get_voltage = mt6797_g2d_w0_get_voltage,
 		.is_enabled = mt6797_g2d_w0_is_enabled,
@@ -533,10 +620,8 @@ static int mt6797_g2d_wifi_wcir_phase(struct mt6797_g2d_owner *owner,
 	if (lease != owner->lease)
 		return -EPERM;
 	return mt6797_wifi_ahb_w0_run(&ops, &result, MT6797_G2D_VCN33_UV);
-#else
-	return -EOPNOTSUPP;
-#endif
 }
+#endif
 
 static int mt6797_g2d_postpatch_stage(void *context,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
@@ -560,23 +645,41 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		.wmt = mt6797_g2d_live_wmt,
 		.context = owner,
 	};
+	struct mt6797_g2_bt_proof_ops bt_ops = {
+		.paldo = mt6797_g2d_live_paldo,
+		.wmt = mt6797_g2d_live_wmt,
+		.hci_exchange = mt6797_g2d_live_hci_exchange,
+		.context = owner,
+	};
 	bool wcir_attempted = false;
 	int ret;
 
 	owner->lease = lease;
-	dev_info(owner->dev, "G2d start: fixed 3.3V, no function control\n");
+	dev_info(owner->dev, "G2d start: fixed 3.3V%s\n",
+		owner->bt_hci_proof ? ", then G2f private H4 proof" :
+		(owner->bt_function_proof ? ", then G2e function proof" :
+		 ", no function control"));
 	ret = mt6797_g2d_postpatch_run(&ops, &state);
-	if (!ret && device_property_read_bool(owner->dev,
-			"mediatek,experimental-wifi-wcir-observe")) {
+#if IS_REACHABLE(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_OBSERVE)
+	if (!ret && mt6797_wifi_ahb_wcir_enabled(owner->dev)) {
 		wcir_attempted = true;
 		ret = mt6797_g2d_wifi_wcir_phase(owner, lease);
 	}
+#endif
 	if (!ret && owner->gnss_probe)
 		ret = mt6797_g2d_gnss_probe_run(&gnss_ops, &state);
+	if (!ret && (owner->bt_function_proof || owner->bt_hci_proof))
+		ret = mt6797_g2_bt_proof_run(&bt_ops, owner->bt_hci_proof);
 	owner->lease = NULL;
 	if (ret && wcir_attempted)
 		dev_err(owner->dev,
 			"G2d Wi-Fi WCIR phase failed: %d; bootstrap must fence/reset\n", ret);
+	else if (ret && owner->bt_hci_proof)
+		dev_err(owner->dev,
+			"G2f private H4 proof failed: %d; bootstrap must fence/reset\n", ret);
+	else if (ret && owner->bt_function_proof)
+		dev_err(owner->dev,
+			"G2e BT function proof failed: %d; bootstrap must fence/reset\n", ret);
 	else if (ret && state.causal_error && state.cleanup_attempted)
 		dev_err(owner->dev,
 			"G2d causal stage %s failed: %d; GNSS LNA-low cleanup: %d; bootstrap must fence/reset\n",
@@ -586,6 +689,12 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		dev_err(owner->dev,
 			"G2d stage %s failed: %d cleanup=%d; bootstrap must fence/reset\n",
 			mt6797_g2d_stage_name[state.stage], ret, state.cleanup_error);
+	else if (owner->bt_hci_proof)
+		dev_info(owner->dev,
+			 "G2f private H4 proof passed; bootstrap will fence/reset\n");
+	else if (owner->bt_function_proof)
+		dev_info(owner->dev,
+			 "G2e BT function proof passed; bootstrap will fence/reset\n");
 	else
 		dev_info(owner->dev, "G2d passed; bootstrap will fence/reset\n");
 	if (state.calibration_reply_valid)
@@ -627,14 +736,24 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	bool postid_init = false, controller_active = false, emi_claimed = false;
 	int ret, cleanup;
 
-	if (!READ_ONCE(enable_experimental_g2d_postpatch_owner) ||
-	    !device_property_read_bool(&pdev->dev,
-		"mediatek,experimental-g2d-postpatch-owner"))
-		return mt6797_g2d_probe_failure(&pdev->dev, -EPERM, "opt-in gate");
 	owner = devm_kzalloc(&pdev->dev, sizeof(*owner), GFP_KERNEL);
 	if (!owner)
 		return mt6797_g2d_probe_failure(&pdev->dev, -ENOMEM, "owner allocation");
 	owner->dev = &pdev->dev;
+	owner->bt_function_proof = device_property_read_bool(&pdev->dev,
+		"mediatek,experimental-g2e-bt-function-owner") &&
+		READ_ONCE(enable_experimental_g2e_bt_function_owner);
+	owner->bt_hci_proof = device_property_read_bool(&pdev->dev,
+		"mediatek,experimental-g2f-bt-hci-proof-owner") &&
+		READ_ONCE(enable_experimental_g2f_bt_hci_proof_owner);
+	if (owner->bt_function_proof && owner->bt_hci_proof)
+		return mt6797_g2d_probe_failure(&pdev->dev, -EINVAL,
+			"multiple Bluetooth proof gates");
+	if (!owner->bt_function_proof && !owner->bt_hci_proof &&
+	    (!READ_ONCE(enable_experimental_g2d_postpatch_owner) ||
+	     !device_property_read_bool(&pdev->dev,
+		"mediatek,experimental-g2d-postpatch-owner")))
+		return mt6797_g2d_probe_failure(&pdev->dev, -EPERM, "opt-in gate");
 	owner->gnss_probe = device_property_read_bool(&pdev->dev,
 		"mediatek,experimental-g2d-gnss-probe") &&
 		READ_ONCE(enable_experimental_g2d_gnss_probe);
@@ -749,7 +868,10 @@ put_runtime:
 }
 
 static const struct of_device_id mt6797_g2d_postpatch_owner_of_match[] = {
-	{ .compatible = "mediatek,mt6797-consys-g2d-postpatch-owner" }, { }
+	{ .compatible = "mediatek,mt6797-consys-g2d-postpatch-owner" },
+	{ .compatible = "mediatek,mt6797-consys-g2e-bt-function-owner" },
+	{ .compatible = "mediatek,mt6797-consys-g2f-bt-hci-proof-owner" },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, mt6797_g2d_postpatch_owner_of_match);
 

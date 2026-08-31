@@ -750,6 +750,25 @@ config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
 	  MT6351 selector is not restored until both consumers are off. It does not
 	  access a regulator, WMT endpoint, Device Tree, or Gemini.
 
+config MTK_MT6797_WIFI_AHB_WCIR_OBSERVE
+	tristate "MT6797 WLAN GEN3 AHB post-patch WCIR observer"
+	depends on ARM64 && ARCH_MEDIATEK && OF && REGULATOR
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	help
+	  Build the smallest live MT6797 WLAN AHB milestone. A corrected G2d
+	  post-patch owner must call it synchronously while retaining its full WMT
+	  lease and enabled Wi-Fi PALDO. It sends one fixed-port CMD53 WCIR read.
+	  The owner DT property and its read-only module parameter are both required.
+	  It never creates a WLAN transport, IRQ, DMA path, firmware load, or netdev.
+
+config MTK_MT6797_WIFI_AHB_WCIR_KUNIT_TEST
+	bool "KUnit tests for the MT6797 WLAN AHB WCIR observer"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_WCIR_OBSERVE=y
+	help
+	  Exercise WCIR decoding, guards, command encoding, and fault cleanup in
+	  memory only. No Device Tree, MMIO, regulator, WMT, or radio is accessed.
+
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

@@ -56,6 +56,13 @@ bool mt6797_wifi_ahb_wcir_read_permitted(const struct mt6797_wifi_ahb_wcir_guard
 }
 EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_wcir_read_permitted);
 
+bool mt6797_wifi_ahb_wcir_enabled(struct device *owner)
+{
+	return owner && READ_ONCE(enable_experimental_wifi_wcir_observe) &&
+		device_property_read_bool(owner, "mediatek,experimental-wifi-wcir-observe");
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_wcir_enabled);
+
 static int mt6797_wifi_ahb_cmd52_read(void __iomem *portal, u32 address,
 				      u8 *data)
 {
@@ -179,8 +186,7 @@ int mt6797_wifi_ahb_wcir_observe(struct device *owner,
 	/* The opaque lease is a live stage capability, not just a non-NULL token. */
 	if (!mt6797_btif_stp_bootstrap_full_wmt_lease_active(lease))
 		return -EPERM;
-	if (!READ_ONCE(enable_experimental_wifi_wcir_observe) ||
-	    !device_property_read_bool(owner, "mediatek,experimental-wifi-wcir-observe"))
+	if (!mt6797_wifi_ahb_wcir_enabled(owner))
 		return -EPERM;
 	guard.full_postpatch_session = true;
 

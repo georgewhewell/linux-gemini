@@ -157,6 +157,8 @@ struct mt6797_wifi_w1_power {
 	struct regulator *wifi_paldo;
 	const struct firmware *firmware;
 	struct mt6797_wifi_ahb_w1_image image;
+	/* W4 owns the resulting live function and drops PALDO on its stop path. */
+	bool retain_hif;
 };
 
 struct mt6797_wifi_w1_config_ack {
@@ -1283,8 +1285,8 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 	if (!ret && w2_capability)
 		ret = mt6797_wifi_w2_query_capability(power->owner, portal, status);
 out_unlock:
-	/* Every attempted mutable CCCR operation is read back after restoration. */
-	if (block_size_set) {
+	/* W1 proof restores CCCR; W4 deliberately retains this live HIF state. */
+	if (block_size_set && !power->retain_hif) {
 		block_cleanup_ret = mt6797_wifi_w1_restore_block_size(portal,
 			block_low_before, block_high_before, &block_low_restored,
 			&block_high_restored);
@@ -1293,7 +1295,7 @@ out_unlock:
 			 block_cleanup_ret, block_low_restored, block_high_restored,
 			 block_low_before, block_high_before);
 	}
-	if (function_enabled) {
+	if (function_enabled && !power->retain_hif) {
 		function_cleanup_ret = mt6797_wifi_w1_restore_function(portal,
 			ioex_before, &ioex_restored);
 		dev_info(power->owner,
@@ -1450,6 +1452,61 @@ int mt6797_wifi_ahb_w1_firmware_preflight(struct device *owner,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w1_firmware_preflight);
+
+/*
+ * The original W1 entry point is intentionally a proof and always unwinds.
+ * A radio cannot be built on that transaction.  Keep this sibling narrow: it
+ * is the same image validation and vendor stream, but leaves exactly the
+ * PALDO/function state established by the stream for W4 to own and tear down.
+ */
+int mt6797_wifi_ahb_w1_firmware_start_retained(struct device *owner,
+		  const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		  struct regulator *bt_paldo, struct regulator *wifi_paldo)
+{
+	struct mt6797_wifi_w1_power power = {
+		.owner = owner, .lease = lease, .bt_paldo = bt_paldo,
+		.wifi_paldo = wifi_paldo, .retain_hif = true,
+	};
+	int ret;
+
+	if (!owner || !lease || !bt_paldo || !wifi_paldo)
+		return -EINVAL;
+	if (!mt6797_btif_stp_bootstrap_full_wmt_lease_active(lease) ||
+	    !mt6797_wifi_ahb_w1_firmware_enabled(owner))
+		return -EPERM;
+	ret = request_firmware(&power.firmware, MT6797_WIFI_W1_FIRMWARE_NAME, owner);
+	if (ret)
+		return ret;
+	ret = mt6797_wifi_ahb_w1_firmware_validate(power.firmware->data,
+		power.firmware->size, MT6797_WIFI_W1_FIRMWARE_SIZE,
+		mt6797_wifi_w1_firmware_sha256);
+	if (!ret)
+		ret = mt6797_wifi_ahb_w1_firmware_parse(power.firmware->data,
+			power.firmware->size, &power.image);
+	if (!ret)
+		ret = mt6797_wifi_w1_power_set_voltage(&power, 3300000);
+	if (!ret)
+		ret = mt6797_wifi_w1_power_enable(&power);
+	if (!ret)
+		ret = mt6797_wifi_w1_stream(&power);
+	if (ret) {
+		mt6797_wifi_w1_power_disable(&power);
+		dev_err(owner, "W1 retained start failed: %d\n", ret);
+	} else {
+		dev_info(owner, "W1 retained firmware/FUNC_CTRL handoff complete\n");
+	}
+	release_firmware(power.firmware);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w1_firmware_start_retained);
+
+int mt6797_wifi_ahb_w1_firmware_stop_retained(struct regulator *wifi_paldo)
+{
+	if (!wifi_paldo)
+		return -EINVAL;
+	return regulator_disable(wifi_paldo);
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w1_firmware_stop_retained);
 
 MODULE_DESCRIPTION("MT6797 WLAN GEN3 AHB W1 pinned firmware proof");
 MODULE_LICENSE("GPL");

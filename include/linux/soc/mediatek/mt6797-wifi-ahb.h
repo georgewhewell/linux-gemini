@@ -96,4 +96,14 @@ int mt6797_wifi_ahb_w1_firmware_preflight(struct device *owner,
 		  const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
 		  struct regulator *bt_paldo, struct regulator *wifi_paldo);
 
+/*
+ * W4's live owner invokes this post-patch stage instead of the one-shot W1
+ * proof.  It deliberately retains the vendor PALDO/function/portal state for
+ * its matching HIF session; the matching stop below is mandatory.
+ */
+int mt6797_wifi_ahb_w1_firmware_start_retained(struct device *owner,
+		  const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		  struct regulator *bt_paldo, struct regulator *wifi_paldo);
+int mt6797_wifi_ahb_w1_firmware_stop_retained(struct regulator *wifi_paldo);
+
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_WIFI_AHB_H */

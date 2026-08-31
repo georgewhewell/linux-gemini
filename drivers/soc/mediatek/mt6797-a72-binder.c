@@ -763,7 +763,7 @@ static int mt6797_a72_binder_cpu9_fail(struct mt6797_a72_binder *binder,
 		ret = mt6797_a72_binder_cpu9_checkpoint(binder,
 			GEMINI_TRANSITION_LEDGER_TERMINAL,
 			MT6797_A72_TRANSITION_STAGE_CPU_ON,
-			MT6797_A72_TRANSITION_FAULT_RETAIN_POSTISO);
+			MT6797_A72_TRANSITION_CPU9_FAULT_RETAIN);
 		if (ret)
 			return ret;
 	}

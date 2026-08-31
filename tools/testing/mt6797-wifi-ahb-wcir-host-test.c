@@ -8,10 +8,10 @@
 #include <linux/soc/mediatek/mt6797-wifi-ahb-codec.h>
 #include <linux/soc/mediatek/mt6797-wifi-ahb-w0-phase.h>
 
-struct fake_w0 { int uv, bt, wifi, set_fail, restore_fail, enable_fail, disable_fail, observe_fail, off_fail; int disables; int fatal; };
+struct fake_w0 { int uv, bt, wifi, set_fail, restore_fail, enable_fail, disable_fail, observe_fail, off_fail, failed_voltage; int disables; int fatal; };
 static int f_uv(void *p) { return ((struct fake_w0 *)p)->uv; }
 static int f_on(void *p, bool wifi) { struct fake_w0 *f = p; return f->off_fail ? f->off_fail : (wifi ? f->wifi : f->bt); }
-static int f_set(void *p, int uv) { struct fake_w0 *f = p; if ((f->set_fail && uv == 3300000) || (f->restore_fail && uv != 3300000)) return -EIO; f->uv = uv; return 0; }
+static int f_set(void *p, int uv) { struct fake_w0 *f = p; f->uv = uv; if ((f->set_fail && uv == 3300000) || (f->restore_fail && uv != 3300000)) { f->failed_voltage = uv; return -EIO; } return 0; }
 static int f_enable(void *p) { struct fake_w0 *f = p; f->wifi = 1; return f->enable_fail; }
 static int f_disable(void *p) { struct fake_w0 *f = p; f->disables++; if (f->disable_fail) return f->disable_fail; f->wifi = 0; return 0; }
 static int f_observe(void *p) { return ((struct fake_w0 *)p)->observe_fail; }
@@ -42,7 +42,8 @@ int main(void)
 	/* Selector partial failure, failed enable, observation and cleanup faults. */
 	fake.set_fail = -EIO;
 	assert(mt6797_wifi_ahb_w0_run(&ops, &result, 3300000) == -EIO);
-	assert(!result.fatal && !result.selector_dirty && fake.uv == 1800000);
+	assert(result.causal == -EIO && !result.cleanup);
+	assert(!result.fatal && !result.selector_dirty && fake.failed_voltage == 3300000 && fake.uv == 1800000);
 	fake = (struct fake_w0){ .uv = 1800000, .enable_fail = -EIO };
 	assert(mt6797_wifi_ahb_w0_run(&ops, &result, 3300000) == -EIO);
 	assert(fake.disables == 1 && !result.fatal);
@@ -51,10 +52,12 @@ int main(void)
 	assert(fake.disables == 1 && !result.fatal);
 	fake = (struct fake_w0){ .uv = 1800000, .disable_fail = -EIO };
 	assert(mt6797_wifi_ahb_w0_run(&ops, &result, 3300000) == -EIO);
+	assert(!result.causal && result.cleanup == -EIO && fake.uv == 3300000);
 	assert(result.fatal && result.selector_dirty && fake.fatal);
 	fake = (struct fake_w0){ .uv = 1800000, .restore_fail = 1 };
 	assert(mt6797_wifi_ahb_w0_run(&ops, &result, 3300000) == -EIO);
-	assert(result.fatal && result.selector_dirty && fake.fatal);
+	assert(!result.causal && result.cleanup == -EIO);
+	assert(result.fatal && result.selector_dirty && fake.failed_voltage == 1800000 && fake.uv == 1800000 && fake.fatal);
 	fake = (struct fake_w0){ .uv = 1800000, .off_fail = -EIO };
 	assert(mt6797_wifi_ahb_w0_run(&ops, &result, 3300000) == -EIO);
 	assert(!fake.disables); /* refusal before any selector or rail operation */

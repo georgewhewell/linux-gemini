@@ -736,7 +736,7 @@ static int mt6797_consys_stp_session_receive_locked(
 		 * parser-proven framing fault out of the PIO fence path.  An endpoint
 		 * error, including -EBADMSG, remains terminal to this dispatch.
 		 */
-		if (ret && (!integrity_fault || !first_error))
+		if (ret && !integrity_fault && !first_error)
 			first_error = ret;
 		if (ret) {
 			session->diagnostics.rx_parser_failures++;

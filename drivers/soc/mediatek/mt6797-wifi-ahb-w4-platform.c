@@ -218,6 +218,23 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 	if (header_len & BIT(6)) off += 2;
 	if (off >= byte_count || byte_count - off < ETH_HLEN)
 		goto out;
+	/* Vendor scan results are SW-defined management RX records, not events. */
+	if (!(header_len & BIT(7)) && ((type >> 13) & 7) == 3 &&
+	    byte_count - off >= 36 && ((buf[off] & 0xf0) == 0x80 ||
+					 (buf[off] & 0xf0) == 0x50)) {
+		struct ieee80211_channel *chan;
+		struct cfg80211_bss *bss;
+		int freq = ieee80211_channel_to_frequency(buf[5], NL80211_BAND_2GHZ);
+		chan = ieee80211_get_channel(w4->wiphy, freq);
+		if (chan) {
+			bss = cfg80211_inform_bss_frame(w4->wiphy, chan,
+				(struct ieee80211_mgmt *)(buf + off), byte_count - off,
+				-4500, GFP_KERNEL);
+			if (bss)
+				cfg80211_put_bss(w4->wiphy, bss);
+		}
+		goto out;
+	}
 	skb = netdev_alloc_skb_ip_align(w4->ndev, byte_count - off);
 	if (!skb) { ret = -ENOMEM; goto out; }
 	skb_put_data(skb, buf + off, byte_count - off);

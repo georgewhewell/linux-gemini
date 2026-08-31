@@ -81,9 +81,11 @@ mt6797_a72_binder_sram_match_mask(const struct mt6797_a72_binder *binder)
 		mask |= MT6797_A72_BINDER_SRAM_MATCH_COMPLETED;
 	if (sram->requested_mv_x100 == MT6797_BIGIDVFS_SRAM_TARGET_MV_X100)
 		mask |= MT6797_A72_BINDER_SRAM_MATCH_VOLTAGE;
-	if (sram->selector_first == MT6797_BIGIDVFS_SRAM_SELECTOR_EXPECTED)
+	if ((sram->selector_first & MT6797_BIGIDVFS_SRAM_SELECTOR_MASK) ==
+	    MT6797_BIGIDVFS_SRAM_SELECTOR_EXPECTED)
 		mask |= MT6797_A72_BINDER_SRAM_MATCH_SELECTOR_FIRST;
-	if (sram->selector_second == MT6797_BIGIDVFS_SRAM_SELECTOR_EXPECTED)
+	if ((sram->selector_second & MT6797_BIGIDVFS_SRAM_SELECTOR_MASK) ==
+	    MT6797_BIGIDVFS_SRAM_SELECTOR_EXPECTED)
 		mask |= MT6797_A72_BINDER_SRAM_MATCH_SELECTOR_SECOND;
 	if (sram->attempt_id == binder->transaction.identity.generation)
 		mask |= MT6797_A72_BINDER_SRAM_MATCH_ATTEMPT_ID;

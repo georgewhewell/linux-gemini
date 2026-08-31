@@ -341,6 +341,14 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 	len += sysfs_emit_at(buf, len, "ledger_prepare_ret=%d ",
 			     READ_ONCE(controller->ledger_prepare_ret));
 	len += sysfs_emit_at(buf, len,
+			     "ledger_snapshot_ret=%d ledger_attempt=%llu ledger_generation=%u ledger_phase=%u ledger_stage=%u ledger_terminal=%u ",
+			     READ_ONCE(controller->state.ledger_snapshot_ret),
+			     (unsigned long long)READ_ONCE(controller->state.ledger_snapshot.attempt_id),
+			     READ_ONCE(controller->state.ledger_snapshot.generation),
+			     READ_ONCE(controller->state.ledger_snapshot.phase),
+			     READ_ONCE(controller->state.ledger_snapshot.stage),
+			     READ_ONCE(controller->state.ledger_snapshot.terminal));
+	len += sysfs_emit_at(buf, len,
 			     "trace_prepare_ret=%d trace_entry_words=%08x/%08x/%08x/%08x/%08x/%08x/%08x ",
 			     READ_ONCE(controller->state.trace_prepare_ret),
 			     READ_ONCE(controller->state.trace_snapshot.entry_words[0]),
@@ -501,6 +509,8 @@ static int mt6797_a72_admission_probe(struct platform_device *pdev)
 	controller->state.trace_prepare_ret =
 		gemini_admission_trace_prepare(&controller->state.trace_snapshot);
 	controller->ledger_prepare_ret = gemini_transition_ledger_prepare();
+	controller->state.ledger_snapshot_ret =
+		gemini_transition_ledger_snapshot(&controller->state.ledger_snapshot);
 	platform_set_drvdata(pdev, controller);
 
 	if (IS_ENABLED(CONFIG_MTK_MT6797_A72_ADMISSION_LIVE_TRIGGER)) {

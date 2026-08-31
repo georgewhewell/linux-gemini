@@ -11,14 +11,31 @@ enum gemini_transition_ledger_phase {
 	GEMINI_TRANSITION_LEDGER_TERMINAL,
 };
 
+struct gemini_transition_ledger_snapshot {
+	u64 attempt_id;
+	u32 generation;
+	u32 phase;
+	u32 stage;
+	u32 terminal;
+};
+
 #ifdef CONFIG_PSTORE_GEMINI_TRANSITION_LEDGER
 int gemini_transition_ledger_prepare(void);
+int gemini_transition_ledger_snapshot(struct gemini_transition_ledger_snapshot *snapshot);
 int gemini_transition_ledger_begin(u64 attempt_id);
 int gemini_transition_ledger_checkpoint(u64 attempt_id, u32 phase,
 					u32 stage, u32 terminal);
 #else
 static inline int gemini_transition_ledger_prepare(void)
 {
+	return -EOPNOTSUPP;
+}
+
+static inline int
+gemini_transition_ledger_snapshot(struct gemini_transition_ledger_snapshot *snapshot)
+{
+	if (snapshot)
+		*snapshot = (struct gemini_transition_ledger_snapshot){};
 	return -EOPNOTSUPP;
 }
 

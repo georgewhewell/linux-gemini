@@ -6,6 +6,7 @@
 
 #include <linux/atomic.h>
 #include <linux/gemini_admission_trace.h>
+#include <linux/gemini_transition_ledger.h>
 #include <linux/types.h>
 
 struct arm64_late_cpu_ready_token;
@@ -46,6 +47,8 @@ struct mt6797_a72_admission_controller_state {
 	u32 failure_stage;
 	u32 derive_stage;
 	int trace_prepare_ret;
+	int ledger_snapshot_ret;
+	struct gemini_transition_ledger_snapshot ledger_snapshot;
 	struct gemini_admission_trace_snapshot trace_snapshot;
 	int trace_entry_ret;
 	int trace_ret;

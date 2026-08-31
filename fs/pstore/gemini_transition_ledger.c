@@ -447,6 +447,54 @@ out_unlock:
 }
 EXPORT_SYMBOL_GPL(gemini_transition_ledger_prepare);
 
+int gemini_transition_ledger_snapshot(struct gemini_transition_ledger_snapshot *snapshot)
+{
+	struct gemini_transition_ledger_record record;
+	void __iomem *slot;
+	u32 copy;
+	u32 signature;
+	u32 start;
+	u32 size;
+	int ret;
+
+	if (!snapshot)
+		return -EINVAL;
+	*snapshot = (struct gemini_transition_ledger_snapshot){};
+	mutex_lock(&gemini_transition_ledger_lock);
+	if (!gemini_transition_ledger_exact_dt()) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
+	slot = ioremap_wc(GEMINI_TRANSITION_LEDGER_BASE,
+			  GEMINI_TRANSITION_LEDGER_SLOT_SIZE);
+	if (!slot) {
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+	signature = gemini_transition_ledger_mmio_read(slot, 0);
+	start = gemini_transition_ledger_mmio_read(slot, 1);
+	size = gemini_transition_ledger_mmio_read(slot, 2);
+	if (signature != GEMINI_TRANSITION_LEDGER_PSTORE_SIGNATURE ||
+	    start != GEMINI_TRANSITION_LEDGER_PAYLOAD_BYTES || start != size)
+		ret = !start && !size ? -ENODATA : -EBADMSG;
+	else if (!gemini_transition_ledger_read_latest(
+			 &gemini_transition_ledger_mmio_ops, slot, &record, &copy))
+		ret = -EBADMSG;
+	else {
+		snapshot->attempt_id = record.attempt_id;
+		snapshot->generation = record.generation;
+		snapshot->phase = record.phase;
+		snapshot->stage = record.stage;
+		snapshot->terminal = record.terminal;
+		ret = 0;
+	}
+	iounmap(slot);
+out_unlock:
+	mutex_unlock(&gemini_transition_ledger_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(gemini_transition_ledger_snapshot);
+
 int gemini_transition_ledger_begin(u64 attempt_id)
 {
 	void __iomem *slot;

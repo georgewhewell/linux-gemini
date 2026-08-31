@@ -1316,6 +1316,18 @@ config MTK_MT6797_MD1_CLDMA_KUNIT_TEST
 	  The suite has no platform device and cannot map DMA, install IRQs, touch
 	  CLDMA/CCIF registers, write shared memory, or alter modem state.
 
+config MTK_MT6797_MD1_CLDMA_PREPARE
+	tristate "MT6797 MD1 inert CLDMA resource preparation"
+	depends on OF && ARM64
+	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
+	select MTK_MT6797_MD1_CLDMA_CORE
+	help
+	  Build the separately gated MT6797 MD1 CLDMA preparation adapter. After
+	  validating the exact vendor resource topology and live LK lease, it can
+	  allocate coherent GPDs, map AP RX buffers and reserve disabled IRQs. It
+	  leaves HWO clear and never maps CLDMA registers, starts DMA, writes modem
+	  shared memory, releases MD1, or accesses SIM/RF state.
+
 config MTK_MT6797_MD1_WDT_GATE_CORE
 	bool
 	help

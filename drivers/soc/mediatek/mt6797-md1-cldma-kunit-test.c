@@ -71,11 +71,13 @@ mt6797_md1_cldma_accepts_only_attested_lk_carveout(struct kunit *test)
 static void mt6797_md1_cldma_builds_cyclic_tx_gpd_ring(struct kunit *test)
 {
 	struct mt6797_md1_cldma_tgpd gpd[2];
+	struct mt6797_md1_cldma_tgpd *gpd_ptrs[] = { &gpd[0], &gpd[1] };
 	const dma_addr_t dma[2] = { 0x812340000ULL, 0x9abcdf000ULL };
 
-	KUNIT_ASSERT_EQ(
-		test, mt6797_md1_cldma_tx_ring_init(gpd, dma, ARRAY_SIZE(gpd)),
-		0);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_md1_cldma_tx_ring_init(gpd_ptrs, dma,
+						      ARRAY_SIZE(gpd)),
+			0);
 	KUNIT_EXPECT_EQ(test, gpd[0].gpd_flags, (u8)0x80);
 	KUNIT_EXPECT_EQ(test, le32_to_cpu(gpd[0].next_gpd_ptr), 0xabcdf000U);
 	KUNIT_EXPECT_EQ(test, le16_to_cpu(gpd[0].debug_id), (u16)0x0090);
@@ -86,10 +88,11 @@ static void mt6797_md1_cldma_builds_cyclic_tx_gpd_ring(struct kunit *test)
 static void mt6797_md1_cldma_prepares_tx_payload_without_hwo(struct kunit *test)
 {
 	struct mt6797_md1_cldma_tgpd gpd;
+	struct mt6797_md1_cldma_tgpd *gpd_ptrs[] = { &gpd };
 	const dma_addr_t ring_dma = 0x812340000ULL;
 
-	KUNIT_ASSERT_EQ(test, mt6797_md1_cldma_tx_ring_init(&gpd, &ring_dma, 1),
-			0);
+	KUNIT_ASSERT_EQ(
+		test, mt6797_md1_cldma_tx_ring_init(gpd_ptrs, &ring_dma, 1), 0);
 	KUNIT_ASSERT_EQ(
 		test,
 		mt6797_md1_cldma_tgpd_prepare_tx(&gpd, 0xa76543210ULL, 16), 0);
@@ -102,16 +105,17 @@ static void mt6797_md1_cldma_prepares_tx_payload_without_hwo(struct kunit *test)
 static void mt6797_md1_cldma_builds_cyclic_rx_gpd_ring(struct kunit *test)
 {
 	struct mt6797_md1_cldma_rgpd gpd[2];
+	struct mt6797_md1_cldma_rgpd *gpd_ptrs[] = { &gpd[0], &gpd[1] };
 	const dma_addr_t gpd_dma[2] = { 0x812340000ULL, 0x9abcdf000ULL };
 	const dma_addr_t data_dma[2] = { 0xa11112222ULL, 0xb33334444ULL };
 	const u16 data_len[2] = { 4096, 16384 };
 
 	KUNIT_ASSERT_EQ(test,
-			mt6797_md1_cldma_rx_ring_init(gpd, gpd_dma, data_dma,
-						      data_len,
+			mt6797_md1_cldma_rx_ring_init(gpd_ptrs, gpd_dma,
+						      data_dma, data_len,
 						      ARRAY_SIZE(gpd)),
 			0);
-	KUNIT_EXPECT_EQ(test, gpd[0].gpd_flags, (u8)0x81);
+	KUNIT_EXPECT_EQ(test, gpd[0].gpd_flags, (u8)0x80);
 	KUNIT_EXPECT_EQ(test, le32_to_cpu(gpd[0].data_buff_bd_ptr),
 			0x11112222U);
 	KUNIT_EXPECT_EQ(test, le32_to_cpu(gpd[0].next_gpd_ptr), 0xabcdf000U);
@@ -122,13 +126,15 @@ static void mt6797_md1_cldma_builds_cyclic_rx_gpd_ring(struct kunit *test)
 static void mt6797_md1_cldma_refuses_unusable_dma_addresses(struct kunit *test)
 {
 	struct mt6797_md1_cldma_tgpd gpd;
+	struct mt6797_md1_cldma_tgpd *gpd_ptrs[] = { &gpd };
 	const dma_addr_t unaligned = 0x812340001ULL;
 	const dma_addr_t too_wide = 0x1000000000ULL;
 
 	KUNIT_EXPECT_EQ(test,
-			mt6797_md1_cldma_tx_ring_init(&gpd, &unaligned, 1),
+			mt6797_md1_cldma_tx_ring_init(gpd_ptrs, &unaligned, 1),
 			-ERANGE);
-	KUNIT_EXPECT_EQ(test, mt6797_md1_cldma_tx_ring_init(&gpd, &too_wide, 1),
+	KUNIT_EXPECT_EQ(test,
+			mt6797_md1_cldma_tx_ring_init(gpd_ptrs, &too_wide, 1),
 			-ERANGE);
 	KUNIT_EXPECT_EQ(test,
 			mt6797_md1_cldma_tgpd_prepare_tx(&gpd, too_wide, 1),

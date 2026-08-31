@@ -126,7 +126,7 @@ int mt6797_md1_cldma_tgpd_prepare_tx(struct mt6797_md1_cldma_tgpd *gpd,
 	return 0;
 }
 
-int mt6797_md1_cldma_tx_ring_init(struct mt6797_md1_cldma_tgpd *gpd,
+int mt6797_md1_cldma_tx_ring_init(struct mt6797_md1_cldma_tgpd *const *gpd,
 				  const dma_addr_t *gpd_dma, size_t count)
 {
 	size_t i;
@@ -134,19 +134,19 @@ int mt6797_md1_cldma_tx_ring_init(struct mt6797_md1_cldma_tgpd *gpd,
 	if (!gpd || !gpd_dma || !count)
 		return -EINVAL;
 	for (i = 0; i < count; i++)
-		if (mt6797_md1_cldma_gpd_dma_valid(gpd_dma[i]))
+		if (!gpd[i] || mt6797_md1_cldma_gpd_dma_valid(gpd_dma[i]))
 			return -ERANGE;
 	for (i = 0; i < count; i++) {
-		memset(&gpd[i], 0, sizeof(gpd[i]));
-		gpd[i].gpd_flags = MT6797_MD1_CLDMA_TX_GPD_IOC;
-		mt6797_md1_cldma_set_pointer(&gpd[i].next_gpd_ptr,
-					     &gpd[i].debug_id,
+		memset(gpd[i], 0, sizeof(*gpd[i]));
+		gpd[i]->gpd_flags = MT6797_MD1_CLDMA_TX_GPD_IOC;
+		mt6797_md1_cldma_set_pointer(&gpd[i]->next_gpd_ptr,
+					     &gpd[i]->debug_id,
 					     gpd_dma[(i + 1) % count], true);
 	}
 	return 0;
 }
 
-int mt6797_md1_cldma_rx_ring_init(struct mt6797_md1_cldma_rgpd *gpd,
+int mt6797_md1_cldma_rx_ring_init(struct mt6797_md1_cldma_rgpd *const *gpd,
 				  const dma_addr_t *gpd_dma,
 				  const dma_addr_t *data_dma,
 				  const u16 *data_allow_len, size_t count)
@@ -157,21 +157,22 @@ int mt6797_md1_cldma_rx_ring_init(struct mt6797_md1_cldma_rgpd *gpd,
 	if (!gpd || !gpd_dma || !data_dma || !data_allow_len || !count)
 		return -EINVAL;
 	for (i = 0; i < count; i++)
-		if (mt6797_md1_cldma_gpd_dma_valid(gpd_dma[i]) ||
+		if (!gpd[i] || mt6797_md1_cldma_gpd_dma_valid(gpd_dma[i]) ||
 		    !mt6797_md1_cldma_addr_valid(data_dma[i]) ||
 		    !data_allow_len[i])
 			return -ERANGE;
 	for (i = 0; i < count; i++) {
-		memset(&gpd[i], 0, sizeof(gpd[i]));
-		gpd[i].gpd_flags = MT6797_MD1_CLDMA_RX_GPD_IOC_HWO;
-		gpd[i].data_allow_len = cpu_to_le16(data_allow_len[i]);
-		ret = mt6797_md1_cldma_set_pointer(&gpd[i].data_buff_bd_ptr,
-						   &gpd[i].debug_id,
+		memset(gpd[i], 0, sizeof(*gpd[i]));
+		/* HWO stays clear until a later post-vector transport owner exists. */
+		gpd[i]->gpd_flags = MT6797_MD1_CLDMA_RX_GPD_IOC;
+		gpd[i]->data_allow_len = cpu_to_le16(data_allow_len[i]);
+		ret = mt6797_md1_cldma_set_pointer(&gpd[i]->data_buff_bd_ptr,
+						   &gpd[i]->debug_id,
 						   data_dma[i], false);
 		if (ret)
 			return ret;
-		ret = mt6797_md1_cldma_set_pointer(&gpd[i].next_gpd_ptr,
-						   &gpd[i].debug_id,
+		ret = mt6797_md1_cldma_set_pointer(&gpd[i]->next_gpd_ptr,
+						   &gpd[i]->debug_id,
 						   gpd_dma[(i + 1) % count],
 						   true);
 		if (ret)

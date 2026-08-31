@@ -57,6 +57,7 @@ obj-$(CONFIG_MTK_MT6797_MD1_HS_CORE) += mt6797-md1-hs-core.o
 obj-$(CONFIG_MTK_MT6797_MD1_HS_KUNIT_TEST) += mt6797-md1-hs-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_MD1_CLDMA_CORE) += mt6797-md1-cldma-core.o
 obj-$(CONFIG_MTK_MT6797_MD1_CLDMA_KUNIT_TEST) += mt6797-md1-cldma-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_CLDMA_PREPARE) += mt6797-md1-cldma-prepare.o
 obj-$(CONFIG_MTK_MT6797_MD1_BRINGUP_FENCE) += mt6797-md1-bringup-fence.o
 obj-$(CONFIG_MTK_MT6797_MD1_BRINGUP_FENCE_KUNIT_TEST) += mt6797-md1-bringup-fence-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_MD1_EMI_MPU_CORE) += mt6797-md1-emi-mpu-core.o

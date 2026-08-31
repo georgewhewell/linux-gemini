@@ -22,7 +22,7 @@ struct mt6797_md1_mpu_remap_layout;
 #define MT6797_MD1_CLDMA_ADDR_BITS 36U
 #define MT6797_MD1_CLDMA_ADDR_MAX ((1ULL << MT6797_MD1_CLDMA_ADDR_BITS) - 1)
 #define MT6797_MD1_CLDMA_TX_GPD_IOC 0x80U
-#define MT6797_MD1_CLDMA_RX_GPD_IOC_HWO 0x81U
+#define MT6797_MD1_CLDMA_RX_GPD_IOC 0x80U
 
 enum mt6797_md1_cldma_region_id {
 	MT6797_MD1_CLDMA_AP_AO,
@@ -92,9 +92,9 @@ int mt6797_md1_cldma_lk_carveout_validate(
 	const struct mt6797_md1_mpu_remap_layout *layout);
 
 /* No allocation, mapping, checksum or HWO transition occurs in these helpers. */
-int mt6797_md1_cldma_tx_ring_init(struct mt6797_md1_cldma_tgpd *gpd,
+int mt6797_md1_cldma_tx_ring_init(struct mt6797_md1_cldma_tgpd *const *gpd,
 				  const dma_addr_t *gpd_dma, size_t count);
-int mt6797_md1_cldma_rx_ring_init(struct mt6797_md1_cldma_rgpd *gpd,
+int mt6797_md1_cldma_rx_ring_init(struct mt6797_md1_cldma_rgpd *const *gpd,
 				  const dma_addr_t *gpd_dma,
 				  const dma_addr_t *data_dma,
 				  const u16 *data_allow_len, size_t count);

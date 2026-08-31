@@ -141,6 +141,7 @@ MODULE_PARM_DESC(enable_experimental_wifi_w2_nic_capability,
 			 "allow one vendor-polled MT6797 WLAN NIC capability query after READY");
 
 struct mt6797_wifi_w1_power {
+	struct device *owner;
 	const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease;
 	struct regulator *bt_paldo;
 	struct regulator *wifi_paldo;

@@ -93,6 +93,7 @@
 
 #define W4_BMC_WLAN_INDEX_AIS 0U
 #define W4_WLAN_INDEX_AIS_AP 1U
+#define W4_STA_BMC_WLAN_INDEX_AIS_AP 2U
 #define W4_STA_STATE_1 0U
 #define W4_STA_STATE_2 1U
 #define W4_STA_STATE_3 2U
@@ -1177,7 +1178,11 @@ static void w4_fill_sta_record(struct mt6797_wifi_w4 *w4, u8 *cmd,
 	put_unaligned_le16(w4->basic_rate_set, cmd + 24);
 	cmd[28] = sta_state;
 	cmd[62] = w4->wlan_index;     /* ucWlanIndex */
-	cmd[63] = W4_BMC_WLAN_INDEX_AIS; /* ucBMCWlanIndex */
+	/* Activation reserved BMC entry zero against our own MAC.  After the AP
+	 * pairwise entry takes one, secGetBmcWlanIndex() cannot address-match zero
+	 * and allocates the AP-addressed BMC entry at two (privacy.c:687-703).
+	 */
+	cmd[63] = W4_STA_BMC_WLAN_INDEX_AIS_AP;
 	put_unaligned_le16(w4->hw_default_rate_code, cmd + 82);
 }
 

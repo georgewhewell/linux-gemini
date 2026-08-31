@@ -15,6 +15,7 @@
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/jiffies.h>
+#include <linux/kconfig.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -28,6 +29,8 @@
 #include <linux/soc/mediatek/mt6797-consys-postid.h>
 #include <linux/soc/mediatek/mt6797-consys-runtime-controller.h>
 #include <linux/soc/mediatek/mt6797-consys-runtime.h>
+#include <linux/soc/mediatek/mt6797-wifi-ahb.h>
+#include <linux/soc/mediatek/mt6797-wifi-ahb-w0-phase.h>
 #include <linux/soc/mediatek/mtk-wmt.h>
 
 #define MT6797_G2D_TIMEOUT		msecs_to_jiffies(3000)
@@ -315,6 +318,7 @@ struct mt6797_g2d_owner {
 	struct regulator *bt;
 	struct regulator *wifi;
 	const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease;
+	bool wifi_w0_dirty_fatal;
 };
 
 static struct regulator *mt6797_g2d_regulator(struct mt6797_g2d_owner *owner,
@@ -375,6 +379,75 @@ static void mt6797_g2d_live_delay_ms(void *context, unsigned int milliseconds)
 	msleep(milliseconds);
 }
 
+/* The W0 PALDO interval is independent of the completed G2d rail pair. */
+static int mt6797_g2d_w0_get_voltage(void *context)
+{
+	return regulator_get_voltage(((struct mt6797_g2d_owner *)context)->wifi);
+}
+
+static int mt6797_g2d_w0_is_enabled(void *context, bool wifi)
+{
+	return regulator_is_enabled(mt6797_g2d_regulator(context, wifi));
+}
+
+static int mt6797_g2d_w0_set_voltage(void *context, int uv)
+{
+	return regulator_set_voltage(((struct mt6797_g2d_owner *)context)->wifi,
+				     uv, uv);
+}
+
+static int mt6797_g2d_w0_enable(void *context)
+{
+	return regulator_enable(((struct mt6797_g2d_owner *)context)->wifi);
+}
+
+static int mt6797_g2d_w0_disable(void *context)
+{
+	return regulator_disable(((struct mt6797_g2d_owner *)context)->wifi);
+}
+
+static int mt6797_g2d_w0_observe(void *context)
+{
+	struct mt6797_g2d_owner *owner = context;
+	struct mt6797_wifi_ahb_wcir wcir;
+
+	return mt6797_wifi_ahb_wcir_observe(owner->dev, owner->lease,
+					    owner->wifi, &wcir);
+}
+
+static void mt6797_g2d_w0_fatal(void *context, int causal, int cleanup)
+{
+	struct mt6797_g2d_owner *owner = context;
+
+	owner->wifi_w0_dirty_fatal = true;
+	dev_err(owner->dev, "Wi-Fi W0 state dirty (causal=%d cleanup=%d); reboot required\n",
+		causal, cleanup);
+}
+
+static int mt6797_g2d_wifi_wcir_phase(struct mt6797_g2d_owner *owner,
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
+{
+#if IS_REACHABLE(CONFIG_MTK_MT6797_WIFI_AHB_WCIR_OBSERVE)
+	struct mt6797_wifi_ahb_w0_ops ops = {
+		.get_voltage = mt6797_g2d_w0_get_voltage,
+		.is_enabled = mt6797_g2d_w0_is_enabled,
+		.set_voltage = mt6797_g2d_w0_set_voltage,
+		.enable = mt6797_g2d_w0_enable,
+		.disable = mt6797_g2d_w0_disable,
+		.observe = mt6797_g2d_w0_observe,
+		.fatal = mt6797_g2d_w0_fatal,
+		.context = owner,
+	};
+	struct mt6797_wifi_ahb_w0_result result;
+
+	if (lease != owner->lease)
+		return -EPERM;
+	return mt6797_wifi_ahb_w0_run(&ops, &result, MT6797_G2D_VCN33_UV);
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
 static int mt6797_g2d_postpatch_stage(void *context,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
 {
@@ -391,13 +464,22 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		.context = owner,
 	};
 	struct mt6797_g2d_state state = { };
+	bool wcir_attempted = false;
 	int ret;
 
 	owner->lease = lease;
 	dev_info(owner->dev, "G2d start: fixed 3.3V, no function control\n");
 	ret = mt6797_g2d_postpatch_run(&ops, &state);
+	if (!ret && device_property_read_bool(owner->dev,
+			"mediatek,experimental-wifi-wcir-observe")) {
+		wcir_attempted = true;
+		ret = mt6797_g2d_wifi_wcir_phase(owner, lease);
+	}
 	owner->lease = NULL;
-	if (ret)
+	if (ret && wcir_attempted)
+		dev_err(owner->dev,
+			"G2d Wi-Fi WCIR phase failed: %d; bootstrap must fence/reset\n", ret);
+	else if (ret)
 		dev_err(owner->dev,
 			"G2d stage %s failed: %d cleanup=%d; bootstrap must fence/reset\n",
 			mt6797_g2d_stage_name[state.stage], ret, state.cleanup_error);

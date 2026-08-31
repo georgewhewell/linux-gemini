@@ -41,6 +41,10 @@ struct mt6797_btif_stp_bootstrap_ops {
 typedef int (*mt6797_btif_stp_bootstrap_full_wmt_stage_t)(void *context,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
 
+/* True only while the bootstrap is synchronously executing that stage. */
+bool mt6797_btif_stp_bootstrap_full_wmt_lease_active(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
+
 struct mt6797_btif_stp_bootstrap *
 mt6797_btif_stp_bootstrap_create(
 		const struct mt6797_btif_pio_lease *pio_lease,

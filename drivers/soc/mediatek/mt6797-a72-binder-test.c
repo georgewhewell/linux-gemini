@@ -350,7 +350,7 @@ static int mt6797_binder_test_isolation(struct device *dev,
 	result->p27_owned = true;
 	result->isolation_attempted = true;
 	result->isolation_crossed = true;
-	result->sealed = state->malformed != TEST_MALFORMED_ISOLATION;
+	result->sealed = state->malformed == TEST_MALFORMED_ISOLATION;
 	mt6797_binder_test_event(TEST_EVENT_ISOLATION);
 	return handle->attempt_id == TEST_GENERATION &&
 		provider->generation == TEST_PROVIDER_GENERATION &&

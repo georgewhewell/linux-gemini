@@ -405,8 +405,10 @@ static int mt6797_a72_binder_isolation(void *context)
 					       &binder->isolation);
 	if (ret)
 		return ret;
+	/* Isolation remains open while P27 and provider ownership are held. */
 	if (!mt6797_a72_effect_result_shape(&binder->isolation,
-					    MT6797_A72_PLATFORM_EFFECT_ISOLATION_CLEAR, true) ||
+					    MT6797_A72_PLATFORM_EFFECT_ISOLATION_CLEAR,
+					    false) ||
 	    binder->isolation.error || !binder->isolation.p27_owned ||
 	    !binder->isolation.isolation_attempted ||
 	    !binder->isolation.isolation_crossed ||

@@ -38,6 +38,7 @@
 #define MT6797_MD1_AP_CCIF_BASE		0x10209000
 #define MT6797_MD1_MD_CCIF_BASE		0x1020a000
 #define MT6797_MD1_CCIF_SIZE			0x1000
+#define MT6797_MD1_CCIF_CON			0x0
 #define MT6797_MD1_CCIF_BUSY			0x4
 #define MT6797_MD1_CCIF_RCHNUM			0x10
 #define MT6797_MD1_CCIF_ACK			0x14
@@ -73,7 +74,7 @@ static int mt6797_md1_boot_status_probe(struct platform_device *pdev)
 	struct mt6797_md1_mpu_remap_plan plan;
 	u32 stats0[MT6797_MD1_BOOT_STATUS_SAMPLES];
 	u32 stats1[MT6797_MD1_BOOT_STATUS_SAMPLES];
-	u32 ap_busy, ap_rchnum, ap_ack, md_busy, md_ack;
+	u32 ap_con, ap_busy, ap_rchnum, ap_ack, md_busy, md_ack;
 	unsigned int i;
 	int ret;
 
@@ -151,11 +152,12 @@ static int mt6797_md1_boot_status_probe(struct platform_device *pdev)
 	mutex_unlock(&mt6797_md1_boot_status_evidence_lock);
 
 	/*
-	 * Vendor CCCI's diagnostic dump reads these AP/MD CCIF registers
-	 * (modem_cldma.c:3158-3186).  Its CCIF interrupt path treats AP_RCHNUM as
-	 * the received channel bitmap before ACKing it (modem_cldma.c:1940-1948).
-	 * This snapshot deliberately keeps that value raw: it does not ACK, request
-	 * the IRQ, decode a channel, or access CHDATA/CLDMA state.
+	 * Vendor CCCI's diagnostic dump reads AP_CON before the other AP/MD CCIF
+	 * registers (modem_cldma.c:3158-3186). Its initialization writes AP_CON for
+	 * arbitration (modem_cldma.c:3750-3755), but this observer keeps every value
+	 * raw. Its interrupt path treats AP_RCHNUM as the received channel bitmap
+	 * before ACKing it (modem_cldma.c:1940-1948); this observer never ACKs,
+	 * requests the IRQ, decodes a channel, or accesses CHDATA/CLDMA state.
 	 */
 	ap_ccif_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ap-ccif");
 	md_ccif_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "md-ccif");
@@ -170,14 +172,15 @@ static int mt6797_md1_boot_status_probe(struct platform_device *pdev)
 	if (IS_ERR(ap_ccif) || IS_ERR(md_ccif))
 		return PTR_ERR(IS_ERR(ap_ccif) ? ap_ccif : md_ccif);
 	dev_info(dev, "before passive MD1 CCIF snapshot\n");
+	ap_con = readl(ap_ccif + MT6797_MD1_CCIF_CON);
 	ap_busy = readl(ap_ccif + MT6797_MD1_CCIF_BUSY);
 	ap_rchnum = readl(ap_ccif + MT6797_MD1_CCIF_RCHNUM);
 	ap_ack = readl(ap_ccif + MT6797_MD1_CCIF_ACK);
 	md_busy = readl(md_ccif + MT6797_MD1_CCIF_BUSY);
 	md_ack = readl(md_ccif + MT6797_MD1_CCIF_ACK);
 	dev_info(dev,
-		 "passive MD1 CCIF snapshot: ap_busy=%#08x ap_rchnum=%#08x ap_ack=%#08x md_busy=%#08x md_ack=%#08x; interpretation=raw-only writes=none\n",
-		 ap_busy, ap_rchnum, ap_ack, md_busy, md_ack);
+		 "passive MD1 CCIF snapshot: ap_con=%#08x ap_busy=%#08x ap_rchnum=%#08x ap_ack=%#08x md_busy=%#08x md_ack=%#08x; interpretation=raw-only writes=none\n",
+		 ap_con, ap_busy, ap_rchnum, ap_ack, md_busy, md_ack);
 	return 0;
 }
 

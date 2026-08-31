@@ -9,6 +9,7 @@
  */
 
 #include <linux/errno.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -24,6 +25,48 @@ static size_t mtk_wmt_max_data(enum mtk_stp_mode mode)
 
 	return MTK_WMT_MAX_DATA;
 }
+
+static void mtk_wmt_trace_bytes(u8 *prefix, u8 *prefix_length, u8 *tail,
+				u8 *tail_length, const u8 *data, size_t length)
+{
+	size_t first = min_t(size_t, length, MTK_WMT_TRACE_BYTES);
+	size_t last = min_t(size_t, length, MTK_WMT_TRACE_BYTES);
+
+	*prefix_length = first;
+	*tail_length = last;
+	if (first)
+		memcpy(prefix, data, first);
+	if (last)
+		memcpy(tail, data + length - last, last);
+}
+
+void mtk_wmt_trace_begin(struct mtk_wmt *wmt, u8 command_opcode)
+{
+	unsigned long flags;
+
+	if (!wmt)
+		return;
+	spin_lock_irqsave(&wmt->state_lock, flags);
+	memset(&wmt->trace, 0, sizeof(wmt->trace));
+	wmt->trace.command_opcode = command_opcode;
+	wmt->trace_started = jiffies;
+	wmt->trace_active = true;
+	spin_unlock_irqrestore(&wmt->state_lock, flags);
+}
+EXPORT_SYMBOL_GPL(mtk_wmt_trace_begin);
+
+void mtk_wmt_trace_end(struct mtk_wmt *wmt, struct mtk_wmt_trace *trace)
+{
+	unsigned long flags;
+
+	if (!wmt || !trace)
+		return;
+	spin_lock_irqsave(&wmt->state_lock, flags);
+	*trace = wmt->trace;
+	wmt->trace_active = false;
+	spin_unlock_irqrestore(&wmt->state_lock, flags);
+}
+EXPORT_SYMBOL_GPL(mtk_wmt_trace_end);
 
 void mtk_wmt_init(struct mtk_wmt *wmt, enum mtk_stp_mode stp_mode,
 		  mtk_wmt_tx_cb_t transmit, void *transport_context)
@@ -152,10 +195,39 @@ int mtk_wmt_receive(void *context, const u8 *payload, size_t payload_len)
 		return -EINVAL;
 
 	ret = mtk_wmt_decode_event(payload, payload_len, &event);
-	if (ret)
+	if (ret) {
+		spin_lock_irqsave(&wmt->state_lock, flags);
+		if (wmt->trace_active) {
+			wmt->trace.decode_failures++;
+			wmt->trace.malformed_length = payload_len;
+			mtk_wmt_trace_bytes(wmt->trace.malformed_prefix,
+					    &wmt->trace.malformed_prefix_length,
+					    wmt->trace.malformed_tail,
+					    &wmt->trace.malformed_tail_length,
+					    payload, payload_len);
+		}
+		spin_unlock_irqrestore(&wmt->state_lock, flags);
 		return ret;
+	}
 
 	spin_lock_irqsave(&wmt->state_lock, flags);
+	if (wmt->trace_active) {
+		struct mtk_wmt_trace_event *trace_event;
+
+		if (wmt->trace.event_count < MTK_WMT_TRACE_EVENTS) {
+			trace_event = &wmt->trace.events[wmt->trace.event_count++];
+			trace_event->opcode = event.opcode;
+			trace_event->data_len = event.data_len;
+			trace_event->elapsed_ms = jiffies_to_msecs(jiffies -
+							wmt->trace_started);
+			mtk_wmt_trace_bytes(trace_event->prefix,
+					    &trace_event->prefix_length,
+					    trace_event->tail,
+					    &trace_event->tail_length,
+					    event.data, event.data_len);
+		}
+		wmt->trace.decoded_events++;
+	}
 	if (wmt->pending && ((wmt->capture_pending &&
 		    wmt->capture_opcode == event.opcode &&
 		    wmt->capture_data_len == event.data_len) ||

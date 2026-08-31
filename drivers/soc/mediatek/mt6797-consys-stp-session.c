@@ -90,6 +90,7 @@ struct mt6797_consys_stp_session {
 	bool bootstrap_verified;
 	u8 resync_count;
 	u8 payload[MTK_STP_MAX_PAYLOAD];
+	struct mt6797_consys_stp_session_diagnostics diagnostics;
 };
 
 struct mt6797_consys_stp_session_lease {
@@ -101,6 +102,23 @@ struct mt6797_consys_stp_session_bootstrap_lease {
 };
 
 static const u8 mt6797_consys_stp_resync[] = { 0x7f, 0x7f, 0x7f, 0x7f };
+
+static void mt6797_consys_stp_record_ingress(
+		struct mt6797_consys_stp_session *session, const u8 *data, size_t length)
+{
+	size_t first = min_t(size_t, length, MT6797_CONSYS_STP_EVIDENCE_SIZE);
+	size_t tail = min_t(size_t, length, MT6797_CONSYS_STP_EVIDENCE_SIZE);
+
+	session->diagnostics.rx_bytes += length;
+	if (!length)
+		return;
+	session->diagnostics.ingress_prefix_length = first;
+	session->diagnostics.ingress_tail_length = tail;
+	if (first)
+		memcpy(session->diagnostics.ingress_prefix, data, first);
+	if (tail)
+		memcpy(session->diagnostics.ingress_tail, data + length - tail, tail);
+}
 
 static u8 mt6797_consys_stp_sequence_next(u8 sequence)
 {
@@ -176,7 +194,11 @@ static int mt6797_consys_stp_transmit_locked(
 	int ret;
 
 	ret = session->ops.transmit(session->ops.transmit_context, frame,
-				     frame_length);
+					     frame_length);
+	session->diagnostics.tx_frames++;
+	if (frame_length == sizeof(mt6797_consys_stp_resync) &&
+	    !memcmp(frame, mt6797_consys_stp_resync, sizeof(mt6797_consys_stp_resync)))
+		session->diagnostics.tx_resync_frames++;
 	if (ret == -EAGAIN) {
 		/* A whole-frame transport backpressure result consumed no bytes. */
 		return ret;
@@ -197,6 +219,7 @@ static int mt6797_consys_stp_send_ack_locked(
 	frame[2] = 0;
 	frame[3] = mt6797_consys_stp_header_checksum(frame);
 
+	session->diagnostics.tx_ack_frames++;
 	return mt6797_consys_stp_transmit_locked(session, frame, sizeof(frame));
 }
 
@@ -247,13 +270,18 @@ static int mt6797_consys_stp_finish_frame_locked(
 	int ret;
 
 	crc = crc16(0, session->payload, session->payload_length);
-	if (session->crc[0] != (u8)crc || session->crc[1] != (u8)(crc >> 8))
+	if (session->crc[0] != (u8)crc || session->crc[1] != (u8)(crc >> 8)) {
+		session->diagnostics.rx_crc_failures++;
 		return -EBADMSG;
+	}
 
 	sequence = (session->header[0] >> 3) & 0x7;
 	ack = session->header[0] & 0x7;
 
 	if (sequence == session->expected_rxseq) {
+		session->diagnostics.rx_data_frames++;
+		if (session->channel == MTK_STP_WMT)
+			session->diagnostics.rx_wmt_frames++;
 		if (session->channel == MTK_STP_GNSS && session->gnss_receive)
 			ret = session->gnss_receive(session->gnss_receive_context,
 						    session->payload,
@@ -310,6 +338,7 @@ static int mt6797_consys_stp_process_header_locked(
 		return -EMSGSIZE;
 	if (!length) {
 		ack = session->header[0] & 0x7;
+		session->diagnostics.rx_ack_frames++;
 		return mt6797_consys_stp_process_ack_locked(session, ack);
 	}
 
@@ -384,6 +413,7 @@ static int mt6797_consys_stp_timeout_locked(
 
 	if (session->credits == MT6797_CONSYS_STP_WINDOW_SIZE)
 		return 0;
+	session->diagnostics.retry_ticks++;
 	if (session->retries > MT6797_CONSYS_STP_RETRY_LIMIT) {
 		session->state = MT6797_CONSYS_STP_FENCED;
 		return -ETIMEDOUT;
@@ -681,8 +711,10 @@ static int mt6797_consys_stp_session_receive_locked(
 		ret = mt6797_consys_stp_receive_byte_locked(session, data[index]);
 		if (ret && !first_error)
 			first_error = ret;
-		if (ret)
+		if (ret) {
+			session->diagnostics.rx_parser_failures++;
 			mt6797_consys_stp_reset_parser(session);
+		}
 		if (!mt6797_consys_stp_session_full_state(session)) {
 			if (!first_error)
 				first_error = -ESHUTDOWN;
@@ -701,6 +733,7 @@ int mt6797_consys_stp_session_receive(struct mt6797_consys_stp_session *session,
 		return -EINVAL;
 
 	mutex_lock(&session->lock);
+	mt6797_consys_stp_record_ingress(session, data, length);
 	if (session->state != MT6797_CONSYS_STP_ACTIVE)
 		ret = -ESHUTDOWN;
 	else
@@ -721,6 +754,7 @@ int mt6797_consys_stp_session_receive_lease(
 		return -EINVAL;
 	session = lease->session;
 	mutex_lock(&session->lock);
+	mt6797_consys_stp_record_ingress(session, data, length);
 	if (!mt6797_consys_stp_lease_valid(lease))
 		ret = -ESHUTDOWN;
 	else
@@ -741,6 +775,7 @@ int mt6797_consys_stp_session_bootstrap_receive(
 		return -EINVAL;
 	session = lease->session;
 	mutex_lock(&session->lock);
+	mt6797_consys_stp_record_ingress(session, data, length);
 	if (!mt6797_consys_stp_bootstrap_lease_valid(lease))
 		ret = -ESHUTDOWN;
 	else
@@ -768,6 +803,34 @@ int mt6797_consys_stp_session_bootstrap_timeout(
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bootstrap_timeout);
+
+int mt6797_consys_stp_session_bootstrap_diagnostics_snapshot(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease,
+		struct mt6797_consys_stp_session_diagnostics *diagnostics)
+{
+	struct mt6797_consys_stp_session *session;
+
+	if (!lease || !lease->session || !diagnostics)
+		return -EINVAL;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	*diagnostics = session->diagnostics;
+	diagnostics->txseq = session->txseq;
+	diagnostics->txack = session->txack;
+	diagnostics->rxack = session->rxack;
+	diagnostics->expected_rxseq = session->expected_rxseq;
+	diagnostics->credits = session->credits;
+	diagnostics->retries = session->retries;
+	diagnostics->rx_state = session->rx_state;
+	diagnostics->channel = session->channel;
+	diagnostics->payload_length = session->payload_length;
+	diagnostics->payload_position = session->payload_position;
+	memcpy(diagnostics->last_header, session->header, sizeof(session->header));
+	memcpy(diagnostics->last_crc, session->crc, sizeof(session->crc));
+	mutex_unlock(&session->lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bootstrap_diagnostics_snapshot);
 
 int mt6797_consys_stp_session_bootstrap_confirm(
 		const struct mt6797_consys_stp_session_bootstrap_lease *lease)

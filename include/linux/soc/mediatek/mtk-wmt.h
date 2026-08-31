@@ -20,6 +20,8 @@
 
 #define MTK_WMT_HEADER_SIZE	4
 #define MTK_WMT_MAX_DATA	(MTK_STP_MAX_PAYLOAD - MTK_WMT_HEADER_SIZE)
+#define MTK_WMT_TRACE_EVENTS	8
+#define MTK_WMT_TRACE_BYTES	8
 
 /*
  * Vendor drivers/misc/mediatek/connectivity/common/common_main/core/include/
@@ -47,6 +49,30 @@ struct mtk_wmt_match {
 	/* Exact raw-SDU match; this may be empty. */
 	const u8 *data;
 	size_t data_len;
+};
+
+/* Bounded evidence for one explicitly armed WMT transaction. */
+struct mtk_wmt_trace_event {
+	u8 opcode;
+	u16 data_len;
+	u32 elapsed_ms;
+	u8 prefix_length;
+	u8 tail_length;
+	u8 prefix[MTK_WMT_TRACE_BYTES];
+	u8 tail[MTK_WMT_TRACE_BYTES];
+};
+
+struct mtk_wmt_trace {
+	u8 command_opcode;
+	u64 decoded_events;
+	u64 decode_failures;
+	u32 malformed_length;
+	u8 malformed_prefix_length;
+	u8 malformed_tail_length;
+	u8 malformed_prefix[MTK_WMT_TRACE_BYTES];
+	u8 malformed_tail[MTK_WMT_TRACE_BYTES];
+	u8 event_count;
+	struct mtk_wmt_trace_event events[MTK_WMT_TRACE_EVENTS];
 };
 
 typedef int (*mtk_wmt_tx_cb_t)(void *context, const u8 *frame,
@@ -88,6 +114,10 @@ struct mtk_wmt {
 	bool pending;
 	/* A timeout/cancel may leave an indistinguishable late reply behind. */
 	bool reset_required;
+	/* Protected by state_lock; armed only for bounded failure evidence. */
+	bool trace_active;
+	unsigned long trace_started;
+	struct mtk_wmt_trace trace;
 };
 
 void mtk_wmt_init(struct mtk_wmt *wmt, enum mtk_stp_mode stp_mode,
@@ -120,6 +150,10 @@ int mtk_wmt_decode_event(const u8 *packet, size_t packet_len,
 
 /* STP WMT-channel callback; it may also be called directly by a transport. */
 int mtk_wmt_receive(void *context, const u8 *payload, size_t payload_len);
+
+/* Arm/snapshot/disarm bounded event evidence around one caller-selected request. */
+void mtk_wmt_trace_begin(struct mtk_wmt *wmt, u8 command_opcode);
+void mtk_wmt_trace_end(struct mtk_wmt *wmt, struct mtk_wmt_trace *trace);
 
 /*
  * Send exactly one command and await one exact reply.  On timeout, signal, or

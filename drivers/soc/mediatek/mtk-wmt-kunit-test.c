@@ -443,6 +443,33 @@ static void mtk_wmt_test_capture_rejects_wrong_opcode_or_length(struct kunit *te
 						     reply, sizeof(reply), 1), -ETIMEDOUT);
 }
 
+static void mtk_wmt_test_trace_preserves_bounded_event_and_malformed_evidence(
+		struct kunit *test)
+{
+	struct mtk_wmt wmt;
+	struct mtk_wmt_trace trace;
+	u8 event[] = { MTK_WMT_DIR_EVENT, 0x13, 3, 0, 0xa5, 0x5a, 0x77 };
+	u8 malformed[] = { MTK_WMT_DIR_EVENT, 0x14, 2, 0, 0 };
+
+	mtk_wmt_init(&wmt, MTK_STP_MODE_FULL, NULL, NULL);
+	mtk_wmt_trace_begin(&wmt, 0x14);
+	KUNIT_EXPECT_EQ(test, mtk_wmt_receive(&wmt, event, sizeof(event)), 0);
+	KUNIT_EXPECT_EQ(test, mtk_wmt_receive(&wmt, malformed, sizeof(malformed)),
+			-EMSGSIZE);
+	mtk_wmt_trace_end(&wmt, &trace);
+	KUNIT_EXPECT_EQ(test, trace.command_opcode, (u8)0x14);
+	KUNIT_EXPECT_EQ(test, trace.decoded_events, 1ULL);
+	KUNIT_EXPECT_EQ(test, trace.decode_failures, 1ULL);
+	KUNIT_EXPECT_EQ(test, trace.event_count, (u8)1);
+	KUNIT_EXPECT_EQ(test, trace.events[0].opcode, (u8)0x13);
+	KUNIT_EXPECT_EQ(test, trace.events[0].data_len, (u16)3);
+	KUNIT_EXPECT_EQ(test, trace.events[0].prefix_length, (u8)3);
+	KUNIT_EXPECT_MEMEQ(test, trace.events[0].prefix, event + 4, 3);
+	KUNIT_EXPECT_EQ(test, trace.malformed_length, (u32)sizeof(malformed));
+	KUNIT_EXPECT_EQ(test, trace.malformed_prefix_length, (u8)sizeof(malformed));
+	KUNIT_EXPECT_MEMEQ(test, trace.malformed_prefix, malformed, sizeof(malformed));
+}
+
 static struct kunit_case mtk_wmt_test_cases[] = {
 	KUNIT_CASE(mtk_wmt_test_packet_codec),
 	KUNIT_CASE(mtk_wmt_test_zero_sdu_event),
@@ -454,6 +481,7 @@ static struct kunit_case mtk_wmt_test_cases[] = {
 	KUNIT_CASE(mtk_wmt_test_unmatched_is_unsolicited),
 	KUNIT_CASE(mtk_wmt_test_capture_variable_reply),
 	KUNIT_CASE(mtk_wmt_test_capture_rejects_wrong_opcode_or_length),
+	KUNIT_CASE(mtk_wmt_test_trace_preserves_bounded_event_and_malformed_evidence),
 	{}
 };
 

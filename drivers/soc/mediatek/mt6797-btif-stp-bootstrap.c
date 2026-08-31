@@ -360,6 +360,46 @@ static void mt6797_btif_stp_bootstrap_log_full_wmt_failure(
 		diagnostics.rx_yield_tail_length, diagnostics.rx_yield_tail);
 }
 
+static void mt6797_btif_stp_bootstrap_log_calibration_trace(
+		const struct mt6797_btif_pio_diagnostics *pio_before,
+		const struct mt6797_btif_pio_diagnostics *pio_after,
+		const struct mt6797_consys_stp_session_diagnostics *stp_before,
+		const struct mt6797_consys_stp_session_diagnostics *stp_after,
+		const struct mtk_wmt_trace *trace, int ret)
+{
+	unsigned int index;
+
+	pr_warn("mt6797-consys-g2b: WMT14 result=%d pio-local=%lluB/%llu_cb "
+		"stp-local=%lluB data=%llu wmt=%llu ack=%llu tx=%llu retry=%llu "
+		"crc=%llu parse=%llu seq=%u/%u/%u/%u credits=%u retries=%u raw=%*ph/%*ph\n",
+		ret, pio_after->rx_bytes - pio_before->rx_bytes,
+		pio_after->rx_callbacks - pio_before->rx_callbacks,
+		stp_after->rx_bytes - stp_before->rx_bytes,
+		stp_after->rx_data_frames - stp_before->rx_data_frames,
+		stp_after->rx_wmt_frames - stp_before->rx_wmt_frames,
+		stp_after->rx_ack_frames - stp_before->rx_ack_frames,
+		stp_after->tx_frames - stp_before->tx_frames,
+		stp_after->retry_ticks - stp_before->retry_ticks,
+		stp_after->rx_crc_failures - stp_before->rx_crc_failures,
+		stp_after->rx_parser_failures - stp_before->rx_parser_failures,
+		stp_after->txseq, stp_after->txack, stp_after->rxack,
+		stp_after->expected_rxseq, stp_after->credits, stp_after->retries,
+		stp_after->ingress_prefix_length, stp_after->ingress_prefix,
+		stp_after->ingress_tail_length, stp_after->ingress_tail);
+	pr_warn("mt6797-consys-g2b: WMT14 events=%llu malformed=%llu len=%u raw=%*ph/%*ph\n",
+		trace->decoded_events, trace->decode_failures, trace->malformed_length,
+		trace->malformed_prefix_length, trace->malformed_prefix,
+		trace->malformed_tail_length, trace->malformed_tail);
+	for (index = 0; index < trace->event_count; index++) {
+		const struct mtk_wmt_trace_event *event = &trace->events[index];
+
+		pr_warn("mt6797-consys-g2b: WMT14 event[%u] +%ums op=%#02x len=%u raw=%*ph/%*ph\n",
+			index, event->elapsed_ms, event->opcode, event->data_len,
+			event->prefix_length, event->prefix, event->tail_length,
+			event->tail);
+	}
+}
+
 static int mt6797_btif_stp_bootstrap_full_wmt_transaction_unchecked(
 		struct mt6797_btif_stp_bootstrap *bootstrap, u8 opcode,
 		const u8 *data, size_t data_len,
@@ -419,6 +459,11 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
 		u8 *reply, size_t reply_len, unsigned long timeout)
 {
 	struct mt6797_btif_stp_bootstrap *bootstrap;
+	struct mt6797_btif_pio_diagnostics pio_before, pio_after;
+	struct mt6797_consys_stp_session_diagnostics stp_before, stp_after;
+	struct mtk_wmt_trace trace;
+	bool trace_calibration;
+	bool trace_ready = false;
 	bool valid;
 	int ret;
 
@@ -434,13 +479,33 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
 	if (!valid)
 		return -ESHUTDOWN;
 
+	trace_calibration = opcode == 0x14;
+	if (trace_calibration) {
+		if (!mt6797_btif_pio_diagnostics_snapshot(bootstrap->pio_lease,
+							 &pio_before) &&
+		    !mt6797_consys_stp_session_bootstrap_diagnostics_snapshot(
+					bootstrap->full_bootstrap, &stp_before)) {
+			mtk_wmt_trace_begin(&bootstrap->full_wmt, opcode);
+			trace_ready = true;
+		}
+	}
 	WRITE_ONCE(bootstrap->full_retry_armed, true);
 	ret = mtk_wmt_transaction_capture(&bootstrap->full_wmt, opcode, data,
 			data_len, expected_opcode, expected_data_len, reply, reply_len,
 			timeout);
 	WRITE_ONCE(bootstrap->full_retry_armed, false);
 	cancel_delayed_work_sync(&bootstrap->full_retry_work);
-	mt6797_btif_stp_bootstrap_log_full_wmt_failure(bootstrap, opcode, ret);
+	if (trace_ready) {
+		mtk_wmt_trace_end(&bootstrap->full_wmt, &trace);
+		if (!mt6797_btif_pio_diagnostics_snapshot(bootstrap->pio_lease,
+							 &pio_after) &&
+		    !mt6797_consys_stp_session_bootstrap_diagnostics_snapshot(
+					bootstrap->full_bootstrap, &stp_after))
+			mt6797_btif_stp_bootstrap_log_calibration_trace(&pio_before,
+					&pio_after, &stp_before, &stp_after, &trace, ret);
+	} else {
+		mt6797_btif_stp_bootstrap_log_full_wmt_failure(bootstrap, opcode, ret);
+	}
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_full_wmt_transaction_capture);

@@ -33,6 +33,7 @@ obj-$(CONFIG_MTK_DEVAPC) += mtk-devapc.o
 obj-$(CONFIG_MTK_DVFSRC) += mtk-dvfsrc.o
 obj-$(CONFIG_MTK_INFRACFG) += mtk-infracfg.o
 obj-$(CONFIG_MTK_MT6797_MD1_BOOT_STATUS_OBSERVE) += mt6797-md1-boot-status-observe.o
+obj-$(CONFIG_MTK_MT6797_MD1_LK_HANDOFF_PROBE) += mt6797-md1-lk-handoff-probe.o
 mt6797-md1-prerelease-driver-y := mt6797-md1-prerelease-core.o \
 	mt6797-md1-prepower.o mt6797-md1-prerelease.o
 obj-$(CONFIG_MTK_MT6797_MD1_PRERELEASE) += mt6797-md1-prerelease-driver.o
@@ -40,6 +41,7 @@ obj-$(CONFIG_MTK_MT6797_MD1_PRERELEASE_KUNIT_TEST) += mt6797-md1-prerelease-kuni
 obj-$(CONFIG_MTK_STP) += mtk-stp.o
 obj-$(CONFIG_MTK_STP_KUNIT_TEST) += mtk-stp-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_STP_SESSION) += mt6797-consys-stp-session.o
+obj-$(CONFIG_MTK_MT6797_BT_H4_COLLECTOR) += mt6797-bt-h4-collector.o
 obj-$(CONFIG_MTK_MT6797_BTIF_PIO) += mt6797-btif-pio.o
 obj-$(CONFIG_MTK_MT6797_BTIF_PIO_PLATFORM) += mt6797-btif-pio-platform.o
 obj-$(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP) += mt6797-btif-stp-bootstrap.o

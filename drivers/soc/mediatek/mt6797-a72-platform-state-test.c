@@ -91,14 +91,14 @@ static void mt6797_state_cci_busy_precedence_test(struct kunit *test)
 	int ret;
 
 	state.samples[0].cci_status_before = BIT(0);
-	state.samples[1].spm_cpu_pwr_status = BIT(6);
+	state.samples[1].spm_pwr_status = BIT(16);
 	ret = mt6797_a72_platform_state_capture(&test_ops, &state, &snapshot,
 						&failure);
 	KUNIT_EXPECT_EQ(test, ret, -EBUSY);
 	KUNIT_EXPECT_EQ(test, state.calls, 2U);
 	KUNIT_EXPECT_TRUE(test, failure.samples_valid);
 	KUNIT_EXPECT_EQ(test, failure.movement_mask,
-			MT6797_A72_PLATFORM_MOVED_SPM_CPU_PWR_STATUS);
+			MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS);
 	mt6797_state_expect_zero(test, &snapshot, sizeof(snapshot));
 }
 
@@ -106,11 +106,11 @@ static void mt6797_state_set_movement(struct mt6797_a72_platform_state *sample,
 				      u32 movement)
 {
 	switch (movement) {
-	case MT6797_A72_PLATFORM_MOVED_SPM_CPU_PWR_STATUS:
-		sample->spm_cpu_pwr_status = BIT(6);
+	case MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS:
+		sample->spm_pwr_status = BIT(16);
 		break;
-	case MT6797_A72_PLATFORM_MOVED_SPM_CPU_PWR_STATUS_2ND:
-		sample->spm_cpu_pwr_status_2nd = BIT(6);
+	case MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS_2ND:
+		sample->spm_pwr_status_2nd = BIT(16);
 		break;
 	case MT6797_A72_PLATFORM_MOVED_MP2_CPUSYS_PWR_CON:
 		sample->spm_mp2_cpusys_pwr_con = 1;
@@ -139,8 +139,8 @@ static void mt6797_state_set_movement(struct mt6797_a72_platform_state *sample,
 static void mt6797_state_each_movement_test(struct kunit *test)
 {
 	static const u32 movements[] = {
-		MT6797_A72_PLATFORM_MOVED_SPM_CPU_PWR_STATUS,
-		MT6797_A72_PLATFORM_MOVED_SPM_CPU_PWR_STATUS_2ND,
+		MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS,
+		MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS_2ND,
 		MT6797_A72_PLATFORM_MOVED_MP2_CPUSYS_PWR_CON,
 		MT6797_A72_PLATFORM_MOVED_MP2_CPU0_PWR_CON,
 		MT6797_A72_PLATFORM_MOVED_MP2_CPU1_PWR_CON,
@@ -175,7 +175,7 @@ static void mt6797_state_each_movement_test(struct kunit *test)
 
 static void mt6797_state_each_a72_identity_bit_test(struct kunit *test)
 {
-	static const u32 status_bits[] = { BIT(6), BIT(7) };
+	static const u32 status_bits[] = { BIT(16), BIT(19), BIT(20) };
 	unsigned int word;
 	unsigned int bit;
 
@@ -188,11 +188,11 @@ static void mt6797_state_each_a72_identity_bit_test(struct kunit *test)
 			int ret;
 
 			if (word == 0) {
-				state.samples[1].spm_cpu_pwr_status = status_bits[bit];
-				expected = MT6797_A72_PLATFORM_MOVED_SPM_CPU_PWR_STATUS;
+				state.samples[1].spm_pwr_status = status_bits[bit];
+				expected = MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS;
 			} else {
-				state.samples[1].spm_cpu_pwr_status_2nd = status_bits[bit];
-				expected = MT6797_A72_PLATFORM_MOVED_SPM_CPU_PWR_STATUS_2ND;
+				state.samples[1].spm_pwr_status_2nd = status_bits[bit];
+				expected = MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS_2ND;
 			}
 			ret = mt6797_a72_platform_state_capture(&test_ops, &state,
 								&snapshot, &failure);

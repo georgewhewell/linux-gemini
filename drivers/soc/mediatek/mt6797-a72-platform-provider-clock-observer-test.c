@@ -188,13 +188,13 @@ static void mt6797_a72_ppc_platform_failure_test(struct kunit *test)
 	state.platform_ret = -EAGAIN;
 	state.platform_samples_valid = true;
 	state.platform_movement_mask =
-		MT6797_A72_PLATFORM_MOVED_SPM_CPU_PWR_STATUS;
+		MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS;
 	ret = mt6797_a72_ppc_run(&state, &snapshot, &failure_stage, &platform_failure);
 	KUNIT_EXPECT_EQ(test, ret, -EAGAIN);
 	KUNIT_EXPECT_EQ(test, failure_stage, MT6797_A72_PPC_FAILURE_PLATFORM);
 	KUNIT_EXPECT_TRUE(test, platform_failure.samples_valid);
 	KUNIT_EXPECT_EQ(test, platform_failure.movement_mask,
-			MT6797_A72_PLATFORM_MOVED_SPM_CPU_PWR_STATUS);
+			MT6797_A72_PLATFORM_MOVED_SPM_PWR_STATUS);
 	KUNIT_EXPECT_EQ(test, state.provider_calls, 0U);
 	KUNIT_EXPECT_EQ(test, state.clock_calls, 0U);
 	mt6797_a72_ppc_expect_zero(test, &snapshot);

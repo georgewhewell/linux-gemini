@@ -9,6 +9,7 @@
 #include <linux/cpu.h>
 #include <linux/device.h>
 #include <linux/errno.h>
+#include <linux/gemini_transition_ledger.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -32,6 +33,7 @@ struct mt6797_a72_admission_controller {
 	struct mt6797_a72_physical_source_context source;
 	struct mt6797_a72_admission_controller_state state;
 	struct mt6797_a72_admission_trigger_state trigger;
+	int ledger_prepare_ret;
 };
 
 static bool
@@ -336,6 +338,8 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 			     "entry_trace_ret=%d terminal_trace_ret=%d ",
 			     READ_ONCE(controller->state.trace_entry_ret),
 			     READ_ONCE(controller->state.trace_ret));
+	len += sysfs_emit_at(buf, len, "ledger_prepare_ret=%d ",
+			     READ_ONCE(controller->ledger_prepare_ret));
 	len += sysfs_emit_at(buf, len,
 			     "trace_prepare_ret=%d trace_entry_words=%08x/%08x/%08x/%08x/%08x/%08x/%08x ",
 			     READ_ONCE(controller->state.trace_prepare_ret),
@@ -493,12 +497,18 @@ static int mt6797_a72_admission_probe(struct platform_device *pdev)
 	controller->dev = dev;
 	mt6797_a72_admission_state_init(&controller->state);
 	mt6797_a72_admission_trigger_state_init(&controller->trigger);
-	/* Private trace-page initialization precedes exposure of the trigger ABI. */
+	/* Private retained pages are prepared before exposing the one-shot ABI. */
 	controller->state.trace_prepare_ret =
 		gemini_admission_trace_prepare(&controller->state.trace_snapshot);
+	controller->ledger_prepare_ret = gemini_transition_ledger_prepare();
 	platform_set_drvdata(pdev, controller);
 
 	if (IS_ENABLED(CONFIG_MTK_MT6797_A72_ADMISSION_LIVE_TRIGGER)) {
+		if (controller->state.trace_prepare_ret ||
+		    controller->ledger_prepare_ret)
+			return dev_err_probe(dev,
+				controller->state.trace_prepare_ret ?: controller->ledger_prepare_ret,
+				"private retained pages unavailable\n");
 		ret = devm_device_add_group(dev,
 					    &mt6797_a72_admission_live_group);
 		if (ret)
@@ -506,10 +516,10 @@ static int mt6797_a72_admission_probe(struct platform_device *pdev)
 					     "live trigger unavailable\n");
 		dev_info(dev, MT6797_A72_ADMISSION_LIVE_TAG
 			 " state=armed trigger_consumed=0 trigger_executions=0 "
-			 "core_consumed=0 requests=0/0/0 retries=0 trace_node=444f0000/1000 trace_prepare_ret=%d "
+			 "core_consumed=0 requests=0/0/0 retries=0 trace_node=444f0000/1000 trace_prepare_ret=%d ledger_node=444f1000/1000 ledger_prepare_ret=%d "
 			 "entry=%08x/%08x/%08x/%08x/%08x/%08x/%08x "
 			 "terminal=%08x/%08x/%08x/%08x/%08x/%08x/%08x\n",
-			 controller->state.trace_prepare_ret,
+			 controller->state.trace_prepare_ret, controller->ledger_prepare_ret,
 			 controller->state.trace_snapshot.entry_words[0],
 			 controller->state.trace_snapshot.entry_words[1],
 			 controller->state.trace_snapshot.entry_words[2],

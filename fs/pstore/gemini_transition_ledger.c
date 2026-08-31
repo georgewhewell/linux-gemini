@@ -13,8 +13,8 @@
 
 #include "gemini_transition_ledger_internal.h"
 
-#define GEMINI_TRANSITION_LEDGER_BASE 0x44410000ULL
-#define GEMINI_TRANSITION_LEDGER_RESERVE_SIZE 0x000e0000ULL
+#define GEMINI_TRANSITION_LEDGER_BASE 0x444f1000ULL
+#define GEMINI_TRANSITION_LEDGER_RESERVE_SIZE 0x00001000ULL
 
 static unsigned int gemini_transition_ledger_copy_word(unsigned int copy,
 						       unsigned int word)
@@ -283,8 +283,10 @@ gemini_transition_ledger_owner_checkpoint(struct gemini_transition_ledger_owner 
 
 static bool gemini_transition_ledger_exact_dt(void)
 {
-	struct device_node *node;
-	struct resource resource;
+	struct device_node *ramoops;
+	struct device_node *ledger;
+	struct resource ramoops_resource;
+	struct resource ledger_resource;
 	const char *model;
 	u32 value;
 	bool exact = false;
@@ -293,27 +295,37 @@ static bool gemini_transition_ledger_exact_dt(void)
 	    of_property_read_string(of_root, "model", &model) ||
 	    strcmp(model, "MT6797X"))
 		return false;
-	node = of_find_node_by_path("/reserved-memory/ramoops@44410000");
-	if (!node)
-		return false;
-	if (!of_device_is_compatible(node, "ramoops") ||
-	    of_address_to_resource(node, 0, &resource) ||
-	    resource.start != GEMINI_TRANSITION_LEDGER_BASE ||
-	    resource_size(&resource) != GEMINI_TRANSITION_LEDGER_RESERVE_SIZE ||
-	    !of_property_read_bool(node, "no-map"))
+	ramoops = of_find_node_by_path("/reserved-memory/ramoops@44410000");
+	ledger = of_find_compatible_node(NULL, NULL,
+					"planet,gemini-a72-transition-ledger");
+	if (!ramoops || !ledger)
 		goto out;
-	if (of_property_read_u32(node, "record-size", &value) ||
+	if (!of_device_is_compatible(ramoops, "ramoops") ||
+	    of_address_to_resource(ramoops, 0, &ramoops_resource) ||
+	    of_address_to_resource(ledger, 0, &ledger_resource) ||
+	    ledger_resource.start != GEMINI_TRANSITION_LEDGER_BASE ||
+	    resource_size(&ledger_resource) != GEMINI_TRANSITION_LEDGER_RESERVE_SIZE ||
+	    !of_property_read_bool(ramoops, "no-map") ||
+	    !of_property_read_bool(ledger, "no-map") ||
+	    !of_property_read_bool(ledger, "gemini,initialize-empty") ||
+	    (ramoops_resource.start + resource_size(&ramoops_resource) >
+		ledger_resource.start &&
+	     ledger_resource.start + resource_size(&ledger_resource) >
+			ramoops_resource.start))
+		goto out;
+	if (of_property_read_u32(ramoops, "record-size", &value) ||
 	    value != GEMINI_TRANSITION_LEDGER_SLOT_SIZE)
 		goto out;
-	if (of_property_read_u32(node, "console-size", &value) ||
+	if (of_property_read_u32(ramoops, "console-size", &value) ||
 	    value != 0x10000 ||
-	    of_property_read_u32(node, "ftrace-size", &value) || value != 0x1000 ||
-	    of_property_read_u32(node, "pmsg-size", &value) || value != 0x20000 ||
-	    of_property_read_u32(node, "mem-type", &value) || value)
+	    of_property_read_u32(ramoops, "ftrace-size", &value) || value != 0x1000 ||
+	    of_property_read_u32(ramoops, "pmsg-size", &value) || value != 0x20000 ||
+	    of_property_read_u32(ramoops, "mem-type", &value) || value)
 		goto out;
 	exact = true;
 out:
-	of_node_put(node);
+	of_node_put(ledger);
+	of_node_put(ramoops);
 	return exact;
 }
 
@@ -349,6 +361,61 @@ gemini_transition_ledger_mmio_ops = {
 static DEFINE_MUTEX(gemini_transition_ledger_lock);
 static struct gemini_transition_ledger_owner gemini_transition_ledger_owner;
 static void __iomem *gemini_transition_ledger_slot;
+
+/*
+ * This page has an explicit DT ownership grant and is disjoint from ramoops.
+ * Initialise it only before exposing the one-shot trigger, with its signature
+ * written last.  The old ramoops dmesg header is deliberately never touched.
+ */
+static int gemini_transition_ledger_initialize(void __iomem *slot)
+{
+	unsigned int word;
+
+	for (word = 0; word < GEMINI_TRANSITION_LEDGER_SLOT_SIZE / sizeof(u32);
+	     word++)
+		gemini_transition_ledger_mmio_write(slot, word, 0);
+	gemini_transition_ledger_mmio_barrier(slot);
+	gemini_transition_ledger_mmio_write(slot, 1, 0);
+	gemini_transition_ledger_mmio_barrier(slot);
+	gemini_transition_ledger_mmio_write(slot, 2, 0);
+	gemini_transition_ledger_mmio_barrier(slot);
+	gemini_transition_ledger_mmio_write(slot, 0,
+				       GEMINI_TRANSITION_LEDGER_PSTORE_SIGNATURE);
+	gemini_transition_ledger_mmio_barrier(slot);
+	return gemini_transition_ledger_mmio_read(slot, 0) ==
+			GEMINI_TRANSITION_LEDGER_PSTORE_SIGNATURE &&
+		gemini_transition_ledger_mmio_read(slot, 1) == 0 &&
+		gemini_transition_ledger_mmio_read(slot, 2) == 0 ? 0 : -EIO;
+}
+
+int gemini_transition_ledger_prepare(void)
+{
+	void __iomem *slot;
+	int ret;
+
+	mutex_lock(&gemini_transition_ledger_lock);
+	if (gemini_transition_ledger_slot || gemini_transition_ledger_owner.active ||
+	    gemini_transition_ledger_owner.sealed) {
+		ret = -EALREADY;
+		goto out_unlock;
+	}
+	if (!gemini_transition_ledger_exact_dt()) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
+	slot = ioremap_wc(GEMINI_TRANSITION_LEDGER_BASE,
+			  GEMINI_TRANSITION_LEDGER_SLOT_SIZE);
+	if (!slot) {
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+	ret = gemini_transition_ledger_initialize(slot);
+	iounmap(slot);
+out_unlock:
+	mutex_unlock(&gemini_transition_ledger_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(gemini_transition_ledger_prepare);
 
 int gemini_transition_ledger_begin(u64 attempt_id)
 {

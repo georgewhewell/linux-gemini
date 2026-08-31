@@ -85,8 +85,15 @@
 			no-map;
 		};
 
-		memory@444f1000 {
-			reg = <0 0x444f1000 0 0xf000>;
+		a72_transition_ledger: a72-transition-ledger@444f1000 {
+			compatible = "planet,gemini-a72-transition-ledger";
+			reg = <0 0x444f1000 0 0x1000>;
+			gemini,initialize-empty;
+			no-map;
+		};
+
+		memory@444f2000 {
+			reg = <0 0x444f2000 0 0xe000>;
 			no-map;
 		};
 

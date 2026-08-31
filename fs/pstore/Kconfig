@@ -455,14 +455,14 @@ config PSTORE_GEMINI_TRANSITION_LEDGER
 	default n
 	help
 	  Add a one-shot API that updates one compact retained CPU-transition
-	  ledger in the first exact Gemini ramoops dmesg zone. Two alternating
+	  ledger in an exact private Gemini no-map reservation. Two alternating
 	  copies preserve the last complete attempt, phase, stage, terminal,
 	  generation, and CRC32 while the older copy is replaced.
 
-	  The owner requires the exact Gemini model and reservation, accepts
-	  only an empty, raw all-ones, or previously valid ledger header, and
-	  seals on a write/readback fault or terminal record. Normal ramoops is
-	  bypassed only on the Gemini while this isolated option is selected.
+	  The owner requires the exact Gemini model and disjoint private
+	  reservation. The explicitly-owned page is initialized empty before
+	  the trigger ABI is exposed, and seals on a write/readback fault or
+	  terminal record. Normal ramoops is never read or written.
 
 	  This option adds no caller, CPU request, watchdog action, SMC, device
 	  trigger, or boot policy. If unsure, say N.
@@ -472,8 +472,8 @@ config PSTORE_GEMINI_ADMISSION_TRACE
 	depends on PSTORE_GEMINI_TRANSITION_LEDGER=y
 	default n
 	help
-	  Own dmesg records 2 and 3 beside the existing record-1 transition
-	  ledger. Commit one fixed controller-entry record and at most one fixed
+	  Own two slots in a separate private page. Commit one fixed
+	  controller-entry record and at most one fixed
 	  consumed zero-request terminal record for source registration,
 	  derivation, or publication failure.
 

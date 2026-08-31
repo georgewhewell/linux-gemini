@@ -12,10 +12,16 @@ enum gemini_transition_ledger_phase {
 };
 
 #ifdef CONFIG_PSTORE_GEMINI_TRANSITION_LEDGER
+int gemini_transition_ledger_prepare(void);
 int gemini_transition_ledger_begin(u64 attempt_id);
 int gemini_transition_ledger_checkpoint(u64 attempt_id, u32 phase,
 					u32 stage, u32 terminal);
 #else
+static inline int gemini_transition_ledger_prepare(void)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline int gemini_transition_ledger_begin(u64 attempt_id)
 {
 	return -EOPNOTSUPP;

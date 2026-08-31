@@ -1281,6 +1281,23 @@ config MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST
 	  every partial-operation failure. The suite uses fake callbacks only and
 	  has no platform device or MD1 hardware path.
 
+config MTK_MT6797_MD1_HS_CORE
+    bool
+    help
+      Internal, hardware-neutral MT6797 MD1 CCCI HS1/HS2 frame classifier. It
+      has no Device Tree, MMIO, IRQ, CLDMA, DMA, shared-memory, runtime-data,
+      power, reset, WDT, MPU, remap, firmware, partition, SIM, or RF path.
+
+config MTK_MT6797_MD1_HS_KUNIT_TEST
+    bool "KUnit tests for the MT6797 MD1 CCCI HS1/HS2 contract"
+    depends on KUNIT=y
+    select MTK_MT6797_MD1_HS_CORE
+    help
+      Exercise the vendor CONTROL_RX HS1/HS2 framing and transition contract
+      after independently observed post-vector MD1 activity. The suite has no
+      HIF, IRQ, CLDMA, DMA, shared-memory, runtime-data, power, reset, SIM, or
+      RF path.
+
 config MTK_MT6797_MD1_WDT_GATE_CORE
 	bool
 	help

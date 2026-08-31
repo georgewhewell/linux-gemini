@@ -328,7 +328,7 @@ static int mt6797_btif_stp_bootstrap_full_wmt_transmit(void *context,
 		return -ESHUTDOWN;
 	if (!ret && READ_ONCE(bootstrap->full_retry_armed))
 		schedule_delayed_work(&bootstrap->full_retry_work,
-				      msecs_to_jiffies(MT6797_CONSYS_STP_TX_TIMEOUT_MS));
+			msecs_to_jiffies(MT6797_CONSYS_STP_TX_TIMEOUT_MS));
 	return ret;
 }
 
@@ -359,7 +359,7 @@ static void mt6797_btif_stp_bootstrap_full_retry(struct work_struct *work)
 	    (READ_ONCE(bootstrap->state) == MT6797_BTIF_STP_BOOTSTRAP_FULL_VERIFY ||
 	     READ_ONCE(bootstrap->state) == MT6797_BTIF_STP_BOOTSTRAP_ACTIVE))
 		schedule_delayed_work(&bootstrap->full_retry_work,
-				      msecs_to_jiffies(MT6797_CONSYS_STP_TX_TIMEOUT_MS));
+			msecs_to_jiffies(MT6797_CONSYS_STP_TX_TIMEOUT_MS));
 }
 
 static void mt6797_btif_stp_bootstrap_log_full_wmt_failure(

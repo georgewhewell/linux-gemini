@@ -116,6 +116,7 @@ struct mt6797_consys_runtime_controller {
 	struct completion run_complete;
 	struct completion gnss_released;
 	struct completion wifi_released;
+	struct completion bt_released;
 	struct completion stop_complete;
 	const struct mt6797_consys_runtime_lease *runtime_lease;
 	const struct mt6797_btif_pio_platform_lease *platform_lease;
@@ -123,6 +124,7 @@ struct mt6797_consys_runtime_controller {
 	const struct mt6797_consys_stp_session_lease *session_lease;
 	struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease_owner;
 	struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease_owner;
+	struct mt6797_consys_runtime_controller_bt_lease *bt_lease_owner;
 	u64 session_generation;
 	bool run_in_progress;
 	bool stop_requested;
@@ -162,6 +164,8 @@ static int mt6797_consys_runtime_controller_init(
 	init_completion(&controller->gnss_released);
 	complete_all(&controller->gnss_released);
 	init_completion(&controller->wifi_released);
+	init_completion(&controller->bt_released);
+	complete_all(&controller->bt_released);
 	complete_all(&controller->wifi_released);
 	init_completion(&controller->stop_complete);
 	complete_all(&controller->stop_complete);
@@ -558,6 +562,103 @@ void mt6797_consys_runtime_controller_gnss_session_put(
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_gnss_session_put);
 
+#define MT6797_CONSYS_BT_FUNC_CTRL	6
+#define MT6797_CONSYS_BT_FUNC_TIMEOUT	msecs_to_jiffies(3000)
+
+static const u8 mt6797_consys_bt_func_ok[] = { 0 };
+static const struct mtk_wmt_match mt6797_consys_bt_func_match = {
+	.opcode = MT6797_CONSYS_BT_FUNC_CTRL,
+	.data = mt6797_consys_bt_func_ok,
+	.data_len = sizeof(mt6797_consys_bt_func_ok),
+};
+
+int mt6797_consys_runtime_controller_bt_session_get(struct device *dev,
+		struct mt6797_consys_runtime_controller_bt_lease *bt_lease,
+		const struct mt6797_consys_stp_session_lease **session_lease)
+{
+	struct mt6797_consys_runtime_controller *controller;
+	int ret;
+
+	if (!dev || !bt_lease || !session_lease)
+		return -EINVAL;
+	*session_lease = NULL;
+	if (bt_lease->controller)
+		return -EBUSY;
+	controller = dev_get_drvdata(dev);
+	if (!controller)
+		return -ENODEV;
+	mutex_lock(&controller->lock);
+	if (controller->state != MT6797_CONSYS_RUNTIME_CONTROLLER_ACTIVE ||
+	    controller->stop_requested || !controller->session_lease ||
+	    !controller->bootstrap) {
+		ret = controller->state == MT6797_CONSYS_RUNTIME_CONTROLLER_READY ||
+			controller->state == MT6797_CONSYS_RUNTIME_CONTROLLER_STARTING ?
+			-EAGAIN : -ESHUTDOWN;
+	} else if (controller->bt_lease_owner || controller->gnss_lease_owner ||
+		   controller->wifi_lease_owner) {
+		ret = -EBUSY;
+	} else {
+		reinit_completion(&controller->bt_released);
+		controller->bt_lease_owner = bt_lease;
+		bt_lease->controller = controller;
+		bt_lease->generation = controller->session_generation;
+		*session_lease = controller->session_lease;
+		ret = 0;
+	}
+	mutex_unlock(&controller->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_bt_session_get);
+
+void mt6797_consys_runtime_controller_bt_session_put(
+		struct mt6797_consys_runtime_controller_bt_lease *bt_lease)
+{
+	struct mt6797_consys_runtime_controller *controller;
+
+	if (!bt_lease || !bt_lease->controller)
+		return;
+	controller = bt_lease->controller;
+	mutex_lock(&controller->lock);
+	if (controller->bt_lease_owner == bt_lease &&
+	    controller->session_generation == bt_lease->generation) {
+		controller->bt_lease_owner = NULL;
+		complete_all(&controller->bt_released);
+	}
+	bt_lease->controller = NULL;
+	bt_lease->generation = 0;
+	mutex_unlock(&controller->lock);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_bt_session_put);
+
+int mt6797_consys_runtime_controller_bt_function_set(
+		struct mt6797_consys_runtime_controller_bt_lease *bt_lease,
+		bool enable)
+{
+	struct mt6797_consys_runtime_controller *controller;
+	struct mt6797_btif_stp_bootstrap *bootstrap;
+	const u8 data[] = { 0, enable ? 1 : 0 };
+	int ret = -ESHUTDOWN;
+
+	if (!bt_lease || !bt_lease->controller)
+		return -EINVAL;
+	controller = bt_lease->controller;
+	mutex_lock(&controller->lock);
+	if (controller->state == MT6797_CONSYS_RUNTIME_CONTROLLER_ACTIVE &&
+	    !controller->stop_requested &&
+	    controller->bt_lease_owner == bt_lease &&
+	    controller->session_generation == bt_lease->generation)
+		bootstrap = controller->bootstrap;
+	else
+		bootstrap = NULL;
+	mutex_unlock(&controller->lock);
+	if (!bootstrap)
+		return ret;
+	return mt6797_btif_stp_bootstrap_active_wmt_transaction(bootstrap,
+		MT6797_CONSYS_BT_FUNC_CTRL, data, sizeof(data),
+		&mt6797_consys_bt_func_match, MT6797_CONSYS_BT_FUNC_TIMEOUT);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_bt_function_set);
+
 static int mt6797_consys_runtime_controller_wifi_session_get_controller(
 		struct mt6797_consys_runtime_controller *controller,
 		struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease,
@@ -665,6 +766,7 @@ static void mt6797_consys_runtime_controller_stop_controller(
 	mutex_unlock(&controller->lock);
 	wait_for_completion(&controller->gnss_released);
 	wait_for_completion(&controller->wifi_released);
+	wait_for_completion(&controller->bt_released);
 
 	mutex_lock(&controller->lock);
 	/* The active-stop winner alone owns bootstrap destruction and PIO close. */

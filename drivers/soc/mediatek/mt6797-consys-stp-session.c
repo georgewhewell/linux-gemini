@@ -68,6 +68,8 @@ struct mt6797_consys_stp_session {
 	struct mt6797_consys_stp_session_ops ops;
 	mt6797_consys_stp_gnss_rx_cb_t gnss_receive;
 	void *gnss_receive_context;
+	mt6797_consys_stp_bt_rx_cb_t bt_receive;
+	void *bt_receive_context;
 	struct mt6797_consys_stp_session_lease *lease;
 	struct mt6797_consys_stp_session_bootstrap_lease *bootstrap_lease;
 	enum mt6797_consys_stp_session_state state;
@@ -293,6 +295,10 @@ static int mt6797_consys_stp_finish_frame_locked(
 			ret = session->gnss_receive(session->gnss_receive_context,
 						    session->payload,
 						    session->payload_length);
+		else if (session->channel == MTK_STP_BT && session->bt_receive)
+			ret = session->bt_receive(session->bt_receive_context,
+						  session->payload,
+						  session->payload_length);
 		else if (mt6797_consys_stp_channel_supported(session->channel))
 			ret = session->ops.receive(session->ops.receive_context,
 						   session->channel,
@@ -611,6 +617,55 @@ int mt6797_consys_stp_session_unbind_gnss(
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_unbind_gnss);
+
+int mt6797_consys_stp_session_bind_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret = 0;
+
+	if (!lease || !lease->session || !receive)
+		return -EINVAL;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else if (session->bt_receive)
+		ret = -EBUSY;
+	else {
+		session->bt_receive = receive;
+		session->bt_receive_context = receive_context;
+	}
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bind_bt);
+
+int mt6797_consys_stp_session_unbind_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret = 0;
+
+	if (!lease || !lease->session || !receive)
+		return -EINVAL;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else if (session->bt_receive != receive ||
+		 session->bt_receive_context != receive_context)
+		ret = -ENOENT;
+	else {
+		session->bt_receive = NULL;
+		session->bt_receive_context = NULL;
+	}
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_unbind_bt);
 
 static int mt6797_consys_stp_session_transmit_locked(
 		struct mt6797_consys_stp_session *session,

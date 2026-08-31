@@ -120,6 +120,15 @@
 				pinctrl-2 = <&g2d_gnss_lna_off>;
 				status = "disabled";
 			};
+
+			/* HCI endpoint stays dormant until its independent DT/parameter gate. */
+			consys_bt_hci: consys-bt-hci {
+				compatible = "mediatek,mt6797-stp-hci";
+				mediatek,controller = <&consys_g2c_controller>;
+				vcn33-bt-supply = <&mt6351_vcn33_bt_reg>;
+				mediatek,experimental-stp-hci;
+				status = "disabled";
+			};
 		};
 	};
 

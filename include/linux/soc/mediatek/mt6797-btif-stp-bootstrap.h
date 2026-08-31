@@ -109,6 +109,12 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range(
 		u8 *reply, size_t reply_len, size_t *actual_data_len,
 		unsigned long timeout);
 
+/* Controller-only exact WMT transaction after the full-STP session is active. */
+int mt6797_btif_stp_bootstrap_active_wmt_transaction(
+		struct mt6797_btif_stp_bootstrap *bootstrap, u8 opcode,
+		const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected, unsigned long timeout);
+
 /*
  * Send one syntactically complete H4 command through private STP channel zero.
  * This is valid only in the synchronous post-full stage.  The supplied matcher

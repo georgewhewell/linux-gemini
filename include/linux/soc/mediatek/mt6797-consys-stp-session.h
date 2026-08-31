@@ -40,6 +40,9 @@ typedef int (*mt6797_consys_stp_rx_cb_t)(void *context,
 typedef int (*mt6797_consys_stp_gnss_rx_cb_t)(void *context,
 						      const u8 *payload,
 						      size_t payload_length);
+typedef int (*mt6797_consys_stp_bt_rx_cb_t)(void *context,
+						    const u8 *payload,
+						    size_t payload_length);
 
 struct mt6797_consys_stp_session_ops {
 	mt6797_consys_stp_tx_cb_t transmit;
@@ -149,6 +152,14 @@ bool mt6797_consys_stp_session_lease_active(
 int mt6797_consys_stp_session_bind_gnss(
 		const struct mt6797_consys_stp_session_lease *lease,
 		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context);
+
+/* Bind one HCI endpoint to STP channel zero without exposing STP framing. */
+int mt6797_consys_stp_session_bind_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context);
+int mt6797_consys_stp_session_unbind_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context);
 int mt6797_consys_stp_session_unbind_gnss(
 		const struct mt6797_consys_stp_session_lease *lease,
 		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context);

@@ -369,6 +369,12 @@ static int mt6797_g2d_supplier(struct device *dev, const char *prop,
 	return 0;
 }
 
+static int mt6797_g2d_probe_failure(struct device *dev, int err,
+		const char *stage)
+{
+	return dev_err_probe(dev, err, "G2d probe %s failed\n", stage);
+}
+
 static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 {
 	struct mt6797_g2d_owner *owner;
@@ -382,49 +388,74 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	if (!READ_ONCE(enable_experimental_g2d_postpatch_owner) ||
 	    !device_property_read_bool(&pdev->dev,
 		"mediatek,experimental-g2d-postpatch-owner"))
-		return -EPERM;
+		return mt6797_g2d_probe_failure(&pdev->dev, -EPERM, "opt-in gate");
 	owner = devm_kzalloc(&pdev->dev, sizeof(*owner), GFP_KERNEL);
 	if (!owner)
-		return -ENOMEM;
+		return mt6797_g2d_probe_failure(&pdev->dev, -ENOMEM, "owner allocation");
 	owner->dev = &pdev->dev;
 	owner->bt = devm_regulator_get(&pdev->dev, "vcn33-bt");
 	if (IS_ERR(owner->bt))
-		return PTR_ERR(owner->bt);
+		return mt6797_g2d_probe_failure(&pdev->dev, PTR_ERR(owner->bt),
+			"vcn33-bt supply");
 	owner->wifi = devm_regulator_get(&pdev->dev, "vcn33-wifi");
 	if (IS_ERR(owner->wifi))
-		return PTR_ERR(owner->wifi);
+		return mt6797_g2d_probe_failure(&pdev->dev, PTR_ERR(owner->wifi),
+			"vcn33-wifi supply");
+	/*
+	 * This compares backing regulator devices, not consumer handles.  MT6351
+	 * gives BT/Wi-Fi distinct enable registers despite their shared selector;
+	 * accepting one rdev for both would make the separate PALDO unwind unsafe.
+	 */
 	if (regulator_is_equal(owner->bt, owner->wifi))
-		return -EINVAL;
+		return mt6797_g2d_probe_failure(&pdev->dev, -EINVAL,
+			"distinct VCN33 regulator check");
 	ret = mt6797_g2d_supplier(&pdev->dev, "mediatek,runtime-provider", &runtime);
 	if (ret)
-		return ret;
+		return mt6797_g2d_probe_failure(&pdev->dev, ret, "runtime provider");
 	ret = mt6797_g2d_supplier(&pdev->dev, "mediatek,controller", &controller);
-	if (ret)
+	if (ret) {
+		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "runtime controller");
 		goto put_runtime;
+	}
 	ret = mt6797_consys_runtime_resource_lease_acquire(runtime, &resources);
 	if (ret == -ENODEV)
 		ret = -EPROBE_DEFER;
-	if (ret)
+	if (ret) {
+		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "runtime resource lease");
 		goto put_controller;
+	}
 	ret = mt6797_consys_runtime_controller_preflight(controller);
-	if (ret)
+	if (ret) {
+		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "controller preflight");
 		goto resources;
+	}
 	ret = mt6797_consys_emi_mpu_claim(&pdev->dev);
-	if (ret)
+	if (ret) {
+		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "persistent EMI claim");
 		goto resources;
+	}
 	emi_claimed = true;
 	ret = mt6797_consys_runtime_platform_identity_acquire(&resources, &identity);
-	if (ret)
+	if (ret) {
+		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "platform identity");
 		goto resources;
+	}
 	ret = mt6797_consys_runtime_postid_owner_init(runtime, identity.identity, &postid);
-	if (ret)
+	if (ret) {
+		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "post-ID owner init");
 		goto identity;
+	}
 	postid_init = true;
 	ret = mt6797_consys_postid_start(&postid, identity.identity, true);
-	if (ret)
+	if (ret) {
+		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "post-ID start");
 		goto postid;
+	}
 	ret = mt6797_consys_runtime_controller_start_with_postpatch_stage(controller,
 		mt6797_g2d_postpatch_stage, owner);
+	if (ret)
+		ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
+			"controller start or post-patch stage");
 	if (!ret)
 		controller_active = true;
 postid:

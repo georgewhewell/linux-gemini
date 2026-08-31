@@ -90,6 +90,7 @@
 				compatible = "mediatek,mt6797-consys-g2d-postpatch-owner";
 				mediatek,runtime-provider = <&consys>;
 				mediatek,controller = <&consys_g2c_controller>;
+				mediatek,emi-mpu = <&consys_emi_mpu>;
 				vcn33-bt-supply = <&mt6351_vcn33_bt_reg>;
 				vcn33-wifi-supply = <&mt6351_vcn33_wifi_reg>;
 				mediatek,experimental-g2d-postpatch-owner;

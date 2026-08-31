@@ -62,6 +62,13 @@ module_param_named(enable_experimental_g2f_bt_hci_proof_owner,
 MODULE_PARM_DESC(enable_experimental_g2f_bt_hci_proof_owner,
 	"allow one MT6797 G2f private Bluetooth H4 proof (default: false)");
 
+/* W4 is a client, not another G2d proof: leave READY for W4's own lifetime. */
+static bool enable_experimental_wifi_w4_retained_owner;
+module_param_named(enable_experimental_wifi_w4_retained_owner,
+		enable_experimental_wifi_w4_retained_owner, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_wifi_w4_retained_owner,
+	"allow MT6797 W4 to own the retained controller start/stop (default: false)");
+
 enum mt6797_g2d_stage {
 	G2D_SNAPSHOT, G2D_SET_BT, G2D_SET_WIFI, G2D_ENABLE_BT, G2D_ENABLE_WIFI,
 	G2D_LTE_EXT, G2D_LTE_FILTER, G2D_LTE_FREQ, G2D_LTE_UNSAFE, G2D_LTE_L,
@@ -508,6 +515,7 @@ struct mt6797_g2d_owner {
 	bool gnss_probe;
 	bool bt_function_proof;
 	bool bt_hci_proof;
+	bool wifi_w4_retained_owner;
 };
 
 static struct regulator *mt6797_g2d_regulator(struct mt6797_g2d_owner *owner,
@@ -825,10 +833,14 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 	owner->bt_hci_proof = device_property_read_bool(&pdev->dev,
 		"mediatek,experimental-g2f-bt-hci-proof-owner") &&
 		READ_ONCE(enable_experimental_g2f_bt_hci_proof_owner);
+	owner->wifi_w4_retained_owner = device_property_read_bool(&pdev->dev,
+		"mediatek,experimental-wifi-w4-retained-owner") &&
+		READ_ONCE(enable_experimental_wifi_w4_retained_owner);
 	if (owner->bt_function_proof && owner->bt_hci_proof)
 		return mt6797_g2d_probe_failure(&pdev->dev, -EINVAL,
 			"multiple Bluetooth proof gates");
 	if (!owner->bt_function_proof && !owner->bt_hci_proof &&
+	    !owner->wifi_w4_retained_owner &&
 	    (!READ_ONCE(enable_experimental_g2d_postpatch_owner) ||
 	     !device_property_read_bool(&pdev->dev,
 		"mediatek,experimental-g2d-postpatch-owner")))
@@ -907,13 +919,19 @@ static int mt6797_g2d_postpatch_owner_probe(struct platform_device *pdev)
 		ret = mt6797_g2d_probe_failure(&pdev->dev, ret, "post-ID start");
 		goto postid;
 	}
-	ret = mt6797_consys_runtime_controller_start_with_postpatch_stage(controller,
-		mt6797_g2d_postpatch_stage, owner);
-	if (ret)
-		ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
-			"controller start or post-patch stage");
-	if (!ret)
-		controller_active = true;
+	if (owner->wifi_w4_retained_owner) {
+		/* W4 is the sole controller/HIF owner; G2d must not fence it here. */
+		dev_info(&pdev->dev,
+			"G2d W4 retained handoff: controller left READY for W4\n");
+	} else {
+		ret = mt6797_consys_runtime_controller_start_with_postpatch_stage(controller,
+			mt6797_g2d_postpatch_stage, owner);
+		if (ret)
+			ret = mt6797_g2d_probe_failure(&pdev->dev, ret,
+				"controller start or post-patch stage");
+		if (!ret)
+			controller_active = true;
+	}
 postid:
 	if (controller_active)
 		mt6797_consys_runtime_controller_stop(controller);

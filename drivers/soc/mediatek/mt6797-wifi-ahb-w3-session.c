@@ -18,6 +18,18 @@
 
 #include <linux/soc/mediatek/mt6797-wifi-ahb-w3-session.h>
 
+static bool enable_experimental_wifi_w3_session;
+module_param_named(enable_experimental_wifi_w3_session,
+		enable_experimental_wifi_w3_session, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_wifi_w3_session,
+	"allow MT6797 W3 retained HIF and IRQ ownership (default: false)");
+
+bool mt6797_wifi_ahb_w3_session_enabled(void)
+{
+	return READ_ONCE(enable_experimental_wifi_w3_session);
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w3_session_enabled);
+
 static int mt6797_wifi_w3_drain_rx(struct mt6797_wifi_ahb_w3_session *session)
 {
 	unsigned int i;

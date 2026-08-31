@@ -26,6 +26,7 @@
 #define W4_WHIER 0x0014
 #define W4_WRDR0 0x0050
 #define W4_WRDR1 0x0054
+#define W4_WTDR1 0x0034
 #define W4_WRPLR 0x0090
 #define W4_WTQCR0 0x0130
 #define W4_WHIER_DEFAULT 0xffffff47U
@@ -328,7 +329,42 @@ static int w4_stop(struct net_device *ndev)
 }
 static netdev_tx_t w4_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
-	/* TX descriptor construction/association are supplied by the GEN3 core. */
+	struct mt6797_wifi_w4 *w4 = w4_ndev(ndev);
+	u8 *frame;
+	const unsigned int txd_len = 28; /* NIC_TX_DESC_LONG_FORMAT_LENGTH */
+	const unsigned int wire_length = txd_len + skb->len;
+	const unsigned int length = ALIGN(wire_length, sizeof(u32));
+	int ret;
+
+	if (!READ_ONCE(w4->opened) || length > W4_RX_MAX)
+		goto drop;
+	/* ndo_start_xmit is atomic: bounded portal ownership, never sleep. */
+	if (!mutex_trylock(&w4->lock))
+		return NETDEV_TX_BUSY;
+	frame = kzalloc(length, GFP_ATOMIC);
+	if (!frame) { mutex_unlock(&w4->lock); return NETDEV_TX_BUSY; }
+	/* vendor HW_MAC_TX_DESC_T: LMAC/AC0, non-802.11 Ethernet-II, long TXD */
+	put_unaligned_le16(wire_length, frame);            /* u2TxByteCount */
+	frame[2] = (ETH_HLEN - ETH_TLEN + txd_len) >> 1;  /* EtherType word */
+	frame[3] = 0;                                     /* LMAC, AC0 */
+	frame[4] = 31;                                    /* NIC_TX_DEFAULT_WLAN_INDEX */
+	frame[5] = BIT(4) | BIT(7);                       /* Ethernet-II, long */
+	frame[7] = 0;                                     /* own-MAC zero */
+	frame[10] = 0xff;                                 /* no lifetime limit */
+	put_unaligned_le16(30, frame + 12);               /* retry count limit */
+	if (skb_copy_bits(skb, 0, frame + txd_len, skb->len))
+		ret = -EFAULT;
+	else
+		ret = w4_cmd53(w4, true, W4_WTDR1, frame, length);
+	kfree(frame);
+	mutex_unlock(&w4->lock);
+	if (ret)
+		goto drop;
+	ndev->stats.tx_packets++;
+	ndev->stats.tx_bytes += skb->len;
+	dev_kfree_skb(skb);
+	return NETDEV_TX_OK;
+drop:
 	ndev->stats.tx_dropped++;
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;

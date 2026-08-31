@@ -82,7 +82,10 @@
 #define W4_CHANNEL_TOKEN 1U
 #define W4_CHANNEL_REQUEST_INTERVAL_MS 4000U
 #define W4_SCAN_POLL_INTERVAL_MS 20U
-#define W4_SCAN_POLL_TIMEOUT_MS 1500U
+/* AIS_SCN_DONE_TIMEOUT_SEC is 30 in the actually-built vendor driver
+ * (gen3/include/mgmt/ais_fsm.h:65); scan_fsm.c:158-159 arms that deadline.
+ */
+#define W4_SCAN_POLL_TIMEOUT_MS 30000U
 
 #define W4_BMC_WLAN_INDEX_AIS 0U
 #define W4_WLAN_INDEX_AIS_AP 1U

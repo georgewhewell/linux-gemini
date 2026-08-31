@@ -696,7 +696,7 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		.hci_exchange = mt6797_g2d_live_hci_exchange,
 		.context = owner,
 	};
-	bool wcir_attempted = false;
+	bool wcir_attempted = false, w1_attempted = false;
 	struct mt6797_g2_bt_proof_state bt_state = { };
 	int ret;
 
@@ -712,13 +712,27 @@ static int mt6797_g2d_postpatch_stage(void *context,
 		ret = mt6797_g2d_wifi_wcir_phase(owner, lease);
 	}
 #endif
+#if IS_REACHABLE(CONFIG_MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT)
+	if (!ret && mt6797_wifi_ahb_w1_firmware_enabled(owner->dev)) {
+		w1_attempted = true;
+		/* W1 is a successor to the corrected live W0 portal observation. */
+		if (!mt6797_wifi_ahb_wcir_enabled(owner->dev))
+			ret = -EPERM;
+		else
+			ret = mt6797_wifi_ahb_w1_firmware_preflight(owner->dev, lease);
+	}
+#endif
 	if (!ret && owner->gnss_probe)
 		ret = mt6797_g2d_gnss_probe_run(&gnss_ops, &state);
 	if (!ret && (owner->bt_function_proof || owner->bt_hci_proof))
 		ret = mt6797_g2_bt_proof_run(&bt_ops, owner->bt_hci_proof,
 					     &bt_state);
 	owner->lease = NULL;
-	if (ret && wcir_attempted)
+	if (ret && w1_attempted)
+		dev_err(owner->dev,
+			"Wi-Fi W1 firmware preflight failed: %d; bootstrap must fence/reset\n",
+			ret);
+	else if (ret && wcir_attempted)
 		dev_err(owner->dev,
 			"G2d Wi-Fi WCIR phase failed: %d; bootstrap must fence/reset\n", ret);
 	else if (ret && owner->bt_hci_proof && bt_state.causal_error)
@@ -756,6 +770,9 @@ static int mt6797_g2d_postpatch_stage(void *context,
 	else if (owner->bt_function_proof)
 		dev_info(owner->dev,
 			 "G2e BT function proof passed; bootstrap will fence/reset\n");
+	else if (w1_attempted)
+		dev_info(owner->dev,
+			 "Wi-Fi W1 firmware preflight passed; HIF stream/IRQ/netdev remain fenced; bootstrap will fence/reset\n");
 	else
 		dev_info(owner->dev, "G2d passed; bootstrap will fence/reset\n");
 	if (state.calibration_reply_valid)

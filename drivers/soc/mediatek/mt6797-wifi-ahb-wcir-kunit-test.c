@@ -148,17 +148,29 @@ static void mt6797_wifi_ahb_wcir_accepts_only_everest_raw_id(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00000279, &wcir), 0);
 	KUNIT_EXPECT_EQ(test, wcir.chip_id, (u16)0x0279);
 	KUNIT_EXPECT_EQ(test, wcir.revision, (u8)0);
+	KUNIT_EXPECT_FALSE(test, wcir.por_indicator);
 	KUNIT_EXPECT_FALSE(test, wcir.wlan_ready);
 }
 
-static void mt6797_wifi_ahb_wcir_rejects_unexpected_nonzero_raw_id(struct kunit *test)
+static void mt6797_wifi_ahb_wcir_accepts_vendor_por_before_firmware(struct kunit *test)
+{
+	struct mt6797_wifi_ahb_wcir wcir;
+
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00100279, &wcir), 0);
+	KUNIT_EXPECT_EQ(test, wcir.chip_id, (u16)0x0279);
+	KUNIT_EXPECT_EQ(test, wcir.revision, (u8)0);
+	KUNIT_EXPECT_TRUE(test, wcir.por_indicator);
+	KUNIT_EXPECT_FALSE(test, wcir.wlan_ready);
+}
+
+static void mt6797_wifi_ahb_wcir_separates_ready_from_identity(struct kunit *test)
 {
 	struct mt6797_wifi_ahb_wcir wcir;
 
 	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00006582, &wcir),
 			-EPROTO);
-	KUNIT_EXPECT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00200279, &wcir),
-			-EPROTO);
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_wcir_decode(0x00200279, &wcir), 0);
+	KUNIT_EXPECT_TRUE(test, wcir.wlan_ready);
 }
 
 static void mt6797_wifi_ahb_wcir_rejects_absent_device(struct kunit *test)
@@ -221,8 +233,9 @@ static void mt6797_wifi_ahb_command_pack_refuses_invalid_fields(struct kunit *te
 
 static struct kunit_case mt6797_wifi_ahb_wcir_test_cases[] = {
 	KUNIT_CASE(mt6797_wifi_ahb_wcir_accepts_only_everest_raw_id),
+	KUNIT_CASE(mt6797_wifi_ahb_wcir_accepts_vendor_por_before_firmware),
 	KUNIT_CASE(mt6797_wifi_ahb_wcir_rejects_absent_device),
-	KUNIT_CASE(mt6797_wifi_ahb_wcir_rejects_unexpected_nonzero_raw_id),
+	KUNIT_CASE(mt6797_wifi_ahb_wcir_separates_ready_from_identity),
 	KUNIT_CASE(mt6797_wifi_ahb_wcir_requires_complete_guard),
 	KUNIT_CASE(mt6797_wifi_ahb_cmd53_packs_vendor_wcir_read),
 	KUNIT_CASE(mt6797_wifi_ahb_cmd52_packs_vendor_cccr_access),

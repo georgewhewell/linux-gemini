@@ -769,6 +769,27 @@ config MTK_MT6797_WIFI_AHB_WCIR_KUNIT_TEST
 	  Exercise WCIR decoding, guards, command encoding, and fault cleanup in
 	  memory only. No Device Tree, MMIO, regulator, WMT, or radio is accessed.
 
+config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT
+	tristate "MT6797 WLAN GEN3 AHB W1 pinned firmware preflight"
+	depends on ARM64 && ARCH_MEDIATEK && OF && FW_LOADER
+	depends on CRYPTO_SHA256
+	depends on MTK_MT6797_WIFI_AHB_WCIR_OBSERVE
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	help
+	  Verify the exact WIFI_RAM_CODE_6797 image size and SHA-256 while the
+	  completed G2d full-WMT lease is active.  Its own DT property and read-only
+	  module parameter are both required, in addition to the corrected W0 HIF
+	  observation gate.  It does not stream firmware, start Wi-Fi, request an
+	  IRQ, instantiate a WLAN transport, create a netdev, or transmit packets.
+
+config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_KUNIT_TEST
+	bool "KUnit tests for MT6797 WLAN W1 firmware preflight"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT=y
+	help
+	  Exercise the exact firmware size and SHA-256 pin policy in memory only.
+	  No firmware request, Device Tree, MMIO, regulator, WMT, or radio is used.
+
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

@@ -97,6 +97,8 @@
 				mediatek,experimental-g2d-postpatch-owner;
 				/* A third DT + command-line gate controls the W0 observation. */
 				mediatek,experimental-wifi-wcir-observe;
+				/* W1 additionally pins the initramfs image; it still cannot stream it. */
+				mediatek,experimental-wifi-w1-firmware-preflight;
 				/* A second DT + command-line gate controls this GNSS probe. */
 				mediatek,experimental-g2d-gnss-probe;
 				pinctrl-names = "gps-lna-init", "gps-lna-on", "gps-lna-off";

@@ -197,19 +197,27 @@ int mt6797_wifi_ahb_wcir_observe(struct device *owner,
 		return -EHOSTDOWN;
 	guard.wifi_paldo_held = true;
 
-	wifi_np = of_find_compatible_node(NULL, NULL, "mediatek,WIFI");
-	if (!wifi_np)
+	wifi_np = of_find_compatible_node(NULL, NULL, "mediatek,wifi");
+	if (!wifi_np) {
+		dev_err(owner, "WCIR HIF node mediatek,wifi is absent\n");
 		return -ENODEV;
+	}
 	ret = of_address_to_resource(wifi_np, 0, &hif);
 	of_node_put(wifi_np);
-	if (ret)
+	if (ret) {
+		dev_err(owner, "WCIR HIF resource decode failed: %d\n", ret);
 		return ret;
+	}
 	if (hif.start != MT6797_WIFI_AHB_HIF_BASE ||
-	    resource_size(&hif) < MT6797_WIFI_AHB_HIF_PORTAL_SIZE)
+	    resource_size(&hif) < MT6797_WIFI_AHB_HIF_PORTAL_SIZE) {
+		dev_err(owner, "WCIR HIF resource invalid: %pr\n", &hif);
 		return -EINVAL;
+	}
 	if (!request_mem_region(hif.start, MT6797_WIFI_AHB_HIF_PORTAL_SIZE,
-				"mt6797-wifi-wcir"))
+				"mt6797-wifi-wcir")) {
+		dev_err(owner, "WCIR HIF resource is busy\n");
 		return -EBUSY;
+	}
 	guard.hif_owner = true;
 
 	portal = ioremap(hif.start, MT6797_WIFI_AHB_HIF_PORTAL_SIZE);

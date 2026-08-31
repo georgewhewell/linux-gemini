@@ -4,6 +4,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -37,6 +38,8 @@
 #define W4_WLAN_INDEX_DEFAULT 31U
 #define W4_STA_INDEX_AIS_AP 0U
 #define W4_JOIN_TIMEOUT_MS 1000U
+#define W4_SCAN_POLL_INTERVAL_MS 20U
+#define W4_SCAN_POLL_TIMEOUT_MS 1500U
 
 static bool enable_experimental_wifi_w4_platform;
 module_param_named(enable_experimental_wifi_w4_platform,
@@ -61,7 +64,7 @@ struct mt6797_wifi_w4 {
 	struct wireless_dev *wdev;
 	struct mutex lock;
 	struct work_struct rx_work;
-	struct delayed_work join_timeout;
+	struct delayed_work join_timeout, scan_poll;
 	int irq;
 	struct mt6797_consys_runtime_controller_wifi_lease runtime;
 	const struct mt6797_consys_stp_session_lease *stp_session;
@@ -75,6 +78,8 @@ struct mt6797_wifi_w4 {
 	u8 join_ssid_len;
 	u8 assoc_req_ies[IEEE80211_MAX_SSID_LEN + 16];
 	u8 assoc_req_ie_len;
+	unsigned int scan_poll_count;
+	unsigned long scan_poll_deadline;
 	enum w4_join_state join_state;
 	bool candidate_valid, retained_owner_released;
 	bool controller_started, w1_retained, opened;
@@ -327,6 +332,28 @@ static const struct mt6797_wifi_ahb_w3_ops w4_hif_ops = {
 	.configure = w4_configure,
 };
 
+/* Read-only MCR evidence.  WHCR is in vendor read-clear mode, so a WHISR
+ * read is the hardware's documented acknowledgement, not a fabricated W1C. */
+static void w4_diag_hif(struct mt6797_wifi_w4 *w4, const char *stage)
+{
+	u32 whlpcr = 0, whcr = 0, whisr = 0, whier = 0, wrplr = 0;
+	int ret = 0, result;
+
+	result = w4_mcr_read(w4, MT6797_WIFI_AHB_W3_MCR_WHLPCR, &whlpcr);
+	if (result && !ret) ret = result;
+	result = w4_mcr_read(w4, MT6797_WIFI_AHB_W3_MCR_WHCR, &whcr);
+	if (result && !ret) ret = result;
+	result = w4_mcr_read(w4, MT6797_WIFI_AHB_W3_MCR_WHISR, &whisr);
+	if (result && !ret) ret = result;
+	result = w4_mcr_read(w4, W4_WHIER, &whier);
+	if (result && !ret) ret = result;
+	result = w4_mcr_read(w4, W4_WRPLR, &wrplr);
+	if (result && !ret) ret = result;
+	dev_info(w4->dev,
+		 "W4_DIAG stage=%s mcr-ret=%d whlpcr=%#x whcr=%#x whisr=%#x whier=%#x wrplr=%#x whisr-read-clear=1\n",
+		 stage, ret, whlpcr, whcr, whisr, whier, wrplr);
+}
+
 static void w4_rx_work(struct work_struct *work)
 {
 	struct mt6797_wifi_w4 *w4 = container_of(work, struct mt6797_wifi_w4, rx_work);
@@ -352,6 +379,52 @@ static void w4_rx_work(struct work_struct *work)
 		if (rx0) w4_rx_deliver(w4, 0, rx0);
 		if (rx1) w4_rx_deliver(w4, 1, rx1);
 	}
+out:
+	mutex_unlock(&w4->lock);
+}
+/*
+ * Vendor nicRxWaitResponse() polls WRPLR/WRDR1 for command events.  Use the
+ * same CMD53 mechanism only while one scan is pending: this diagnoses a
+ * missing host EINT without guessing a GIC polarity or injecting an ACK.
+ */
+static void w4_scan_poll(struct work_struct *work)
+{
+	struct mt6797_wifi_w4 *w4 = container_of(to_delayed_work(work),
+		struct mt6797_wifi_w4, scan_poll);
+	u16 rx0, rx1;
+	int ret;
+
+	mutex_lock(&w4->lock);
+	if (!w4->opened || !w4->scan_request)
+		goto out;
+	w4->scan_poll_count++;
+	ret = w4_rx_lengths(w4, &rx0, &rx1);
+	if (ret) {
+		dev_err(w4->dev, "W4_DIAG stage=scan-poll ret=%d count=%u\n",
+			ret, w4->scan_poll_count);
+	} else if (rx0 || rx1) {
+		dev_info(w4->dev,
+			 "W4_DIAG stage=scan-poll ret=0 count=%u rx0=%u rx1=%u\n",
+			 w4->scan_poll_count, rx0, rx1);
+		if (rx0)
+			w4_rx_deliver(w4, 0, rx0);
+		if (rx1)
+			w4_rx_deliver(w4, 1, rx1);
+	}
+	if (!w4->scan_request)
+		goto out;
+	if (time_after_eq(jiffies, w4->scan_poll_deadline)) {
+		struct cfg80211_scan_info info = { .aborted = true };
+
+		w4_diag_hif(w4, "scan-poll-timeout");
+		dev_info(w4->dev, "W4_DIAG stage=scan-poll-timeout count=%u\n",
+			 w4->scan_poll_count);
+		cfg80211_scan_done(w4->scan_request, &info);
+		w4->scan_request = NULL;
+		goto out;
+	}
+	mod_delayed_work(system_wq, &w4->scan_poll,
+		msecs_to_jiffies(W4_SCAN_POLL_INTERVAL_MS));
 out:
 	mutex_unlock(&w4->lock);
 }
@@ -448,6 +521,7 @@ static int w4_stop(struct net_device *ndev)
 	}
 	w4_stop_locked(w4);
 	mutex_unlock(&w4->lock);
+	cancel_delayed_work_sync(&w4->scan_poll);
 	cancel_delayed_work_sync(&w4->join_timeout);
 	/* The worker takes the same mutex, so waiting while holding it deadlocks. */
 	cancel_work_sync(&w4->rx_work);
@@ -714,12 +788,18 @@ static int w4_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 	int ret;
 	mutex_lock(&w4->lock);
 	if (!w4->opened || w4->scan_request) { mutex_unlock(&w4->lock); return -EBUSY; }
+	w4_diag_hif(w4, "scan-pre");
 	ret = w4_send_scan(w4, request);
 	dev_info(w4->dev,
 		 "W4_DIAG stage=scan-submit ret=%d channels=%u ssids=%u\n",
 		 ret, request->n_channels, request->n_ssids);
 	if (ret) { mutex_unlock(&w4->lock); return ret; }
 	w4->scan_request = request;
+	w4->scan_poll_count = 0;
+	w4->scan_poll_deadline = jiffies + msecs_to_jiffies(W4_SCAN_POLL_TIMEOUT_MS);
+	w4_diag_hif(w4, "scan-post");
+	mod_delayed_work(system_wq, &w4->scan_poll,
+		msecs_to_jiffies(W4_SCAN_POLL_INTERVAL_MS));
 	mutex_unlock(&w4->lock);
 	return 0;
 }
@@ -795,9 +875,19 @@ static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 	w4 = devm_kzalloc(&pdev->dev, sizeof(*w4), GFP_KERNEL); if (!w4) return -ENOMEM;
 	w4->dev = &pdev->dev; mutex_init(&w4->lock); INIT_WORK(&w4->rx_work, w4_rx_work);
 	INIT_DELAYED_WORK(&w4->join_timeout, w4_join_timeout);
+	INIT_DELAYED_WORK(&w4->scan_poll, w4_scan_poll);
 	w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
 	w4->portal = devm_ioremap_resource(&pdev->dev, res); if (IS_ERR(w4->portal)) return PTR_ERR(w4->portal);
 	w4->irq = platform_get_irq_byname(pdev, "wifi"); if (w4->irq < 0) return w4->irq;
+	{
+		u32 spec[3] = { };
+		int spec_ret = of_property_read_u32_array(pdev->dev.of_node,
+			"interrupts", spec, ARRAY_SIZE(spec));
+		dev_info(&pdev->dev,
+			 "W4_DIAG stage=irq-route irq=%d trigger=%#x spec-ret=%d spec=%#x/%#x/%#x\n",
+			 w4->irq, irq_get_trigger_type(w4->irq), spec_ret,
+			 spec[0], spec[1], spec[2]);
+	}
 	node = of_parse_phandle(pdev->dev.of_node, "mediatek,controller", 0); if (!node) return -EINVAL;
 	controller = of_find_device_by_node(node); of_node_put(node); if (!controller) return -EPROBE_DEFER;
 	w4->controller_dev = &controller->dev;
@@ -864,6 +954,7 @@ static void mt6797_wifi_w4_remove(struct platform_device *pdev)
 {
 	struct mt6797_wifi_w4 *w4 = platform_get_drvdata(pdev);
 	if (!w4) return;
+	cancel_delayed_work_sync(&w4->scan_poll);
 	/* unregister_netdev() takes RTNL and drives cfg80211's notifier teardown. */
 	unregister_netdev(w4->ndev); kfree(w4->wdev); free_netdev(w4->ndev);
 	wiphy_unregister(w4->wiphy); wiphy_free(w4->wiphy);

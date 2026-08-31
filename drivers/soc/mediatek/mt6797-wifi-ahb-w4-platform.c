@@ -42,6 +42,7 @@
 #define W4_RX_MAX 2352U
 #define W4_RX_BUDGET 32U
 #define W4_RX_DESCRIPTOR_MIN 16U
+#define W4_RX_STATUS_ERROR_MASK 0x07f8U
 #define W4_WIFI_EVENT_HEADER_LEN 8U
 #define W4_EVENT_ID_SCAN_DONE 0x0dU
 #define W4_SCAN_SEQUENCE 1U
@@ -52,12 +53,13 @@
 #define W4_CMD_PKT_TYPE 0x20U
 #define W4_SCAN_SSID_SLOT_LEN 36U
 #define W4_SCAN_REQ_V2_IE_OFFSET 226U
-#define W4_SCAN_REQ_V2_LEN (W4_WIFI_CMD_HEADER_LEN + W4_SCAN_REQ_V2_IE_OFFSET)
-#define W4_SCAN_REQ_V2_WIRE_LEN ALIGN(W4_SCAN_REQ_V2_LEN, sizeof(u32))
+#define W4_SCAN_MAX_IE_LEN 600U
+#define W4_SCAN_REQ_V2_BASE_LEN (W4_WIFI_CMD_HEADER_LEN + W4_SCAN_REQ_V2_IE_OFFSET)
 #define W4_SCAN_REQ_V2_SSID0_OFFSET (W4_WIFI_CMD_HEADER_LEN + 8U)
 #define W4_SCAN_REQ_V2_TIMER_OFFSET (W4_SCAN_REQ_V2_SSID0_OFFSET + 4U * W4_SCAN_SSID_SLOT_LEN)
 #define W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET (W4_SCAN_REQ_V2_TIMER_OFFSET + 6U)
 #define W4_SCAN_REQ_V2_CHANNEL_LIST_OFFSET (W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET + 2U)
+#define W4_SCAN_REQ_V2_IE_LEN_OFFSET (W4_SCAN_REQ_V2_BASE_LEN - sizeof(u16))
 #define W4_SCAN_CHANNEL_2G4 1U
 #define W4_SCAN_CHANNEL_SPECIFIED 4U
 #define W4_CMD_SEQUENCE_BASIC_CONFIG 1U
@@ -72,6 +74,12 @@
 #define W4_JOIN_TIMEOUT_MS 1000U
 #define W4_SCAN_POLL_INTERVAL_MS 20U
 #define W4_SCAN_POLL_TIMEOUT_MS 1500U
+
+#define W4_BMC_WLAN_INDEX_AIS 0U
+#define W4_WLAN_INDEX_AIS_AP 1U
+#define W4_STA_STATE_1 0U
+#define W4_STA_STATE_2 1U
+#define W4_STA_STATE_3 2U
 
 static bool enable_experimental_wifi_w4_platform;
 module_param_named(enable_experimental_wifi_w4_platform,
@@ -367,7 +375,8 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 	header_len = buf[6];
 	status = get_unaligned_le16(buf + 10);
 	groups = (type >> 9) & 0xf;
-	if (byte_count > len || byte_count < off || status)
+	if (byte_count > len || byte_count < off ||
+	    (status & W4_RX_STATUS_ERROR_MASK))
 		goto out;
 	/* Vendor group order is 4,1,2,3 following HW_MAC_RX_DESC_T. */
 	if (groups & BIT(3)) off += 12;
@@ -718,8 +727,8 @@ static netdev_tx_t w4_xmit(struct sk_buff *skb, struct net_device *ndev)
 	frame[4] = READ_ONCE(w4->wlan_index);             /* AP STA-record WTBL index */
 	frame[5] = BIT(4) | BIT(7);                       /* Ethernet-II, long */
 	frame[7] = 0;                                     /* own-MAC zero */
-	frame[10] = 0xff;                                 /* no lifetime limit */
-	put_unaligned_le16(30, frame + 12);               /* retry count limit */
+	frame[10] = 0;                                    /* no lifetime limit */
+	put_unaligned_le16(30U << 11, frame + 12);        /* remaining retry count */
 	if (skb_copy_bits(skb, 0, frame + txd_len, skb->len))
 		ret = -EFAULT;
 	else
@@ -758,7 +767,7 @@ static int w4_activate_ais(struct mt6797_wifi_w4 *w4, u8 command_sequence)
 	cmd[10] = 0;                /* AIS network type */
 	cmd[11] = 0;                /* own-MAC index */
 	ether_addr_copy(cmd + 12, w4->ndev->dev_addr);
-	cmd[18] = W4_WLAN_INDEX_DEFAULT;
+	cmd[18] = W4_BMC_WLAN_INDEX_AIS;
 	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
 	dev_info(w4->dev, "W4_DIAG stage=ais-activate ret=%d cmd-seq=%u\n",
 		 ret, command_sequence);
@@ -767,18 +776,26 @@ static int w4_activate_ais(struct mt6797_wifi_w4 *w4, u8 command_sequence)
 static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 			const struct cfg80211_scan_request *req)
 {
-	u8 cmd[W4_SCAN_REQ_V2_WIRE_LEN] = { };
+	size_t command_len, wire_len;
+	u8 *cmd;
 	unsigned int i, n = min_t(unsigned int, req->n_channels, 32);
-	u8 ssid_num = req->n_ssids ? 1 : 0;
-	u32 ssid_len = ssid_num ?
-		min_t(unsigned int, req->ssids[0].ssid_len, IEEE80211_MAX_SSID_LEN) : 0;
+	u8 ssid_num = req->n_ssids && req->ssids[0].ssid_len ? 1 : 0;
+	u32 ssid_len = ssid_num ? req->ssids[0].ssid_len : 0;
 	u8 channel_type = n ? W4_SCAN_CHANNEL_SPECIFIED : W4_SCAN_CHANNEL_2G4;
 	int ret;
+
+	if (req->ie_len > W4_SCAN_MAX_IE_LEN)
+		return -EMSGSIZE;
+	command_len = W4_SCAN_REQ_V2_BASE_LEN + req->ie_len;
+	wire_len = ALIGN(command_len, sizeof(u32));
+	cmd = kzalloc(wire_len, GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
 
 	/* AIS emits WIFI_CMD_T + CMD_SCAN_REQ_V2, not the obsolete short request.
 	 * Keep the full fixed 4-SSID/32-channel prefix through aucIE even with no
 	 * optional IEs, exactly as scnSendScanReqV2()'s OFFSET_OF() length. */
-	put_unaligned_le16(W4_SCAN_REQ_V2_LEN, cmd);
+	put_unaligned_le16(command_len, cmd);
 	put_unaligned_le16(0x8000, cmd + 2);
 	cmd[4] = W4_CMD_ID_SCAN_REQ_V2;
 	cmd[5] = W4_CMD_PKT_TYPE;
@@ -787,7 +804,7 @@ static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 	cmd[8] = W4_SCAN_SEQUENCE;
 	cmd[9] = 0;          /* AIS BSS index */
 	cmd[10] = 1;         /* active scan */
-	cmd[11] = req->n_ssids ? BIT(2) : BIT(0);
+	cmd[11] = ssid_num ? BIT(2) : BIT(0);
 	cmd[12] = ssid_num;
 	put_unaligned_le32(ssid_len, cmd + W4_SCAN_REQ_V2_SSID0_OFFSET);
 	if (ssid_len)
@@ -805,12 +822,16 @@ static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 		cmd[W4_SCAN_REQ_V2_CHANNEL_LIST_OFFSET + 2 * i + 1] =
 			ieee80211_frequency_to_channel(req->channels[i]->center_freq);
 	}
-	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
+	put_unaligned_le16(req->ie_len, cmd + W4_SCAN_REQ_V2_IE_LEN_OFFSET);
+	if (req->ie_len)
+		memcpy(cmd + W4_SCAN_REQ_V2_BASE_LEN, req->ie, req->ie_len);
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, wire_len);
 	dev_info(w4->dev,
-		 "W4_DIAG stage=scan-cmd ret=%d cid=%#x tx-len=%u wire-len=%zu cmd-seq=%u scan-seq=%u ssid-type=%#x ssid-num=%u ssid-len=%u ch-type=%u ch-count=%u\n",
-		 ret, cmd[4], W4_SCAN_REQ_V2_LEN, sizeof(cmd), cmd[7], cmd[8],
+		 "W4_DIAG stage=scan-cmd ret=%d cid=%#x tx-len=%zu wire-len=%zu cmd-seq=%u scan-seq=%u ssid-type=%#x ssid-num=%u ssid-len=%u ch-type=%u ch-count=%u ie-len=%zu\n",
+		 ret, cmd[4], command_len, wire_len, cmd[7], cmd[8],
 		 cmd[11], cmd[12], ssid_len, cmd[W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET],
-		 cmd[W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET + 1]);
+		 cmd[W4_SCAN_REQ_V2_CHANNEL_TYPE_OFFSET + 1], req->ie_len);
+	kfree(cmd);
 	return ret;
 }
 static int w4_send_open_sta(struct mt6797_wifi_w4 *w4)
@@ -828,9 +849,9 @@ static int w4_send_open_sta(struct mt6797_wifi_w4 *w4)
 	cmd[8] = w4->sta_index; cmd[9] = BIT(0) | BIT(6); /* legacy AP */
 	ether_addr_copy(cmd + 10, w4->candidate_bssid);
 	cmd[20] = 0;                  /* AIS BSS index */
-	cmd[28] = 1;                  /* STA_STATE_1 */
+	cmd[28] = W4_STA_STATE_1;
 	cmd[62] = w4->wlan_index;     /* ucWlanIndex */
-	cmd[63] = W4_WLAN_INDEX_DEFAULT; /* ucBMCWlanIndex */
+	cmd[63] = W4_BMC_WLAN_INDEX_AIS; /* ucBMCWlanIndex */
 	return w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
 }
 /* The management descriptors follow nic_tx.c's 802.11-normal, long format. */
@@ -848,12 +869,13 @@ static int w4_send_mgmt(struct mt6797_wifi_w4 *w4, const u8 *mgmt, size_t len)
 	if (!frame)
 		return -ENOMEM;
 	put_unaligned_le16(wire_len, frame);
+	frame[2] = (txd_len + IEEE80211_HDRLEN) >> 1;
 	frame[3] = BIT(7) | BIT(3); /* TC4: MCU port, queue one */
 	frame[4] = w4->wlan_index;
 	frame[5] = BIT(7) | (2 << 5) | (IEEE80211_HDRLEN >> 1);
 	frame[8] = ((mgmt[0] >> 4) & 0xf) | ((mgmt[0] & 0x0c) << 2);
-	frame[10] = 0xff;
-	put_unaligned_le16(30, frame + 12);
+	frame[10] = 0;
+	put_unaligned_le16(30U << 11, frame + 12);
 	memcpy(frame + txd_len, mgmt, len);
 	ret = w4_cmd53(w4, true, W4_WTDR1, frame, total);
 	kfree(frame);
@@ -881,7 +903,7 @@ static int w4_send_auth1(struct mt6797_wifi_w4 *w4)
 
 static int w4_send_assoc1(struct mt6797_wifi_w4 *w4)
 {
-	u8 frame[IEEE80211_HDRLEN + 4 + IEEE80211_MAX_SSID_LEN + 16] = { };
+	u8 frame[IEEE80211_HDRLEN + 4 + IEEE80211_MAX_SSID_LEN + 20] = { };
 	u8 *ie = frame + IEEE80211_HDRLEN + 4;
 	static const u8 rates[] = { 0x82, 0x84, 0x8b, 0x96,
 		0x0c, 0x18, 0x30, 0x48, 0x60, 0x6c };
@@ -896,9 +918,13 @@ static int w4_send_assoc1(struct mt6797_wifi_w4 *w4)
 	memcpy(ie, w4->join_ssid, w4->join_ssid_len);
 	ie += w4->join_ssid_len;
 	*ie++ = WLAN_EID_SUPP_RATES;
-	*ie++ = sizeof(rates);
-	memcpy(ie, rates, sizeof(rates));
-	ie += sizeof(rates);
+	*ie++ = 8;
+	memcpy(ie, rates, 8);
+	ie += 8;
+	*ie++ = WLAN_EID_EXT_SUPP_RATES;
+	*ie++ = sizeof(rates) - 8;
+	memcpy(ie, rates + 8, sizeof(rates) - 8);
+	ie += sizeof(rates) - 8;
 	len = ie - frame;
 	w4->assoc_req_ie_len = len - IEEE80211_HDRLEN - 4;
 	memcpy(w4->assoc_req_ies, frame + IEEE80211_HDRLEN + 4,
@@ -917,9 +943,9 @@ static int w4_send_sta_state(struct mt6797_wifi_w4 *w4, u8 sta_state, u16 aid)
 	ether_addr_copy(cmd + 10, w4->candidate_bssid);
 	put_unaligned_le16(aid, cmd + 16);
 	cmd[20] = 0;
-	cmd[28] = sta_state;          /* state 2 after Auth-2; state 3 after Assoc-2 */
+	cmd[28] = sta_state;
 	cmd[62] = w4->wlan_index;
-	cmd[63] = W4_WLAN_INDEX_DEFAULT;
+	cmd[63] = W4_BMC_WLAN_INDEX_AIS;
 	return w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
 }
 
@@ -957,7 +983,8 @@ static void w4_rx_mgmt(struct mt6797_wifi_w4 *w4, const u8 *mgmt, size_t len)
 	    get_unaligned_le16(mgmt + IEEE80211_HDRLEN + 2) == 2) {
 		status = get_unaligned_le16(mgmt + IEEE80211_HDRLEN + 4);
 		/* saaFsmRunEventRxAuth synchronises STA_STATE_2 before Assoc-1. */
-		if (status || w4_send_sta_state(w4, 2, 0) || w4_send_assoc1(w4)) {
+		if (status || w4_send_sta_state(w4, W4_STA_STATE_2, 0) ||
+		    w4_send_assoc1(w4)) {
 			w4->join_state = W4_JOIN_IDLE;
 			w4->wlan_index = W4_WLAN_INDEX_DEFAULT;
 			cancel_delayed_work(&w4->join_timeout);
@@ -974,7 +1001,7 @@ static void w4_rx_mgmt(struct mt6797_wifi_w4 *w4, const u8 *mgmt, size_t len)
 	    (fc & 0x00fc) == IEEE80211_STYPE_ASSOC_RESP) {
 		status = get_unaligned_le16(mgmt + IEEE80211_HDRLEN + 2);
 		cancel_delayed_work(&w4->join_timeout);
-		if (!status && w4_send_sta_state(w4, 3,
+		if (!status && w4_send_sta_state(w4, W4_STA_STATE_3,
 			get_unaligned_le16(mgmt + IEEE80211_HDRLEN + 4) & 0x3fff))
 			status = WLAN_STATUS_UNSPECIFIED_FAILURE;
 		w4->join_state = status ? W4_JOIN_IDLE : W4_JOIN_CONNECTED;
@@ -1027,11 +1054,12 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 		mutex_unlock(&w4->lock);
 		return -EBUSY;
 	}
-	/* secPrivacySeekForEntry() uses the first free unicast WTBL entry (zero).
-	 * 31 remains the vendor broadcast/default entry; it must not carry AP TX.
+	/* AIS activation reserves entry zero for BMC.  The vendor's subsequent
+	 * secPrivacySeekForEntry() therefore assigns entry one to the AP station.
+	 * Entry 31 is the non-StaRec TX default and must not carry AP data.
 	 */
 	w4->sta_index = W4_STA_INDEX_AIS_AP;
-	w4->wlan_index = W4_STA_INDEX_AIS_AP;
+	w4->wlan_index = W4_WLAN_INDEX_AIS_AP;
 	w4->join_ssid_len = sme->ssid_len;
 	memcpy(w4->join_ssid, sme->ssid, w4->join_ssid_len);
 	w4->assoc_req_ie_len = 0;
@@ -1141,6 +1169,7 @@ static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 	/* iw's ordinary wildcard probe is one SSID entry; zero makes nl80211
 	 * reject it before ->scan() is reached.  CMD_SCAN_REQ implements one. */
 	w4->wiphy->max_scan_ssids = 1;
+	w4->wiphy->max_scan_ie_len = W4_SCAN_MAX_IE_LEN;
 	w4->wiphy->bands[NL80211_BAND_2GHZ] = &w4_band; set_wiphy_dev(w4->wiphy, &pdev->dev);
 	ret = wiphy_register(w4->wiphy); if (ret) goto free_wiphy;
 	w4->ndev = alloc_netdev(sizeof(struct mt6797_wifi_w4 *), "wlan%d", NET_NAME_ENUM, ether_setup);

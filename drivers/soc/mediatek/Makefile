@@ -27,6 +27,7 @@ obj-$(CONFIG_MTK_MT6797_DVFSP_VENDOR_PROVIDER_BRIDGE_KUNIT_TEST) += mt6797-dvfsp
 obj-$(CONFIG_MTK_MT6797_DVFSP_HANDOFF) += mt6797-dvfsp-state-snapshot.o
 obj-$(CONFIG_MTK_MT6797_DVFSP_HANDOFF) += mt6797-dvfsp-runtime-bind.o
 obj-$(CONFIG_MTK_MT6797_DVFSP_STATE_DECODERS) += mt6797-dvfsp-clock-state.o
+obj-$(CONFIG_MTK_MT6797_DVFSP_STATE_DECODERS_KUNIT_TEST) += mt6797-dvfsp-clock-state-test.o
 # SPDX-License-Identifier: GPL-2.0-only
 obj-$(CONFIG_MTK_CMDQ) += mtk-cmdq-helper.o
 obj-$(CONFIG_MTK_DEVAPC) += mtk-devapc.o

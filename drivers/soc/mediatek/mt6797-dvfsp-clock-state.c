@@ -30,6 +30,8 @@ static int mt6797_dvfsp_clock_divider_decode(
 
 	switch (selector) {
 	case 8:
+	case 16:
+	case 24:
 		*divider = (struct mt6797_dvfsp_clock_divider){ 1, 1 };
 		break;
 	case 9:
@@ -112,6 +114,13 @@ static int mt6797_dvfsp_clock_cluster_decode(
 	int ret;
 
 	if (!cluster || con1 & MT6797_DVFSP_CLOCK_STATE_PLL_CHANGE)
+		return -EAGAIN;
+	/*
+	 * The PLL word is not the cluster clock while the mux selects CLKSQ,
+	 * MAINPLL, or UNIVPLL.  A snapshot can race the vendor transition's
+	 * temporary MAINPLL selection, so never publish that PLL rate as live.
+	 */
+	if (mux != MT6797_DVFSP_CLOCK_STATE_MUX_ARMPLL)
 		return -EAGAIN;
 
 	cluster->mux_selector = mux;

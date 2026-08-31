@@ -971,6 +971,16 @@ config MTK_MT6797_DVFSP_STATE_DECODERS
 	  needs them. This internal gate performs no I/O and does not enable the
 	  optional hardware transport.
 
+config MTK_MT6797_DVFSP_STATE_DECODERS_KUNIT_TEST
+	bool "KUnit tests for MT6797 protected clock-state decoding"
+	depends on KUNIT=y
+	depends on MTK_MT6797_DVFSP_STATE_DECODERS=y
+	default n
+	help
+	  Exercise the vendor-supported ARMPLLDIV divider encodings, PLL rate
+	  conversion, and rejection of an in-flight temporary clock mux without
+	  accessing MT6797 hardware.
+
 config MTK_MT6797_DVFSP_CLOCK_BACKEND
 	bool "MediaTek MT6797 protected CPU clock readback transport"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

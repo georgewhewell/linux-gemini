@@ -768,7 +768,15 @@ static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 	node = of_parse_phandle(pdev->dev.of_node, "mediatek,controller", 0); if (!node) return -EINVAL;
 	controller = of_find_device_by_node(node); of_node_put(node); if (!controller) return -EPROBE_DEFER;
 	w4->controller_dev = &controller->dev;
-	node = of_parse_phandle(pdev->dev.of_node, "mediatek,retained-owner", 0);
+	/*
+	 * G2d is the one matching true-chronology owner in this profile.  Do not
+	 * encode this as a DT phandle: fw_devlink treats that vendor reference as
+	 * a supplier edge while G2d is still resolving its controller suppliers,
+	 * creating a bind-time cycle.  The explicit device_link below is created
+	 * only after the fully bound G2d owner has published its retained state.
+	 */
+	node = of_find_compatible_node(NULL, NULL,
+		"mediatek,mt6797-consys-g2d-postpatch-owner");
 	if (!node) { ret = -EINVAL; goto put_controller; }
 	controller = of_find_device_by_node(node); of_node_put(node);
 	if (!controller) { ret = -EPROBE_DEFER; goto put_controller; }

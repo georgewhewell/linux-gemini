@@ -108,6 +108,8 @@
 				mediatek,experimental-wifi-wcir-observe;
 				/* W1 pins and sends the image, but does not expose a netdev. */
 				mediatek,experimental-wifi-w1-firmware-preflight;
+				/* W2 additionally requires its Kconfig and command-line gate. */
+				mediatek,experimental-wifi-w2-nic-capability;
 				/* A second DT + command-line gate controls this GNSS probe. */
 				mediatek,experimental-g2d-gnss-probe;
 				pinctrl-names = "gps-lna-init", "gps-lna-on", "gps-lna-off";

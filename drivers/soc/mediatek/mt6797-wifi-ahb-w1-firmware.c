@@ -7,15 +7,15 @@
  * interrupt delivery; common/wlan_lib.c:2577-2612 configures and sends every
  * divided section; :827-887 sends sections 0-1 over HIF and copies later
  * sections through the first 512 KiB of CONSYS EMI; and nic_pwr_mgt.c:348-389
- * starts firmware and waits for WCIR.READY. The vendor only enables IRQ after
- * it has installed a normal adapter/IST; it supplies no isolated post-enable
- * IRQ self-test event. W1 therefore clears the same status but leaves global
- * IRQ delivery off and reports READY only, rather than claiming an IRQ proof
- * from a stale TX_DONE level.  W1_DIAG messages deliberately retain the
- * causal register snapshots for an enabled attempt.  They make a safe failure
- * useful: the next build must distinguish CCCR function readiness, ownership,
- * download acknowledgement, each transfer, EMI placement, start, READY, and
- * portal cleanup before anyone considers another hardware cycle.
+ * starts firmware and waits for WCIR.READY. W1 clears the same status and
+ * leaves global IRQ delivery off. The separately gated W2 extension sends the
+ * vendor's normal NIC-capability query only after that clearing and accepts
+ * only its new port-1 RX/IRQ response, never a stale TX_DONE level. W1_DIAG
+ * and W2_DIAG deliberately retain the causal register snapshots for an
+ * enabled attempt. They make a safe failure useful: the next build must
+ * distinguish CCCR function readiness, ownership, download acknowledgement,
+ * each transfer, EMI placement, start, READY, IRQ/event, and portal cleanup
+ * before anyone considers another hardware cycle.
  *
  * This is not a WLAN driver. It has no netdev, MAC, DMA, cfg80211, retry, or
  * userspace API. It performs exactly one pinned image attempt inside the
@@ -30,8 +30,10 @@
 #include <linux/crc32.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/completion.h>
 #include <linux/errno.h>
 #include <linux/firmware.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/jiffies.h>
@@ -40,6 +42,7 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/overflow.h>
 #include <linux/property.h>
 #include <linux/regulator/consumer.h>
@@ -61,13 +64,16 @@
 #define MT6797_WIFI_W1_MCR_WHIER		0x0014U
 #define MT6797_WIFI_W1_MCR_WTDR1		0x0034U
 #define MT6797_WIFI_W1_MCR_WRDR0		0x0050U
+#define MT6797_WIFI_W1_MCR_WRDR1		0x0054U
 #define MT6797_WIFI_W1_MCR_WRPLR		0x0090U
 #define MT6797_WIFI_W1_MCR_WTQCR0		0x0130U
 
 #define MT6797_WIFI_W1_WHLPCR_DRIVER_OWN	BIT(8)
 #define MT6797_WIFI_W1_WHLPCR_OWN_CLR		BIT(9)
 #define MT6797_WIFI_W1_WHLPCR_INT_CLR		BIT(1)
+#define MT6797_WIFI_W1_WHLPCR_INT_SET		BIT(0)
 #define MT6797_WIFI_W1_WHIER_DEFAULT		0xffffff47U
+#define MT6797_WIFI_W1_WHISR_RX1_DONE		BIT(2)
 
 #define MT6797_WIFI_W1_PQ_CMD			0x8000U
 #define MT6797_WIFI_W1_PQ_PDA			0xc000U
@@ -90,6 +96,17 @@
 #define MT6797_WIFI_W1_READY_POLLS		100U
 #define MT6797_WIFI_W1_IDLM_FRAME_COUNT	8U
 #define MT6797_WIFI_W1_IDLM_TRANSFER_BYTES	18432U
+
+/*
+ * wlan_lib.c:3726-3791 uses this ordinary post-READY query.  It allocates
+ * CMD_HDR_SIZE + EVENT_NIC_CAPABILITY_T, so both command and event are 124
+ * bytes (the 8-byte HIF header plus the 116-byte capability payload).
+ */
+#define MT6797_WIFI_W2_CMD_NIC_CAPABILITY	0x80U
+#define MT6797_WIFI_W2_EVENT_NIC_CAPABILITY	0x01U
+#define MT6797_WIFI_W2_CAPABILITY_SEQUENCE	1U
+#define MT6797_WIFI_W2_CAPABILITY_LENGTH	124U
+#define MT6797_WIFI_W2_RESPONSE_TIMEOUT_MS	1000U
 
 static const u8 mt6797_wifi_w1_firmware_sha256[] = {
 	0xa6, 0x93, 0x83, 0xd7, 0x4d, 0x82, 0x94, 0x30,
@@ -117,10 +134,15 @@ static const struct mt6797_wifi_ahb_w1_section mt6797_wifi_w1_sections[] = {
 
 static DEFINE_MUTEX(mt6797_wifi_w1_portal_lock);
 static bool enable_experimental_wifi_w1_firmware_preflight;
+static bool enable_experimental_wifi_w2_nic_capability;
 module_param_named(enable_experimental_wifi_w1_firmware_preflight,
-		   enable_experimental_wifi_w1_firmware_preflight, bool, 0400);
+			   enable_experimental_wifi_w1_firmware_preflight, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_wifi_w1_firmware_preflight,
-		 "allow one MT6797 WLAN firmware download/start/READY proof");
+			 "allow one MT6797 WLAN firmware download/start/READY proof");
+module_param_named(enable_experimental_wifi_w2_nic_capability,
+			   enable_experimental_wifi_w2_nic_capability, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_wifi_w2_nic_capability,
+			 "allow one MT6797 WLAN NIC capability command/IRQ proof after READY");
 
 struct mt6797_wifi_w1_power {
 	struct device *owner;
@@ -138,13 +160,40 @@ struct mt6797_wifi_w1_config_ack {
 	u8 header[9];
 };
 
+struct mt6797_wifi_w2_capability_irq {
+	void __iomem *portal;
+	struct device *owner;
+	struct completion completion;
+	u8 sequence;
+	u8 event[MT6797_WIFI_W2_CAPABILITY_LENGTH];
+	u8 response[MT6797_WIFI_W2_CAPABILITY_LENGTH + sizeof(u32)];
+	u32 whisr;
+	u32 wrplr;
+	unsigned int irq_count;
+	int result;
+	bool armed;
+};
+
 bool mt6797_wifi_ahb_w1_firmware_enabled(struct device *owner)
 {
-	return owner && READ_ONCE(enable_experimental_wifi_w1_firmware_preflight) &&
-		device_property_read_bool(owner,
-			"mediatek,experimental-wifi-w1-firmware-preflight");
+	return owner &&
+		((READ_ONCE(enable_experimental_wifi_w1_firmware_preflight) &&
+		  device_property_read_bool(owner,
+			"mediatek,experimental-wifi-w1-firmware-preflight")) ||
+		 (IS_ENABLED(CONFIG_MTK_MT6797_WIFI_AHB_W2_NIC_CAPABILITY) &&
+		  READ_ONCE(enable_experimental_wifi_w2_nic_capability) &&
+		  device_property_read_bool(owner,
+			"mediatek,experimental-wifi-w2-nic-capability")));
 }
 EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w1_firmware_enabled);
+
+static bool mt6797_wifi_w2_capability_enabled(struct device *owner)
+{
+	return IS_ENABLED(CONFIG_MTK_MT6797_WIFI_AHB_W2_NIC_CAPABILITY) && owner &&
+		READ_ONCE(enable_experimental_wifi_w2_nic_capability) &&
+		device_property_read_bool(owner,
+			"mediatek,experimental-wifi-w2-nic-capability");
+}
 
 static int mt6797_wifi_w1_digest(const u8 *data, size_t size, u8 *digest)
 {
@@ -532,6 +581,54 @@ static void mt6797_wifi_w1_init_header(u8 *packet, u16 wire_length, u16 pq,
 	packet[7] = sequence;
 }
 
+int mt6797_wifi_ahb_w2_capability_command_build(u8 *command, size_t length,
+						 u8 sequence)
+{
+	if (!command)
+		return -EINVAL;
+	if (length != MT6797_WIFI_W2_CAPABILITY_LENGTH)
+		return -EMSGSIZE;
+	/* nic.c:1025-1040 starts the normal command sequence at zero. */
+	if (sequence != MT6797_WIFI_W2_CAPABILITY_SEQUENCE)
+		return -EINVAL;
+
+	memset(command, 0, length);
+	/* wlan_lib.c:3748-3770, CMD_PQ_ID/CMD_PACKET_TYPE_ID. */
+	mt6797_wifi_w1_init_header(command, length, MT6797_WIFI_W1_PQ_CMD,
+		MT6797_WIFI_W2_CMD_NIC_CAPABILITY, sequence);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w2_capability_command_build);
+
+int mt6797_wifi_ahb_w2_capability_event_parse(const u8 *event, size_t length,
+					       u8 sequence,
+					       struct mt6797_wifi_ahb_w2_capability *capability)
+{
+	if (!event || !capability)
+		return -EINVAL;
+	if (length != MT6797_WIFI_W2_CAPABILITY_LENGTH ||
+	    get_unaligned_le16(event) != MT6797_WIFI_W2_CAPABILITY_LENGTH)
+		return -EMSGSIZE;
+	if (get_unaligned_le16(event + 2) != MT6797_WIFI_W1_EVENT_PACKET_TYPE ||
+	    event[4] != MT6797_WIFI_W2_EVENT_NIC_CAPABILITY ||
+	    event[5] != sequence)
+		return -EPROTO;
+
+	/* nic_cmd_event.h:495-516, after the 8-byte WIFI_EVENT_T header. */
+	memset(capability, 0, sizeof(*capability));
+	capability->product_id = get_unaligned_le16(event + 8);
+	capability->firmware_version = get_unaligned_le16(event + 10);
+	capability->driver_version = get_unaligned_le16(event + 12);
+	memcpy(capability->mac_address, event + 16,
+	       sizeof(capability->mac_address));
+	capability->feature_flag0 = get_unaligned_le32(event + 44);
+	capability->feature_flag1 = get_unaligned_le32(event + 48);
+	capability->compile_flag0 = get_unaligned_le32(event + 52);
+	capability->compile_flag1 = get_unaligned_le32(event + 56);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w2_capability_event_parse);
+
 static int mt6797_wifi_w1_wait_config_ack(void __iomem *portal, u8 sequence,
 					  struct mt6797_wifi_w1_config_ack *ack)
 {
@@ -812,6 +909,160 @@ static int mt6797_wifi_w1_clear_post_ready_status(void __iomem *portal,
 	return 0;
 }
 
+static irqreturn_t mt6797_wifi_w2_capability_irq(int irq, void *data)
+{
+	struct mt6797_wifi_w2_capability_irq *capability = data;
+
+	if (!READ_ONCE(capability->armed))
+		return IRQ_NONE;
+	return IRQ_WAKE_THREAD;
+}
+
+static irqreturn_t mt6797_wifi_w2_capability_irq_thread(int irq, void *data)
+{
+	struct mt6797_wifi_w2_capability_irq *capability = data;
+	u16 response_length;
+	int ret;
+
+	if (!READ_ONCE(capability->armed))
+		return IRQ_HANDLED;
+
+	capability->irq_count++;
+	ret = mt6797_wifi_w1_reg_read(capability->portal,
+		MT6797_WIFI_W1_MCR_WHISR, &capability->whisr);
+	if (ret)
+		goto out_complete;
+	/* MT6630 WHISR_RX1_DONE_INT, not a stale TX_DONE/RX0 completion. */
+	if (!(capability->whisr & MT6797_WIFI_W1_WHISR_RX1_DONE)) {
+		ret = -EPROTO;
+		goto out_complete;
+	}
+	ret = mt6797_wifi_w1_reg_read(capability->portal,
+		MT6797_WIFI_W1_MCR_WRPLR, &capability->wrplr);
+	if (ret)
+		goto out_complete;
+	response_length = capability->wrplr >> 16;
+	if (response_length != MT6797_WIFI_W2_CAPABILITY_LENGTH) {
+		ret = -EMSGSIZE;
+		goto out_complete;
+	}
+	/* nic_rx.c:3680-3692 reads this build's four extra portal bytes. */
+	ret = mt6797_wifi_w1_cmd53_read(capability->portal,
+		MT6797_WIFI_W1_MCR_WRDR1, capability->response,
+		sizeof(capability->response));
+	if (ret)
+		goto out_complete;
+	memcpy(capability->event, capability->response,
+	       sizeof(capability->event));
+	{
+		struct mt6797_wifi_ahb_w2_capability parsed;
+
+		ret = mt6797_wifi_ahb_w2_capability_event_parse(capability->event,
+			sizeof(capability->event), capability->sequence, &parsed);
+		if (!ret)
+			dev_info(capability->owner,
+				 "W2_DIAG stage=event ret=0 whisr=%#08x wrplr=%#08x irq-count=%u product=%#04x firmware=%#04x driver=%#04x mac=%pM feature=%#08x/%#08x compile=%#08x/%#08x\n",
+				 capability->whisr, capability->wrplr,
+				 capability->irq_count, parsed.product_id,
+				 parsed.firmware_version, parsed.driver_version,
+				 parsed.mac_address, parsed.feature_flag0,
+				 parsed.feature_flag1, parsed.compile_flag0,
+				 parsed.compile_flag1);
+	}
+out_complete:
+	capability->result = ret;
+	complete(&capability->completion);
+	return IRQ_HANDLED;
+}
+
+static int mt6797_wifi_w2_query_capability(struct device *owner,
+					    void __iomem *portal, int irq)
+{
+	struct mt6797_wifi_w2_capability_irq capability = {
+		.portal = portal,
+		.owner = owner,
+		.sequence = MT6797_WIFI_W2_CAPABILITY_SEQUENCE,
+		.result = -ETIMEDOUT,
+	};
+	u8 command[MT6797_WIFI_W2_CAPABILITY_LENGTH];
+	unsigned long completed;
+	bool irq_requested = false;
+	bool device_irq_enabled = false;
+	int causal_ret = 0;
+	int cleanup_ret = 0;
+	int ret;
+
+	if (!owner || !portal || irq <= 0)
+		return -EINVAL;
+	init_completion(&capability.completion);
+
+	/*
+	 * The post-READY WHISR/read-release pass has completed.  nic_rx.c:3635-64
+	 * identifies this upper WRPLR half as port 1; anything already queued is
+	 * not the response to this command and is therefore terminal.
+	 */
+	ret = mt6797_wifi_w1_reg_read(portal, MT6797_WIFI_W1_MCR_WRPLR,
+		&capability.wrplr);
+	if (ret)
+		goto out_summary;
+	if (capability.wrplr >> 16) {
+		ret = -EUCLEAN;
+		goto out_summary;
+	}
+	ret = mt6797_wifi_ahb_w2_capability_command_build(command,
+		sizeof(command), capability.sequence);
+	if (ret)
+		goto out_summary;
+
+	/* nic.c:348-380 enables the real platform IRQ only after status reset. */
+	ret = request_threaded_irq(irq, mt6797_wifi_w2_capability_irq,
+		mt6797_wifi_w2_capability_irq_thread, IRQF_ONESHOT,
+		"mt6797-wifi-w2-capability", &capability);
+	if (ret)
+		goto out_summary;
+	irq_requested = true;
+	WRITE_ONCE(capability.armed, true);
+	/* Make the response state visible before WHLPCR can assert the line. */
+	smp_wmb();
+	ret = mt6797_wifi_w1_reg_write(portal, MT6797_WIFI_W1_MCR_WHLPCR,
+		MT6797_WIFI_W1_WHLPCR_INT_SET);
+	if (ret)
+		goto out_disable_irq;
+	device_irq_enabled = true;
+	ret = mt6797_wifi_w1_cmd53_write(portal, MT6797_WIFI_W1_MCR_WTDR1,
+		command, sizeof(command));
+	if (ret)
+		goto out_disable_irq;
+	completed = wait_for_completion_timeout(&capability.completion,
+		msecs_to_jiffies(MT6797_WIFI_W2_RESPONSE_TIMEOUT_MS));
+	if (!completed)
+		ret = -ETIMEDOUT;
+	else
+		ret = capability.result;
+
+out_disable_irq:
+	causal_ret = ret;
+	if (device_irq_enabled) {
+		cleanup_ret = mt6797_wifi_w1_reg_write(portal,
+			MT6797_WIFI_W1_MCR_WHLPCR,
+			MT6797_WIFI_W1_WHLPCR_INT_CLR);
+		device_irq_enabled = false;
+	}
+	WRITE_ONCE(capability.armed, false);
+	if (irq_requested)
+		free_irq(irq, &capability);
+	if (!ret)
+		ret = cleanup_ret;
+out_summary:
+	if (!irq_requested)
+		causal_ret = ret;
+	dev_info(owner,
+		 "W2_DIAG stage=capability causal=%d cleanup=%d irq=%d whisr=%#08x wrplr=%#08x irq-count=%u sequence=%u\n",
+		 causal_ret, cleanup_ret, irq, capability.whisr, capability.wrplr,
+		 capability.irq_count, capability.sequence);
+	return ret;
+}
+
 static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 {
 	struct device_node *wifi_np;
@@ -831,9 +1082,11 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 	u8 ioex_restored = 0;
 	u8 sequence = 1;
 	bool function_enabled = false, block_size_set = false;
+	bool w2_capability;
 	int block_cleanup_ret = 0;
 	int cleanup_ret = 0;
 	int function_cleanup_ret = 0;
+	int wifi_irq = -1;
 	int ret;
 	unsigned int i;
 	unsigned int own_polls = 0;
@@ -853,6 +1106,7 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 	if (!power || !power->owner || !power->lease || !power->firmware ||
 	    !mt6797_btif_stp_bootstrap_full_wmt_lease_active(power->lease))
 		return -EPERM;
+	w2_capability = mt6797_wifi_w2_capability_enabled(power->owner);
 	ret = mt6797_wifi_ahb_w1_idlm_transfer_account(&power->image,
 		&expected_frames, &expected_transfer_bytes);
 	if (ret)
@@ -872,11 +1126,19 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 		goto out_free_image_packet;
 	}
 	ret = of_address_to_resource(wifi_np, 0, &hif);
+	if (!ret && w2_capability)
+		wifi_irq = of_irq_get(wifi_np, 0);
 	of_node_put(wifi_np);
 	if (ret)
 		dev_info(power->owner, "W1_DIAG stage=portal-resource ret=%d\n", ret);
 	if (ret)
 		goto out_free_image_packet;
+	if (w2_capability && wifi_irq <= 0) {
+		ret = wifi_irq ?: -EINVAL;
+		dev_info(power->owner, "W2_DIAG stage=portal-irq ret=%d irq=%d\n",
+			 ret, wifi_irq);
+		goto out_free_image_packet;
+	}
 	if (hif.start != MT6797_WIFI_AHB_HIF_BASE ||
 	    resource_size(&hif) < MT6797_WIFI_AHB_HIF_PORTAL_SIZE) {
 		ret = -EINVAL;
@@ -970,7 +1232,6 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 			 "W1_DIAG stage=ready ret=%d raw=%#08x polls=%u\n", ret,
 			 ready_raw, ready_polls);
 	}
-	/* Do not enable IRQ: vendor has no isolated post-enable event source. */
 	if (!ret) {
 		ret = mt6797_wifi_w1_clear_post_ready_status(portal, &status, released);
 		dev_info(power->owner,
@@ -978,6 +1239,8 @@ static int mt6797_wifi_w1_stream(struct mt6797_wifi_w1_power *power)
 			 ret, status, released[0], released[1], released[2], released[3],
 			 released[4], released[5], released[6], released[7]);
 	}
+	if (!ret && w2_capability)
+		ret = mt6797_wifi_w2_query_capability(power->owner, portal, wifi_irq);
 out_unlock:
 	/* Every attempted mutable CCCR operation is read back after restoration. */
 	if (block_size_set) {

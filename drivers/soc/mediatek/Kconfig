@@ -637,25 +637,35 @@ config MTK_MT6797_WIFI_AHB_WCIR_KUNIT_TEST
 	  memory only. No Device Tree, MMIO, regulator, WMT, or radio is accessed.
 
 config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT
-	tristate "MT6797 WLAN GEN3 AHB W1 pinned firmware preflight"
+	tristate "MT6797 WLAN GEN3 AHB W1 pinned firmware/READY proof"
 	depends on ARM64 && ARCH_MEDIATEK && OF && FW_LOADER
 	depends on CRYPTO_SHA256
 	depends on MTK_MT6797_WIFI_AHB_WCIR_OBSERVE
 	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
 	help
-	  Verify the exact WIFI_RAM_CODE_6797 image size and SHA-256 while the
-	  completed G2d full-WMT lease is active.  Its own DT property and read-only
-	  module parameter are both required, in addition to the corrected W0 HIF
-	  observation gate.  It does not stream firmware, start Wi-Fi, request an
-	  IRQ, instantiate a WLAN transport, create a netdev, or transmit packets.
+	  Verify and parse the exact WIFI_RAM_CODE_6797 image, send both IDLM
+	  sections through the vendor HIF framing, copy both EMI sections through
+	  the provider-owned temporary region-18 window, start firmware and poll
+	  WCIR.READY while the completed G2d full-WMT lease is active. Its own DT
+	  property and read-only module parameter are both required, in addition to
+	  the corrected W0 HIF observation gate.
+
+	  W1 clears post-ready status and TX release counters, but deliberately
+	  leaves global IRQ delivery disabled: the vendor only enables the IRQ after
+	  its full normal adapter/IST setup and provides no isolated post-enable
+	  event that could prove an IRQ without accepting stale status. It creates no
+	  WLAN transport, netdev, DMA path, cfg80211 device, or user API.
 
 config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_KUNIT_TEST
 	bool "KUnit tests for MT6797 WLAN W1 firmware preflight"
 	depends on KUNIT=y
 	depends on MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT=y
 	help
-	  Exercise the exact firmware size and SHA-256 pin policy in memory only.
-	  No firmware request, Device Tree, MMIO, regulator, WMT, or radio is used.
+	  Exercise the exact firmware size/SHA-256 pin policy, divided-header parser,
+	  complete IDLM frame accounting, and cleanup-failure fencing in memory only.
+	  The fixture rejects every changed section field even after its CRC is
+	  recomputed. No firmware request, Device Tree, MMIO, regulator, WMT, or
+	  radio is used.
 
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"

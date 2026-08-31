@@ -205,6 +205,15 @@ static void mt6797_wifi_ahb_cmd53_packs_vendor_wcir_read(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, word, 0x10000004U);
 }
 
+static void mt6797_wifi_ahb_cmd53_packs_vendor_fixed_port_write(struct kunit *test)
+{
+	u32 word;
+
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ahb_cmd53_write_pack(0x34, 20, &word), 0);
+	/* write/function-1/fixed-port/byte-mode/count-20 */
+	KUNIT_EXPECT_EQ(test, word, 0x90006814U);
+}
+
 static void mt6797_wifi_ahb_cmd52_packs_vendor_cccr_access(struct kunit *test)
 {
 	u32 word;
@@ -238,6 +247,7 @@ static struct kunit_case mt6797_wifi_ahb_wcir_test_cases[] = {
 	KUNIT_CASE(mt6797_wifi_ahb_wcir_separates_ready_from_identity),
 	KUNIT_CASE(mt6797_wifi_ahb_wcir_requires_complete_guard),
 	KUNIT_CASE(mt6797_wifi_ahb_cmd53_packs_vendor_wcir_read),
+	KUNIT_CASE(mt6797_wifi_ahb_cmd53_packs_vendor_fixed_port_write),
 	KUNIT_CASE(mt6797_wifi_ahb_cmd52_packs_vendor_cccr_access),
 	KUNIT_CASE(mt6797_wifi_ahb_command_pack_refuses_invalid_fields),
 	KUNIT_CASE(mt6797_wifi_ahb_w0_fault_paths),

@@ -48,15 +48,32 @@ int mt6797_wifi_ahb_wcir_observe(struct device *owner,
 				 struct regulator *wifi_paldo,
 				 struct mt6797_wifi_ahb_wcir *wcir);
 
-/*
- * W1 deliberately verifies the exact initramfs image before any future HIF
- * stream/IRQ step.  It never sends it, requests an IRQ, or exposes a netdev.
- */
+/* W1 is an explicitly gated, one-shot firmware download/start/READY proof. */
 bool mt6797_wifi_ahb_w1_firmware_enabled(struct device *owner);
 int mt6797_wifi_ahb_w1_firmware_validate(const u8 *data, size_t size,
 					 size_t expected_size,
 					 const u8 *expected_digest);
+struct mt6797_wifi_ahb_w1_section {
+	u32 offset;
+	u32 length;
+	u32 destination;
+	u8 key_index;
+	bool encrypted;
+};
+
+#define MT6797_WIFI_AHB_W1_SECTION_COUNT 4
+
+struct mt6797_wifi_ahb_w1_image {
+	struct mt6797_wifi_ahb_w1_section section[MT6797_WIFI_AHB_W1_SECTION_COUNT];
+};
+
+int mt6797_wifi_ahb_w1_firmware_parse(const u8 *data, size_t size,
+				       struct mt6797_wifi_ahb_w1_image *image);
+int mt6797_wifi_ahb_w1_idlm_transfer_account(
+		const struct mt6797_wifi_ahb_w1_image *image,
+		u32 *frame_count, size_t *transfer_bytes);
 int mt6797_wifi_ahb_w1_firmware_preflight(struct device *owner,
-			  const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
+		  const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		  struct regulator *bt_paldo, struct regulator *wifi_paldo);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_WIFI_AHB_H */

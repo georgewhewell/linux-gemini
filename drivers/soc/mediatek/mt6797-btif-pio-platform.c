@@ -607,9 +607,12 @@ static irqreturn_t mt6797_btif_pio_platform_irq_thread(int irq, void *context)
 	ret = mt6797_btif_pio_irq(pio_lease);
 	if (ret == -EAGAIN)
 		return IRQ_NONE;
-	if (ret == -EOVERFLOW || ret == -EPROTO || ret == -ESHUTDOWN) {
+	if (ret) {
 		/*
-		 * These PIO paths already clear BTIF IER and invalidate its lease.
+		 * Every non-spurious PIO error clears BTIF IER and invalidates its
+		 * lease.  In particular, a receive callback may return -EBADMSG or
+		 * -EIO after RBR has advanced; do not leave a level-low line enabled
+		 * waiting for a second IRQ merely to observe -ESHUTDOWN.
 		 * Mask the Linux line from its own threaded handler without waiting on
 		 * ourselves; normal close/remove uses the synchronous variant.
 		 */
@@ -805,6 +808,9 @@ MODULE_LICENSE("GPL");
 struct mt6797_btif_pio_platform_test_bus {
 	u32 regs[MT6797_BTIF_PIO_PLATFORM_TEST_REGS];
 	u32 iir;
+	u8 rx[1];
+	size_t rx_length;
+	size_t rx_position;
 	u8 loopback_byte;
 	unsigned int write8_count;
 	bool loopback_pending;
@@ -876,6 +882,8 @@ static u32 mt6797_btif_pio_platform_test_read32(void *context, u32 offset)
 	if (offset == 0x08)
 		if (bus->loopback_pending)
 			return BIT(2);
+	if (offset == 0x08 && bus->rx_position < bus->rx_length)
+		return BIT(2);
 	if (offset == 0x08)
 		return bus->iir;
 	return bus->regs[offset / sizeof(u32)];
@@ -897,7 +905,11 @@ static u8 mt6797_btif_pio_platform_test_read8(void *context, u32 offset)
 
 	if (!bus->btifc_enabled)
 		bus->io_while_btifc_disabled = true;
-	if (offset != 0 || !bus->loopback_pending)
+	if (offset != 0)
+		return 0;
+	if (bus->rx_position < bus->rx_length)
+		return bus->rx[bus->rx_position++];
+	if (!bus->loopback_pending)
 		return 0;
 	bus->loopback_pending = false;
 	return bus->loopback_byte;
@@ -1257,6 +1269,34 @@ static void mt6797_btif_pio_platform_test_irq_fence(struct kunit *test)
 	mt6797_btif_pio_platform_test_stop(ctx);
 }
 
+static void mt6797_btif_pio_platform_test_callback_error_fences_irq(
+		struct kunit *test)
+{
+	struct mt6797_btif_pio_platform_test_context *ctx;
+	const struct mt6797_btif_pio_platform_lease *lease;
+	bool enabled = READ_ONCE(enable_experimental_platform_adapter);
+
+	ctx = mt6797_btif_pio_platform_test_start(test);
+	lease = mt6797_btif_pio_platform_reserve(&ctx->adapter);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
+	WRITE_ONCE(enable_experimental_platform_adapter, true);
+	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_platform_attach_full_stp(lease,
+								&ctx->runtime_lease,
+								ctx->stp_lease), 0);
+	/* Full-STP SYNC rejects 0x00 with -EBADMSG, which PIO fences. */
+	ctx->bus->rx[0] = 0x00;
+	ctx->bus->rx_length = 1;
+	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_platform_irq_thread(ctx->adapter.irq,
+								      &ctx->adapter), IRQ_HANDLED);
+	flush_work(&ctx->adapter.fatal_close_work);
+	KUNIT_EXPECT_EQ(test, ctx->bus->disable_nosync_count, 1U);
+	KUNIT_EXPECT_EQ(test, ctx->adapter.state,
+			MT6797_BTIF_PIO_PLATFORM_FENCED);
+	KUNIT_EXPECT_FALSE(test, ctx->adapter.irq_enabled);
+	WRITE_ONCE(enable_experimental_platform_adapter, enabled);
+	mt6797_btif_pio_platform_test_stop(ctx);
+}
+
 #if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
 
 static void mt6797_btif_pio_platform_test_bootstrap_factory(struct kunit *test)
@@ -1306,6 +1346,7 @@ static struct kunit_case mt6797_btif_pio_platform_test_cases[] = {
 	KUNIT_CASE(mt6797_btif_pio_platform_test_loopback_byte_irq_fences),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_activate_close_once),
 	KUNIT_CASE(mt6797_btif_pio_platform_test_irq_fence),
+	KUNIT_CASE(mt6797_btif_pio_platform_test_callback_error_fences_irq),
 #if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
 	KUNIT_CASE(mt6797_btif_pio_platform_test_bootstrap_factory),
 #endif

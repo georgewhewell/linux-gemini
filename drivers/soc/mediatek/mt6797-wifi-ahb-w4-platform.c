@@ -56,7 +56,12 @@
 #define W4_CMD_ID_SET_BSS_INFO 0x12U
 #define W4_CMD_ID_UPDATE_STA_RECORD 0x13U
 #define W4_CMD_ID_CH_PRIVILEGE 0x1cU
-#define W4_CMD_PKT_TYPE 0x20U
+/*
+ * The active gen3 driver assigns CMD_PACKET_TYPE_ID (0xa0) in nicTxCmd().
+ * nic_cmd_event.h's WIFI_CMD_T member comment still says 0x20, but that stale
+ * comment does not describe the bytes written by the actually-built driver.
+ */
+#define W4_CMD_PKT_TYPE 0xa0U
 #define W4_SCAN_SSID_SLOT_LEN 36U
 #define W4_SCAN_REQ_V2_IE_OFFSET 226U
 #define W4_SCAN_MAX_IE_LEN 600U

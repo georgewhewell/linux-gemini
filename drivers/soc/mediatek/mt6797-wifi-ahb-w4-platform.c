@@ -42,7 +42,7 @@
 #define W4_RX_MAX 2352U
 #define W4_RX_BUDGET 32U
 #define W4_RX_DESCRIPTOR_MIN 16U
-#define W4_RX_STATUS_ERROR_MASK 0x07f8U
+#define W4_RX_STATUS_ERROR_MASK (BIT(1) | BIT(3) | BIT(4))
 #define W4_WIFI_EVENT_HEADER_LEN 8U
 #define W4_EVENT_ID_SCAN_DONE 0x0dU
 #define W4_EVENT_ID_CH_PRIVILEGE 0x10U
@@ -530,11 +530,16 @@ static int w4_rx_deliver(struct mt6797_wifi_w4 *w4, unsigned int port, u16 len)
 	    (status & W4_RX_STATUS_ERROR_MASK))
 		goto out;
 	/* Vendor group order is 4,1,2,3 following HW_MAC_RX_DESC_T. */
-	if (groups & BIT(3)) off += 12;
-	if (groups & BIT(0)) off += 16;
-	if (groups & BIT(1)) off += 8;
-	if (groups & BIT(2)) off += 24;
-	if (header_len & BIT(6)) off += 2;
+	if (groups & BIT(3))
+		off += 16;
+	if (groups & BIT(0))
+		off += 16;
+	if (groups & BIT(1))
+		off += 8;
+	if (groups & BIT(2))
+		off += 24;
+	if (header_len & BIT(6))
+		off += 2;
 	if (off >= byte_count)
 		goto out;
 	/* Vendor RXM_RXD_PKT_TYPE_SW_FRAME is (u2PktTYpe & 0xe00f) == 0xe001.

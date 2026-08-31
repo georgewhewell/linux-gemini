@@ -47,7 +47,9 @@ struct mt6797_md1_wdt_gate {
 	const struct mt6797_md1_wdt_gate_ops *ops;
 	void *context;
 	struct mutex lock;
+	/* Samples immediately before and after the two vendor key writes. */
 	struct mt6797_md1_wdt_status_observation observation;
+	struct mt6797_md1_wdt_status_observation post_observation;
 	enum mt6797_md1_wdt_gate_state state;
 	int last_error;
 };

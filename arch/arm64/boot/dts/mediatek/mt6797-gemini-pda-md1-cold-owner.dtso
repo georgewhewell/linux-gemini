@@ -4,8 +4,10 @@
  *
  * This overlay does not run on its own. The driver also needs the explicit
  * mt6797_md1_cold_owner.enable_experimental_md1_cold_owner=1 module parameter.
- * Its successful terminal state is before modem WDT, remap/MPU, boot-vector,
- * IRQ, CLDMA, shared-memory, transport, SIM and RF ownership.
+ * It carries the default-disabled EMI-MPU, remap observer and boot-vector
+ * candidate. All nodes and both release parameters remain off by default.
+ * It stops after bounded boot-status/CCIF observation, before IRQ, CLDMA,
+ * shared-memory, transport, SIM and RF ownership.
  */
 
 /dts-v1/;
@@ -21,6 +23,21 @@
 			#address-cells = <2>;
 			#size-cells = <2>;
 
+			md1_emi_mpu: modem-emi-mpu {
+				compatible = "mediatek,mt6797-md1-emi-mpu";
+				mediatek,experimental-md1-emi-mpu;
+				status = "disabled";
+			};
+
+			md1_remap_observe: modem-remap-observe {
+				compatible = "mediatek,mt6797-md1-remap-observe";
+				reg = <0 0x10001000 0 0x1000>;
+				reg-names = "infracfg-ao";
+				mediatek,experimental-md1-remap-observe;
+				mediatek,stage-lk-remap-observe-read-only;
+				status = "disabled";
+			};
+
 			md1_cold_owner: modem-cold-owner {
 				compatible = "mediatek,mt6797-md1-cold-owner";
 				reg = <0 0x10001000 0 0x1000>,
@@ -32,14 +49,21 @@
 				      <0 0x20060000 0 0xd0>,
 				      <0 0x260f0000 0 0x200>,
 				      <0 0x20140000 0 0x18>,
-				      <0 0x20120000 0 0xd0>;
+				      <0 0x20120000 0 0xd0>,
+				      <0 0x200f0100 0 0x300>,
+				      <0 0x26010000 0 0x40>,
+				      <0 0x20000024 0 0x4>,
+				      <0 0x10201300 0 0x8>;
 				reg-names = "infracfg", "ap-ccif", "md-ccif", "apmixed",
 					    "md-clksw", "md-dcm", "md-peri-misc", "md-l1-a0",
-					    "md-top-pll", "md-sys-clk";
+					    "md-top-pll", "md-sys-clk", "md-rgu", "l1-rgu",
+					    "boot-vector", "boot-status";
 				mediatek,experimental-md1-cold-owner;
 				mediatek,stage-cold-reset-held;
 				mediatek,pmic = <&pmic>;
 				mediatek,spm = <&scpsys>;
+				mediatek,emi-mpu = <&md1_emi_mpu>;
+				mediatek,stage-md1-boot-vector-release;
 				status = "disabled";
 			};
 		};

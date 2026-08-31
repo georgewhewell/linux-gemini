@@ -7,7 +7,10 @@
  * it must not borrow the unbuilt mt_spm_mtcmos.c PCM/C2K path: the two paths
  * use different isolation and bus-protection controls.
  *
- * No function maps or writes MD_BOOT_VECTOR_EN (0x20000024).
+ * The explicitly separately-gated terminal stage follows vendor MD1 WDT
+ * writes with an AP-visible status sample, applies the staged secure MPU
+ * contract, writes MD_BOOT_VECTOR_EN once, and observes boot-status/CCIF.
+ * It intentionally stops before IRQ, CLDMA, shared-memory or CCCI transport.
  */
 
 #include <linux/delay.h>
@@ -25,8 +28,12 @@
 #include <linux/regmap.h>
 #include <linux/soc/mediatek/mt6797-md1-boot-status-observe.h>
 #include <linux/soc/mediatek/mt6797-md1-cold-owner.h>
+#include <linux/soc/mediatek/mt6797-md1-emi-mpu.h>
 #include <linux/soc/mediatek/mt6797-md1-lk-handoff.h>
+#include <linux/soc/mediatek/mt6797-md1-mpu-remap-plan.h>
 #include <linux/soc/mediatek/mt6797-md1-prerelease.h>
+#include <linux/soc/mediatek/mt6797-md1-remap-observe.h>
+#include <linux/soc/mediatek/mt6797-md1-wdt-gate.h>
 
 #define MT6797_MD1_INFRA_BASE			0x10001000
 #define MT6797_MD1_INFRA_SIZE			0x1000
@@ -48,6 +55,14 @@
 #define MT6797_MD1_TOP_PLL_SIZE		0x18
 #define MT6797_MD1_SYS_CLK_BASE		0x20120000
 #define MT6797_MD1_SYS_CLK_SIZE		0xd0
+#define MT6797_MD1_RGU_BASE			0x200f0100
+#define MT6797_MD1_RGU_SIZE			0x300
+#define MT6797_MD1_L1_RGU_BASE			0x26010000
+#define MT6797_MD1_L1_RGU_SIZE			0x40
+#define MT6797_MD1_BOOT_VECTOR_BASE		0x20000024
+#define MT6797_MD1_BOOT_VECTOR_SIZE		0x4
+#define MT6797_MD1_BOOT_STATUS_BASE		0x10201300
+#define MT6797_MD1_BOOT_STATUS_SIZE		0x8
 
 #define MT6797_MD1_INFRA_PROTECT_EN		0x220
 #define MT6797_MD1_INFRA_PROTECT_STA1		0x228
@@ -85,7 +100,20 @@
 #define MT6797_MD1_CCIF_CHANNELS		16
 #define MT6797_MD1_CCIF_SRAM_BYTES		512
 
+/* cldma_platform.h WDT mode/status offsets and exact MD1 keys. */
+#define MT6797_MD1_WDT_MD_MODE			0x000
+#define MT6797_MD1_WDT_MD_STATUS		0x034
+#define MT6797_MD1_WDT_L1_MODE			0x000
+#define MT6797_MD1_WDT_L1_STATUS		0x00c
+#define MT6797_MD1_WDT_MD_MODE_KEY		0x55000008
+#define MT6797_MD1_WDT_L1_MODE_KEY		0x00002200
+#define MT6797_MD1_BOOT_VECTOR_ENABLE		1
+#define MT6797_MD1_BOOT_STATUS0			0x0
+#define MT6797_MD1_BOOT_STATUS1			0x4
+
 #define MT6797_MD1_MAX_POWER_POLLS		100
+#define MT6797_MD1_MAX_BOOT_OBSERVE_POLLS	1000
+#define MT6797_MD1_BOOT_OBSERVE_DELAY_US	100
 
 struct mt6797_md1_cold_owner_resource {
 	const char *name;
@@ -104,6 +132,10 @@ enum mt6797_md1_cold_owner_resource_id {
 	MT6797_MD1_RES_L1_A0,
 	MT6797_MD1_RES_TOP_PLL,
 	MT6797_MD1_RES_SYS_CLK,
+	MT6797_MD1_RES_MD_RGU,
+	MT6797_MD1_RES_L1_RGU,
+	MT6797_MD1_RES_BOOT_VECTOR,
+	MT6797_MD1_RES_BOOT_STATUS,
 	MT6797_MD1_RES_COUNT,
 };
 
@@ -128,6 +160,14 @@ static const struct mt6797_md1_cold_owner_resource mt6797_md1_cold_resources[] =
 		MT6797_MD1_TOP_PLL_SIZE },
 	[MT6797_MD1_RES_SYS_CLK] = { "md-sys-clk", MT6797_MD1_SYS_CLK_BASE,
 		MT6797_MD1_SYS_CLK_SIZE },
+	[MT6797_MD1_RES_MD_RGU] = { "md-rgu", MT6797_MD1_RGU_BASE,
+		MT6797_MD1_RGU_SIZE },
+	[MT6797_MD1_RES_L1_RGU] = { "l1-rgu", MT6797_MD1_L1_RGU_BASE,
+		MT6797_MD1_L1_RGU_SIZE },
+	[MT6797_MD1_RES_BOOT_VECTOR] = { "boot-vector", MT6797_MD1_BOOT_VECTOR_BASE,
+		MT6797_MD1_BOOT_VECTOR_SIZE },
+	[MT6797_MD1_RES_BOOT_STATUS] = { "boot-status", MT6797_MD1_BOOT_STATUS_BASE,
+		MT6797_MD1_BOOT_STATUS_SIZE },
 };
 
 struct mt6797_md1_cold_owner_backend {
@@ -138,15 +178,21 @@ struct mt6797_md1_cold_owner_backend {
 	struct mt6797_md1_pmic_snapshot pmic_snapshot;
 	struct mt6797_md1_clkbuf_snapshot clkbuf_snapshot;
 	enum mt6797_md1_cold_owner_pll_stage pll_stage;
+	struct mt6797_md1_wdt_gate wdt_gate;
 };
 
 static bool enable_experimental_md1_cold_owner;
+static bool enable_experimental_md1_boot_vector_release;
 /* A failed post-observation transaction may have changed MD1 state. */
 static atomic_t mt6797_md1_cold_owner_fatal_latch = ATOMIC_INIT(0);
 module_param_named(enable_experimental_md1_cold_owner,
 			   enable_experimental_md1_cold_owner, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_md1_cold_owner,
 	"run the one-shot, source-backed MT6797 MD1 cold owner (default: false)");
+module_param_named(enable_experimental_md1_boot_vector_release,
+			enable_experimental_md1_boot_vector_release, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_md1_boot_vector_release,
+	"allow the separately gated MT6797 MD1 WDT/boot-vector candidate (default: false)");
 
 static int mt6797_md1_cold_map_resource(struct platform_device *pdev,
 	enum mt6797_md1_cold_owner_resource_id id, void __iomem **base)
@@ -622,28 +668,204 @@ static const struct mt6797_md1_cold_owner_ops mt6797_md1_cold_owner_ops = {
 	.pll_poll = mt6797_md1_cold_pll_poll,
 };
 
+/*
+ * The LK loader owns the live remap and permanently locks it.  This runner
+ * never replaces it: a separately gated read-only observer must first attest
+ * the exact plan that this transaction will send to the secure MPU provider.
+ */
+static int mt6797_md1_cold_candidate_plan_get(
+	struct mt6797_md1_mpu_remap_plan *plan)
+{
+	struct mt6797_md1_remap_observation observation;
+	int ret;
+
+	ret = mt6797_md1_lk_handoff_plan_get(plan);
+	if (ret)
+		return ret == -ENODATA ? -EPROBE_DEFER : ret;
+	ret = mt6797_md1_remap_observation_get(&observation);
+	if (ret)
+		return ret == -ENODATA ? -EPROBE_DEFER : ret;
+	if (observation.classification || !observation.attestation.lk_lock_observed ||
+	    !observation.attestation.secure_mpu_unobservable ||
+	    observation.attestation.mode == MT6797_MD1_REMAP_ATTEST_NONE)
+		return -EUCLEAN;
+
+	return 0;
+}
+
+static int mt6797_md1_cold_apply_initial_mpu(struct device *dev,
+	const struct mt6797_md1_mpu_remap_plan *plan)
+{
+	struct mt6797_md1_mpu_plan_entry entries[2] = {
+		plan->mpu[0],
+		plan->mpu[MT6797_MD1_MPU_SHARED_ENTRY],
+	};
+
+	return mt6797_md1_emi_mpu_apply(dev, plan, MT6797_MD1_EMI_MPU_INITIAL,
+					entries, ARRAY_SIZE(entries));
+}
+
+static int mt6797_md1_cold_apply_stage1_mpu(struct device *dev,
+	const struct mt6797_md1_mpu_remap_plan *plan)
+{
+	struct mt6797_md1_mpu_plan_entry entries[4] = {
+		plan->mpu[1], plan->mpu[2], plan->mpu[3], plan->mpu[4],
+	};
+
+	/* Vendor ccci_set_mem_access_protection_1st_stage() temporary region 13. */
+	entries[1].access_permission = 0x0016db44;
+	return mt6797_md1_emi_mpu_apply(dev, plan, MT6797_MD1_EMI_MPU_STAGE1,
+					entries, ARRAY_SIZE(entries));
+}
+
+static int mt6797_md1_cold_wdt_observe(void *context,
+	struct mt6797_md1_wdt_status_observation *observation)
+{
+	struct mt6797_md1_cold_owner_backend *backend = context;
+
+	if (!backend || !observation)
+		return -EINVAL;
+	observation->md_status = readl(backend->base[MT6797_MD1_RES_MD_RGU] +
+		MT6797_MD1_WDT_MD_STATUS);
+	observation->l1_status = readl(backend->base[MT6797_MD1_RES_L1_RGU] +
+		MT6797_MD1_WDT_L1_STATUS);
+	return 0;
+}
+
+static int mt6797_md1_cold_wdt_write_md_key(void *context)
+{
+	struct mt6797_md1_cold_owner_backend *backend = context;
+
+	if (!backend)
+		return -EINVAL;
+	writel(MT6797_MD1_WDT_MD_MODE_KEY,
+	       backend->base[MT6797_MD1_RES_MD_RGU] + MT6797_MD1_WDT_MD_MODE);
+	return 0;
+}
+
+static int mt6797_md1_cold_wdt_write_l1_key(void *context)
+{
+	struct mt6797_md1_cold_owner_backend *backend = context;
+
+	if (!backend)
+		return -EINVAL;
+	writel(MT6797_MD1_WDT_L1_MODE_KEY,
+	       backend->base[MT6797_MD1_RES_L1_RGU] + MT6797_MD1_WDT_L1_MODE);
+	return 0;
+}
+
+static const struct mt6797_md1_wdt_gate_ops mt6797_md1_cold_wdt_ops = {
+	.abi = MT6797_MD1_WDT_GATE_ABI,
+	.observe_status = mt6797_md1_cold_wdt_observe,
+	.write_md_mode_key = mt6797_md1_cold_wdt_write_md_key,
+	.write_l1_mode_key = mt6797_md1_cold_wdt_write_l1_key,
+};
+
+static int mt6797_md1_cold_wdt_run(struct mt6797_md1_cold_owner_backend *backend,
+	struct mt6797_md1_cold_owner *owner)
+{
+	const struct mt6797_md1_wdt_gate_preflight preflight = {
+		.cold_owner_pll_ready_wdt_unowned =
+			mt6797_md1_cold_owner_state(owner) ==
+			MT6797_MD1_COLD_OWNER_PLL_READY_WDT_UNOWNED,
+	};
+	int ret;
+
+	ret = mt6797_md1_wdt_gate_init(&backend->wdt_gate,
+					&mt6797_md1_cold_wdt_ops, backend);
+	if (ret)
+		return ret;
+	ret = mt6797_md1_wdt_gate_run(&backend->wdt_gate, &preflight);
+	if (ret)
+		return ret;
+	dev_info(backend->dev,
+		 "MD1 WDT keys attempted; status %#x/%#x -> %#x/%#x (diagnostic only)\n",
+		 backend->wdt_gate.observation.md_status,
+		 backend->wdt_gate.observation.l1_status,
+		 backend->wdt_gate.post_observation.md_status,
+		 backend->wdt_gate.post_observation.l1_status);
+	return 0;
+}
+
+static bool mt6797_md1_cold_ccif_activity(
+	const struct mt6797_md1_cold_owner_ccif *ccif)
+{
+	return ccif->ap_busy || ccif->md_busy || ccif->ap_ack || ccif->md_ack ||
+		ccif->ap_sram_nonzero_words || ccif->md_sram_nonzero_words;
+}
+
+static int mt6797_md1_cold_boot_vector_release(
+	struct mt6797_md1_cold_owner_backend *backend,
+	const struct mt6797_md1_boot_status_evidence *before)
+{
+	struct mt6797_md1_cold_owner_ccif ccif;
+	void __iomem *boot_vector = backend->base[MT6797_MD1_RES_BOOT_VECTOR];
+	void __iomem *boot_status = backend->base[MT6797_MD1_RES_BOOT_STATUS];
+	u32 vector, stats0, stats1;
+	unsigned int attempt;
+	int ret;
+
+	/* Vendor cldma_platform.c::md_cd_let_md_go(): MD_BOOT_VECTOR_EN <- 1. */
+	writel(MT6797_MD1_BOOT_VECTOR_ENABLE, boot_vector);
+	vector = readl(boot_vector);
+	if (vector != MT6797_MD1_BOOT_VECTOR_ENABLE)
+		return -EIO;
+
+	for (attempt = 0; attempt < MT6797_MD1_MAX_BOOT_OBSERVE_POLLS; attempt++) {
+		stats0 = readl(boot_status + MT6797_MD1_BOOT_STATUS0);
+		stats1 = readl(boot_status + MT6797_MD1_BOOT_STATUS1);
+		ret = mt6797_md1_cold_ccif_observe(backend, &ccif);
+		if (ret)
+			return ret;
+		if (stats0 != before->stats0_final || stats1 != before->stats1_final ||
+		    mt6797_md1_cold_ccif_activity(&ccif)) {
+			dev_info(backend->dev,
+				 "MD1 boot-vector readback=%#x after %u polls; boot=%#x/%#x CCIF busy=%#x/%#x ack=%#x/%#x sram=%u/%u\n",
+				 vector, attempt + 1, stats0, stats1, ccif.ap_busy,
+				 ccif.md_busy, ccif.ap_ack, ccif.md_ack,
+				 ccif.ap_sram_nonzero_words, ccif.md_sram_nonzero_words);
+			return 0;
+		}
+		udelay(MT6797_MD1_BOOT_OBSERVE_DELAY_US);
+	}
+
+	dev_crit(backend->dev,
+		 "MD1 boot-vector readback=%#x but no boot-status or CCIF movement in %u bounded polls\n",
+		 vector, MT6797_MD1_MAX_BOOT_OBSERVE_POLLS);
+	return -ETIMEDOUT;
+}
+
 static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 {
 	struct mt6797_md1_boot_status_evidence boot_status;
 	struct mt6797_md1_boot_status_preflight preflight;
+	struct mt6797_md1_mpu_remap_plan plan;
 	struct mt6797_md1_cold_owner_backend *backend;
 	struct mt6797_md1_cold_owner *owner;
+	bool mpu_started = false;
 	unsigned int i;
 	int ret;
 
 	if (!READ_ONCE(enable_experimental_md1_cold_owner) ||
+	    !READ_ONCE(enable_experimental_md1_boot_vector_release) ||
 	    !device_property_read_bool(&pdev->dev,
 				       "mediatek,experimental-md1-cold-owner") ||
 	    !device_property_read_bool(&pdev->dev,
-				       "mediatek,stage-cold-reset-held"))
+				       "mediatek,stage-cold-reset-held") ||
+	    !device_property_read_bool(&pdev->dev,
+				       "mediatek,stage-md1-boot-vector-release"))
 		return dev_err_probe(&pdev->dev, -EPERM,
-			"MD1 cold owner requires independent module and DT gates\n");
+			"MD1 boot candidate requires independent cold-owner and release gates\n");
 	if (atomic_read(&mt6797_md1_cold_owner_fatal_latch))
 		return dev_err_probe(&pdev->dev, -EUCLEAN,
-			"MD1 cold owner was previously attempted; reset/reboot required\n");
+			"MD1 candidate was previously attempted; reset/reboot required\n");
 	if (!mt6797_md1_lk_handoff_image_loaded())
 		return dev_err_probe(&pdev->dev, -EPROBE_DEFER,
 			"waiting for verified LK image-load evidence\n");
+	ret = mt6797_md1_cold_candidate_plan_get(&plan);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+			"waiting for attested LK remap plan/locked snapshot\n");
 	ret = mt6797_md1_boot_status_evidence_get(&boot_status);
 	if (ret)
 		return dev_err_probe(&pdev->dev, -EPROBE_DEFER,
@@ -664,7 +886,7 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, PTR_ERR(backend->pmic),
 			"MT6351 PMIC regmap unavailable\n");
 	backend->spm = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
-						       "mediatek,spm");
+					       "mediatek,spm");
 	if (IS_ERR(backend->spm))
 		return dev_err_probe(&pdev->dev, PTR_ERR(backend->spm),
 			"SPM syscon regmap unavailable\n");
@@ -679,22 +901,43 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 		.stats0_final = boot_status.stats0_final,
 		.stats1_final = boot_status.stats1_final,
 	};
+
+	/* Vendor CCCI: final LK remap, initial MPU, then CCIF/power sequence. */
+	ret = mt6797_md1_cold_apply_initial_mpu(&pdev->dev, &plan);
+	if (ret)
+		goto out_fatal;
+	mpu_started = true;
 	ret = mt6797_md1_cold_owner_run(owner, &preflight);
-	if (ret) {
-		if (mt6797_md1_cold_owner_state(owner) ==
-		    MT6797_MD1_COLD_OWNER_FATAL)
-			atomic_set(&mt6797_md1_cold_owner_fatal_latch, 1);
-		dev_crit(&pdev->dev,
-		 "MD1 cold owner failed %d state=%u PLL stage=%u off=%#x mask=%#x last=%#x; reset/reboot required, no boot vector\n",
-		 ret, mt6797_md1_cold_owner_state(owner),
-		 owner->last_pll.stage, owner->last_pll.offset,
-		 owner->last_pll.mask, owner->last_pll.last_value);
-		return ret;
-	}
+	if (ret)
+		goto out_fatal;
+	/* Vendor md_cd_power_on() writes the two WDT keys before stage-one MPU. */
+	ret = mt6797_md1_cold_wdt_run(backend, owner);
+	if (ret)
+		goto out_fatal;
+	ret = mt6797_md1_cold_apply_stage1_mpu(&pdev->dev, &plan);
+	if (ret)
+		goto out_fatal;
+	/* The one vendor boot-vector write is followed only by bounded observation. */
+	ret = mt6797_md1_cold_boot_vector_release(backend, &boot_status);
+	if (ret)
+		goto out_fatal;
+
 	platform_set_drvdata(pdev, owner);
 	dev_info(&pdev->dev,
-		 "MD1 cold owner reached PLL-ready only; WDT ownership/readback and boot-vector release remain absent\n");
+		 "MD1 boot candidate observed post-vector activity; no IRQ, CLDMA, shared-memory or CCCI transport is installed\n");
 	return 0;
+
+out_fatal:
+	if (mpu_started || mt6797_md1_emi_mpu_is_fatal()) {
+		mt6797_md1_emi_mpu_latch_fatal();
+		atomic_set(&mt6797_md1_cold_owner_fatal_latch, 1);
+		dev_crit(&pdev->dev,
+			 "MD1 boot candidate failed %d; reset/reboot required before any retry\n", ret);
+	} else {
+		dev_err(&pdev->dev,
+			"MD1 boot candidate preflight failed %d; no transaction was started\n", ret);
+	}
+	return ret;
 }
 
 static const struct of_device_id mt6797_md1_cold_owner_of_match[] = {

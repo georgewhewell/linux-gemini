@@ -1253,19 +1253,23 @@ config MTK_MT6797_MD1_COLD_OWNER_CORE
 	  reset, CCIF, firmware, partition, transport, SIM, RF, or boot-vector path.
 
 config MTK_MT6797_MD1_COLD_OWNER
-	tristate "MT6797 MD1 active-CCF cold-power/PLL/CCIF candidate"
+	tristate "MT6797 MD1 gated CCF boot-vector candidate"
 	depends on OF && ARM64
 	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
 	depends on MTK_MT6797_MD1_BOOT_STATUS_OBSERVE=y
 	depends on MTK_MT6797_MD1_PRERELEASE=y
 	select MTK_MT6797_MD1_COLD_OWNER_CORE
+	select MTK_MT6797_MD1_WDT_GATE_CORE
+	select MTK_MT6797_MD1_REMAP_OBSERVE
+	select MTK_MT6797_MD1_EMI_MPU
 	help
-	  Build the default-disabled owner for the active vendor CCF MD1 power
-	  sequence. It requires both an explicit module parameter and a disabled DT
-	  node to be changed before it can make hardware writes. The successful
-	  terminal state remains before WDT, remap/MPU, boot-vector, IRQ, CLDMA,
-	  shared-memory, transport, SIM and RF ownership; it does not claim a
-	  booted modem.
+	  Build the default-disabled candidate which requires validated LK image and
+	  remap evidence, an explicitly armed secure EMI-MPU provider, the active
+	  vendor CCF MD1 sequence, exact vendor WDT key writes with diagnostic status
+	  samples, stage-one MPU and the single vendor boot-vector write. It requires
+	  two module parameters and disabled DT nodes to be changed before any write.
+	  A bounded AP boot-status/CCIF observation is the terminal result. It does
+	  not install MD IRQs, CLDMA, shared-memory, CCCI transport, SIM or RF.
 
 config MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 cold owner"

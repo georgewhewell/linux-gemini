@@ -72,6 +72,11 @@ int mt6797_md1_wdt_gate_run(struct mt6797_md1_wdt_gate *gate,
 	if (ret)
 		goto out_fatal;
 
+	/* The documented status words are evidence only, never key acceptance. */
+	ret = gate->ops->observe_status(gate->context, &gate->post_observation);
+	if (ret)
+		goto out_fatal;
+
 	gate->state = MT6797_MD1_WDT_GATE_KEYS_ATTEMPTED_WRITE_ONLY;
 	gate->last_error = 0;
 	ret = 0;

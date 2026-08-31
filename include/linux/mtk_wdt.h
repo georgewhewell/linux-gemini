@@ -20,6 +20,8 @@ struct mtk_wdt_recovery_result {
 #ifdef CONFIG_MEDIATEK_WATCHDOG_RECOVERY_TAKEOVER
 int mtk_wdt_recovery_takeover(struct device *dev, unsigned int timeout_ms,
 				      struct mtk_wdt_recovery_result *result);
+int mtk_wdt_recovery_release(struct device *dev, u64 identity,
+                             struct mtk_wdt_recovery_result *result);
 #else
 static inline int mtk_wdt_recovery_takeover(struct device *dev,
 					    unsigned int timeout_ms,
@@ -31,6 +33,16 @@ static inline int mtk_wdt_recovery_takeover(struct device *dev,
 		*result = (struct mtk_wdt_recovery_result){};
 	return -EOPNOTSUPP;
 }
+static inline int mtk_wdt_recovery_release(struct device *dev, u64 identity,
+                                           struct mtk_wdt_recovery_result *result)
+{
+        (void)dev;
+        (void)identity;
+        if (result)
+                *result = (struct mtk_wdt_recovery_result){};
+        return -EOPNOTSUPP;
+}
+
 #endif
 
 #ifdef CONFIG_MEDIATEK_WATCHDOG_RECOVERY_TAKEOVER

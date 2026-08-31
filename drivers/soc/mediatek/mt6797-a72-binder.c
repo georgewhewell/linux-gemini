@@ -120,6 +120,9 @@ mt6797_a72_binder_fill_diagnostic(const struct mt6797_a72_binder *binder,
 	snapshot->checkpoint_errno = binder->result.checkpoint_errno;
 	snapshot->attempted = binder->result.attempted;
 	snapshot->watchdog_armed = binder->result.watchdog_armed;
+	snapshot->watchdog_released = binder->watchdog_released;
+	snapshot->watchdog_release_ret = binder->watchdog_release_ret;
+	snapshot->watchdog_release_identity = binder->watchdog_release_identity;
 	snapshot->p27_owned = binder->result.p27_owned;
 	snapshot->rollback_mask = binder->result.rollback_mask;
 	snapshot->retained_mask = binder->result.retained_mask;
@@ -222,6 +225,7 @@ mt6797_a72_binder_production_backend = {
 	.membership_finalize_success =
 		mt6797_a72_membership_finalize_cpu8_success,
 	.watchdog_takeover = mtk_wdt_recovery_takeover,
+	.watchdog_release = mtk_wdt_recovery_release,
 	.p27_acquire = mt6797_a72_platform_effect_p27_acquire,
 	.p27_release = mt6797_a72_platform_effect_p27_release,
 	.isolation_clear = mt6797_a72_platform_effect_isolation_clear,
@@ -245,6 +249,7 @@ mt6797_a72_binder_backend_valid(const struct mt6797_a72_binder_backend_ops *ops)
 		ops->membership_begin_cpu_on &&
 		ops->membership_publish_success &&
 		ops->membership_finalize_success && ops->watchdog_takeover &&
+		ops->watchdog_release &&
 		ops->p27_acquire && ops->p27_release && ops->isolation_clear &&
 		ops->sram_enable && ops->dcm_update && ops->cpu_online &&
 		ops->ipi_call;
@@ -338,6 +343,31 @@ static int mt6797_a72_binder_watchdog(void *context, unsigned int timeout_ms,
 	if (!result.identity || result.owned != 1)
 		return -EPROTO;
 	*identity = result.identity;
+	return 0;
+}
+
+static int mt6797_a72_binder_watchdog_release(
+	void *context, const struct mt6797_a72_transition_result *transition)
+{
+	struct mt6797_a72_binder *binder = context;
+	struct mtk_wdt_recovery_result result = { };
+	int ret;
+
+	if (!binder || !transition || !transition->watchdog_armed ||
+	    !transition->watchdog_identity || !transition->cpu8_online ||
+	    transition->cpu9_online ||
+	    transition->terminal != MT6797_A72_TRANSITION_CPU8_ONLINE_PROOF)
+		return -EPROTO;
+
+	ret = binder->backend->watchdog_release(binder->watchdog,
+					transition->watchdog_identity, &result);
+	binder->watchdog_release_ret = ret;
+	binder->watchdog_release_identity = result.identity;
+	if (ret)
+		return ret;
+	if (result.identity != transition->watchdog_identity || result.owned)
+		return -EPROTO;
+	binder->watchdog_released = true;
 	return 0;
 }
 
@@ -637,7 +667,11 @@ mt6797_a72_binder_terminal(void *context,
 			return 0;
 		return binder->backend->membership_reject(&binder->transaction);
 	case MT6797_A72_TRANSITION_CPU8_ONLINE_PROOF:
-		return binder->backend->membership_finalize_success(&binder->transaction);
+		ret = binder->backend->membership_finalize_success(&binder->transaction);
+		if (ret)
+			return ret;
+		/* The terminal ledger is durable before the recovery fence opens. */
+		return mt6797_a72_binder_watchdog_release(binder, result);
 	case MT6797_A72_TRANSITION_ROLLBACK_FAULT_PREISO:
 	case MT6797_A72_TRANSITION_FAULT_RETAIN_POSTISO:
 		return 0;

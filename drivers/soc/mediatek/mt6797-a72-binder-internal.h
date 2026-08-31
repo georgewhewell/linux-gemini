@@ -47,6 +47,8 @@ struct mt6797_a72_binder_backend_ops {
 	int (*membership_finalize_success)(struct mt6797_a72_transaction *transaction);
 	int (*watchdog_takeover)(struct device *dev, unsigned int timeout_ms,
 				 struct mtk_wdt_recovery_result *result);
+	int (*watchdog_release)(struct device *dev, u64 identity,
+				struct mtk_wdt_recovery_result *result);
 	int (*p27_acquire)(struct device *dev,
 			   const struct mt6797_a72_platform_effect_handle *handle,
 			   struct mt6797_a72_platform_effect_result *result);
@@ -91,6 +93,9 @@ struct mt6797_a72_binder {
 	s32 sram_ret;
 	s32 p28_complete_ret;
 	bool ledger_begun;
+	bool watchdog_released;
+	s32 watchdog_release_ret;
+	u64 watchdog_release_identity;
 	bool p28_begin_attempted;
 	bool p28_begun;
 	bool sram_returned;

@@ -539,8 +539,11 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 			     diagnostic.stage_errno, diagnostic.rollback_errno);
 	len += sysfs_emit_at(buf, len, "checkpoint_errno=%d attempted=%u ",
 			     diagnostic.checkpoint_errno, diagnostic.attempted);
-	len += sysfs_emit_at(buf, len, "watchdog_armed=%u p27_owned=%u ",
-			     diagnostic.watchdog_armed, diagnostic.p27_owned);
+	len += sysfs_emit_at(buf, len,
+			     "watchdog_armed=%u watchdog_released=%u watchdog_release_ret=%d watchdog_release_identity=%llu p27_owned=%u ",
+			     diagnostic.watchdog_armed, diagnostic.watchdog_released,
+			     diagnostic.watchdog_release_ret,
+			     diagnostic.watchdog_release_identity, diagnostic.p27_owned);
 	len += sysfs_emit_at(buf, len, "rollback_mask=0x%x retained_mask=0x%x ",
 			     diagnostic.rollback_mask, diagnostic.retained_mask);
 	len += sysfs_emit_at(buf, len, "p27a_op=%u p27a_error=%d ",

@@ -36,6 +36,9 @@ struct mt6797_a72_binder_diagnostic {
 	s32 checkpoint_errno;
 	u32 attempted;
 	u32 watchdog_armed;
+	u32 watchdog_released;
+	s32 watchdog_release_ret;
+	u64 watchdog_release_identity;
 	u32 p27_owned;
 	u32 rollback_mask;
 	u32 retained_mask;

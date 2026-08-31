@@ -392,6 +392,60 @@ int mtk_wdt_recovery_takeover(struct device *dev, unsigned int timeout_ms,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mtk_wdt_recovery_takeover);
+
+/* Identity-gated success handoff for a completed CPU8 admission. */
+int mtk_wdt_recovery_release(struct device *dev, u64 identity,
+			     struct mtk_wdt_recovery_result *result)
+{
+	struct mtk_wdt_dev *mtk_wdt;
+	unsigned long flags;
+	u32 length;
+	u32 mode;
+	int ret = 0;
+
+	if (!result)
+		return -EINVAL;
+	*result = (struct mtk_wdt_recovery_result){};
+	if (!dev || !identity)
+		return -EINVAL;
+	mtk_wdt = dev_get_drvdata(dev);
+	if (!mtk_wdt)
+		return -ENODEV;
+	if (!mtk_wdt->recovery_supported)
+		return -EOPNOTSUPP;
+
+	spin_lock_irqsave(&mtk_wdt->recovery_lock, flags);
+	if (!mtk_wdt->recovery.owned) {
+		ret = -EALREADY;
+		goto out;
+	}
+	if (mtk_wdt->recovery.identity != identity) {
+		ret = -EPERM;
+		goto out;
+	}
+
+	length = mtk_wdt_recovery_read(mtk_wdt, WDT_LENGTH);
+	mode = mtk_wdt_recovery_read(mtk_wdt, WDT_MODE);
+	result->identity = identity;
+	result->length_after = length;
+	result->mode_after = mode;
+	result->owned = 1;
+	if ((length & WDT_LENGTH_TIMEOUT_MASK) !=
+	    WDT_LENGTH_TIMEOUT(MTK_WDT_RECOVERY_TIMEOUT_SECONDS << 6) ||
+	    (mode & WDT_MODE_RECOVERY_MASK) !=
+		    (WDT_MODE_EN | WDT_MODE_AUTO_START)) {
+		ret = -EUCLEAN;
+		goto out;
+	}
+
+	mtk_wdt->recovery.owned = false;
+	mtk_wdt->recovery.identity = 0;
+	result->owned = 0;
+out:
+	spin_unlock_irqrestore(&mtk_wdt->recovery_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mtk_wdt_recovery_release);
 #endif
 
 static int mtk_wdt_mutation_begin(struct mtk_wdt_dev *mtk_wdt,

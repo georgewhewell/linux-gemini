@@ -41,6 +41,7 @@ enum mt6797_binder_test_event {
 	TEST_EVENT_PROVIDER_RELEASE,
 	TEST_EVENT_P27_RELEASE,
 	TEST_EVENT_REJECT,
+	TEST_EVENT_WATCHDOG_RELEASE,
 };
 
 struct mt6797_binder_test_state {
@@ -285,6 +286,20 @@ static int mt6797_binder_test_watchdog(struct device *dev,
 	return timeout_ms == MTK_WDT_RECOVERY_TIMEOUT_MS ? 0 : -EINVAL;
 }
 
+static int mt6797_binder_test_watchdog_release(
+	struct device *dev, u64 identity, struct mtk_wdt_recovery_result *result)
+{
+	(void)dev;
+	if (!result || identity != 11)
+		return -EPROTO;
+	*result = (struct mtk_wdt_recovery_result) {
+		.identity = identity,
+		.owned = 0,
+	};
+	mt6797_binder_test_event(TEST_EVENT_WATCHDOG_RELEASE);
+	return 0;
+}
+
 static int mt6797_binder_test_p27(struct device *dev,
 				  const struct mt6797_a72_platform_effect_handle *handle,
 				  struct mt6797_a72_platform_effect_result *result)
@@ -452,6 +467,7 @@ static const struct mt6797_a72_binder_backend_ops mt6797_binder_test_ops = {
 	.membership_publish_success = mt6797_binder_test_publish_success,
 	.membership_finalize_success = mt6797_binder_test_finalize_success,
 	.watchdog_takeover = mt6797_binder_test_watchdog,
+	.watchdog_release = mt6797_binder_test_watchdog_release,
 	.p27_acquire = mt6797_binder_test_p27,
 	.p27_release = mt6797_binder_test_p27_release,
 	.isolation_clear = mt6797_binder_test_isolation,
@@ -531,6 +547,12 @@ static void mt6797_binder_success_test(struct kunit *test)
 	KUNIT_EXPECT_LT(test, mt6797_binder_test_find(state,
 						      TEST_EVENT_TERMINAL),
 			mt6797_binder_test_find(state, TEST_EVENT_FINALIZE));
+	KUNIT_EXPECT_LT(test, mt6797_binder_test_find(state,
+				      TEST_EVENT_FINALIZE),
+			mt6797_binder_test_find(state, TEST_EVENT_WATCHDOG_RELEASE));
+	KUNIT_EXPECT_TRUE(test, state->binder.watchdog_released);
+	KUNIT_EXPECT_EQ(test, state->binder.watchdog_release_ret, 0);
+	KUNIT_EXPECT_EQ(test, state->binder.watchdog_release_identity, 11ULL);
 }
 
 static void mt6797_binder_terminal_failure_test(struct kunit *test)

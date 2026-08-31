@@ -2049,7 +2049,7 @@ mt6797_a72_membership_check_up(unsigned int cpu, int tasks_frozen,
 	unsigned long flags;
 	int ret = -EPERM;
 
-	if (cpu != 8 || target != CPUHP_ONLINE)
+	if ((cpu != 8 && cpu != 9) || target != CPUHP_ONLINE)
 		return -EINVAL;
 	if (tasks_frozen)
 		return -EPERM;
@@ -2072,17 +2072,19 @@ mt6797_a72_membership_check_up(unsigned int cpu, int tasks_frozen,
 		   !transaction->valid || !transaction->p17_p18_published ||
 		   !transaction->p30_token_valid ||
 		   transaction->identity.operation !=
-			   ARM64_LATE_CPU_STARTUP_OP_CPU8_UP ||
-		   transaction->identity.target_cpu != 8 ||
+			   (cpu == 8 ? ARM64_LATE_CPU_STARTUP_OP_CPU8_UP :
+			    ARM64_LATE_CPU_STARTUP_OP_CPU9_UP) ||
+		   transaction->identity.target_cpu != cpu ||
 		   transaction->identity.cpuhp_target != CPUHP_ONLINE ||
 		   transaction->controller_cookie !=
 			   transaction->identity.cookie ||
 		   a72_owner.controller != current ||
 		   a72_owner.controller_cookie !=
 			   transaction->identity.cookie ||
-		   a72_owner.members ||
-		   a72_owner.provider_state != MT6797_A72_PROVIDER_NONE ||
-		   cpu_online(8) || cpu_online(9)) {
+		   a72_owner.members != (cpu == 8 ? 0 : BIT(0)) ||
+		   a72_owner.provider_state != (cpu == 8 ? MT6797_A72_PROVIDER_NONE :
+						 MT6797_A72_PROVIDER_HELD) ||
+		   cpu_online(8) != (cpu == 9) || cpu_online(9)) {
 		ret = -EPERM;
 	} else if (preflight) {
 		if (transaction->public_preflight ==
@@ -2304,6 +2306,178 @@ int mt6797_a72_membership_finalize_cpu8_success(struct mt6797_a72_transaction *t
 {
 	return mt6797_a72_finalize_cpu8_success_state(transaction,
 						      cpu_online(8), cpu_online(9));
+}
+
+int mt6797_a72_membership_claim_cpu9(
+	struct mt6797_a72_transaction *transaction)
+{
+	unsigned long flags;
+	int ret = -EPERM;
+
+	if (!transaction)
+		return -EINVAL;
+	memset(transaction, 0, sizeof(*transaction));
+	raw_spin_lock_irqsave(&a72_state_lock, flags);
+	if (a72_owner.health == MT6797_A72_OWNER_AVAILABLE &&
+	    a72_owner.phase == MT6797_A72_PHASE_ON_ISSUED &&
+	    a72_owner.active.valid && a72_owner.active.p17_p18_published &&
+	    a72_owner.active.p30_token_valid &&
+	    a72_owner.active.public_preflight ==
+		    MT6797_A72_PUBLIC_ADMISSION_PREFLIGHT &&
+	    a72_owner.active.identity.operation ==
+		    ARM64_LATE_CPU_STARTUP_OP_CPU9_UP &&
+	    a72_owner.active.identity.target_cpu == 9 &&
+	    a72_owner.members == BIT(0) &&
+	    a72_owner.provider_state == MT6797_A72_PROVIDER_HELD &&
+	    cpu_online(8) && !cpu_online(9)) {
+		a72_owner.active.public_preflight =
+			MT6797_A72_PUBLIC_ADMISSION_CLAIMED;
+		*transaction = a72_owner.active;
+		ret = 0;
+	}
+	raw_spin_unlock_irqrestore(&a72_state_lock, flags);
+	return ret;
+}
+
+int mt6797_a72_membership_reject_cpu9(
+	struct mt6797_a72_transaction *transaction)
+{
+	unsigned long flags;
+	int ret = -EPERM;
+
+	if (!transaction)
+		return -EINVAL;
+	mutex_lock(&a72_transition_lock);
+	raw_spin_lock_irqsave(&a72_state_lock, flags);
+	/*
+	 * A CPU9 claim can be retired only before CPU_ON. This never releases
+	 * the provider or touches P27/P28/SRAM; CPU8 remains the owner.
+	 */
+	if (a72_owner.health == MT6797_A72_OWNER_AVAILABLE &&
+	    a72_owner.phase == MT6797_A72_PHASE_ON_ISSUED &&
+	    a72_owner.active.valid &&
+	    a72_owner.active.public_preflight ==
+		    MT6797_A72_PUBLIC_ADMISSION_CLAIMED &&
+	    a72_owner.active.identity.operation ==
+		    ARM64_LATE_CPU_STARTUP_OP_CPU9_UP &&
+	    a72_owner.members == BIT(0) &&
+	    a72_owner.provider_state == MT6797_A72_PROVIDER_HELD &&
+	    a72_owner.active.budgets.cpu_on ==
+		    MT6797_A72_BUDGET_AVAILABLE &&
+	    !memcmp(&a72_owner.active.identity, &transaction->identity,
+		    sizeof(transaction->identity)) &&
+	    cpu_online(8) && !cpu_online(9)) {
+		a72_owner.retired[1] = a72_owner.active;
+		a72_owner.retired_mask |= BIT(1);
+		*transaction = a72_owner.retired[1];
+		memset(&a72_owner.active, 0, sizeof(a72_owner.active));
+		a72_owner.controller = NULL;
+		a72_owner.controller_cookie = 0;
+		a72_owner.phase = MT6797_A72_PHASE_REJECTED;
+		ret = 0;
+	}
+	raw_spin_unlock_irqrestore(&a72_state_lock, flags);
+	mutex_unlock(&a72_transition_lock);
+	return ret;
+}
+
+int mt6797_a72_membership_begin_cpu9_on(
+	struct mt6797_a72_transaction *transaction)
+{
+	unsigned long flags;
+	int ret = -EPERM;
+
+	if (!transaction)
+		return -EINVAL;
+	mutex_lock(&a72_transition_lock);
+	raw_spin_lock_irqsave(&a72_state_lock, flags);
+	if (a72_owner.health == MT6797_A72_OWNER_AVAILABLE &&
+	    a72_owner.phase == MT6797_A72_PHASE_ON_ISSUED &&
+	    a72_owner.active.valid &&
+	    a72_owner.active.public_preflight ==
+		    MT6797_A72_PUBLIC_ADMISSION_CLAIMED &&
+	    a72_owner.active.identity.operation ==
+		    ARM64_LATE_CPU_STARTUP_OP_CPU9_UP &&
+	    a72_owner.members == BIT(0) &&
+	    a72_owner.provider_state == MT6797_A72_PROVIDER_HELD &&
+	    a72_owner.active.budgets.cpu_on ==
+		    MT6797_A72_BUDGET_AVAILABLE &&
+	    !memcmp(&a72_owner.active.identity, &transaction->identity,
+		    sizeof(transaction->identity)) &&
+	    cpu_online(8) && !cpu_online(9)) {
+		a72_owner.active.budgets.cpu_on = MT6797_A72_BUDGET_CONSUMED;
+		*transaction = a72_owner.active;
+		ret = 0;
+	}
+	raw_spin_unlock_irqrestore(&a72_state_lock, flags);
+	mutex_unlock(&a72_transition_lock);
+	return ret;
+}
+
+int mt6797_a72_membership_publish_cpu9_success(
+	struct mt6797_a72_transaction *transaction)
+{
+	unsigned long flags;
+	int ret = -EPERM;
+
+	if (!transaction)
+		return -EINVAL;
+	mutex_lock(&a72_transition_lock);
+	raw_spin_lock_irqsave(&a72_state_lock, flags);
+	if (a72_owner.health == MT6797_A72_OWNER_AVAILABLE &&
+	    a72_owner.phase == MT6797_A72_PHASE_ON_ISSUED &&
+	    a72_owner.active.valid &&
+	    a72_owner.active.identity.operation ==
+		    ARM64_LATE_CPU_STARTUP_OP_CPU9_UP &&
+	    a72_owner.members == BIT(0) &&
+	    a72_owner.provider_state == MT6797_A72_PROVIDER_HELD &&
+	    a72_owner.active.budgets.cpu_on ==
+		    MT6797_A72_BUDGET_CONSUMED &&
+	    !memcmp(&a72_owner.active.identity, &transaction->identity,
+		    sizeof(transaction->identity)) &&
+	    cpu_online(8) && cpu_online(9)) {
+		a72_owner.members = BIT(0) | BIT(1);
+		a72_owner.phase = MT6797_A72_PHASE_VERIFYING;
+		*transaction = a72_owner.active;
+		ret = 0;
+	}
+	raw_spin_unlock_irqrestore(&a72_state_lock, flags);
+	mutex_unlock(&a72_transition_lock);
+	return ret;
+}
+
+int mt6797_a72_membership_finalize_cpu9_success(
+	struct mt6797_a72_transaction *transaction)
+{
+	unsigned long flags;
+	int ret = -EPERM;
+
+	if (!transaction)
+		return -EINVAL;
+	mutex_lock(&a72_transition_lock);
+	raw_spin_lock_irqsave(&a72_state_lock, flags);
+	if (a72_owner.health == MT6797_A72_OWNER_AVAILABLE &&
+	    a72_owner.phase == MT6797_A72_PHASE_VERIFYING &&
+	    a72_owner.active.valid &&
+	    a72_owner.active.identity.operation ==
+		    ARM64_LATE_CPU_STARTUP_OP_CPU9_UP &&
+	    a72_owner.members == (BIT(0) | BIT(1)) &&
+	    a72_owner.provider_state == MT6797_A72_PROVIDER_HELD &&
+	    !memcmp(&a72_owner.active.identity, &transaction->identity,
+		    sizeof(transaction->identity)) &&
+	    cpu_online(8) && cpu_online(9)) {
+		a72_owner.retired[1] = a72_owner.active;
+		a72_owner.retired_mask |= BIT(1);
+		*transaction = a72_owner.retired[1];
+		memset(&a72_owner.active, 0, sizeof(a72_owner.active));
+		a72_owner.controller = NULL;
+		a72_owner.controller_cookie = 0;
+		a72_owner.phase = MT6797_A72_PHASE_IDLE;
+		ret = 0;
+	}
+	raw_spin_unlock_irqrestore(&a72_state_lock, flags);
+	mutex_unlock(&a72_transition_lock);
+	return ret;
 }
 
 int mt6797_a72_membership_validate_entry(unsigned int cpu,

@@ -98,6 +98,7 @@ int mt6797_a72_binder_secondary_complete(unsigned int cpu);
 int mt6797_a72_binder_complete(unsigned int cpu, enum cpuhp_state target);
 int mt6797_a72_binder_failure(unsigned int cpu, int error,
 			      bool *publish_p32);
+bool mt6797_a72_binder_cpu8_success_ready(void);
 #else
 static inline bool mt6797_a72_binder_available(void)
 {
@@ -151,6 +152,11 @@ mt6797_a72_binder_complete(unsigned int cpu, enum cpuhp_state target)
 	(void)cpu;
 	(void)target;
 	return -EOPNOTSUPP;
+}
+
+static inline bool mt6797_a72_binder_cpu8_success_ready(void)
+{
+	return false;
 }
 
 static inline int

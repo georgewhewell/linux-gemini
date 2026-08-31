@@ -727,6 +727,111 @@ int mt6797_a72_binder_validate(unsigned int cpu, int tasks_frozen,
 	return ret;
 }
 
+bool mt6797_a72_binder_cpu8_success_ready(void)
+{
+	struct mt6797_a72_binder *binder;
+	bool ready = false;
+
+	mutex_lock(&mt6797_a72_binder_publish_lock);
+	binder = mt6797_a72_binder_ready();
+	if (binder && binder->result.terminal ==
+	    MT6797_A72_TRANSITION_CPU8_ONLINE_PROOF &&
+	    binder->watchdog_released && binder->backend->cpu_online(8) &&
+	    !binder->backend->cpu_online(9))
+		ready = true;
+	mutex_unlock(&mt6797_a72_binder_publish_lock);
+	return ready;
+}
+
+static int mt6797_a72_binder_cpu9_checkpoint(
+	struct mt6797_a72_binder *binder, u32 phase, u32 stage, u32 terminal)
+{
+	if (!binder->cpu9_ledger_begun)
+		return -EPROTO;
+	return binder->backend->ledger_checkpoint(
+		binder->cpu9_transaction.identity.generation, phase, stage, terminal);
+}
+
+static int mt6797_a72_binder_cpu9_fail(struct mt6797_a72_binder *binder,
+					int error)
+{
+	int ret;
+
+	if (!binder || !error)
+		return -EINVAL;
+	if (binder->cpu9_ledger_begun) {
+		ret = mt6797_a72_binder_cpu9_checkpoint(binder,
+			GEMINI_TRANSITION_LEDGER_TERMINAL,
+			MT6797_A72_TRANSITION_STAGE_CPU_ON,
+			MT6797_A72_TRANSITION_FAULT_RETAIN_POSTISO);
+		if (ret)
+			return ret;
+	}
+	binder->cpu9_last_ret = error;
+	return 0;
+}
+
+static int mt6797_a72_binder_cpu9_boot(struct mt6797_a72_binder *binder,
+					unsigned int cpu,
+					mt6797_a72_cpu_boot_fn cpu_boot)
+{
+	struct mtk_wdt_recovery_result watchdog = { };
+	int ret;
+
+	if (!binder || cpu != MT6797_A72_TRANSITION_CPU9 || !cpu_boot ||
+	    binder->result.terminal != MT6797_A72_TRANSITION_CPU8_ONLINE_PROOF ||
+	    !binder->watchdog_released || !binder->backend->cpu_online(8) ||
+	    binder->backend->cpu_online(9))
+		return -EPERM;
+	if (atomic_cmpxchg(&binder->cpu9_boot_claimed, 0, 1))
+		return -EALREADY;
+	ret = mt6797_a72_membership_claim_cpu9(&binder->cpu9_transaction);
+	if (ret)
+		return ret;
+	ret = binder->backend->ledger_begin(
+		binder->cpu9_transaction.identity.generation);
+	if (ret)
+		goto reject;
+	binder->cpu9_ledger_begun = true;
+	ret = mt6797_a72_binder_cpu9_checkpoint(binder,
+		GEMINI_TRANSITION_LEDGER_BEFORE,
+		MT6797_A72_TRANSITION_STAGE_WATCHDOG, 0);
+	if (ret)
+		goto reject;
+	ret = binder->backend->watchdog_takeover(binder->watchdog,
+		MTK_WDT_RECOVERY_TIMEOUT_MS, &watchdog);
+	if (ret || !watchdog.identity || watchdog.owned != 1) {
+		ret = ret ?: -EPROTO;
+		goto reject;
+	}
+	binder->cpu9_watchdog_armed = true;
+	binder->cpu9_watchdog_identity = watchdog.identity;
+	ret = mt6797_a72_binder_cpu9_checkpoint(binder,
+		GEMINI_TRANSITION_LEDGER_AFTER,
+		MT6797_A72_TRANSITION_STAGE_WATCHDOG, 0);
+	if (ret)
+		return mt6797_a72_binder_cpu9_fail(binder, ret);
+	ret = mt6797_a72_membership_begin_cpu9_on(
+		&binder->cpu9_transaction);
+	if (ret)
+		return mt6797_a72_binder_cpu9_fail(binder, ret);
+	ret = mt6797_a72_binder_cpu9_checkpoint(binder,
+		GEMINI_TRANSITION_LEDGER_BEFORE,
+		MT6797_A72_TRANSITION_STAGE_CPU_ON, 0);
+	if (ret)
+		return mt6797_a72_binder_cpu9_fail(binder, ret);
+	binder->cpu9_boot = cpu_boot;
+	return cpu_boot(cpu);
+reject:
+	if (binder->cpu9_ledger_begun)
+		mt6797_a72_binder_cpu9_checkpoint(binder,
+			GEMINI_TRANSITION_LEDGER_TERMINAL,
+			MT6797_A72_TRANSITION_STAGE_WATCHDOG,
+			MT6797_A72_TRANSITION_REJECTED_PRESTATE);
+	mt6797_a72_membership_reject_cpu9(&binder->cpu9_transaction);
+	return ret;
+}
+
 static int mt6797_a72_binder_boot(struct mt6797_a72_binder *binder,
 				  unsigned int cpu,
 				  mt6797_a72_cpu_boot_fn cpu_boot)
@@ -794,9 +899,65 @@ int mt6797_a72_binder_cpu_boot(unsigned int cpu,
 
 	mutex_lock(&mt6797_a72_binder_publish_lock);
 	binder = mt6797_a72_binder_ready();
-	ret = binder ? mt6797_a72_binder_boot(binder, cpu, cpu_boot) : -EAGAIN;
+	ret = !binder ? -EAGAIN :
+		cpu == MT6797_A72_TRANSITION_CPU8 ?
+		mt6797_a72_binder_boot(binder, cpu, cpu_boot) :
+		cpu == MT6797_A72_TRANSITION_CPU9 ?
+		mt6797_a72_binder_cpu9_boot(binder, cpu, cpu_boot) : -EINVAL;
 	mutex_unlock(&mt6797_a72_binder_publish_lock);
 	return ret;
+}
+
+static int mt6797_a72_binder_cpu9_secondary(struct mt6797_a72_binder *binder)
+{
+	int ret;
+
+	if (!binder || !binder->cpu9_ledger_begun ||
+	    !binder->cpu9_watchdog_armed || !binder->backend->cpu_online(8) ||
+	    !binder->backend->cpu_online(9))
+		return -EPROTO;
+	ret = mt6797_a72_binder_cpu9_checkpoint(binder,
+		GEMINI_TRANSITION_LEDGER_AFTER,
+		MT6797_A72_TRANSITION_STAGE_CPU_ON, 0);
+	if (ret)
+		return mt6797_a72_binder_cpu9_fail(binder, ret);
+	ret = mt6797_a72_membership_publish_cpu9_success(
+		&binder->cpu9_transaction);
+	if (ret)
+		return mt6797_a72_binder_cpu9_fail(binder, ret);
+	binder->cpu9_published = true;
+	return mt6797_a72_binder_cpu9_checkpoint(binder,
+		GEMINI_TRANSITION_LEDGER_AFTER,
+		MT6797_A72_TRANSITION_STAGE_MEMBERSHIP, 0);
+}
+
+static int mt6797_a72_binder_cpu9_complete(struct mt6797_a72_binder *binder)
+{
+	struct mtk_wdt_recovery_result watchdog = { };
+	int ret;
+
+	if (!binder || !binder->cpu9_published || !binder->cpu9_watchdog_armed ||
+	    !binder->backend->cpu_online(8) || !binder->backend->cpu_online(9))
+		return -EPROTO;
+	ret = mt6797_a72_binder_cpu9_checkpoint(binder,
+		GEMINI_TRANSITION_LEDGER_TERMINAL,
+		MT6797_A72_TRANSITION_STAGE_MEMBERSHIP,
+		MT6797_A72_TRANSITION_CPU9_ONLINE_PROOF);
+	if (ret)
+		return ret;
+	ret = mt6797_a72_membership_finalize_cpu9_success(
+		&binder->cpu9_transaction);
+	if (ret)
+		return ret;
+	binder->cpu9_finalized = true;
+	ret = binder->backend->watchdog_release(binder->watchdog,
+		binder->cpu9_watchdog_identity, &watchdog);
+	if (ret || watchdog.identity != binder->cpu9_watchdog_identity ||
+	    watchdog.owned)
+		return ret ?: -EPROTO;
+	binder->cpu9_watchdog_released = true;
+	binder->cpu9_last_ret = 0;
+	return 0;
 }
 
 static int mt6797_a72_binder_drive_secondary(struct mt6797_a72_binder *binder,
@@ -819,8 +980,11 @@ int mt6797_a72_binder_secondary_complete(unsigned int cpu)
 
 	mutex_lock(&mt6797_a72_binder_publish_lock);
 	binder = mt6797_a72_binder_ready();
-	ret = binder ? mt6797_a72_binder_drive_secondary(binder, cpu) :
-		-EAGAIN;
+	ret = !binder ? -EAGAIN :
+		cpu == MT6797_A72_TRANSITION_CPU8 ?
+		mt6797_a72_binder_drive_secondary(binder, cpu) :
+		cpu == MT6797_A72_TRANSITION_CPU9 ?
+		mt6797_a72_binder_cpu9_secondary(binder) : -EINVAL;
 	mutex_unlock(&mt6797_a72_binder_publish_lock);
 	return ret;
 }
@@ -847,7 +1011,11 @@ int mt6797_a72_binder_complete(unsigned int cpu, enum cpuhp_state target)
 
 	mutex_lock(&mt6797_a72_binder_publish_lock);
 	binder = mt6797_a72_binder_ready();
-	ret = binder ? mt6797_a72_binder_finish(binder, cpu, target) : -EAGAIN;
+	ret = !binder ? -EAGAIN :
+		cpu == MT6797_A72_TRANSITION_CPU8 ?
+		mt6797_a72_binder_finish(binder, cpu, target) :
+		cpu == MT6797_A72_TRANSITION_CPU9 && target == CPUHP_ONLINE ?
+		mt6797_a72_binder_cpu9_complete(binder) : -EINVAL;
 	mutex_unlock(&mt6797_a72_binder_publish_lock);
 	return ret;
 }
@@ -857,11 +1025,19 @@ static int mt6797_a72_binder_fail(struct mt6797_a72_binder *binder,
 				  bool *publish_p32)
 {
 	int lifecycle;
+	int ret;
 
 	if (!binder || !mt6797_a72_binder_backend_valid(binder->backend) ||
 	    !publish_p32 || !error)
 		return -EINVAL;
 	*publish_p32 = false;
+	if (cpu == MT6797_A72_TRANSITION_CPU9) {
+		if (!binder->cpu9_watchdog_armed)
+			return -EPROTO;
+		ret = mt6797_a72_binder_cpu9_fail(binder, error);
+		*publish_p32 = false;
+		return ret;
+	}
 	if (cpu != MT6797_A72_TRANSITION_CPU8)
 		return -EINVAL;
 	lifecycle = atomic_read_acquire(&binder->transition.lifecycle);
@@ -904,6 +1080,7 @@ void mt6797_a72_binder_test_init(struct mt6797_a72_binder *binder,
 	atomic_set(&binder->transition.lifecycle,
 		   MT6797_A72_TRANSITION_LIFECYCLE_IDLE);
 	atomic_set(&binder->boot_claimed, 0);
+	atomic_set(&binder->cpu9_boot_claimed, 0);
 }
 
 void
@@ -992,6 +1169,7 @@ static int mt6797_a72_binder_probe(struct platform_device *pdev)
 	atomic_set(&binder->transition.lifecycle,
 		   MT6797_A72_TRANSITION_LIFECYCLE_IDLE);
 	atomic_set(&binder->boot_claimed, 0);
+	atomic_set(&binder->cpu9_boot_claimed, 0);
 	ret = mt6797_a72_binder_resolve(&pdev->dev, "mediatek,watchdog",
 					&binder->watchdog);
 	if (ret)

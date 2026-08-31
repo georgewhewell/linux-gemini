@@ -1773,7 +1773,7 @@ static int mt6797_psci_cpu_up_rollback(unsigned int cpu,
 	if (cpu != 8 && cpu != 9)
 		return 0;
 	if (IS_ENABLED(CONFIG_MTK_MT6797_A72_DEFAULT_OFF_BINDER) &&
-	    cpu == 8) {
+	    (cpu == 8 || cpu == 9)) {
 		ret = mt6797_a72_binder_failure(cpu, error, &publish_p32);
 		if (ret || !publish_p32)
 			return ret;
@@ -1831,7 +1831,8 @@ static int mt6797_psci_cpu_up_complete(unsigned int cpu,
 
 static int mt6797_psci_cpu_boot(unsigned int cpu)
 {
-	if (IS_ENABLED(CONFIG_MTK_MT6797_A72_DEFAULT_OFF_BINDER) && cpu == 8)
+	if (IS_ENABLED(CONFIG_MTK_MT6797_A72_DEFAULT_OFF_BINDER) &&
+	    (cpu == 8 || cpu == 9))
 		return mt6797_a72_binder_cpu_boot(cpu, cpu_psci_ops.cpu_boot);
 
 	pr_warn_ratelimited("CPU%u boot rejected: A72 power sequence inactive\n",

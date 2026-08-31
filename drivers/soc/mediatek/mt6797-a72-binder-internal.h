@@ -89,6 +89,17 @@ struct mt6797_a72_binder {
 	struct mt6797_a72_provider_response provider;
 	mt6797_a72_cpu_boot_fn cpu_boot;
 	atomic_t boot_claimed;
+	/* CPU9 is a second, no-shared-power admission after CPU8 succeeds. */
+	struct mt6797_a72_transaction cpu9_transaction;
+	mt6797_a72_cpu_boot_fn cpu9_boot;
+	atomic_t cpu9_boot_claimed;
+	u64 cpu9_watchdog_identity;
+	int cpu9_last_ret;
+	bool cpu9_ledger_begun;
+	bool cpu9_watchdog_armed;
+	bool cpu9_published;
+	bool cpu9_finalized;
+	bool cpu9_watchdog_released;
 	s32 p28_begin_ret;
 	s32 sram_ret;
 	s32 p28_complete_ret;

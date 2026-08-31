@@ -690,6 +690,11 @@ int mt6797_a72_membership_reject_cpu8(struct mt6797_a72_transaction *transaction
 int mt6797_a72_membership_begin_cpu8_on(struct mt6797_a72_transaction *transaction);
 int mt6797_a72_membership_publish_cpu8_success(struct mt6797_a72_transaction *transaction);
 int mt6797_a72_membership_finalize_cpu8_success(struct mt6797_a72_transaction *transaction);
+int mt6797_a72_membership_claim_cpu9(struct mt6797_a72_transaction *transaction);
+int mt6797_a72_membership_reject_cpu9(struct mt6797_a72_transaction *transaction);
+int mt6797_a72_membership_begin_cpu9_on(struct mt6797_a72_transaction *transaction);
+int mt6797_a72_membership_publish_cpu9_success(struct mt6797_a72_transaction *transaction);
+int mt6797_a72_membership_finalize_cpu9_success(struct mt6797_a72_transaction *transaction);
 bool
 mt6797_a72_membership_owns_up_token(const struct arm64_late_cpu_up_token *token);
 int mt6797_a72_membership_copy_up_token(struct arm64_late_cpu_up_token *token);

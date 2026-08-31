@@ -9,7 +9,10 @@
 #include <linux/gemini_transition_ledger.h>
 #include <linux/types.h>
 
-struct arm64_late_cpu_ready_token;
+#define MT6797_A72_ADMISSION_ACK_CPU8_TOKEN \
+	"archive-cpu8-success-v1\n"
+#define MT6797_A72_ADMISSION_CPU9_TRIGGER_TOKEN \
+	"run-a72-cpu9-after-cpu8-v1\n"
 
 struct mt6797_a72_admission_controller_ops {
 	bool allow_trace_failure;

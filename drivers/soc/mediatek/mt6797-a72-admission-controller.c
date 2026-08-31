@@ -57,6 +57,10 @@ struct mt6797_a72_admission_controller {
 	struct mt6797_a72_physical_source_context source;
 	struct mt6797_a72_admission_controller_state state;
 	struct mt6797_a72_admission_trigger_state trigger;
+	/* CPU9 is explicit and cannot reuse CPU8 trace or trigger state. */
+	struct mt6797_a72_admission_controller_state cpu9_state;
+	struct mt6797_a72_admission_trigger_state cpu9_trigger;
+	bool cpu8_success_acked;
 	int ledger_prepare_ret;
 	struct mutex live_lock;
 };
@@ -612,6 +616,116 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 				   diagnostic.sram_sealed);
 }
 
+static int mt6797_a72_admission_cpu9_execute(void *context)
+{
+	struct mt6797_a72_admission_controller *controller = context;
+	const struct arm64_late_cpu_ready_token *ready;
+	bool source_registered = false;
+	int ret;
+
+	if (!controller->cpu8_success_acked ||
+	    !mt6797_a72_binder_cpu8_success_ready())
+		return -EPERM;
+	ready = mt6797_a72_admission_ready_token(controller);
+	if (!ready)
+		return -EAGAIN;
+	if (atomic_cmpxchg(&controller->cpu9_state.consumed, 0, 1))
+		return -EALREADY;
+	ret = mt6797_a72_admission_source_register(controller);
+	if (ret)
+		goto out;
+	source_registered = true;
+	ret = mt6797_a72_membership_derive_cpu9_diagnostic(ready,
+		&controller->cpu9_state.transaction,
+		&controller->cpu9_state.derive_stage);
+	if (ret)
+		goto out;
+	ret = mt6797_a72_admission_publish_up(controller,
+		&controller->cpu9_state.transaction);
+	if (ret)
+		goto out;
+	controller->cpu9_state.cpu_requests++;
+	ret = mt6797_a72_admission_add_cpu(controller, 9);
+out:
+	if (source_registered)
+		mt6797_a72_admission_source_unregister(controller);
+	controller->cpu9_state.operation_ret = ret;
+	return ret;
+}
+
+static const struct mt6797_a72_admission_trigger_ops
+mt6797_a72_admission_cpu9_trigger_ops = {
+	.execute = mt6797_a72_admission_cpu9_execute,
+};
+
+static ssize_t ack_cpu8_store(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct mt6797_a72_admission_controller *controller = dev_get_drvdata(dev);
+	struct gemini_transition_ledger_snapshot ledger;
+	int ret;
+
+	(void)attr;
+	if (count != sizeof(MT6797_A72_ADMISSION_ACK_CPU8_TOKEN) - 1 ||
+	    memcmp(buf, MT6797_A72_ADMISSION_ACK_CPU8_TOKEN, count))
+		return -EINVAL;
+	mutex_lock(&controller->live_lock);
+	if (atomic_read(&controller->cpu9_trigger.consumed)) {
+		ret = -EALREADY;
+		goto out;
+	}
+	ret = mt6797_a72_admission_retained_ledger_refresh(controller, &ledger);
+	if (ret)
+		goto out;
+	if (ledger.phase != GEMINI_TRANSITION_LEDGER_TERMINAL ||
+	    ledger.terminal != MT6797_A72_TRANSITION_CPU8_ONLINE_PROOF ||
+	    !mt6797_a72_binder_cpu8_success_ready() ||
+	    !cpu_online(8) || cpu_online(9)) {
+		ret = -EPERM;
+		goto out;
+	}
+	controller->state.archived_ledger = ledger;
+	ret = gemini_transition_ledger_ack_terminal(&ledger);
+	controller->state.ledger_ack_ret = ret;
+	if (!ret) {
+		controller->state.ledger_acknowledged = true;
+		controller->cpu8_success_acked = true;
+		mt6797_a72_admission_retained_ledger_refresh(controller,
+			&controller->state.ledger_snapshot);
+	}
+out:
+	mutex_unlock(&controller->live_lock);
+	return ret ? ret : count;
+}
+
+static ssize_t cpu9_trigger_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct mt6797_a72_admission_controller *controller = dev_get_drvdata(dev);
+	struct gemini_transition_ledger_snapshot ledger;
+	int ret;
+
+	(void)attr;
+	mutex_lock(&controller->live_lock);
+	if (!controller->cpu8_success_acked ||
+	    !mt6797_a72_binder_cpu8_success_ready()) {
+		ret = -EPERM;
+		goto out;
+	}
+	ret = mt6797_a72_admission_retained_ledger_refresh(controller, &ledger);
+	if (ret != -ENODATA) {
+		ret = ret ?: -EUCLEAN;
+		goto out;
+	}
+	ret = mt6797_a72_admission_trigger_run(&controller->cpu9_trigger,
+		&mt6797_a72_admission_cpu9_trigger_ops, controller, buf, count);
+out:
+	mutex_unlock(&controller->live_lock);
+	return ret ? ret : count;
+}
+
 static ssize_t trigger_store(struct device *dev,
 			     struct device_attribute *attr,
 			     const char *buf, size_t count)
@@ -701,11 +815,15 @@ out_unlock:
 static DEVICE_ATTR_RO(status);
 static DEVICE_ATTR_WO(trigger);
 static DEVICE_ATTR_WO(recover);
+static DEVICE_ATTR_WO(ack_cpu8);
+static DEVICE_ATTR_WO(cpu9_trigger);
 
 static struct attribute *mt6797_a72_admission_live_attrs[] = {
 	&dev_attr_status.attr,
 	&dev_attr_trigger.attr,
 	&dev_attr_recover.attr,
+	&dev_attr_ack_cpu8.attr,
+	&dev_attr_cpu9_trigger.attr,
 	NULL,
 };
 
@@ -727,6 +845,8 @@ static int mt6797_a72_admission_probe(struct platform_device *pdev)
 	mutex_init(&controller->live_lock);
 	mt6797_a72_admission_state_init(&controller->state);
 	mt6797_a72_admission_trigger_state_init(&controller->trigger);
+	mt6797_a72_admission_state_init(&controller->cpu9_state);
+	mt6797_a72_admission_trigger_state_init(&controller->cpu9_trigger);
 	/* Private retained pages are prepared before exposing the one-shot ABI. */
 	controller->state.trace_prepare_ret =
 		gemini_admission_trace_prepare(&controller->state.trace_snapshot);

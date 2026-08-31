@@ -372,14 +372,49 @@ drop:
 static const struct net_device_ops w4_netdev_ops = {
 	.ndo_open = w4_open, .ndo_stop = w4_stop, .ndo_start_xmit = w4_xmit,
 };
+static int w4_send_scan(struct mt6797_wifi_w4 *w4,
+			const struct cfg80211_scan_request *req)
+{
+	u8 cmd[8 + 48 + 64 + 2] = { };
+	unsigned int i, n = min_t(unsigned int, req->n_channels, 32);
+	unsigned int body = 48 + n * 2;
+	u16 total = 8 + body;
+
+	/* WIFI_CMD_T + CMD_SCAN_REQ from vendor scan_fsm.c:174-246. */
+	put_unaligned_le16(total, cmd);
+	put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = 0x1a;       /* CMD_ID_SCAN_REQ */
+	cmd[5] = 0x20;       /* command packet */
+	cmd[6] = 1;          /* set */
+	cmd[7] = 1;          /* command sequence */
+	cmd[8] = 1;          /* scan sequence */
+	cmd[9] = 0;          /* AIS BSS index */
+	cmd[10] = 1;         /* active scan */
+	cmd[11] = req->n_ssids ? BIT(2) : BIT(0);
+	if (req->n_ssids) {
+		cmd[12] = min_t(unsigned int, req->ssids[0].ssid_len, 32);
+		memcpy(cmd + 20, req->ssids[0].ssid, cmd[12]);
+	}
+	put_unaligned_le16(30, cmd + 14); /* dwell ms */
+	cmd[52] = n ? 1 : 0;              /* specified channels/all */
+	cmd[53] = n;
+	for (i = 0; i < n; i++) {
+		cmd[56 + 2 * i] = req->channels[i]->band == NL80211_BAND_2GHZ ? 1 : 2;
+		cmd[57 + 2 * i] = ieee80211_frequency_to_channel(req->channels[i]->center_freq);
+	}
+	return w4_cmd53(w4, true, W4_WTDR1, cmd, ALIGN(total, 4));
+}
 static int w4_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 {
 	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
+	int ret;
 	mutex_lock(&w4->lock);
 	if (!w4->opened || w4->scan_request) { mutex_unlock(&w4->lock); return -EBUSY; }
+	ret = w4_send_scan(w4, request);
+	if (ret) { mutex_unlock(&w4->lock); return ret; }
 	w4->scan_request = request;
 	mutex_unlock(&w4->lock);
-	return -EOPNOTSUPP;
+	return 0;
 }
 static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 	struct cfg80211_connect_params *sme) { return -EOPNOTSUPP; }

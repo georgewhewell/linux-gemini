@@ -48,12 +48,33 @@
 #include <linux/soc/mediatek/mt6797-consys-runtime.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
 #include <linux/soc/mediatek/mt6797-consys-wmt-patch.h>
+#include <linux/soc/mediatek/mtk-wmt.h>
+
+#define MT6797_CONSYS_RUNTIME_GNSS_WMT_TIMEOUT	msecs_to_jiffies(3000)
+#define MT6797_CONSYS_RUNTIME_WMT_FUNC_CTRL	6
+#define MT6797_CONSYS_RUNTIME_WMT_GNSS_TYPE	2
 
 static bool enable_experimental_runtime_controller;
 module_param_named(enable_experimental_runtime_controller,
 			   enable_experimental_runtime_controller, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_runtime_controller,
 		 "allow the gated MT6797 CONSYS STP-bootstrap coordinator (default: false)");
+
+/* Vendor wmt_core.c:395-481 GPS FUNC_CTRL request and one-byte status event. */
+static const u8 mt6797_consys_runtime_gnss_on[] = {
+	MT6797_CONSYS_RUNTIME_WMT_GNSS_TYPE, 1,
+};
+
+static const u8 mt6797_consys_runtime_gnss_off[] = {
+	MT6797_CONSYS_RUNTIME_WMT_GNSS_TYPE, 0,
+};
+
+static const u8 mt6797_consys_runtime_wmt_ok[] = { 0 };
+static const struct mtk_wmt_match mt6797_consys_runtime_gnss_match = {
+	.opcode = MT6797_CONSYS_RUNTIME_WMT_FUNC_CTRL,
+	.data = mt6797_consys_runtime_wmt_ok,
+	.data_len = sizeof(mt6797_consys_runtime_wmt_ok),
+};
 
 enum mt6797_consys_runtime_controller_state {
 	MT6797_CONSYS_RUNTIME_CONTROLLER_READY,
@@ -75,6 +96,10 @@ struct mt6797_consys_runtime_controller_ops {
 			void *stage_context);
 	int (*patch_download)(void *context, struct device *dev,
 			const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
+	int (*active_wmt_transaction)(void *context,
+			struct mt6797_btif_stp_bootstrap *bootstrap, u8 opcode,
+			const u8 *data, size_t data_len,
+			const struct mtk_wmt_match *expected, unsigned long timeout);
 	void (*bootstrap_destroy)(void *context,
 			struct mt6797_btif_stp_bootstrap *bootstrap);
 	void (*platform_close)(void *context,
@@ -102,6 +127,7 @@ struct mt6797_consys_runtime_controller {
 	bool run_in_progress;
 	bool stop_requested;
 	bool no_patch_stage;
+	bool active_wmt_faulted;
 	enum mt6797_consys_runtime_controller_state state;
 };
 
@@ -116,7 +142,8 @@ static bool mt6797_consys_runtime_controller_ops_valid(
 {
 	return ops && ops->runtime_lease && ops->platform_acquire &&
 		ops->bootstrap_create && ops->bootstrap_run &&
-		ops->patch_download && ops->bootstrap_destroy && ops->platform_close;
+		ops->patch_download && ops->active_wmt_transaction &&
+		ops->bootstrap_destroy && ops->platform_close;
 }
 
 static int mt6797_consys_runtime_controller_init(
@@ -442,6 +469,68 @@ int mt6797_consys_runtime_controller_gnss_session_get(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_gnss_session_get);
 
+static int mt6797_consys_runtime_controller_gnss_set_power_controller(
+		struct mt6797_consys_runtime_controller *controller,
+		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease,
+		bool enable)
+{
+	struct mt6797_btif_stp_bootstrap *bootstrap;
+	const u8 *request;
+	int ret;
+
+	if (!controller || !gnss_lease)
+		return -EINVAL;
+
+	mutex_lock(&controller->lock);
+	if (controller->state != MT6797_CONSYS_RUNTIME_CONTROLLER_ACTIVE ||
+	    controller->stop_requested || controller->active_wmt_faulted ||
+	    controller->gnss_lease_owner != gnss_lease ||
+	    gnss_lease->controller != controller ||
+	    gnss_lease->generation != controller->session_generation ||
+	    !controller->bootstrap) {
+		ret = controller->active_wmt_faulted ? -EPIPE : -ESHUTDOWN;
+		goto unlock;
+	}
+	/* stop() cannot destroy this pointer until the GNSS borrower puts it. */
+	bootstrap = controller->bootstrap;
+	mutex_unlock(&controller->lock);
+
+	request = enable ? mt6797_consys_runtime_gnss_on :
+		mt6797_consys_runtime_gnss_off;
+	ret = controller->ops->active_wmt_transaction(controller->ops_context,
+		bootstrap, MT6797_CONSYS_RUNTIME_WMT_FUNC_CTRL, request,
+		sizeof(mt6797_consys_runtime_gnss_on),
+		&mt6797_consys_runtime_gnss_match,
+		MT6797_CONSYS_RUNTIME_GNSS_WMT_TIMEOUT);
+	if (ret) {
+		mutex_lock(&controller->lock);
+		controller->active_wmt_faulted = true;
+		mutex_unlock(&controller->lock);
+	}
+	return ret;
+
+unlock:
+	mutex_unlock(&controller->lock);
+	return ret;
+}
+
+int mt6797_consys_runtime_controller_gnss_set_power(struct device *dev,
+		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease,
+		bool enable)
+{
+	struct mt6797_consys_runtime_controller *controller;
+
+	if (!dev)
+		return -EINVAL;
+	controller = dev_get_drvdata(dev);
+	if (!controller)
+		return -ENODEV;
+
+	return mt6797_consys_runtime_controller_gnss_set_power_controller(
+		controller, gnss_lease, enable);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_gnss_set_power);
+
 static void mt6797_consys_runtime_controller_gnss_session_put_controller(
 		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease)
 {
@@ -647,6 +736,15 @@ static int mt6797_consys_runtime_controller_patch_download(void *context,
 	return mt6797_consys_wmt_patch_download(dev, lease);
 }
 
+static int mt6797_consys_runtime_controller_active_wmt(void *context,
+		struct mt6797_btif_stp_bootstrap *bootstrap, u8 opcode,
+		const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected, unsigned long timeout)
+{
+	return mt6797_btif_stp_bootstrap_active_wmt_transaction(bootstrap, opcode,
+		data, data_len, expected, timeout);
+}
+
 static void mt6797_consys_runtime_controller_destroy_bootstrap(void *context,
 		struct mt6797_btif_stp_bootstrap *bootstrap)
 {
@@ -666,6 +764,7 @@ static const struct mt6797_consys_runtime_controller_ops
 	.bootstrap_create = mt6797_consys_runtime_controller_create_bootstrap,
 	.bootstrap_run = mt6797_consys_runtime_controller_run_bootstrap,
 	.patch_download = mt6797_consys_runtime_controller_patch_download,
+	.active_wmt_transaction = mt6797_consys_runtime_controller_active_wmt,
 	.bootstrap_destroy = mt6797_consys_runtime_controller_destroy_bootstrap,
 	.platform_close = mt6797_consys_runtime_controller_close_platform,
 };
@@ -789,12 +888,13 @@ enum mt6797_consys_runtime_controller_test_call {
 	MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CREATE,
 	MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUN,
 	MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_PATCH,
+	MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_ACTIVE_WMT,
 	MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_DESTROY,
 	MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CLOSE,
 };
 
 struct mt6797_consys_runtime_controller_test_backend {
-	enum mt6797_consys_runtime_controller_test_call calls[8];
+	enum mt6797_consys_runtime_controller_test_call calls[12];
 	struct mt6797_consys_runtime_lease runtime_token;
 	u8 platform_token;
 	u8 bootstrap_token;
@@ -811,6 +911,10 @@ struct mt6797_consys_runtime_controller_test_backend {
 	int create_error;
 	int run_error;
 	int patch_error;
+	int active_wmt_error;
+	u8 active_wmt_opcode;
+	u8 active_wmt_data[2];
+	size_t active_wmt_data_len;
 	bool block_run;
 	bool block_patch;
 	bool block_destroy;
@@ -910,6 +1014,25 @@ static int mt6797_consys_runtime_controller_test_patch(void *context,
 	return backend->patch_error;
 }
 
+static int mt6797_consys_runtime_controller_test_active_wmt(void *context,
+		struct mt6797_btif_stp_bootstrap *bootstrap, u8 opcode,
+		const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected, unsigned long timeout)
+{
+	struct mt6797_consys_runtime_controller_test_backend *backend = context;
+
+	mt6797_consys_runtime_controller_test_record(backend,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_ACTIVE_WMT);
+	backend->active_wmt_opcode = opcode;
+	backend->active_wmt_data_len = min_t(size_t, data_len,
+					    sizeof(backend->active_wmt_data));
+	memcpy(backend->active_wmt_data, data, backend->active_wmt_data_len);
+	if (!bootstrap || !expected || expected->opcode != opcode ||
+	    expected->data_len != 1 || expected->data[0] || !timeout)
+		return -EPROTO;
+	return backend->active_wmt_error;
+}
+
 static void mt6797_consys_runtime_controller_test_destroy(void *context,
 		struct mt6797_btif_stp_bootstrap *bootstrap)
 {
@@ -937,6 +1060,7 @@ static const struct mt6797_consys_runtime_controller_ops
 	.bootstrap_create = mt6797_consys_runtime_controller_test_create,
 	.bootstrap_run = mt6797_consys_runtime_controller_test_run,
 	.patch_download = mt6797_consys_runtime_controller_test_patch,
+	.active_wmt_transaction = mt6797_consys_runtime_controller_test_active_wmt,
 	.bootstrap_destroy = mt6797_consys_runtime_controller_test_destroy,
 	.platform_close = mt6797_consys_runtime_controller_test_close,
 };
@@ -1265,6 +1389,97 @@ static void mt6797_consys_runtime_controller_test_gnss_lease_drains_before_stop(
 	KUNIT_EXPECT_MEMEQ(test, backend->calls, expected, sizeof(expected));
 }
 
+static void mt6797_consys_runtime_controller_test_gnss_power_sequence(
+		struct kunit *test)
+{
+	static const enum mt6797_consys_runtime_controller_test_call expected[] = {
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUNTIME,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_PLATFORM,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CREATE,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUN,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_PATCH,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_ACTIVE_WMT,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_ACTIVE_WMT,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_DESTROY,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CLOSE,
+	};
+	static const u8 gnss_on[] = { 2, 1 };
+	static const u8 gnss_off[] = { 2, 0 };
+	struct mt6797_consys_runtime_controller_gnss_lease gnss_lease = { };
+	const struct mt6797_consys_stp_session_lease *session_lease = NULL;
+	struct mt6797_consys_runtime_controller_test_backend *backend;
+	struct mt6797_consys_runtime_controller *controller;
+
+	controller = mt6797_consys_runtime_controller_test_init(test, &backend);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_controller_start_unchecked(controller), 0);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_controller_gnss_session_get_controller(controller,
+			&gnss_lease, &session_lease), 0);
+
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_runtime_controller_gnss_set_power_controller(controller,
+			&gnss_lease, true), 0);
+	KUNIT_EXPECT_EQ(test, backend->active_wmt_opcode,
+			MT6797_CONSYS_RUNTIME_WMT_FUNC_CTRL);
+	KUNIT_EXPECT_EQ(test, backend->active_wmt_data_len, sizeof(gnss_on));
+	KUNIT_EXPECT_MEMEQ(test, backend->active_wmt_data, gnss_on,
+			   sizeof(gnss_on));
+
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_runtime_controller_gnss_set_power_controller(controller,
+			&gnss_lease, false), 0);
+	KUNIT_EXPECT_EQ(test, backend->active_wmt_data_len, sizeof(gnss_off));
+	KUNIT_EXPECT_MEMEQ(test, backend->active_wmt_data, gnss_off,
+			   sizeof(gnss_off));
+
+	mt6797_consys_runtime_controller_gnss_session_put_controller(&gnss_lease);
+	mt6797_consys_runtime_controller_stop_controller(controller);
+	KUNIT_EXPECT_EQ(test, backend->call_count, ARRAY_SIZE(expected));
+	KUNIT_EXPECT_MEMEQ(test, backend->calls, expected, sizeof(expected));
+}
+
+static void mt6797_consys_runtime_controller_test_gnss_power_fault_fences(
+		struct kunit *test)
+{
+	static const enum mt6797_consys_runtime_controller_test_call expected[] = {
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUNTIME,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_PLATFORM,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CREATE,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUN,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_PATCH,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_ACTIVE_WMT,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_DESTROY,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CLOSE,
+	};
+	struct mt6797_consys_runtime_controller_gnss_lease gnss_lease = { };
+	const struct mt6797_consys_stp_session_lease *session_lease = NULL;
+	struct mt6797_consys_runtime_controller_test_backend *backend;
+	struct mt6797_consys_runtime_controller *controller;
+
+	controller = mt6797_consys_runtime_controller_test_init(test, &backend);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_controller_start_unchecked(controller), 0);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_controller_gnss_session_get_controller(controller,
+			&gnss_lease, &session_lease), 0);
+	backend->active_wmt_error = -ETIMEDOUT;
+
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_runtime_controller_gnss_set_power_controller(controller,
+			&gnss_lease, true), -ETIMEDOUT);
+	KUNIT_EXPECT_TRUE(test, controller->active_wmt_faulted);
+	KUNIT_EXPECT_EQ(test,
+		mt6797_consys_runtime_controller_gnss_set_power_controller(controller,
+			&gnss_lease, false), -EPIPE);
+	KUNIT_EXPECT_EQ(test, backend->call_count, 6U);
+
+	mt6797_consys_runtime_controller_gnss_session_put_controller(&gnss_lease);
+	mt6797_consys_runtime_controller_stop_controller(controller);
+	KUNIT_EXPECT_EQ(test, backend->call_count, ARRAY_SIZE(expected));
+	KUNIT_EXPECT_MEMEQ(test, backend->calls, expected, sizeof(expected));
+}
+
 static void mt6797_consys_runtime_controller_test_concurrent_stop_waits_for_close(
 		struct kunit *test)
 {
@@ -1330,6 +1545,8 @@ static struct kunit_case mt6797_consys_runtime_controller_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_stop_waits_for_run),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_stop_waits_for_patch_stage),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_gnss_lease_drains_before_stop),
+	KUNIT_CASE(mt6797_consys_runtime_controller_test_gnss_power_sequence),
+	KUNIT_CASE(mt6797_consys_runtime_controller_test_gnss_power_fault_fences),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_concurrent_stop_waits_for_close),
 	{ }
 };

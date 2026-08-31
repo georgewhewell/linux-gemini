@@ -84,6 +84,17 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction(
 		u8 opcode, const u8 *data, size_t data_len,
 		const struct mtk_wmt_match *expected, unsigned long timeout);
 
+/*
+ * Send one serialized WMT operation after the provisional session has been
+ * promoted.  Only the controller which retains @bootstrap may call this; a
+ * failure fences the complete BTIF/STP owner and requires controller recovery.
+ * The endpoint and its retry/window state remain private to the bootstrap.
+ */
+int mt6797_btif_stp_bootstrap_active_wmt_transaction(
+		struct mt6797_btif_stp_bootstrap *bootstrap, u8 opcode,
+		const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected, unsigned long timeout);
+
 /* Capture a variable WMT event SDU without exposing the private endpoint. */
 int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,

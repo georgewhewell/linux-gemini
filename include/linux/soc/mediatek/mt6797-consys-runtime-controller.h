@@ -82,6 +82,14 @@ void mt6797_consys_runtime_controller_stop(struct device *dev);
 int mt6797_consys_runtime_controller_gnss_session_get(struct device *dev,
 		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease,
 		const struct mt6797_consys_stp_session_lease **session_lease);
+/*
+ * Issue the exact vendor GPS FUNC_CTRL on/off transaction through the private
+ * active WMT endpoint.  @gnss_lease must be the current borrower.  Any failed
+ * transaction permanently faults this controller instance until full recovery.
+ */
+int mt6797_consys_runtime_controller_gnss_set_power(struct device *dev,
+		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease,
+		bool enable);
 void mt6797_consys_runtime_controller_gnss_session_put(
 		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease);
 

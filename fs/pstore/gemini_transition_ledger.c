@@ -388,6 +388,36 @@ static int gemini_transition_ledger_initialize(void __iomem *slot)
 		gemini_transition_ledger_mmio_read(slot, 2) == 0 ? 0 : -EIO;
 }
 
+/*
+ * The private page survives the recovery watchdog by design.  A complete
+ * ledger is therefore evidence from the previous attempted transition, not
+ * stale storage to erase at the next probe.  Preserve only a fully validated
+ * committed record; the DT ownership grant permits initialization of every
+ * other initial/fresh shape before the trigger is made visible.
+ */
+static int gemini_transition_ledger_prepare_slot(void __iomem *slot)
+{
+	struct gemini_transition_ledger_record latest;
+	u32 copy;
+	u32 signature;
+	u32 start;
+	u32 size;
+
+	signature = gemini_transition_ledger_mmio_read(slot, 0);
+	start = gemini_transition_ledger_mmio_read(slot, 1);
+	size = gemini_transition_ledger_mmio_read(slot, 2);
+	if (signature == GEMINI_TRANSITION_LEDGER_PSTORE_SIGNATURE &&
+	    !start && !size)
+		return 0;
+	if (signature == GEMINI_TRANSITION_LEDGER_PSTORE_SIGNATURE &&
+	    start == GEMINI_TRANSITION_LEDGER_PAYLOAD_BYTES && start == size)
+		return gemini_transition_ledger_read_latest(
+			&gemini_transition_ledger_mmio_ops, slot, &latest, &copy) ?
+			0 : -EBADMSG;
+
+	return gemini_transition_ledger_initialize(slot);
+}
+
 int gemini_transition_ledger_prepare(void)
 {
 	void __iomem *slot;
@@ -409,7 +439,7 @@ int gemini_transition_ledger_prepare(void)
 		ret = -ENOMEM;
 		goto out_unlock;
 	}
-	ret = gemini_transition_ledger_initialize(slot);
+	ret = gemini_transition_ledger_prepare_slot(slot);
 	iounmap(slot);
 out_unlock:
 	mutex_unlock(&gemini_transition_ledger_lock);

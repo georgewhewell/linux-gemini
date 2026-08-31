@@ -437,6 +437,23 @@ static int w4_send_scan(struct mt6797_wifi_w4 *w4,
 	}
 	return w4_cmd53(w4, true, W4_WTDR1, cmd, ALIGN(total, 4));
 }
+static int w4_send_open_sta(struct mt6797_wifi_w4 *w4)
+{
+	u8 cmd[8 + 48] = { };
+	/* CMD_BSS_ACTIVATE_CTRL, vendor nic_cmd_event.h:899. */
+	put_unaligned_le16(8 + 12, cmd); put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = 0x11; cmd[5] = 0x20; cmd[6] = 1; cmd[7] = 2;
+	cmd[8] = 0; cmd[9] = 1; cmd[10] = 0; cmd[11] = 0;
+	ether_addr_copy(cmd + 12, w4->ndev->dev_addr); cmd[18] = 31;
+	if (w4_cmd53(w4, true, W4_WTDR1, cmd, 20)) return -EIO;
+	/* CMD_UPDATE_STA_RECORD_T: open AP candidate, state-1 allocation. */
+	memset(cmd, 0, sizeof(cmd));
+	put_unaligned_le16(8 + 45, cmd); put_unaligned_le16(0x8000, cmd + 2);
+	cmd[4] = 0x13; cmd[5] = 0x20; cmd[6] = 1; cmd[7] = 3;
+	cmd[8] = 0; cmd[9] = 0; ether_addr_copy(cmd + 10, w4->candidate_bssid);
+	cmd[18] = 0; cmd[25] = 1; cmd[39] = 31; cmd[40] = 31;
+	return w4_cmd53(w4, true, W4_WTDR1, cmd, 56);
+}
 static int w4_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 {
 	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
@@ -464,6 +481,10 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 	}
 	/* Candidate is now frozen for the vendor BSS_ACTIVATE/UPDATE_STA commands. */
 	w4->wlan_index = 31;
+	if (w4_send_open_sta(w4)) {
+		mutex_unlock(&w4->lock);
+		return -EIO;
+	}
 	mutex_unlock(&w4->lock);
 	return 0;
 }

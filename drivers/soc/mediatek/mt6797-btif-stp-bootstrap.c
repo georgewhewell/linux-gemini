@@ -433,6 +433,25 @@ static int mt6797_btif_stp_bootstrap_full_wmt_transaction_unchecked(
 	return ret;
 }
 
+bool mt6797_btif_stp_bootstrap_full_wmt_lease_active(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
+{
+	struct mt6797_btif_stp_bootstrap *bootstrap;
+	bool active;
+
+	if (!lease || !lease->bootstrap)
+		return false;
+	bootstrap = lease->bootstrap;
+	mutex_lock(&bootstrap->lifecycle_lock);
+	active = bootstrap->run_in_progress && bootstrap->full_wmt_stage_running &&
+		!bootstrap->destroy_requested &&
+		bootstrap->state == MT6797_BTIF_STP_BOOTSTRAP_FULL_VERIFY &&
+		lease == &bootstrap->full_wmt_lease;
+	mutex_unlock(&bootstrap->lifecycle_lock);
+	return active;
+}
+EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_full_wmt_lease_active);
+
 int mt6797_btif_stp_bootstrap_full_wmt_transaction(
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
 		u8 opcode, const u8 *data, size_t data_len,

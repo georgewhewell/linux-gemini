@@ -176,6 +176,7 @@ static unsigned int cpuhp_rollback_step_inventory(bool bringup,
 	return count;
 }
 
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
 static u32 cpuhp_rollback_callback_inventory(enum cpuhp_state previous,
 						 enum cpuhp_state target)
 {
@@ -194,6 +195,7 @@ static u32 cpuhp_rollback_callback_inventory(enum cpuhp_state previous,
 		}
 		return count;
 	}
+#endif
 static inline void cpuhp_record_rollback_effect(
 	struct cpuhp_cpu_state *st, enum cpu_up_rollback_effect effect,
 	u32 phase, int result)
@@ -1196,9 +1198,11 @@ static int cpuhp_up_callbacks(unsigned int cpu, struct cpuhp_cpu_state *st,
 		pr_debug("CPU UP failed (%d) CPU %u state %s (%d)\n",
 			 ret, cpu, cpuhp_get_step(st->state)->name,
 			 st->state);
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
 		if (arch_cpu_up_rollback(cpu, st->state, ret,
 					 rollback_trace))
 			pr_err("CPU%u P32 rollback publication failed\n", cpu);
+#endif
 
 		cpuhp_reset_state(cpu, st, prev_state);
 #ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
@@ -1234,9 +1238,11 @@ static int cpuhp_up_callbacks(unsigned int cpu, struct cpuhp_cpu_state *st,
 			!st->rollback_trace.effect_missing_mask &&
 			!st->rollback_trace.effect_forbidden_mask;
 #endif
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
 		if (arch_cpu_up_rollback_complete(cpu, ret,
 							rollback_trace))
 			pr_err("CPU%u P32 rollback consumption failed\n", cpu);
+#endif
 #ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
 		st->rollback_trace.rollback_armed = 0;
 #endif

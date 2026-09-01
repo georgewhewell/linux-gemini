@@ -128,6 +128,8 @@ struct mt6797_md1_cold_owner_ops {
 	/* Return -EAGAIN for one not-ready bounded poll and fill @status. */
 	int (*pll_poll)(void *context,
 			struct mt6797_md1_cold_owner_pll_status *status);
+	/* Read-only register evidence after a pll poll timeout; no writes. */
+	void (*pll_timeout_dump)(void *context);
 };
 
 struct mt6797_md1_cold_owner {

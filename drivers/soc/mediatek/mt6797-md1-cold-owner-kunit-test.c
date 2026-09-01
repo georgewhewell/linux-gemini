@@ -15,6 +15,7 @@ enum mt6797_md1_cold_owner_test_op {
 	MD1_COLD_TEST_SRC_CLK,
 	MD1_COLD_TEST_PLL_START,
 	MD1_COLD_TEST_PLL_POLL,
+	MD1_COLD_TEST_PLL_DUMP,
 };
 
 struct mt6797_md1_cold_owner_test_backend {
@@ -104,6 +105,11 @@ static int mt6797_md1_cold_owner_test_pll_poll(void *context,
 	return 0;
 }
 
+static void mt6797_md1_cold_owner_test_pll_dump(void *context)
+{
+	mt6797_md1_cold_owner_test_record(context, MD1_COLD_TEST_PLL_DUMP);
+}
+
 static const struct mt6797_md1_cold_owner_ops mt6797_md1_cold_owner_test_ops = {
 	.abi = MT6797_MD1_COLD_OWNER_ABI,
 	.verify_cold_reset_held = mt6797_md1_cold_owner_test_cold,
@@ -114,6 +120,7 @@ static const struct mt6797_md1_cold_owner_ops mt6797_md1_cold_owner_test_ops = {
 	.enable_srcclk = mt6797_md1_cold_owner_test_srcclk,
 	.pll_start = mt6797_md1_cold_owner_test_pll_start,
 	.pll_poll = mt6797_md1_cold_owner_test_pll_poll,
+	.pll_timeout_dump = mt6797_md1_cold_owner_test_pll_dump,
 };
 
 static const struct mt6797_md1_boot_status_preflight mt6797_md1_cold_owner_ok = {
@@ -255,7 +262,7 @@ static void mt6797_md1_cold_owner_pll_timeout_captures_last_status_and_latches(
 	KUNIT_EXPECT_EQ(test, owner.last_pll.mask, 0x80800000U);
 	KUNIT_EXPECT_EQ(test, owner.last_pll.last_value, 0U);
 	KUNIT_EXPECT_EQ(test, backend.count,
-		8U + MT6797_MD1_COLD_OWNER_MAX_PLL_POLLS);
+		8U + MT6797_MD1_COLD_OWNER_MAX_PLL_POLLS + 1U);
 }
 
 static void mt6797_md1_cold_owner_post_vector_activity_requires_delta(

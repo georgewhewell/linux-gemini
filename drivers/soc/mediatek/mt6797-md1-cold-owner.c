@@ -53,8 +53,13 @@
 #define MT6797_MD1_L1_A0_BASE			0x260f0000
 #define MT6797_MD1_L1_A0_SIZE			0x200
 #define MT6797_MD1_TOP_PLL_BASE		0x20140000
-/* The vendor accesses offsets 0x10 and 0x14 from this base. */
-#define MT6797_MD1_TOP_PLL_SIZE		0x18
+/*
+ * Vendor accesses offsets 0x10 and 0x14 from this base; its cldma_platform.h
+ * MD_Clkctrl dump (DUMP_ADDR03/LEN03) spans 0x00..0x9b, so the window covers
+ * the full dump region with one word of margin.
+ */
+#define MT6797_MD1_TOP_PLL_SIZE		0xa0
+#define MT6797_MD1_TOP_PLL_DUMP_WORDS	40
 #define MT6797_MD1_SYS_CLK_BASE		0x20120000
 #define MT6797_MD1_SYS_CLK_SIZE		0xd0
 #define MT6797_MD1_RGU_BASE			0x200f0100
@@ -725,6 +730,38 @@ static int mt6797_md1_cold_pll_poll(void *context,
 	return backend->pll_stage == MT6797_MD1_COLD_OWNER_PLL_DONE ? 0 : -EAGAIN;
 }
 
+/*
+ * Read-only register evidence for a frozen pll ready bit, invoked by the
+ * core after the shared poll budget expires.  Mirrors the vendor
+ * MD_Clkctrl DUMP_ADDR03/LEN03 region over md-top-pll; no writes.
+ */
+static void mt6797_md1_cold_pll_timeout_dump(void *context)
+{
+	struct mt6797_md1_cold_owner_backend *backend = context;
+	void __iomem *pll = backend->base[MT6797_MD1_RES_TOP_PLL];
+	void __iomem *clksw = backend->base[MT6797_MD1_RES_CLKSW];
+	void __iomem *apmixed = backend->base[MT6797_MD1_RES_APMIXED];
+	void __iomem *infra = backend->base[MT6797_MD1_RES_INFRA];
+	unsigned int i;
+
+	for (i = 0; i < MT6797_MD1_TOP_PLL_DUMP_WORDS; i += 8)
+		dev_warn(backend->dev,
+			 "MD1 pll dump pllmixed[%#04x..%#04x]: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+			 i * 4, i * 4 + 0x1c,
+			 readl(pll + i * 4 + 0x00), readl(pll + i * 4 + 0x04),
+			 readl(pll + i * 4 + 0x08), readl(pll + i * 4 + 0x0c),
+			 readl(pll + i * 4 + 0x10), readl(pll + i * 4 + 0x14),
+			 readl(pll + i * 4 + 0x18), readl(pll + i * 4 + 0x1c));
+	dev_warn(backend->dev,
+		 "MD1 pll dump clksw: 0x20=%08x 0x24=%08x 0x2c=%08x 0x40=%08x 0x44=%08x\n",
+		 readl(clksw + 0x20), readl(clksw + 0x24), readl(clksw + 0x2c),
+		 readl(clksw + 0x40), readl(clksw + 0x44));
+	dev_warn(backend->dev,
+		 "MD1 pll dump apmixed: 0x000=%08x 0x2c8=%08x srcclkena[0x10001f0c]=%08x\n",
+		 readl(apmixed + 0x000), readl(apmixed + 0x2c8),
+		 readl(infra + MT6797_MD1_INFRA_SRC_CLKENA));
+}
+
 static const struct mt6797_md1_cold_owner_ops mt6797_md1_cold_owner_ops = {
 	.abi = MT6797_MD1_COLD_OWNER_ABI,
 	.verify_cold_reset_held = mt6797_md1_cold_verify,
@@ -735,6 +772,7 @@ static const struct mt6797_md1_cold_owner_ops mt6797_md1_cold_owner_ops = {
 	.enable_srcclk = mt6797_md1_cold_enable_srcclk,
 	.pll_start = mt6797_md1_cold_pll_start,
 	.pll_poll = mt6797_md1_cold_pll_poll,
+	.pll_timeout_dump = mt6797_md1_cold_pll_timeout_dump,
 };
 
 /*

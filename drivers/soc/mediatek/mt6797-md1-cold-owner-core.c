@@ -29,7 +29,8 @@ int mt6797_md1_cold_owner_init(struct mt6797_md1_cold_owner *owner,
 	if (!owner || !ops || ops->abi != MT6797_MD1_COLD_OWNER_ABI ||
 	    !ops->verify_cold_reset_held || !ops->ccif_observe ||
 	    !ops->ccif_clear || !ops->ccif_verify_cleared || !ops->power_on ||
-	    !ops->enable_srcclk || !ops->pll_start || !ops->pll_poll)
+	    !ops->enable_srcclk || !ops->pll_start || !ops->pll_poll ||
+	    !ops->pll_timeout_dump)
 		return -EINVAL;
 
 	memset(owner, 0, sizeof(*owner));
@@ -120,6 +121,7 @@ int mt6797_md1_cold_owner_run(struct mt6797_md1_cold_owner *owner,
 			MT6797_MD1_COLD_OWNER_MAX_PLL_POLLS,
 			owner->last_pll.stage, owner->last_pll.offset,
 			owner->last_pll.mask, owner->last_pll.last_value);
+		owner->ops->pll_timeout_dump(owner->context);
 		ret = -ETIMEDOUT;
 		goto out_fatal;
 	}

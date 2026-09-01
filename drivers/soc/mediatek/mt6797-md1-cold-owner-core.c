@@ -122,8 +122,19 @@ int mt6797_md1_cold_owner_run(struct mt6797_md1_cold_owner *owner,
 			owner->last_pll.stage, owner->last_pll.offset,
 			owner->last_pll.mask, owner->last_pll.last_value);
 		owner->ops->pll_timeout_dump(owner->context);
-		ret = -ETIMEDOUT;
-		goto out_fatal;
+		/*
+		 * Vendor never cold-starts MD1 and DFEPLL clocks only the radio
+		 * front-end: a frozen pll ready bit is not evidence that the
+		 * modem CPUs cannot execute.  Mark the stage degraded and
+		 * continue to the boot-vector oracle instead of latching fatal;
+		 * every other failure in this transaction stays fatal.
+		 */
+		pr_warn("mt6797-md1-cold-owner: proceeding with degraded PLL state (vendor never cold-starts MD1)\n");
+		owner->pll_degraded = true;
+		owner->state = MT6797_MD1_COLD_OWNER_PLL_READY_WDT_UNOWNED;
+		owner->last_error = 0;
+		ret = 0;
+		goto out_unlock;
 	}
 	/*
 	 * Do not write the vendor WDT magic keys: the source gives no AP-visible

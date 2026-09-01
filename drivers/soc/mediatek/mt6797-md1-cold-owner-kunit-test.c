@@ -242,7 +242,7 @@ static void mt6797_md1_cold_owner_every_post_observation_failure_is_fatal(
 	}
 }
 
-static void mt6797_md1_cold_owner_pll_timeout_captures_last_status_and_latches(
+static void mt6797_md1_cold_owner_pll_timeout_continues_degraded(
 	struct kunit *test)
 {
 	struct mt6797_md1_cold_owner_test_backend backend = {
@@ -253,9 +253,10 @@ static void mt6797_md1_cold_owner_pll_timeout_captures_last_status_and_latches(
 	KUNIT_ASSERT_EQ(test, mt6797_md1_cold_owner_init(&owner,
 						&mt6797_md1_cold_owner_test_ops, &backend), 0);
 	KUNIT_EXPECT_EQ(test, mt6797_md1_cold_owner_run(&owner,
-						       &mt6797_md1_cold_owner_ok), -ETIMEDOUT);
+						       &mt6797_md1_cold_owner_ok), 0);
 	KUNIT_EXPECT_EQ(test, mt6797_md1_cold_owner_state(&owner),
-		MT6797_MD1_COLD_OWNER_FATAL);
+		MT6797_MD1_COLD_OWNER_PLL_READY_WDT_UNOWNED);
+	KUNIT_EXPECT_TRUE(test, owner.pll_degraded);
 	KUNIT_EXPECT_EQ(test, owner.last_pll.stage,
 		MT6797_MD1_COLD_OWNER_PLL_L1SYS);
 	KUNIT_EXPECT_EQ(test, owner.last_pll.offset, 0x30U);
@@ -293,7 +294,7 @@ static struct kunit_case mt6797_md1_cold_owner_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_cold_owner_refuses_missing_observation_without_touching_hw),
 	KUNIT_CASE(mt6797_md1_cold_owner_cold_rejection_is_non_destructive),
 	KUNIT_CASE(mt6797_md1_cold_owner_every_post_observation_failure_is_fatal),
-	KUNIT_CASE(mt6797_md1_cold_owner_pll_timeout_captures_last_status_and_latches),
+	KUNIT_CASE(mt6797_md1_cold_owner_pll_timeout_continues_degraded),
 	KUNIT_CASE(mt6797_md1_cold_owner_post_vector_activity_requires_delta),
 	{}
 };

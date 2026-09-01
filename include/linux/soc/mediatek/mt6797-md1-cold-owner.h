@@ -140,6 +140,8 @@ struct mt6797_md1_cold_owner {
 	struct mt6797_md1_cold_owner_ccif ccif_before;
 	struct mt6797_md1_cold_owner_ccif ccif_after;
 	struct mt6797_md1_cold_owner_pll_status last_pll;
+	/* A pll stage timed out and was advanced without its ready bits. */
+	bool pll_degraded;
 	enum mt6797_md1_cold_owner_state state;
 	int last_error;
 };

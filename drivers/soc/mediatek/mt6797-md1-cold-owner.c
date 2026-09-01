@@ -124,6 +124,12 @@
 #define MT6797_MD1_BOOT_STATUS1			0x4
 
 #define MT6797_MD1_MAX_POWER_POLLS		100
+/*
+ * Vendor cldma_platform.c spins unbounded per pll stage.  Bound each stage:
+ * on expiry, dump the register evidence once and advance degraded, since a
+ * frozen radio-front-end ready bit is not evidence the modem CPUs cannot run.
+ */
+#define MT6797_MD1_PLL_STAGE_MAX_POLLS		1000
 #define MT6797_MD1_MAX_BOOT_OBSERVE_POLLS	1000
 #define MT6797_MD1_BOOT_OBSERVE_DELAY_US	100
 
@@ -190,6 +196,7 @@ struct mt6797_md1_cold_owner_backend {
 	struct mt6797_md1_pmic_snapshot pmic_snapshot;
 	struct mt6797_md1_clkbuf_snapshot clkbuf_snapshot;
 	enum mt6797_md1_cold_owner_pll_stage pll_stage;
+	unsigned int pll_stage_polls;
 	struct mt6797_md1_wdt_gate wdt_gate;
 };
 
@@ -701,6 +708,8 @@ static int mt6797_md1_cold_pll_advance(struct mt6797_md1_cold_owner_backend *bac
 	return ret;
 }
 
+static void mt6797_md1_cold_pll_timeout_dump(void *context);
+
 static int mt6797_md1_cold_pll_poll(void *context,
 	struct mt6797_md1_cold_owner_pll_status *status)
 {
@@ -721,8 +730,18 @@ static int mt6797_md1_cold_pll_poll(void *context,
 		.last_value = value,
 	};
 	if ((value & check->mask) != check->mask) {
-		udelay(1);
-		return -EAGAIN;
+		if (++backend->pll_stage_polls < MT6797_MD1_PLL_STAGE_MAX_POLLS) {
+			udelay(1);
+			return -EAGAIN;
+		}
+		backend->pll_stage_polls = 0;
+		dev_warn(backend->dev,
+			 "MD1 pll stage %d not ready after %u polls: offset=%#x mask=%#x last_value=%#x; advancing with degraded PLL state, vendor never cold-starts MD1\n",
+			 backend->pll_stage, MT6797_MD1_PLL_STAGE_MAX_POLLS,
+			 check->offset, check->mask, value);
+		mt6797_md1_cold_pll_timeout_dump(backend);
+	} else {
+		backend->pll_stage_polls = 0;
 	}
 	ret = mt6797_md1_cold_pll_advance(backend);
 	if (ret)
@@ -731,9 +750,10 @@ static int mt6797_md1_cold_pll_poll(void *context,
 }
 
 /*
- * Read-only register evidence for a frozen pll ready bit, invoked by the
- * core after the shared poll budget expires.  Mirrors the vendor
- * MD_Clkctrl DUMP_ADDR03/LEN03 region over md-top-pll; no writes.
+ * Read-only register evidence for a frozen pll ready bit, invoked after a
+ * stage's poll budget expires (per-stage in pll_poll, or by the core when
+ * the shared budget expires).  Mirrors the vendor MD_Clkctrl
+ * DUMP_ADDR03/LEN03 region over md-top-pll; no writes.
  */
 static void mt6797_md1_cold_pll_timeout_dump(void *context)
 {

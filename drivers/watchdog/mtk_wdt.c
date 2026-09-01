@@ -101,6 +101,7 @@ struct mtk_wdt_dev {
 	struct mtk_wdt_recovery_owner recovery;
 	bool recovery_supported;
 #endif
+	unsigned int reset_pulse_us;
 };
 
 struct mtk_wdt_data {
@@ -112,6 +113,7 @@ struct mtk_wdt_data {
 	bool recovery_takeover;
 #endif
 	unsigned int restart_priority;
+	unsigned int reset_pulse_us;
 };
 
 static const struct mtk_wdt_data mt2712_data = {
@@ -134,6 +136,7 @@ static const struct mtk_wdt_data mt6797_data = {
 	.recovery_takeover = true,
 #endif
 	.restart_priority = 255,
+	.reset_pulse_us = 1,
 };
 
 static const struct mtk_wdt_data mt7986_data = {
@@ -246,11 +249,16 @@ static int toprgu_reset_status(struct reset_controller_dev *rcdev,
 static int toprgu_reset(struct reset_controller_dev *rcdev,
 			unsigned long id)
 {
+	struct mtk_wdt_dev *data =
+		container_of(rcdev, struct mtk_wdt_dev, rcdev);
 	int ret;
 
 	ret = toprgu_reset_assert(rcdev, id);
 	if (ret)
 		return ret;
+
+	if (data->reset_pulse_us)
+		udelay(data->reset_pulse_us);
 
 	return toprgu_reset_deassert(rcdev, id);
 }
@@ -779,6 +787,7 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 		 mtk_wdt->wdt_dev.timeout, nowayout);
 
 	if (wdt_data && wdt_data->toprgu_sw_rst_num) {
+		mtk_wdt->reset_pulse_us = wdt_data->reset_pulse_us;
 		err = toprgu_register_reset_controller(pdev,
 						       wdt_data->toprgu_sw_rst_num);
 		if (err)

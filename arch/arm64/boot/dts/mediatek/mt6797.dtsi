@@ -347,8 +347,9 @@
 			     <GIC_SPI 263 IRQ_TYPE_LEVEL_LOW>,
 			     <GIC_SPI 262 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-names = "job", "mmu", "gpu";
-		clocks = <&mfgsys CLK_MFG_BG3D>;
-		clock-names = "core";
+		clocks = <&mfgsys CLK_MFG_BG3D>,
+			 <&infrasys CLK_INFRA_MFG_VCG>;
+		clock-names = "core", "bus";
 		power-domains = <&scpsys MT6797_POWER_DOMAIN_MFG_CORE0>,
 				 <&scpsys MT6797_POWER_DOMAIN_MFG_CORE1>,
 				 <&scpsys MT6797_POWER_DOMAIN_MFG_CORE2>,

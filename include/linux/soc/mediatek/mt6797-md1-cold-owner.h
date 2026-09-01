@@ -17,7 +17,13 @@
 #include <linux/types.h>
 
 #define MT6797_MD1_COLD_OWNER_ABI		1
-#define MT6797_MD1_COLD_OWNER_MAX_PLL_POLLS	100
+/*
+ * Shared across all PLL stages: the core's attempt counter never resets
+ * between stages.  Vendor cldma_platform.c spins unbounded per stage;
+ * keep a firm bound at ~330 ms worst case (~33 us per syscon-backed
+ * poll), enough for DFEPLL_RDY to assert after the earlier ready bits.
+ */
+#define MT6797_MD1_COLD_OWNER_MAX_PLL_POLLS	10000
 
 enum mt6797_md1_cold_owner_state {
 	MT6797_MD1_COLD_OWNER_OFF,

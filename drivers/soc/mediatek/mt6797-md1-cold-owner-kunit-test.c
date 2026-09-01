@@ -29,7 +29,10 @@ static int mt6797_md1_cold_owner_test_record(
 	struct mt6797_md1_cold_owner_test_backend *backend,
 	enum mt6797_md1_cold_owner_test_op op)
 {
-	backend->calls[backend->count++] = op;
+	/* The pll-timeout test records MAX_PLL_POLLS polls; count them all. */
+	if (backend->count < ARRAY_SIZE(backend->calls))
+		backend->calls[backend->count] = op;
+	backend->count++;
 	return backend->fail && backend->fail_op == op ? -EIO : 0;
 }
 

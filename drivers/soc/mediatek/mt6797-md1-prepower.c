@@ -317,7 +317,14 @@ int mt6797_md1_spm_snapshot(struct regmap *spm,
 		return -EINVAL;
 
 	snapshot->valid = false;
-	/* Do not alter the shared SPM key: it must already be enabled. */
+	/*
+	 * This snapshot only reads.  The cold owner now programs the vendor
+	 * project-code key with the enable bit before its mtcmos power
+	 * sequence and leaves it asserted (vendor spm_mtcmos_ctrl_md1()
+	 * does the same and never clears it); this earlier gate still
+	 * refuses a disabled register as fail-closed evidence that the SPM
+	 * sequencer control state is unknown.
+	 */
 	ret = regmap_read(spm, MT6797_MD1_SPM_POWERON_CONFIG_EN,
 			  &poweron_config);
 	if (ret)

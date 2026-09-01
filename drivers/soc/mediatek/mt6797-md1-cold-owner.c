@@ -79,6 +79,11 @@
 #define MT6797_MD1_SPM_MD_EXT_BUCK_ISO		0x390
 #define MT6797_MD1_SPM_PWR_STATUS_MD1		BIT(0)
 #define MT6797_MD1_SPM_POWERON_CONFIG_EN_BIT	BIT(0)
+/* Vendor clk-mt6797-pg.c SPM project code keying every mtcmos sequence. */
+#define MT6797_MD1_SPM_PROJECT_CODE		0x0b16
+#define MT6797_MD1_SPM_POWERON_CONFIG_EN_KEY	\
+	((MT6797_MD1_SPM_PROJECT_CODE << 16) | \
+	 MT6797_MD1_SPM_POWERON_CONFIG_EN_BIT)
 #define MT6797_MD1_SPM_PWR_RST_B		BIT(0)
 #define MT6797_MD1_SPM_PWR_ISO			BIT(1)
 #define MT6797_MD1_SPM_PWR_ON			BIT(2)
@@ -274,6 +279,10 @@ static int mt6797_md1_cold_wait_power(struct mt6797_md1_cold_owner_backend *back
 			return 0;
 		udelay(1);
 	}
+	dev_warn(backend->dev,
+		 "MD1 power %s wait timed out after %u polls: pwr_status=%#x pwr_status_2nd=%#x\n",
+		 on ? "on" : "off", MT6797_MD1_MAX_POWER_POLLS, status,
+		 status_2nd);
 	return -ETIMEDOUT;
 }
 
@@ -293,6 +302,10 @@ static int mt6797_md1_cold_wait_bus_protect(
 			return 0;
 		udelay(1);
 	}
+	dev_warn(backend->dev,
+		 "MD1 bus protect %s wait timed out after %u polls: protect_sta1=%#x mask=%#x\n",
+		 asserted ? "assert" : "release", MT6797_MD1_MAX_POWER_POLLS,
+		 value, MT6797_MD1_INFRA_MD1_PROT_MASK);
 	return -ETIMEDOUT;
 }
 
@@ -415,7 +428,7 @@ static int mt6797_md1_cold_ccif_verify(void *context,
 static int mt6797_md1_cold_power_on(void *context)
 {
 	struct mt6797_md1_cold_owner_backend *backend = context;
-	unsigned int pwr_con;
+	unsigned int pwr_con, poweron_config, status, status_2nd;
 	u32 value;
 	int ret;
 
@@ -434,6 +447,18 @@ static int mt6797_md1_cold_power_on(void *context)
 	if (ret)
 		return ret;
 
+	/*
+	 * Vendor spm_mtcmos_ctrl_md1() keys every mtcmos power sequence with
+	 * the SPM project code; without it the MD1_PWR_CON power requests are
+	 * inert and PWR_STATUS never sets.  Mirror vendor: program the key
+	 * here and leave it asserted, as mainline mtk-scpsys does for other
+	 * domains.
+	 */
+	ret = regmap_write(backend->spm, MT6797_MD1_SPM_POWERON_CONFIG_EN,
+			   MT6797_MD1_SPM_POWERON_CONFIG_EN_KEY);
+	if (ret)
+		return ret;
+
 	/* Exact active CCF order: buck isolation, requests, both acknowledgements. */
 	ret = regmap_update_bits(backend->spm, MT6797_MD1_SPM_MD_EXT_BUCK_ISO,
 				 MT6797_MD1_SPM_MD_EXT_BUCK_ISO_MD1, 0);
@@ -447,6 +472,25 @@ static int mt6797_md1_cold_power_on(void *context)
 				 MT6797_MD1_SPM_PWR_ON_2ND, MT6797_MD1_SPM_PWR_ON_2ND);
 	if (ret)
 		return ret;
+
+	/* Permanent evidence channel: request readbacks before the wait. */
+	ret = regmap_read(backend->spm, MT6797_MD1_SPM_POWERON_CONFIG_EN,
+			  &poweron_config);
+	if (ret)
+		return ret;
+	ret = regmap_read(backend->spm, MT6797_MD1_SPM_MD1_PWR_CON, &pwr_con);
+	if (ret)
+		return ret;
+	ret = regmap_read(backend->spm, MT6797_MD1_SPM_PWR_STATUS, &status);
+	if (ret)
+		return ret;
+	ret = regmap_read(backend->spm, MT6797_MD1_SPM_PWR_STATUS_2ND,
+			  &status_2nd);
+	if (ret)
+		return ret;
+	dev_info(backend->dev,
+		 "MD1 power-on requested: poweron_config=%#x pwr_con=%#x pwr_status=%#x pwr_status_2nd=%#x\n",
+		 poweron_config, pwr_con, status, status_2nd);
 	ret = mt6797_md1_cold_wait_power(backend, true);
 	if (ret)
 		return ret;

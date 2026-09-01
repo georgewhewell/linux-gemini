@@ -26,6 +26,14 @@ static int panfrost_reset_init(struct panfrost_device *pfdev)
 		dev_err(pfdev->base.dev, "get reset failed %ld\n", PTR_ERR(pfdev->rstc));
 		return PTR_ERR(pfdev->rstc);
 	}
+	if (pfdev->comp->reset_on_init) {
+		if (!pfdev->rstc) {
+			dev_err(pfdev->base.dev, "initial reset requires a reset control\n");
+			return -ENODEV;
+		}
+
+		return reset_control_reset(pfdev->rstc);
+	}
 
 	return reset_control_deassert(pfdev->rstc);
 }

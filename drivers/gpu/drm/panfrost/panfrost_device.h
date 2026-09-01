@@ -112,6 +112,8 @@ struct panfrost_compatible {
 
 	/* Allowed PM features */
 	u8 pm_features;
+	/* Reset the GPU during initialization. */
+	bool reset_on_init;
 
 	/* GPU configuration quirks */
 	u8 gpu_quirks;

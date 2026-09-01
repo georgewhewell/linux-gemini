@@ -8,8 +8,9 @@
  * in dependency order: LK evidence, AP-side baseline, locked remap evidence,
  * the secure EMI-MPU provider, then the cold owner. It is inert without all
  * six built-in command-line gates. The owner stops after one boot-vector
- * write and a 100 ms bounded AP/CCIF observation; it installs no IRQ, CLDMA,
- * shared-memory, CCCI, SIM, RF, or modem firmware transport.
+ * write, a 100 ms immediate oracle and a scheduled five-second register-only
+ * follow-up; it installs no IRQ, CLDMA, shared-memory, CCCI, SIM, RF, or modem
+ * firmware transport.
  */
 
 /dts-v1/;

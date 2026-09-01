@@ -36,6 +36,7 @@
 #include <linux/soc/mediatek/mt6797-md1-prerelease.h>
 #include <linux/soc/mediatek/mt6797-md1-remap-observe.h>
 #include <linux/soc/mediatek/mt6797-md1-wdt-gate.h>
+#include <linux/workqueue.h>
 
 #define MT6797_MD1_INFRA_BASE			0x10001000
 #define MT6797_MD1_INFRA_SIZE			0x1000
@@ -107,6 +108,7 @@
 
 #define MT6797_MD1_CCIF_BUSY			0x004
 #define MT6797_MD1_CCIF_TCHNUM			0x00c
+#define MT6797_MD1_CCIF_RCHNUM			0x010
 #define MT6797_MD1_CCIF_ACK			0x014
 #define MT6797_MD1_CCIF_CHDATA			0x100
 #define MT6797_MD1_CCIF_CHANNELS		16
@@ -132,6 +134,9 @@
 #define MT6797_MD1_PLL_STAGE_MAX_POLLS		1000
 #define MT6797_MD1_MAX_BOOT_OBSERVE_POLLS	1000
 #define MT6797_MD1_BOOT_OBSERVE_DELAY_US	100
+/* Five seconds at nominal cadence; scheduling stretch is recorded in ns. */
+#define MT6797_MD1_PASSIVE_OBSERVE_POLLS	5000
+#define MT6797_MD1_PASSIVE_OBSERVE_DELAY_US	1000
 
 struct mt6797_md1_cold_owner_resource {
 	const char *name;
@@ -198,6 +203,8 @@ struct mt6797_md1_cold_owner_backend {
 	enum mt6797_md1_cold_owner_pll_stage pll_stage;
 	unsigned int pll_stage_polls;
 	struct mt6797_md1_wdt_gate wdt_gate;
+	struct work_struct passive_observe_work;
+	struct mt6797_md1_post_vector_evidence passive_evidence;
 };
 
 static bool enable_experimental_md1_cold_owner;
@@ -365,19 +372,33 @@ static int mt6797_md1_cold_verify(void *context,
 	return 0;
 }
 
-static int mt6797_md1_cold_ccif_observe(void *context,
+static int mt6797_md1_cold_ccif_registers_observe(void *context,
 	struct mt6797_md1_cold_owner_ccif *state)
 {
 	struct mt6797_md1_cold_owner_backend *backend = context;
-	u32 word;
 
 	if (!backend || !state)
 		return -EINVAL;
 	memset(state, 0, sizeof(*state));
 	state->ap_busy = readl(backend->base[MT6797_MD1_RES_AP_CCIF] + MT6797_MD1_CCIF_BUSY);
 	state->md_busy = readl(backend->base[MT6797_MD1_RES_MD_CCIF] + MT6797_MD1_CCIF_BUSY);
+	state->ap_rchnum = readl(backend->base[MT6797_MD1_RES_AP_CCIF] + MT6797_MD1_CCIF_RCHNUM);
+	state->md_rchnum = readl(backend->base[MT6797_MD1_RES_MD_CCIF] + MT6797_MD1_CCIF_RCHNUM);
 	state->ap_ack = readl(backend->base[MT6797_MD1_RES_AP_CCIF] + MT6797_MD1_CCIF_ACK);
 	state->md_ack = readl(backend->base[MT6797_MD1_RES_MD_CCIF] + MT6797_MD1_CCIF_ACK);
+	return 0;
+}
+
+static int mt6797_md1_cold_ccif_observe(void *context,
+	struct mt6797_md1_cold_owner_ccif *state)
+{
+	struct mt6797_md1_cold_owner_backend *backend = context;
+	u32 word;
+	int ret;
+
+	ret = mt6797_md1_cold_ccif_registers_observe(context, state);
+	if (ret)
+		return ret;
 	for (word = 0; word < MT6797_MD1_CCIF_SRAM_BYTES / sizeof(u32); word++) {
 		if (readl(backend->base[MT6797_MD1_RES_AP_CCIF] +
 			  MT6797_MD1_CCIF_CHDATA + word * sizeof(u32)))
@@ -914,6 +935,103 @@ static int mt6797_md1_cold_wdt_run(struct mt6797_md1_cold_owner_backend *backend
 	return 0;
 }
 
+static bool mt6797_md1_cold_ccif_registers_changed(
+	const struct mt6797_md1_cold_owner_ccif *before,
+	const struct mt6797_md1_cold_owner_ccif *after)
+{
+	return before->ap_busy != after->ap_busy ||
+		before->md_busy != after->md_busy ||
+		before->ap_rchnum != after->ap_rchnum ||
+		before->md_rchnum != after->md_rchnum ||
+		before->ap_ack != after->ap_ack ||
+		before->md_ack != after->md_ack;
+}
+
+/*
+ * Deliberately independent of the immediate release oracle.  This worker
+ * observes a much longer window without holding up boot and without writing
+ * CCIF ACK/TCHNUM, enabling an IRQ, touching MD shared memory, or preparing
+ * CLDMA descriptors.  RCHNUM reads are passive; vendor code separately writes
+ * ACK after reading them when it actually owns the interrupt path.
+ */
+static void mt6797_md1_cold_passive_observe_work(struct work_struct *work)
+{
+	struct mt6797_md1_cold_owner_backend *backend = container_of(work,
+		struct mt6797_md1_cold_owner_backend, passive_observe_work);
+	struct mt6797_md1_post_vector_evidence evidence =
+		backend->passive_evidence;
+	struct mt6797_md1_cold_owner_ccif previous_ccif, ccif;
+	u32 previous_stats0, previous_stats1, stats0, stats1;
+	unsigned int attempt;
+	int ret;
+
+	previous_stats0 = readl(backend->base[MT6797_MD1_RES_BOOT_STATUS] +
+		MT6797_MD1_BOOT_STATUS0);
+	previous_stats1 = readl(backend->base[MT6797_MD1_RES_BOOT_STATUS] +
+		MT6797_MD1_BOOT_STATUS1);
+	ret = mt6797_md1_cold_ccif_registers_observe(backend, &previous_ccif);
+	if (ret)
+		return;
+	evidence.passive_started_boottime_ns = ktime_get_boottime_ns();
+
+	for (attempt = 0; attempt < MT6797_MD1_PASSIVE_OBSERVE_POLLS; attempt++) {
+		usleep_range(MT6797_MD1_PASSIVE_OBSERVE_DELAY_US,
+			     MT6797_MD1_PASSIVE_OBSERVE_DELAY_US + 250);
+		stats0 = readl(backend->base[MT6797_MD1_RES_BOOT_STATUS] +
+			MT6797_MD1_BOOT_STATUS0);
+		stats1 = readl(backend->base[MT6797_MD1_RES_BOOT_STATUS] +
+			MT6797_MD1_BOOT_STATUS1);
+		ret = mt6797_md1_cold_ccif_registers_observe(backend, &ccif);
+		if (ret)
+			break;
+
+		if (stats0 != previous_stats0)
+			evidence.boot_status0_transitions++;
+		if (stats1 != previous_stats1)
+			evidence.boot_status1_transitions++;
+		if (mt6797_md1_cold_ccif_registers_changed(&previous_ccif, &ccif))
+			evidence.ccif_register_transitions++;
+		if (mt6797_md1_cold_owner_ccif_register_activity(&ccif)) {
+			evidence.ccif_register_activity = true;
+			if (!evidence.first_ccif_activity_poll)
+				evidence.first_ccif_activity_poll = attempt + 1;
+		}
+
+		previous_stats0 = stats0;
+		previous_stats1 = stats1;
+		previous_ccif = ccif;
+		evidence.passive_polls = attempt + 1;
+	}
+
+	evidence.boot_status0_after = previous_stats0;
+	evidence.boot_status1_after = previous_stats1;
+	evidence.ccif_after = previous_ccif;
+	evidence.passive_observed_boottime_ns = ktime_get_boottime_ns();
+	evidence.passive_complete = !ret &&
+		evidence.passive_polls == MT6797_MD1_PASSIVE_OBSERVE_POLLS;
+	backend->passive_evidence = evidence;
+	mt6797_md1_cold_post_vector_publish(&evidence);
+
+	dev_info(backend->dev,
+		 "MD1 passive post-vector observation: complete=%u polls=%u t=%llu..%llu stats=%#08x/%#08x transitions=%u/%u CCIF busy=%#x/%#x rchnum=%#x/%#x ack=%#x/%#x transitions=%u first_activity_poll=%u; no writes, IRQ, CLDMA, HWO or MD shared-memory access\n",
+		 evidence.passive_complete, evidence.passive_polls,
+		 (unsigned long long)evidence.passive_started_boottime_ns,
+		 (unsigned long long)evidence.passive_observed_boottime_ns,
+		 evidence.boot_status0_after, evidence.boot_status1_after,
+		 evidence.boot_status0_transitions,
+		 evidence.boot_status1_transitions,
+		 evidence.ccif_after.ap_busy, evidence.ccif_after.md_busy,
+		 evidence.ccif_after.ap_rchnum, evidence.ccif_after.md_rchnum,
+		 evidence.ccif_after.ap_ack, evidence.ccif_after.md_ack,
+		 evidence.ccif_register_transitions,
+		 evidence.first_ccif_activity_poll);
+}
+
+static void mt6797_md1_cold_cancel_passive_observer(void *data)
+{
+	cancel_work_sync(data);
+}
+
 static int mt6797_md1_cold_boot_vector_release(
 	struct mt6797_md1_cold_owner_backend *backend,
 	const struct mt6797_md1_boot_status_evidence *before)
@@ -1079,6 +1197,13 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	if (IS_ERR(backend->spm))
 		return dev_err_probe(&pdev->dev, PTR_ERR(backend->spm),
 			"SPM syscon regmap unavailable\n");
+	INIT_WORK(&backend->passive_observe_work,
+		  mt6797_md1_cold_passive_observe_work);
+	ret = devm_add_action_or_reset(&pdev->dev,
+		mt6797_md1_cold_cancel_passive_observer,
+		&backend->passive_observe_work);
+	if (ret)
+		return ret;
 	ret = mt6797_md1_cold_owner_init(owner, &mt6797_md1_cold_owner_ops, backend);
 	if (ret)
 		return ret;
@@ -1110,6 +1235,11 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	ret = mt6797_md1_cold_boot_vector_release(backend, &boot_status);
 	if (ret)
 		goto out_fatal;
+	ret = mt6797_md1_cold_owner_post_vector_evidence_get(
+		&backend->passive_evidence);
+	if (ret)
+		goto out_fatal;
+	schedule_work(&backend->passive_observe_work);
 
 	platform_set_drvdata(pdev, owner);
 	dev_info(&pdev->dev,

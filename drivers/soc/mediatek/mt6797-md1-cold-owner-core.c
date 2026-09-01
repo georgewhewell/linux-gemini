@@ -180,8 +180,17 @@ bool mt6797_md1_cold_owner_post_vector_activity(
 		evidence->boot_status1_before != evidence->boot_status1_after ||
 		before->ap_busy != after->ap_busy ||
 		before->md_busy != after->md_busy ||
+		before->ap_rchnum != after->ap_rchnum ||
+		before->md_rchnum != after->md_rchnum ||
 		before->ap_ack != after->ap_ack ||
 		before->md_ack != after->md_ack ||
 		before->ap_sram_nonzero_words != after->ap_sram_nonzero_words ||
 		before->md_sram_nonzero_words != after->md_sram_nonzero_words;
+}
+
+bool mt6797_md1_cold_owner_ccif_register_activity(
+	const struct mt6797_md1_cold_owner_ccif *ccif)
+{
+	return ccif && (ccif->ap_busy || ccif->md_busy || ccif->ap_rchnum ||
+		ccif->md_rchnum || ccif->ap_ack || ccif->md_ack);
 }

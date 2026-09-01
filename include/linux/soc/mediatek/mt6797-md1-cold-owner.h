@@ -78,6 +78,8 @@ struct mt6797_md1_cold_owner_pll_status {
 struct mt6797_md1_cold_owner_ccif {
 	u32 ap_busy;
 	u32 md_busy;
+	u32 ap_rchnum;
+	u32 md_rchnum;
 	u32 ap_ack;
 	u32 md_ack;
 	u32 ap_sram_nonzero_words;
@@ -110,6 +112,16 @@ struct mt6797_md1_post_vector_evidence {
 	bool ccif_changed;
 	enum mt6797_md1_post_vector_token token;
 	bool observed;
+	/* Bounded, register-only follow-up after the immediate GO oracle. */
+	u64 passive_started_boottime_ns;
+	u64 passive_observed_boottime_ns;
+	u32 passive_polls;
+	u32 boot_status0_transitions;
+	u32 boot_status1_transitions;
+	u32 ccif_register_transitions;
+	u32 first_ccif_activity_poll;
+	bool ccif_register_activity;
+	bool passive_complete;
 };
 
 struct mt6797_md1_cold_owner_ops {
@@ -156,6 +168,10 @@ mt6797_md1_cold_owner_state(struct mt6797_md1_cold_owner *owner);
 /* Pure comparison used by the bounded post-vector AP-only observer. */
 bool mt6797_md1_cold_owner_post_vector_activity(
 	const struct mt6797_md1_post_vector_evidence *evidence);
+
+/* Pure classifier for the passive CCIF register observer; performs no I/O. */
+bool mt6797_md1_cold_owner_ccif_register_activity(
+	const struct mt6797_md1_cold_owner_ccif *ccif);
 
 /* Returns -ENODATA until the boot-vector observer reports GO or NO-GO. */
 int mt6797_md1_cold_owner_post_vector_evidence_get(

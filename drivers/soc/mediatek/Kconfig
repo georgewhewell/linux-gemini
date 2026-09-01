@@ -1269,8 +1269,9 @@ config MTK_MT6797_MD1_COLD_OWNER
 	  vendor CCF MD1 sequence, exact vendor WDT key writes with diagnostic status
 	  samples, stage-one MPU and the single vendor boot-vector write. It requires
 	  two module parameters and disabled DT nodes to be changed before any write.
-	  A bounded AP boot-status/CCIF observation is the terminal result. It does
-	  not install MD IRQs, CLDMA, shared-memory, CCCI transport, SIM or RF.
+	  A bounded AP boot-status/CCIF oracle and a scheduled five-second passive
+	  register observer are the terminal result. It does not install MD IRQs,
+	  CLDMA, shared-memory, CCCI transport, SIM or RF.
 
 config MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 cold owner"

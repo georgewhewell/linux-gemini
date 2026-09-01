@@ -282,11 +282,22 @@ static void mt6797_md1_cold_owner_post_vector_activity_requires_delta(
 	evidence.ccif_after.md_ack = BIT(7);
 	KUNIT_EXPECT_TRUE(test,
 		mt6797_md1_cold_owner_post_vector_activity(&evidence));
+	KUNIT_EXPECT_TRUE(test,
+		mt6797_md1_cold_owner_ccif_register_activity(&evidence.ccif_after));
+
+	evidence.ccif_after = evidence.ccif_before;
+	evidence.ccif_after.ap_rchnum = BIT(3);
+	KUNIT_EXPECT_TRUE(test,
+		mt6797_md1_cold_owner_post_vector_activity(&evidence));
+	KUNIT_EXPECT_TRUE(test,
+		mt6797_md1_cold_owner_ccif_register_activity(&evidence.ccif_after));
 
 	evidence.ccif_after = evidence.ccif_before;
 	evidence.boot_status1_after++;
 	KUNIT_EXPECT_TRUE(test,
 		mt6797_md1_cold_owner_post_vector_activity(&evidence));
+	KUNIT_EXPECT_FALSE(test,
+		mt6797_md1_cold_owner_ccif_register_activity(&evidence.ccif_after));
 }
 
 static struct kunit_case mt6797_md1_cold_owner_test_cases[] = {

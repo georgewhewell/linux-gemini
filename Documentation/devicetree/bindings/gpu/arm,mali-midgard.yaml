@@ -157,6 +157,14 @@ allOf:
           minItems: 2
       required:
         - resets
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: mediatek,mt6797-mali
+    then:
+      required:
+        - resets
 
 examples:
   - |

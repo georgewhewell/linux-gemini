@@ -118,9 +118,9 @@ static int mt6797_md1_remap_observe_probe(struct platform_device *pdev)
 			"infracfg-ao must be %08x/%#x\n",
 			MT6797_MD1_INFRACFG_AO_BASE, MT6797_MD1_INFRACFG_AO_SIZE);
 
-	base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
+	base = devm_ioremap(dev, res->start, resource_size(res));
+	if (!base)
+		return -ENOMEM;
 	io = (struct mt6797_md1_remap_observe_io) {
 		.dev = dev,
 		.base = base,

@@ -265,9 +265,9 @@ static int mt6797_md1_boot_status_probe(struct platform_device *pdev)
 			"md1-boot-status must be %08x/%#x\n",
 			MT6797_MD1_BOOT_STATUS_BASE, MT6797_MD1_BOOT_STATUS_SIZE);
 
-	base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
+	base = devm_ioremap(dev, res->start, resource_size(res));
+	if (!base)
+		return -ENOMEM;
 
 	/*
 	 * This fixed sequence matches the vendor's two dummy reads and one report
@@ -337,10 +337,12 @@ static int mt6797_md1_boot_status_probe(struct platform_device *pdev)
 	    resource_size(ap_ccif_res) != MT6797_MD1_CCIF_SIZE ||
 	    resource_size(md_ccif_res) != MT6797_MD1_CCIF_SIZE)
 		return dev_err_probe(dev, -EINVAL, "invalid read-only CCIF resources\n");
-	ap_ccif = devm_ioremap_resource(dev, ap_ccif_res);
-	md_ccif = devm_ioremap_resource(dev, md_ccif_res);
-	if (IS_ERR(ap_ccif) || IS_ERR(md_ccif))
-		return PTR_ERR(IS_ERR(ap_ccif) ? ap_ccif : md_ccif);
+	ap_ccif = devm_ioremap(dev, ap_ccif_res->start,
+			       resource_size(ap_ccif_res));
+	md_ccif = devm_ioremap(dev, md_ccif_res->start,
+			       resource_size(md_ccif_res));
+	if (!ap_ccif || !md_ccif)
+		return -ENOMEM;
 	dev_info(dev, "before passive MD1 CCIF snapshot\n");
 	ap_con = readl(ap_ccif + MT6797_MD1_CCIF_CON);
 	ap_busy = readl(ap_ccif + MT6797_MD1_CCIF_BUSY);

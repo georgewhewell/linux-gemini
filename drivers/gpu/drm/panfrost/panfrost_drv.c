@@ -1099,6 +1099,7 @@ static const struct panfrost_compatible mediatek_mt6797_data = {
 	.supply_names = default_supplies,
 	.num_pm_domains = ARRAY_SIZE(mediatek_mt6797_pm_domains),
 	.pm_domain_names = mediatek_mt6797_pm_domains,
+	.reset_on_init = true,
 };
 
 static const char * const mediatek_pm_domains[] = { "core0", "core1", "core2",

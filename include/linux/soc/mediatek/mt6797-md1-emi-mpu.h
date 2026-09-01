@@ -48,6 +48,14 @@ struct mt6797_md1_emi_mpu_core {
 	{ .lock = __MUTEX_INITIALIZER((core).lock) }
 
 void mt6797_md1_emi_mpu_core_init(struct mt6797_md1_emi_mpu_core *core);
+/*
+ * Value-only answer: does one secure-SET tuple exactly equal the validated
+ * LK plan entry for its region?  This grants no skip authority by itself;
+ * the provider additionally requires the attested LK-locked observation.
+ */
+bool mt6797_md1_emi_mpu_plan_entry_matches(
+	const struct mt6797_md1_mpu_remap_plan *plan, u64 start, u64 end,
+	u32 region_permission);
 int mt6797_md1_emi_mpu_core_apply(struct mt6797_md1_emi_mpu_core *core,
 	mt6797_md1_emi_mpu_begin_fn begin, mt6797_md1_emi_mpu_set_fn set,
 	void *context, const struct mt6797_md1_mpu_remap_plan *plan,

@@ -86,6 +86,32 @@ static bool mt6797_md1_emi_mpu_entries_valid(
 	return true;
 }
 
+/*
+ * Value-only plan match for one secure-SET tuple.  This is not skip
+ * authority: the platform provider separately requires the attested
+ * LK-locked observation before it may bypass the secure call.
+ */
+bool mt6797_md1_emi_mpu_plan_entry_matches(
+	const struct mt6797_md1_mpu_remap_plan *plan, u64 start, u64 end,
+	u32 region_permission)
+{
+	u32 region = region_permission >> MT6797_MD1_EMI_MPU_REGION_SHIFT;
+	u32 permission = region_permission & MT6797_MD1_EMI_MPU_PERMISSION_MASK;
+	unsigned int i;
+
+	if (!plan)
+		return false;
+	for (i = 0; i < MT6797_MD1_MPU_PLAN_ENTRIES; i++) {
+		const struct mt6797_md1_mpu_plan_entry *entry = &plan->mpu[i];
+
+		if (entry->emi_mpu_region != region)
+			continue;
+		return entry->start == start && entry->end == end &&
+		       entry->access_permission == permission;
+	}
+	return false;
+}
+
 void mt6797_md1_emi_mpu_core_init(struct mt6797_md1_emi_mpu_core *core)
 {
 	if (!core)

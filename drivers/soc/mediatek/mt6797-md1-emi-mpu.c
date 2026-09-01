@@ -7,6 +7,13 @@
  * discard the return register; this provider instead captures it and turns
  * every nonzero result into an irreversible boot-fatal latch.  There is no
  * GET/readback or inverse operation because neither is source-backed for MD1.
+ *
+ * LK programs and locks the MD1 regions before hand-off; this device's ATF
+ * then answers any re-SET of a locked region with PERMISSION_DENY, and vendor
+ * CCCI bypasses every one of these secure calls once LK did the setup
+ * (modem_run_env_ready()).  A tuple that exactly matches the attested
+ * LK-locked plan is already committed, so its SET is skipped.  Any mismatch
+ * keeps the strict SET-or-fatal rule above unchanged.
  */
 
 #include <linux/arm-smccc.h>
@@ -19,6 +26,8 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/soc/mediatek/mt6797-md1-emi-mpu.h>
+#include <linux/soc/mediatek/mt6797-md1-lk-handoff.h>
+#include <linux/soc/mediatek/mt6797-md1-remap-observe.h>
 
 static bool enable_experimental_md1_emi_mpu;
 module_param_named(enable_experimental_md1_emi_mpu,
@@ -51,12 +60,45 @@ static int mt6797_md1_emi_mpu_begin(void *context)
 	return ret;
 }
 
+/*
+ * Skip authority: the published LK plan must carry identical values for this
+ * region AND the separate read-only observation must attest that LK locked
+ * the remap/MPU setup.  Missing or rejected evidence means no skip; the
+ * caller then performs the secure SET with its unchanged error contract.
+ */
+static bool mt6797_md1_emi_mpu_lk_locked_match(u64 start, u64 end,
+					       u32 region_permission)
+{
+	struct mt6797_md1_remap_observation observation;
+	struct mt6797_md1_mpu_remap_plan plan;
+
+	if (mt6797_md1_lk_handoff_plan_get(&plan) ||
+	    mt6797_md1_remap_observation_get(&observation))
+		return false;
+	if (observation.classification ||
+	    !observation.attestation.lk_lock_observed ||
+	    !observation.attestation.secure_mpu_unobservable ||
+	    observation.attestation.mode == MT6797_MD1_REMAP_ATTEST_NONE)
+		return false;
+	return mt6797_md1_emi_mpu_plan_entry_matches(&plan, start, end,
+						     region_permission);
+}
+
 static int mt6797_md1_emi_mpu_set(void *context, u64 start, u64 end,
 				  u32 region_permission)
 {
 	struct mt6797_md1_emi_mpu *mpu = context;
 	struct arm_smccc_res res;
 	long status;
+
+	if (mt6797_md1_emi_mpu_lk_locked_match(start, end, region_permission)) {
+		dev_info(mpu->dev,
+			 "MD1 EMI-MPU region %u [%#llx-%#llx] permission %#07x already locked by LK with identical values; skipping secure SET, mirroring vendor bypass\n",
+			 region_permission >> MT6797_MD1_EMI_MPU_REGION_SHIFT,
+			 start, end,
+			 region_permission & MT6797_MD1_EMI_MPU_PERMISSION_MASK);
+		return 0;
+	}
 
 	arm_smccc_smc(MT6797_MD1_EMI_MPU_SMC_SET, start, end, region_permission,
 		      0, 0, 0, 0, &res);

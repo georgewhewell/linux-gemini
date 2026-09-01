@@ -1460,12 +1460,16 @@ config MTK_MT6797_MD1_EMI_MPU
 	bool "MT6797 MD1 one-way secure EMI-MPU provider"
 	depends on OF && ARM64
 	depends on MTK_MT6797_MD1_MPU_REMAP_PLAN=y
+	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
+	depends on MTK_MT6797_MD1_REMAP_OBSERVE=y
 	select MTK_MT6797_MD1_EMI_MPU_CORE
 	help
 	  Build the default-disabled MD1 secure-monitor EMI-MPU provider. It uses
 	  vendor SIP SET 0x82000209 for the exact initial and stage-one region
 	  sequence, captures every return status, and has no readback or inverse.
 	  Any attempted error permanently latches a reset/reboot requirement.
+	  Regions the attested LK-locked plan already programs with identical
+	  values are skipped, mirroring the vendor run-env-ready bypass.
 
 config MTK_MT6797_MD1_EMI_MPU_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 secure EMI-MPU provider core"

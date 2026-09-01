@@ -206,12 +206,47 @@ static void mt6797_md1_emi_mpu_invalid_continuation_latches_fatal(struct kunit *
 		MT6797_MD1_EMI_MPU_FATAL);
 }
 
+static void mt6797_md1_emi_mpu_plan_match_exact_lk_values(struct kunit *test)
+{
+	struct mt6797_md1_mpu_remap_plan plan = mt6797_md1_emi_mpu_test_plan();
+	u32 region_permission = plan.mpu[0].access_permission |
+		((u32)plan.mpu[0].emi_mpu_region << MT6797_MD1_EMI_MPU_REGION_SHIFT);
+
+	KUNIT_EXPECT_TRUE(test, mt6797_md1_emi_mpu_plan_entry_matches(&plan,
+		plan.mpu[0].start, plan.mpu[0].end, region_permission));
+	KUNIT_EXPECT_TRUE(test, mt6797_md1_emi_mpu_plan_entry_matches(&plan,
+		plan.mpu[5].start, plan.mpu[5].end,
+		plan.mpu[5].access_permission |
+		((u32)plan.mpu[5].emi_mpu_region << MT6797_MD1_EMI_MPU_REGION_SHIFT)));
+	/* The stage-one temporary region 13 permission is not an exact match. */
+	KUNIT_EXPECT_FALSE(test, mt6797_md1_emi_mpu_plan_entry_matches(&plan,
+		plan.mpu[2].start, plan.mpu[2].end,
+		MT6797_MD1_BRINGUP_STAGE1_REGION2_PERMISSION |
+		(13U << MT6797_MD1_EMI_MPU_REGION_SHIFT)));
+	KUNIT_EXPECT_FALSE(test, mt6797_md1_emi_mpu_plan_entry_matches(&plan,
+		plan.mpu[0].start + SZ_64K, plan.mpu[0].end, region_permission));
+	KUNIT_EXPECT_FALSE(test, mt6797_md1_emi_mpu_plan_entry_matches(&plan,
+		plan.mpu[0].start, plan.mpu[0].end + SZ_64K, region_permission));
+	KUNIT_EXPECT_FALSE(test, mt6797_md1_emi_mpu_plan_entry_matches(&plan,
+		plan.mpu[0].start, plan.mpu[0].end,
+		(plan.mpu[0].access_permission ^ 1) |
+		((u32)plan.mpu[0].emi_mpu_region << MT6797_MD1_EMI_MPU_REGION_SHIFT)));
+	/* An unknown region or an absent plan can never match. */
+	KUNIT_EXPECT_FALSE(test, mt6797_md1_emi_mpu_plan_entry_matches(&plan,
+		plan.mpu[0].start, plan.mpu[0].end,
+		plan.mpu[0].access_permission |
+		(9U << MT6797_MD1_EMI_MPU_REGION_SHIFT)));
+	KUNIT_EXPECT_FALSE(test, mt6797_md1_emi_mpu_plan_entry_matches(NULL,
+		plan.mpu[0].start, plan.mpu[0].end, region_permission));
+}
+
 static struct kunit_case mt6797_md1_emi_mpu_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_emi_mpu_exact_order_and_permission),
 	KUNIT_CASE(mt6797_md1_emi_mpu_initial_partial_failure_is_fatal),
 	KUNIT_CASE(mt6797_md1_emi_mpu_stage1_partial_failure_is_fatal),
 	KUNIT_CASE(mt6797_md1_emi_mpu_rejects_unpinned_handoff_before_smc),
 	KUNIT_CASE(mt6797_md1_emi_mpu_invalid_continuation_latches_fatal),
+	KUNIT_CASE(mt6797_md1_emi_mpu_plan_match_exact_lk_values),
 	{}
 };
 

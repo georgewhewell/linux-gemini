@@ -20,7 +20,7 @@ int mt6797_md1_hs_init(struct mt6797_md1_hs *hs)
 		return -EINVAL;
 
 	memset(hs, 0, sizeof(*hs));
-	mutex_init(&hs->lock);
+	spin_lock_init(&hs->lock);
 	hs->state = MT6797_MD1_HS_OFF;
 	return 0;
 }
@@ -28,12 +28,13 @@ EXPORT_SYMBOL_GPL(mt6797_md1_hs_init);
 
 int mt6797_md1_hs_arm(struct mt6797_md1_hs *hs, bool post_vector_activity)
 {
+	unsigned long flags;
 	int ret = 0;
 
 	if (!hs)
 		return -EINVAL;
 
-	mutex_lock(&hs->lock);
+	spin_lock_irqsave(&hs->lock, flags);
 	if (!post_vector_activity)
 		ret = -EPERM;
 	else if (hs->state != MT6797_MD1_HS_OFF)
@@ -41,7 +42,7 @@ int mt6797_md1_hs_arm(struct mt6797_md1_hs *hs, bool post_vector_activity)
 	else
 		hs->state = MT6797_MD1_HS_WAIT_HS1;
 	hs->last_error = ret;
-	mutex_unlock(&hs->lock);
+	spin_unlock_irqrestore(&hs->lock, flags);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_hs_arm);
@@ -66,13 +67,14 @@ int mt6797_md1_hs_rx(struct mt6797_md1_hs *hs,
 		     const struct mt6797_md1_hs_frame *frame,
 		     enum mt6797_md1_hs_action *action)
 {
+	unsigned long flags;
 	int ret = 0;
 
 	if (!hs || !frame || !action)
 		return -EINVAL;
 
 	*action = MT6797_MD1_HS_ACTION_NONE;
-	mutex_lock(&hs->lock);
+	spin_lock_irqsave(&hs->lock, flags);
 	if (frame->wire_size < MT6797_MD1_CCCI_HEADER_SIZE) {
 		ret = -EMSGSIZE;
 		goto out;
@@ -113,39 +115,43 @@ int mt6797_md1_hs_rx(struct mt6797_md1_hs *hs,
 	}
 out:
 	hs->last_error = ret;
-	mutex_unlock(&hs->lock);
+	spin_unlock_irqrestore(&hs->lock, flags);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_hs_rx);
 
 int mt6797_md1_hs_crash(struct mt6797_md1_hs *hs, int reason)
 {
+	unsigned long flags;
+
 	if (!hs || reason >= 0)
 		return -EINVAL;
 
-	mutex_lock(&hs->lock);
+	spin_lock_irqsave(&hs->lock, flags);
 	if (hs->state == MT6797_MD1_HS_OFF) {
-		mutex_unlock(&hs->lock);
+		spin_unlock_irqrestore(&hs->lock, flags);
 		return -EPERM;
 	}
 	hs->state = MT6797_MD1_HS_CRASHED;
 	hs->last_action = MT6797_MD1_HS_ACTION_NONE;
 	hs->last_error = reason;
-	mutex_unlock(&hs->lock);
+	spin_unlock_irqrestore(&hs->lock, flags);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_hs_crash);
 
 int mt6797_md1_hs_reset(struct mt6797_md1_hs *hs)
 {
+	unsigned long flags;
+
 	if (!hs)
 		return -EINVAL;
 
-	mutex_lock(&hs->lock);
+	spin_lock_irqsave(&hs->lock, flags);
 	hs->state = MT6797_MD1_HS_OFF;
 	hs->last_action = MT6797_MD1_HS_ACTION_NONE;
 	hs->last_error = 0;
-	mutex_unlock(&hs->lock);
+	spin_unlock_irqrestore(&hs->lock, flags);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_hs_reset);
@@ -153,12 +159,13 @@ EXPORT_SYMBOL_GPL(mt6797_md1_hs_reset);
 enum mt6797_md1_hs_state mt6797_md1_hs_state(struct mt6797_md1_hs *hs)
 {
 	enum mt6797_md1_hs_state state;
+	unsigned long flags;
 
 	if (!hs)
 		return MT6797_MD1_HS_OFF;
-	mutex_lock(&hs->lock);
+	spin_lock_irqsave(&hs->lock, flags);
 	state = hs->state;
-	mutex_unlock(&hs->lock);
+	spin_unlock_irqrestore(&hs->lock, flags);
 	return state;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_hs_state);

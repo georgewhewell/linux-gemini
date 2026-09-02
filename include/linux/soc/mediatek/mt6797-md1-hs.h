@@ -9,7 +9,7 @@
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_MD1_HS_H
 #define __LINUX_SOC_MEDIATEK_MT6797_MD1_HS_H
 
-#include <linux/mutex.h>
+#include <linux/spinlock.h>
 #include <linux/types.h>
 
 #define MT6797_MD1_HS_ABI 1
@@ -49,7 +49,8 @@ struct mt6797_md1_hs_frame {
 };
 
 struct mt6797_md1_hs {
-	struct mutex lock;
+	/* Protects all handshake state and permits RX/timeout IRQ callers. */
+	spinlock_t lock;
 	enum mt6797_md1_hs_state state;
 	enum mt6797_md1_hs_action last_action;
 	int last_error;

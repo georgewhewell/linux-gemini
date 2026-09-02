@@ -29,6 +29,26 @@ config GNSS_MTK_SERIAL
 
 	  If unsure, say N.
 
+config GNSS_MTK_CONSYS
+	tristate "MediaTek MT6797 integrated GNSS support"
+	depends on OF
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER=y
+	help
+	  Say Y here to expose the GNSS function integrated into the MT6797
+	  connectivity subsystem through the standard /dev/gnss interface. The
+	  receiver shares the controller-owned full-STP transport with Wi-Fi and
+	  Bluetooth and uses only the bounded GPS function-control operation.
+
+config GNSS_MTK_CONSYS_KUNIT_TEST
+	bool "KUnit tests for MediaTek MT6797 integrated GNSS"
+	depends on KUNIT=y
+	depends on GNSS_MTK_CONSYS=y
+	help
+	  Exercise GNSS function, LNA, STP binding and cleanup transitions with
+	  in-memory operations. No platform device or hardware is accessed.
+	  The tests also verify suspend, resume and terminal transport failure
+	  handling. Enable this only for kernel self-test builds.
+
 config GNSS_SIRF_SERIAL
 	tristate "SiRFstar GNSS receiver support"
 	depends on SERIAL_DEV_BUS

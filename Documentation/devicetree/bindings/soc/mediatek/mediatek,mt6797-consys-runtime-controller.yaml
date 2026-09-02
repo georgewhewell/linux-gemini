@@ -30,10 +30,23 @@ properties:
       BTIF PIO transport provider. Its binding requires CLK_INFRA_BTIF from
       the MT6797 infrasys clock provider.
 
+  mediatek,emi-mpu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Shared-EMI protection provider claimed before CONSYS starts.
+
+  bt-paldo-supply:
+    description: Bluetooth PALDO used during common post-patch calibration.
+
+  wifi-paldo-supply:
+    description: Wi-Fi PALDO used during common post-patch calibration.
+
 required:
   - compatible
   - mediatek,runtime-provider
   - mediatek,btif-provider
+  - mediatek,emi-mpu
+  - bt-paldo-supply
+  - wifi-paldo-supply
 
 additionalProperties: false
 
@@ -43,6 +56,9 @@ examples:
         compatible = "mediatek,mt6797-consys-runtime-controller";
         mediatek,runtime-provider = <&consys_runtime>;
         mediatek,btif-provider = <&btif_pio>;
+        mediatek,emi-mpu = <&consys_emi_mpu>;
+        bt-paldo-supply = <&vcn33_bt>;
+        wifi-paldo-supply = <&vcn33_wifi>;
         status = "disabled";
     };
 ...

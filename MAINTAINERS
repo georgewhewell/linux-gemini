@@ -16504,6 +16504,7 @@ L:	netdev@vger.kernel.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/net/mediatek,mt6797-ccci.yaml
 F:	Documentation/networking/device_drivers/wwan/mt6797-ccci.rst
+F:	arch/arm64/boot/dts/mediatek/mt6797-gemini-pda-md1-ccci.dtso
 F:	drivers/net/wwan/mediatek/mtk_ccci*
 F:	drivers/soc/mediatek/mt6797-md1-cldma*
 F:	include/linux/soc/mediatek/mt6797-md1-cldma.h

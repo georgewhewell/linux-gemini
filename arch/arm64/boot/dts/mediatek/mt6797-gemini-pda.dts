@@ -122,7 +122,7 @@
 			no-map;
 		};
 
-		reserve-memory-ccci_md1 {
+		ccci_md1_reserved: reserve-memory-ccci_md1 {
 			compatible = "mediatek,reserve-memory-ccci_md1";
 			no-map;
 			size = <0 0xa100000>;
@@ -130,7 +130,7 @@
 			alloc-ranges = <0 0x40000000 0 0x80000000>;
 		};
 
-		reserve-memory-ccci_share {
+		ccci_shared: reserve-memory-ccci_share {
 			compatible = "mediatek,reserve-memory-ccci_share";
 			no-map;
 			size = <0 0x600000>;

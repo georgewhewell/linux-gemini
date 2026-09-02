@@ -37,6 +37,11 @@ mt6797-gemini-pda-md1-cldma-prepare-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-md1-cldma-prepare.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-cldma-prepare.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-ccci.dtbo
+mt6797-gemini-pda-md1-ccci-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-md1-ccci.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-ccci.dtb
 mt6797-gemini-pda-md1-boot-candidate-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-md1-boot-candidate.dtbo

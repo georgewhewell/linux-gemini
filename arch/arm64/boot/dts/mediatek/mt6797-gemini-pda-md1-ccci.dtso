@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Disabled MT6797 MD1 CCCI/CLDMA WWAN transport profile. */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		interrupt-parent = <&sysirq>;
+
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <2>;
+
+			md1_ccci: modem@10014000 {
+				compatible = "mediatek,mt6797-ccci";
+				reg = <0 0x10014000 0 0x1e00>,
+				      <0 0x10015000 0 0x1e00>,
+				      <0 0x10219000 0 0x1e00>,
+				      <0 0x1021a000 0 0x1e00>,
+				      <0 0x10209000 0 0x1000>,
+				      <0 0x1020a000 0 0x1000>;
+				reg-names = "ap-cldma-ao", "md-cldma-ao",
+					    "ap-cldma-pdn", "md-cldma-pdn",
+					    "ap-ccif", "md-ccif";
+				interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>,
+					     <GIC_SPI 147 IRQ_TYPE_LEVEL_LOW>,
+					     <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
+				interrupt-names = "cldma", "ap-ccif", "md-wdt";
+				memory-region = <&ccci_shared>;
+				memory-region-names = "md-shared";
+				status = "disabled";
+			};
+		};
+	};
+};

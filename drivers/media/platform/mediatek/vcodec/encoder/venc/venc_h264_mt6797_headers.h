@@ -10,6 +10,8 @@
 #include "venc_h264_mt6797.h"
 
 #define MT6797_VENC_H264_HEADER_RBSP_SIZE	128U
+#define MT6797_VENC_H264_BS_ALIGN		128U
+#define MT6797_VENC_H264_FILLER_MIN_SIZE	6U
 
 struct mt6797_venc_h264_header_params {
 	u32 width;
@@ -291,6 +293,53 @@ mt6797_venc_h264_build_headers(const struct mt6797_venc_h264_header_params *para
 					 size - sizes->sps, &sizes->pps);
 	if (ret)
 		return ret;
+
+	return 0;
+}
+
+/*
+ * Put an access-unit header in front of a hardware-produced frame.  The
+ * direct encoder requires the frame bitstream DMA address to be 128-byte
+ * aligned.  A filler-data NAL supplies that padding when SPS/PPS do not
+ * already end on the required boundary.
+ */
+static inline int
+mt6797_venc_h264_build_prepend(const struct mt6797_venc_h264_header_params *params,
+			       u8 *dst, size_t size, size_t *frame_offset)
+{
+	struct mt6797_venc_h264_header_sizes sizes;
+	size_t filler_size, header_size, offset;
+	u8 *filler;
+	int ret;
+
+	if (!frame_offset)
+		return -EINVAL;
+
+	ret = mt6797_venc_h264_build_headers(params, dst, size, &sizes);
+	if (ret)
+		return ret;
+
+	header_size = sizes.sps + sizes.pps;
+	if (IS_ALIGNED(header_size, MT6797_VENC_H264_BS_ALIGN)) {
+		*frame_offset = header_size;
+		return 0;
+	}
+
+	offset = ALIGN(header_size + MT6797_VENC_H264_FILLER_MIN_SIZE,
+		       MT6797_VENC_H264_BS_ALIGN);
+	if (offset > size)
+		return -ENOSPC;
+
+	filler = dst + header_size;
+	filler_size = offset - header_size;
+	filler[0] = 0;
+	filler[1] = 0;
+	filler[2] = 0;
+	filler[3] = 1;
+	filler[4] = 0x0c;
+	memset(filler + 5, 0xff, filler_size - 6);
+	filler[filler_size - 1] = 0x80;
+	*frame_offset = offset;
 
 	return 0;
 }

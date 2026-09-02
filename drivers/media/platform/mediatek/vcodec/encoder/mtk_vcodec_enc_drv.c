@@ -66,11 +66,13 @@ static const struct mtk_video_fmt mt6797_video_formats_capture[] =  {
 		.fourcc = V4L2_PIX_FMT_H264,
 		.type = MTK_FMT_ENC,
 		.num_planes = 1,
+		.frmsize = { 160, 1920, 16, 128, 1088, 16 },
 	},
 	{
 		.fourcc = V4L2_PIX_FMT_HEVC,
 		.type = MTK_FMT_ENC,
 		.num_planes = 1,
+		.frmsize = { 160, 3840, 16, 128, 2176, 16 },
 	},
 };
 

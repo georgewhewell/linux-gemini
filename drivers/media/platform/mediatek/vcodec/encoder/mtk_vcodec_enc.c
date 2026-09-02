@@ -40,6 +40,28 @@ static const struct v4l2_frmsize_stepwise mtk_venc_4k_framesizes = {
 	MTK_VENC_MIN_H, MTK_VENC_4K_MAX_H, 16,
 };
 
+static const struct v4l2_frmsize_stepwise *
+mtk_venc_get_framesizes(struct mtk_vcodec_enc_ctx *ctx,
+			const struct mtk_video_fmt *fmt)
+{
+	const struct mtk_video_fmt *capture_fmt;
+
+	if (fmt->frmsize.max_width)
+		return &fmt->frmsize;
+
+	/* Raw formats inherit the limit of the selected coded format. */
+	if (fmt->type == MTK_FMT_FRAME) {
+		capture_fmt = ctx->q_data[MTK_Q_DATA_DST].fmt;
+		if (capture_fmt && capture_fmt->frmsize.max_width)
+			return &capture_fmt->frmsize;
+	}
+
+	if (ctx->dev->enc_capability & MTK_VENC_4K_CAPABILITY_ENABLE)
+		return &mtk_venc_4k_framesizes;
+
+	return &mtk_venc_hd_framesizes;
+}
+
 static int vidioc_venc_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct mtk_vcodec_enc_ctx *ctx = ctrl_to_enc_ctx(ctrl);
@@ -180,11 +202,7 @@ static int vidioc_enum_framesizes(struct file *file, void *fh,
 		return -EINVAL;
 
 	fsize->type = V4L2_FRMSIZE_TYPE_STEPWISE;
-
-	if (ctx->dev->enc_capability & MTK_VENC_4K_CAPABILITY_ENABLE)
-		fsize->stepwise = mtk_venc_4k_framesizes;
-	else
-		fsize->stepwise = mtk_venc_hd_framesizes;
+	fsize->stepwise = *mtk_venc_get_framesizes(ctx, fmt);
 
 	return 0;
 }
@@ -306,18 +324,15 @@ static int vidioc_try_fmt_out(struct mtk_vcodec_enc_ctx *ctx, struct v4l2_format
 			      const struct mtk_video_fmt *fmt)
 {
 	struct v4l2_pix_format_mplane *pix_fmt_mp = &f->fmt.pix_mp;
+	const struct v4l2_frmsize_stepwise *framesizes;
 	int tmp_w, tmp_h;
 	unsigned int max_width, max_height;
 
 	pix_fmt_mp->field = V4L2_FIELD_NONE;
 
-	if (ctx->dev->enc_capability & MTK_VENC_4K_CAPABILITY_ENABLE) {
-		max_width = MTK_VENC_4K_MAX_W;
-		max_height = MTK_VENC_4K_MAX_H;
-	} else {
-		max_width = MTK_VENC_HD_MAX_W;
-		max_height = MTK_VENC_HD_MAX_H;
-	}
+	framesizes = mtk_venc_get_framesizes(ctx, fmt);
+	max_width = framesizes->max_width;
+	max_height = framesizes->max_height;
 
 	pix_fmt_mp->height = clamp(pix_fmt_mp->height, MTK_VENC_MIN_H, max_height);
 	pix_fmt_mp->width = clamp(pix_fmt_mp->width, MTK_VENC_MIN_W, max_width);

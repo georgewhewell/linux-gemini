@@ -89,4 +89,15 @@ config MTK_SOCINFO
 	  information about the SoC to the userspace including the
 	  manufacturer name, marketing name and soc name.
 
+config MTK_MT6797_A72_POWER
+	bool "MediaTek MT6797 Cortex-A72 power coordination"
+	depends on ARCH_MEDIATEK && ARM64 && HOTPLUG_CPU
+	depends on REGULATOR && RESET_CONTROLLER
+	default y if ARCH_MEDIATEK
+	help
+	  Coordinate the MT6797 external processor regulator, SRAM LDO, SPM
+	  isolation, and MCUCFG clock control around PSCI CPU_ON/OFF for the
+	  Cortex-A72 cluster. CPU_ON fails closed until the platform owner is
+	  ready, and CPU9 requires a separate Device Tree opt-in.
+
 endmenu

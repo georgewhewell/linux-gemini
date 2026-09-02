@@ -16497,6 +16497,17 @@ L:	netdev@vger.kernel.org
 S:	Supported
 F:	drivers/net/wwan/t7xx/
 
+MEDIATEK MT6797 CCCI WWAN DRIVER
+M:	George Whewell <georgerw@gmail.com>
+L:	linux-mediatek@lists.infradead.org
+L:	netdev@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/net/mediatek,mt6797-ccci.yaml
+F:	Documentation/networking/device_drivers/wwan/mt6797-ccci.rst
+F:	drivers/net/wwan/mediatek/mtk_ccci*
+F:	drivers/soc/mediatek/mt6797-md1-cldma*
+F:	include/linux/soc/mediatek/mt6797-md1-cldma.h
+
 MEDIATEK USB3 DRD IP DRIVER
 M:	Chunfeng Yun <chunfeng.yun@mediatek.com>
 L:	linux-usb@vger.kernel.org

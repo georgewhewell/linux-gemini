@@ -66,6 +66,14 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     minimum: 1
 
+  mediatek,initialize-battery-detection:
+    description: |
+      Permit Linux to enable the MT6351 BATON and temperature-detection
+      circuits and report POWER_SUPPLY_PROP_PRESENT from BATON_UNDET. The
+      driver snapshots and restores both enable bits. Without this property
+      it neither changes the detector nor exposes battery presence.
+    type: boolean
+
 required:
   - compatible
   - mediatek,initialize-fgadc

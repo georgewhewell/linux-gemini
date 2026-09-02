@@ -32,10 +32,6 @@ properties:
   interrupt-names:
     const: wifi
 
-  mediatek,runtime-provider:
-    $ref: /schemas/types.yaml#/definitions/phandle
-    description: MT6797 CONSYS runtime provider.
-
   mediatek,controller:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: MT6797 CONSYS firmware controller.
@@ -43,9 +39,6 @@ properties:
   mediatek,emi-mpu:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: MT6797 CONSYS shared-EMI MPU provider.
-
-  bt-paldo-supply:
-    description: Bluetooth PALDO used by the common post-patch sequence.
 
   wifi-paldo-supply:
     description: Wi-Fi PALDO used by the common post-patch sequence.
@@ -55,10 +48,8 @@ required:
   - reg
   - interrupts
   - interrupt-names
-  - mediatek,runtime-provider
   - mediatek,controller
   - mediatek,emi-mpu
-  - bt-paldo-supply
   - wifi-paldo-supply
 
 unevaluatedProperties: false
@@ -83,10 +74,8 @@ examples:
             interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
             interrupt-names = "wifi";
             interrupt-parent = <&gic>;
-            mediatek,runtime-provider = <&consys>;
             mediatek,controller = <&consys_controller>;
             mediatek,emi-mpu = <&consys_emi_mpu>;
-            bt-paldo-supply = <&vcn33_bt>;
             wifi-paldo-supply = <&vcn33_wifi>;
             status = "disabled";
         };

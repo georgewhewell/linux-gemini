@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/gnss/mediatek,mt6797-consys-gnss.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 integrated GNSS receiver
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The MT6797 connectivity subsystem carries its integrated GNSS byte stream on
+  channel two of the internal full-STP transport. A shared CONSYS controller
+  owns that transport and its firmware lifecycle. This node owns only the GNSS
+  function lifetime and the board antenna low-noise-amplifier supply.
+
+allOf:
+  - $ref: gnss-common.yaml#
+
+properties:
+  compatible:
+    const: mediatek,mt6797-consys-gnss
+
+  mediatek,controller:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: CONSYS controller which owns the active full-STP session.
+
+  lna-supply: true
+
+required:
+  - compatible
+  - mediatek,controller
+  - lna-supply
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    gnss {
+        compatible = "mediatek,mt6797-consys-gnss";
+        mediatek,controller = <&consys_controller>;
+        lna-supply = <&gnss_lna>;
+        status = "disabled";
+    };
+...

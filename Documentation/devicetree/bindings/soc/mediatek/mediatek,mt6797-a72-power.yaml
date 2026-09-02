@@ -32,7 +32,10 @@ properties:
     description: Cortex-A72 CPUs sharing this power path, CPU8 first.
 
   vproc-supply:
-    description: External DA9214 BUCKB supply for the Cortex-A72 cluster.
+    description: |
+      External DA9214 BUCKB supply for the Cortex-A72 cluster. The first
+      implementation accepts only the disabled, bootloader-inherited 1.0 V
+      cold state proven on Gemini; it does not provide CPU DVFS.
 
   resets:
     maxItems: 1

@@ -38,6 +38,12 @@ struct mt6797_consys_runtime_controller_wifi_lease {
 	u64 generation;
 };
 
+/* One Bluetooth channel-zero borrower; zero-initialize before get. */
+struct mt6797_consys_runtime_controller_bt_lease {
+	struct mt6797_consys_runtime_controller *controller;
+	u64 generation;
+};
+
 /*
  * The caller must retain @dev and serialize this operation with controller
  * removal; managed supplier links then preserve the runtime/BTIF providers.
@@ -64,6 +70,22 @@ int mt6797_consys_runtime_controller_gnss_session_get(struct device *dev,
 		const struct mt6797_consys_stp_session_lease **session_lease);
 void mt6797_consys_runtime_controller_gnss_session_put(
 		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease);
+
+/*
+ * Channel-zero endpoint lease. It may coexist with the separately owned GNSS
+ * and WLAN channels on one full-STP session. WMT transactions remain serialized
+ * by the bootstrap transaction lock; this exposes only BT FUNC_CTRL, not a
+ * general WMT path. The caller must serialize bt_function_set() with the
+ * matching bt_session_put().
+ */
+int mt6797_consys_runtime_controller_bt_session_get(struct device *dev,
+		struct mt6797_consys_runtime_controller_bt_lease *bt_lease,
+		const struct mt6797_consys_stp_session_lease **session_lease);
+void mt6797_consys_runtime_controller_bt_session_put(
+		struct mt6797_consys_runtime_controller_bt_lease *bt_lease);
+int mt6797_consys_runtime_controller_bt_function_set(
+		struct mt6797_consys_runtime_controller_bt_lease *bt_lease,
+		bool enable);
 
 int mt6797_consys_runtime_controller_wifi_session_get(struct device *dev,
 		struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease,

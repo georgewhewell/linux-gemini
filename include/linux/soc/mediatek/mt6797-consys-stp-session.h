@@ -39,6 +39,10 @@ typedef int (*mt6797_consys_stp_rx_cb_t)(void *context,
 typedef int (*mt6797_consys_stp_gnss_rx_cb_t)(void *context,
 						      const u8 *payload,
 						      size_t payload_length);
+typedef int (*mt6797_consys_stp_bt_rx_cb_t)(void *context,
+						    const u8 *payload,
+						    size_t payload_length);
+typedef void (*mt6797_consys_stp_bt_tx_ready_cb_t)(void *context);
 
 struct mt6797_consys_stp_session_ops {
 	mt6797_consys_stp_tx_cb_t transmit;
@@ -122,6 +126,25 @@ bool mt6797_consys_stp_session_lease_active(
 int mt6797_consys_stp_session_bind_gnss(
 		const struct mt6797_consys_stp_session_lease *lease,
 		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context);
+
+/*
+ * Bind one HCI endpoint to STP channel zero without exposing STP framing.
+ * tx_ready() runs in process context when a cumulative ACK releases at least
+ * one STP transmit credit. It must not re-enter a session API.
+ */
+int mt6797_consys_stp_session_bind_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive,
+		mt6797_consys_stp_bt_tx_ready_cb_t tx_ready, void *context);
+int mt6797_consys_stp_session_unbind_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive,
+		mt6797_consys_stp_bt_tx_ready_cb_t tx_ready, void *context);
+/* Submit one H4 payload only from the endpoint bound to channel zero. */
+int mt6797_consys_stp_session_transmit_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context,
+		const u8 *payload, size_t payload_length);
 int mt6797_consys_stp_session_unbind_gnss(
 		const struct mt6797_consys_stp_session_lease *lease,
 		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context);

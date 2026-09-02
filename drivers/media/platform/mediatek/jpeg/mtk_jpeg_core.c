@@ -1934,6 +1934,14 @@ static const struct of_device_id mtk_jpeg_match[] = {
 		.data = &mt8173_jpeg_drvdata,
 	},
 	{
+		.compatible = "mediatek,mt6797-jpgdec",
+		.data = &mt8173_jpeg_drvdata,
+	},
+	{
+		.compatible = "mediatek,mt6797-jpgenc",
+		.data = &mtk_jpeg_drvdata,
+	},
+	{
 		.compatible = "mediatek,mtk-jpgenc",
 		.data = &mtk_jpeg_drvdata,
 	},

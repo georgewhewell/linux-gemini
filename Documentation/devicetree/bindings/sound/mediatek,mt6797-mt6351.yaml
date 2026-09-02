@@ -52,8 +52,8 @@ examples:
         model = "mt6797-mt6351";
         audio-widgets = "Headphone", "Headphone Jack";
         audio-routing =
-            "Headphone Jack", "HPL",
-            "Headphone Jack", "HPR";
+            "Headphone Jack", "Headphone L",
+            "Headphone Jack", "Headphone R";
         mediatek,platform = <&afe>;
         mediatek,audio-codec = <&mt6351_codec>;
     };

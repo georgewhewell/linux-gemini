@@ -6,6 +6,11 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-sony-xperia-m5.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-camera.dtbo
+mt6797-gemini-pda-camera-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-camera.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-camera.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-thermal-hall-observe.dtbo
 mt6797-gemini-pda-thermal-hall-observe-dtbs := \
 	mt6797-gemini-pda.dtb \

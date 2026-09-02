@@ -16445,8 +16445,10 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/media/mediatek,mt6797-camsv.yaml
 F:	Documentation/devicetree/bindings/media/mediatek,mt6797-seninf.yaml
 F:	Documentation/driver-api/media/drivers/mtk-mt6797-seninf.rst
+F:	arch/arm64/boot/dts/mediatek/mt6797-gemini-pda-camera.dtso
 F:	drivers/media/platform/mediatek/camsv/
 F:	drivers/media/platform/mediatek/seninf/
+F:	tools/gemini/test-camera-dt.sh
 
 MEDIATEK MT76 WIRELESS LAN DRIVER
 M:	Felix Fietkau <nbd@nbd.name>

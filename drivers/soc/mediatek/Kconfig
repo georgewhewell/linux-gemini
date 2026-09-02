@@ -730,6 +730,17 @@ config MTK_MT6797_WIFI_AHB_W4_PLATFORM
 	  controller gates and W1 image pin remain mandatory. Stop masks host and
 	  device IRQs, drains both ports and releases HIF, PALDO and CONSYS in
 	  reverse order.
+
+config MTK_MT6797_WIFI_GEN3_WIRE_KUNIT_TEST
+	bool "KUnit tests for MT6797 WLAN GEN3 security command encoding"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_W4_PLATFORM=y
+	help
+	  Validate the byte-exact CCMP, BIP and default-key commands used by the
+	  MT6797 GEN3 firmware. The tests reject invalid key/index combinations
+	  before the live driver can advertise protected-network support.
+
+	  No platform device, firmware, register, interrupt or radio is used.
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

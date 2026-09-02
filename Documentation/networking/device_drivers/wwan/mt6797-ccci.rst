@@ -45,9 +45,9 @@ relative to ``drivers/misc/mediatek/eccci`` unless otherwise stated.
   interrupts.  ``modem_cldma.c:1115-1221`` acknowledges status before handing
   completed queues to workers and masks RX DONE until draining completes.
 * ``port_cfg.c:19-88`` maps the control channel to queue 0, the primary modem
-  AT/MUX channel (UART2) to queue 1, modem log to queue 2, the first two data
-  links to queue 3 and the remaining data links to queue 5.  It defines 18
-  CCMNI raw-IP contexts, with index 8 absent from this firmware's channel map.
+  AT/MUX channel (UART2) to queue 1, modem log to queue 2, data links 0, 1 and
+  7 to queue 3, and the remaining data links to queue 5.  It defines 18 CCMNI
+  raw-IP contexts, with index 8 absent from this firmware's channel map.
 * ``port_net.c:246-275`` prepends a CCCI header whose first data word is zero,
   second data word is the complete framed length and channel is the selected
   CCMNI TX channel.  ``port_net.c:376-423`` removes that header before

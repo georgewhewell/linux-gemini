@@ -36,10 +36,14 @@ static void mtk_ccci_net_map(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, tx, (u16)22);
 	KUNIT_EXPECT_EQ(test, rx, (u16)20);
 	KUNIT_EXPECT_EQ(test, queue, (u8)3);
+	KUNIT_ASSERT_EQ(test, mtk_ccci_net_channels(2, NULL, NULL, &queue), 0);
+	KUNIT_EXPECT_EQ(test, queue, (u8)5);
 	KUNIT_ASSERT_EQ(test, mtk_ccci_net_channels(3, &tx, &rx, &queue), 0);
 	KUNIT_EXPECT_EQ(test, tx, (u16)71);
 	KUNIT_EXPECT_EQ(test, rx, (u16)69);
 	KUNIT_EXPECT_EQ(test, queue, (u8)5);
+	KUNIT_ASSERT_EQ(test, mtk_ccci_net_channels(7, NULL, NULL, &queue), 0);
+	KUNIT_EXPECT_EQ(test, queue, (u8)3);
 	KUNIT_EXPECT_EQ(test, mtk_ccci_net_channels(8, NULL, NULL, NULL),
 			-EINVAL);
 	KUNIT_ASSERT_EQ(test, mtk_ccci_net_channels(17, &tx, &rx, &queue), 0);

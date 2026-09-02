@@ -106,16 +106,14 @@ int mtk_ccci_net_channels(u32 if_id, u16 *tx_channel, u16 *rx_channel,
 	if (if_id < 3) {
 		rx = 20 + 4 * if_id;
 		tx = rx + 2;
-		queue = 3;
 	} else if (if_id < 8) {
 		rx = 69 + 5 * (if_id - 3);
 		tx = rx + 2;
-		queue = 5;
 	} else {
 		rx = 103 + 5 * (if_id - 9);
 		tx = rx + 2;
-		queue = 5;
 	}
+	queue = if_id < 2 || if_id == 7 ? 3 : 5;
 
 	if (tx_channel)
 		*tx_channel = tx;

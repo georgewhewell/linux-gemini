@@ -12,6 +12,10 @@ maintainers:
 
 allOf:
   - $ref: power-supply.yaml#
+  - not:
+      required:
+        - ti,read-only
+        - ti,adopt-firmware-settings
   - if:
       required:
         - ti,status-poll-interval-ms
@@ -25,10 +29,13 @@ allOf:
       required:
         - ti,read-only
   - if:
-      not:
-        required:
-          - ti,read-only
-    then:
+      anyOf:
+        - required:
+            - ti,read-only
+        - required:
+            - ti,adopt-firmware-settings
+    then: {}
+    else:
       required:
         - interrupts
         - ti,battery-regulation-voltage
@@ -142,6 +149,20 @@ properties:
       continuous-conversion bit is already set, otherwise these properties
       return -ENODATA. This is intended for a bounded diagnostic stage where
       charger policy and ADC ownership remain outside Linux.
+    type: boolean
+
+  ti,adopt-firmware-settings:
+    description: |
+      Preserve the charger configuration left by firmware and keep charge
+      policy read-only. The driver reads the existing current, voltage and
+      ancillary settings without resetting the chip, changing CHG_CFG,
+      configuring the ADC, registering an interrupt or OTG regulator, or
+      accepting writable power-supply properties. If the firmware left the
+      charger watchdog enabled, the driver immediately resets its timer and
+      continues to service it at one quarter of its configured timeout. The
+      watchdog reset bit is the only charger register field written in this
+      mode. System suspend is rejected while that watchdog is enabled because
+      servicing it during sleep has not been delegated to another agent.
     type: boolean
 
 required:

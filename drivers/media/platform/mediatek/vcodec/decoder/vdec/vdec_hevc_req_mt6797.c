@@ -12,6 +12,7 @@
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <media/v4l2-mem2mem.h>
+#include <media/videobuf2-dma-contig.h>
 
 #include "../../common/mtk_vcodec_intr.h"
 #include "../mtk_vcodec_dec.h"
@@ -147,6 +148,59 @@ mt6797_hevc_get_slices(struct mt6797_hevc_inst *inst, unsigned int *count)
 	return ctrl->p_cur.p;
 }
 
+static int
+mt6797_hevc_fill_ref_buffers(struct mt6797_hevc_inst *inst,
+			     const struct v4l2_ctrl_hevc_decode_params *dec,
+			     const struct mt6797_hevc_mv_slot_plan *slots,
+			     const struct mt6797_hevc_buffer_layout *layout,
+			     struct mt6797_hevc_ref_buffer *buffers)
+{
+	struct vb2_queue *vq;
+	unsigned int i;
+	u32 frame_size;
+
+	frame_size = layout->luma_size + layout->chroma_size;
+	vq = v4l2_m2m_get_vq(inst->ctx->m2m_ctx,
+			     V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+	for (i = 0; i < dec->num_active_dpb_entries; i++) {
+		const struct v4l2_hevc_dpb_entry *dpb = &dec->dpb[i];
+		struct mt6797_hevc_output_plan output;
+		struct vb2_buffer *vb;
+		u64 c_addr;
+		u8 slot = slots->dpb_slots[i];
+		int ret;
+
+		if (slot >= ARRAY_SIZE(inst->mv))
+			return -EINVAL;
+		vb = vb2_find_buffer(vq, dpb->timestamp);
+		if (!vb) {
+			mtk_v4l2_vdec_err(inst->ctx,
+					  "missing HEVC DPB %u timestamp %llu",
+					  i, dpb->timestamp);
+			return -ENOENT;
+		}
+		if (vb2_plane_size(vb, 0) < frame_size)
+			return -ENOSPC;
+
+		buffers[i].y_addr = vb2_dma_contig_plane_dma_addr(vb, 0);
+		if (check_add_overflow(buffers[i].y_addr,
+				       (u64)layout->luma_size, &c_addr))
+			return -ERANGE;
+		ret = mt6797_hevc_output_plan(buffers[i].y_addr, c_addr, layout,
+					      &output);
+		if (ret)
+			return ret;
+
+		buffers[i].reference_ts = dpb->timestamp;
+		buffers[i].c_addr = c_addr;
+		buffers[i].mv_addr = inst->mv[slot].dma_addr;
+		buffers[i].mv_slot = slot;
+		buffers[i].valid = true;
+	}
+
+	return 0;
+}
+
 static int mt6797_hevc_stage_slice(struct mt6797_hevc_inst *inst,
 				   const struct mtk_vcodec_mem *source,
 				   u32 offset, struct mtk_vcodec_mem *staged)
@@ -270,10 +324,37 @@ mt6797_hevc_program_output(struct mt6797_hevc_inst *inst,
 	writel(1, regs->mc + 0x250);
 	writel(output->mb_width - 1, regs->mc + 0x260);
 	writel(output->mb_height - 1, regs->mc + 0x264);
-	writel(0, regs->mc + 0xa60);
-	writel(0, regs->mv + 0x320);
 	writel(current_mv >> 4, regs->mv + 0x20c);
 	writel(1, regs->mc + 0xb5c);
+}
+
+static void
+mt6797_hevc_program_refs(struct mt6797_hevc_inst *inst,
+			 const struct mt6797_hevc_ref_plan *refs)
+{
+	struct mt6797_hevc_regs *regs = &inst->regs;
+	unsigned int i;
+
+	writel(0, regs->mc + 0xa60);
+	writel(refs->current_after_all, regs->mv + 0x320);
+	if (!refs->num_l0 && !refs->num_l1)
+		return;
+
+	writel(refs->long_term_flags, regs->mv + 0x324);
+	for (i = 0; i < MT6797_HEVC_REF_LIST_LEN; i++) {
+		if (refs->num_l0) {
+			writel(refs->l0[i].mv_addr_16, regs->mv + i * 4);
+			writel(refs->l0[i].y_addr, regs->mc + 0x45c + i * 4);
+			writel(refs->l0[i].c_addr, regs->mc + 0xbe0 + i * 4);
+			writel(refs->l0[i].poc_slot, regs->mv + 0x338 + i * 4);
+		}
+		if (refs->num_l1) {
+			writel(refs->l1[i].mv_addr_16, regs->mv + 0x40 + i * 4);
+			writel(refs->l1[i].y_addr, regs->mc + 0x4dc + i * 4);
+			writel(refs->l1[i].c_addr, regs->mc + 0xc60 + i * 4);
+			writel(refs->l1[i].poc_slot, regs->mv + 0x378 + i * 4);
+		}
+	}
 }
 
 static void
@@ -417,7 +498,10 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	struct v4l2_ctrl_hevc_slice_params *slices, staged_slice;
 	struct mt6797_hevc_buffer_layout layout;
 	struct mt6797_hevc_barrel_plan barrel;
+	struct mt6797_hevc_mv_slot_plan mv_slots;
 	struct mt6797_hevc_output_plan output;
+	struct mt6797_hevc_ref_buffer ref_buffers[V4L2_HEVC_DPB_ENTRIES_NUM_MAX] = {};
+	struct mt6797_hevc_ref_plan refs;
 	struct mt6797_hevc_sps_regs sps_regs;
 	struct mt6797_hevc_pps_regs pps_regs;
 	struct mt6797_hevc_slice_regs slice_regs;
@@ -492,28 +576,40 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	ret = mt6797_hevc_alloc_mv(inst, layout.mv_size);
 	if (ret)
 		return ret;
-	if (inst->mv[0].dma_addr & (MT6797_HEVC_MV_ALIGN - 1) ||
-	    inst->mv[0].dma_addr > U32_MAX)
+	ret = mt6797_hevc_mv_slot_plan(dec, inst->mv_slots, &mv_slots);
+	if (ret)
+		return ret;
+	ret = mt6797_hevc_fill_ref_buffers(inst, dec, &mv_slots, &layout, ref_buffers);
+	if (ret)
+		return ret;
+	ret = mt6797_hevc_ref_plan(slices, dec, ref_buffers, &refs);
+	if (ret)
+		return ret;
+	if (inst->mv[mv_slots.current_slot].dma_addr &
+		    (MT6797_HEVC_MV_ALIGN - 1) ||
+	    inst->mv[mv_slots.current_slot].dma_addr > U32_MAX)
 		return -ERANGE;
 
 	src_buf = container_of(bs, struct mtk_video_dec_buf, bs_buffer);
 	dst_buf = container_of(fb, struct mtk_video_dec_buf, frame_buffer);
 	v4l2_m2m_buf_copy_metadata(&src_buf->m2m_buf.vb, &dst_buf->m2m_buf.vb);
-	inst->mv_slots[0].valid = false;
 	ret = mt6797_hevc_reset(inst);
 	if (ret)
 		return ret;
 	ret = mt6797_hevc_init_barrel(inst, &barrel);
 	if (ret)
 		return ret;
-	mt6797_hevc_program_output(inst, sps, &output, inst->mv[0].dma_addr);
+	mt6797_hevc_program_refs(inst, &refs);
+	mt6797_hevc_program_output(inst, sps, &output,
+				   inst->mv[mv_slots.current_slot].dma_addr);
 	mt6797_hevc_program_syntax(inst, &sps_regs, &pps_regs, &slice_regs,
 				   &tiles);
 	ret = mt6797_hevc_start(inst, sps_regs.ctb_width, sps_regs.ctb_height);
 	if (ret)
 		return ret;
 
-	return mt6797_hevc_mv_slot_commit(inst->mv_slots, 0,
+	return mt6797_hevc_mv_slot_commit(inst->mv_slots,
+					 mv_slots.current_slot,
 					 dst_buf->m2m_buf.vb.vb2_buf.timestamp);
 }
 

@@ -519,7 +519,7 @@ mt6797_hevc_ref_plan(const struct v4l2_ctrl_hevc_slice_params *slice,
 	*plan = (struct mt6797_hevc_ref_plan){};
 	plan->num_l0 = num_l0;
 	plan->num_l1 = num_l1;
-	plan->current_after_all = 1;
+	plan->current_after_all = !!dec->num_active_dpb_entries;
 	for (i = 0; i < dec->num_active_dpb_entries; i++) {
 		if (dec->dpb[i].field_pic)
 			return -EOPNOTSUPP;

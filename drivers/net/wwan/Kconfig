@@ -130,6 +130,7 @@ config MTK_CCCI_COMMON
 config MTK_MT6797_CCCI
 	bool "MediaTek MT6797 integrated modem CCCI transport"
 	depends on ARM64 && OF
+	depends on WWAN=y
 	depends on MTK_MT6797_MD1_COLD_OWNER=y
 	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
 	select MTK_CCCI_COMMON
@@ -139,7 +140,9 @@ config MTK_MT6797_CCCI
 	  Own the AP-side CLDMA rings and CCCI handshake for the integrated MT6797
 	  MD1 modem. The driver requires an LK-attested shared-memory layout and a
 	  positive post-vector activity token from the separate lifecycle owner.
-	  It remains additionally gated by a read-only module parameter.
+	  After HS2 it exposes the UART2 control channel as a standard WWAN AT port
+	  and CCMNI contexts as WWAN raw-IP links. It remains additionally gated by
+	  a read-only module parameter.
 
 config MTK_CCCI_KUNIT_TEST
 	bool "KUnit tests for MediaTek CCCI helpers"

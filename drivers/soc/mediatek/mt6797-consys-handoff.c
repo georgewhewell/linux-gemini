@@ -96,7 +96,7 @@ int mt6797_consys_handoff_start(struct mt6797_consys_handoff_owner *owner,
 		owner->identity_held = true;
 
 		ret = mt6797_consys_postid_start(owner->postid,
-				owner->identity.identity, true);
+				owner->identity.identity);
 		if (ret)
 			goto fail_identity;
 		owner->state = MT6797_CONSYS_HANDOFF_ACTIVE;

@@ -183,13 +183,10 @@ static void mt6797_consys_postid_test_exact_order_and_teardown(
 
 	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_test_setup(&backend,
 			&lifecycle, &lease, &owner), 0);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease, false),
-			-EPERM);
-	KUNIT_EXPECT_EQ(test, backend.post_call_count, 0U);
-	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_start(&owner, &lease, true), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_start(&owner, &lease), 0);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&owner),
 			MT6797_CONSYS_POSTID_ACTIVE);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease, true),
+	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease),
 			-EBUSY);
 	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_stop(&owner), 0);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&owner),
@@ -199,7 +196,7 @@ static void mt6797_consys_postid_test_exact_order_and_teardown(
 	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_lease_release(&lease), 0);
 }
 
-static void mt6797_consys_postid_test_gate_and_identity_failure(
+static void mt6797_consys_postid_test_identity_failure(
 		struct kunit *test)
 {
 	struct mt6797_consys_postid_test_backend backend = {
@@ -213,9 +210,7 @@ static void mt6797_consys_postid_test_gate_and_identity_failure(
 	ret = mt6797_consys_postid_test_setup(&backend, &lifecycle,
 			&lease, &owner);
 	KUNIT_EXPECT_EQ(test, ret, -EIO);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease, false),
-			-EPERM);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease, true),
+	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease),
 			-ESHUTDOWN);
 	KUNIT_EXPECT_EQ(test, backend.post_call_count, 0U);
 }
@@ -235,7 +230,7 @@ static void mt6797_consys_postid_test_mbist_failure_is_closed(
 
 	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_test_setup(&backend,
 			&lifecycle, &lease, &owner), 0);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease, true),
+	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease),
 			-EIO);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&owner),
 			MT6797_CONSYS_POSTID_IDLE);
@@ -259,7 +254,7 @@ static void mt6797_consys_postid_test_afe_failure_is_sticky(
 
 	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_test_setup(&backend,
 			&lifecycle, &lease, &owner), 0);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease, true),
+	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease),
 			-EIO);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&owner),
 			MT6797_CONSYS_POSTID_ERROR);
@@ -286,7 +281,7 @@ static void mt6797_consys_postid_test_release_failure_asserts(
 
 	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_test_setup(&backend,
 			&lifecycle, &lease, &owner), 0);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease, true),
+	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_start(&owner, &lease),
 			-EIO);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&owner),
 			MT6797_CONSYS_POSTID_ERROR);
@@ -307,7 +302,7 @@ static void mt6797_consys_postid_test_stop_retry_completes_teardown(
 
 	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_test_setup(&backend,
 			&lifecycle, &lease, &owner), 0);
-	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_start(&owner, &lease, true), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_postid_start(&owner, &lease), 0);
 	backend.fail_post_op = POSTID_TEST_ASSERT_RESET;
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_stop(&owner), -EIO);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&owner),
@@ -320,7 +315,7 @@ static void mt6797_consys_postid_test_stop_retry_completes_teardown(
 
 static struct kunit_case mt6797_consys_postid_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_postid_test_exact_order_and_teardown),
-	KUNIT_CASE(mt6797_consys_postid_test_gate_and_identity_failure),
+	KUNIT_CASE(mt6797_consys_postid_test_identity_failure),
 	KUNIT_CASE(mt6797_consys_postid_test_mbist_failure_is_closed),
 	KUNIT_CASE(mt6797_consys_postid_test_afe_failure_is_sticky),
 	KUNIT_CASE(mt6797_consys_postid_test_release_failure_asserts),

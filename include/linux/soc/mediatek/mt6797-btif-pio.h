@@ -57,30 +57,9 @@ const struct mt6797_btif_pio_lease *
 mt6797_btif_pio_acquire(struct mt6797_btif_pio *pio);
 
 /*
- * Run the vendor's clocked PIO register qualification without attaching a
- * CONSYS/STP consumer or enabling the Linux IRQ.  The caller must own a
- * clocked platform lease and must close it immediately afterwards: this is a
- * one-shot experiment, not a transport activation.  @tri_level receives the
- * final, loopback-disabled trigger register value on success.
- */
-int mt6797_btif_pio_qualify(const struct mt6797_btif_pio_lease *pio_lease,
-			    u32 *tri_level);
-
-/*
- * Prepare exactly one AP-internal BTIF loopback byte.  The caller must leave
- * its Linux IRQ masked until this returns successfully, then deliver that IRQ
- * to mt6797_btif_pio_loopback_irq().  Neither function attaches STP nor
- * permits a second byte; the latter always clears loopback and fences PIO.
- */
-int mt6797_btif_pio_loopback_prepare(const struct mt6797_btif_pio_lease *pio_lease,
-				     u8 byte);
-int mt6797_btif_pio_loopback_irq(const struct mt6797_btif_pio_lease *pio_lease,
-				 u8 *byte);
-
-/*
  * Bind exactly one active full-STP lease and then perform the vendor PIO core
  * setup. runtime_lease must be the exclusive, long-lived CONSYS lifecycle
- * capability and remains pinned until close() fences this PIO owner. The
+ * capability and remains pinned until close() invalidates this PIO owner. The
  * future platform owner must have installed-but-disabled IRQ handling before
  * this call; this library neither owns nor enables Linux IRQs.
  */
@@ -137,12 +116,12 @@ int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease);
 /*
  * A future owner calls this only after its separately evidenced TX deadline.
  * Vendor source establishes no PIO timeout duration, so this library invents
- * none. A pending queue becomes permanently fenced rather than retried.
+ * none. A pending queue fails rather than being retried without a deadline.
  */
 int mt6797_btif_pio_tx_timeout(const struct mt6797_btif_pio_lease *lease);
 
 /*
- * Fence TX/RX and invalidate the lease. The future IRQ owner must first mask
+ * Stop TX/RX and invalidate the lease. The IRQ owner must first mask
  * and synchronize its Linux IRQ, and retain the attached full-STP session,
  * before calling close() or destroy().
  */

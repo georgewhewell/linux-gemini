@@ -54,7 +54,7 @@ enum mt6797_consys_stp_session_state {
 	MT6797_CONSYS_STP_NEW,
 	MT6797_CONSYS_STP_BOOTSTRAP,
 	MT6797_CONSYS_STP_ACTIVE,
-	MT6797_CONSYS_STP_FENCED,
+	MT6797_CONSYS_STP_FAILED,
 };
 
 struct mt6797_consys_stp_tx_slot {
@@ -182,7 +182,7 @@ static int mt6797_consys_stp_transmit_locked(
 		return ret;
 	}
 	if (ret)
-		session->state = MT6797_CONSYS_STP_FENCED;
+		session->state = MT6797_CONSYS_STP_FAILED;
 	return ret;
 }
 
@@ -218,7 +218,7 @@ static int mt6797_consys_stp_process_ack_locked(
 	sequence = mt6797_consys_stp_sequence_next(session->rxack);
 	for (;;) {
 		if (!session->tx[sequence].valid) {
-			session->state = MT6797_CONSYS_STP_FENCED;
+			session->state = MT6797_CONSYS_STP_FAILED;
 			return -EPROTO;
 		}
 		session->tx[sequence].valid = false;
@@ -231,7 +231,7 @@ static int mt6797_consys_stp_process_ack_locked(
 	session->rxack = ack;
 	session->credits += released;
 	if (session->credits > MT6797_CONSYS_STP_WINDOW_SIZE) {
-		session->state = MT6797_CONSYS_STP_FENCED;
+		session->state = MT6797_CONSYS_STP_FAILED;
 		return -EPROTO;
 	}
 	session->retries = 0;
@@ -385,7 +385,7 @@ static int mt6797_consys_stp_timeout_locked(
 	if (session->credits == MT6797_CONSYS_STP_WINDOW_SIZE)
 		return 0;
 	if (session->retries > MT6797_CONSYS_STP_RETRY_LIMIT) {
-		session->state = MT6797_CONSYS_STP_FENCED;
+		session->state = MT6797_CONSYS_STP_FAILED;
 		return -ETIMEDOUT;
 	}
 
@@ -398,7 +398,7 @@ static int mt6797_consys_stp_timeout_locked(
 	sequence = mt6797_consys_stp_sequence_next(session->rxack);
 	while (sequence != session->txseq) {
 		if (!session->tx[sequence].valid) {
-			session->state = MT6797_CONSYS_STP_FENCED;
+			session->state = MT6797_CONSYS_STP_FAILED;
 			return -EPROTO;
 		}
 		ret = mt6797_consys_stp_transmit_locked(session,
@@ -411,7 +411,7 @@ static int mt6797_consys_stp_timeout_locked(
 
 	session->retries++;
 	if (session->retries > MT6797_CONSYS_STP_RETRY_LIMIT) {
-		session->state = MT6797_CONSYS_STP_FENCED;
+		session->state = MT6797_CONSYS_STP_FAILED;
 		return -ETIMEDOUT;
 	}
 
@@ -463,7 +463,7 @@ mt6797_consys_stp_session_begin_full(struct mt6797_consys_stp_session *session)
 		return ERR_PTR(-EINVAL);
 
 	mutex_lock(&session->lock);
-	if (session->state == MT6797_CONSYS_STP_FENCED)
+	if (session->state == MT6797_CONSYS_STP_FAILED)
 		lease = ERR_PTR(-EPIPE);
 	else if (session->state != MT6797_CONSYS_STP_NEW)
 		lease = ERR_PTR(-EBUSY);
@@ -488,7 +488,7 @@ mt6797_consys_stp_session_begin_full_bootstrap(
 		return ERR_PTR(-EINVAL);
 
 	mutex_lock(&session->lock);
-	if (session->state == MT6797_CONSYS_STP_FENCED)
+	if (session->state == MT6797_CONSYS_STP_FAILED)
 		lease = ERR_PTR(-EPIPE);
 	else if (session->state != MT6797_CONSYS_STP_NEW)
 		lease = ERR_PTR(-EBUSY);
@@ -583,7 +583,7 @@ static int mt6797_consys_stp_session_transmit_locked(
 
 	slot = &session->tx[session->txseq];
 	if (slot->valid) {
-		session->state = MT6797_CONSYS_STP_FENCED;
+		session->state = MT6797_CONSYS_STP_FAILED;
 		ret = -EPROTO;
 		goto out;
 	}
@@ -839,7 +839,7 @@ void mt6797_consys_stp_session_quiesce(struct mt6797_consys_stp_session *session
 		return;
 
 	mutex_lock(&session->lock);
-	session->state = MT6797_CONSYS_STP_FENCED;
+	session->state = MT6797_CONSYS_STP_FAILED;
 	mt6797_consys_stp_reset_parser(session);
 	mutex_unlock(&session->lock);
 }
@@ -1124,7 +1124,7 @@ static void mt6797_consys_stp_test_nak_and_timeout_retry(struct kunit *test)
 	mt6797_consys_stp_session_destroy(session);
 }
 
-static void mt6797_consys_stp_test_retry_limit_fences(struct kunit *test)
+static void mt6797_consys_stp_test_retry_limit_fails(struct kunit *test)
 {
 	const struct mt6797_consys_stp_session_lease *lease;
 	struct mt6797_consys_stp_test_link *link;
@@ -1370,7 +1370,7 @@ static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_duplicate_and_out_of_order),
 	KUNIT_CASE(mt6797_consys_stp_test_receive_failure_retries_without_ack),
 	KUNIT_CASE(mt6797_consys_stp_test_nak_and_timeout_retry),
-	KUNIT_CASE(mt6797_consys_stp_test_retry_limit_fences),
+	KUNIT_CASE(mt6797_consys_stp_test_retry_limit_fails),
 	KUNIT_CASE(mt6797_consys_stp_test_malformed_and_quiesce),
 	KUNIT_CASE(mt6797_consys_stp_test_fragmented_delimiter_resync_and_crc_recovery),
 	KUNIT_CASE(mt6797_consys_stp_test_receive_sequence_wraps),

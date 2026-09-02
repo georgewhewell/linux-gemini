@@ -30,8 +30,8 @@
  * full-mode reply.
  *
  * There is no DT match, MMIO, clock, reset, firmware, patch, or radio action.
- * A future owner must supply the already-live mandatory-STP WMT endpoint and
- * one raw exchange callback.  This public entry point remains default-off.
+ * Its transport owner supplies the already-live mandatory-STP WMT endpoint
+ * and one raw exchange callback.
  */
 
 #include <linux/errno.h>
@@ -51,10 +51,6 @@
 #include <linux/soc/mediatek/mtk-stp.h>
 #include <linux/soc/mediatek/mtk-wmt.h>
 
-#define MT6797_CONSYS_WMT_INITIAL_TIMEOUT_MS	2000
-#define MT6797_CONSYS_WMT_INITIAL_TIMEOUT \
-	msecs_to_jiffies(MT6797_CONSYS_WMT_INITIAL_TIMEOUT_MS)
-
 #define MT6797_CONSYS_WMT_GEN_HVR		0x80000000
 #define MT6797_CONSYS_WMT_GEN_FVR		0x80000004
 #define MT6797_CONSYS_WMT_GEN_HCR		0x80000008
@@ -72,18 +68,13 @@
 
 #define MT6797_CONSYS_WMT_STP_OPCODE		0x04
 
-static bool enable_initial_sequence;
-module_param_named(enable_initial_sequence, enable_initial_sequence, bool, 0400);
-MODULE_PARM_DESC(enable_initial_sequence,
-		 "allow the explicit MT6797 identity/chip-STP experiment (default: false)");
-
 enum mt6797_consys_wmt_initial_state {
 	MT6797_CONSYS_WMT_INITIAL_NEW,
 	MT6797_CONSYS_WMT_INITIAL_RUNNING,
 	MT6797_CONSYS_WMT_INITIAL_READY,
 	MT6797_CONSYS_WMT_INITIAL_SETTING_CHIP_FULL,
 	MT6797_CONSYS_WMT_INITIAL_CHIP_FULL_CONFIGURED,
-	MT6797_CONSYS_WMT_INITIAL_FENCED,
+	MT6797_CONSYS_WMT_INITIAL_FAILED,
 };
 
 struct mt6797_consys_wmt_initial {
@@ -202,7 +193,7 @@ static int mt6797_wmt_initial_run_unchecked(struct mt6797_consys_wmt_initial *in
 	memset(identity, 0, sizeof(*identity));
 
 	mutex_lock(&initial->lock);
-	if (initial->state == MT6797_CONSYS_WMT_INITIAL_FENCED) {
+	if (initial->state == MT6797_CONSYS_WMT_INITIAL_FAILED) {
 		ret = -EPIPE;
 	} else if (initial->state == MT6797_CONSYS_WMT_INITIAL_READY ||
 		   initial->state == MT6797_CONSYS_WMT_INITIAL_CHIP_FULL_CONFIGURED) {
@@ -210,7 +201,7 @@ static int mt6797_wmt_initial_run_unchecked(struct mt6797_consys_wmt_initial *in
 	} else if (initial->state != MT6797_CONSYS_WMT_INITIAL_NEW) {
 		ret = -EBUSY;
 	} else if (initial->wmt->stp_mode != MTK_STP_MODE_MANDATORY) {
-		initial->state = MT6797_CONSYS_WMT_INITIAL_FENCED;
+		initial->state = MT6797_CONSYS_WMT_INITIAL_FAILED;
 		ret = -EPROTONOSUPPORT;
 	} else {
 		initial->state = MT6797_CONSYS_WMT_INITIAL_RUNNING;
@@ -244,7 +235,7 @@ static int mt6797_wmt_initial_run_unchecked(struct mt6797_consys_wmt_initial *in
 					  timeout);
 
 	mutex_lock(&initial->lock);
-	initial->state = ret ? MT6797_CONSYS_WMT_INITIAL_FENCED :
+	initial->state = ret ? MT6797_CONSYS_WMT_INITIAL_FAILED :
 		MT6797_CONSYS_WMT_INITIAL_READY;
 	mutex_unlock(&initial->lock);
 	return ret;
@@ -266,7 +257,7 @@ mt6797_wmt_initial_set_full_unchecked(struct mt6797_consys_wmt_initial *initial,
 		return -EINVAL;
 
 	mutex_lock(&initial->lock);
-	if (initial->state == MT6797_CONSYS_WMT_INITIAL_FENCED) {
+	if (initial->state == MT6797_CONSYS_WMT_INITIAL_FAILED) {
 		ret = -EPIPE;
 	} else if (initial->state ==
 		   MT6797_CONSYS_WMT_INITIAL_CHIP_FULL_CONFIGURED) {
@@ -276,10 +267,10 @@ mt6797_wmt_initial_set_full_unchecked(struct mt6797_consys_wmt_initial *initial,
 		ret = -EBUSY;
 	} else if (initial->state != MT6797_CONSYS_WMT_INITIAL_READY) {
 		/* No command was sent, but this owner order is unsafe to continue. */
-		initial->state = MT6797_CONSYS_WMT_INITIAL_FENCED;
+		initial->state = MT6797_CONSYS_WMT_INITIAL_FAILED;
 		ret = -EPROTO;
 	} else if (initial->wmt->stp_mode != MTK_STP_MODE_MANDATORY) {
-		initial->state = MT6797_CONSYS_WMT_INITIAL_FENCED;
+		initial->state = MT6797_CONSYS_WMT_INITIAL_FAILED;
 		ret = -EPROTONOSUPPORT;
 	} else {
 		initial->state = MT6797_CONSYS_WMT_INITIAL_SETTING_CHIP_FULL;
@@ -295,7 +286,7 @@ mt6797_wmt_initial_set_full_unchecked(struct mt6797_consys_wmt_initial *initial,
 				  &mt6797_consys_wmt_set_chip_full_match, timeout);
 
 	mutex_lock(&initial->lock);
-	initial->state = ret ? MT6797_CONSYS_WMT_INITIAL_FENCED :
+	initial->state = ret ? MT6797_CONSYS_WMT_INITIAL_FAILED :
 		MT6797_CONSYS_WMT_INITIAL_CHIP_FULL_CONFIGURED;
 	mutex_unlock(&initial->lock);
 	return ret;
@@ -331,43 +322,20 @@ void mt6797_consys_wmt_initial_destroy(struct mt6797_consys_wmt_initial *initial
 EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_destroy);
 
 int mt6797_consys_wmt_initial_run(struct mt6797_consys_wmt_initial *initial,
-				  struct mt6797_consys_wmt_initial_identity *identity)
-{
-	if (!enable_initial_sequence)
-		return -EPERM;
-
-	return mt6797_wmt_initial_run_unchecked(initial,
-				     MT6797_CONSYS_WMT_INITIAL_TIMEOUT, identity);
-}
-EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_run);
-
-int
-mt6797_consys_wmt_initial_run_exclusive(struct mt6797_consys_wmt_initial *initial,
 					struct mt6797_consys_wmt_initial_identity *identity,
 					unsigned long timeout)
 {
 	return mt6797_wmt_initial_run_unchecked(initial, timeout, identity);
 }
-EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_run_exclusive);
+EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_run);
 
 int
-mt6797_consys_wmt_initial_configure_chip_full(struct mt6797_consys_wmt_initial *initial)
-{
-	if (!enable_initial_sequence)
-		return -EPERM;
-
-	return mt6797_wmt_initial_set_full_unchecked(initial,
-					 MT6797_CONSYS_WMT_INITIAL_TIMEOUT);
-}
-EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_configure_chip_full);
-
-int
-mt6797_consys_wmt_initial_configure_chip_full_exclusive(struct mt6797_consys_wmt_initial *initial,
-							unsigned long timeout)
+mt6797_consys_wmt_initial_configure_chip_full(
+		struct mt6797_consys_wmt_initial *initial, unsigned long timeout)
 {
 	return mt6797_wmt_initial_set_full_unchecked(initial, timeout);
 }
-EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_configure_chip_full_exclusive);
+EXPORT_SYMBOL_GPL(mt6797_consys_wmt_initial_configure_chip_full);
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_WMT_INITIAL_KUNIT_TEST)
 
@@ -629,7 +597,7 @@ static void mt6797_consys_wmt_initial_test_sequence(struct kunit *test)
 	mt6797_consys_wmt_initial_destroy(initial);
 }
 
-static void mt6797_consys_wmt_initial_test_raw_failure_fences(struct kunit *test)
+static void mt6797_consys_wmt_initial_test_raw_failure_fails(struct kunit *test)
 {
 	static const struct {
 		enum mt6797_consys_wmt_initial_test_reply reply;
@@ -706,7 +674,7 @@ static void mt6797_consys_wmt_initial_test_hvr_rejection(struct kunit *test)
 	mt6797_consys_wmt_initial_destroy(initial);
 }
 
-static void mt6797_consys_wmt_initial_test_query_errors_fence(struct kunit *test)
+static void mt6797_consys_wmt_initial_test_query_errors_fail(struct kunit *test)
 {
 	struct mt6797_consys_wmt_initial_test_transport *transport;
 	struct mt6797_consys_wmt_initial *initial;
@@ -826,7 +794,7 @@ static void mt6797_consys_wmt_initial_test_mandatory_mode_required(struct kunit 
 	mt6797_consys_wmt_initial_destroy(initial);
 }
 
-static void mt6797_consys_wmt_initial_test_chip_full_errors_fence(struct kunit *test)
+static void mt6797_consys_wmt_initial_test_chip_full_errors_fail(struct kunit *test)
 {
 	static const struct {
 		enum mt6797_consys_wmt_initial_test_reply reply;
@@ -861,35 +829,16 @@ static void mt6797_consys_wmt_initial_test_chip_full_errors_fence(struct kunit *
 	}
 }
 
-static void mt6797_consys_wmt_initial_test_gate(struct kunit *test)
-{
-	struct mt6797_consys_wmt_initial_test_transport *transport;
-	struct mt6797_consys_wmt_initial *initial;
-	struct mt6797_consys_wmt_initial_identity identity;
-
-	initial = mt6797_wmt_initial_test_create(test);
-	transport = test->priv;
-	KUNIT_EXPECT_EQ(test, mt6797_consys_wmt_initial_run(initial, &identity),
-			-EPERM);
-	KUNIT_EXPECT_EQ(test, transport->raw_count, 0U);
-	KUNIT_EXPECT_EQ(test, transport->default_query_count, 0U);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_wmt_initial_configure_chip_full(initial),
-			-EPERM);
-	KUNIT_EXPECT_EQ(test, transport->set_count, 0U);
-	mt6797_consys_wmt_initial_destroy(initial);
-}
-
 static struct kunit_case mt6797_consys_wmt_initial_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_wmt_initial_test_sequence),
-	KUNIT_CASE(mt6797_consys_wmt_initial_test_raw_failure_fences),
+	KUNIT_CASE(mt6797_consys_wmt_initial_test_raw_failure_fails),
 	KUNIT_CASE(mt6797_consys_wmt_initial_test_chip_rejection),
 	KUNIT_CASE(mt6797_consys_wmt_initial_test_hvr_rejection),
-	KUNIT_CASE(mt6797_consys_wmt_initial_test_query_errors_fence),
+	KUNIT_CASE(mt6797_consys_wmt_initial_test_query_errors_fail),
 	KUNIT_CASE(mt6797_consys_wmt_initial_test_chip_full_sequence),
 	KUNIT_CASE(mt6797_consys_wmt_initial_test_chip_full_requires_ready),
 	KUNIT_CASE(mt6797_consys_wmt_initial_test_mandatory_mode_required),
-	KUNIT_CASE(mt6797_consys_wmt_initial_test_chip_full_errors_fence),
-	KUNIT_CASE(mt6797_consys_wmt_initial_test_gate),
+	KUNIT_CASE(mt6797_consys_wmt_initial_test_chip_full_errors_fail),
 	{}
 };
 
@@ -902,5 +851,5 @@ kunit_test_suite(mt6797_consys_wmt_initial_test_suite);
 
 #endif /* CONFIG_MTK_MT6797_CONSYS_WMT_INITIAL_KUNIT_TEST */
 
-MODULE_DESCRIPTION("Dormant MT6797 identity and chip-side WMT STP controller");
+MODULE_DESCRIPTION("MediaTek MT6797 identity and chip-side WMT STP controller");
 MODULE_LICENSE("GPL");

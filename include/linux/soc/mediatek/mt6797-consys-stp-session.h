@@ -66,7 +66,7 @@ const struct mt6797_consys_stp_session_lease *
 mt6797_consys_stp_session_begin_full(struct mt6797_consys_stp_session *session);
 
 /*
- * Start the one-shot provisional full-STP half of the vendor BTIF handover.
+ * Start the provisional full-STP half of the vendor BTIF handover.
  * This exists solely for the exact mandatory -> full WMT transition in
  * wmt_ic_soc.c:1008-1044: after the mandatory set reply, the host switches to
  * full STP, waits 10 ms, and verifies the controller's full-mode reply.  It
@@ -144,7 +144,7 @@ int mt6797_consys_stp_session_receive_lease(
  * Run one vendor 180-ms timeout tick.  A future owner schedules this only
  * after MT6797_CONSYS_STP_TX_TIMEOUT_MS without a cumulative ACK.  It emits
  * the documented resync pattern and retransmits retained frames.  On retry
- * exhaustion or a transmit error it permanently fences this session.
+ * exhaustion or a transmit error it permanently fails this session.
  */
 int mt6797_consys_stp_session_timeout(
 		const struct mt6797_consys_stp_session_lease *lease);

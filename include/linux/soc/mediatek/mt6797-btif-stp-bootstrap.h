@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * One-shot MT6797 BTIF mandatory-to-full STP handover controller.
+ * MT6797 BTIF mandatory-to-full STP handover controller.
  *
  * This object owns no platform device, register mapping, Linux IRQ, clock,
  * reset, power domain, pad, firmware image, or radio function.  Its caller
@@ -24,7 +24,7 @@ struct mtk_wmt_match;
 /*
  * enable_irq() is called only after PIO mandatory setup installed its RX
  * consumer; it must make an already-requested IRQ deliverable. close() must
- * synchronously mask that Linux IRQ before fencing the associated PIO lease.
+ * synchronously mask that Linux IRQ before invalidating the associated lease.
  */
 struct mt6797_btif_stp_bootstrap_ops {
 	int (*enable_irq)(void *context);
@@ -32,16 +32,7 @@ struct mt6797_btif_stp_bootstrap_ops {
 	void *context;
 };
 
-/*
- * A post-full stage runs synchronously between the exact full-STP query and
- * session promotion.  The opaque lease has no constructor or endpoint getter:
- * it is valid only for this callback and exposes one serialized WMT operation
- * owned by the bootstrap.
- */
-typedef int (*mt6797_btif_stp_bootstrap_full_wmt_stage_t)(void *context,
-		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
-
-/* True only while the bootstrap is synchronously executing that stage. */
+/* True while the bootstrap owns an active full-STP WMT endpoint. */
 bool mt6797_btif_stp_bootstrap_full_wmt_lease_active(
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
 
@@ -53,30 +44,20 @@ mt6797_btif_stp_bootstrap_create(
 
 /*
  * Run exactly raw HCR/HVR/FVR identity reads, query-default, set-full, host
- * handoff, 10-ms wait, and query-full.  It is rejected unless the default-false
- * enable_experimental_stp_bootstrap parameter was set.  On every error it
- * leaves the supplied transport closed/fenced and returns an error pointer.
+ * handoff, 10-ms wait, and query-full. On every error it closes the supplied
+ * transport and returns an error pointer.
  */
 const struct mt6797_consys_stp_session_lease *
 mt6797_btif_stp_bootstrap_run(struct mt6797_btif_stp_bootstrap *bootstrap);
-
-/*
- * As mt6797_btif_stp_bootstrap_run(), but runs @stage after the exact
- * full-STP query has succeeded and before the full session is published.  The
- * stage must neither retain @lease nor issue traffic except through
- * mt6797_btif_stp_bootstrap_full_wmt_transaction().  A stage error fences the
- * PIO/STP owner and prevents promotion.
- */
-const struct mt6797_consys_stp_session_lease *
-mt6797_btif_stp_bootstrap_run_with_full_wmt_stage(
-		struct mt6797_btif_stp_bootstrap *bootstrap,
-		mt6797_btif_stp_bootstrap_full_wmt_stage_t stage,
-		void *stage_context);
+/* Return the active bootstrap-owned WMT capability after run() succeeds. */
+const struct mt6797_btif_stp_bootstrap_full_wmt_lease *
+mt6797_btif_stp_bootstrap_full_wmt_lease(
+		struct mt6797_btif_stp_bootstrap *bootstrap);
 
 /*
  * Send one exact WMT operation through the bootstrap's private full-STP WMT
- * endpoint.  This is valid only while its synchronous post-full stage owns
- * @lease.  The bootstrap retains the STP window, ACK, retry and recovery
+ * endpoint. This is valid only while the bootstrap owns @lease. The bootstrap
+ * retains the STP window, ACK, retry and recovery
  * lifecycle; callers cannot obtain or reset the underlying struct mtk_wmt.
  */
 int mt6797_btif_stp_bootstrap_full_wmt_transaction(

@@ -4,7 +4,7 @@
  *
  * This interface deliberately models no controller bring-up sequence.  It
  * provides the packet envelope shared by vendor WMT implementations and a
- * single-flight request/response fence for a future transport owner.
+ * single-flight request/response guard for a transport owner.
  */
 
 #ifndef __LINUX_SOC_MEDIATEK_MTK_WMT_H
@@ -126,7 +126,7 @@ int mtk_wmt_receive(void *context, const u8 *payload, size_t payload_len);
 
 /*
  * Send exactly one command and await one exact reply.  On timeout, signal, or
- * transport failure this returns an error and fences subsequent commands with
+ * transport failure this returns an error and rejects subsequent commands with
  * -EPIPE.  The owner must call mtk_wmt_reset() after it has recovered the
  * underlying transport/controller before sending another command.
  */
@@ -163,7 +163,7 @@ int mtk_wmt_transaction_capture_range(struct mtk_wmt *wmt, u8 opcode,
 				      unsigned long timeout);
 
 /*
- * Local cancellation/generation fence; this never emits a controller reset.
+ * Local cancellation/generation boundary; this never emits a controller reset.
  *
  * Calling this function announces a reset before waiting for issue_lock. A
  * transaction which has not claimed issue_lock observes that request and does

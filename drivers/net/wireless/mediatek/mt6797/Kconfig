@@ -7,7 +7,6 @@ config MT6797_WIFI
 	depends on MTK_MT6797_CONSYS_EMI_MPU=y
 	depends on MTK_MT6797_CONSYS_POSTID=y
 	select CRYPTO_SHA256
-	select MTK_MT6797_CONSYS_WMT_POSTPATCH
 	help
 	  Build the integrated 2.4 GHz WLAN driver for MT6797. The driver owns the
 	  CONSYS identity, post-ID, WMT patch/calibration, WLAN firmware and AHB HIF

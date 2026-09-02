@@ -1250,7 +1250,7 @@ out_unlock:
 	mutex_unlock(&mt6797_wifi_fw_portal_lock);
 	if (cleanup_ret) {
 		dev_err(power->owner,
-			"firmware portal cleanup could not be verified: %d; reset/fence required\n",
+			"firmware portal cleanup could not be verified: %d; reset required\n",
 			cleanup_ret);
 		if (!ret)
 			ret = cleanup_ret;

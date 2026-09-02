@@ -4,8 +4,8 @@
  *
  * The vendor order is intentionally represented as three callbacks:
  * MBIST, AFE, then reset release.  This file never supplies MMIO offsets and
- * never calls a live backend by itself.  A caller must provide an active,
- * exclusive CONSYS runtime lease and a separate experiment gate.
+ * never calls a live backend by itself. A caller must provide an active,
+ * exclusive CONSYS runtime lease.
  */
 
 #include <linux/errno.h>
@@ -71,15 +71,12 @@ EXPORT_SYMBOL_GPL(mt6797_consys_postid_init);
 
 int mt6797_consys_postid_start(
 		struct mt6797_consys_postid_owner *owner,
-		const struct mt6797_consys_runtime_lease *lease, bool experiment_gate)
+		const struct mt6797_consys_runtime_lease *lease)
 {
 	int ret;
 
 	if (!owner || !lease)
 		return -EINVAL;
-	if (!experiment_gate)
-		return -EPERM;
-
 	mutex_lock(&owner->lock);
 	if (!owner->lifecycle || !owner->ops) {
 		ret = -EINVAL;
@@ -156,5 +153,5 @@ mt6797_consys_postid_state(struct mt6797_consys_postid_owner *owner)
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_postid_state);
 
-MODULE_DESCRIPTION("Dormant MT6797 CONSYS post-identity bootstrap owner");
+MODULE_DESCRIPTION("MediaTek MT6797 CONSYS post-identity owner");
 MODULE_LICENSE("GPL");

@@ -24,7 +24,6 @@
 #include <linux/soc/mediatek/mt6797-consys-postid.h>
 #include <linux/soc/mediatek/mt6797-consys-runtime-controller.h>
 #include <linux/soc/mediatek/mt6797-consys-runtime.h>
-#include <linux/soc/mediatek/mt6797-consys-wmt-postpatch.h>
 #include "mt6797.h"
 #include "hif.h"
 #include "wire.h"
@@ -176,7 +175,8 @@ struct mt6797_wifi {
 	struct cfg80211_bss *assoc_bss;
 	bool use_mfp;
 	bool candidate_valid, channel_requested;
-	bool resources_held, identity_held, postid_active, bootstrap_failed;
+	bool resources_held, emi_claimed, identity_held, postid_active;
+	bool bootstrap_failed;
 	bool controller_started, firmware_running, opened,
 		pairwise_key_installed;
 	bool protected_network, port_authorized, control_port_no_encrypt;
@@ -890,24 +890,17 @@ static irqreturn_t mt6797_wifi_irq_thread(int irq, void *data)
 	schedule_work(&wifi->rx_work);
 	return IRQ_HANDLED;
 }
-static int mt6797_wifi_postpatch(
-	void *ctx, const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
-{
-	struct mt6797_wifi *wifi = ctx;
-
-	return mt6797_consys_wmt_postpatch_run(wifi->dev, lease, wifi->bt_paldo,
-					       wifi->wifi_paldo);
-}
-
 static void mt6797_wifi_release_controller(struct mt6797_wifi *wifi)
 {
 	int ret;
 
 	if (wifi->firmware_running) {
 		ret = mt6797_wifi_firmware_stop(wifi->wifi_paldo);
-		if (ret)
+		if (ret) {
+			wifi->bootstrap_failed = true;
 			dev_err(wifi->dev, "failed to disable WLAN PALDO: %d\n",
 				ret);
+		}
 		wifi->firmware_running = false;
 	}
 	if (wifi->controller_started) {
@@ -917,6 +910,7 @@ static void mt6797_wifi_release_controller(struct mt6797_wifi *wifi)
 	if (wifi->postid_active) {
 		ret = mt6797_consys_postid_stop(&wifi->postid);
 		if (ret) {
+			wifi->bootstrap_failed = true;
 			mt6797_consys_emi_mpu_latch_fatal();
 			dev_err(wifi->dev,
 				"failed to stop CONSYS post-ID owner: %d\n",
@@ -928,21 +922,25 @@ static void mt6797_wifi_release_controller(struct mt6797_wifi *wifi)
 	if (wifi->identity_held) {
 		ret = mt6797_consys_runtime_platform_identity_release(
 			&wifi->identity);
-		if (ret)
+		if (ret) {
+			wifi->bootstrap_failed = true;
 			dev_err(wifi->dev,
 				"failed to release CONSYS identity: %d\n", ret);
-		else
+		} else {
 			wifi->identity_held = false;
+		}
 	}
 	if (wifi->resources_held) {
 		ret = mt6797_consys_runtime_resource_lease_release(
 			&wifi->resources);
-		if (ret)
+		if (ret) {
+			wifi->bootstrap_failed = true;
 			dev_err(wifi->dev,
 				"failed to release CONSYS resources: %d\n",
 				ret);
-		else
+		} else {
 			wifi->resources_held = false;
+		}
 	}
 }
 
@@ -958,12 +956,17 @@ static int mt6797_wifi_prepare_controller(struct mt6797_wifi *wifi)
 
 	ret = mt6797_consys_runtime_resource_lease_acquire(wifi->runtime_dev,
 							   &wifi->resources);
-	if (ret)
+	if (ret) {
+		wifi->bootstrap_failed = false;
 		return ret;
+	}
 	wifi->resources_held = true;
-	ret = mt6797_consys_emi_mpu_claim(wifi->dev);
-	if (ret)
-		goto fail;
+	if (!wifi->emi_claimed) {
+		ret = mt6797_consys_emi_mpu_claim(wifi->dev);
+		if (ret)
+			goto fail;
+		wifi->emi_claimed = true;
+	}
 	ret = mt6797_consys_runtime_platform_identity_acquire(&wifi->resources,
 							      &wifi->identity);
 	if (ret)
@@ -973,13 +976,13 @@ static int mt6797_wifi_prepare_controller(struct mt6797_wifi *wifi)
 		wifi->runtime_dev, wifi->identity.identity, &wifi->postid);
 	if (ret)
 		goto fail_fatal;
-	ret = mt6797_consys_postid_start(&wifi->postid, wifi->identity.identity,
-					 true);
+	ret = mt6797_consys_postid_start(&wifi->postid,
+					 wifi->identity.identity);
 	if (ret)
 		goto fail_fatal;
 	wifi->postid_active = true;
-	ret = mt6797_consys_runtime_controller_start_with_postpatch_stage(
-		wifi->controller_dev, mt6797_wifi_postpatch, wifi);
+	ret = mt6797_consys_runtime_controller_start(
+		wifi->controller_dev, wifi->bt_paldo, wifi->wifi_paldo);
 	if (ret)
 		goto fail_fatal;
 	wifi->controller_started = true;
@@ -1020,6 +1023,8 @@ static void mt6797_wifi_stop_locked(struct mt6797_wifi *wifi)
 	/* Set before releasing the lock: a queued worker will only observe stop. */
 	wifi->opened = false;
 	mt6797_consys_runtime_controller_wifi_session_put(&wifi->runtime);
+	/* A full controller stop is the final backstop for hardware key erasure. */
+	mt6797_wifi_release_controller(wifi);
 }
 static int mt6797_wifi_open(struct net_device *ndev)
 {
@@ -1054,7 +1059,7 @@ static int mt6797_wifi_open(struct net_device *ndev)
 		 wifi->irq, wifi->session.last_whisr);
 	goto out;
 fail:
-	/* Firmware and full WMT remain owned until device removal. */
+	mt6797_wifi_release_controller(wifi);
 out:
 	mutex_unlock(&wifi->lock);
 	return ret;

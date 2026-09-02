@@ -72,7 +72,7 @@ config MTK_MT6797_CONSYS_STP_SESSION
 	depends on MTK_STP
 	help
 	  Build the hardware-independent owner for the full STP sequence window,
-	  cumulative ACKs, default-disabled NAK bit, retransmission and resync
+	  cumulative ACKs, NAK handling, retransmission and resync
 	  machinery used by the MT6797 vendor BTIF path. It is disabled by default
 	  and owns no Device Tree node or hardware resource.
 
@@ -80,8 +80,8 @@ config MTK_MT6797_CONSYS_STP_SESSION
 	  independently completed the vendor mandatory-to-full WMT handover. The
 	  owner obtains an opaque full-STP lease rather than selecting a framing enum;
 	  no MTK_STP_MODE_FULL value can masquerade as a live session. On a transport
-	  error, retry exhaustion, or explicit quiesce, the lease is permanently
-	  fenced. Recovery requires a new session after the real transport/controller
+	  error, retry exhaustion, or explicit quiesce, the lease becomes unusable.
+	  Recovery requires a new session after the transport/controller
 	  owner has recovered the device.
 
 	  This option cannot map BTIF or CONSYS MMIO, enable a clock, regulator or
@@ -95,15 +95,15 @@ config MTK_MT6797_CONSYS_STP_SESSION_KUNIT_TEST
 	help
 	  Exercise full-STP sequence wrapping, credit exhaustion, cumulative ACKs,
 	  duplicate and out-of-order input, default NAK masking, retry/resync,
-	  malformed-frame rejection and permanent quiesce fencing using an in-memory
+	  malformed-frame rejection and permanent quiesce using an in-memory
 	  byte link. The test does not access Device Tree, MMIO, DMA, firmware or
 	  Gemini hardware.
 
 config MTK_MT6797_BTIF_PIO
-	tristate "MediaTek MT6797 dormant BTIF PIO transport owner"
+	tristate "MediaTek MT6797 BTIF PIO transport owner"
 	depends on MTK_MT6797_CONSYS_STP_SESSION && MTK_MT6797_CONSYS_CORE
 	help
-	  Build the default-disabled byte transport owner for the MT6797 BTIF PIO
+	  Build the byte transport owner for the MT6797 BTIF PIO
 	  register protocol. It owns bounded PIO TX backpressure, RX framing input,
 	  and the single capability that may attach a full-STP session.
 
@@ -119,43 +119,37 @@ config MTK_MT6797_BTIF_PIO_KUNIT_TEST
 	depends on KUNIT=y
 	depends on MTK_MT6797_BTIF_PIO=y
 	help
-	  Exercise partial PIO TX, whole-frame backpressure, timeout fencing, RX
-	  fragmentation/overflow, full-STP lease attachment, and close fencing with
+	  Exercise partial PIO TX, whole-frame backpressure, timeout failure, RX
+	  fragmentation/overflow, full-STP lease attachment, and synchronized close with
 	  an in-memory register model. The test has no Device Tree, MMIO, clock, DMA,
 	  firmware, WMT, CONSYS, or Gemini hardware dependency.
 
 config MTK_MT6797_BTIF_PIO_PLATFORM
-	tristate "MediaTek MT6797 dormant BTIF PIO platform adapter"
+	tristate "MediaTek MT6797 BTIF PIO platform adapter"
 	depends on OF && MTK_MT6797_BTIF_PIO
 	help
-	  Build the default-disabled platform acquisition adapter for the MT6797
+	  Build the platform acquisition adapter for the MT6797
 	  BTIF PIO transport owner. It validates and maps only the vendor-evidenced
 	  4 KiB BTIF core window, obtains its named btifc core clock and one
 	  DT-described IRQ, and installs a threaded handler with IRQF_NO_AUTOEN.
 	  It enables btifc only while its exclusive PIO lease is held, and disables
-	  it after synchronous IRQ quiesce and PIO fencing. It neither obtains nor
-	  votes APDMA; CONSYS power/reset/wake ownership is not yet proven.
-
-	  No Gemini Device Tree node matches this driver. A future separately
-	  reviewed node must remain disabled by default, and attachment still needs
-	  enable_experimental_platform_adapter=1. The module parameter is a further
-	  explicit experiment gate; it does not establish any missing power, pad,
-	  firmware, WMT, or radio contract.
+	  it after synchronous IRQ quiesce. CONSYS power and reset remain with the
+	  calling connectivity controller.
 
 config MTK_MT6797_BTIF_PIO_PLATFORM_KUNIT_TEST
 	bool "KUnit tests for the MT6797 BTIF PIO platform adapter"
 	depends on KUNIT=y
 	depends on MTK_MT6797_BTIF_PIO_PLATFORM=y
 	help
-	  Exercise exact resource validation, the explicit experiment gate, the
-	  one-shot platform lease, btifc enable/disable ordering, threaded-IRQ
-	  activation ordering, and synchronized close using in-memory registers,
+	  Exercise exact resource validation, the exclusive platform lease, btifc
+	  enable/disable ordering, threaded-IRQ activation ordering, repeatable
+	  acquisition, and synchronized close using in-memory registers,
 	  fake IRQ, and fake clock controllers. The test does not instantiate a
 	  platform device or access Device Tree, MMIO, DMA, firmware, CONSYS, or
 	  Gemini hardware.
 
 config MTK_MT6797_BTIF_STP_BOOTSTRAP
-	tristate "MediaTek MT6797 dormant BTIF STP bootstrap controller"
+	tristate "MediaTek MT6797 BTIF STP bootstrap controller"
 	depends on MTK_MT6797_BTIF_PIO && MTK_WMT
 	depends on MTK_MT6797_CONSYS_WMT_INITIAL
 	help
@@ -164,15 +158,13 @@ config MTK_MT6797_BTIF_STP_BOOTSTRAP
 	  host-side full-STP handoff, a 10-ms delay, and full-STP query verification.
 	  It uses only the vendor-evidenced WMT transactions and bounded timeouts.
 
-	  This option is disabled by default and has no Device Tree match. Calling
-	  it additionally requires enable_experimental_stp_bootstrap=1. The caller
-	  must provide an acquired PIO lease, exclusive long-lived CONSYS lifecycle
+	  The caller must provide an acquired PIO lease, exclusive CONSYS lifecycle
 	  lease, and synchronized IRQ close callback after independently
 	  establishing clocks, pads and firmware ownership. It never discovers
 	  hardware, requests firmware, downloads a patch, or enables Wi-Fi,
-	  Bluetooth, GNSS or FM through its normal run API. A separately gated
-	  post-full callback can use its opaque transaction lease before the session
-	  is promoted; the bootstrap still owns STP framing, ACK, retry and recovery.
+	  Bluetooth, GNSS or FM through its normal run API. Its opaque transaction
+	  lease lets the connectivity controller perform firmware setup while the
+	  bootstrap still owns STP framing, ACK, retry and recovery.
 
 config MTK_MT6797_BTIF_STP_BOOTSTRAP_KUNIT_TEST
 	bool "KUnit tests for the MT6797 BTIF STP bootstrap controller"
@@ -186,7 +178,7 @@ config MTK_MT6797_BTIF_STP_BOOTSTRAP_KUNIT_TEST
 	  accesses no Gemini hardware or radio function.
 
 config MTK_WMT
-	tristate "MediaTek WMT packet codec and transaction fence"
+	tristate "MediaTek WMT packet codec and transaction owner"
 	depends on MTK_STP
 	help
 	  Build the hardware-independent WMT packet codec and one-at-a-time
@@ -200,12 +192,12 @@ config MTK_WMT_KUNIT_TEST
 	depends on MTK_WMT=y
 	help
 	  Exercise strict WMT length/direction validation, exact matching,
-	  timeout fencing, cancellation, unsolicited events and fragmented STP
+	  timeout failure, cancellation, unsolicited events and fragmented STP
 	  delivery without hardware or firmware. This does not send a WMT command,
 	  access an STP transport, or instantiate a connectivity device.
 
 config MTK_MT6797_CONSYS_WMT_INITIAL
-	tristate "Dormant MT6797 identity/chip-STP WMT controller"
+	tristate "MediaTek MT6797 identity/chip-STP WMT controller"
 	depends on MTK_WMT
 	help
 	  Build the transport-neutral mandatory-STP WMT identity controller for
@@ -214,15 +206,15 @@ config MTK_MT6797_CONSYS_WMT_INITIAL
 	  exact chip-side set-full command/reply. The three masked results must
 	  identify chip ID 0x0279 and a known HVR. The sequence requires a future
 	  owner to supply an already-live mandatory-STP WMT endpoint and exact raw
-	  exchanges; the public entry is default-disabled.
+	  exchanges.
 
 	  This has no Device Tree match and cannot acquire MMIO, power, clock, reset,
 	  firmware, patch, or radio resources. It never switches local host STP
 	  mode, waits for a chip transition, or verifies full-mode STP. It cannot
 	  enable Wi-Fi, Bluetooth, GNSS, or FM. Any malformed, unexpected, timed-out,
-	  or out-of-order operation permanently fences the instance; the transport
+	  or out-of-order operation permanently fails the instance; the transport
 	  owner must recover and provide a new endpoint. It must not be independently
-	  run beside the PIO bootstrap controller: that exclusive, default-disabled
+	  run beside the PIO bootstrap controller: that exclusive
 	  owner consumes these identity/default/set stages exactly once before it
 	  performs the host/full handoff.
 
@@ -233,7 +225,7 @@ config MTK_MT6797_CONSYS_WMT_INITIAL_KUNIT_TEST
 	help
 	  Exercise exact HCR/HVR/FVR/default-query/set-full ordering and packet
 	  vectors, malformed reply rejection, unsupported chip/HVR rejection,
-	  stage timeout and out-of-order fencing, and the default-false public gate
+	  timeout and out-of-order failure
 	  against an in-memory WMT transport. It does not instantiate a platform
 	  device or access Gemini hardware.
 
@@ -295,13 +287,13 @@ config MTK_MT6797_CONSYS_CORE_KUNIT_TEST
 	  dependency or firmware requirement.
 
 config MTK_MT6797_CONSYS_POSTID
-	tristate "Dormant MT6797 CONSYS post-identity bootstrap owner"
+	tristate "MediaTek MT6797 CONSYS post-identity owner"
 	depends on MTK_MT6797_CONSYS_CORE
 	help
-	  Build the hardware-neutral, default-disabled owner for the reviewed
+	  Build the hardware-neutral owner for the reviewed
 	  post-identity prefix: MBIST configuration, AFE configuration, and
 	  CONMCU reset release. It requires an already active exclusive CONSYS
-	  runtime lease and an independent caller-supplied experiment gate.
+	  runtime lease.
 
 	  The backend supplies callbacks; this option has no Device Tree match,
 	  platform caller, MMIO access, clock, regulator, power-domain, firmware,
@@ -313,7 +305,7 @@ config MTK_MT6797_CONSYS_POSTID_KUNIT_TEST
 	depends on KUNIT=y
 	depends on MTK_MT6797_CONSYS_POSTID=y
 	help
-	  Exercise exact MBIST/AFE/reset-release ordering, the independent gate,
+	  Exercise exact MBIST/AFE/reset-release ordering,
 	  inactive-identity rejection, error injection, reset assertion and
 	  teardown completion with fake callbacks only. No Device Tree, MMIO,
 	  hardware, firmware, transport, or radio is used.
@@ -343,7 +335,7 @@ config MTK_MT6797_CONSYS_EMI_LAYOUT_KUNIT_TEST
 	  dependency.
 
 config MTK_MT6797_CONSYS_EMI_MPU
-	tristate "Experimental MT6797 CONSYS shared-EMI MPU owner"
+	tristate "MediaTek MT6797 CONSYS shared-EMI MPU owner"
 	depends on ARM64 && ARCH_MEDIATEK && OF
 	select MTK_MT6797_CONSYS_EMI_LAYOUT
 	select ARM_SMCCC
@@ -355,11 +347,8 @@ config MTK_MT6797_CONSYS_EMI_MPU
 	  vendor supplies no inverse, so the provider rejects unbind and its owner
 	  never offers release or retry after a partial failure.
 
-	  The provider has no enabled node in the shipped Gemini DT. It requires an
-	  explicit overlay property and
-	  mt6797_consys_emi_mpu.enable_experimental_ownership=1 before it probes;
-	  it performs no hardware operation until an independently gated consumer
-	  claims it. It may be built as a module. The first consumer claim attempt
+	  It performs no hardware operation until a consumer claims it. It may be
+	  built as a module. The first consumer claim attempt
 	  consumes the provider for the boot, whether it succeeds or fails; the
 	  module deliberately remains loaded until reboot so overlay removal or
 	  recreation cannot repeat the one-way transaction.
@@ -382,7 +371,7 @@ config MTK_MT6797_CONSYS_HANDOFF_KUNIT_TEST
 	depends on MTK_MT6797_CONSYS_RUNTIME_KUNIT_TEST=y
 	default n
 	help
-	  Exercise resources-before-identity ordering, removal fencing, reverse
+	  Exercise resources-before-identity ordering, removal synchronization, reverse
 	  unwind, and failure boundaries using only fake callback owners. No
 	  Device Tree, MMIO, firmware, transport, or radio is used.
 	  It is suitable for KUnit-compatible test kernels and has no hardware
@@ -412,14 +401,14 @@ config MTK_MT6797_CONSYS_LIVE
 	  before the reset-held identity lease is released; it performs no writes.
 
 config MTK_MT6797_CONSYS_RUNTIME
-	bool "Experimental MT6797 CONSYS runtime lifecycle backend"
+	bool "MediaTek MT6797 CONSYS runtime lifecycle backend"
 	depends on ARM64 && ARCH_MEDIATEK && OF && PM
 	depends on PM_GENERIC_DOMAINS_OF && MTK_SCPSYS
 	depends on REGULATOR_MT6351 && RESET_CONTROLLER
 	depends on MTK_MT6797_CONSYS_CORE
 	select MFD_SYSCON
 	help
-	  Build the separately named, default-disabled MT6797 CONSYS runtime
+	  Build the MT6797 CONSYS runtime
 	  lifecycle provider. It validates the exact Gemini resource layout and
 	  2 MiB no-map reservation, registers the BGF IRQ disabled, and publishes
 	  validated resources. A separate coordinator may later acquire the
@@ -427,10 +416,7 @@ config MTK_MT6797_CONSYS_RUNTIME
 	  VCN28, sleep mask, CONMCU reset, PWRON configuration, SCPSYS CONN vote,
 	  30 us, and chip ID 0x0279.
 
-	  The shipped Gemini node does not match this driver. A hand-authored node
-	  must be enabled, carry mediatek,experimental-runtime, and the read-only
-	  mt6797_consys_runtime.enable_experimental_runtime=1 parameter must be
-	  supplied. The provider itself never activates identity, releases reset,
+	  The provider itself never activates identity, releases reset,
 	  maps or clears shared EMI, accesses AFE,
 	  requests the WDT IRQ, initializes BTIF, loads firmware, sends WMT, or
 	  enables Wi-Fi, Bluetooth, GNSS, or FM. A failed identity transaction
@@ -457,30 +443,25 @@ config MTK_MT6797_CONSYS_RUNTIME_KUNIT_TEST
 	  not create a platform device or access Gemini hardware.
 
 config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
-	bool "Experimental MT6797 CONSYS STP-bootstrap coordinator"
+	bool "MediaTek MT6797 CONSYS STP-bootstrap coordinator"
 	depends on OF
 	depends on MTK_MT6797_CONSYS_RUNTIME=y
 	depends on MTK_MT6797_BTIF_PIO_PLATFORM=y
 	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
 	depends on MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD=y
+	depends on MTK_MT6797_CONSYS_WMT_POSTPATCH=y
 	help
-	  Build the default-disabled coordinator that joins separately reviewed
+	  Build the coordinator that joins
 	  MT6797 runtime and BTIF PIO platform providers through managed device
 	  links. It does not activate the resources-only runtime provider: an
 	  earlier true-chronology owner must already hold identity. An explicit
 	  in-kernel start then uses the held lease and invokes the exact
-	  mandatory-to-full STP bootstrap controller and its opaque, post-full
-	  firmware manifest stage before publishing a session.
+	  mandatory-to-full STP bootstrap controller, patch download and post-patch
+	  calibration before publishing a session.
 
-	  The shipped Gemini DT contains no matching node. A hand-authored,
-	  disabled-by-default node must carry mediatek,experimental-bootstrap and
-	  the read-only mt6797_consys_runtime_controller.
-	  enable_experimental_runtime_controller=1 parameter must be supplied.
-	  Each provider and the STP bootstrap retain their own independent gates.
 	  The coordinator creates no GNSS, Bluetooth, Wi-Fi, or FM function; it
 	  releases no CONMCU reset, accesses no AFE/shared EMI, or enables a radio
-	  function, and has no userspace ABI. Firmware request/download remains
-	  separately default-false gated by the patch controller.
+	  function, and has no userspace ABI.
 
 config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 CONSYS STP-bootstrap coordinator"
@@ -488,7 +469,7 @@ config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER_KUNIT_TEST
 	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER=y
 	help
 	  Exercise supplier acquisition, one-owner bootstrap start, reverse-order
-	  cleanup, gate rejection, and stop-versus-run serialization with fake
+	  cleanup and stop-versus-run serialization with fake
 	  provider operations. No platform device, Device Tree, MMIO, WMT packet,
 	  firmware, CONSYS resource, or Gemini hardware is used.
 
@@ -522,7 +503,7 @@ config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT_KUNIT_TEST
 	  dependency.
 
 config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD
-	tristate "Experimental MT6797 WMT patch-download controller"
+	tristate "MediaTek MT6797 WMT patch-download controller"
 	depends on MTK_WMT && MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
 	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP
 	depends on FW_LOADER
@@ -536,18 +517,15 @@ config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD
 
 	  This is deliberately not a Device Tree driver. It cannot acquire a
 	  transport, power domain, reset, clock, regulator, pad, or RF resource.
-	  The bootstrap's post-full callback must explicitly call it; raw WMT
+	  The connectivity controller must explicitly call it; raw WMT
 	  endpoints are deliberately not accepted. The MT6797 vendor sequence
 	  switches from mandatory to full STP before patch download. The opaque
 	  bootstrap lease proves the one owner retains the full STP window, ACK,
-	  retry and recovery lifecycle. Calls are also rejected
-	  unless mt6797_consys_wmt_patch.enable_patch_download=1 is set at boot (or
-	  the equivalent read-only module parameter is supplied). It neither enables
+	  retry and recovery lifecycle. It neither enables
 	  Wi-Fi, Bluetooth, GNSS, FM, nor any radio function.
 
-	  On a WMT timeout or transport error it leaves the WMT transaction fence in
-	  place. Only the bootstrap transport owner may recover the underlying
-	  controller; this controller never clears that safety fence.
+	  On a WMT timeout or transport error it leaves recovery to the bootstrap
+	  transport owner; this controller never resets the underlying endpoint.
 
 config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD_KUNIT_TEST
 	bool "KUnit tests for the MT6797 WMT patch-download controller"
@@ -569,7 +547,7 @@ config MTK_MT6797_CONSYS_WMT_BT_FUNCTION_CHOREOGRAPHY_KUNIT_TEST
 	  in-memory PALDO and WMT transport: BT VCN33/PALDO on, WMT FUNC_CTRL BT
 	  on/status, WMT FUNC_CTRL BT off/status, then PALDO off. Every command
 	  timeout or cleanup failure is terminal and requires the outer CONSYS/BTIF
-	  owner to fence and recover the hardware before another attempt.
+	  owner to reset and recover the hardware before another attempt.
 
 	  This is deliberately test-only choreography. It has no Device Tree node,
 	  module parameter, platform driver, WMT endpoint, or callable live entry

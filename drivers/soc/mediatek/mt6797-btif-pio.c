@@ -19,7 +19,7 @@
  * object cannot map MMIO, turn on clocks, request/enable an IRQ, wake CONSYS,
  * allocate DMA, load firmware, or initiate a WMT/radio transaction.
  * Its first hardware-facing attachment also pins the caller's already-live
- * runtime lease; close/fence releases that pin before the long-lived owner
+ * runtime lease; close releases that pin before the long-lived owner
  * may unwind its identity transaction.
  */
 
@@ -67,19 +67,16 @@
 #define MT6797_BTIF_TRI_TX(value)	(((value) & 0xf) << 0)
 #define MT6797_BTIF_TRI_RX(value)	(((value) & 0x7) << 4)
 #define MT6797_BTIF_HANDSHAKE_EN	BIT(0)
-#define MT6797_BTIF_TRI_LOOP_EN		BIT(7)
 #define MT6797_BTIF_TX_FIFO_SIZE	16
 #define MT6797_BTIF_TX_THRESHOLD	8
 
 enum mt6797_btif_pio_state {
 	MT6797_BTIF_PIO_NEW,
 	MT6797_BTIF_PIO_LEASED,
-	MT6797_BTIF_PIO_QUALIFYING,
-	MT6797_BTIF_PIO_LOOPBACK_QUALIFYING,
 	MT6797_BTIF_PIO_MANDATORY,
 	MT6797_BTIF_PIO_FULL_BOOTSTRAP,
 	MT6797_BTIF_PIO_ACTIVE,
-	MT6797_BTIF_PIO_FENCED,
+	MT6797_BTIF_PIO_FAILED,
 };
 
 struct mt6797_btif_pio {
@@ -181,11 +178,11 @@ static void mt6797_btif_pio_tx_drain_locked(struct mt6797_btif_pio *pio)
 					 MT6797_BTIF_IER_TX);
 }
 
-static void mt6797_btif_pio_fence_locked(struct mt6797_btif_pio *pio)
+static void mt6797_btif_pio_fail_locked(struct mt6797_btif_pio *pio)
 {
 	unsigned long flags;
 
-	pio->state = MT6797_BTIF_PIO_FENCED;
+	pio->state = MT6797_BTIF_PIO_FAILED;
 	pio->stp_lease = NULL;
 	pio->receive = NULL;
 	pio->receive_context = NULL;
@@ -193,7 +190,7 @@ static void mt6797_btif_pio_fence_locked(struct mt6797_btif_pio *pio)
 	/*
 	 * Transmit enables TX IER while holding tx_lock.  Clear both interrupt
 	 * enables under the same lock so an in-flight submit cannot re-enable TX
-	 * after this permanent fence.
+	 * after this session has failed.
 	 */
 	mt6797_btif_pio_set_ier(pio, MT6797_BTIF_IER_RX | MT6797_BTIF_IER_TX,
 				 0);
@@ -272,7 +269,7 @@ mt6797_btif_pio_acquire(struct mt6797_btif_pio *pio)
 	if (pio->state == MT6797_BTIF_PIO_NEW) {
 		pio->state = MT6797_BTIF_PIO_LEASED;
 		lease = pio->lease;
-	} else if (pio->state == MT6797_BTIF_PIO_FENCED) {
+	} else if (pio->state == MT6797_BTIF_PIO_FAILED) {
 		lease = ERR_PTR(-EPIPE);
 	} else {
 		lease = ERR_PTR(-EBUSY);
@@ -281,146 +278,6 @@ mt6797_btif_pio_acquire(struct mt6797_btif_pio *pio)
 	return lease;
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_pio_acquire);
-
-int mt6797_btif_pio_qualify(const struct mt6797_btif_pio_lease *lease,
-			    u32 *tri_level)
-{
-	struct mt6797_btif_pio *pio;
-	u32 tri;
-	int ret = 0;
-
-	if (!lease || !lease->pio || !tri_level)
-		return -EINVAL;
-	pio = lease->pio;
-
-	mutex_lock(&pio->state_lock);
-	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FENCED) {
-		ret = -ESHUTDOWN;
-	} else if (pio->state != MT6797_BTIF_PIO_LEASED) {
-		ret = -EBUSY;
-	} else {
-		/*
-		 * The vendor enables btifc before hal_btif_hw_init(), then permits
-		 * loopback only after normal mode has been selected (btif_plat.c:
-		 * 476-521,699-721).  The platform owner supplies the former; this
-		 * bounded path validates the latter and sends no byte to THR.
-		 */
-		pio->state = MT6797_BTIF_PIO_QUALIFYING;
-		mt6797_btif_pio_hw_init(pio);
-		mt6797_btif_pio_update_bits(pio, MT6797_BTIF_TRI_LVL,
-					    MT6797_BTIF_TRI_LOOP_EN,
-					    MT6797_BTIF_TRI_LOOP_EN);
-		tri = pio->io.read32(pio->io.context, MT6797_BTIF_TRI_LVL);
-		if (!(tri & MT6797_BTIF_TRI_LOOP_EN))
-			ret = -EIO;
-
-		/* Never leave the internal AP-side test route selected. */
-		mt6797_btif_pio_update_bits(pio, MT6797_BTIF_TRI_LVL,
-					    MT6797_BTIF_TRI_LOOP_EN, 0);
-		tri = pio->io.read32(pio->io.context, MT6797_BTIF_TRI_LVL);
-		if (!ret && (tri & MT6797_BTIF_TRI_LOOP_EN))
-			ret = -EIO;
-		if (!ret)
-			*tri_level = tri;
-		else
-			mt6797_btif_pio_fence_locked(pio);
-	}
-	mutex_unlock(&pio->state_lock);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(mt6797_btif_pio_qualify);
-
-int
-mt6797_btif_pio_loopback_prepare(const struct mt6797_btif_pio_lease *lease,
-				 u8 byte)
-{
-	struct mt6797_btif_pio *pio;
-	u32 tri;
-	int ret = 0;
-
-	if (!lease || !lease->pio)
-		return -EINVAL;
-	pio = lease->pio;
-
-	mutex_lock(&pio->state_lock);
-	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FENCED) {
-		ret = -ESHUTDOWN;
-	} else if (pio->state != MT6797_BTIF_PIO_LEASED) {
-		ret = -EBUSY;
-	} else {
-		/*
-		 * The vendor marks this AP-internal route debug-only and says bytes
-		 * sent to BTIF return to BTIF (mtk_btif_exp.c:382-387).  Its own
-		 * IRQ path then observes IIR RX and reads RBR (btif_plat.c:765-789,
-		 * 829-849).  The platform line remains masked until this one byte is
-		 * queued, so neither external CONSYS nor a protocol consumer can run.
-		 */
-		pio->state = MT6797_BTIF_PIO_LOOPBACK_QUALIFYING;
-		mt6797_btif_pio_hw_init(pio);
-		mt6797_btif_pio_update_bits(pio, MT6797_BTIF_TRI_LVL,
-					    MT6797_BTIF_TRI_LOOP_EN,
-					    MT6797_BTIF_TRI_LOOP_EN);
-		tri = pio->io.read32(pio->io.context, MT6797_BTIF_TRI_LVL);
-		if (!(tri & MT6797_BTIF_TRI_LOOP_EN))
-			ret = -EIO;
-		else
-			pio->io.write8(pio->io.context, MT6797_BTIF_THR, byte);
-		if (ret)
-			mt6797_btif_pio_fence_locked(pio);
-	}
-	mutex_unlock(&pio->state_lock);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(mt6797_btif_pio_loopback_prepare);
-
-int
-mt6797_btif_pio_loopback_irq(const struct mt6797_btif_pio_lease *lease, u8 *byte)
-{
-	struct mt6797_btif_pio *pio;
-	u32 iir;
-	u32 tri;
-	int ret = 0;
-
-	if (!lease || !lease->pio || !byte)
-		return -EINVAL;
-	pio = lease->pio;
-
-	mutex_lock(&pio->state_lock);
-	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FENCED) {
-		ret = -ESHUTDOWN;
-	} else if (pio->state != MT6797_BTIF_PIO_LOOPBACK_QUALIFYING) {
-		ret = -EBUSY;
-	} else {
-		iir = pio->io.read32(pio->io.context, MT6797_BTIF_IIR);
-		if (iir & MT6797_BTIF_IIR_NINT) {
-			ret = -EAGAIN;
-		} else if (!(iir & (MT6797_BTIF_IIR_RX |
-				   MT6797_BTIF_IIR_RX_TIMEOUT))) {
-			ret = -EPROTO;
-		} else {
-			*byte = pio->io.read8(pio->io.context, MT6797_BTIF_RBR);
-			iir = pio->io.read32(pio->io.context, MT6797_BTIF_IIR);
-			if (iir & (MT6797_BTIF_IIR_RX |
-				   MT6797_BTIF_IIR_RX_TIMEOUT))
-				ret = -EOVERFLOW;
-		}
-
-		if (ret != -EAGAIN) {
-			mt6797_btif_pio_update_bits(pio, MT6797_BTIF_TRI_LVL,
-						    MT6797_BTIF_TRI_LOOP_EN, 0);
-			tri = pio->io.read32(pio->io.context, MT6797_BTIF_TRI_LVL);
-			if (!ret && (tri & MT6797_BTIF_TRI_LOOP_EN))
-				ret = -EIO;
-			mt6797_btif_pio_fence_locked(pio);
-		}
-	}
-	mutex_unlock(&pio->state_lock);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(mt6797_btif_pio_loopback_irq);
 
 static int mt6797_btif_pio_full_receive(void *context, const u8 *data,
 					 size_t length)
@@ -443,7 +300,7 @@ int mt6797_btif_pio_attach_full_stp(
 	pio = lease->pio;
 
 	mutex_lock(&pio->state_lock);
-	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FENCED)
+	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FAILED)
 		ret = -ESHUTDOWN;
 	else if (pio->state != MT6797_BTIF_PIO_LEASED || pio->stp_lease)
 		ret = -EBUSY;
@@ -475,7 +332,7 @@ int mt6797_btif_pio_begin_mandatory(
 	pio = lease->pio;
 
 	mutex_lock(&pio->state_lock);
-	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FENCED)
+	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FAILED)
 		ret = -ESHUTDOWN;
 	else if (pio->state != MT6797_BTIF_PIO_LEASED || pio->receive)
 		ret = -EBUSY;
@@ -505,7 +362,7 @@ int mt6797_btif_pio_handoff_full_bootstrap(
 	pio = lease->pio;
 
 	mutex_lock(&pio->state_lock);
-	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FENCED)
+	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FAILED)
 		ret = -ESHUTDOWN;
 	else if (pio->state != MT6797_BTIF_PIO_MANDATORY)
 		ret = -EBUSY;
@@ -530,7 +387,7 @@ int mt6797_btif_pio_promote_full(const struct mt6797_btif_pio_lease *lease,
 	pio = lease->pio;
 
 	mutex_lock(&pio->state_lock);
-	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FENCED)
+	if (lease != pio->lease || pio->state == MT6797_BTIF_PIO_FAILED)
 		ret = -ESHUTDOWN;
 	else if (pio->state != MT6797_BTIF_PIO_FULL_BOOTSTRAP)
 		ret = -EBUSY;
@@ -607,7 +464,7 @@ int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease)
 		iir = pio->io.read32(pio->io.context, MT6797_BTIF_IIR);
 	}
 	if (iir & (MT6797_BTIF_IIR_RX | MT6797_BTIF_IIR_RX_TIMEOUT)) {
-		mt6797_btif_pio_fence_locked(pio);
+		mt6797_btif_pio_fail_locked(pio);
 		ret = -EOVERFLOW;
 		goto out_unlock;
 	}
@@ -615,14 +472,14 @@ int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease)
 	receive = pio->receive;
 	receive_context = pio->receive_context;
 	if (count && !receive) {
-		mt6797_btif_pio_fence_locked(pio);
+		mt6797_btif_pio_fail_locked(pio);
 		ret = -EPROTO;
 		goto out_unlock;
 	}
 	if (count) {
 		ret = receive(receive_context, rx, count);
 		if (ret == -ESHUTDOWN)
-			mt6797_btif_pio_fence_locked(pio);
+			mt6797_btif_pio_fail_locked(pio);
 		if (ret)
 			goto out_unlock;
 	}
@@ -660,7 +517,7 @@ int mt6797_btif_pio_tx_timeout(const struct mt6797_btif_pio_lease *lease)
 	if (!pending)
 		ret = 0;
 	else {
-		mt6797_btif_pio_fence_locked(pio);
+		mt6797_btif_pio_fail_locked(pio);
 		ret = -ETIMEDOUT;
 	}
 
@@ -676,19 +533,13 @@ void mt6797_btif_pio_close(struct mt6797_btif_pio *pio)
 		return;
 
 	mutex_lock(&pio->state_lock);
-	if (pio->state != MT6797_BTIF_PIO_FENCED) {
-		if (pio->state == MT6797_BTIF_PIO_LOOPBACK_QUALIFYING) {
-			/* A timed-out loopback qualification must not leave its route set. */
-			mt6797_btif_pio_update_bits(pio, MT6797_BTIF_TRI_LVL,
-						    MT6797_BTIF_TRI_LOOP_EN, 0);
-			mt6797_btif_pio_fence_locked(pio);
-		} else if (pio->state == MT6797_BTIF_PIO_QUALIFYING ||
-		    pio->state == MT6797_BTIF_PIO_MANDATORY ||
+	if (pio->state != MT6797_BTIF_PIO_FAILED) {
+		if (pio->state == MT6797_BTIF_PIO_MANDATORY ||
 		    pio->state == MT6797_BTIF_PIO_FULL_BOOTSTRAP ||
 		    pio->state == MT6797_BTIF_PIO_ACTIVE)
-			mt6797_btif_pio_fence_locked(pio);
+			mt6797_btif_pio_fail_locked(pio);
 		else {
-			pio->state = MT6797_BTIF_PIO_FENCED;
+			pio->state = MT6797_BTIF_PIO_FAILED;
 			pio->stp_lease = NULL;
 			pio->receive = NULL;
 			pio->receive_context = NULL;
@@ -826,9 +677,6 @@ static void mt6797_btif_pio_test_write8(void *context, u32 offset, u8 value)
 		return;
 	if (bus->tx_length < ARRAY_SIZE(bus->tx))
 		bus->tx[bus->tx_length++] = value;
-	if (bus->regs[MT6797_BTIF_TRI_LVL / sizeof(u32)] &
-	    MT6797_BTIF_TRI_LOOP_EN && bus->rx_length < ARRAY_SIZE(bus->rx))
-		bus->rx[bus->rx_length++] = value;
 }
 
 static int mt6797_btif_pio_test_receive(void *context,
@@ -996,7 +844,7 @@ static void mt6797_btif_pio_test_rx_fragmentation(struct kunit *test)
 	mt6797_btif_pio_test_stop(ctx);
 }
 
-static void mt6797_btif_pio_test_rx_overflow_fences(struct kunit *test)
+static void mt6797_btif_pio_test_rx_overflow_fails(struct kunit *test)
 {
 	struct mt6797_btif_pio_test_context *ctx;
 	unsigned int index;
@@ -1101,128 +949,13 @@ static void mt6797_btif_pio_test_mandatory_handoff_is_single_owner(
 	mt6797_btif_pio_destroy(pio);
 }
 
-static void mt6797_btif_pio_test_clocked_qualification_leaves_loopback_off(struct kunit *test)
-{
-	struct mt6797_btif_pio_test_bus *bus;
-	const struct mt6797_btif_pio_lease *lease;
-	struct mt6797_btif_pio *pio;
-	struct mt6797_btif_pio_io_ops io_ops;
-	u32 tri_level;
-
-	bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
-	KUNIT_ASSERT_NOT_NULL(test, bus);
-	io_ops = (struct mt6797_btif_pio_io_ops) {
-		.read32 = mt6797_btif_pio_test_read32,
-		.write32 = mt6797_btif_pio_test_write32,
-		.read8 = mt6797_btif_pio_test_read8,
-		.write8 = mt6797_btif_pio_test_write8,
-		.context = bus,
-	};
-	pio = mt6797_btif_pio_create(&io_ops);
-	KUNIT_ASSERT_FALSE(test, IS_ERR(pio));
-	lease = mt6797_btif_pio_acquire(pio);
-	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
-
-	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_qualify(lease, &tri_level), 0);
-	KUNIT_EXPECT_EQ(test, tri_level,
-			MT6797_BTIF_TRI_TX(MT6797_BTIF_TX_THRESHOLD) |
-			MT6797_BTIF_TRI_RX(1));
-	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_FAKELCR / sizeof(u32)], 0U);
-	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_HANDSHAKE / sizeof(u32)],
-			MT6797_BTIF_HANDSHAKE_EN);
-	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_DMA_EN / sizeof(u32)],
-			MT6797_BTIF_DMA_AUTORST);
-	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_IER / sizeof(u32)],
-			MT6797_BTIF_IER_RX);
-	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_TRI_LVL / sizeof(u32)] &
-			MT6797_BTIF_TRI_LOOP_EN, 0U);
-
-	mt6797_btif_pio_close(pio);
-	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_IER / sizeof(u32)], 0U);
-	mt6797_btif_pio_destroy(pio);
-}
-
-static void mt6797_btif_pio_test_loopback_byte_fences_after_rx(struct kunit *test)
-{
-	struct mt6797_btif_pio_test_bus *bus;
-	const struct mt6797_btif_pio_lease *lease;
-	struct mt6797_btif_pio *pio;
-	struct mt6797_btif_pio_io_ops io_ops;
-	u8 received;
-	u8 pattern = 0xa5;
-
-	bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
-	KUNIT_ASSERT_NOT_NULL(test, bus);
-	bus->iir = MT6797_BTIF_IIR_NINT;
-	io_ops = (struct mt6797_btif_pio_io_ops) {
-		.read32 = mt6797_btif_pio_test_read32,
-		.write32 = mt6797_btif_pio_test_write32,
-		.read8 = mt6797_btif_pio_test_read8,
-		.write8 = mt6797_btif_pio_test_write8,
-		.context = bus,
-	};
-	pio = mt6797_btif_pio_create(&io_ops);
-	KUNIT_ASSERT_FALSE(test, IS_ERR(pio));
-	lease = mt6797_btif_pio_acquire(pio);
-	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
-
-	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_loopback_prepare(lease, pattern), 0);
-	KUNIT_EXPECT_EQ(test, bus->tx_length, 1UL);
-	KUNIT_EXPECT_EQ(test, bus->tx[0], pattern);
-	KUNIT_EXPECT_NE(test, bus->regs[MT6797_BTIF_TRI_LVL / sizeof(u32)] &
-			MT6797_BTIF_TRI_LOOP_EN, 0U);
-	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_loopback_irq(lease, &received), 0);
-	KUNIT_EXPECT_EQ(test, received, pattern);
-	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_TRI_LVL / sizeof(u32)] &
-			MT6797_BTIF_TRI_LOOP_EN, 0U);
-	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_IER / sizeof(u32)], 0U);
-	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_loopback_prepare(lease, pattern),
-			-ESHUTDOWN);
-	mt6797_btif_pio_destroy(pio);
-}
-
-static void mt6797_btif_pio_test_loopback_close_clears_route(struct kunit *test)
-{
-	struct mt6797_btif_pio_test_bus *bus;
-	const struct mt6797_btif_pio_lease *lease;
-	struct mt6797_btif_pio *pio;
-	struct mt6797_btif_pio_io_ops io_ops;
-
-	bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
-	KUNIT_ASSERT_NOT_NULL(test, bus);
-	bus->iir = MT6797_BTIF_IIR_NINT;
-	io_ops = (struct mt6797_btif_pio_io_ops) {
-		.read32 = mt6797_btif_pio_test_read32,
-		.write32 = mt6797_btif_pio_test_write32,
-		.read8 = mt6797_btif_pio_test_read8,
-		.write8 = mt6797_btif_pio_test_write8,
-		.context = bus,
-	};
-	pio = mt6797_btif_pio_create(&io_ops);
-	KUNIT_ASSERT_FALSE(test, IS_ERR(pio));
-	lease = mt6797_btif_pio_acquire(pio);
-	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
-	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_loopback_prepare(lease, 0xa5), 0);
-
-	mt6797_btif_pio_close(pio);
-	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_TRI_LVL / sizeof(u32)] &
-			MT6797_BTIF_TRI_LOOP_EN, 0U);
-	KUNIT_EXPECT_EQ(test, bus->regs[MT6797_BTIF_IER / sizeof(u32)], 0U);
-	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_loopback_irq(lease, &bus->rx[0]),
-			-ESHUTDOWN);
-	mt6797_btif_pio_destroy(pio);
-}
-
 static struct kunit_case mt6797_btif_pio_test_cases[] = {
 	KUNIT_CASE(mt6797_btif_pio_test_partial_tx),
 	KUNIT_CASE(mt6797_btif_pio_test_backpressure_and_timeout),
 	KUNIT_CASE(mt6797_btif_pio_test_rx_fragmentation),
-	KUNIT_CASE(mt6797_btif_pio_test_rx_overflow_fences),
+	KUNIT_CASE(mt6797_btif_pio_test_rx_overflow_fails),
 	KUNIT_CASE(mt6797_btif_pio_test_quiesce_close_and_lease_exclusion),
 	KUNIT_CASE(mt6797_btif_pio_test_mandatory_handoff_is_single_owner),
-	KUNIT_CASE(mt6797_btif_pio_test_clocked_qualification_leaves_loopback_off),
-	KUNIT_CASE(mt6797_btif_pio_test_loopback_byte_fences_after_rx),
-	KUNIT_CASE(mt6797_btif_pio_test_loopback_close_clears_route),
 	{ }
 };
 

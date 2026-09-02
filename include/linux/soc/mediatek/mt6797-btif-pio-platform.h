@@ -34,11 +34,8 @@ mt6797_btif_pio_platform_acquire(struct device *dev);
  * adapter.  This keeps the raw PIO lease and Linux IRQ callback private to
  * the platform adapter; it performs neither BTIF register I/O nor WMT traffic.
  *
- * The caller must hold both provider device lifetimes and, after destroying
- * the returned object, call close() even if run() never started.  The latter
- * fences this deliberately single-use adapter reservation.  The factory is
- * rejected unless the separately default-false platform-adapter parameter is
- * set, and the returned bootstrap has its own independent run gate.
+ * The caller must hold both provider device lifetimes. Destroying the returned
+ * object releases this platform lease even if run() never started.
  */
 struct mt6797_btif_stp_bootstrap *
 mt6797_btif_pio_platform_bootstrap_create(
@@ -51,8 +48,7 @@ mt6797_btif_pio_platform_bootstrap_create(
  * Bind one already-active full-STP session, initialize the vendor PIO subset,
  * then enable the previously installed threaded IRQ. runtime_lease is pinned
  * across that live PIO interval and must be the exclusive long-lived CONSYS
- * lifecycle owner. This remains rejected unless the separate
- * enable_experimental_platform_adapter parameter was set.
+ * lifecycle owner.
  */
 int mt6797_btif_pio_platform_attach_full_stp(
 		const struct mt6797_btif_pio_platform_lease *platform_lease,
@@ -60,9 +56,9 @@ int mt6797_btif_pio_platform_attach_full_stp(
 		const struct mt6797_consys_stp_session_lease *stp_lease);
 
 /*
- * Synchronously mask the Linux IRQ before PIO fencing. This may sleep and
- * cannot be called from the adapter's threaded IRQ. The lease stays fenced;
- * recovery requires a new platform instance and full-STP session.
+ * Synchronously mask the Linux IRQ and invalidate the current PIO session.
+ * This may sleep and cannot be called from the adapter's threaded IRQ. A
+ * later acquisition creates a fresh PIO owner for a new full-STP session.
  */
 void mt6797_btif_pio_platform_close(
 		const struct mt6797_btif_pio_platform_lease *platform_lease);

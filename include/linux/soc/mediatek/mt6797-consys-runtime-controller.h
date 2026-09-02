@@ -3,10 +3,10 @@
  * MT6797 CONSYS runtime bootstrap controller interface.
  *
  * A controller platform device has already acquired managed links to the
- * separately gated CONSYS runtime and BTIF PIO platform providers.  start()
- * runs the one vendor-evidenced mandatory-to-full STP handover and retains the
- * resulting opaque session.  It creates no wireless client.  stop() fences
- * and destroys that handover before releasing the BTIF runtime pin.
+ * CONSYS runtime and BTIF PIO platform providers. start() runs the
+ * vendor-evidenced mandatory-to-full STP handover and retains the resulting
+ * opaque session. It creates no wireless client. stop() closes and destroys
+ * that handover before releasing the BTIF runtime pin.
  */
 
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_CONSYS_RUNTIME_CONTROLLER_H
@@ -15,13 +15,10 @@
 #include <linux/types.h>
 
 struct device;
+struct regulator;
 struct mt6797_consys_runtime_controller;
 struct mt6797_consys_stp_session_lease;
 struct mt6797_btif_stp_bootstrap_full_wmt_lease;
-
-typedef int (*mt6797_consys_runtime_controller_postpatch_stage_t)(
-		void *context,
-		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
 
 /*
  * One controller-owned GNSS borrower.  The object is caller-owned, must be
@@ -42,19 +39,11 @@ struct mt6797_consys_runtime_controller_wifi_lease {
 };
 
 /*
- * Both the controller DT property and its default-false parameter gate start.
  * The caller must retain @dev and serialize this operation with controller
  * removal; managed supplier links then preserve the runtime/BTIF providers.
  */
-int mt6797_consys_runtime_controller_start(struct device *dev);
-/*
- * Start the normal hash-pinned patch stage, then run one synchronous,
- * caller-supplied post-patch WMT stage before a full-STP session is published.
- * The stage capability expires before this function returns.
- */
-int mt6797_consys_runtime_controller_start_with_postpatch_stage(struct device *dev,
-		mt6797_consys_runtime_controller_postpatch_stage_t stage,
-		void *stage_context);
+int mt6797_consys_runtime_controller_start(struct device *dev,
+		struct regulator *bt_paldo, struct regulator *wifi_paldo);
 
 /* Safe for teardown and idempotent after a failed or completed handover. */
 void mt6797_consys_runtime_controller_stop(struct device *dev);
@@ -68,7 +57,7 @@ void mt6797_consys_runtime_controller_stop(struct device *dev);
  * destroys the bootstrap/session in the required reverse order.
  *
  * The caller must keep @dev alive while this lease is held.  This is separate
- * from every runtime/DT gate; it cannot make a dormant controller runnable.
+ * from the runtime lifecycle; it cannot make an inactive controller runnable.
  */
 int mt6797_consys_runtime_controller_gnss_session_get(struct device *dev,
 		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease,

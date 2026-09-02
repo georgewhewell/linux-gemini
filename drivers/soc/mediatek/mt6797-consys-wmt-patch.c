@@ -26,17 +26,16 @@
  * renegotiation. The reset's firmware-internal side effects could not be
  * determined from this source. Therefore it is sent and matched only as the
  * vendor's ordinary full-STP transaction; any failure stops the manifest and
- * only the bootstrap session owner may fence/recover that transport.
+ * only the bootstrap session owner may close and recover that transport.
  *
  * CFG_WMT_POWER_ON_DLM and CFG_WMT_PATCH_DL_OPTM are both hard-coded to 1 in
  * the cited vendor source. Their failures are fail-closed here; the bootstrap
- * session owner must fence/recover the full-STP window.
+ * session owner must close and recover the full-STP window.
  *
  * This file is intentionally not a platform driver. It cannot acquire power,
  * clocks, resets, pads, BTIF DMA, STP ownership or a WMT endpoint. No Device
- * Tree node can bind this code, and the entry point is additionally blocked by
- * a read-only command-line/module parameter. The caller gets no struct
- * mtk_wmt: only the bootstrap's private full-STP stage may supply the opaque
+ * Tree node can bind this code. The caller gets no struct mtk_wmt: only the
+ * bootstrap's private full-STP callback may supply the opaque
  * transaction lease after its own independently reviewed recovery sequence.
  * It does not enable Wi-Fi, Bluetooth, GNSS, FM, RF, or any unknown rail.
  */
@@ -75,11 +74,6 @@
 /* WMT_LIB_RX_TIMEOUT + 1000 is vendor MAX_EACH_WMT_CMD (wmt_lib.h:70,90). */
 #define MT6797_CONSYS_WMT_PATCH_TIMEOUT \
 	msecs_to_jiffies(MT6797_CONSYS_WMT_PATCH_TIMEOUT_MS)
-
-static bool enable_patch_download;
-module_param_named(enable_patch_download, enable_patch_download, bool, 0400);
-MODULE_PARM_DESC(enable_patch_download,
-		 "allow the explicitly called MT6797 WMT patch download (default: false)");
 
 /* Serialize this controller's manifests; the caller must exclusively own WMT. */
 static DEFINE_MUTEX(mt6797_consys_wmt_patch_download_lock);
@@ -439,10 +433,7 @@ int mt6797_consys_wmt_patch_download(struct device *dev,
 	 * multi-packet manifest, and this local lock only excludes another caller
 	 * of this controller.
 	 *
-	 * The opt-in must be true before even a firmware-class request is allowed.
 	 */
-	if (!enable_patch_download)
-		return -EPERM;
 	if (!dev || !lease)
 		return -EINVAL;
 	/*
@@ -475,7 +466,7 @@ int mt6797_consys_wmt_patch_download(struct device *dev,
 	verified_patches[1].blob.size = patch_1_0->size;
 
 	ret = mt6797_consys_wmt_patch_download_manifest(&transport, &manifest);
-	/* The bootstrap owns recovery: this stage never calls mtk_wmt_reset(). */
+	/* The bootstrap owns recovery: patch download never resets WMT locally. */
 	release_firmware(patch_1_0);
 out_patch_1_1:
 	release_firmware(patch_1_1);
@@ -724,7 +715,7 @@ static void mt6797_consys_wmt_patch_test_manifest_sequence(struct kunit *test)
 	KUNIT_EXPECT_MEMEQ(test, transport->packets[14], reset, sizeof(reset));
 }
 
-static void mt6797_consys_wmt_patch_test_envelope_failure_fences(
+static void mt6797_consys_wmt_patch_test_envelope_failure_closes(
 		struct kunit *test)
 {
 	struct mt6797_consys_wmt_patch_test_transport *transport;
@@ -822,7 +813,7 @@ static void mt6797_consys_wmt_patch_test_unowned_transport_rejected(struct kunit
 
 static struct kunit_case mt6797_consys_wmt_patch_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_manifest_sequence),
-	KUNIT_CASE(mt6797_consys_wmt_patch_test_envelope_failure_fences),
+	KUNIT_CASE(mt6797_consys_wmt_patch_test_envelope_failure_closes),
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_fragment_tags),
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_unowned_transport_rejected),
 	{ }

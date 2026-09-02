@@ -48,24 +48,12 @@ void mt6797_consys_wmt_initial_destroy(struct mt6797_consys_wmt_initial *initial
 /*
  * Run HCR, HVR, and FVR verification followed by the exact mandatory-STP
  * default-query. identity reports the masked values obtained before the
- * query; this is default-disabled and has no Device Tree or in-kernel caller.
- * On any error the controller instance is permanently fenced; its owner must
- * recover and instantiate a new endpoint before trying again.
+ * query. On any error the controller instance becomes unusable; its owner
+ * must recover and instantiate a new endpoint before trying again.
  */
 int mt6797_consys_wmt_initial_run(struct mt6797_consys_wmt_initial *initial,
-				  struct mt6797_consys_wmt_initial_identity *identity);
-
-/*
- * Exclusive transport coordinators use this bounded form after their own
- * explicit default-false activation gate has admitted one sole owner.  It is
- * not a second endpoint or a recovery mechanism: the coordinator must own
- * the mandatory STP receive path until this operation returns, and must fence
- * that path before destroying initial.  Ordinary callers must use run().
- */
-int
-mt6797_consys_wmt_initial_run_exclusive(struct mt6797_consys_wmt_initial *initial,
-					struct mt6797_consys_wmt_initial_identity *identity,
-					unsigned long timeout);
+				  struct mt6797_consys_wmt_initial_identity *identity,
+				  unsigned long timeout);
 
 /*
  * Send only the vendor's chip-side set-full WMT command after a successful
@@ -74,13 +62,9 @@ mt6797_consys_wmt_initial_run_exclusive(struct mt6797_consys_wmt_initial *initia
  * lease, or authorizes any subsequent firmware or radio operation. A future
  * single owner must perform those remaining handoff steps exactly once. This
  * call is valid only after run() succeeds; a malformed, timed-out, or
- * out-of-order call permanently fences the instance.
+ * out-of-order call permanently fails the instance.
  */
-int mt6797_consys_wmt_initial_configure_chip_full(struct mt6797_consys_wmt_initial *initial);
-
-/* See run_exclusive(): this is for one gated exclusive coordinator only. */
-int
-mt6797_consys_wmt_initial_configure_chip_full_exclusive(struct mt6797_consys_wmt_initial *initial,
-							unsigned long timeout);
+int mt6797_consys_wmt_initial_configure_chip_full(
+		struct mt6797_consys_wmt_initial *initial, unsigned long timeout);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_CONSYS_WMT_INITIAL_H */

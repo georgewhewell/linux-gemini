@@ -217,7 +217,7 @@ void mtk_wmt_reset(struct mtk_wmt *wmt)
 EXPORT_SYMBOL_GPL(mtk_wmt_reset);
 
 static int mtk_wmt_finish(struct mtk_wmt *wmt, u32 generation, int error,
-			  bool fence)
+			  bool fail_session)
 {
 	unsigned long flags;
 	int result;
@@ -225,7 +225,7 @@ static int mtk_wmt_finish(struct mtk_wmt *wmt, u32 generation, int error,
 	spin_lock_irqsave(&wmt->state_lock, flags);
 	if (wmt->generation != generation) {
 		result = -ECANCELED;
-	} else if (error && fence) {
+	} else if (error && fail_session) {
 		/* A transport error wins even if its callback delivered a reply. */
 		wmt->pending = false;
 		wmt->result = error;
@@ -235,7 +235,7 @@ static int mtk_wmt_finish(struct mtk_wmt *wmt, u32 generation, int error,
 	} else if (wmt->pending) {
 		wmt->pending = false;
 		wmt->result = error;
-		if (fence) {
+		if (fail_session) {
 			wmt->generation++;
 			wmt->reset_required = true;
 		}

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Explicitly gated MT6797 CONSYS runtime lifecycle provider.
+ * MT6797 CONSYS runtime lifecycle provider.
  *
- * The vendor source is the boundary of this deliberately small experiment:
+ * The vendor source defines this lifecycle boundary:
  *
  * - mtk_wcn_consys_hw.c:301-326 enables VCN18, waits 240 us, then enables
  *   VCN28 when co_clock_type is zero (Gemini WMT_SOC.cfg selects zero);
@@ -95,12 +95,6 @@ static const struct mt6797_consys_runtime_afe_write
 	{ 0x88, 0x08400000 },
 	{ 0x90, 0x012a020a },
 };
-
-static bool enable_experimental_runtime;
-module_param_named(enable_experimental_runtime, enable_experimental_runtime,
-			   bool, 0400);
-MODULE_PARM_DESC(enable_experimental_runtime,
-		 "allow the MT6797 CONSYS runtime lifecycle experiment (default: false)");
 
 struct mt6797_consys_runtime_resource {
 	const char *name;
@@ -579,7 +573,7 @@ static irqreturn_t mt6797_consys_runtime_bgf_thread(int irq, void *context)
 	/* This line must never be enabled before a separately reviewed BGF owner. */
 	disable_irq_nosync(irq);
 	dev_err_ratelimited(runtime->dev,
-			    "unexpected BGF IRQ; line fenced without recovery\n");
+			    "unexpected BGF IRQ; line disabled without recovery\n");
 	return IRQ_HANDLED;
 }
 
@@ -920,12 +914,6 @@ static int mt6797_consys_runtime_probe(struct platform_device *pdev)
 	};
 	int ret;
 
-	if (!READ_ONCE(enable_experimental_runtime) ||
-	    !device_property_read_bool(&pdev->dev,
-				       "mediatek,experimental-runtime"))
-		return dev_err_probe(&pdev->dev, -EPERM,
-				     "runtime requires explicit DT and parameter opt-in\n");
-
 	runtime = devm_kzalloc(&pdev->dev, sizeof(*runtime), GFP_KERNEL);
 	if (!runtime)
 		return -ENOMEM;
@@ -1060,7 +1048,7 @@ static struct platform_driver mt6797_consys_runtime_driver = {
 	.driver = {
 		.name = "mt6797-consys-runtime",
 		.of_match_table = mt6797_consys_runtime_of_match,
-		/* A held lease is not a safely unbindable transient experiment. */
+		/* A held lease is not safely unbindable. */
 		.suppress_bind_attrs = true,
 	},
 };
@@ -1563,7 +1551,7 @@ static void mt6797_consys_handoff_test_cleanup(
 	put_device(dev);
 }
 
-static void mt6797_consys_handoff_test_order_and_fence(struct kunit *test)
+static void mt6797_consys_handoff_test_order_and_cleanup(struct kunit *test)
 {
 	static const enum mt6797_consys_handoff_test_call expected[] = {
 		MT6797_CONSYS_HANDOFF_TEST_EMI_PROTECT,
@@ -1712,7 +1700,7 @@ static void mt6797_consys_handoff_test_postid_failures(struct kunit *test)
 	}
 }
 
-static void mt6797_consys_handoff_test_reset_failure_fences(
+static void mt6797_consys_handoff_test_reset_failure_is_fatal(
 		struct kunit *test)
 {
 	struct mt6797_consys_runtime_test_backend runtime_backend = { };
@@ -1766,10 +1754,10 @@ static void mt6797_consys_handoff_test_stop_reset_failure(
 }
 
 static struct kunit_case mt6797_consys_handoff_test_cases[] = {
-	KUNIT_CASE(mt6797_consys_handoff_test_order_and_fence),
+	KUNIT_CASE(mt6797_consys_handoff_test_order_and_cleanup),
 	KUNIT_CASE(mt6797_consys_handoff_test_identity_and_emi_failures),
 	KUNIT_CASE(mt6797_consys_handoff_test_postid_failures),
-	KUNIT_CASE(mt6797_consys_handoff_test_reset_failure_fences),
+	KUNIT_CASE(mt6797_consys_handoff_test_reset_failure_is_fatal),
 	KUNIT_CASE(mt6797_consys_handoff_test_stop_reset_failure),
 	{ }
 };
@@ -1783,7 +1771,7 @@ kunit_test_suite(mt6797_consys_handoff_test_suite);
 
 #endif
 
-static void mt6797_consys_runtime_test_provider_lease_and_remove_fence(
+static void mt6797_consys_runtime_test_provider_lease_and_remove_wait(
 		struct kunit *test)
 {
 	struct mt6797_consys_runtime_test_backend backend = { };
@@ -1889,7 +1877,7 @@ static struct kunit_case mt6797_consys_runtime_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_runtime_test_failure_unwinds),
 	KUNIT_CASE(mt6797_consys_runtime_test_contracts),
 	KUNIT_CASE(mt6797_consys_runtime_test_postid_backend_requires_identity),
-	KUNIT_CASE(mt6797_consys_runtime_test_provider_lease_and_remove_fence),
+	KUNIT_CASE(mt6797_consys_runtime_test_provider_lease_and_remove_wait),
 	KUNIT_CASE(mt6797_consys_runtime_test_provider_waits_concurrently),
 	KUNIT_CASE(mt6797_consys_runtime_test_provider_rejects_unready_state),
 	{ }
@@ -1904,5 +1892,5 @@ kunit_test_suite(mt6797_consys_runtime_test_suite);
 
 #endif
 
-MODULE_DESCRIPTION("Explicitly gated MT6797 CONSYS runtime lifecycle provider");
+MODULE_DESCRIPTION("MediaTek MT6797 CONSYS runtime lifecycle provider");
 MODULE_LICENSE("GPL");

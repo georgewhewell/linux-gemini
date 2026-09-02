@@ -68,7 +68,13 @@
 #define W4_DEBUG_MSG_TYPE_ASCII 3U
 #define IEEE80211_HDRLEN 24U
 #define W4_WLAN_INDEX_DEFAULT 31U
+#define W4_WLAN_INDEX_AIS_BMC 0U
+#define W4_WLAN_INDEX_AIS_AP 1U
 #define W4_STA_INDEX_AIS_AP 0U
+#define W4_PHY_TYPE_HR_DSSS BIT(0)
+#define W4_PHY_TYPE_ERP BIT(1)
+#define W4_RATE_SET_ASSOC 0x354fU
+#define W4_BASIC_RATE_SET_ASSOC 0x000fU
 #define W4_JOIN_TIMEOUT_MS 1000U
 #define W4_SCAN_POLL_INTERVAL_MS 20U
 #define W4_SCAN_POLL_TIMEOUT_MS 1500U
@@ -739,7 +745,12 @@ static int w4_activate_ais(struct mt6797_wifi_w4 *w4, u8 command_sequence)
 	cmd[10] = 0;                /* AIS network type */
 	cmd[11] = 0;                /* own-MAC index */
 	ether_addr_copy(cmd + 12, w4->ndev->dev_addr);
-	cmd[18] = W4_WLAN_INDEX_DEFAULT;
+	/* nicActivateNetwork() allocates the first free WTBL entry for AIS BMC.
+	 * On a fresh firmware session that is entry zero; the AP pairwise entry is
+	 * allocated next.  Entry 31 is the no-peer/default TX sentinel and is not a
+	 * usable BMC entry.
+	 */
+	cmd[18] = W4_WLAN_INDEX_AIS_BMC;
 	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
 	dev_info(w4->dev, "W4_DIAG stage=ais-activate ret=%d cmd-seq=%u\n",
 		 ret, command_sequence);
@@ -809,9 +820,12 @@ static int w4_send_open_sta(struct mt6797_wifi_w4 *w4)
 	cmd[8] = w4->sta_index; cmd[9] = BIT(0) | BIT(6); /* legacy AP */
 	ether_addr_copy(cmd + 10, w4->candidate_bssid);
 	cmd[20] = 0;                  /* AIS BSS index */
+	cmd[21] = W4_PHY_TYPE_HR_DSSS | W4_PHY_TYPE_ERP;
+	put_unaligned_le16(W4_RATE_SET_ASSOC, cmd + 22);
+	put_unaligned_le16(W4_BASIC_RATE_SET_ASSOC, cmd + 24);
 	cmd[28] = 1;                  /* STA_STATE_1 */
 	cmd[62] = w4->wlan_index;     /* ucWlanIndex */
-	cmd[63] = W4_WLAN_INDEX_DEFAULT; /* ucBMCWlanIndex */
+	cmd[63] = W4_WLAN_INDEX_AIS_BMC; /* ucBMCWlanIndex */
 	return w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
 }
 /* The management descriptors follow nic_tx.c's 802.11-normal, long format. */
@@ -898,9 +912,12 @@ static int w4_send_sta_state(struct mt6797_wifi_w4 *w4, u8 sta_state, u16 aid)
 	ether_addr_copy(cmd + 10, w4->candidate_bssid);
 	put_unaligned_le16(aid, cmd + 16);
 	cmd[20] = 0;
+	cmd[21] = W4_PHY_TYPE_HR_DSSS | W4_PHY_TYPE_ERP;
+	put_unaligned_le16(W4_RATE_SET_ASSOC, cmd + 22);
+	put_unaligned_le16(W4_BASIC_RATE_SET_ASSOC, cmd + 24);
 	cmd[28] = sta_state;          /* state 2 after Auth-2; state 3 after Assoc-2 */
 	cmd[62] = w4->wlan_index;
-	cmd[63] = W4_WLAN_INDEX_DEFAULT;
+	cmd[63] = W4_WLAN_INDEX_AIS_BMC;
 	return w4_cmd53(w4, true, W4_WTDR1, cmd, sizeof(cmd));
 }
 
@@ -1008,11 +1025,12 @@ static int w4_connect(struct wiphy *wiphy, struct net_device *ndev,
 		mutex_unlock(&w4->lock);
 		return -EBUSY;
 	}
-	/* secPrivacySeekForEntry() uses the first free unicast WTBL entry (zero).
-	 * 31 remains the vendor broadcast/default entry; it must not carry AP TX.
+	/* AIS activation reserves entry zero for BMC. secPrivacySeekForEntry()
+	 * therefore assigns entry one to the AP. Entry 31 remains the vendor
+	 * no-peer/default entry; it must not carry AP TX.
 	 */
 	w4->sta_index = W4_STA_INDEX_AIS_AP;
-	w4->wlan_index = W4_STA_INDEX_AIS_AP;
+	w4->wlan_index = W4_WLAN_INDEX_AIS_AP;
 	w4->join_ssid_len = sme->ssid_len;
 	memcpy(w4->join_ssid, sme->ssid, w4->join_ssid_len);
 	w4->assoc_req_ie_len = 0;

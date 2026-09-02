@@ -27,6 +27,7 @@
 #define MT6797_CSI_FIRST_PAYLOAD_WORD	0x25
 #define MT6797_CSI_WORDS		5
 #define MT6797_CSI_CELL_BYTES		(MT6797_CSI_WORDS * sizeof(u32))
+/* Keep the established provider offset; bytes 12..99 are reserved. */
 #define MT6797_CSI_CELL_OFFSET		100
 #define MT6797_ATAG_CELL_BYTES		(MT6797_CSI_CELL_OFFSET + \
 					 MT6797_CSI_CELL_BYTES)

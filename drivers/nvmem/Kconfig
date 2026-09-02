@@ -232,7 +232,8 @@ config NVMEM_MTK_ATAG_DEVINFO
 	depends on OF
 	help
 	  Say Y or M here to expose the validated, read-only MT6797 LK
-	  /chosen/atag,devinfo thermal calibration payload through NVMEM.
+	  /chosen/atag,devinfo calibration payload through NVMEM.  Identified
+	  thermal and camera CSI fields are exposed as fixed cells.
 	  This provider does not access or write the efuse MMIO block.  It
 	  can be built as a module named mediatek-atag-devinfo.
 

@@ -50,6 +50,12 @@ The driver provides the smallest complete, fail-closed receiver milestone:
 * reject an unproved mode or link frequency with ``-EOPNOTSUPP``;
 * roll the receiver, mux and analog power bits back if calibration fails.
 
-The MT6797 SoC node remains disabled and the Gemini board adds no endpoint.
-CAMSV capture-engine IRQ, IOMMU and DMA ownership remain a separate acceptance
-gate, so this milestone does not claim image capture.
+The companion CAMSV0 driver completes the standard media graph from the
+SP5509 sensor through SENINF to a DMA-contiguous V4L2 capture queue.  It owns
+the recovered CAMSV0 interrupt, clocks, reset and packed RAW10 register plan;
+unsupported formats and dimensions are rejected.
+
+The complete Gemini route remains disabled in Device Tree until it has passed
+an on-device stream and frame-integrity test.  Enable ``i2c3``, ``sp5509``,
+``larb2``, ``seninf`` and ``camsv0`` together; a partial route is neither safe
+nor useful.

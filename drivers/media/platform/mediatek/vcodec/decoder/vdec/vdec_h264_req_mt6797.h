@@ -512,6 +512,21 @@ mt6797_h264_find_start_code(const u8 *data, size_t size, size_t from,
 	return -ENODATA;
 }
 
+static inline bool
+mt6797_h264_same_slice_config(const struct v4l2_ctrl_h264_slice_params *a,
+			      const struct v4l2_ctrl_h264_slice_params *b)
+{
+	return a->slice_type == b->slice_type &&
+	       a->cabac_init_idc == b->cabac_init_idc &&
+	       a->slice_qp_delta == b->slice_qp_delta &&
+	       a->disable_deblocking_filter_idc == b->disable_deblocking_filter_idc &&
+	       a->slice_alpha_c0_offset_div2 == b->slice_alpha_c0_offset_div2 &&
+	       a->slice_beta_offset_div2 == b->slice_beta_offset_div2 &&
+	       a->num_ref_idx_l0_active_minus1 == b->num_ref_idx_l0_active_minus1 &&
+	       a->num_ref_idx_l1_active_minus1 == b->num_ref_idx_l1_active_minus1 &&
+	       a->flags == b->flags;
+}
+
 static inline int
 mt6797_h264_parse_frame_headers(const u8 *data, size_t size,
 				const struct v4l2_ctrl_h264_sps *sps,
@@ -523,6 +538,7 @@ mt6797_h264_parse_frame_headers(const u8 *data, size_t size,
 	const u8 *nal_data;
 	size_t nal_size;
 	size_t offset = 0, next;
+	u32 previous_mb = 0;
 	unsigned int slices = 0;
 	int ret;
 
@@ -546,9 +562,12 @@ mt6797_h264_parse_frame_headers(const u8 *data, size_t size,
 				return -EINVAL;
 			*first = slice_hdr;
 		} else {
-			/* The progressive multi-slice launch protocol is unknown. */
-			return -EOPNOTSUPP;
+			if (slice_hdr.first_mb_in_slice <= previous_mb)
+				return -EINVAL;
+			if (!mt6797_h264_same_slice_config(first, &slice_hdr))
+				return -EOPNOTSUPP;
 		}
+		previous_mb = slice_hdr.first_mb_in_slice;
 		slices++;
 		if (next == size)
 			return 0;

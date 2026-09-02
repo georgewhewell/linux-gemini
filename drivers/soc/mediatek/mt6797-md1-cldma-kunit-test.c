@@ -141,6 +141,60 @@ static void mt6797_md1_cldma_refuses_unusable_dma_addresses(struct kunit *test)
 			-ERANGE);
 }
 
+static void mt6797_md1_cldma_transfers_tx_ownership(struct kunit *test)
+{
+	struct mt6797_md1_cldma_tgpd gpd;
+	struct mt6797_md1_cldma_tgpd *gpd_ptrs[] = { &gpd };
+	const dma_addr_t ring_dma = 0x812340000ULL;
+	u16 len;
+
+	KUNIT_ASSERT_EQ(test,
+			mt6797_md1_cldma_tx_ring_init(gpd_ptrs, &ring_dma, 1), 0);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_md1_cldma_tgpd_prepare_tx(&gpd, 0xa76543210ULL, 64), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_cldma_tgpd_publish(&gpd), 0);
+	KUNIT_EXPECT_EQ(test, gpd.gpd_flags, (u8)0x81);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_cldma_tgpd_reclaim(&gpd, &len), -EAGAIN);
+
+	/* Emulate CLDMA returning ownership after completing the transfer. */
+	gpd.gpd_flags &= ~MT6797_MD1_CLDMA_GPD_HWO;
+	KUNIT_ASSERT_EQ(test, mt6797_md1_cldma_tgpd_reclaim(&gpd, &len), 0);
+	KUNIT_EXPECT_EQ(test, len, (u16)64);
+	KUNIT_EXPECT_EQ(test, gpd.gpd_flags, (u8)0x80);
+	KUNIT_EXPECT_EQ(test, le32_to_cpu(gpd.data_buff_bd_ptr), 0U);
+	KUNIT_EXPECT_EQ(test, le16_to_cpu(gpd.debug_id), (u16)0x0080);
+}
+
+static void mt6797_md1_cldma_validates_rx_completion(struct kunit *test)
+{
+	struct mt6797_md1_cldma_rgpd gpd = { .gpd_flags = 0x80 };
+	u16 len;
+
+	KUNIT_ASSERT_EQ(test,
+			mt6797_md1_cldma_rgpd_publish(&gpd, 0xa76543210ULL, 3584), 0);
+	KUNIT_EXPECT_EQ(test, gpd.gpd_flags, (u8)0x81);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_cldma_rgpd_consume(&gpd, &len), -EAGAIN);
+	gpd.gpd_flags &= ~MT6797_MD1_CLDMA_GPD_HWO;
+	gpd.data_buff_len = cpu_to_le16(3585);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_cldma_rgpd_consume(&gpd, &len), -EBADMSG);
+	gpd.data_buff_len = cpu_to_le16(128);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_cldma_rgpd_consume(&gpd, &len), 0);
+	KUNIT_EXPECT_EQ(test, len, (u16)128);
+}
+
+static void mt6797_md1_cldma_decodes_unmasked_irqs(struct kunit *test)
+{
+	struct mt6797_md1_cldma_irq_pending pending;
+	u32 tx_status = BIT(0) | BIT(2) | BIT(16);
+	u32 rx_status = BIT(3) | BIT(4) | BIT(20);
+
+	mt6797_md1_cldma_irq_decode(tx_status, BIT(2), rx_status, BIT(3), &pending);
+	KUNIT_EXPECT_EQ(test, pending.tx_done, (u8)BIT(0));
+	KUNIT_EXPECT_EQ(test, pending.rx_done, (u8)BIT(4));
+	KUNIT_EXPECT_EQ(test, pending.tx_error, (u8)BIT(0));
+	KUNIT_EXPECT_EQ(test, pending.rx_error, (u8)BIT(4));
+}
+
 static struct kunit_case mt6797_md1_cldma_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_cldma_accepts_vendor_topology),
 	KUNIT_CASE(mt6797_md1_cldma_refuses_non_vendor_topology),
@@ -149,6 +203,9 @@ static struct kunit_case mt6797_md1_cldma_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_cldma_prepares_tx_payload_without_hwo),
 	KUNIT_CASE(mt6797_md1_cldma_builds_cyclic_rx_gpd_ring),
 	KUNIT_CASE(mt6797_md1_cldma_refuses_unusable_dma_addresses),
+	KUNIT_CASE(mt6797_md1_cldma_transfers_tx_ownership),
+	KUNIT_CASE(mt6797_md1_cldma_validates_rx_completion),
+	KUNIT_CASE(mt6797_md1_cldma_decodes_unmasked_irqs),
 	{}
 };
 

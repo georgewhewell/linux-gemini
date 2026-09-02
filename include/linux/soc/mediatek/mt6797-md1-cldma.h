@@ -23,6 +23,10 @@ struct mt6797_md1_mpu_remap_layout;
 #define MT6797_MD1_CLDMA_ADDR_MAX ((1ULL << MT6797_MD1_CLDMA_ADDR_BITS) - 1)
 #define MT6797_MD1_CLDMA_TX_GPD_IOC 0x80U
 #define MT6797_MD1_CLDMA_RX_GPD_IOC 0x80U
+#define MT6797_MD1_CLDMA_GPD_HWO 0x01U
+#define MT6797_MD1_CLDMA_ACTIVE_QUEUES 0x7fU
+#define MT6797_MD1_CLDMA_IRQ_DONE 0x000000ffU
+#define MT6797_MD1_CLDMA_IRQ_ERROR 0x00ff0000U
 
 enum mt6797_md1_cldma_region_id {
 	MT6797_MD1_CLDMA_AP_AO,
@@ -64,6 +68,13 @@ struct mt6797_md1_cldma_resources {
 	struct mt6797_md1_cldma_irq irq[MT6797_MD1_CLDMA_IRQ_COUNT];
 };
 
+struct mt6797_md1_cldma_irq_pending {
+	u8 tx_done;
+	u8 rx_done;
+	u8 tx_error;
+	u8 rx_error;
+};
+
 /* Exact packed vendor GPD layouts, including 36-bit pointer high nibbles. */
 struct mt6797_md1_cldma_tgpd {
 	u8 gpd_flags;
@@ -100,5 +111,17 @@ int mt6797_md1_cldma_rx_ring_init(struct mt6797_md1_cldma_rgpd *const *gpd,
 				  const u16 *data_allow_len, size_t count);
 int mt6797_md1_cldma_tgpd_prepare_tx(struct mt6797_md1_cldma_tgpd *gpd,
 				     dma_addr_t data_dma, u16 data_len);
+
+/* Publish/reclaim helpers pair the descriptor ownership bit with DMA barriers. */
+int mt6797_md1_cldma_tgpd_publish(struct mt6797_md1_cldma_tgpd *gpd);
+int mt6797_md1_cldma_tgpd_reclaim(struct mt6797_md1_cldma_tgpd *gpd,
+				  u16 *data_len);
+int mt6797_md1_cldma_rgpd_publish(struct mt6797_md1_cldma_rgpd *gpd,
+				  dma_addr_t data_dma, u16 data_allow_len);
+int mt6797_md1_cldma_rgpd_consume(struct mt6797_md1_cldma_rgpd *gpd,
+				  u16 *data_len);
+void mt6797_md1_cldma_irq_decode(u32 tx_status, u32 tx_mask,
+				 u32 rx_status, u32 rx_mask,
+				 struct mt6797_md1_cldma_irq_pending *pending);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_MD1_CLDMA_H */

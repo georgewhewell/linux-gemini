@@ -9,6 +9,7 @@
  */
 
 #include <linux/errno.h>
+#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/soc/mediatek/mt6797-md1-cldma.h>
 #include <linux/soc/mediatek/mt6797-md1-mpu-remap-plan.h>
@@ -95,6 +96,7 @@ int mt6797_md1_cldma_resources_validate(
 			return -ERANGE;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_cldma_resources_validate);
 
 int mt6797_md1_cldma_lk_carveout_validate(
 	const struct mt6797_md1_mpu_remap_layout *layout)
@@ -110,6 +112,7 @@ int mt6797_md1_cldma_lk_carveout_validate(
 		return -ERANGE;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_cldma_lk_carveout_validate);
 
 int mt6797_md1_cldma_tgpd_prepare_tx(struct mt6797_md1_cldma_tgpd *gpd,
 				     dma_addr_t data_dma, u16 data_len)
@@ -125,6 +128,7 @@ int mt6797_md1_cldma_tgpd_prepare_tx(struct mt6797_md1_cldma_tgpd *gpd,
 	gpd->data_buff_len = cpu_to_le16(data_len);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_cldma_tgpd_prepare_tx);
 
 int mt6797_md1_cldma_tx_ring_init(struct mt6797_md1_cldma_tgpd *const *gpd,
 				  const dma_addr_t *gpd_dma, size_t count)
@@ -145,6 +149,7 @@ int mt6797_md1_cldma_tx_ring_init(struct mt6797_md1_cldma_tgpd *const *gpd,
 	}
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_cldma_tx_ring_init);
 
 int mt6797_md1_cldma_rx_ring_init(struct mt6797_md1_cldma_rgpd *const *gpd,
 				  const dma_addr_t *gpd_dma,
@@ -180,3 +185,98 @@ int mt6797_md1_cldma_rx_ring_init(struct mt6797_md1_cldma_rgpd *const *gpd,
 	}
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_cldma_rx_ring_init);
+
+int mt6797_md1_cldma_tgpd_publish(struct mt6797_md1_cldma_tgpd *gpd)
+{
+	if (!gpd || (gpd->gpd_flags & MT6797_MD1_CLDMA_GPD_HWO) ||
+	    !le16_to_cpu(gpd->data_buff_len))
+		return -EINVAL;
+
+	/* All descriptor and payload writes must precede ownership transfer. */
+	dma_wmb();
+	WRITE_ONCE(gpd->gpd_flags,
+		   MT6797_MD1_CLDMA_TX_GPD_IOC | MT6797_MD1_CLDMA_GPD_HWO);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cldma_tgpd_publish);
+
+int mt6797_md1_cldma_tgpd_reclaim(struct mt6797_md1_cldma_tgpd *gpd,
+				  u16 *data_len)
+{
+	u16 debug;
+
+	if (!gpd || !data_len)
+		return -EINVAL;
+	if (READ_ONCE(gpd->gpd_flags) & MT6797_MD1_CLDMA_GPD_HWO)
+		return -EAGAIN;
+	dma_rmb();
+	*data_len = le16_to_cpu(gpd->data_buff_len);
+	if (!*data_len)
+		return -EBADMSG;
+
+	gpd->data_buff_len = 0;
+	gpd->data_buff_bd_ptr = 0;
+	debug = le16_to_cpu(gpd->debug_id) & 0xfff0;
+	gpd->debug_id = cpu_to_le16(debug);
+	WRITE_ONCE(gpd->gpd_flags, MT6797_MD1_CLDMA_TX_GPD_IOC);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cldma_tgpd_reclaim);
+
+int mt6797_md1_cldma_rgpd_publish(struct mt6797_md1_cldma_rgpd *gpd,
+				  dma_addr_t data_dma, u16 data_allow_len)
+{
+	int ret;
+
+	if (!gpd || !data_allow_len ||
+	    (gpd->gpd_flags & MT6797_MD1_CLDMA_GPD_HWO))
+		return -EINVAL;
+	ret = mt6797_md1_cldma_set_pointer(&gpd->data_buff_bd_ptr,
+					   &gpd->debug_id, data_dma, false);
+	if (ret)
+		return ret;
+	gpd->data_allow_len = cpu_to_le16(data_allow_len);
+	gpd->data_buff_len = 0;
+
+	/* The replacement buffer and descriptor must be visible before HWO. */
+	dma_wmb();
+	WRITE_ONCE(gpd->gpd_flags,
+		   MT6797_MD1_CLDMA_RX_GPD_IOC | MT6797_MD1_CLDMA_GPD_HWO);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cldma_rgpd_publish);
+
+int mt6797_md1_cldma_rgpd_consume(struct mt6797_md1_cldma_rgpd *gpd,
+				  u16 *data_len)
+{
+	u16 allow;
+
+	if (!gpd || !data_len)
+		return -EINVAL;
+	if (READ_ONCE(gpd->gpd_flags) & MT6797_MD1_CLDMA_GPD_HWO)
+		return -EAGAIN;
+	dma_rmb();
+	allow = le16_to_cpu(gpd->data_allow_len);
+	*data_len = le16_to_cpu(gpd->data_buff_len);
+	if (!*data_len || *data_len > allow)
+		return -EBADMSG;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cldma_rgpd_consume);
+
+void mt6797_md1_cldma_irq_decode(u32 tx_status, u32 tx_mask,
+				 u32 rx_status, u32 rx_mask,
+				 struct mt6797_md1_cldma_irq_pending *pending)
+{
+	u32 tx = tx_status & ~tx_mask;
+	u32 rx = rx_status & ~rx_mask;
+
+	if (!pending)
+		return;
+	pending->tx_done = tx & MT6797_MD1_CLDMA_ACTIVE_QUEUES;
+	pending->rx_done = rx & MT6797_MD1_CLDMA_ACTIVE_QUEUES;
+	pending->tx_error = (tx >> 16) & MT6797_MD1_CLDMA_ACTIVE_QUEUES;
+	pending->rx_error = (rx >> 16) & MT6797_MD1_CLDMA_ACTIVE_QUEUES;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cldma_irq_decode);

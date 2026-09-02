@@ -20,6 +20,7 @@
 
 #include <asm/cpu_ops.h>
 #include <asm/errno.h>
+#include <asm/smp.h>
 #include <asm/smp_plat.h>
 
 static int __init cpu_psci_cpu_init(unsigned int cpu)
@@ -133,41 +134,37 @@ static int mt6797_a72_psci_cpu_boot(unsigned int cpu)
 		return ret;
 
 	ret = cpu_psci_ops.cpu_boot(cpu);
-	mt6797_a72_power_complete(cpu, ret);
+	mt6797_a72_power_psci_return(cpu, ret);
 	return ret;
 }
 
-#ifdef CONFIG_HOTPLUG_CPU
-static int mt6797_a72_psci_cpu_disable(unsigned int cpu)
+static void mt6797_a72_psci_cpu_postboot(void)
 {
-	int ret;
-
-	ret = mt6797_a72_power_can_disable(cpu);
-	if (ret)
-		return ret;
-	return cpu_psci_ops.cpu_disable(cpu);
-}
-
-static int mt6797_a72_psci_cpu_kill(unsigned int cpu)
-{
-	int ret = cpu_psci_ops.cpu_kill(cpu);
+	unsigned int cpu = smp_processor_id();
+	int ret = mt6797_a72_power_postboot(cpu);
 
 	if (!ret)
-		mt6797_a72_power_off(cpu);
-	return ret;
+		return;
+
+	pr_crit("CPU%u: A72 postboot power completion failed: %d\n", cpu, ret);
+	update_cpu_boot_status(CPU_STUCK_IN_KERNEL);
+	cpu_park_loop();
 }
-#endif
+
+static bool mt6797_a72_psci_cpu_can_disable(unsigned int cpu)
+{
+	(void)cpu;
+	return false;
+}
 
 const struct cpu_operations mt6797_a72_psci_ops = {
 	.name		= "mediatek,mt6797-a72-psci",
 	.cpu_init	= cpu_psci_cpu_init,
 	.cpu_prepare	= cpu_psci_cpu_prepare,
 	.cpu_boot	= mt6797_a72_psci_cpu_boot,
+	.cpu_postboot	= mt6797_a72_psci_cpu_postboot,
 #ifdef CONFIG_HOTPLUG_CPU
-	.cpu_can_disable = cpu_psci_cpu_can_disable,
-	.cpu_disable	= mt6797_a72_psci_cpu_disable,
-	.cpu_die	= cpu_psci_cpu_die,
-	.cpu_kill	= mt6797_a72_psci_cpu_kill,
+	.cpu_can_disable = mt6797_a72_psci_cpu_can_disable,
 #endif
 };
 #endif

@@ -93,11 +93,13 @@ config MTK_MT6797_A72_POWER
 	bool "MediaTek MT6797 Cortex-A72 power coordination"
 	depends on ARCH_MEDIATEK && ARM64 && HOTPLUG_CPU
 	depends on REGULATOR && RESET_CONTROLLER
+	select MFD_SYSCON
 	default y if ARCH_MEDIATEK
 	help
 	  Coordinate the MT6797 external processor regulator, SRAM LDO, SPM
-	  isolation, and MCUCFG clock control around PSCI CPU_ON/OFF for the
+	  isolation, and MCUCFG clock control around PSCI CPU_ON for the
 	  Cortex-A72 cluster. CPU_ON fails closed until the platform owner is
-	  ready, and CPU9 requires a separate Device Tree opt-in.
+	  ready, CPU9 requires a separate Device Tree opt-in, and CPU_OFF is
+	  deliberately unavailable.
 
 endmenu

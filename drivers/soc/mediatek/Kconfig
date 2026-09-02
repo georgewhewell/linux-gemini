@@ -869,9 +869,10 @@ config MTK_MT6797_WIFI_GEN3_WIRE_KUNIT_TEST
 	depends on KUNIT=y
 	depends on MTK_MT6797_WIFI_AHB_W4_PLATFORM=y
 	help
-	  Validate the byte-exact CCMP, BIP and default-key commands used by the
-	  MT6797 GEN3 firmware. The tests reject invalid key/index combinations
-	  before the live driver can advertise protected-network support.
+	  Validate the byte-exact CCMP, BIP, replay-counter, default-key and BSS
+	  state commands used by the MT6797 GEN3 firmware. The tests reject invalid
+	  key/index combinations before the live driver can advertise protected-
+	  network support.
 
 	  No platform device, firmware, register, interrupt or radio is used.
 config MTK_MT6797_BTIF_INVENTORY

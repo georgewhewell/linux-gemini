@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <kunit/test.h>
 #include <linux/if_ether.h>
+#include <linux/unaligned.h>
 
 #include "mt6797-wifi-gen3-wire.h"
 
@@ -121,12 +122,51 @@ static void mt6797_wifi_gen3_remove_and_default_test(struct kunit *test)
 			   sizeof(default_cmd));
 }
 
+static void mt6797_wifi_gen3_bss_info_test(struct kunit *test)
+{
+	static const u8 ssid[] = "sae-test";
+	u8 cmd[MT6797_WIFI_GEN3_BSS_INFO_CMD_LEN];
+	int ret;
+
+	ret = mt6797_wifi_gen3_build_bss_info_cmd(cmd, sizeof(cmd), 13, true,
+						  true, ssid, sizeof(ssid) - 1,
+						  test_peer, 6);
+	KUNIT_ASSERT_EQ(test, ret, (int)sizeof(cmd));
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(cmd), (u16)sizeof(cmd));
+	KUNIT_EXPECT_EQ(test, cmd[4], (u8)0x12);
+	KUNIT_EXPECT_EQ(test, cmd[7], (u8)13);
+	KUNIT_EXPECT_EQ(test, cmd[9], (u8)0);
+	KUNIT_EXPECT_EQ(test, cmd[11], (u8)(sizeof(ssid) - 1));
+	KUNIT_EXPECT_MEMEQ(test, cmd + 12, ssid, sizeof(ssid) - 1);
+	KUNIT_EXPECT_MEMEQ(test, cmd + 44, test_peer, ETH_ALEN);
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(cmd + 52), (u16)0x354f);
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(cmd + 54), (u16)0x000f);
+	KUNIT_EXPECT_EQ(test, cmd[61], (u8)7);
+	KUNIT_EXPECT_EQ(test, cmd[62], (u8)6);
+	KUNIT_EXPECT_EQ(test, cmd[63], (u8)(BIT(0) | BIT(1)));
+	KUNIT_EXPECT_EQ(test, cmd[77], (u8)1);
+	KUNIT_EXPECT_EQ(test, cmd[78], (u8)6);
+	KUNIT_EXPECT_EQ(test, cmd[95], (u8)0);
+
+	ret = mt6797_wifi_gen3_build_bss_info_cmd(cmd, sizeof(cmd), 14, false,
+						  false, NULL, 0, test_peer, 1);
+	KUNIT_ASSERT_EQ(test, ret, (int)sizeof(cmd));
+	KUNIT_EXPECT_EQ(test, cmd[9], (u8)1);
+	KUNIT_EXPECT_EQ(test, cmd[61], (u8)0);
+	KUNIT_EXPECT_EQ(test, cmd[62], (u8)1);
+
+	ret = mt6797_wifi_gen3_build_bss_info_cmd(cmd, sizeof(cmd), 15, false,
+						  false, NULL, 0, test_peer, 0);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+}
+
 static struct kunit_case mt6797_wifi_gen3_wire_cases[] = {
 	KUNIT_CASE(mt6797_wifi_gen3_pairwise_ccmp_test),
 	KUNIT_CASE(mt6797_wifi_gen3_igtk_test),
 	KUNIT_CASE(mt6797_wifi_gen3_rsc_test),
 	KUNIT_CASE(mt6797_wifi_gen3_rejects_invalid_keys_test),
 	KUNIT_CASE(mt6797_wifi_gen3_remove_and_default_test),
+	KUNIT_CASE(mt6797_wifi_gen3_bss_info_test),
 	{}
 };
 

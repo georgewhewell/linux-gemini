@@ -15,9 +15,9 @@ description: |
   sensor-interface windows, and two MIPI receiver analog windows. It has no
   independently described interrupt in the MT6797 platform source.
 
-  The binding describes the complete resource owner. A board must not enable
-  the node or add endpoints until its physical CSI route and D-PHY sequence
-  have been established.
+  The binding describes the complete resource owner. The currently supported
+  route is the MT6797 Gemini camera1/sub NCSI2 port with two data lanes. Other
+  routes remain disabled until their D-PHY programming is established.
 
 properties:
   compatible:
@@ -43,6 +43,15 @@ properties:
 
   power-domains:
     maxItems: 1
+
+  nvmem-cells:
+    maxItems: 1
+    description:
+      Five consecutive MT6797 devinfo words 0x25 through 0x29. They contain
+      the per-device MIPI CSI analog calibration consumed by the receiver.
+
+  nvmem-cell-names:
+    const: csi-calibration-data
 
   ports:
     $ref: /schemas/graph.yaml#/properties/ports

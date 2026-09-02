@@ -200,6 +200,19 @@
 		regulator-max-microvolt = <2800000>;
 	};
 
+	/* MT6797 has separate Bluetooth and Wi-Fi PALDO rails. */
+	mt6351_vcn33_bt_reg: ldo-vcn33-bt {
+		regulator-name = "vcn33-bt";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3600000>;
+	};
+
+	mt6351_vcn33_wifi_reg: ldo-vcn33-wifi {
+		regulator-name = "vcn33-wifi";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3600000>;
+	};
+
 	mt6351_vemc_reg: ldo-vemc {
 		regulator-name = "vemc_3v3";
 		regulator-min-microvolt = <3000000>;
@@ -217,17 +230,21 @@
 
 / {
 	consys: consys@18070000 {
-		compatible = "mediatek,mt6797-consys";
+		compatible = "mediatek,mt6797-consys-runtime";
 		reg = <0 0x18070000 0 0x200>,
 		      <0 0x10007000 0 0x100>,
 		      <0 0x10000000 0 0x2000>,
-		      <0 0x10006000 0 0x1000>;
-		reg-names = "mcu", "ap-rgu", "topckgen", "spm";
+		      <0 0x10006000 0 0x1000>,
+		      <0 0x180b6000 0 0x100>;
+		reg-names = "mcu", "ap-rgu", "topckgen", "spm", "afe";
 		interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>,
 			     <GIC_SPI 285 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-names = "bgf", "wdt";
 		resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
 		reset-names = "conn-mcu";
+		mediatek,conn-power-domain = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+		mediatek,infracfg = <&infrasys>;
+		mediatek,spm = <&scpsys>;
 		vcn18-supply = <&mt6351_vcn18_reg>;
 		vcn28-supply = <&mt6351_vcn28_reg>;
 		memory-region = <&consys_reserved_memory>;
@@ -245,27 +262,37 @@
 		status = "disabled";
 	};
 
+	consys_controller: consys-controller {
+		compatible = "mediatek,mt6797-consys-runtime-controller";
+		mediatek,runtime-provider = <&consys>;
+		mediatek,btif-provider = <&btif>;
+		status = "disabled";
+	};
+
+	wifi: wifi@180f0000 {
+		compatible = "mediatek,mt6797-wifi";
+		reg = <0 0x180f0000 0 0x1100>;
+		interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "wifi";
+		mediatek,runtime-provider = <&consys>;
+		mediatek,controller = <&consys_controller>;
+		mediatek,emi-mpu = <&consys_emi_mpu>;
+		bt-paldo-supply = <&mt6351_vcn33_bt_reg>;
+		wifi-paldo-supply = <&mt6351_vcn33_wifi_reg>;
+		status = "disabled";
+	};
 };
 
 /*
  * Replace the generic disabled 8250 BTIF description from mt6797.dtsi.
- * Keep this disabled: the transport driver has a second explicit experiment
- * gate because BTIF pads, firmware and CONSYS power ownership remain unknown.
+ * The connectivity graph remains inert until all of its nodes are enabled.
  */
 &btif {
-	compatible = "mediatek,mt6797-btif-transport";
-	reg = <0 0x1100c000 0 0x1000>,
-	      <0 0x11000a00 0 0x80>,
-	      <0 0x11000a80 0 0x80>;
-	reg-names = "core", "tx-dma", "rx-dma";
-	interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>,
-		     <GIC_SPI 116 IRQ_TYPE_LEVEL_LOW>,
-		     <GIC_SPI 117 IRQ_TYPE_LEVEL_LOW>;
-	interrupt-names = "core", "tx", "rx";
-	clocks = <&infrasys CLK_INFRA_BTIF>,
-		 <&infrasys CLK_INFRA_AP_DMA>;
-	clock-names = "btifc", "apdmac";
-	mediatek,consys = <&consys>;
+	compatible = "mediatek,mt6797-btif-pio";
+	reg = <0 0x1100c000 0 0x1000>;
+	interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>;
+	clocks = <&infrasys CLK_INFRA_BTIF>;
+	clock-names = "btifc";
 	/delete-property/ reg-shift;
 	/delete-property/ reg-io-width;
 	status = "disabled";

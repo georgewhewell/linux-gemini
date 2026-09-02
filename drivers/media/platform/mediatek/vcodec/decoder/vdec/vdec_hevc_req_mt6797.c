@@ -359,6 +359,51 @@ mt6797_hevc_program_refs(struct mt6797_hevc_inst *inst,
 }
 
 static void
+mt6797_hevc_program_scaling_group(struct mt6797_hevc_inst *inst,
+				  const u8 *matrices, unsigned int count,
+				  unsigned int width, unsigned int *index)
+{
+	unsigned int words = width == 4 ? 4 : 16;
+	unsigned int matrix, word;
+
+	for (matrix = 0; matrix < count; matrix++) {
+		const u8 *coeffs = matrices + matrix * width * width;
+
+		for (word = 0; word < words; word++) {
+			writel((*index)++, inst->regs.ld + 0x260);
+			writel(mt6797_hevc_pack_scaling_column(coeffs, width, word),
+			       inst->regs.ld + 0x264);
+		}
+	}
+}
+
+static void
+mt6797_hevc_program_scaling(struct mt6797_hevc_inst *inst,
+			    const struct v4l2_ctrl_hevc_scaling_matrix *matrix)
+{
+	struct mt6797_hevc_scaling_dc_regs dc;
+	unsigned int index = 0;
+
+	writel(!!matrix, inst->regs.pp + 0x630);
+	if (!matrix)
+		return;
+
+	mt6797_hevc_scaling_dc_regs(matrix, &dc);
+	writel(dc.pp_634, inst->regs.pp + 0x634);
+	writel(dc.pp_638, inst->regs.pp + 0x638);
+	writel(1, inst->regs.pp + 0x504);
+	mt6797_hevc_program_scaling_group(inst, &matrix->scaling_list_4x4[0][0],
+					  6, 4, &index);
+	mt6797_hevc_program_scaling_group(inst, &matrix->scaling_list_8x8[0][0],
+					  6, 8, &index);
+	mt6797_hevc_program_scaling_group(inst, &matrix->scaling_list_16x16[0][0],
+					  6, 8, &index);
+	mt6797_hevc_program_scaling_group(inst, &matrix->scaling_list_32x32[0][0],
+					  2, 8, &index);
+	writel(0, inst->regs.pp + 0x504);
+}
+
+static void
 mt6797_hevc_program_syntax(struct mt6797_hevc_inst *inst,
 			   const struct mt6797_hevc_sps_regs *sps,
 			   const struct mt6797_hevc_pps_regs *pps,
@@ -369,7 +414,6 @@ mt6797_hevc_program_syntax(struct mt6797_hevc_inst *inst,
 	struct mt6797_hevc_regs *regs = &inst->regs;
 	unsigned int i;
 
-	writel(0, regs->pp + 0x630);
 	writel(slice->vld_0bc, regs->hevc + 0xbc);
 	writel(slice->vld_0c0, regs->hevc + 0xc0);
 	writel(slice->vld_0c4, regs->hevc + 0xc4);
@@ -449,8 +493,7 @@ mt6797_hevc_validate_request(const struct v4l2_ctrl_hevc_sps *sps,
 	if (ret)
 		return ret;
 	slice = &slices[0];
-	if ((sps->flags & V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED) ||
-	    (pps->flags & unsupported_pps))
+	if (pps->flags & unsupported_pps)
 		return -EOPNOTSUPP;
 	if (slice->nal_unit_type == 19 || slice->nal_unit_type == 20) {
 		if (!(dec->flags & V4L2_HEVC_DECODE_PARAM_FLAG_IDR_PIC) ||
@@ -498,6 +541,8 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	struct mt6797_hevc_inst *inst = h_vdec;
 	const struct v4l2_ctrl_hevc_decode_params *dec;
 	const struct v4l2_ctrl_hevc_ext_sps_st_rps *ext_sps_rps = NULL;
+	const struct v4l2_ctrl_hevc_scaling_matrix *scaling = NULL;
+	const struct mt6797_hevc_rps_set *sps_rps = NULL;
 	const struct v4l2_ctrl_hevc_sps *sps;
 	const struct v4l2_ctrl_hevc_pps *pps;
 	struct v4l2_ctrl_hevc_slice_params *slices, staged_slice;
@@ -516,6 +561,7 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	struct mtk_vcodec_mem staged_bs;
 	struct vdec_fb *fb;
 	const u32 ext_rps_id = V4L2_CID_STATELESS_HEVC_EXT_SPS_ST_RPS;
+	const u32 scaling_id = V4L2_CID_STATELESS_HEVC_SCALING_MATRIX;
 	unsigned int slice_count;
 	int ret;
 
@@ -543,6 +589,11 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 						   sps_regs.ctb_height);
 	if (ret)
 		return ret;
+	if (sps->flags & V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED) {
+		scaling = mt6797_hevc_get_ctrl(inst, scaling_id);
+		if (IS_ERR(scaling))
+			return PTR_ERR(scaling);
+	}
 	if (sps->num_short_term_ref_pic_sets) {
 		ext_sps_rps = mt6797_hevc_get_ctrl(inst, ext_rps_id);
 		if (IS_ERR(ext_sps_rps))
@@ -552,12 +603,10 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 					       inst->sps_rps);
 		if (ret)
 			return ret;
+		sps_rps = inst->sps_rps;
 	}
-	ret = mt6797_hevc_slice_rps_regs(bs->va, bs->size, sps, pps, slices,
-						dec,
-						sps->num_short_term_ref_pic_sets ?
-						inst->sps_rps : NULL,
-						&rps_regs);
+	ret = mt6797_hevc_slice_rps_regs(bs->va, bs->size, sps, pps,
+					 slices, dec, sps_rps, &rps_regs);
 	if (ret)
 		return ret;
 
@@ -628,6 +677,7 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	mt6797_hevc_program_refs(inst, &refs);
 	mt6797_hevc_program_output(inst, sps, &output,
 				   inst->mv[mv_slots.current_slot].dma_addr);
+	mt6797_hevc_program_scaling(inst, scaling);
 	mt6797_hevc_program_syntax(inst, &sps_regs, &pps_regs, &rps_regs,
 				   &slice_regs, &tiles);
 	ret = mt6797_hevc_start(inst, sps_regs.ctb_width, sps_regs.ctb_height);

@@ -1,0 +1,134 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/remoteproc/mediatek,mt6797-md1.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 MD1 modem subsystem
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  MD1 is the integrated cellular modem subsystem in MT6797. Its lifecycle,
+  protection, remap, reset, watchdog, CCIF and CLDMA resources form one
+  aggregate ownership domain and must not be split across independent drivers.
+
+  The initial Linux implementation only validates an LK handoff. It performs
+  no MMIO, SMC, interrupt request, power transition, reset release or DMA.
+  The two reserved-memory phandles refer to the final regions after LK has
+  replaced the dynamic size/alignment requests with physical reg properties.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-md1
+
+  reg:
+    minItems: 18
+    maxItems: 18
+
+  reg-names:
+    items:
+      - const: ap-cldma-ao
+      - const: infracfg
+      - const: md-cldma-ao
+      - const: ap-cldma-pdn
+      - const: md-cldma-pdn
+      - const: ap-ccif
+      - const: md-ccif
+      - const: apmixedsys
+      - const: md-clksw
+      - const: md-dcm
+      - const: md-peri-misc
+      - const: md-l1-a0
+      - const: md-top-pll
+      - const: md-sys-clk
+      - const: md-rgu
+      - const: l1-rgu
+      - const: boot-vector
+      - const: boot-status
+
+  interrupts:
+    items:
+      - description: CLDMA completion and error interrupt
+      - description: AP CCIF interrupt
+      - description: MD1 watchdog interrupt
+
+  interrupt-names:
+    items:
+      - const: cldma
+      - const: ccif
+      - const: watchdog
+
+  clocks:
+    minItems: 3
+    maxItems: 3
+
+  clock-names:
+    items:
+      - const: cldma
+      - const: ccif-ap
+      - const: ccif-md
+
+  mediatek,spm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: System power manager containing the MD1 MTCMOS controls.
+
+  memory-region:
+    minItems: 2
+    maxItems: 2
+
+  memory-region-names:
+    items:
+      - const: firmware
+      - const: md-shared
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
+  - mediatek,spm
+  - memory-region
+  - memory-region-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    remoteproc@10014000 {
+        compatible = "mediatek,mt6797-md1";
+        reg = <0x10014000 0x1e00>, <0x10001000 0x1000>,
+              <0x10015000 0x1e00>, <0x10219000 0x1e00>,
+              <0x1021a000 0x1e00>, <0x10209000 0x1000>,
+              <0x1020a000 0x1000>, <0x1000c000 0x1000>,
+              <0x20150000 0x118>, <0x20130000 0x1004>,
+              <0x20060000 0xd0>, <0x260f0000 0x200>,
+              <0x20140000 0xa0>, <0x20120000 0xd0>,
+              <0x200f0100 0x300>, <0x26010000 0x40>,
+              <0x20000024 0x4>, <0x10201300 0x8>;
+        reg-names = "ap-cldma-ao", "infracfg", "md-cldma-ao",
+                    "ap-cldma-pdn", "md-cldma-pdn", "ap-ccif",
+                    "md-ccif", "apmixedsys", "md-clksw", "md-dcm",
+                    "md-peri-misc", "md-l1-a0", "md-top-pll",
+                    "md-sys-clk", "md-rgu", "l1-rgu", "boot-vector",
+                    "boot-status";
+        interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 147 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
+        interrupt-names = "cldma", "ccif", "watchdog";
+        clocks = <&infrasys CLK_INFRA_CLDMA>,
+                 <&infrasys CLK_INFRA_CCIF_AP>,
+                 <&infrasys CLK_INFRA_CCIF_MD>;
+        clock-names = "cldma", "ccif-ap", "ccif-md";
+        mediatek,spm = <&scpsys>;
+        memory-region = <&md1_firmware>, <&md1_shared>;
+        memory-region-names = "firmware", "md-shared";
+    };

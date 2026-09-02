@@ -16428,6 +16428,15 @@ F:	include/linux/soc/mediatek/mt6797-consys-*
 F:	include/linux/soc/mediatek/mtk-stp.h
 F:	include/linux/soc/mediatek/mtk-wmt.h
 
+MEDIATEK MT6797 MD1 MODEM SUPPORT
+M:	George Whewell <georgerw@gmail.com>
+L:	linux-mediatek@lists.infradead.org (moderated for non-subscribers)
+L:	netdev@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/remoteproc/mediatek,mt6797-md1.yaml
+F:	Documentation/networking/device_drivers/wwan/mt6797-md1.rst
+F:	drivers/soc/mediatek/mt6797-md1-*
+
 MEDIATEK MT6797 CAMERA RECEIVER DRIVERS
 M:	George Whewell <georgerw@gmail.com>
 L:	linux-media@vger.kernel.org

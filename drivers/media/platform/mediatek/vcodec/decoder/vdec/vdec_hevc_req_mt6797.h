@@ -127,6 +127,20 @@ struct mt6797_hevc_rps_set {
 	u8 num_positive_pics;
 };
 
+struct mt6797_hevc_rps_regs {
+	u32 vld_0c8;
+};
+
+struct mt6797_hevc_bitreader {
+	const u8 *data;
+	size_t size;
+	size_t pos;
+	u32 raw_bits;
+	u8 byte;
+	u8 bits_left;
+	u8 zero_bytes;
+};
+
 static inline u32 mt6797_hevc_ceil_log2_nonzero(u32 value)
 {
 	return value <= 2 ? 1 : fls(value - 1);
@@ -262,6 +276,248 @@ mt6797_hevc_sps_rps_sets(const struct v4l2_ctrl_hevc_ext_sps_st_rps *rps,
 			}
 		}
 	}
+
+	return 0;
+}
+
+static inline int mt6797_hevc_next_byte(struct mt6797_hevc_bitreader *br)
+{
+	u8 byte;
+
+	while (br->pos < br->size) {
+		byte = br->data[br->pos++];
+		if (br->zero_bytes >= 2 && byte == 0x03) {
+			br->zero_bytes = 0;
+			br->raw_bits += 8;
+			continue;
+		}
+		if (byte)
+			br->zero_bytes = 0;
+		else if (br->zero_bytes < 2)
+			br->zero_bytes++;
+		br->byte = byte;
+		br->bits_left = 8;
+		return 0;
+	}
+
+	return -ENODATA;
+}
+
+static inline int
+mt6797_hevc_get_bits(struct mt6797_hevc_bitreader *br, u8 count, u32 *value)
+{
+	u32 result = 0;
+	unsigned int i;
+	int ret;
+
+	if (count > 32)
+		return -EINVAL;
+	for (i = 0; i < count; i++) {
+		if (!br->bits_left) {
+			ret = mt6797_hevc_next_byte(br);
+			if (ret)
+				return ret;
+		}
+		result = result << 1 | ((br->byte >> (br->bits_left - 1)) & 1);
+		br->bits_left--;
+		br->raw_bits++;
+	}
+	*value = result;
+
+	return 0;
+}
+
+static inline int mt6797_hevc_get_ue(struct mt6797_hevc_bitreader *br,
+				     u32 *value)
+{
+	u32 bit, suffix;
+	u8 leading = 0;
+	int ret;
+
+	do {
+		ret = mt6797_hevc_get_bits(br, 1, &bit);
+		if (ret)
+			return ret;
+		if (!bit && ++leading == 32)
+			return -ERANGE;
+	} while (!bit);
+	if (!leading) {
+		*value = 0;
+		return 0;
+	}
+	ret = mt6797_hevc_get_bits(br, leading, &suffix);
+	if (ret)
+		return ret;
+	*value = (BIT(leading) - 1) + suffix;
+
+	return 0;
+}
+
+static inline int mt6797_hevc_skip_bits(struct mt6797_hevc_bitreader *br,
+					u32 count)
+{
+	u32 unused;
+	u8 chunk;
+	int ret;
+
+	while (count) {
+		chunk = min_t(u32, count, 32);
+		ret = mt6797_hevc_get_bits(br, chunk, &unused);
+		if (ret)
+			return ret;
+		count -= chunk;
+	}
+
+	return 0;
+}
+
+static inline int
+mt6797_hevc_slice_rps_regs(const u8 *data, size_t size,
+			   const struct v4l2_ctrl_hevc_sps *sps,
+			   const struct v4l2_ctrl_hevc_pps *pps,
+			   const struct v4l2_ctrl_hevc_slice_params *slice,
+			   const struct v4l2_ctrl_hevc_decode_params *dec,
+			   const struct mt6797_hevc_rps_set *sps_sets,
+			   struct mt6797_hevc_rps_regs *regs)
+{
+	struct mt6797_hevc_bitreader br = {};
+	const struct mt6797_hevc_rps_set *set;
+	u32 prefix, nal_type, temporal_id, value;
+	u32 num_negative, num_positive;
+	u32 num_long_sps = 0, num_long_pics = 0;
+	u32 poc_bits, poc_mask;
+	unsigned int i;
+	int ret;
+
+	if (!data || !sps || !pps || !slice || !dec || !regs || size < 6)
+		return -EINVAL;
+	if (data[0] || data[1])
+		return -EINVAL;
+	if (data[2] == 1)
+		prefix = 3;
+	else if (size >= 7 && !data[2] && data[3] == 1)
+		prefix = 4;
+	else
+		return -EINVAL;
+	if (prefix + 2 >= size || data[prefix] & BIT(7) ||
+	    (data[prefix] & 1) || (data[prefix + 1] & 0xf8))
+		return -EINVAL;
+	nal_type = data[prefix] >> 1;
+	temporal_id = data[prefix + 1] & 7;
+	if (!temporal_id || nal_type != slice->nal_unit_type ||
+	    temporal_id != slice->nuh_temporal_id_plus1)
+		return -EINVAL;
+
+	br.data = data;
+	br.size = min_t(size_t, size, slice->data_byte_offset);
+	br.pos = prefix + 2;
+	br.raw_bits = br.pos * 8;
+	ret = mt6797_hevc_get_bits(&br, 1, &value);
+	if (ret || !value)
+		return ret ?: -EOPNOTSUPP;
+	if (nal_type >= 16 && nal_type <= 23) {
+		ret = mt6797_hevc_skip_bits(&br, 1);
+		if (ret)
+			return ret;
+	}
+	ret = mt6797_hevc_get_ue(&br, &value);
+	if (ret || value != pps->pic_parameter_set_id)
+		return ret ?: -EINVAL;
+	ret = mt6797_hevc_skip_bits(&br, pps->num_extra_slice_header_bits);
+	if (ret)
+		return ret;
+	ret = mt6797_hevc_get_ue(&br, &value);
+	if (ret || value != slice->slice_type)
+		return ret ?: -EINVAL;
+	if (pps->flags & V4L2_HEVC_PPS_FLAG_OUTPUT_FLAG_PRESENT) {
+		ret = mt6797_hevc_skip_bits(&br, 1);
+		if (ret)
+			return ret;
+	}
+	if (nal_type == 19 || nal_type == 20) {
+		if (dec->pic_order_cnt_val || slice->slice_pic_order_cnt)
+			return -EINVAL;
+		regs->vld_0c8 = 0;
+		return 0;
+	}
+
+	poc_bits = sps->log2_max_pic_order_cnt_lsb_minus4 + 4;
+	if (poc_bits > 16)
+		return -ERANGE;
+	ret = mt6797_hevc_get_bits(&br, poc_bits, &value);
+	if (ret)
+		return ret;
+	poc_mask = BIT(poc_bits) - 1;
+	if (value != ((u32)dec->pic_order_cnt_val & poc_mask) ||
+	    dec->pic_order_cnt_val != slice->slice_pic_order_cnt)
+		return -EINVAL;
+
+	if (sps->num_short_term_ref_pic_sets) {
+		ret = mt6797_hevc_get_bits(&br, 1, &value);
+		if (ret)
+			return ret;
+	} else {
+		value = 0;
+	}
+	if (value) {
+		if (!sps_sets)
+			return -EINVAL;
+		if (sps->num_short_term_ref_pic_sets == 1) {
+			value = 0;
+		} else {
+			poc_bits = fls(sps->num_short_term_ref_pic_sets - 1);
+			ret = mt6797_hevc_get_bits(&br, poc_bits, &value);
+			if (ret)
+				return ret;
+			if (value >= sps->num_short_term_ref_pic_sets)
+				return -EINVAL;
+		}
+		set = &sps_sets[value];
+		num_negative = set->num_negative_pics;
+		num_positive = set->num_positive_pics;
+	} else {
+		if (sps->num_short_term_ref_pic_sets) {
+			ret = mt6797_hevc_get_bits(&br, 1, &value);
+			if (ret)
+				return ret;
+			if (value)
+				return -EOPNOTSUPP;
+		}
+		ret = mt6797_hevc_get_ue(&br, &num_negative);
+		if (ret)
+			return ret;
+		ret = mt6797_hevc_get_ue(&br, &num_positive);
+		if (ret)
+			return ret;
+		if (num_negative + num_positive > MT6797_HEVC_MAX_RPS_PICS)
+			return -ERANGE;
+		for (i = 0; i < num_negative + num_positive; i++) {
+			ret = mt6797_hevc_get_ue(&br, &value);
+			if (ret)
+				return ret;
+			ret = mt6797_hevc_skip_bits(&br, 1);
+			if (ret)
+				return ret;
+		}
+	}
+
+	if (sps->flags & V4L2_HEVC_SPS_FLAG_LONG_TERM_REF_PICS_PRESENT) {
+		if (sps->num_long_term_ref_pics_sps) {
+			ret = mt6797_hevc_get_ue(&br, &num_long_sps);
+			if (ret)
+				return ret;
+		}
+		ret = mt6797_hevc_get_ue(&br, &num_long_pics);
+		if (ret)
+			return ret;
+	}
+	if (num_long_sps > sps->num_long_term_ref_pics_sps ||
+	    num_negative + num_positive > 0x3f ||
+	    num_long_sps + num_long_pics > 0x1f || num_long_sps > 0x1f)
+		return -ERANGE;
+	regs->vld_0c8 = (num_negative + num_positive) << 8 |
+				(num_long_sps + num_long_pics) << 16 |
+				num_long_sps << 24;
 
 	return 0;
 }

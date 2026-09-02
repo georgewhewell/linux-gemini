@@ -4,6 +4,34 @@
 
 #include "vdec_hevc_req_mt6797.h"
 
+struct mt6797_hevc_test_bits {
+	u8 data[32];
+	u32 bit;
+};
+
+static void mt6797_hevc_test_put_bits(struct mt6797_hevc_test_bits *bits,
+				      u32 value, u8 count)
+{
+	unsigned int i;
+
+	for (i = 0; i < count; i++, bits->bit++) {
+		u32 shift = count - i - 1;
+
+		if (value & BIT(shift))
+			bits->data[bits->bit >> 3] |= BIT(7 - (bits->bit & 7));
+	}
+}
+
+static void mt6797_hevc_test_put_ue(struct mt6797_hevc_test_bits *bits,
+				    u32 value)
+{
+	u32 code = value + 1;
+	u8 width = fls(code);
+
+	mt6797_hevc_test_put_bits(bits, 0, width - 1);
+	mt6797_hevc_test_put_bits(bits, code, width);
+}
+
 static void mt6797_hevc_sps_regs_test(struct kunit *test)
 {
 	struct v4l2_ctrl_hevc_pps pps = {
@@ -392,6 +420,88 @@ static void mt6797_hevc_sps_rps_sets_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_hevc_sps_rps_sets(rps, 1, sets), -EINVAL);
 }
 
+static void mt6797_hevc_slice_rps_regs_test(struct kunit *test)
+{
+	struct v4l2_ctrl_hevc_slice_params slice = {
+		.nal_unit_type = 19,
+		.nuh_temporal_id_plus1 = 1,
+		.slice_type = V4L2_HEVC_SLICE_TYPE_I,
+	};
+	struct v4l2_ctrl_hevc_decode_params dec = {
+		.flags = V4L2_HEVC_DECODE_PARAM_FLAG_IDR_PIC,
+	};
+	struct v4l2_ctrl_hevc_sps sps = {};
+	struct v4l2_ctrl_hevc_pps pps = {};
+	struct mt6797_hevc_rps_set set = {
+		.num_negative_pics = 1,
+		.num_positive_pics = 1,
+	};
+	struct mt6797_hevc_rps_regs regs;
+	struct mt6797_hevc_test_bits bits = {
+		.data = { 0, 0, 1, 0x26, 1 },
+		.bit = 40,
+	};
+	size_t size;
+
+	mt6797_hevc_test_put_bits(&bits, 1, 1);
+	mt6797_hevc_test_put_bits(&bits, 0, 1);
+	mt6797_hevc_test_put_ue(&bits, 0);
+	mt6797_hevc_test_put_ue(&bits, V4L2_HEVC_SLICE_TYPE_I);
+	size = DIV_ROUND_UP(bits.bit, 8);
+	slice.data_byte_offset = size;
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_slice_rps_regs(bits.data, size, &sps, &pps,
+						   &slice, &dec, NULL, &regs),
+			0);
+	KUNIT_EXPECT_EQ(test, regs.vld_0c8, 0U);
+
+	memset(&bits, 0, sizeof(bits));
+	bits.data[2] = 1;
+	bits.data[3] = 0x02;
+	bits.data[4] = 1;
+	bits.bit = 40;
+	mt6797_hevc_test_put_bits(&bits, 1, 1);
+	mt6797_hevc_test_put_ue(&bits, 0);
+	mt6797_hevc_test_put_ue(&bits, V4L2_HEVC_SLICE_TYPE_P);
+	mt6797_hevc_test_put_bits(&bits, 1, 4);
+	mt6797_hevc_test_put_bits(&bits, 1, 1);
+	size = DIV_ROUND_UP(bits.bit, 8);
+	sps.num_short_term_ref_pic_sets = 1;
+	slice.nal_unit_type = 1;
+	slice.slice_type = V4L2_HEVC_SLICE_TYPE_P;
+	slice.slice_pic_order_cnt = 1;
+	slice.data_byte_offset = size;
+	dec.pic_order_cnt_val = 1;
+	dec.flags = 0;
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_slice_rps_regs(bits.data, size, &sps, &pps,
+						   &slice, &dec, &set, &regs),
+			0);
+	KUNIT_EXPECT_EQ(test, regs.vld_0c8, 0x00000200U);
+
+	memset(&bits, 0, sizeof(bits));
+	bits.data[2] = 1;
+	bits.data[3] = 0x02;
+	bits.data[4] = 1;
+	bits.bit = 40;
+	mt6797_hevc_test_put_bits(&bits, 1, 1);
+	mt6797_hevc_test_put_ue(&bits, 0);
+	mt6797_hevc_test_put_ue(&bits, V4L2_HEVC_SLICE_TYPE_P);
+	mt6797_hevc_test_put_bits(&bits, 1, 4);
+	mt6797_hevc_test_put_ue(&bits, 1);
+	mt6797_hevc_test_put_ue(&bits, 0);
+	mt6797_hevc_test_put_ue(&bits, 0);
+	mt6797_hevc_test_put_bits(&bits, 1, 1);
+	size = DIV_ROUND_UP(bits.bit, 8);
+	sps.num_short_term_ref_pic_sets = 0;
+	slice.data_byte_offset = size;
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_slice_rps_regs(bits.data, size, &sps, &pps,
+						   &slice, &dec, NULL, &regs),
+			0);
+	KUNIT_EXPECT_EQ(test, regs.vld_0c8, 0x00000100U);
+}
+
 static struct kunit_case mt6797_hevc_test_cases[] = {
 	KUNIT_CASE(mt6797_hevc_sps_regs_test),
 	KUNIT_CASE(mt6797_hevc_pps_regs_test),
@@ -408,6 +518,7 @@ static struct kunit_case mt6797_hevc_test_cases[] = {
 	KUNIT_CASE(mt6797_hevc_reject_layout_test),
 	KUNIT_CASE(mt6797_hevc_staging_size_test),
 	KUNIT_CASE(mt6797_hevc_sps_rps_sets_test),
+	KUNIT_CASE(mt6797_hevc_slice_rps_regs_test),
 	{},
 };
 

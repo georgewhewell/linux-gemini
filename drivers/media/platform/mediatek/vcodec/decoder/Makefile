@@ -25,4 +25,5 @@ mtk-vcodec-dec-y := vdec/vdec_h264_if.o \
 
 mtk-vcodec-dec-hw-y := mtk_vcodec_dec_hw.o
 
-obj-$(CONFIG_VIDEO_MEDIATEK_VCODEC_KUNIT_TEST) += vdec/vdec_h264_req_mt6797_test.o
+obj-$(CONFIG_VIDEO_MEDIATEK_VCODEC_KUNIT_TEST) += vdec/vdec_h264_req_mt6797_test.o \
+		vdec/vdec_hevc_req_mt6797_test.o

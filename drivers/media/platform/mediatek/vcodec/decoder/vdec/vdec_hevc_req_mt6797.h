@@ -5,7 +5,9 @@
 #include <linux/align.h>
 #include <linux/bitops.h>
 #include <linux/errno.h>
+#include <linux/limits.h>
 #include <linux/overflow.h>
+#include <linux/string.h>
 #include <linux/types.h>
 #include <media/v4l2-ctrls.h>
 
@@ -18,6 +20,9 @@
 #define MT6797_HEVC_BS_GUARD		0x200U
 #define MT6797_HEVC_MV_BUFFER_COUNT	17U
 #define MT6797_HEVC_MV_ALIGN		0x1000U
+#define MT6797_HEVC_Y_ALIGN		0x200U
+#define MT6797_HEVC_C_ALIGN		0x100U
+#define MT6797_HEVC_REF_LIST_LEN	16U
 #define MT6797_HEVC_TILE_WORDS		17U
 
 struct mt6797_hevc_sps_regs {
@@ -58,6 +63,59 @@ struct mt6797_hevc_buffer_layout {
 	u32 chroma_size;
 	u32 frame_size;
 	u32 mv_size;
+};
+
+struct mt6797_hevc_barrel_plan {
+	u32 fetch_start_64;
+	u32 fetch_end_64;
+	u32 read_start;
+	u32 read_end;
+};
+
+struct mt6797_hevc_output_plan {
+	u32 y_addr;
+	u32 c_addr;
+	u32 y_addr_512;
+	u32 c_addr_256;
+	u32 c_offset;
+	u32 mb_width;
+	u32 mb_height;
+};
+
+struct mt6797_hevc_ref_buffer {
+	u64 reference_ts;
+	u64 y_addr;
+	u64 c_addr;
+	u64 mv_addr;
+	u8 mv_slot;
+	bool valid;
+};
+
+struct mt6797_hevc_ref {
+	u32 y_addr;
+	u32 c_addr;
+	u32 mv_addr_16;
+	u32 poc_slot;
+	bool long_term;
+};
+
+struct mt6797_hevc_ref_plan {
+	u8 num_l0;
+	u8 num_l1;
+	u32 long_term_flags;
+	u32 current_after_all;
+	struct mt6797_hevc_ref l0[MT6797_HEVC_REF_LIST_LEN];
+	struct mt6797_hevc_ref l1[MT6797_HEVC_REF_LIST_LEN];
+};
+
+struct mt6797_hevc_mv_slot {
+	u64 reference_ts;
+	bool valid;
+};
+
+struct mt6797_hevc_mv_slot_plan {
+	u8 dpb_slots[V4L2_HEVC_DPB_ENTRIES_NUM_MAX];
+	u8 current_slot;
 };
 
 static inline u32 mt6797_hevc_ceil_log2_nonzero(u32 value)
@@ -334,6 +392,209 @@ mt6797_hevc_tile_regs(const struct v4l2_ctrl_hevc_pps *pps,
 	}
 
 	return end == ctb_height ? 0 : -ERANGE;
+}
+
+static inline int
+mt6797_hevc_barrel_plan(u64 dma_addr, size_t payload_size,
+			const struct v4l2_ctrl_hevc_slice_params *slice,
+			struct mt6797_hevc_barrel_plan *plan)
+{
+	u64 fetch_end, read_start;
+
+	if (!slice || !plan || !payload_size ||
+	    dma_addr & (MT6797_HEVC_BS_ALIGN - 1) ||
+	    slice->data_byte_offset >= payload_size)
+		return -EINVAL;
+	if (check_add_overflow(dma_addr, (u64)payload_size, &fetch_end) ||
+	    check_add_overflow(fetch_end, (u64)MT6797_HEVC_BS_GUARD,
+			       &fetch_end) ||
+	    check_add_overflow(dma_addr, (u64)slice->data_byte_offset,
+			       &read_start) ||
+	    fetch_end > U32_MAX)
+		return -ERANGE;
+
+	plan->fetch_start_64 = dma_addr >> 6;
+	plan->fetch_end_64 = fetch_end >> 6;
+	plan->read_start = read_start;
+	plan->read_end = fetch_end & ~(MT6797_HEVC_BS_ALIGN - 1);
+
+	return 0;
+}
+
+static inline int
+mt6797_hevc_output_plan(u64 y_addr, u64 c_addr,
+			const struct mt6797_hevc_buffer_layout *layout,
+			struct mt6797_hevc_output_plan *plan)
+{
+	u64 expected_c, end;
+
+	if (!layout || !plan || !layout->luma_size || !layout->chroma_size ||
+	    y_addr & (MT6797_HEVC_Y_ALIGN - 1) ||
+	    c_addr & (MT6797_HEVC_C_ALIGN - 1) ||
+	    check_add_overflow(y_addr, (u64)layout->luma_size, &expected_c) ||
+	    expected_c != c_addr ||
+	    check_add_overflow(c_addr, (u64)layout->chroma_size, &end))
+		return -EINVAL;
+	if (end > U32_MAX)
+		return -ERANGE;
+
+	plan->y_addr = y_addr;
+	plan->c_addr = c_addr;
+	plan->y_addr_512 = y_addr >> 9;
+	plan->c_addr_256 = c_addr >> 8;
+	plan->c_offset = layout->luma_size;
+	plan->mb_width = layout->width >> 4;
+	plan->mb_height = layout->height >> 4;
+
+	return 0;
+}
+
+static inline int
+mt6797_hevc_ref_entry(u8 dpb_index,
+		      const struct v4l2_ctrl_hevc_decode_params *dec,
+		      const struct mt6797_hevc_ref_buffer *buffers,
+		      struct mt6797_hevc_ref *ref)
+{
+	const struct v4l2_hevc_dpb_entry *dpb;
+	const struct mt6797_hevc_ref_buffer *buffer;
+	s64 poc_delta;
+
+	if (!dec || !buffers || !ref ||
+	    dpb_index >= dec->num_active_dpb_entries ||
+	    dpb_index >= V4L2_HEVC_DPB_ENTRIES_NUM_MAX)
+		return -EINVAL;
+
+	dpb = &dec->dpb[dpb_index];
+	buffer = &buffers[dpb_index];
+	if (!buffer->valid || buffer->reference_ts != dpb->timestamp ||
+	    dpb->field_pic || buffer->mv_slot >= MT6797_HEVC_MV_BUFFER_COUNT ||
+	    buffer->y_addr & (MT6797_HEVC_Y_ALIGN - 1) ||
+	    buffer->c_addr & (MT6797_HEVC_C_ALIGN - 1) ||
+	    buffer->mv_addr & (MT6797_HEVC_MV_ALIGN - 1))
+		return -EINVAL;
+	if (buffer->y_addr > U32_MAX || buffer->c_addr > U32_MAX ||
+	    buffer->mv_addr > U32_MAX)
+		return -ERANGE;
+
+	poc_delta = (s64)dec->pic_order_cnt_val - dpb->pic_order_cnt_val;
+	poc_delta = clamp_t(s64, poc_delta, -128, 127);
+	ref->y_addr = buffer->y_addr;
+	ref->c_addr = buffer->c_addr;
+	ref->mv_addr_16 = buffer->mv_addr >> 4;
+	ref->poc_slot = ((buffer->mv_slot + 1) & 0x1f) << 8 |
+			(u8)poc_delta;
+	ref->long_term = dpb->flags & V4L2_HEVC_DPB_ENTRY_LONG_TERM_REFERENCE;
+
+	return 0;
+}
+
+static inline int
+mt6797_hevc_ref_plan(const struct v4l2_ctrl_hevc_slice_params *slice,
+		     const struct v4l2_ctrl_hevc_decode_params *dec,
+		     const struct mt6797_hevc_ref_buffer *buffers,
+		     struct mt6797_hevc_ref_plan *plan)
+{
+	u32 num_l0 = 0, num_l1 = 0;
+	unsigned int i;
+	u8 ref_index;
+	int ret;
+
+	if (!slice || !dec || !buffers || !plan ||
+	    dec->num_active_dpb_entries > V4L2_HEVC_DPB_ENTRIES_NUM_MAX)
+		return -EINVAL;
+
+	if (slice->slice_type == V4L2_HEVC_SLICE_TYPE_P) {
+		num_l0 = slice->num_ref_idx_l0_active_minus1 + 1;
+	} else if (slice->slice_type == V4L2_HEVC_SLICE_TYPE_B) {
+		num_l0 = slice->num_ref_idx_l0_active_minus1 + 1;
+		num_l1 = slice->num_ref_idx_l1_active_minus1 + 1;
+	} else if (slice->slice_type != V4L2_HEVC_SLICE_TYPE_I) {
+		return -EINVAL;
+	}
+	if (num_l0 > MT6797_HEVC_REF_LIST_LEN ||
+	    num_l1 > MT6797_HEVC_REF_LIST_LEN ||
+	    ((num_l0 || num_l1) && !dec->num_active_dpb_entries))
+		return -EINVAL;
+
+	*plan = (struct mt6797_hevc_ref_plan){};
+	plan->num_l0 = num_l0;
+	plan->num_l1 = num_l1;
+	plan->current_after_all = 1;
+	for (i = 0; i < dec->num_active_dpb_entries; i++) {
+		if (dec->dpb[i].field_pic)
+			return -EOPNOTSUPP;
+		if (dec->pic_order_cnt_val < dec->dpb[i].pic_order_cnt_val)
+			plan->current_after_all = 0;
+	}
+
+	for (i = 0; i < MT6797_HEVC_REF_LIST_LEN && num_l0; i++) {
+		ref_index = slice->ref_idx_l0[i % num_l0];
+		ret = mt6797_hevc_ref_entry(ref_index, dec, buffers,
+					    &plan->l0[i]);
+		if (ret)
+			return ret;
+		if (plan->l0[i].long_term)
+			plan->long_term_flags |= BIT(i);
+	}
+	for (i = 0; i < MT6797_HEVC_REF_LIST_LEN && num_l1; i++) {
+		ref_index = slice->ref_idx_l1[i % num_l1];
+		ret = mt6797_hevc_ref_entry(ref_index, dec, buffers,
+					    &plan->l1[i]);
+		if (ret)
+			return ret;
+		if (plan->l1[i].long_term)
+			plan->long_term_flags |= BIT(i + 16);
+	}
+
+	return 0;
+}
+
+static inline int
+mt6797_hevc_mv_slot_plan(const struct v4l2_ctrl_hevc_decode_params *dec,
+			 const struct mt6797_hevc_mv_slot *slots,
+			 struct mt6797_hevc_mv_slot_plan *plan)
+{
+	u32 used = 0;
+	unsigned int i, j;
+
+	if (!dec || !slots || !plan ||
+	    dec->num_active_dpb_entries > V4L2_HEVC_DPB_ENTRIES_NUM_MAX)
+		return -EINVAL;
+
+	memset(plan->dpb_slots, U8_MAX, sizeof(plan->dpb_slots));
+	for (i = 0; i < dec->num_active_dpb_entries; i++) {
+		for (j = 0; j < MT6797_HEVC_MV_BUFFER_COUNT; j++) {
+			if (slots[j].valid &&
+			    slots[j].reference_ts == dec->dpb[i].timestamp)
+				break;
+		}
+		if (j == MT6797_HEVC_MV_BUFFER_COUNT)
+			return -ENOENT;
+		plan->dpb_slots[i] = j;
+		used |= BIT(j);
+	}
+
+	for (i = 0; i < MT6797_HEVC_MV_BUFFER_COUNT; i++) {
+		if (!(used & BIT(i))) {
+			plan->current_slot = i;
+			return 0;
+		}
+	}
+
+	return -ENOSPC;
+}
+
+static inline int
+mt6797_hevc_mv_slot_commit(struct mt6797_hevc_mv_slot *slots, u8 slot,
+			   u64 reference_ts)
+{
+	if (!slots || slot >= MT6797_HEVC_MV_BUFFER_COUNT)
+		return -EINVAL;
+
+	slots[slot].reference_ts = reference_ts;
+	slots[slot].valid = true;
+
+	return 0;
 }
 
 static inline int

@@ -121,6 +121,22 @@ config MTK_T7XX
 
 	  If unsure, say N.
 
+config MTK_CCCI_COMMON
+	bool
+	help
+	  Internal wire-format and runtime-negotiation helpers for MediaTek CCCI
+	  modems. The helpers perform no I/O and own no modem hardware.
+
+config MTK_CCCI_KUNIT_TEST
+	bool "KUnit tests for MediaTek CCCI helpers"
+	depends on KUNIT=y
+	select MTK_CCCI_COMMON
+	help
+	  Exercise CCCI framing, MT6797 CCMNI channel mapping and bounded HS1 v2
+	  runtime-feature negotiation without modem hardware. The tests reject
+	  malformed feature queries and modem requirements which this driver
+	  cannot safely satisfy.
+
 endif # WWAN
 
 endmenu

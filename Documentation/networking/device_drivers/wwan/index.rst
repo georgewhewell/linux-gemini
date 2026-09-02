@@ -9,4 +9,5 @@ Contents:
    :maxdepth: 2
 
    iosm
+   mt6797-ccci
    t7xx

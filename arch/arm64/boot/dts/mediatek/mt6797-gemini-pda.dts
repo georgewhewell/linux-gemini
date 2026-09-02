@@ -41,6 +41,10 @@
 			mt6797_cpu_efuse_identity: cpu-efuse-identity@58 {
 				reg = <88 12>;
 			};
+
+			mt6797_csi_calibration: csi-calibration-data@64 {
+				reg = <100 20>;
+			};
 		};
 	};
 
@@ -503,6 +507,11 @@
 &thermal {
 	nvmem-cells = <&mt6797_thermal_calibration>;
 	nvmem-cell-names = "calibration-data";
+};
+
+&seninf {
+	nvmem-cells = <&mt6797_csi_calibration>;
+	nvmem-cell-names = "csi-calibration-data";
 };
 
 &dvfsp_handoff {

@@ -23,6 +23,18 @@
 		stdout-path = "serial0:921600n8";
 	};
 
+	sound {
+		compatible = "mediatek,mt6797-mt6351-sound";
+		model = "Gemini PDA";
+		audio-widgets = "Headphone", "Headphone Jack";
+		audio-routing =
+			"Headphone Jack", "Headphone L",
+			"Headphone Jack", "Headphone R";
+		mediatek,platform = <&afe>;
+		mediatek,audio-codec = <&mt6351_audio>;
+		status = "disabled";
+	};
+
 	consys: consys@18070000 {
 		compatible = "mediatek,mt6797-consys-runtime";
 		reg = <0 0x18070000 0 0x200>,
@@ -269,6 +281,14 @@
 };
 
 /*
+ * Headphone playback is the only physically confirmed audio path. Keep the
+ * AFE, codec, and card dormant until this topology can be tested together.
+ */
+&afe {
+	status = "disabled";
+};
+
+/*
  * LK leaves the MT6351 FGADC configured with the vendor board calibration.
  * Linux takes ownership of coherent current and coulomb-counter sampling, but
  * does not infer capacity, voltage, or charger policy from those readings.
@@ -287,6 +307,13 @@
 	mediatek,fg-board-slope = <1000>;
 	mediatek,car-tune = <118>;
 	mediatek,fg-trim-permille = <1000>;
+};
+
+&pmic {
+	mt6351_audio: audio-codec {
+		compatible = "mediatek,mt6351-sound";
+		status = "disabled";
+	};
 };
 
 &mt6351regulator {

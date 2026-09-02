@@ -22,6 +22,8 @@
 
 #define HI556_LINK_FREQ_437MHZ		437000000ULL
 #define SP5509_LINK_FREQ_440MHZ		440000000ULL
+#define SP5509_LINK_FREQ_220MHZ		220000000ULL
+#define SP5509_LINK_FREQ_110MHZ		110000000ULL
 #define HI556_MCLK			19200000
 #define SP5509_MCLK			24000000
 #define HI556_DATA_LANES		2
@@ -82,6 +84,12 @@ enum {
 	HI556_LINK_FREQ_INDEX,
 };
 
+enum {
+	SP5509_LINK_FREQ_440MHZ_INDEX,
+	SP5509_LINK_FREQ_220MHZ_INDEX,
+	SP5509_LINK_FREQ_110MHZ_INDEX,
+};
+
 struct hi556_reg {
 	u16 address;
 	u16 val;
@@ -124,6 +132,7 @@ struct hi556_config {
 	u32 num_modes;
 	const s64 *link_freq_menu_items;
 	u32 num_link_freqs;
+	u64 pixel_rate;
 	unsigned long mclk;
 	u32 power_delay_us;
 };
@@ -527,6 +536,82 @@ static const struct hi556_reg sp5509_mode_2592x1944_regs[] = {
 	{0x091e, 0x0a00},
 };
 
+static const struct hi556_reg sp5509_mode_1296x972_regs[] = {
+	{0x0b0a, 0x8259},
+	{0x0f30, 0x6e25},
+	{0x0f32, 0x7167},
+	{0x004a, 0x0100},
+	{0x004c, 0x0000},
+	{0x000c, 0x0122},
+	{0x0008, 0x0b00},
+	{0x005a, 0x0404},
+	{0x0012, 0x000c},
+	{0x0018, 0x0a33},
+	{0x0022, 0x0008},
+	{0x0028, 0x0017},
+	{0x0024, 0x0022},
+	{0x002a, 0x002b},
+	{0x0026, 0x0030},
+	{0x002c, 0x07c7},
+	{0x002e, 0x3311},
+	{0x0030, 0x3311},
+	{0x0032, 0x3311},
+	{0x0006, 0x0823},
+	{0x0a22, 0x0000},
+	{0x0a12, 0x0510},
+	{0x0a14, 0x03cc},
+	{0x003e, 0x0000},
+	{0x0804, 0x0208},
+	{0x0a04, 0x0168},
+	{0x090e, 0x0010},
+	{0x090c, 0x09c0},
+	{0x0902, 0x4319},
+	{0x0914, 0xc106},
+	{0x0916, 0x040e},
+	{0x0918, 0x0304},
+	{0x091a, 0x0708},
+	{0x091c, 0x0e06},
+	{0x091e, 0x0300},
+};
+
+static const struct hi556_reg sp5509_mode_640x480_regs[] = {
+	{0x0b0a, 0x8252},
+	{0x0f30, 0x6e25},
+	{0x0f32, 0x7267},
+	{0x004a, 0x0100},
+	{0x004c, 0x0000},
+	{0x000c, 0x0022},
+	{0x0008, 0x0b00},
+	{0x005a, 0x0208},
+	{0x0012, 0x0018},
+	{0x0018, 0x0a27},
+	{0x0022, 0x0008},
+	{0x0028, 0x0017},
+	{0x0024, 0x002e},
+	{0x002a, 0x0033},
+	{0x0026, 0x003c},
+	{0x002c, 0x07bb},
+	{0x002e, 0x1111},
+	{0x0030, 0x1111},
+	{0x0032, 0x7711},
+	{0x0006, 0x0208},
+	{0x0a22, 0x0100},
+	{0x0a12, 0x0280},
+	{0x0a14, 0x01e0},
+	{0x003e, 0x0000},
+	{0x0804, 0x0200},
+	{0x0a04, 0x0168},
+	{0x090c, 0x0270},
+	{0x090e, 0x000c},
+	{0x0902, 0x4319},
+	{0x0914, 0xc103},
+	{0x0916, 0x0207},
+	{0x0918, 0x0302},
+	{0x091a, 0x0406},
+	{0x091c, 0x0903},
+	{0x091e, 0x0300},
+};
+
 static const struct hi556_reg mode_2592x1444_regs[] = {
 	{0x0a00, 0x0000},
 	{0x0b0a, 0x8252},
@@ -677,6 +762,8 @@ static const s64 hi556_link_freq_menu_items[] = {
 
 static const s64 sp5509_link_freq_menu_items[] = {
 	SP5509_LINK_FREQ_440MHZ,
+	SP5509_LINK_FREQ_220MHZ,
+	SP5509_LINK_FREQ_110MHZ,
 };
 
 static const struct hi556_mode supported_modes[] = {
@@ -771,7 +858,43 @@ static const struct hi556_mode sp5509_modes[] = {
 			.num_of_regs = ARRAY_SIZE(sp5509_mode_2592x1944_regs),
 			.regs = sp5509_mode_2592x1944_regs,
 		},
-		.link_freq_index = HI556_LINK_FREQ_INDEX,
+		.link_freq_index = SP5509_LINK_FREQ_440MHZ_INDEX,
+	},
+	{
+		.width = 1296,
+		.height = 972,
+		.crop = {
+			.left = HI556_PIXEL_ARRAY_LEFT,
+			.top = HI556_PIXEL_ARRAY_TOP,
+			.width = HI556_PIXEL_ARRAY_WIDTH,
+			.height = HI556_PIXEL_ARRAY_HEIGHT,
+		},
+		.fll_def = 0x0823,
+		.fll_min = 0x0823,
+		.llp = 0x0b00,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(sp5509_mode_1296x972_regs),
+			.regs = sp5509_mode_1296x972_regs,
+		},
+		.link_freq_index = SP5509_LINK_FREQ_220MHZ_INDEX,
+	},
+	{
+		.width = 640,
+		.height = 480,
+		.crop = {
+			.left = HI556_PIXEL_ARRAY_LEFT,
+			.top = HI556_PIXEL_ARRAY_TOP,
+			.width = HI556_PIXEL_ARRAY_WIDTH,
+			.height = HI556_PIXEL_ARRAY_HEIGHT,
+		},
+		.fll_def = 0x0208,
+		.fll_min = 0x0208,
+		.llp = 0x0b00,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(sp5509_mode_640x480_regs),
+			.regs = sp5509_mode_640x480_regs,
+		},
+		.link_freq_index = SP5509_LINK_FREQ_110MHZ_INDEX,
 	},
 };
 
@@ -784,6 +907,8 @@ static const struct hi556_config hi556_config = {
 	.num_modes = ARRAY_SIZE(supported_modes),
 	.link_freq_menu_items = hi556_link_freq_menu_items,
 	.num_link_freqs = ARRAY_SIZE(hi556_link_freq_menu_items),
+	.pixel_rate = HI556_LINK_FREQ_437MHZ * 2 * HI556_DATA_LANES /
+		      HI556_RGB_DEPTH,
 	.mclk = HI556_MCLK,
 	.power_delay_us = 5000,
 };
@@ -797,6 +922,7 @@ static const struct hi556_config sp5509_config = {
 	.num_modes = ARRAY_SIZE(sp5509_modes),
 	.link_freq_menu_items = sp5509_link_freq_menu_items,
 	.num_link_freqs = ARRAY_SIZE(sp5509_link_freq_menu_items),
+	.pixel_rate = 176000000,
 	.mclk = SP5509_MCLK,
 	.power_delay_us = 10000,
 };
@@ -837,16 +963,6 @@ struct hi556 {
 	/* True if the device has been identified */
 	bool identified;
 };
-
-static u64 to_pixel_rate(const struct hi556 *hi556, u32 f_index)
-{
-	u64 pixel_rate = hi556->config->link_freq_menu_items[f_index] * 2 *
-			 HI556_DATA_LANES;
-
-	do_div(pixel_rate, HI556_RGB_DEPTH);
-
-	return pixel_rate;
-}
 
 static int hi556_read_reg(struct hi556 *hi556, u16 reg, u16 len, u32 *val)
 {
@@ -1047,11 +1163,9 @@ static int hi556_init_controls(struct hi556 *hi556)
 	hi556->pixel_rate = v4l2_ctrl_new_std
 			    (ctrl_hdlr, &hi556_ctrl_ops,
 			     V4L2_CID_PIXEL_RATE, 0,
-			     to_pixel_rate(hi556,
-					   hi556->cur_mode->link_freq_index),
+			     hi556->config->pixel_rate,
 			     1,
-			     to_pixel_rate(hi556,
-					   hi556->cur_mode->link_freq_index));
+			     hi556->config->pixel_rate);
 	hi556->vblank = v4l2_ctrl_new_std(ctrl_hdlr, &hi556_ctrl_ops,
 					  V4L2_CID_VBLANK,
 					  hi556->cur_mode->fll_min -
@@ -1284,8 +1398,7 @@ static int hi556_set_format(struct v4l2_subdev *sd,
 		hi556->cur_mode = mode;
 		__v4l2_ctrl_s_ctrl(hi556->link_freq, mode->link_freq_index);
 		__v4l2_ctrl_s_ctrl_int64(hi556->pixel_rate,
-					 to_pixel_rate(hi556,
-						       mode->link_freq_index));
+					 hi556->config->pixel_rate);
 
 		/* Update limits and set FPS to default */
 		vblank_def = mode->fll_def - mode->height;

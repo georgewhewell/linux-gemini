@@ -4,6 +4,7 @@
 
 #include <linux/dma-mapping.h>
 #include <linux/errno.h>
+#include <linux/math64.h>
 #include <linux/overflow.h>
 #include <linux/types.h>
 
@@ -24,6 +25,15 @@
 #define MT6797_VENC_HEVC_MAX_HEIGHT 2176U
 #define MT6797_VENC_HEVC_HEADER_MODE 0x02003ff5U
 #define MT6797_VENC_HEVC_FIRST_HEADER_MODE 0x02083ff5U
+
+#define MT6797_VENC_HEVC_RC_START_WINDOW 15U
+#define MT6797_VENC_HEVC_RC_WINDOW_SIZE 1U
+#define MT6797_VENC_HEVC_RC_TRACKING_FACTOR_128 128U
+#define MT6797_VENC_HEVC_RC_BITRATE_TOLERANCE 55000000U
+#define MT6797_VENC_HEVC_RC_MAX_QP 51U
+#define MT6797_VENC_HEVC_RC_MAX_QP_HARD_UPPER 51U
+#define MT6797_VENC_HEVC_RC_MAX_QP_HARD_LOWER 35U
+#define MT6797_VENC_HEVC_RC_MIN_QP 8U
 
 enum mt6797_venc_hevc_header_type {
 	MT6797_VENC_HEVC_HEADER_SPS,
@@ -132,6 +142,111 @@ struct mt6797_venc_hevc_ref_regs {
 	u32 mv_info_1;
 	u32 mv_info_2;
 };
+
+struct mt6797_venc_hevc_rate_control {
+	u32 start_window;
+	u32 window_size;
+	u32 tracking_factor_128;
+	u32 bitrate_tolerance;
+	u32 max_qp_hard_upper;
+	u32 max_qp_hard_lower;
+	u32 max_qp;
+	u32 min_qp;
+	u64 average_frame_bits;
+	u64 window_bitrate;
+};
+
+static inline void
+mt6797_hevc_rc_init(struct mt6797_venc_hevc_rate_control *rc)
+{
+	*rc = (struct mt6797_venc_hevc_rate_control) {
+		.start_window = MT6797_VENC_HEVC_RC_START_WINDOW,
+		.window_size = MT6797_VENC_HEVC_RC_WINDOW_SIZE,
+		.tracking_factor_128 =
+			MT6797_VENC_HEVC_RC_TRACKING_FACTOR_128,
+		.bitrate_tolerance = MT6797_VENC_HEVC_RC_BITRATE_TOLERANCE,
+		.max_qp_hard_upper = MT6797_VENC_HEVC_RC_MAX_QP_HARD_UPPER,
+		.max_qp_hard_lower = MT6797_VENC_HEVC_RC_MAX_QP_HARD_LOWER,
+		.max_qp = MT6797_VENC_HEVC_RC_MAX_QP,
+		.min_qp = MT6797_VENC_HEVC_RC_MIN_QP,
+	};
+}
+
+/*
+ * The vendor policy compares the measured/tolerance ratio against six
+ * double-precision constants.  Express the observed six-decimal literals as
+ * integers and perform a full-width multiply/divide: no floating point enters
+ * the kernel and the strict comparison direction is retained.
+ */
+static inline unsigned int
+mt6797_hevc_rc_step(u64 numerator, u64 denominator,
+		    u32 tracking_factor_128)
+{
+	static const u32 threshold_millionths[] = {
+		1121658, 1258988, 1413132, 1586148, 1780347, 1998323,
+	};
+	u64 ratio;
+	unsigned int i;
+
+	if (!denominator)
+		return ARRAY_SIZE(threshold_millionths) + 1;
+
+	ratio = mul_u64_u64_div_u64(numerator, 128000000ULL, denominator);
+	for (i = 0; i < ARRAY_SIZE(threshold_millionths); i++) {
+		if (ratio < (u64)tracking_factor_128 *
+			    threshold_millionths[i])
+			return i + 1;
+	}
+
+	return ARRAY_SIZE(threshold_millionths) + 1;
+}
+
+static inline void
+mt6797_hevc_rc_update(struct mt6797_venc_hevc_rate_control *rc,
+		      u32 frame_rate, u32 frame_num, u32 frame_bytes)
+{
+	u64 frame_bits = (u64)frame_bytes * 8;
+	u32 next_qp;
+	unsigned int step;
+
+	if (!rc || !frame_rate || !rc->window_size)
+		return;
+
+	if (!frame_num)
+		rc->average_frame_bits = frame_bits;
+	else
+		rc->average_frame_bits =
+			(frame_bits + rc->average_frame_bits * 7) >> 3;
+
+	if (frame_num % rc->window_size || frame_num <= rc->start_window)
+		return;
+
+	rc->window_bitrate = rc->average_frame_bits * frame_rate;
+	if (rc->window_bitrate > rc->bitrate_tolerance) {
+		step = mt6797_hevc_rc_step(rc->window_bitrate,
+					   rc->bitrate_tolerance,
+					   rc->tracking_factor_128);
+		next_qp = min_t(u64, (u64)rc->max_qp + step,
+				rc->max_qp_hard_upper);
+	} else if (rc->max_qp > rc->max_qp_hard_lower) {
+		step = mt6797_hevc_rc_step(rc->bitrate_tolerance,
+					   rc->window_bitrate,
+					   rc->tracking_factor_128);
+		next_qp = rc->max_qp > step ? rc->max_qp - step : 0;
+		next_qp = max(next_qp, rc->max_qp_hard_lower);
+	} else {
+		return;
+	}
+
+	rc->max_qp = clamp(next_qp, rc->max_qp_hard_lower,
+			   rc->max_qp_hard_upper);
+}
+
+static inline u32
+mt6797_hevc_rc_reg(const struct mt6797_venc_hevc_rate_control *rc)
+{
+	return rc->max_qp << 8 | rc->min_qp;
+}
 
 /*
  * Header production is three distinct hardware jobs.  The first SPS after a

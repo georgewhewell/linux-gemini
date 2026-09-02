@@ -333,6 +333,70 @@ static void mt6797_venc_hevc_ref_regs_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, regs.mv_info_2, (u32)0x50);
 }
 
+static void mt6797_venc_hevc_rate_control_defaults_test(struct kunit *test)
+{
+	struct mt6797_venc_hevc_rate_control rc;
+
+	mt6797_hevc_rc_init(&rc);
+	KUNIT_EXPECT_EQ(test, rc.start_window, 15U);
+	KUNIT_EXPECT_EQ(test, rc.window_size, 1U);
+	KUNIT_EXPECT_EQ(test, rc.tracking_factor_128, 128U);
+	KUNIT_EXPECT_EQ(test, rc.bitrate_tolerance, 55000000U);
+	KUNIT_EXPECT_EQ(test, rc.max_qp_hard_upper, 51U);
+	KUNIT_EXPECT_EQ(test, rc.max_qp_hard_lower, 35U);
+	KUNIT_EXPECT_EQ(test, rc.max_qp, 51U);
+	KUNIT_EXPECT_EQ(test, rc.min_qp, 8U);
+	KUNIT_EXPECT_EQ(test, mt6797_hevc_rc_reg(&rc), 0x3308U);
+}
+
+static void mt6797_venc_hevc_rate_step_test(struct kunit *test)
+{
+	unsigned int step;
+
+	step = mt6797_hevc_rc_step(1100000, 1000000, 128);
+	KUNIT_EXPECT_EQ(test, step, 1U);
+	step = mt6797_hevc_rc_step(1200000, 1000000, 128);
+	KUNIT_EXPECT_EQ(test, step, 2U);
+	step = mt6797_hevc_rc_step(1300000, 1000000, 128);
+	KUNIT_EXPECT_EQ(test, step, 3U);
+	step = mt6797_hevc_rc_step(1500000, 1000000, 128);
+	KUNIT_EXPECT_EQ(test, step, 4U);
+	step = mt6797_hevc_rc_step(1700000, 1000000, 128);
+	KUNIT_EXPECT_EQ(test, step, 5U);
+	step = mt6797_hevc_rc_step(1900000, 1000000, 128);
+	KUNIT_EXPECT_EQ(test, step, 6U);
+	step = mt6797_hevc_rc_step(2100000, 1000000, 128);
+	KUNIT_EXPECT_EQ(test, step, 7U);
+}
+
+static void mt6797_venc_hevc_rate_control_update_test(struct kunit *test)
+{
+	struct mt6797_venc_hevc_rate_control rc;
+	unsigned int i;
+
+	mt6797_hevc_rc_init(&rc);
+	for (i = 0; i <= 15; i++)
+		mt6797_hevc_rc_update(&rc, 30, i, 125000);
+	KUNIT_EXPECT_EQ(test, rc.max_qp, 51U);
+	KUNIT_EXPECT_EQ(test, rc.average_frame_bits, 1000000ULL);
+
+	/* 60 Mbit/s is between the first and second observed thresholds. */
+	rc.max_qp = 40;
+	mt6797_hevc_rc_update(&rc, 60, 16, 125000);
+	KUNIT_EXPECT_EQ(test, rc.window_bitrate, 60000000ULL);
+	KUNIT_EXPECT_EQ(test, rc.max_qp, 41U);
+
+	/* A zero-sized sample follows the vendor's maximum downward step. */
+	rc.average_frame_bits = 0;
+	rc.max_qp = 45;
+	mt6797_hevc_rc_update(&rc, 30, 17, 0);
+	KUNIT_EXPECT_EQ(test, rc.max_qp, 38U);
+
+	rc.max_qp = 36;
+	mt6797_hevc_rc_update(&rc, 30, 18, 0);
+	KUNIT_EXPECT_EQ(test, rc.max_qp, 35U);
+}
+
 static struct kunit_case mt6797_venc_hevc_cases[] = {
 	KUNIT_CASE(mt6797_venc_hevc_rcpu_size_test),
 	KUNIT_CASE(mt6797_venc_hevc_header_regs_test),
@@ -346,6 +410,9 @@ static struct kunit_case mt6797_venc_hevc_cases[] = {
 	KUNIT_CASE(mt6797_venc_hevc_seq_regs_reject_test),
 	KUNIT_CASE(mt6797_venc_hevc_frame_regs_test),
 	KUNIT_CASE(mt6797_venc_hevc_ref_regs_test),
+	KUNIT_CASE(mt6797_venc_hevc_rate_control_defaults_test),
+	KUNIT_CASE(mt6797_venc_hevc_rate_step_test),
+	KUNIT_CASE(mt6797_venc_hevc_rate_control_update_test),
 	{}
 };
 

@@ -34,7 +34,7 @@
 #define MT6797_BIGIDVFS_SRAM_SEL_MASK	GENMASK(11, 0)
 #define MT6797_BIGIDVFS_SRAM_SEL_1100MV	0x8fb
 #define MT6797_BIGIDVFS_SRAM_UV		1100000
-#define MT6797_BIGIDVFS_MAX_RAIL_DIFF_UV	300000
+#define MT6797_A72_COLD_VPROC_UV	1000000
 
 enum mt6797_a72_state {
 	MT6797_A72_OFF,
@@ -147,13 +147,17 @@ static int mt6797_a72_prepare_first(struct mt6797_a72_power *power)
 	uv = regulator_get_voltage(power->vproc);
 	if (uv <= 0)
 		return uv ?: -ERANGE;
-	/* The fixed SRAM entry point must obey the vendor rail invariant. */
-	if (uv > MT6797_BIGIDVFS_SRAM_UV ||
-	    MT6797_BIGIDVFS_SRAM_UV - uv >
-				MT6797_BIGIDVFS_MAX_RAIL_DIFF_UV) {
+	/*
+	 * This is an observed cold-handoff value, not an OPP range. Gemini's
+	 * legacy DA9214 repeatedly reports BUCKB selector 0x46 (1.0 V) while
+	 * disabled, and the bounded CPU8 successes started from that value.
+	 * Until Linux owns the PLL and coupled VPROC/VSRAM transitions, accepting
+	 * another otherwise rail-compatible voltage would invent an untested OPP.
+	 */
+	if (uv != MT6797_A72_COLD_VPROC_UV) {
 		dev_err(power->dev,
-			"cold-entry VPROC %duV is incompatible with SRAM %duV\n",
-			uv, MT6797_BIGIDVFS_SRAM_UV);
+			"cold-entry VPROC %duV does not match proven %duV handoff\n",
+			uv, MT6797_A72_COLD_VPROC_UV);
 		return -ERANGE;
 	}
 	power->vproc_uv = uv;

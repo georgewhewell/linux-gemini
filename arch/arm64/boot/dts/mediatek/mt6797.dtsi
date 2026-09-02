@@ -323,6 +323,16 @@
 		infracfg = <&infrasys>;
 	};
 
+	a72_power: power-controller@10222000 {
+		compatible = "mediatek,mt6797-a72-power";
+		reg = <0 0x10222000 0 0x1000>;
+		mediatek,spm = <&scpsys>;
+		cpus = <&cpu8>, <&cpu9>;
+		resets = <&watchdog MT6797_TOPRGU_PWRAP_SPI_CTL_RST>;
+		reset-names = "pwrap";
+		status = "disabled";
+	};
+
 	mfgsys: syscon@13000000 {
 		compatible = "mediatek,mt6797-mfgsys", "syscon";
 		reg = <0 0x13000000 0 0x1000>;

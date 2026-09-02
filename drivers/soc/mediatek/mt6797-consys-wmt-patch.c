@@ -404,14 +404,6 @@ int mt6797_consys_wmt_patch_download(struct device *dev,
 	 */
 	if (!dev || !lease)
 		return -EINVAL;
-	/*
-	 * WMT_SOC.cfg is vendor userspace policy parsed before runtime power/STP
-	 * setup (wmt_lib.c:284-302; wmt_conf.c:432-486), not a firmware payload.
-	 * This kernel path therefore requests only the two patch images it sends.
-	 * The runtime provider's co-clock==0 lifecycle contract is independently
-	 * evidenced.
-	 */
-
 	mutex_lock(&mt6797_consys_wmt_patch_download_lock);
 	ret = request_firmware(&patch_1_1, patches[0].blob.name, dev);
 	if (ret)

@@ -113,16 +113,13 @@ int mt6797_consys_emi_init(struct mt6797_consys_emi_owner *owner,
 EXPORT_SYMBOL_GPL(mt6797_consys_emi_init);
 
 int mt6797_consys_emi_start(struct mt6797_consys_emi_owner *owner,
-			    const struct mt6797_consys_emi_layout *layout,
-			    bool experiment_gate)
+			    const struct mt6797_consys_emi_layout *layout)
 {
 	struct mt6797_consys_emi_layout derived;
 	int ret;
 
 	if (!owner || !layout)
 		return -EINVAL;
-	if (!experiment_gate)
-		return -EPERM;
 
 	mutex_lock(&owner->lock);
 	if (!owner->ops) {
@@ -183,5 +180,5 @@ mt6797_consys_emi_state(struct mt6797_consys_emi_owner *owner)
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_emi_state);
 
-MODULE_DESCRIPTION("Dormant MT6797 CONSYS shared-EMI owner");
+MODULE_DESCRIPTION("MT6797 CONSYS shared-EMI owner");
 MODULE_LICENSE("GPL");

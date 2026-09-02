@@ -5,7 +5,7 @@
  * The vendor source defines this lifecycle boundary:
  *
  * - mtk_wcn_consys_hw.c:301-326 enables VCN18, waits 240 us, then enables
- *   VCN28 when co_clock_type is zero (Gemini WMT_SOC.cfg selects zero);
+ *   VCN28 for the Gemini non-co-clock hardware configuration;
  * - :328-354 sets the Conn-to-AP sleep mask, asserts CONMCU reset, writes
  *   PWRON_CONFG_EN, and votes the vendor SCP_SYS_CONN CCF path;
  * - :401-420 waits 30 us then polls MCU+0x8 for 0x0279;
@@ -1578,10 +1578,7 @@ static void mt6797_consys_handoff_test_order_and_cleanup(struct kunit *test)
 		&runtime_backend, &backend, &emi, &postid, &layout);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_runtime_platform_state(&dev),
 		MT6797_CONSYS_RUNTIME_PROVIDER_RESOURCES_READY);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_handoff_start(&handoff, &layout,
-		false), -EPERM);
-	KUNIT_ASSERT_EQ(test, mt6797_consys_handoff_start(&handoff, &layout,
-		true), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_consys_handoff_start(&handoff, &layout), 0);
 	KUNIT_EXPECT_EQ(test, backend.emi_external_users, 1U);
 	KUNIT_EXPECT_TRUE(test, backend.trace.emi_complete &&
 		backend.trace.identity_first > backend.trace.emi_complete &&
@@ -1630,7 +1627,7 @@ static void mt6797_consys_handoff_test_identity_and_emi_failures(
 		mt6797_consys_handoff_test_setup(test, &handoff, &runtime, &dev,
 			&runtime_backend, &backend, &emi, &postid, &layout);
 		KUNIT_EXPECT_EQ(test,
-			mt6797_consys_handoff_start(&handoff, &layout, true), -EIO);
+			mt6797_consys_handoff_start(&handoff, &layout), -EIO);
 		KUNIT_EXPECT_EQ(test, mt6797_consys_emi_state(&emi),
 			MT6797_CONSYS_EMI_ERROR);
 		KUNIT_EXPECT_EQ(test, runtime.external_users, 0U);
@@ -1648,7 +1645,7 @@ static void mt6797_consys_handoff_test_identity_and_emi_failures(
 		&runtime_backend, &backend, &emi, &postid, &layout);
 	runtime_backend.fail_call = MT6797_CONSYS_RUNTIME_TEST_DOMAIN_ON;
 	KUNIT_EXPECT_EQ(test,
-		mt6797_consys_handoff_start(&handoff, &layout, true), -EIO);
+		mt6797_consys_handoff_start(&handoff, &layout), -EIO);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_emi_state(&emi),
 		MT6797_CONSYS_EMI_ACTIVE);
 	KUNIT_EXPECT_EQ(test, backend.call_count, 3U);
@@ -1684,7 +1681,7 @@ static void mt6797_consys_handoff_test_postid_failures(struct kunit *test)
 		mt6797_consys_handoff_test_setup(test, &handoff, &runtime, &dev,
 			&runtime_backend, &backend, &emi, &postid, &layout);
 		KUNIT_EXPECT_EQ(test,
-			mt6797_consys_handoff_start(&handoff, &layout, true), -EIO);
+			mt6797_consys_handoff_start(&handoff, &layout), -EIO);
 		KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&postid),
 			failures[i] == MT6797_CONSYS_HANDOFF_TEST_MBIST ?
 			MT6797_CONSYS_POSTID_IDLE : MT6797_CONSYS_POSTID_ERROR);
@@ -1718,7 +1715,7 @@ static void mt6797_consys_handoff_test_reset_failure_is_fatal(
 	mt6797_consys_handoff_test_setup(test, &handoff, &runtime, &dev,
 		&runtime_backend, &backend, &emi, &postid, &layout);
 	KUNIT_EXPECT_EQ(test,
-		mt6797_consys_handoff_start(&handoff, &layout, true), -EIO);
+		mt6797_consys_handoff_start(&handoff, &layout), -EIO);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_postid_state(&postid),
 		MT6797_CONSYS_POSTID_ERROR);
 	KUNIT_EXPECT_EQ(test, runtime.external_users, 2U);
@@ -1743,7 +1740,7 @@ static void mt6797_consys_handoff_test_stop_reset_failure(
 	mt6797_consys_handoff_test_setup(test, &handoff, &runtime, &dev,
 		&runtime_backend, &backend, &emi, &postid, &layout);
 	KUNIT_ASSERT_EQ(test,
-		mt6797_consys_handoff_start(&handoff, &layout, true), 0);
+		mt6797_consys_handoff_start(&handoff, &layout), 0);
 	backend.fail_assert_reset = true;
 	KUNIT_EXPECT_EQ(test, mt6797_consys_handoff_stop(&handoff), -EIO);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_handoff_state(&handoff),

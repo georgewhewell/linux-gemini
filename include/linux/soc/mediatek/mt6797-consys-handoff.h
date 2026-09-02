@@ -33,7 +33,7 @@ int mt6797_consys_handoff_init(struct mt6797_consys_handoff_owner *owner,
 		struct mt6797_consys_postid_owner *postid,
 		struct device *runtime_dev);
 int mt6797_consys_handoff_start(struct mt6797_consys_handoff_owner *owner,
-		const struct mt6797_consys_emi_layout *layout, bool experiment_gate);
+		const struct mt6797_consys_emi_layout *layout);
 int mt6797_consys_handoff_stop(struct mt6797_consys_handoff_owner *owner);
 enum mt6797_consys_handoff_state
 mt6797_consys_handoff_state(struct mt6797_consys_handoff_owner *owner);

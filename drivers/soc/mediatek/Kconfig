@@ -311,16 +311,16 @@ config MTK_MT6797_CONSYS_POSTID_KUNIT_TEST
 	  hardware, firmware, transport, or radio is used.
 
 config MTK_MT6797_CONSYS_EMI_LAYOUT
-	tristate "Dormant MT6797 CONSYS shared-EMI layout owner"
+	tristate "MT6797 CONSYS shared-EMI layout owner"
 	depends on MTK_MT6797_CONSYS_CORE
 	help
-	  Build the hardware-neutral, default-disabled shared-EMI layout owner.
+	  Build the hardware-neutral shared-EMI layout owner.
 	  It validates the vendor 2 MiB reservation, derives the exact MPU,
 	  remap, and 343 KiB clear windows, and invokes backend callbacks in that
 	  order. It has no Device Tree node or caller, performs no MMIO, ioremap,
 	  or memset, and does not implement rollback because the vendor source
-	  supplies no inverse for these persistent settings. The caller must pass
-	  an independent experiment gate explicitly.
+	  supplies no inverse for these persistent settings. A platform owner must
+	  validate and exclusively claim the layout before starting it.
 
 config MTK_MT6797_CONSYS_EMI_LAYOUT_KUNIT_TEST
 	bool "KUnit tests for the MT6797 CONSYS shared-EMI layout owner"
@@ -329,7 +329,7 @@ config MTK_MT6797_CONSYS_EMI_LAYOUT_KUNIT_TEST
 	default n
 	help
 	  Exercise exact vendor geometry, overflow and boundary rejection,
-	  callback ordering, gate rejection, sticky failures, and the absence of
+	  callback ordering, sticky failures, and the absence of
 	  teardown with fake callbacks and no hardware or memory mapping.
 	  It is suitable for test kernels and QEMU and has no Gemini hardware
 	  dependency.
@@ -354,12 +354,12 @@ config MTK_MT6797_CONSYS_EMI_MPU
 	  recreation cannot repeat the one-way transaction.
 
 config MTK_MT6797_CONSYS_HANDOFF
-	tristate "Dormant MT6797 CONSYS true-chronology handoff owner"
+	tristate "MT6797 CONSYS true-chronology handoff owner"
 	depends on MTK_MT6797_CONSYS_RUNTIME
 	depends on MTK_MT6797_CONSYS_POSTID
 	depends on MTK_MT6797_CONSYS_EMI_LAYOUT
 	help
-	  Build the default-disabled coordinator which holds a resources-only
+	  Build the coordinator which holds a resources-only
 	  provider lease, performs shared-EMI setup, activates identity, and then
 	  runs MBIST, AFE, and reset release through callback owners. It has no
 	  Device Tree caller and performs no hardware access by itself.
@@ -506,10 +506,10 @@ config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD
 	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP
 	depends on FW_LOADER
 	help
-	  Build the bounded controller for the captured Gemini WMT patch manifest:
+	  Build the bounded controller for the MT6797 WMT patch sequence:
 	  ROMv3_patch_1_1_hdr.bin and ROMv3_patch_1_0_hdr.bin. It requests those
 	  exact bare names, verifies
-	  the firmware-loader results and opaque evidenced four-byte vectors, strips
+	  the firmware-loader results and fixed four-byte load-address vectors, strips
 	  the 28-byte patch header, and emits only the documented WMT patch
 	  address and patch-fragment transactions.
 

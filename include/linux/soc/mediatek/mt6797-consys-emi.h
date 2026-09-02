@@ -79,10 +79,8 @@ int mt6797_consys_emi_layout_build(
 int mt6797_consys_emi_init(struct mt6797_consys_emi_owner *owner,
 			   const struct mt6797_consys_emi_ops *ops, void *context);
 
-/* @experiment_gate is independent and defaults to false at every caller. */
 int mt6797_consys_emi_start(struct mt6797_consys_emi_owner *owner,
-			    const struct mt6797_consys_emi_layout *layout,
-			    bool experiment_gate);
+			    const struct mt6797_consys_emi_layout *layout);
 
 /* No vendor inverse exists; this returns -EOPNOTSUPP without changing state. */
 int mt6797_consys_emi_stop(struct mt6797_consys_emi_owner *owner);

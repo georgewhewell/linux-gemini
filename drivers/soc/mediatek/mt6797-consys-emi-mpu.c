@@ -238,7 +238,7 @@ mt6797_consys_emi_mpu_claim_provider(struct mt6797_consys_emi_mpu *mpu)
 	mt6797_consys_emi_mpu_boot_state = MT6797_CONSYS_EMI_MPU_BOOT_ATTEMPTED;
 	mutex_unlock(&mt6797_consys_emi_mpu_boot_lock);
 
-	ret = mt6797_consys_emi_start(&mpu->owner, &mpu->layout, true);
+	ret = mt6797_consys_emi_start(&mpu->owner, &mpu->layout);
 	mutex_lock(&mt6797_consys_emi_mpu_boot_lock);
 	mt6797_consys_emi_mpu_boot_state = ret ? MT6797_CONSYS_EMI_MPU_BOOT_FATAL :
 		MT6797_CONSYS_EMI_MPU_BOOT_COMMITTED;

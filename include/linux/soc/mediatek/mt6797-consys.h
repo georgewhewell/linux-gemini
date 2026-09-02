@@ -10,8 +10,8 @@
  * c5b0be85017ad0c599725e8273842efdbecdd88a,
  * drivers/misc/mediatek/connectivity/common/common_main/mt6797/
  * mtk_wcn_consys_hw.c:301-309 enables VCN18 then waits 240us. Lines 311-326
- * enable VCN28 when co_clock_type is zero; Gemini's WMT_SOC.cfg:6 specifies
- * co_clock_flag=0. Lines 341-354 prepare PWRON_CONFG_EN then enable
+ * enable VCN28 for the Gemini non-co-clock hardware configuration. Lines
+ * 341-354 prepare PWRON_CONFG_EN then enable
  * SCP_SYS_CONN through CCF, and lines 401-402 wait 30us before lines 415-420
  * read the chip ID.
  */

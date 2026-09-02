@@ -60,14 +60,12 @@ int mt6797_consys_handoff_init(struct mt6797_consys_handoff_owner *owner,
 EXPORT_SYMBOL_GPL(mt6797_consys_handoff_init);
 
 int mt6797_consys_handoff_start(struct mt6797_consys_handoff_owner *owner,
-		const struct mt6797_consys_emi_layout *layout, bool experiment_gate)
+		const struct mt6797_consys_emi_layout *layout)
 {
 	int ret;
 
 	if (!owner || !layout)
 		return -EINVAL;
-	if (!experiment_gate)
-		return -EPERM;
 	mutex_lock(&owner->lock);
 	if (!mt6797_consys_handoff_valid(owner))
 		ret = -EINVAL;
@@ -84,7 +82,7 @@ int mt6797_consys_handoff_start(struct mt6797_consys_handoff_owner *owner,
 		owner->resources_held = true;
 
 		/* Vendor hw_init(): protection, remap, then map/clear. */
-		ret = mt6797_consys_emi_start(owner->emi, layout, true);
+		ret = mt6797_consys_emi_start(owner->emi, layout);
 		if (ret)
 			goto fail_resources;
 

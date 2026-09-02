@@ -102,7 +102,7 @@ static void mt6797_consys_emi_test_layout_rejects_bad_geometry(
 					MT6797_CONSYS_SHARED_MEM_SIZE, NULL), -EINVAL);
 }
 
-static void mt6797_consys_emi_test_start_order_and_gate(struct kunit *test)
+static void mt6797_consys_emi_test_start_order(struct kunit *test)
 {
 	struct mt6797_consys_emi_test_backend backend = {
 		.fail_call = MT6797_CONSYS_EMI_TEST_NONE,
@@ -114,10 +114,7 @@ static void mt6797_consys_emi_test_start_order_and_gate(struct kunit *test)
 					&mt6797_consys_emi_test_ops, &backend), 0);
 	KUNIT_ASSERT_EQ(test, mt6797_consys_emi_layout_build(0x40000000,
 					MT6797_CONSYS_SHARED_MEM_SIZE, &layout), 0);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_emi_start(&owner, &layout, false),
-			-EPERM);
-	KUNIT_EXPECT_EQ(test, backend.call_count, (u32)0);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_emi_start(&owner, &layout, true), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_emi_start(&owner, &layout), 0);
 	KUNIT_EXPECT_EQ(test, backend.call_count, (u32)3);
 	KUNIT_EXPECT_EQ(test, backend.calls[0],
 			(enum mt6797_consys_emi_test_call)
@@ -130,7 +127,7 @@ static void mt6797_consys_emi_test_start_order_and_gate(struct kunit *test)
 			MT6797_CONSYS_EMI_TEST_MAP_CLEAR);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_emi_state(&owner),
 			MT6797_CONSYS_EMI_ACTIVE);
-	KUNIT_EXPECT_EQ(test, mt6797_consys_emi_start(&owner, &layout, true),
+	KUNIT_EXPECT_EQ(test, mt6797_consys_emi_start(&owner, &layout),
 			-EBUSY);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_emi_stop(&owner), -EOPNOTSUPP);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_emi_state(&owner),
@@ -157,12 +154,12 @@ static void mt6797_consys_emi_test_failures_are_sticky(struct kunit *test)
 
 		KUNIT_ASSERT_EQ(test, mt6797_consys_emi_init(&owner,
 					&mt6797_consys_emi_test_ops, &backend), 0);
-		KUNIT_EXPECT_EQ(test, mt6797_consys_emi_start(&owner, &layout, true),
+		KUNIT_EXPECT_EQ(test, mt6797_consys_emi_start(&owner, &layout),
 				-EIO);
 		KUNIT_EXPECT_EQ(test, mt6797_consys_emi_state(&owner),
 				MT6797_CONSYS_EMI_ERROR);
 		KUNIT_EXPECT_EQ(test, backend.call_count, (u32)failures[i] + 1);
-		KUNIT_EXPECT_EQ(test, mt6797_consys_emi_start(&owner, &layout, true),
+		KUNIT_EXPECT_EQ(test, mt6797_consys_emi_start(&owner, &layout),
 				-EIO);
 		KUNIT_EXPECT_EQ(test, mt6797_consys_emi_stop(&owner), -EIO);
 	}
@@ -171,7 +168,7 @@ static void mt6797_consys_emi_test_failures_are_sticky(struct kunit *test)
 static struct kunit_case mt6797_consys_emi_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_emi_test_layout_values),
 	KUNIT_CASE(mt6797_consys_emi_test_layout_rejects_bad_geometry),
-	KUNIT_CASE(mt6797_consys_emi_test_start_order_and_gate),
+	KUNIT_CASE(mt6797_consys_emi_test_start_order),
 	KUNIT_CASE(mt6797_consys_emi_test_failures_are_sticky),
 	{ }
 };

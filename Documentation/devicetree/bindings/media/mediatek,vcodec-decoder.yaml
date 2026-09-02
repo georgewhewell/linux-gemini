@@ -97,15 +97,15 @@ allOf:
         reg-names:
           items:
             - const: misc
-            - const: vld
-            - const: vld-top
-            - const: mc
-            - const: avc-vld
-            - const: avc-mv
+            - const: ld
+            - const: top
+            - const: cm
+            - const: ad
+            - const: av
             - const: pp
-            - const: vp8-vld
-            - const: vld2
-            - const: hevc-vld
+            - const: hwd
+            - const: hwq
+            - const: hwb
 
         clocks:
           minItems: 1

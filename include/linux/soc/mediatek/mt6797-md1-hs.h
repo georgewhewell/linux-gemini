@@ -28,6 +28,7 @@ enum mt6797_md1_hs_state {
 	MT6797_MD1_HS_WAIT_HS1,
 	MT6797_MD1_HS_WAIT_HS2,
 	MT6797_MD1_HS_READY,
+	MT6797_MD1_HS_CRASHED,
 };
 
 enum mt6797_md1_hs_action {
@@ -60,6 +61,8 @@ int mt6797_md1_hs_arm(struct mt6797_md1_hs *hs, bool post_vector_activity);
 int mt6797_md1_hs_rx(struct mt6797_md1_hs *hs,
 		     const struct mt6797_md1_hs_frame *frame,
 		     enum mt6797_md1_hs_action *action);
+int mt6797_md1_hs_crash(struct mt6797_md1_hs *hs, int reason);
+int mt6797_md1_hs_reset(struct mt6797_md1_hs *hs);
 enum mt6797_md1_hs_state mt6797_md1_hs_state(struct mt6797_md1_hs *hs);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_MD1_HS_H */

@@ -163,6 +163,23 @@ static void mt6797_md1_hs_rejects_replayed_hs2(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_md1_hs_state(&hs), MT6797_MD1_HS_READY);
 }
 
+static void mt6797_md1_hs_latches_crash_until_reset(struct kunit *test)
+{
+	struct mt6797_md1_hs hs;
+	enum mt6797_md1_hs_action action;
+
+	mt6797_md1_hs_init_and_arm(test, &hs);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_hs_crash(&hs, -EIO), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_hs_state(&hs), MT6797_MD1_HS_CRASHED);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_md1_hs_rx(&hs, &mt6797_md1_hs_v2_hs1, &action),
+			-ESHUTDOWN);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_hs_arm(&hs, true), -EALREADY);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_hs_reset(&hs), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_hs_state(&hs), MT6797_MD1_HS_OFF);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_hs_arm(&hs, true), 0);
+}
+
 static struct kunit_case mt6797_md1_hs_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_hs_requires_post_vector_activity),
 	KUNIT_CASE(mt6797_md1_hs_refuses_unframed_or_wrong_channel_input),
@@ -173,6 +190,7 @@ static struct kunit_case mt6797_md1_hs_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_hs_accepts_hs2_after_hs1),
 	KUNIT_CASE(mt6797_md1_hs_keeps_hs1_priority_while_waiting_for_hs2),
 	KUNIT_CASE(mt6797_md1_hs_rejects_replayed_hs2),
+	KUNIT_CASE(mt6797_md1_hs_latches_crash_until_reset),
 	{}
 };
 

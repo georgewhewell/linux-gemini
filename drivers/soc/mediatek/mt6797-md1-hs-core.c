@@ -10,6 +10,7 @@
  */
 
 #include <linux/errno.h>
+#include <linux/export.h>
 #include <linux/soc/mediatek/mt6797-md1-hs.h>
 #include <linux/string.h>
 
@@ -23,6 +24,7 @@ int mt6797_md1_hs_init(struct mt6797_md1_hs *hs)
 	hs->state = MT6797_MD1_HS_OFF;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_hs_init);
 
 int mt6797_md1_hs_arm(struct mt6797_md1_hs *hs, bool post_vector_activity)
 {
@@ -42,6 +44,7 @@ int mt6797_md1_hs_arm(struct mt6797_md1_hs *hs, bool post_vector_activity)
 	mutex_unlock(&hs->lock);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_hs_arm);
 
 static int mt6797_md1_hs_hs1(struct mt6797_md1_hs *hs,
 			     const struct mt6797_md1_hs_frame *frame,
@@ -104,12 +107,48 @@ int mt6797_md1_hs_rx(struct mt6797_md1_hs *hs,
 	case MT6797_MD1_HS_READY:
 		ret = -EALREADY;
 		break;
+	case MT6797_MD1_HS_CRASHED:
+		ret = -ESHUTDOWN;
+		break;
 	}
 out:
 	hs->last_error = ret;
 	mutex_unlock(&hs->lock);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_hs_rx);
+
+int mt6797_md1_hs_crash(struct mt6797_md1_hs *hs, int reason)
+{
+	if (!hs || reason >= 0)
+		return -EINVAL;
+
+	mutex_lock(&hs->lock);
+	if (hs->state == MT6797_MD1_HS_OFF) {
+		mutex_unlock(&hs->lock);
+		return -EPERM;
+	}
+	hs->state = MT6797_MD1_HS_CRASHED;
+	hs->last_action = MT6797_MD1_HS_ACTION_NONE;
+	hs->last_error = reason;
+	mutex_unlock(&hs->lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_hs_crash);
+
+int mt6797_md1_hs_reset(struct mt6797_md1_hs *hs)
+{
+	if (!hs)
+		return -EINVAL;
+
+	mutex_lock(&hs->lock);
+	hs->state = MT6797_MD1_HS_OFF;
+	hs->last_action = MT6797_MD1_HS_ACTION_NONE;
+	hs->last_error = 0;
+	mutex_unlock(&hs->lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_hs_reset);
 
 enum mt6797_md1_hs_state mt6797_md1_hs_state(struct mt6797_md1_hs *hs)
 {
@@ -122,3 +161,4 @@ enum mt6797_md1_hs_state mt6797_md1_hs_state(struct mt6797_md1_hs *hs)
 	mutex_unlock(&hs->lock);
 	return state;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_hs_state);

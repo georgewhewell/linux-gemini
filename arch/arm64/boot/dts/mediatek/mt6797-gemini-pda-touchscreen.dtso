@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Opt-in NT36772 touchscreen composition for the Planet Gemini PDA.
+ *
+ * The base board keeps this hardware disabled. This overlay is intended for
+ * a recovery-backed physical touch, coordinate and suspend/resume test.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&i2c4 {
+	status = "okay";
+};
+
+&touchscreen {
+	status = "okay";
+};

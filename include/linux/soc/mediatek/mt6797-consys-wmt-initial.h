@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * MT6797's mandatory-STP WMT identity and chip-side mode preflight.
+ * MT6797's mandatory-STP WMT identity and chip-side mode setup.
  *
  * This is deliberately not a platform, power, firmware, or radio API.  A
  * future single transport owner may use it only after it owns the mandatory

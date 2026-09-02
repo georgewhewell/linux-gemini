@@ -21,7 +21,7 @@
  * register exchange itself.
  * This controller instead accepts only the complete vendor layout below.
  *
- * Only after this complete identity preflight, wmt_ic_soc.c:122-124 defines
+ * Only after this complete identity exchange, wmt_ic_soc.c:122-124 defines
  * the first BTIF mandatory-STP scripted query/default reply.  Its
  * :190-191 set-full command/reply follows that query at :1008-1022, before
  * the host changes its own STP framing at :1024-1037.  This controller owns

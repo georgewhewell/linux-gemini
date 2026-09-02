@@ -18,8 +18,8 @@
  * probe stops at validated resources. A coordinator must perform shared EMI
  * setup before calling that transaction. This provider consequently never
  * deasserts reset, touches AFE/shared EMI, starts BTIF, loads firmware, sends
- * WMT, or turns on a connectivity function by itself. The shipped Gemini DT
- * has no compatible node for this driver and stays disabled.
+ * WMT, or turns on a connectivity function by itself. The Gemini node is
+ * disabled by default.
  */
 
 #include <linux/bits.h>

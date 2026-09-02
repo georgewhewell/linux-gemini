@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-consys-runtime-controller.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 CONSYS firmware controller
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  Coordinates the MT6797 CONSYS lifecycle and BTIF PIO transport for an
+  in-kernel connectivity-function consumer. A session performs the mandatory
+  STP handover, downloads both WMT patches, and completes the vendor post-patch
+  sequence before it is published to the consumer. The controller registers
+  no radio or userspace endpoint by itself.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-consys-runtime-controller
+
+  mediatek,runtime-provider:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: CONSYS runtime provider holding the common lifecycle lease.
+
+  mediatek,btif-provider:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      BTIF PIO transport provider. Its binding requires CLK_INFRA_BTIF from
+      the MT6797 infrasys clock provider.
+
+required:
+  - compatible
+  - mediatek,runtime-provider
+  - mediatek,btif-provider
+
+additionalProperties: false
+
+examples:
+  - |
+    consys-controller {
+        compatible = "mediatek,mt6797-consys-runtime-controller";
+        mediatek,runtime-provider = <&consys_runtime>;
+        mediatek,btif-provider = <&btif_pio>;
+        status = "disabled";
+    };
+...

@@ -21,7 +21,9 @@ properties:
     pattern: '^power-controller(@[0-9a-f]+)?$'
 
   compatible:
-    const: mediatek,mt6797-scpsys
+    items:
+      - const: mediatek,mt6797-scpsys
+      - const: syscon
 
   reg:
     maxItems: 1
@@ -64,7 +66,7 @@ examples:
         #size-cells = <2>;
 
         scpsys: power-controller@10006000 {
-            compatible = "mediatek,mt6797-scpsys";
+            compatible = "mediatek,mt6797-scpsys", "syscon";
             #power-domain-cells = <1>;
             reg = <0 0x10006000 0 0x1000>;
             infracfg = <&infracfg>;

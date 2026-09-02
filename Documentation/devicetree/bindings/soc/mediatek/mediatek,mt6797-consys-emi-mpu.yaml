@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-consys-emi-mpu.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 CONSYS shared-EMI MPU owner
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The MT6797 vendor CONSYS setup permanently protects the upper half of its
+  2 MiB shared reservation through EMI MPU region 19, configures the
+  CONSYS-to-AP remap field, and clears a 343 KiB window. The vendor source has
+  no inverse operation. The provider validates its resources at probe and
+  performs the one-way ownership transaction only when a CONSYS consumer
+  claims it. It also controls the separately reversible 512 KiB Wi-Fi window.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-consys-emi-mpu
+
+  reg:
+    items:
+      - description: EMI MPU aperture used by the vendor secure firmware ABI.
+      - description: TOPCKGEN aperture containing the CONSYS remap register.
+
+  reg-names:
+    items:
+      - const: emi
+      - const: topckgen
+
+  memory-region:
+    maxItems: 1
+    description: The exact 2 MiB, 2 MiB-aligned, no-map CONSYS reservation.
+
+  memory-region-names:
+    const: shared
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - memory-region
+  - memory-region-names
+
+additionalProperties: false
+
+examples:
+  - |
+    / {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        reserved-memory {
+            #address-cells = <2>;
+            #size-cells = <2>;
+            ranges;
+
+            consys_reserved_memory: wifi-memory {
+                size = <0 0x200000>;
+                alignment = <0 0x200000>;
+                no-map;
+            };
+        };
+
+        emi-mpu@10203000 {
+            compatible = "mediatek,mt6797-consys-emi-mpu";
+            reg = <0 0x10203000 0 0x1000>,
+                  <0 0x10000000 0 0x2000>;
+            reg-names = "emi", "topckgen";
+            memory-region = <&consys_reserved_memory>;
+            memory-region-names = "shared";
+            status = "disabled";
+        };
+    };
+...

@@ -22,8 +22,68 @@ static void mt6797_venc_h264_rcpu_size_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 }
 
+static void mt6797_venc_h264_work_buf_1080p_test(struct kunit *test)
+{
+	struct mt6797_venc_h264_work_buf_sizes sizes = { };
+	int ret;
+
+	ret = mt6797_venc_h264_calc_work_buf_sizes(1920, 1080, &sizes);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test,
+			sizes.size[MT6797_VENC_H264_WORK_BUF_RC_INFO],
+			(size_t)0x400);
+	KUNIT_EXPECT_EQ(test,
+			sizes.size[MT6797_VENC_H264_WORK_BUF_REC_LUMA],
+			(size_t)2088960);
+	KUNIT_EXPECT_EQ(test,
+			sizes.size[MT6797_VENC_H264_WORK_BUF_REC_CHROMA],
+			(size_t)1044480);
+	KUNIT_EXPECT_EQ(test,
+			sizes.size[MT6797_VENC_H264_WORK_BUF_MV_INFO_1],
+			(size_t)65280);
+	KUNIT_EXPECT_EQ(test,
+			sizes.size[MT6797_VENC_H264_WORK_BUF_SKIP_FRAME],
+			(size_t)0x80);
+}
+
+static void mt6797_venc_h264_work_buf_alignment_test(struct kunit *test)
+{
+	struct mt6797_venc_h264_work_buf_sizes sizes = { };
+	int ret;
+
+	ret = mt6797_venc_h264_calc_work_buf_sizes(1, 1, &sizes);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test,
+			sizes.size[MT6797_VENC_H264_WORK_BUF_REC_LUMA],
+			(size_t)512);
+	KUNIT_EXPECT_EQ(test,
+			sizes.size[MT6797_VENC_H264_WORK_BUF_REC_CHROMA],
+			(size_t)256);
+	KUNIT_EXPECT_EQ(test,
+			sizes.size[MT6797_VENC_H264_WORK_BUF_MV_INFO_1],
+			(size_t)128);
+}
+
+static void mt6797_venc_h264_work_buf_reject_test(struct kunit *test)
+{
+	struct mt6797_venc_h264_work_buf_sizes sizes = { };
+	int ret;
+
+	ret = mt6797_venc_h264_calc_work_buf_sizes(0, 1080, &sizes);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	ret = mt6797_venc_h264_calc_work_buf_sizes(1920, 0, &sizes);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	ret = mt6797_venc_h264_calc_work_buf_sizes(1920, 1080, NULL);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	ret = mt6797_venc_h264_calc_work_buf_sizes(U32_MAX, U32_MAX, &sizes);
+	KUNIT_EXPECT_EQ(test, ret, -EOVERFLOW);
+}
+
 static struct kunit_case mt6797_venc_h264_cases[] = {
 	KUNIT_CASE(mt6797_venc_h264_rcpu_size_test),
+	KUNIT_CASE(mt6797_venc_h264_work_buf_1080p_test),
+	KUNIT_CASE(mt6797_venc_h264_work_buf_alignment_test),
+	KUNIT_CASE(mt6797_venc_h264_work_buf_reject_test),
 	{}
 };
 

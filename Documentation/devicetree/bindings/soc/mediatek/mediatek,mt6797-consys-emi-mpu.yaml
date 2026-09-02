@@ -13,17 +13,15 @@ description: |
   The MT6797 vendor CONSYS setup permanently protects the upper half of its
   2 MiB shared reservation through EMI MPU region 19, configures the
   CONSYS-to-AP remap field, and clears a 343 KiB window. The vendor source has
-  no inverse operation. This node must stay disabled in the shipped board DT.
-  Activating it needs an explicit overlay property and a boot-time parameter;
-  probe only validates resources. A separately gated CONSYS consumer claims
-  the one-way ownership transaction.
+  no inverse operation. The provider validates its resources at probe and
+  performs the one-way ownership transaction only when a CONSYS consumer
+  claims it. It also controls the separately reversible 512 KiB Wi-Fi window.
 
 properties:
   compatible:
     const: mediatek,mt6797-consys-emi-mpu
 
   reg:
-    minItems: 2
     items:
       - description: EMI MPU aperture used by the vendor secure firmware ABI.
       - description: TOPCKGEN aperture containing the CONSYS remap register.
@@ -40,10 +38,6 @@ properties:
   memory-region-names:
     const: shared
 
-  mediatek,experimental-shared-emi-ownership:
-    type: boolean
-    description: Explicitly permit this persistent ownership provider to probe.
-
 required:
   - compatible
   - reg
@@ -52,4 +46,33 @@ required:
   - memory-region-names
 
 additionalProperties: false
+
+examples:
+  - |
+    / {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        reserved-memory {
+            #address-cells = <2>;
+            #size-cells = <2>;
+            ranges;
+
+            consys_reserved_memory: wifi-memory {
+                size = <0 0x200000>;
+                alignment = <0 0x200000>;
+                no-map;
+            };
+        };
+
+        emi-mpu@10203000 {
+            compatible = "mediatek,mt6797-consys-emi-mpu";
+            reg = <0 0x10203000 0 0x1000>,
+                  <0 0x10000000 0 0x2000>;
+            reg-names = "emi", "topckgen";
+            memory-region = <&consys_reserved_memory>;
+            memory-region-names = "shared";
+            status = "disabled";
+        };
+    };
 ...

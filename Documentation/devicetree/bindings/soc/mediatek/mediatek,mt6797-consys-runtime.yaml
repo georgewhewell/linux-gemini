@@ -1,0 +1,139 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-consys-runtime.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 CONSYS runtime provider
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The MT6797 connectivity subsystem shares power, reset, analogue, interrupt,
+  and reserved-memory resources between its radio functions. This provider
+  owns the common lifecycle while a function session is active. Firmware and
+  transport sequencing are handled by a separate controller.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-consys-runtime
+
+  reg:
+    items:
+      - description: Connectivity MCU configuration registers.
+      - description: AP reset generator registers.
+      - description: Top clock generator and connectivity remap registers.
+      - description: System power manager registers.
+      - description: ANA_WBG analogue front-end registers.
+
+  reg-names:
+    items:
+      - const: mcu
+      - const: ap-rgu
+      - const: topckgen
+      - const: spm
+      - const: afe
+
+  interrupts:
+    items:
+      - description: BGF interrupt.
+      - description: Connectivity watchdog interrupt.
+
+  interrupt-names:
+    items:
+      - const: bgf
+      - const: wdt
+
+  resets:
+    maxItems: 1
+
+  reset-names:
+    const: conn-mcu
+
+  mediatek,conn-power-domain:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    description: |
+      CONN power domain attached explicitly by the lifecycle, after the shared
+      regulator and reset prerequisites have been established.
+
+  mediatek,infracfg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: INFRACFG syscon containing the connectivity sleep-mask bit.
+
+  mediatek,spm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: SPM syscon containing connectivity power-control registers.
+
+  vcn18-supply:
+    description: Shared 1.8 V connectivity supply.
+
+  vcn28-supply:
+    description: Shared 2.8 V connectivity supply.
+
+  memory-region:
+    maxItems: 1
+    description: 2 MiB, 2 MiB-aligned, no-map CONSYS shared memory.
+
+  memory-region-names:
+    const: shared
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - resets
+  - reset-names
+  - mediatek,conn-power-domain
+  - mediatek,infracfg
+  - mediatek,spm
+  - vcn18-supply
+  - vcn28-supply
+  - memory-region
+  - memory-region-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/power/mt6797-power.h>
+    #include <dt-bindings/reset/mt6797-resets.h>
+
+    / {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        gic: interrupt-controller {
+            interrupt-controller;
+            #interrupt-cells = <3>;
+        };
+
+        consys@18070000 {
+            compatible = "mediatek,mt6797-consys-runtime";
+            reg = <0 0x18070000 0 0x200>,
+                  <0 0x10007000 0 0x100>,
+                  <0 0x10000000 0 0x2000>,
+                  <0 0x10006000 0 0x1000>,
+                  <0 0x180b6000 0 0x100>;
+            reg-names = "mcu", "ap-rgu", "topckgen", "spm", "afe";
+            interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>,
+                         <GIC_SPI 285 IRQ_TYPE_LEVEL_LOW>;
+            interrupt-names = "bgf", "wdt";
+            interrupt-parent = <&gic>;
+            resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
+            reset-names = "conn-mcu";
+            mediatek,conn-power-domain = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+            mediatek,infracfg = <&infrasys>;
+            mediatek,spm = <&scpsys>;
+            vcn18-supply = <&vcn18>;
+            vcn28-supply = <&vcn28>;
+            memory-region = <&consys_reserved_memory>;
+            memory-region-names = "shared";
+            status = "disabled";
+        };
+    };
+...

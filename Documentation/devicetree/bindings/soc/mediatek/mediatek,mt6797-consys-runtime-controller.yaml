@@ -4,27 +4,17 @@
 $id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-consys-runtime-controller.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: MediaTek MT6797 gated CONSYS STP-bootstrap controller
+title: MediaTek MT6797 CONSYS firmware controller
 
 maintainers:
   - George Whewell <georgerw@gmail.com>
 
 description: |
-  This is a deliberately separate, one-shot consumer of the MT6797 CONSYS
-  runtime and BTIF PIO platform experiments. It creates managed supplier
-  links, then remains dormant until an in-kernel caller invokes its explicitly
-  gated start operation. That operation owns only the documented mandatory
-  STP query-default, set-full, host full-STP handoff, 10 ms delay, and
-  query-full verification sequence.
-
-  Keep this node disabled in the shipped Gemini DT. A hand-authored overlay
-  must enable it, set mediatek,experimental-bootstrap, enable each referenced
-  provider's independent gates, and set the controller boot parameter. The
-  separately bound BTIF PIO provider exclusively owns its named btifc
-  (CLK_INFRA_BTIF) clock vote while its PIO platform lease is held. This
-  controller does not establish APDMA, pad, reset-release, AFE,
-  firmware-patch, or radio-function ownership. The controller registers no
-  GNSS, HCI, Wi-Fi, FM, or userspace endpoint.
+  Coordinates the MT6797 CONSYS lifecycle and BTIF PIO transport for an
+  in-kernel connectivity-function consumer. A session performs the mandatory
+  STP handover, downloads both WMT patches, and completes the vendor post-patch
+  sequence before it is published to the consumer. The controller registers
+  no radio or userspace endpoint by itself.
 
 properties:
   compatible:
@@ -32,39 +22,27 @@ properties:
 
   mediatek,runtime-provider:
     $ref: /schemas/types.yaml#/definitions/phandle
-    description: |
-      A separately enabled mediatek,mt6797-consys-runtime provider holding the
-      exclusive lifecycle lease through its bounded identity prefix.
+    description: CONSYS runtime provider holding the common lifecycle lease.
 
   mediatek,btif-provider:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: |
-      A separately enabled mediatek,mt6797-btif-pio platform adapter with its
-      BTIF IRQ registered but disabled. Its binding requires one btifc clock
-      consumer, CLK_INFRA_BTIF from the MT6797 infrasys provider.
-
-  mediatek,experimental-bootstrap:
-    type: boolean
-    description: |
-      Explicitly permit this dormant coordinator to bind when its independent
-      default-false boot parameter is also supplied. It does not itself start
-      the handover.
+      BTIF PIO transport provider. Its binding requires CLK_INFRA_BTIF from
+      the MT6797 infrasys clock provider.
 
 required:
   - compatible
   - mediatek,runtime-provider
   - mediatek,btif-provider
-  - mediatek,experimental-bootstrap
 
 additionalProperties: false
 
 examples:
   - |
-    consys-stp-bootstrap {
+    consys-controller {
         compatible = "mediatek,mt6797-consys-runtime-controller";
         mediatek,runtime-provider = <&consys_runtime>;
         mediatek,btif-provider = <&btif_pio>;
-        mediatek,experimental-bootstrap;
         status = "disabled";
     };
 ...

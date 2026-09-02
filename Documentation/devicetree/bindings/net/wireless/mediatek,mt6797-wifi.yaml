@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/wireless/mediatek,mt6797-wifi.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 integrated wireless LAN
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The MT6797 wireless LAN function is integrated into CONSYS. It uses the AHB
+  host-interface portal while separate providers own the common CONSYS
+  lifecycle, WMT-over-BTIF firmware sequence, and shared-EMI protection.
+
+allOf:
+  - $ref: wireless-controller.yaml#
+
+properties:
+  compatible:
+    const: mediatek,mt6797-wifi
+
+  reg:
+    maxItems: 1
+    description: AHB host-interface portal at 0x180f0000, sized 0x1100.
+
+  interrupts:
+    maxItems: 1
+    description: Wi-Fi GIC SPI 283, level-low.
+
+  interrupt-names:
+    const: wifi
+
+  mediatek,runtime-provider:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: MT6797 CONSYS runtime provider.
+
+  mediatek,controller:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: MT6797 CONSYS firmware controller.
+
+  mediatek,emi-mpu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: MT6797 CONSYS shared-EMI MPU provider.
+
+  bt-paldo-supply:
+    description: Bluetooth PALDO used by the common post-patch sequence.
+
+  wifi-paldo-supply:
+    description: Wi-Fi PALDO used by the common post-patch sequence.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - interrupt-names
+  - mediatek,runtime-provider
+  - mediatek,controller
+  - mediatek,emi-mpu
+  - bt-paldo-supply
+  - wifi-paldo-supply
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    / {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        gic: interrupt-controller {
+            interrupt-controller;
+            #interrupt-cells = <3>;
+        };
+
+        wifi@180f0000 {
+            compatible = "mediatek,mt6797-wifi";
+            reg = <0 0x180f0000 0 0x1100>;
+            interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
+            interrupt-names = "wifi";
+            interrupt-parent = <&gic>;
+            mediatek,runtime-provider = <&consys>;
+            mediatek,controller = <&consys_controller>;
+            mediatek,emi-mpu = <&consys_emi_mpu>;
+            bt-paldo-supply = <&vcn33_bt>;
+            wifi-paldo-supply = <&vcn33_wifi>;
+            status = "disabled";
+        };
+    };
+...

@@ -228,6 +228,11 @@ properties:
     $ref: /schemas/power/supply/mediatek,mt6351-fg-readonly.yaml#
     unevaluatedProperties: false
 
+  auxadc:
+    type: object
+    $ref: /schemas/iio/adc/mediatek,mt6359-auxadc.yaml#
+    unevaluatedProperties: false
+
   fuel-gauge-active:
     type: object
     $ref: /schemas/power/supply/mediatek,mt6351-fgadc.yaml#

@@ -120,6 +120,7 @@ struct mt6797_h264_idr_plan {
 
 struct mt6797_h264_ref_buffer {
 	u64 y_addr;
+	u64 mv_addr;
 	u8 dpb_slot;
 };
 
@@ -133,6 +134,37 @@ struct mt6797_h264_p_ref {
 struct mt6797_h264_p_ref_plan {
 	u8 num_refs;
 	struct mt6797_h264_p_ref refs[V4L2_H264_REF_LIST_LEN];
+};
+
+struct mt6797_h264_b_ref {
+	u32 y_addr;
+	u32 pic_num;
+	u32 top;
+	u32 bottom;
+	u32 mv_top_addr_16;
+	u32 mv_bottom_addr_16;
+};
+
+struct mt6797_h264_b_ref_plan {
+	u8 num_l0;
+	u8 num_l1;
+	struct mt6797_h264_b_ref l0[V4L2_H264_REF_LIST_LEN];
+	struct mt6797_h264_b_ref l1[V4L2_H264_REF_LIST_LEN];
+};
+
+struct mt6797_h264_mv_slot {
+	u64 reference_ts;
+	bool valid;
+};
+
+struct mt6797_h264_mv_slot_plan {
+	u8 dpb_slots[V4L2_H264_NUM_DPB_ENTRIES];
+	u8 current_slot;
+};
+
+struct mt6797_h264_mv_range {
+	u32 min_addr;
+	u32 max_end;
 };
 
 static inline int
@@ -434,6 +466,185 @@ mt6797_h264_p_ref_plan(const struct v4l2_ctrl_h264_slice_params *slice,
 		entry->bottom = common | MT6797_H264_REF_BOTTOM;
 	}
 
+	return 0;
+}
+
+static inline int
+mt6797_h264_b_ref_entry(const struct v4l2_h264_reference *ref,
+			const struct v4l2_ctrl_h264_decode_params *dec,
+			const struct mt6797_h264_ref_buffer buffers[V4L2_H264_NUM_DPB_ENTRIES],
+			bool need_mv, struct mt6797_h264_b_ref *entry)
+{
+	const struct v4l2_h264_dpb_entry *dpb;
+	const struct mt6797_h264_ref_buffer *buffer;
+	u32 common;
+	bool long_term;
+
+	if (ref->index >= V4L2_H264_NUM_DPB_ENTRIES ||
+	    ref->fields != V4L2_H264_FRAME_REF)
+		return -EINVAL;
+
+	dpb = &dec->dpb[ref->index];
+	buffer = &buffers[ref->index];
+	if ((dpb->flags & (V4L2_H264_DPB_ENTRY_FLAG_VALID |
+			   V4L2_H264_DPB_ENTRY_FLAG_ACTIVE)) !=
+	    (V4L2_H264_DPB_ENTRY_FLAG_VALID |
+	     V4L2_H264_DPB_ENTRY_FLAG_ACTIVE) ||
+	    dpb->fields != V4L2_H264_FRAME_REF ||
+	    buffer->dpb_slot >= MT6797_H264_MV_BUFFER_COUNT ||
+	    (buffer->y_addr & (MT6797_H264_DMA_ALIGN - 1)) ||
+	    (need_mv && buffer->mv_addr & (MT6797_H264_MV_ALIGN - 1)))
+		return -EINVAL;
+	if (buffer->y_addr > U32_MAX || (need_mv && buffer->mv_addr > U32_MAX))
+		return -ERANGE;
+
+	long_term = dpb->flags & V4L2_H264_DPB_ENTRY_FLAG_LONG_TERM;
+	entry->y_addr = buffer->y_addr;
+	entry->pic_num = (long_term ? dpb->frame_num : dpb->pic_num) &
+			 MT6797_H264_REF_PIC_NUM;
+	common = FIELD_PREP(MT6797_H264_REF_DPB_SLOT, buffer->dpb_slot);
+	if (long_term) {
+		entry->pic_num |= MT6797_H264_REF_PIC_LONG_TERM;
+		common |= MT6797_H264_REF_MV_LONG_TERM;
+	}
+	if (dpb->top_field_order_cnt <= dpb->bottom_field_order_cnt &&
+	    dpb->top_field_order_cnt != INT_MAX)
+		common |= MT6797_H264_REF_POC_VALID;
+	entry->top = common |
+		     ((u32)dpb->top_field_order_cnt & MT6797_H264_POC_VALUE);
+	entry->bottom = common | MT6797_H264_REF_BOTTOM |
+			((u32)dpb->bottom_field_order_cnt & MT6797_H264_POC_VALUE);
+	entry->mv_top_addr_16 = need_mv ? buffer->mv_addr >> 4 : 0;
+	entry->mv_bottom_addr_16 = need_mv ? entry->mv_top_addr_16 + 4 : 0;
+
+	return 0;
+}
+
+static inline int
+mt6797_h264_b_ref_plan(const struct v4l2_ctrl_h264_slice_params *slice,
+		       const struct v4l2_ctrl_h264_decode_params *dec,
+		       const struct mt6797_h264_ref_buffer buffers[V4L2_H264_NUM_DPB_ENTRIES],
+		       struct mt6797_h264_b_ref_plan *plan)
+{
+	u32 num_l0 = slice->num_ref_idx_l0_active_minus1 + 1;
+	u32 num_l1 = slice->num_ref_idx_l1_active_minus1 + 1;
+	unsigned int i;
+	int ret;
+
+	if (slice->slice_type != V4L2_H264_SLICE_TYPE_B ||
+	    !(dec->flags & V4L2_H264_DECODE_PARAM_FLAG_BFRAME) ||
+	    dec->flags & (V4L2_H264_DECODE_PARAM_FLAG_FIELD_PIC |
+			  V4L2_H264_DECODE_PARAM_FLAG_BOTTOM_FIELD |
+			  V4L2_H264_DECODE_PARAM_FLAG_PFRAME) ||
+	    num_l0 > V4L2_H264_REF_LIST_LEN || num_l1 > V4L2_H264_REF_LIST_LEN)
+		return -EINVAL;
+
+	plan->num_l0 = num_l0;
+	plan->num_l1 = num_l1;
+	for (i = 0; i < num_l0; i++) {
+		ret = mt6797_h264_b_ref_entry(&slice->ref_pic_list0[i], dec,
+					      buffers, false, &plan->l0[i]);
+		if (ret)
+			return ret;
+	}
+	for (i = 0; i < num_l1; i++) {
+		ret = mt6797_h264_b_ref_entry(&slice->ref_pic_list1[i], dec,
+					      buffers, true, &plan->l1[i]);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static inline int
+mt6797_h264_mv_slot_plan(const struct v4l2_ctrl_h264_decode_params *dec,
+			 const struct mt6797_h264_mv_slot slots[MT6797_H264_MV_BUFFER_COUNT],
+			 struct mt6797_h264_mv_slot_plan *plan)
+{
+	u32 used = 0;
+	unsigned int i, j;
+
+	memset(plan->dpb_slots, U8_MAX, sizeof(plan->dpb_slots));
+	for (i = 0; i < V4L2_H264_NUM_DPB_ENTRIES; i++) {
+		const struct v4l2_h264_dpb_entry *dpb = &dec->dpb[i];
+
+		if (!(dpb->flags & V4L2_H264_DPB_ENTRY_FLAG_ACTIVE))
+			continue;
+		if (!(dpb->flags & V4L2_H264_DPB_ENTRY_FLAG_VALID))
+			return -EINVAL;
+
+		for (j = 0; j < MT6797_H264_MV_BUFFER_COUNT; j++) {
+			if (slots[j].valid &&
+			    slots[j].reference_ts == dpb->reference_ts)
+				break;
+		}
+		if (j == MT6797_H264_MV_BUFFER_COUNT)
+			return -ENOENT;
+
+		plan->dpb_slots[i] = j;
+		used |= BIT(j);
+	}
+
+	for (i = 0; i < MT6797_H264_MV_BUFFER_COUNT; i++) {
+		if (!(used & BIT(i))) {
+			plan->current_slot = i;
+			return 0;
+		}
+	}
+
+	return -ENOSPC;
+}
+
+static inline int
+mt6797_h264_mv_slot_begin(struct mt6797_h264_mv_slot slots[MT6797_H264_MV_BUFFER_COUNT],
+			  u8 slot)
+{
+	if (slot >= MT6797_H264_MV_BUFFER_COUNT)
+		return -EINVAL;
+
+	slots[slot].valid = false;
+	return 0;
+}
+
+static inline int
+mt6797_h264_mv_slot_commit(struct mt6797_h264_mv_slot slots[MT6797_H264_MV_BUFFER_COUNT],
+			   u8 slot, u64 reference_ts)
+{
+	if (slot >= MT6797_H264_MV_BUFFER_COUNT)
+		return -EINVAL;
+
+	slots[slot].reference_ts = reference_ts;
+	slots[slot].valid = true;
+	return 0;
+}
+
+static inline int
+mt6797_h264_mv_range_plan(const u64 addrs[MT6797_H264_MV_BUFFER_COUNT],
+			  u32 size, struct mt6797_h264_mv_range *range)
+{
+	u64 min_addr = U64_MAX;
+	u64 max_end = 0;
+	unsigned int i;
+
+	if (!size)
+		return -EINVAL;
+
+	for (i = 0; i < MT6797_H264_MV_BUFFER_COUNT; i++) {
+		u64 end;
+
+		if (addrs[i] & (MT6797_H264_MV_ALIGN - 1))
+			return -EINVAL;
+		if (check_add_overflow(addrs[i], (u64)size, &end) ||
+		    end > U32_MAX)
+			return -ERANGE;
+
+		min_addr = min(min_addr, addrs[i]);
+		max_end = max(max_end, end);
+	}
+
+	range->min_addr = min_addr;
+	range->max_end = max_end;
 	return 0;
 }
 

@@ -139,8 +139,11 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	const struct v4l2_ctrl_h264_pps *pps;
 	struct mt6797_h264_barrel_plan barrel;
 	struct mt6797_h264_buffer_layout layout;
+	struct mt6797_h264_mv_range mv_range;
 	struct mt6797_h264_working_plan working;
+	u64 mv_addrs[MT6797_H264_MV_BUFFER_COUNT];
 	u32 sps_reg, pps_reg, slice_reg, slice2_reg;
+	unsigned int i;
 	int ret;
 
 	*res_chg = false;
@@ -176,6 +179,11 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	ret = mt6797_h264_alloc_mv(inst, layout.mv_size);
 	if (ret)
 		return ret;
+	for (i = 0; i < ARRAY_SIZE(inst->mv); i++)
+		mv_addrs[i] = inst->mv[i].dma_addr;
+	ret = mt6797_h264_mv_range_plan(mv_addrs, layout.mv_size, &mv_range);
+	if (ret)
+		return ret;
 	ret = mt6797_h264_working_plan(inst->prediction.dma_addr,
 				       inst->pp.dma_addr, inst->ld.dma_addr,
 				       inst->mv[0].dma_addr, &working);
@@ -193,11 +201,12 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	slice_reg = mt6797_h264_slice_reg(slice, false, false);
 	slice2_reg = mt6797_h264_slice2_reg(slice, dec);
 	mtk_v4l2_vdec_dbg(3, inst->ctx,
-			  "direct plan sps=%#x pps=%#x slice=%#x/%#x bs=%#x-%#x shift=%u/%u pred=%#x pp=%#x ld=%#x mv=%#x",
+			  "direct plan sps=%#x pps=%#x slice=%#x/%#x bs=%#x-%#x shift=%u/%u pred=%#x pp=%#x ld=%#x mv=%#x range=%#x-%#x",
 			  sps_reg, pps_reg, slice_reg, slice2_reg, barrel.fetch_start,
 			  barrel.fetch_end, barrel.shift_reads, barrel.final_shift,
 			  working.prediction_addr, working.pp_addr,
-			  working.ld_addr, working.mv_addr_16);
+			  working.ld_addr, working.mv_addr_16,
+			  mv_range.min_addr, mv_range.max_end);
 
 	return -EOPNOTSUPP;
 }

@@ -298,6 +298,148 @@ static void mt6797_h264_reject_bad_p_ref_test(struct kunit *test)
 						     &plan), -EINVAL);
 }
 
+static void mt6797_h264_b_ref_plan_test(struct kunit *test)
+{
+	struct v4l2_ctrl_h264_slice_params slice = {
+		.slice_type = V4L2_H264_SLICE_TYPE_B,
+		.ref_pic_list0 = {
+			{ .fields = V4L2_H264_FRAME_REF, .index = 4 },
+		},
+		.ref_pic_list1 = {
+			{ .fields = V4L2_H264_FRAME_REF, .index = 9 },
+		},
+	};
+	struct v4l2_ctrl_h264_decode_params dec = {
+		.dpb = {
+			[4] = {
+				.pic_num = 0xfffffff9,
+				.fields = V4L2_H264_FRAME_REF,
+				.top_field_order_cnt = -8,
+				.bottom_field_order_cnt = -6,
+				.flags = V4L2_H264_DPB_ENTRY_FLAG_VALID |
+					 V4L2_H264_DPB_ENTRY_FLAG_ACTIVE,
+			},
+			[9] = {
+				.frame_num = 3,
+				.fields = V4L2_H264_FRAME_REF,
+				.top_field_order_cnt = 20,
+				.bottom_field_order_cnt = 18,
+				.flags = V4L2_H264_DPB_ENTRY_FLAG_VALID |
+					 V4L2_H264_DPB_ENTRY_FLAG_ACTIVE |
+					 V4L2_H264_DPB_ENTRY_FLAG_LONG_TERM,
+			},
+		},
+		.flags = V4L2_H264_DECODE_PARAM_FLAG_BFRAME,
+	};
+	struct mt6797_h264_ref_buffer buffers[V4L2_H264_NUM_DPB_ENTRIES] = {
+		[4] = {
+			.y_addr = 0x12000000,
+			.mv_addr = 0x18000000,
+			.dpb_slot = 2,
+		},
+		[9] = {
+			.y_addr = 0x14000000,
+			.mv_addr = 0x20000000,
+			.dpb_slot = 15,
+		},
+	};
+	struct mt6797_h264_b_ref_plan plan;
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_b_ref_plan(&slice, &dec, buffers,
+						     &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.num_l0, 1);
+	KUNIT_EXPECT_EQ(test, plan.num_l1, 1);
+	KUNIT_EXPECT_EQ(test, plan.l0[0].y_addr, 0x12000000U);
+	KUNIT_EXPECT_EQ(test, plan.l0[0].pic_num, 0x7fff9U);
+	KUNIT_EXPECT_EQ(test, plan.l0[0].top, 0x123fff8U);
+	KUNIT_EXPECT_EQ(test, plan.l0[0].bottom, 0x163fffaU);
+	KUNIT_EXPECT_EQ(test, plan.l0[0].mv_top_addr_16, 0U);
+	KUNIT_EXPECT_EQ(test, plan.l1[0].y_addr, 0x14000000U);
+	KUNIT_EXPECT_EQ(test, plan.l1[0].pic_num, 0x80003U);
+	KUNIT_EXPECT_EQ(test, plan.l1[0].top, 0x7900014U);
+	KUNIT_EXPECT_EQ(test, plan.l1[0].bottom, 0x7d00012U);
+	KUNIT_EXPECT_EQ(test, plan.l1[0].mv_top_addr_16, 0x2000000U);
+	KUNIT_EXPECT_EQ(test, plan.l1[0].mv_bottom_addr_16, 0x2000004U);
+}
+
+static void mt6797_h264_mv_slot_lifetime_test(struct kunit *test)
+{
+	struct v4l2_ctrl_h264_decode_params dec = {
+		.dpb = {
+			[4] = {
+				.reference_ts = 100,
+				.flags = V4L2_H264_DPB_ENTRY_FLAG_VALID |
+					 V4L2_H264_DPB_ENTRY_FLAG_ACTIVE,
+			},
+			[9] = {
+				.reference_ts = 200,
+				.flags = V4L2_H264_DPB_ENTRY_FLAG_VALID |
+					 V4L2_H264_DPB_ENTRY_FLAG_ACTIVE,
+			},
+		},
+	};
+	struct mt6797_h264_mv_slot slots[MT6797_H264_MV_BUFFER_COUNT] = {
+		[0] = { .reference_ts = 50, .valid = true },
+		[3] = { .reference_ts = 100, .valid = true },
+		[15] = { .reference_ts = 200, .valid = true },
+	};
+	struct mt6797_h264_mv_slot_plan plan;
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_mv_slot_plan(&dec, slots, &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.dpb_slots[4], 3);
+	KUNIT_EXPECT_EQ(test, plan.dpb_slots[9], 15);
+	KUNIT_EXPECT_EQ(test, plan.dpb_slots[0], U8_MAX);
+	KUNIT_EXPECT_EQ(test, plan.current_slot, 0);
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_mv_slot_begin(slots, plan.current_slot), 0);
+	KUNIT_EXPECT_FALSE(test, slots[0].valid);
+	KUNIT_ASSERT_EQ(test, mt6797_h264_mv_slot_commit(slots, plan.current_slot, 300), 0);
+	KUNIT_EXPECT_TRUE(test, slots[0].valid);
+	KUNIT_EXPECT_EQ(test, slots[0].reference_ts, 300ULL);
+}
+
+static void mt6797_h264_mv_slot_missing_ref_test(struct kunit *test)
+{
+	struct v4l2_ctrl_h264_decode_params dec = {
+		.dpb = {
+			[0] = {
+				.reference_ts = 100,
+				.flags = V4L2_H264_DPB_ENTRY_FLAG_VALID |
+					 V4L2_H264_DPB_ENTRY_FLAG_ACTIVE,
+			},
+		},
+	};
+	struct mt6797_h264_mv_slot slots[MT6797_H264_MV_BUFFER_COUNT] = {};
+	struct mt6797_h264_mv_slot_plan plan;
+
+	KUNIT_EXPECT_EQ(test, mt6797_h264_mv_slot_plan(&dec, slots, &plan),
+			-ENOENT);
+	dec.dpb[0].flags = V4L2_H264_DPB_ENTRY_FLAG_ACTIVE;
+	KUNIT_EXPECT_EQ(test, mt6797_h264_mv_slot_plan(&dec, slots, &plan),
+			-EINVAL);
+}
+
+static void mt6797_h264_mv_range_test(struct kunit *test)
+{
+	u64 addrs[MT6797_H264_MV_BUFFER_COUNT];
+	struct mt6797_h264_mv_range range;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(addrs); i++)
+		addrs[i] = 0x10000000 + (MT6797_H264_MV_BUFFER_COUNT - i) * 0x20000;
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_mv_range_plan(addrs, 0x12000, &range), 0);
+	KUNIT_EXPECT_EQ(test, range.min_addr, 0x10020000U);
+	KUNIT_EXPECT_EQ(test, range.max_end, 0x10232000U);
+
+	addrs[4]++;
+	KUNIT_EXPECT_EQ(test, mt6797_h264_mv_range_plan(addrs, 0x12000, &range),
+			-EINVAL);
+	addrs[4] = BIT_ULL(32) - 0x1000;
+	KUNIT_EXPECT_EQ(test, mt6797_h264_mv_range_plan(addrs, 0x12000, &range),
+			-ERANGE);
+}
+
 static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_sps_pack_test),
 	KUNIT_CASE(mt6797_h264_pps_pack_test),
@@ -314,6 +456,10 @@ static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_idr_plan_test),
 	KUNIT_CASE(mt6797_h264_p_ref_plan_test),
 	KUNIT_CASE(mt6797_h264_reject_bad_p_ref_test),
+	KUNIT_CASE(mt6797_h264_b_ref_plan_test),
+	KUNIT_CASE(mt6797_h264_mv_slot_lifetime_test),
+	KUNIT_CASE(mt6797_h264_mv_slot_missing_ref_test),
+	KUNIT_CASE(mt6797_h264_mv_range_test),
 	{}
 };
 

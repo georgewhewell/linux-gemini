@@ -123,6 +123,7 @@ struct venc_done_result {
 };
 
 extern const struct venc_common_if venc_h264_if;
+extern const struct venc_common_if mtk_venc_6797_h264_if;
 extern const struct venc_common_if venc_vp8_if;
 
 /*

@@ -213,7 +213,9 @@ static int mtk_vcodec_enc_get_chip_name(struct mtk_vcodec_enc_ctx *ctx)
 {
 	struct device *dev = &ctx->dev->plat_dev->dev;
 
-	if (of_device_is_compatible(dev->of_node, "mediatek,mt8173-vcodec-enc"))
+	if (of_device_is_compatible(dev->of_node, "mediatek,mt6797-vcodec-enc"))
+		return 6797;
+	else if (of_device_is_compatible(dev->of_node, "mediatek,mt8173-vcodec-enc"))
 		return 8173;
 	else if (of_device_is_compatible(dev->of_node, "mediatek,mt8183-vcodec-enc"))
 		return 8183;

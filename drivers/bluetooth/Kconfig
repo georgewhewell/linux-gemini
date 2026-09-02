@@ -11,16 +11,16 @@ config BT_MTK6797_STP
 	help
 	  Register one standard HCI device over the MT6797 controller-owned
 	  full-STP channel-zero lease, enables BT PALDO, and issues only vendor
-	  FUNC_CTRL(BT,on). Closing reverses FUNC_CTRL then PALDO. Both DT and a
-	  default-false read-only module parameter gate this experimental endpoint.
+	  FUNC_CTRL(BT,on). Closing reverses FUNC_CTRL then PALDO. The board node
+	  remains disabled until the complete transport has been qualified.
 
 config BT_MTK6797_STP_KUNIT_TEST
 	bool "KUnit tests for MT6797 full-STP Bluetooth HCI endpoint"
 	depends on KUNIT=y
 	depends on BT_MTK6797_STP=y
 	help
-	  Exercise the MT6797 HCI packet-type filter and transmit skb ownership
-	  contract with in-memory frames. The tests do not bind a platform device,
+	  Exercise the MT6797 H4 packet-type filter and fragmented/coalesced receive
+	  parser with in-memory frames. The tests do not bind a platform device,
 	  acquire a regulator, send full-STP traffic, or access Gemini hardware.
 
 

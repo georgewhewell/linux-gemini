@@ -432,20 +432,24 @@ static int mt6797_hevc_start(struct mt6797_hevc_inst *inst, u32 ctb_width,
 static int
 mt6797_hevc_validate_request(const struct v4l2_ctrl_hevc_sps *sps,
 			     const struct v4l2_ctrl_hevc_pps *pps,
-			     const struct v4l2_ctrl_hevc_slice_params *slice,
+			     const struct v4l2_ctrl_hevc_slice_params *slices,
 			     const struct v4l2_ctrl_hevc_decode_params *dec,
-			     unsigned int slice_count)
+			     unsigned int slice_count, u32 ctb_count)
 {
+	const struct v4l2_ctrl_hevc_slice_params *slice;
 	u64 unsupported_pps;
+	int ret;
 
 	unsupported_pps = V4L2_HEVC_PPS_FLAG_WEIGHTED_PRED |
 			  V4L2_HEVC_PPS_FLAG_WEIGHTED_BIPRED |
 			  V4L2_HEVC_PPS_FLAG_LISTS_MODIFICATION_PRESENT |
 			  V4L2_HEVC_PPS_FLAG_TILES_ENABLED |
 			  V4L2_HEVC_PPS_FLAG_ENTROPY_CODING_SYNC_ENABLED;
-	if (slice_count != 1 || slice->slice_segment_addr ||
-	    slice->num_entry_point_offsets ||
-	    (sps->flags & V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED) ||
+	ret = mt6797_hevc_validate_frame_slices(slices, slice_count, ctb_count);
+	if (ret)
+		return ret;
+	slice = &slices[0];
+	if ((sps->flags & V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED) ||
 	    (pps->flags & unsupported_pps))
 		return -EOPNOTSUPP;
 	if (slice->nal_unit_type == 19 || slice->nal_unit_type == 20) {
@@ -531,7 +535,12 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	slices = mt6797_hevc_get_slices(inst, &slice_count);
 	if (IS_ERR(slices))
 		return PTR_ERR(slices);
-	ret = mt6797_hevc_validate_request(sps, pps, slices, dec, slice_count);
+	ret = mt6797_hevc_sps_regs(sps, pps, &sps_regs);
+	if (ret)
+		return ret;
+	ret = mt6797_hevc_validate_request(sps, pps, slices, dec, slice_count,
+					   sps_regs.ctb_width *
+						   sps_regs.ctb_height);
 	if (ret)
 		return ret;
 	if (sps->num_short_term_ref_pic_sets) {
@@ -552,9 +561,6 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	if (ret)
 		return ret;
 
-	ret = mt6797_hevc_sps_regs(sps, pps, &sps_regs);
-	if (ret)
-		return ret;
 	ret = mt6797_hevc_pps_regs(sps, pps, &pps_regs);
 	if (ret)
 		return ret;

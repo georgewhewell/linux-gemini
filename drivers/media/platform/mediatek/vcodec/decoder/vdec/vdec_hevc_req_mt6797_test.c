@@ -390,6 +390,54 @@ static void mt6797_hevc_staging_size_test(struct kunit *test)
 			-EOVERFLOW);
 }
 
+static void mt6797_hevc_frame_slices_test(struct kunit *test)
+{
+	struct v4l2_ctrl_hevc_slice_params slices[2] = {
+		{
+			.bit_size = 800,
+			.data_byte_offset = 10,
+			.nal_unit_type = 1,
+			.nuh_temporal_id_plus1 = 1,
+			.slice_pic_order_cnt = 9,
+		},
+		{
+			.bit_size = 640,
+			.data_byte_offset = 8,
+			.nal_unit_type = 1,
+			.nuh_temporal_id_plus1 = 1,
+			.slice_pic_order_cnt = 9,
+			.slice_segment_addr = 12,
+		},
+	};
+
+	KUNIT_EXPECT_EQ(test,
+			mt6797_hevc_validate_frame_slices(slices, 2, 100), 0);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_hevc_validate_frame_slices(slices, 0, 100),
+			-EINVAL);
+
+	slices[1].slice_segment_addr = 0;
+	KUNIT_EXPECT_EQ(test,
+			mt6797_hevc_validate_frame_slices(slices, 2, 100),
+			-EINVAL);
+	slices[1].slice_segment_addr = 12;
+	slices[1].slice_pic_order_cnt++;
+	KUNIT_EXPECT_EQ(test,
+			mt6797_hevc_validate_frame_slices(slices, 2, 100),
+			-EINVAL);
+	slices[1].slice_pic_order_cnt--;
+	slices[1].num_entry_point_offsets = 1;
+	KUNIT_EXPECT_EQ(test,
+			mt6797_hevc_validate_frame_slices(slices, 2, 100),
+			-EOPNOTSUPP);
+	slices[1].num_entry_point_offsets = 0;
+	slices[0].flags =
+		V4L2_HEVC_SLICE_PARAMS_FLAG_DEPENDENT_SLICE_SEGMENT;
+	KUNIT_EXPECT_EQ(test,
+			mt6797_hevc_validate_frame_slices(slices, 2, 100),
+			-EINVAL);
+}
+
 static void mt6797_hevc_sps_rps_sets_test(struct kunit *test)
 {
 	struct v4l2_ctrl_hevc_ext_sps_st_rps rps[2] = {
@@ -552,6 +600,7 @@ static struct kunit_case mt6797_hevc_test_cases[] = {
 	KUNIT_CASE(mt6797_hevc_min_layout_test),
 	KUNIT_CASE(mt6797_hevc_reject_layout_test),
 	KUNIT_CASE(mt6797_hevc_staging_size_test),
+	KUNIT_CASE(mt6797_hevc_frame_slices_test),
 	KUNIT_CASE(mt6797_hevc_sps_rps_sets_test),
 	KUNIT_CASE(mt6797_hevc_slice_rps_regs_test),
 	{},

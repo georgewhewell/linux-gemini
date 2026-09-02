@@ -404,6 +404,12 @@
 				status = "disabled";
 			};
 
+			mt6351auxadc: auxadc {
+				compatible = "mediatek,mt6351-auxadc";
+				#io-channel-cells = <1>;
+				status = "disabled";
+			};
+
 			mt6351fgadc: fuel-gauge-active {
 				compatible = "mediatek,mt6351-fgadc";
 				status = "disabled";

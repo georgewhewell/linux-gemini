@@ -16402,11 +16402,12 @@ F:	include/dt-bindings/reset/mediatek,mt6735-mfgcfg.h
 F:	include/dt-bindings/reset/mediatek,mt6735-pericfg.h
 F:	include/dt-bindings/reset/mediatek,mt6735-vdecsys.h
 
-MEDIATEK MT6797 SENINF DRIVER
+MEDIATEK MT6797 CAMERA RECEIVER DRIVERS
 M:	George Whewell <georgerw@gmail.com>
 L:	linux-media@vger.kernel.org
 L:	linux-mediatek@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
+F:	Documentation/devicetree/bindings/media/mediatek,mt6797-camsv.yaml
 F:	Documentation/devicetree/bindings/media/mediatek,mt6797-seninf.yaml
 F:	Documentation/driver-api/media/drivers/mtk-mt6797-seninf.rst
 F:	drivers/media/platform/mediatek/seninf/

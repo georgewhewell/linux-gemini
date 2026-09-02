@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/mediatek,mt6797-camsv.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 CAMSV capture engine
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  CAMSV is a small raw camera capture engine containing a timing generator,
+  pixel packer, frame-buffer controller and one image DMA output. MT6797 has
+  six register windows, but only CAMSV0 has an independently clocked and IOMMU
+  mapped path established here. The driver uses the DMA API and the CAM_SV0
+  M4U port; Android ION and the vendor camera ioctl ABI are not part of this
+  binding.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-camsv
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: Camera larb clock
+      - description: Camera subsystem clock
+      - description: Camera timing-generator clock
+      - description: CAMSV0 engine clock
+
+  clock-names:
+    items:
+      - const: larb
+      - const: camsys
+      - const: camtg
+      - const: camsv
+
+  power-domains:
+    maxItems: 1
+
+  iommus:
+    maxItems: 1
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    unevaluatedProperties: false
+    description: Pixel input from SENINF
+
+    properties:
+      endpoint:
+        $ref: video-interfaces.yaml#
+        unevaluatedProperties: false
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+  - iommus
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/memory/mt6797-larb-port.h>
+    #include <dt-bindings/power/mt6797-power.h>
+
+    camsv@1a050000 {
+        compatible = "mediatek,mt6797-camsv";
+        reg = <0x1a050000 0x1000>;
+        interrupts = <GIC_SPI 252 IRQ_TYPE_LEVEL_LOW>;
+        clocks = <&camsys CLK_CAM_LARB2>,
+                 <&camsys CLK_CAM_CAMSYS>,
+                 <&camsys CLK_CAM_CAMTG>,
+                 <&camsys CLK_CAM_CAMSV0>;
+        clock-names = "larb", "camsys", "camtg", "camsv";
+        power-domains = <&scpsys MT6797_POWER_DOMAIN_ISP>;
+        iommus = <&m4u M4U_PORT_CAM_SV0>;
+
+        port {
+            camsv0_in: endpoint {
+                remote-endpoint = <&seninf_out>;
+            };
+        };
+    };

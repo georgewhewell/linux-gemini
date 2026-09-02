@@ -22,8 +22,6 @@
  * a stateful firmware start fails.
  */
 
-#include <crypto/hash.h>
-#include <crypto/sha2.h>
 #include <linux/bitops.h>
 #include <linux/crc32.h>
 #include <linux/delay.h>
@@ -134,14 +132,7 @@ struct mt6797_wifi_capability_poll {
 	unsigned int rx1_drained;
 };
 
-static const u8 mt6797_wifi_firmware_sha256[] = {
-	0xa6, 0x93, 0x83, 0xd7, 0x4d, 0x82, 0x94, 0x30,
-	0x48, 0x7c, 0x39, 0xee, 0xf6, 0xb5, 0xe2, 0x81,
-	0xb2, 0x5f, 0x90, 0x15, 0x95, 0xc9, 0x03, 0xa6,
-	0x32, 0xa1, 0x0a, 0xa8, 0x63, 0x14, 0x26, 0xdd,
-};
-
-/* Exact MTKE divided-header fields from the SHA-256-pinned image. */
+/* Exact MTKE divided-header fields consumed by the download protocol. */
 static const struct mt6797_wifi_fw_section mt6797_wifi_fw_sections[] = {
 	{
 		.offset = 0x58, .length = 0x16d0, .destination = 0x020a0000,
@@ -165,48 +156,6 @@ static bool mt6797_wifi_capability_enabled(struct device *owner)
 {
 	return owner != NULL;
 }
-
-static int mt6797_wifi_fw_digest(const u8 *data, size_t size, u8 *digest)
-{
-	struct crypto_shash *tfm;
-	struct shash_desc *desc;
-	int ret;
-
-	if (!data || !digest)
-		return -EINVAL;
-	tfm = crypto_alloc_shash("sha256", 0, 0);
-	if (IS_ERR(tfm))
-		return PTR_ERR(tfm);
-	desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
-	if (!desc) {
-		ret = -ENOMEM;
-		goto out_free_tfm;
-	}
-	desc->tfm = tfm;
-	ret = crypto_shash_digest(desc, data, size, digest);
-	kfree(desc);
-out_free_tfm:
-	crypto_free_shash(tfm);
-	return ret;
-}
-
-int mt6797_wifi_firmware_validate(const u8 *data, size_t size,
-					 size_t expected_size,
-					 const u8 *expected_digest)
-{
-	u8 digest[SHA256_DIGEST_SIZE];
-	int ret;
-
-	if (!data || !expected_digest || !expected_size)
-		return -EINVAL;
-	if (size != expected_size)
-		return -EFBIG;
-	ret = mt6797_wifi_fw_digest(data, size, digest);
-	if (ret)
-		return ret;
-	return memcmp(digest, expected_digest, sizeof(digest)) ? -EBADMSG : 0;
-}
-EXPORT_SYMBOL_GPL(mt6797_wifi_firmware_validate);
 
 int mt6797_wifi_firmware_parse(const u8 *data, size_t size,
 				       struct mt6797_wifi_fw_image *image)
@@ -1300,12 +1249,8 @@ int mt6797_wifi_firmware_start(struct device *owner,
 	ret = request_firmware(&power.firmware, MT6797_WIFI_FW_FIRMWARE_NAME, owner);
 	if (ret)
 		return ret;
-	ret = mt6797_wifi_firmware_validate(power.firmware->data,
-		power.firmware->size, MT6797_WIFI_FW_FIRMWARE_SIZE,
-		mt6797_wifi_firmware_sha256);
-	if (!ret)
-		ret = mt6797_wifi_firmware_parse(power.firmware->data,
-			power.firmware->size, &power.image);
+	ret = mt6797_wifi_firmware_parse(power.firmware->data,
+					 power.firmware->size, &power.image);
 	if (!ret)
 		ret = mt6797_wifi_fw_power_set_voltage(&power, 3300000);
 	if (!ret) {

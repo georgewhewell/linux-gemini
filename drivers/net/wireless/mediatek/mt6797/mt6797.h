@@ -23,9 +23,6 @@
 
 struct device;
 struct regulator;
-int mt6797_wifi_firmware_validate(const u8 *data, size_t size,
-					 size_t expected_size,
-					 const u8 *expected_digest);
 struct mt6797_wifi_fw_section {
 	u32 offset;
 	u32 length;

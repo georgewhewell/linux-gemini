@@ -10,46 +10,6 @@
 
 #define MT6797_WIFI_FW_FIXTURE_SIZE	411632U
 
-static const u8 mt6797_wifi_fw_sha256_abc[32] = {
-	0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
-	0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
-	0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
-	0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
-};
-
-static void mt6797_wifi_fw_accepts_exact_size_and_digest(struct kunit *test)
-{
-	static const u8 image[] = "abc";
-	int ret;
-
-	ret = mt6797_wifi_firmware_validate(image, sizeof(image) - 1,
-						       sizeof(image) - 1,
-						       mt6797_wifi_fw_sha256_abc);
-	KUNIT_EXPECT_EQ(test, ret, 0);
-}
-
-static void mt6797_wifi_fw_rejects_wrong_size_before_digest(struct kunit *test)
-{
-	static const u8 image[] = "abc";
-	int ret;
-
-	ret = mt6797_wifi_firmware_validate(image, sizeof(image) - 1,
-						       sizeof(image),
-						       mt6797_wifi_fw_sha256_abc);
-	KUNIT_EXPECT_EQ(test, ret, -EFBIG);
-}
-
-static void mt6797_wifi_fw_rejects_wrong_digest(struct kunit *test)
-{
-	static const u8 image[] = "abc";
-	u8 wrong_digest[sizeof(mt6797_wifi_fw_sha256_abc)] = { };
-	int ret;
-
-	ret = mt6797_wifi_firmware_validate(image, sizeof(image) - 1,
-						       sizeof(image) - 1, wrong_digest);
-	KUNIT_EXPECT_EQ(test, ret, -EBADMSG);
-}
-
 static void mt6797_wifi_fw_fixture_header(u8 *fixture)
 {
 	static const struct mt6797_wifi_fw_section section[] = {
@@ -198,9 +158,6 @@ static void mt6797_wifi_cap_parses_only_exact_capability_event(struct kunit *tes
 }
 
 static struct kunit_case mt6797_wifi_fw_test_cases[] = {
-	KUNIT_CASE(mt6797_wifi_fw_accepts_exact_size_and_digest),
-	KUNIT_CASE(mt6797_wifi_fw_rejects_wrong_size_before_digest),
-	KUNIT_CASE(mt6797_wifi_fw_rejects_wrong_digest),
 	KUNIT_CASE(mt6797_wifi_fw_parses_only_exact_divided_header),
 	KUNIT_CASE(mt6797_wifi_fw_accounts_for_every_idlm_frame),
 	KUNIT_CASE(mt6797_wifi_cap_builds_exact_capability_command),

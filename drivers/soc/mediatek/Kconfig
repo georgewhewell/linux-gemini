@@ -473,16 +473,14 @@ config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER_KUNIT_TEST
 	  provider operations. No platform device, Device Tree, MMIO, WMT packet,
 	  firmware, CONSYS resource, or Gemini hardware is used.
 
-config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
-	bool "MediaTek MT6797 CONSYS firmware preflight gate"
+config MTK_MT6797_CONSYS_FIRMWARE_METADATA
+	bool "MediaTek MT6797 CONSYS firmware metadata validation"
 	depends on MTK_MT6797_CONSYS_CORE
-	select CRYPTO_SHA256
 	help
-	  Build a data-only guard for the MT6797 CONSYS WMT configuration and patch
-	  blobs. It accepts only bare firmware names, verifies a caller-supplied
-	  SHA-256 digest of every full blob, bounds and parses the documented 28-byte
-	  patch header, and requires opaque four-byte address metadata for every
-	  patch.
+	  Validate MT6797 CONSYS patch blobs returned by the firmware loader.
+	  Accept only bare firmware names. Bound and parse the documented 28-byte
+	  patch header. Require opaque four-byte address metadata for every patch.
+	  Reject duplicate names that would make the patch order ambiguous.
 
 	  It does not request firmware, map shared memory, alter a rail or clock,
 	  access BTIF/CONSYS registers, construct a WMT packet, or transmit data.
@@ -490,29 +488,29 @@ config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
 	  discovery; this code never guesses an address from the EMI reservation or
 	  a register value.
 
-config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT_KUNIT_TEST
-	tristate "KUnit tests for the MT6797 CONSYS firmware preflight gate"
+config MTK_MT6797_CONSYS_FIRMWARE_METADATA_KUNIT_TEST
+	tristate "KUnit tests for MT6797 CONSYS firmware metadata"
 	depends on KUNIT=y
-	depends on MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT=y
+	depends on MTK_MT6797_CONSYS_FIRMWARE_METADATA=y
 	help
-	  Exercise firmware digest, bare-name, patch-header bounds and parsing,
-	  address-presence, and duplicate-sequence rejection with in-memory blobs
-	  only. No firmware class request, Device Tree node, MMIO, power resource, or
-	  radio is used.
+	  Exercise bare-name validation and patch-header bounds and parsing.
+	  Check address-presence and duplicate-sequence rejection with in-memory
+	  blobs only. No firmware class request, Device Tree node, MMIO, power
+	  resource, or radio is used.
 	  This is suitable for test kernels and QEMU, and has no Gemini hardware
 	  dependency.
 
 config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD
 	tristate "MediaTek MT6797 WMT patch-download controller"
-	depends on MTK_WMT && MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
+	depends on MTK_WMT && MTK_MT6797_CONSYS_FIRMWARE_METADATA
 	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP
 	depends on FW_LOADER
 	help
-	  Build the bounded controller for the one captured Gemini WMT firmware
-	  manifest: WMT_SOC.cfg, ROMv3_patch_1_1_hdr.bin, and
-	  ROMv3_patch_1_0_hdr.bin. It requests those exact bare names, verifies
-	  complete-image SHA-256 digests and opaque evidenced four-byte vectors,
-	  strips the 28-byte patch header, and emits only the documented WMT patch
+	  Build the bounded controller for the captured Gemini WMT patch manifest:
+	  ROMv3_patch_1_1_hdr.bin and ROMv3_patch_1_0_hdr.bin. It requests those
+	  exact bare names, verifies
+	  the firmware-loader results and opaque evidenced four-byte vectors, strips
+	  the 28-byte patch header, and emits only the documented WMT patch
 	  address and patch-fragment transactions.
 
 	  This is deliberately not a Device Tree driver. It cannot acquire a

@@ -2,11 +2,10 @@
 /*
  * Bounded MT6797 WMT patch-download controller.
  *
- * The retained Gemini trace establishes this exact request order:
- * WMT_SOC.cfg, ROMv3_patch_1_1_hdr.bin, ROMv3_patch_1_0_hdr.bin. It also
- * records the complete-image SHA-256 digests. See the Gemini evidence packet
- * at nixos-gemini/research/mt6797-btif-runtime-evidence-next/
- * firmware-provenance.md:17-23,67-70.
+ * The retained Gemini trace establishes the patch order:
+ * ROMv3_patch_1_1_hdr.bin, then ROMv3_patch_1_0_hdr.bin, and records the
+ * firmware images used for that run. See the Gemini evidence
+ * packet at nixos-gemini/research/mt6797-btif-runtime-evidence-next/.
  *
  * Vendor MT6797 code initially uses BTIF mandatory STP to query the chip, then
  * switches the host to BTIF full STP before entering the patch-download loop:
@@ -78,33 +77,10 @@
 /* Serialize this controller's manifests; the caller must exclusively own WMT. */
 static DEFINE_MUTEX(mt6797_consys_wmt_patch_download_lock);
 
-static const char mt6797_consys_wmt_config_name[] = "WMT_SOC.cfg";
 static const char mt6797_consys_wmt_patch_1_1_name[] =
 	"ROMv3_patch_1_1_hdr.bin";
 static const char mt6797_consys_wmt_patch_1_0_name[] =
 	"ROMv3_patch_1_0_hdr.bin";
-
-/* Complete-blob SHA-256 values, never body-only values. */
-static const u8 mt6797_consys_wmt_config_sha256[] = {
-	0xf4, 0xa5, 0x9b, 0x62, 0x2a, 0x4e, 0x0c, 0x14,
-	0x70, 0xe4, 0x75, 0xce, 0x33, 0xf3, 0xed, 0xae,
-	0x43, 0xb2, 0x7f, 0x1f, 0xbd, 0xeb, 0xa5, 0x4d,
-	0xc7, 0xcf, 0x07, 0x50, 0x3d, 0x13, 0x28, 0x80,
-};
-
-static const u8 mt6797_consys_wmt_patch_1_1_sha256[] = {
-	0x57, 0x32, 0xc0, 0x73, 0x03, 0x80, 0xe9, 0x37,
-	0xb4, 0x8a, 0xd1, 0x69, 0xf2, 0x80, 0x5b, 0x65,
-	0xe8, 0xd4, 0xa1, 0x78, 0x26, 0x55, 0x66, 0xc5,
-	0x08, 0x3c, 0xb2, 0xcc, 0x2d, 0x24, 0x9f, 0x1e,
-};
-
-static const u8 mt6797_consys_wmt_patch_1_0_sha256[] = {
-	0x45, 0x0c, 0x2b, 0x09, 0x49, 0xcf, 0x87, 0x92,
-	0x17, 0xac, 0x9a, 0xef, 0x81, 0xb1, 0x8b, 0x86,
-	0x09, 0x82, 0xf0, 0xe6, 0x93, 0x40, 0x78, 0x4b,
-	0x44, 0x8b, 0x54, 0x36, 0x5d, 0x8c, 0xf6, 0x30,
-};
 
 /* Opaque command-order vectors recovered from the production launcher. */
 static const u8 mt6797_consys_wmt_patch_1_1_address[] = {
@@ -337,7 +313,7 @@ mt6797_consys_wmt_patch_download_manifest(
 	    manifest->patch_count != 2)
 		return -EINVAL;
 
-	ret = mt6797_consys_firmware_manifest_preflight(manifest);
+	ret = mt6797_consys_firmware_manifest_validate(manifest);
 	if (ret)
 		return ret;
 
@@ -356,7 +332,7 @@ mt6797_consys_wmt_patch_download_manifest(
 		return ret;
 
 	for (i = 0; i < manifest->patch_count; i++) {
-		ret = mt6797_consys_patch_preflight(&manifest->patches[i], &info);
+		ret = mt6797_consys_patch_validate(&manifest->patches[i], &info);
 		if (ret)
 			return ret;
 		ret = mt6797_consys_wmt_patch_set_address(transport, &info);
@@ -392,32 +368,24 @@ static int mt6797_consys_wmt_patch_bootstrap_transaction(
 int mt6797_consys_wmt_patch_download(struct device *dev,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
 {
-	const struct firmware *config = NULL;
 	const struct firmware *patch_1_1 = NULL;
 	const struct firmware *patch_1_0 = NULL;
 	const struct mt6797_consys_patch_image patches[] = {
 		{
 			.blob = {
 				.name = mt6797_consys_wmt_patch_1_1_name,
-				.sha256 = mt6797_consys_wmt_patch_1_1_sha256,
 			},
 			.load_address = mt6797_consys_wmt_patch_1_1_address,
 		},
 		{
 			.blob = {
 				.name = mt6797_consys_wmt_patch_1_0_name,
-				.sha256 = mt6797_consys_wmt_patch_1_0_sha256,
 			},
 			.load_address = mt6797_consys_wmt_patch_1_0_address,
 		},
 	};
-	struct mt6797_consys_firmware_blob config_blob = {
-		.name = mt6797_consys_wmt_config_name,
-		.sha256 = mt6797_consys_wmt_config_sha256,
-	};
 	struct mt6797_consys_patch_image verified_patches[ARRAY_SIZE(patches)];
 	struct mt6797_consys_firmware_manifest manifest = {
-		.config = &config_blob,
 		.patches = verified_patches,
 		.patch_count = ARRAY_SIZE(verified_patches),
 	};
@@ -437,27 +405,21 @@ int mt6797_consys_wmt_patch_download(struct device *dev,
 	if (!dev || !lease)
 		return -EINVAL;
 	/*
-	 * The vendor reads and parses WMT_SOC.cfg before runtime power/STP setup
-	 * (wmt_lib.c:284-302; wmt_conf.c:432-486).  It is not a WMT command and
-	 * this post-full phase intentionally performs only the captured filename
-	 * and digest preflight.  In particular, it does not apply co-clock/rail
-	 * semantics late; the runtime provider's co-clock==0 lifecycle contract is
-	 * independently evidenced.
+	 * WMT_SOC.cfg is vendor userspace policy parsed before runtime power/STP
+	 * setup (wmt_lib.c:284-302; wmt_conf.c:432-486), not a firmware payload.
+	 * This kernel path therefore requests only the two patch images it sends.
+	 * The runtime provider's co-clock==0 lifecycle contract is independently
+	 * evidenced.
 	 */
 
 	mutex_lock(&mt6797_consys_wmt_patch_download_lock);
-	ret = request_firmware(&config, config_blob.name, dev);
-	if (ret)
-		goto out_unlock;
 	ret = request_firmware(&patch_1_1, patches[0].blob.name, dev);
 	if (ret)
-		goto out_config;
+		goto out_unlock;
 	ret = request_firmware(&patch_1_0, patches[1].blob.name, dev);
 	if (ret)
 		goto out_patch_1_1;
 
-	config_blob.data = config->data;
-	config_blob.size = config->size;
 	verified_patches[0] = patches[0];
 	verified_patches[0].blob.data = patch_1_1->data;
 	verified_patches[0].blob.size = patch_1_1->size;
@@ -470,8 +432,6 @@ int mt6797_consys_wmt_patch_download(struct device *dev,
 	release_firmware(patch_1_0);
 out_patch_1_1:
 	release_firmware(patch_1_1);
-out_config:
-	release_firmware(config);
 out_unlock:
 	mutex_unlock(&mt6797_consys_wmt_patch_download_lock);
 	return ret;
@@ -569,40 +529,19 @@ static void mt6797_consys_wmt_patch_test_make_data(u8 patch[29])
 }
 
 static void
-mt6797_consys_wmt_patch_test_manifest(struct mt6797_consys_firmware_blob *config,
-				      struct mt6797_consys_patch_image patches[2],
+mt6797_consys_wmt_patch_test_manifest(struct mt6797_consys_patch_image patches[2],
 				      struct mt6797_consys_firmware_manifest *manifest,
 				      u8 patch_data[29])
 {
-	static const u8 config_data[] = "co_clock_flag=0\n";
-	static const u8 config_sha256[] = {
-		0x7f, 0x3f, 0x8e, 0x28, 0x76, 0x8a, 0xe7, 0x68,
-		0x18, 0xbd, 0x28, 0x57, 0x05, 0x10, 0xf9, 0x72,
-		0x5b, 0xc2, 0x83, 0x52, 0xeb, 0x8a, 0x46, 0x04,
-		0xcb, 0xbb, 0xb6, 0x79, 0x50, 0x07, 0x95, 0xb3,
-	};
-	static const u8 patch_sha256[] = {
-		0xc6, 0x41, 0xe6, 0xcd, 0x90, 0x29, 0x46, 0x1f,
-		0xb7, 0xbe, 0x65, 0x87, 0x6e, 0xad, 0xed, 0x73,
-		0x90, 0x3d, 0xa2, 0xb2, 0x5b, 0x62, 0x1d, 0x90,
-		0xe9, 0x37, 0x10, 0x7a, 0x2a, 0x2e, 0x8f, 0xe1,
-	};
 	static const u8 first_address[] = { 0x00, 0x00, 0x0a, 0xf0 };
 	static const u8 second_address[] = { 0x00, 0x00, 0x09, 0x00 };
 
 	mt6797_consys_wmt_patch_test_make_data(patch_data);
-	*config = (struct mt6797_consys_firmware_blob) {
-		.name = "WMT_SOC.cfg",
-		.data = config_data,
-		.size = sizeof(config_data) - 1,
-		.sha256 = config_sha256,
-	};
 	patches[0] = (struct mt6797_consys_patch_image) {
 		.blob = {
 			.name = "ROMv3_patch_1_1_hdr.bin",
 			.data = patch_data,
 			.size = 29,
-			.sha256 = patch_sha256,
 		},
 		.load_address = first_address,
 	};
@@ -610,7 +549,6 @@ mt6797_consys_wmt_patch_test_manifest(struct mt6797_consys_firmware_blob *config
 	patches[1].blob.name = "ROMv3_patch_1_0_hdr.bin";
 	patches[1].load_address = second_address;
 	*manifest = (struct mt6797_consys_firmware_manifest) {
-		.config = config,
 		.patches = patches,
 		.patch_count = 2,
 	};
@@ -654,7 +592,6 @@ static void mt6797_consys_wmt_patch_test_manifest_sequence(struct kunit *test)
 	static const u8 reset[] = { 0x01, 0x07, 0x01, 0x00, 0x04 };
 	struct mt6797_consys_wmt_patch_test_transport *transport;
 	struct mt6797_consys_wmt_patch_transport patch_transport;
-	struct mt6797_consys_firmware_blob config;
 	struct mt6797_consys_patch_image patches[2];
 	struct mt6797_consys_firmware_manifest manifest;
 	struct mtk_wmt wmt;
@@ -669,8 +606,7 @@ static void mt6797_consys_wmt_patch_test_manifest_sequence(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, mtk_stp_register_client(&transport->stp, MTK_STP_WMT,
 						      mt6797_consys_wmt_patch_test_receive,
 						      transport), 0);
-	mt6797_consys_wmt_patch_test_manifest(&config, patches, &manifest,
-					      patch_data);
+	mt6797_consys_wmt_patch_test_manifest(patches, &manifest, patch_data);
 	patch_transport = (struct mt6797_consys_wmt_patch_transport) {
 		.transaction = mt6797_consys_wmt_patch_test_transaction,
 		.context = &wmt,
@@ -720,7 +656,6 @@ static void mt6797_consys_wmt_patch_test_envelope_failure_closes(
 {
 	struct mt6797_consys_wmt_patch_test_transport *transport;
 	struct mt6797_consys_wmt_patch_transport patch_transport;
-	struct mt6797_consys_firmware_blob config;
 	struct mt6797_consys_patch_image patches[2];
 	struct mt6797_consys_firmware_manifest manifest;
 	struct mtk_wmt wmt;
@@ -737,8 +672,7 @@ static void mt6797_consys_wmt_patch_test_envelope_failure_closes(
 	KUNIT_ASSERT_EQ(test, mtk_stp_register_client(&transport->stp, MTK_STP_WMT,
 							      mt6797_consys_wmt_patch_test_receive,
 							      transport), 0);
-	mt6797_consys_wmt_patch_test_manifest(&config, patches, &manifest,
-							     patch_data);
+	mt6797_consys_wmt_patch_test_manifest(patches, &manifest, patch_data);
 	patch_transport = (struct mt6797_consys_wmt_patch_transport) {
 		.transaction = mt6797_consys_wmt_patch_test_transaction,
 		.context = &wmt,

@@ -93,18 +93,23 @@ static int mt6797_h264_get_param(void *h_vdec, enum vdec_get_param_type type,
 {
 	struct mt6797_h264_inst *inst = h_vdec;
 	struct mtk_vcodec_dec_ctx *ctx = inst->ctx;
+	struct mt6797_h264_buffer_layout layout;
 	struct vdec_pic_info *pic;
 	struct v4l2_rect *crop;
+	int ret;
 
 	switch (type) {
 	case GET_PARAM_PIC_INFO:
 		pic = out;
 		pic->pic_w = ctx->picinfo.pic_w;
 		pic->pic_h = ctx->picinfo.pic_h;
-		pic->buf_w = ALIGN(pic->pic_w, VCODEC_DEC_ALIGNED_64);
-		pic->buf_h = ALIGN(pic->pic_h, VCODEC_DEC_ALIGNED_64);
-		pic->fb_sz[0] = pic->buf_w * pic->buf_h;
-		pic->fb_sz[1] = pic->fb_sz[0] / 2;
+		ret = mt6797_h264_buffer_layout(pic->pic_w, pic->pic_h, &layout);
+		if (ret)
+			return ret;
+		pic->buf_w = layout.width;
+		pic->buf_h = layout.height;
+		pic->fb_sz[0] = layout.luma_size;
+		pic->fb_sz[1] = layout.chroma_size;
 		pic->cap_fourcc = V4L2_PIX_FMT_MM21;
 		break;
 	case GET_PARAM_DPB_SIZE:

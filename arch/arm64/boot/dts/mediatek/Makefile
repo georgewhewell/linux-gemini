@@ -11,6 +11,11 @@ mt6797-gemini-pda-imu-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-imu.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-imu.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-haptics.dtbo
+mt6797-gemini-pda-haptics-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-haptics.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-haptics.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-touchscreen.dtbo
 mt6797-gemini-pda-touchscreen-dtbs := \
 	mt6797-gemini-pda.dtb \

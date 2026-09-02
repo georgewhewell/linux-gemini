@@ -23,6 +23,19 @@
 		stdout-path = "serial0:921600n8";
 	};
 
+	/*
+	 * The shipping kernel drives the motor directly from the MT6351 VIBR
+	 * output at 2.8 V. Keep the standard force-feedback consumer dormant
+	 * until an attended run verifies the motor and suspend behaviour.
+	 */
+	haptics: haptics {
+		compatible = "regulator-haptic";
+		haptic-supply = <&mt6351_vibr_reg>;
+		min-microvolt = <2800000>;
+		max-microvolt = <2800000>;
+		status = "disabled";
+	};
+
 	sound {
 		compatible = "mediatek,mt6797-mt6351-sound";
 		model = "Gemini PDA";
@@ -324,6 +337,12 @@
 };
 
 &mt6351regulator {
+	mt6351_vibr_reg: ldo-vibr {
+		regulator-name = "vibr";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+	};
+
 	mt6351_vcn18_reg: ldo-vcn18 {
 		regulator-name = "vcn18";
 		regulator-min-microvolt = <1800000>;

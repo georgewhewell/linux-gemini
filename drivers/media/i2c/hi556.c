@@ -53,6 +53,7 @@
 
 /* Analog gain controls from sensor */
 #define HI556_REG_ANALOG_GAIN		0x0077
+#define SP5509_REG_ANALOG_GAIN		0x0076
 #define HI556_ANAL_GAIN_MIN		0
 #define HI556_ANAL_GAIN_MAX		240
 #define HI556_ANAL_GAIN_STEP		1
@@ -135,6 +136,11 @@ struct hi556_config {
 	u64 pixel_rate;
 	unsigned long mclk;
 	u32 power_delay_us;
+	u16 analog_gain_reg;
+	u8 exposure_min;
+	u8 exposure_margin;
+	bool supports_digital_gain;
+	bool is_sp5509;
 };
 
 #define to_hi556(_sd) container_of(_sd, struct hi556, sd)
@@ -756,6 +762,11 @@ static const char * const hi556_test_pattern_menu[] = {
 	"Slant Pattern",
 };
 
+static const char * const sp5509_test_pattern_menu[] = {
+	"Disabled",
+	"Colour Bars",
+};
+
 static const s64 hi556_link_freq_menu_items[] = {
 	HI556_LINK_FREQ_437MHZ,
 };
@@ -911,6 +922,10 @@ static const struct hi556_config hi556_config = {
 		      HI556_RGB_DEPTH,
 	.mclk = HI556_MCLK,
 	.power_delay_us = 5000,
+	.analog_gain_reg = HI556_REG_ANALOG_GAIN,
+	.exposure_min = HI556_EXPOSURE_MIN,
+	.exposure_margin = HI556_EXPOSURE_MAX_MARGIN,
+	.supports_digital_gain = true,
 };
 
 static const struct hi556_config sp5509_config = {
@@ -925,6 +940,10 @@ static const struct hi556_config sp5509_config = {
 	.pixel_rate = 176000000,
 	.mclk = SP5509_MCLK,
 	.power_delay_us = 10000,
+	.analog_gain_reg = SP5509_REG_ANALOG_GAIN,
+	.exposure_min = 4,
+	.exposure_margin = 4,
+	.is_sp5509 = true,
 };
 
 static const char * const hi556_supply_names[] = {
@@ -1054,10 +1073,43 @@ static int hi556_update_digital_gain(struct hi556 *hi556, u32 d_gain)
 			       HI556_REG_VALUE_16BIT, d_gain);
 }
 
+static int sp5509_test_pattern(struct hi556 *hi556, u32 pattern)
+{
+	int ret;
+
+	ret = hi556_write_reg(hi556, 0x0a04, HI556_REG_VALUE_16BIT,
+			      pattern ? 0x0141 : 0x0140);
+	if (ret)
+		return ret;
+
+	ret = hi556_write_reg(hi556, 0x0200, HI556_REG_VALUE_16BIT,
+			      pattern ? 0x0001 : 0x0000);
+	if (ret || !pattern)
+		return ret;
+
+	ret = hi556_write_reg(hi556, 0x0206, HI556_REG_VALUE_16BIT, 0x000a);
+	if (ret)
+		return ret;
+
+	ret = hi556_write_reg(hi556, 0x0208, HI556_REG_VALUE_16BIT, 0x0a0a);
+	if (ret)
+		return ret;
+
+	ret = hi556_write_reg(hi556, 0x020a, HI556_REG_VALUE_16BIT, 0x000a);
+	if (ret)
+		return ret;
+
+	return hi556_write_reg(hi556, 0x020c, HI556_REG_VALUE_16BIT,
+			       0x0a0a);
+}
+
 static int hi556_test_pattern(struct hi556 *hi556, u32 pattern)
 {
 	int ret;
 	u32 val;
+
+	if (hi556->config->is_sp5509)
+		return sp5509_test_pattern(hi556, pattern);
 
 	ret = hi556_read_reg(hi556, HI556_REG_ISP,
 			     HI556_REG_VALUE_08BIT, &val);
@@ -1078,6 +1130,22 @@ static int hi556_test_pattern(struct hi556 *hi556, u32 pattern)
 			       HI556_REG_VALUE_08BIT, val);
 }
 
+static int sp5509_write_control(struct hi556 *hi556, u16 reg, u16 val)
+{
+	int release_ret;
+	int ret;
+
+	ret = hi556_write_reg(hi556, 0x0046, HI556_REG_VALUE_16BIT, 0x0100);
+	if (ret)
+		return ret;
+
+	ret = hi556_write_reg(hi556, reg, HI556_REG_VALUE_16BIT, val);
+	release_ret = hi556_write_reg(hi556, 0x0046, HI556_REG_VALUE_16BIT,
+				      0x0000);
+
+	return ret ? ret : release_ret;
+}
+
 static int hi556_set_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct hi556 *hi556 = container_of(ctrl->handler,
@@ -1089,7 +1157,7 @@ static int hi556_set_ctrl(struct v4l2_ctrl *ctrl)
 	if (ctrl->id == V4L2_CID_VBLANK) {
 		/* Update max exposure while meeting expected vblanking */
 		exposure_max = hi556->cur_mode->height + ctrl->val -
-			       HI556_EXPOSURE_MAX_MARGIN;
+			       hi556->config->exposure_margin;
 		__v4l2_ctrl_modify_range(hi556->exposure,
 					 hi556->exposure->minimum,
 					 exposure_max, hi556->exposure->step,
@@ -1102,8 +1170,14 @@ static int hi556_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	switch (ctrl->id) {
 	case V4L2_CID_ANALOGUE_GAIN:
-		ret = hi556_write_reg(hi556, HI556_REG_ANALOG_GAIN,
-				      HI556_REG_VALUE_16BIT, ctrl->val);
+		if (hi556->config->is_sp5509)
+			ret = sp5509_write_control(hi556,
+						   hi556->config->analog_gain_reg,
+						   ctrl->val);
+		else
+			ret = hi556_write_reg(hi556,
+					      hi556->config->analog_gain_reg,
+					      HI556_REG_VALUE_16BIT, ctrl->val);
 		break;
 
 	case V4L2_CID_DIGITAL_GAIN:
@@ -1111,15 +1185,25 @@ static int hi556_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 
 	case V4L2_CID_EXPOSURE:
-		ret = hi556_write_reg(hi556, HI556_REG_EXPOSURE,
-				      HI556_REG_VALUE_16BIT, ctrl->val);
+		if (hi556->config->is_sp5509)
+			ret = sp5509_write_control(hi556, HI556_REG_EXPOSURE,
+						   ctrl->val);
+		else
+			ret = hi556_write_reg(hi556, HI556_REG_EXPOSURE,
+					      HI556_REG_VALUE_16BIT, ctrl->val);
 		break;
 
 	case V4L2_CID_VBLANK:
 		/* Update FLL that meets expected vertical blanking */
-		ret = hi556_write_reg(hi556, HI556_REG_FLL,
-				      HI556_REG_VALUE_16BIT,
-				      hi556->cur_mode->height + ctrl->val);
+		if (hi556->config->is_sp5509)
+			ret = sp5509_write_control(hi556, HI556_REG_FLL,
+						   hi556->cur_mode->height +
+						   ctrl->val);
+		else
+			ret = hi556_write_reg(hi556, HI556_REG_FLL,
+					      HI556_REG_VALUE_16BIT,
+					      hi556->cur_mode->height +
+					      ctrl->val);
 		break;
 
 	case V4L2_CID_TEST_PATTERN:
@@ -1143,6 +1227,8 @@ static const struct v4l2_ctrl_ops hi556_ctrl_ops = {
 static int hi556_init_controls(struct hi556 *hi556)
 {
 	struct v4l2_ctrl_handler *ctrl_hdlr;
+	const char * const *test_pattern_menu;
+	u32 num_test_patterns;
 	s64 exposure_max, h_blank;
 	int ret;
 
@@ -1186,19 +1272,30 @@ static int hi556_init_controls(struct hi556 *hi556)
 	v4l2_ctrl_new_std(ctrl_hdlr, &hi556_ctrl_ops, V4L2_CID_ANALOGUE_GAIN,
 			  HI556_ANAL_GAIN_MIN, HI556_ANAL_GAIN_MAX,
 			  HI556_ANAL_GAIN_STEP, HI556_ANAL_GAIN_MIN);
-	v4l2_ctrl_new_std(ctrl_hdlr, &hi556_ctrl_ops, V4L2_CID_DIGITAL_GAIN,
-			  HI556_DGTL_GAIN_MIN, HI556_DGTL_GAIN_MAX,
-			  HI556_DGTL_GAIN_STEP, HI556_DGTL_GAIN_DEFAULT);
-	exposure_max = hi556->cur_mode->fll_def - HI556_EXPOSURE_MAX_MARGIN;
+	if (hi556->config->supports_digital_gain)
+		v4l2_ctrl_new_std(ctrl_hdlr, &hi556_ctrl_ops,
+				  V4L2_CID_DIGITAL_GAIN, HI556_DGTL_GAIN_MIN,
+				  HI556_DGTL_GAIN_MAX, HI556_DGTL_GAIN_STEP,
+				  HI556_DGTL_GAIN_DEFAULT);
+	exposure_max = hi556->cur_mode->fll_def -
+		       hi556->config->exposure_margin;
 	hi556->exposure = v4l2_ctrl_new_std(ctrl_hdlr, &hi556_ctrl_ops,
 					    V4L2_CID_EXPOSURE,
-					    HI556_EXPOSURE_MIN, exposure_max,
+					    hi556->config->exposure_min,
+					    exposure_max,
 					    HI556_EXPOSURE_STEP,
 					    exposure_max);
+	if (hi556->config->is_sp5509) {
+		test_pattern_menu = sp5509_test_pattern_menu;
+		num_test_patterns = ARRAY_SIZE(sp5509_test_pattern_menu);
+	} else {
+		test_pattern_menu = hi556_test_pattern_menu;
+		num_test_patterns = ARRAY_SIZE(hi556_test_pattern_menu);
+	}
 	v4l2_ctrl_new_std_menu_items(ctrl_hdlr, &hi556_ctrl_ops,
 				     V4L2_CID_TEST_PATTERN,
-				     ARRAY_SIZE(hi556_test_pattern_menu) - 1,
-				     0, 0, hi556_test_pattern_menu);
+				     num_test_patterns - 1, 0, 0,
+				     test_pattern_menu);
 	if (ctrl_hdlr->error)
 		return ctrl_hdlr->error;
 

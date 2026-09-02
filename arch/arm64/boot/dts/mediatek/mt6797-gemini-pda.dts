@@ -106,6 +106,46 @@
 		status = "disabled";
 	};
 
+	md1: remoteproc@10014000 {
+		compatible = "mediatek,mt6797-md1";
+		reg = <0 0x10014000 0 0x1e00>,
+		      <0 0x10001000 0 0x1000>,
+		      <0 0x10015000 0 0x1e00>,
+		      <0 0x10219000 0 0x1e00>,
+		      <0 0x1021a000 0 0x1e00>,
+		      <0 0x10209000 0 0x1000>,
+		      <0 0x1020a000 0 0x1000>,
+		      <0 0x1000c000 0 0x1000>,
+		      <0 0x20150000 0 0x118>,
+		      <0 0x20130000 0 0x1004>,
+		      <0 0x20060000 0 0xd0>,
+		      <0 0x260f0000 0 0x200>,
+		      <0 0x20140000 0 0xa0>,
+		      <0 0x20120000 0 0xd0>,
+		      <0 0x200f0100 0 0x300>,
+		      <0 0x26010000 0 0x40>,
+		      <0 0x20000024 0 0x4>,
+		      <0 0x10201300 0 0x8>;
+		reg-names = "ap-cldma-ao", "infracfg", "md-cldma-ao",
+			    "ap-cldma-pdn", "md-cldma-pdn", "ap-ccif",
+			    "md-ccif", "apmixedsys", "md-clksw", "md-dcm",
+			    "md-peri-misc", "md-l1-a0", "md-top-pll",
+			    "md-sys-clk", "md-rgu", "l1-rgu", "boot-vector",
+			    "boot-status";
+		interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 147 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "cldma", "ccif", "watchdog";
+		clocks = <&infrasys CLK_INFRA_CLDMA>,
+			 <&infrasys CLK_INFRA_CCIF_AP>,
+			 <&infrasys CLK_INFRA_CCIF_MD>;
+		clock-names = "cldma", "ccif-ap", "ccif-md";
+		mediatek,spm = <&scpsys>;
+		memory-region = <&md1_firmware>, <&md1_shared>;
+		memory-region-names = "firmware", "md-shared";
+		status = "disabled";
+	};
+
 	gnss: gnss {
 		compatible = "mediatek,mt6797-consys-gnss";
 		mediatek,controller = <&consys_controller>;
@@ -221,7 +261,7 @@
 			no-map;
 		};
 
-		reserve-memory-ccci_md1 {
+		md1_firmware: reserve-memory-ccci_md1 {
 			compatible = "mediatek,reserve-memory-ccci_md1";
 			no-map;
 			size = <0 0xa100000>;
@@ -229,7 +269,7 @@
 			alloc-ranges = <0 0x40000000 0 0x80000000>;
 		};
 
-		reserve-memory-ccci_share {
+		md1_shared: reserve-memory-ccci_share {
 			compatible = "mediatek,reserve-memory-ccci_share";
 			no-map;
 			size = <0 0x600000>;

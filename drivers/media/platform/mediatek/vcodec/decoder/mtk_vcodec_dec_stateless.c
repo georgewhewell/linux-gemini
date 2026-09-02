@@ -161,6 +161,22 @@ static const struct mtk_stateless_control mtk_stateless_controls[] = {
 	},
 	{
 		.cfg = {
+			.id = V4L2_CID_STATELESS_HEVC_EXT_SPS_ST_RPS,
+			.dims = { 65 },
+		},
+		.codec_type = V4L2_PIX_FMT_HEVC_SLICE,
+		.direct_hevc_only = true,
+	},
+	{
+		.cfg = {
+			.id = V4L2_CID_STATELESS_HEVC_EXT_SPS_LT_RPS,
+			.dims = { 65 },
+		},
+		.codec_type = V4L2_PIX_FMT_HEVC_SLICE,
+		.direct_hevc_only = true,
+	},
+	{
+		.cfg = {
 			.id = V4L2_CID_MPEG_VIDEO_HEVC_PROFILE,
 			.def = V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN,
 			.max = V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN_10,

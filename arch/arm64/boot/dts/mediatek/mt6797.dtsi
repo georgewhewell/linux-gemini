@@ -1144,4 +1144,16 @@
 		clock-names = "apb", "smi";
 		status = "disabled";
 	};
+
+	seninf: csi@1a040000 {
+		compatible = "mediatek,mt6797-seninf";
+		reg = <0 0x1a040000 0 0x8000>,
+		      <0 0x10217000 0 0x1000>,
+		      <0 0x10218000 0 0x1000>;
+		reg-names = "seninf", "csi0-ana", "csi1-ana";
+		clocks = <&camsys CLK_CAM_SENINF>;
+		clock-names = "seninf";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_ISP>;
+		status = "disabled";
+	};
 };

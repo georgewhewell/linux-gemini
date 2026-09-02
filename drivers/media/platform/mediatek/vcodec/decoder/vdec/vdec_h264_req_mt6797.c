@@ -17,17 +17,102 @@
 
 struct mt6797_h264_inst {
 	struct mtk_vcodec_dec_ctx *ctx;
+	struct mtk_vcodec_mem prediction;
+	struct mtk_vcodec_mem pp;
+	struct mtk_vcodec_mem ld;
+	struct mtk_vcodec_mem mv[MT6797_H264_MV_BUFFER_COUNT];
+	u32 mv_size;
 };
+
+static void mt6797_h264_free_mem(struct mt6797_h264_inst *inst,
+				 struct mtk_vcodec_mem *mem)
+{
+	if (mem->va)
+		mtk_vcodec_mem_free(inst->ctx, mem);
+}
+
+static void mt6797_h264_free_mv(struct mt6797_h264_inst *inst)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(inst->mv); i++)
+		mt6797_h264_free_mem(inst, &inst->mv[i]);
+	inst->mv_size = 0;
+}
+
+static int mt6797_h264_alloc_mem(struct mt6797_h264_inst *inst,
+				 struct mtk_vcodec_mem *mem, size_t size)
+{
+	int ret;
+
+	mem->size = size;
+	ret = mtk_vcodec_mem_alloc(inst->ctx, mem);
+	if (!ret)
+		memset(mem->va, 0, size);
+
+	return ret;
+}
+
+static int mt6797_h264_alloc_fixed(struct mt6797_h264_inst *inst)
+{
+	int ret;
+
+	ret = mt6797_h264_alloc_mem(inst, &inst->prediction,
+				    MT6797_H264_PREDICTION_SIZE);
+	if (ret)
+		return ret;
+	ret = mt6797_h264_alloc_mem(inst, &inst->pp, MT6797_H264_PP_SIZE);
+	if (ret)
+		goto err_prediction;
+	ret = mt6797_h264_alloc_mem(inst, &inst->ld, MT6797_H264_LD_SIZE);
+	if (ret)
+		goto err_pp;
+
+	return 0;
+
+err_pp:
+	mt6797_h264_free_mem(inst, &inst->pp);
+err_prediction:
+	mt6797_h264_free_mem(inst, &inst->prediction);
+	return ret;
+}
+
+static int mt6797_h264_alloc_mv(struct mt6797_h264_inst *inst, u32 size)
+{
+	unsigned int i;
+	int ret;
+
+	if (inst->mv_size == size)
+		return 0;
+
+	mt6797_h264_free_mv(inst);
+	for (i = 0; i < ARRAY_SIZE(inst->mv); i++) {
+		ret = mt6797_h264_alloc_mem(inst, &inst->mv[i], size);
+		if (ret) {
+			mt6797_h264_free_mv(inst);
+			return ret;
+		}
+	}
+	inst->mv_size = size;
+
+	return 0;
+}
 
 static int mt6797_h264_init(struct mtk_vcodec_dec_ctx *ctx)
 {
 	struct mt6797_h264_inst *inst;
+	int ret;
 
 	inst = kzalloc_obj(*inst);
 	if (!inst)
 		return -ENOMEM;
 
 	inst->ctx = ctx;
+	ret = mt6797_h264_alloc_fixed(inst);
+	if (ret) {
+		kfree(inst);
+		return ret;
+	}
 	ctx->drv_handle = inst;
 
 	return 0;
@@ -35,7 +120,13 @@ static int mt6797_h264_init(struct mtk_vcodec_dec_ctx *ctx)
 
 static void mt6797_h264_deinit(void *h_vdec)
 {
-	kfree(h_vdec);
+	struct mt6797_h264_inst *inst = h_vdec;
+
+	mt6797_h264_free_mv(inst);
+	mt6797_h264_free_mem(inst, &inst->ld);
+	mt6797_h264_free_mem(inst, &inst->pp);
+	mt6797_h264_free_mem(inst, &inst->prediction);
+	kfree(inst);
 }
 
 static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
@@ -47,7 +138,9 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	const struct v4l2_ctrl_h264_sps *sps;
 	const struct v4l2_ctrl_h264_pps *pps;
 	struct mt6797_h264_barrel_plan barrel;
-	u32 sps_reg, pps_reg, slice_reg;
+	struct mt6797_h264_buffer_layout layout;
+	struct mt6797_h264_working_plan working;
+	u32 sps_reg, pps_reg, slice_reg, slice2_reg;
 	int ret;
 
 	*res_chg = false;
@@ -75,6 +168,19 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 				      &barrel);
 	if (ret)
 		return ret;
+	ret = mt6797_h264_buffer_layout((sps->pic_width_in_mbs_minus1 + 1) * 16,
+					(sps->pic_height_in_map_units_minus1 + 1) * 16,
+					&layout);
+	if (ret)
+		return ret;
+	ret = mt6797_h264_alloc_mv(inst, layout.mv_size);
+	if (ret)
+		return ret;
+	ret = mt6797_h264_working_plan(inst->prediction.dma_addr,
+				       inst->pp.dma_addr, inst->ld.dma_addr,
+				       inst->mv[0].dma_addr, &working);
+	if (ret)
+		return ret;
 
 	/*
 	 * These words are independently recovered and unit tested.  Do not
@@ -85,10 +191,13 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	sps_reg = mt6797_h264_sps_reg(sps);
 	pps_reg = mt6797_h264_pps_reg(pps);
 	slice_reg = mt6797_h264_slice_reg(slice, false, false);
+	slice2_reg = mt6797_h264_slice2_reg(slice, dec);
 	mtk_v4l2_vdec_dbg(3, inst->ctx,
-			  "direct plan sps=%#x pps=%#x slice=%#x bs=%#x-%#x shift=%u/%u",
-			  sps_reg, pps_reg, slice_reg, barrel.fetch_start,
-			  barrel.fetch_end, barrel.shift_reads, barrel.final_shift);
+			  "direct plan sps=%#x pps=%#x slice=%#x/%#x bs=%#x-%#x shift=%u/%u pred=%#x pp=%#x ld=%#x mv=%#x",
+			  sps_reg, pps_reg, slice_reg, slice2_reg, barrel.fetch_start,
+			  barrel.fetch_end, barrel.shift_reads, barrel.final_shift,
+			  working.prediction_addr, working.pp_addr,
+			  working.ld_addr, working.mv_addr_16);
 
 	return -EOPNOTSUPP;
 }

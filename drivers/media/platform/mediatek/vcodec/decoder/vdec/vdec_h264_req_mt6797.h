@@ -38,6 +38,16 @@
 #define MT6797_H264_SH_REFS_L0		GENMASK(24, 20)
 #define MT6797_H264_SH_REFS_L1		GENMASK(29, 25)
 
+#define MT6797_H264_SH2_QP_DELTA	GENMASK(6, 0)
+#define MT6797_H264_SH2_DEBLOCK		GENMASK(8, 7)
+#define MT6797_H264_SH2_ALPHA		GENMASK(12, 9)
+#define MT6797_H264_SH2_BETA		GENMASK(16, 13)
+#define MT6797_H264_SH2_NAL_REF_IDC	GENMASK(18, 17)
+#define MT6797_H264_SH2_IDR		BIT(19)
+#define MT6797_H264_SH2_CABAC_INIT	GENMASK(21, 20)
+
+#define MT6797_H264_POC_VALUE		GENMASK(17, 0)
+
 #define MT6797_H264_MAX_WIDTH		1920U
 #define MT6797_H264_MAX_HEIGHT		1088U
 #define MT6797_H264_DMA_ALIGN		512U
@@ -45,6 +55,13 @@
 #define MT6797_H264_BS_GUARD		0x100U
 #define MT6797_H264_NAL_HEADER_BITS	8U
 #define MT6797_H264_BARREL_MAX_SHIFT	32U
+#define MT6797_H264_MV_BUFFER_COUNT	17U
+#define MT6797_H264_PREDICTION_SIZE	0x8000U
+#define MT6797_H264_PP_SIZE		0x1e000U
+#define MT6797_H264_LD_SIZE		0xf000U
+#define MT6797_H264_PREDICTION_ALIGN	0x400U
+#define MT6797_H264_AUX_ALIGN		0x800U
+#define MT6797_H264_MV_ALIGN		0x1000U
 
 struct mt6797_h264_buffer_layout {
 	u32 width;
@@ -74,6 +91,23 @@ struct mt6797_h264_output_plan {
 	u32 mv_addr_16;
 	u32 crc_y_addr;
 	u32 crc_end_addr;
+};
+
+struct mt6797_h264_working_plan {
+	u32 prediction_addr;
+	u32 pp_addr;
+	u32 ld_addr;
+	u32 mv_addr_16;
+};
+
+struct mt6797_h264_idr_plan {
+	u32 max_frame_num;
+	u32 frame_num;
+	u32 poc;
+	u32 top_poc;
+	u32 bottom_poc;
+	u32 ref_y_addr;
+	u32 ref_mv_addr_16;
 };
 
 static inline int
@@ -170,6 +204,27 @@ mt6797_h264_output_plan(u64 y_addr, u64 c_addr, u64 mv_addr,
 	return 0;
 }
 
+static inline int
+mt6797_h264_working_plan(u64 prediction_addr, u64 pp_addr, u64 ld_addr,
+			 u64 mv_addr, struct mt6797_h264_working_plan *plan)
+{
+	if ((prediction_addr & (MT6797_H264_PREDICTION_ALIGN - 1)) ||
+	    (pp_addr & (MT6797_H264_AUX_ALIGN - 1)) ||
+	    (ld_addr & (MT6797_H264_AUX_ALIGN - 1)) ||
+	    (mv_addr & (MT6797_H264_MV_ALIGN - 1)))
+		return -EINVAL;
+	if (prediction_addr > U32_MAX || pp_addr > U32_MAX ||
+	    ld_addr > U32_MAX || mv_addr > U32_MAX)
+		return -ERANGE;
+
+	plan->prediction_addr = prediction_addr;
+	plan->pp_addr = pp_addr;
+	plan->ld_addr = ld_addr;
+	plan->mv_addr_16 = mv_addr >> 4;
+
+	return 0;
+}
+
 static inline u32 mt6797_h264_sps_reg(const struct v4l2_ctrl_h264_sps *sps)
 {
 	u32 flags = sps->flags;
@@ -243,6 +298,57 @@ static inline u32 mt6797_h264_slice_reg(const struct v4l2_ctrl_h264_slice_params
 	return reg;
 }
 
+static inline u32
+mt6797_h264_slice2_reg(const struct v4l2_ctrl_h264_slice_params *slice,
+		       const struct v4l2_ctrl_h264_decode_params *dec)
+{
+	u32 reg;
+
+	reg = FIELD_PREP(MT6797_H264_SH2_QP_DELTA,
+			 (u32)slice->slice_qp_delta & 0x7f);
+	reg |= FIELD_PREP(MT6797_H264_SH2_DEBLOCK,
+			  slice->disable_deblocking_filter_idc);
+	reg |= FIELD_PREP(MT6797_H264_SH2_ALPHA,
+			  (u32)slice->slice_alpha_c0_offset_div2 & 0xf);
+	reg |= FIELD_PREP(MT6797_H264_SH2_BETA,
+			  (u32)slice->slice_beta_offset_div2 & 0xf);
+	reg |= FIELD_PREP(MT6797_H264_SH2_NAL_REF_IDC, dec->nal_ref_idc);
+	reg |= FIELD_PREP(MT6797_H264_SH2_CABAC_INIT, slice->cabac_init_idc);
+	if (dec->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC)
+		reg |= MT6797_H264_SH2_IDR;
+
+	return reg;
+}
+
+static inline int
+mt6797_h264_idr_plan(const struct v4l2_ctrl_h264_sps *sps,
+		     const struct v4l2_ctrl_h264_decode_params *dec,
+		     u64 y_addr, u64 mv_addr,
+		     struct mt6797_h264_idr_plan *plan)
+{
+	s32 poc;
+
+	if (!(dec->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC))
+		return -EINVAL;
+	if (sps->log2_max_frame_num_minus4 > 12 ||
+	    (y_addr & (MT6797_H264_DMA_ALIGN - 1)) ||
+	    (mv_addr & (MT6797_H264_MV_ALIGN - 1)))
+		return -EINVAL;
+	if (y_addr > U32_MAX || mv_addr > U32_MAX)
+		return -ERANGE;
+
+	poc = min(dec->top_field_order_cnt, dec->bottom_field_order_cnt);
+	plan->max_frame_num = 1U << (sps->log2_max_frame_num_minus4 + 4);
+	plan->frame_num = dec->frame_num;
+	plan->poc = (u32)poc & MT6797_H264_POC_VALUE;
+	plan->top_poc = (u32)dec->top_field_order_cnt & MT6797_H264_POC_VALUE;
+	plan->bottom_poc = (u32)dec->bottom_field_order_cnt & MT6797_H264_POC_VALUE;
+	plan->ref_y_addr = y_addr;
+	plan->ref_mv_addr_16 = mv_addr >> 4;
+
+	return 0;
+}
+
 static inline int
 mt6797_h264_validate_request(const struct v4l2_ctrl_h264_sps *sps,
 			     const struct v4l2_ctrl_h264_pps *pps,
@@ -266,6 +372,8 @@ mt6797_h264_validate_request(const struct v4l2_ctrl_h264_sps *sps,
 	    pps->weighted_bipred_idc)
 		return -EINVAL;
 	if (slice->first_mb_in_slice || slice->slice_type != V4L2_H264_SLICE_TYPE_I)
+		return -EOPNOTSUPP;
+	if (!(dec->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC))
 		return -EOPNOTSUPP;
 	if (dec->flags & (V4L2_H264_DECODE_PARAM_FLAG_FIELD_PIC |
 			  V4L2_H264_DECODE_PARAM_FLAG_BOTTOM_FIELD |

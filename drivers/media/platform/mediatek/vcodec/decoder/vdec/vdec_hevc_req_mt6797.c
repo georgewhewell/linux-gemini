@@ -38,6 +38,7 @@ struct mt6797_hevc_inst {
 	struct mtk_vcodec_mem bitstream;
 	struct mtk_vcodec_mem mv[MT6797_HEVC_MV_BUFFER_COUNT];
 	struct mt6797_hevc_mv_slot mv_slots[MT6797_HEVC_MV_BUFFER_COUNT];
+	struct mt6797_hevc_rps_set sps_rps[MT6797_HEVC_MAX_SPS_RPS];
 	u32 mv_size;
 };
 
@@ -429,11 +430,11 @@ static int mt6797_hevc_start(struct mt6797_hevc_inst *inst, u32 ctb_width,
 }
 
 static int
-mt6797_hevc_validate_idr(const struct v4l2_ctrl_hevc_sps *sps,
-			 const struct v4l2_ctrl_hevc_pps *pps,
-			 const struct v4l2_ctrl_hevc_slice_params *slice,
-			 const struct v4l2_ctrl_hevc_decode_params *dec,
-			 unsigned int slice_count)
+mt6797_hevc_validate_request(const struct v4l2_ctrl_hevc_sps *sps,
+			     const struct v4l2_ctrl_hevc_pps *pps,
+			     const struct v4l2_ctrl_hevc_slice_params *slice,
+			     const struct v4l2_ctrl_hevc_decode_params *dec,
+			     unsigned int slice_count)
 {
 	u64 unsupported_pps;
 
@@ -443,20 +444,18 @@ mt6797_hevc_validate_idr(const struct v4l2_ctrl_hevc_sps *sps,
 			  V4L2_HEVC_PPS_FLAG_TILES_ENABLED |
 			  V4L2_HEVC_PPS_FLAG_ENTROPY_CODING_SYNC_ENABLED;
 	if (slice_count != 1 || slice->slice_segment_addr ||
-	    slice->slice_type != V4L2_HEVC_SLICE_TYPE_I ||
-	    (slice->nal_unit_type != 19 && slice->nal_unit_type != 20) ||
-	    !(dec->flags & V4L2_HEVC_DECODE_PARAM_FLAG_IDR_PIC) ||
-	    dec->pic_order_cnt_val || slice->slice_pic_order_cnt ||
-	    dec->short_term_ref_pic_set_size ||
-	    dec->long_term_ref_pic_set_size || dec->num_active_dpb_entries ||
-	    dec->num_poc_st_curr_before || dec->num_poc_st_curr_after ||
-	    dec->num_poc_lt_curr || dec->num_delta_pocs_of_ref_rps_idx ||
-	    slice->short_term_ref_pic_set_size ||
-	    slice->long_term_ref_pic_set_size ||
 	    slice->num_entry_point_offsets ||
 	    (sps->flags & V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED) ||
 	    (pps->flags & unsupported_pps))
 		return -EOPNOTSUPP;
+	if (slice->nal_unit_type == 19 || slice->nal_unit_type == 20) {
+		if (!(dec->flags & V4L2_HEVC_DECODE_PARAM_FLAG_IDR_PIC) ||
+		    slice->slice_type != V4L2_HEVC_SLICE_TYPE_I ||
+		    dec->num_active_dpb_entries)
+			return -EINVAL;
+	} else if (dec->flags & V4L2_HEVC_DECODE_PARAM_FLAG_IDR_PIC) {
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -494,6 +493,7 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 {
 	struct mt6797_hevc_inst *inst = h_vdec;
 	const struct v4l2_ctrl_hevc_decode_params *dec;
+	const struct v4l2_ctrl_hevc_ext_sps_st_rps *ext_sps_rps = NULL;
 	const struct v4l2_ctrl_hevc_sps *sps;
 	const struct v4l2_ctrl_hevc_pps *pps;
 	struct v4l2_ctrl_hevc_slice_params *slices, staged_slice;
@@ -511,6 +511,7 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	struct mtk_video_dec_buf *dst_buf, *src_buf;
 	struct mtk_vcodec_mem staged_bs;
 	struct vdec_fb *fb;
+	const u32 ext_rps_id = V4L2_CID_STATELESS_HEVC_EXT_SPS_ST_RPS;
 	unsigned int slice_count;
 	int ret;
 
@@ -530,11 +531,24 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	slices = mt6797_hevc_get_slices(inst, &slice_count);
 	if (IS_ERR(slices))
 		return PTR_ERR(slices);
-	ret = mt6797_hevc_validate_idr(sps, pps, slices, dec, slice_count);
+	ret = mt6797_hevc_validate_request(sps, pps, slices, dec, slice_count);
 	if (ret)
 		return ret;
+	if (sps->num_short_term_ref_pic_sets) {
+		ext_sps_rps = mt6797_hevc_get_ctrl(inst, ext_rps_id);
+		if (IS_ERR(ext_sps_rps))
+			return PTR_ERR(ext_sps_rps);
+		ret = mt6797_hevc_sps_rps_sets(ext_sps_rps,
+					       sps->num_short_term_ref_pic_sets,
+					       inst->sps_rps);
+		if (ret)
+			return ret;
+	}
 	ret = mt6797_hevc_slice_rps_regs(bs->va, bs->size, sps, pps, slices,
-					 dec, NULL, &rps_regs);
+						dec,
+						sps->num_short_term_ref_pic_sets ?
+						inst->sps_rps : NULL,
+						&rps_regs);
 	if (ret)
 		return ret;
 

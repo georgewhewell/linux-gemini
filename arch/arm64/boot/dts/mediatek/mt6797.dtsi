@@ -439,7 +439,6 @@
 		mediatek,larbs = <&larb0>, <&larb1>, <&larb2>, <&larb3>,
 				 <&larb4>, <&larb5>, <&larb6>;
 		#iommu-cells = <1>;
-		status = "disabled";
 	};
 
 	gce: mailbox@10212000 {
@@ -1063,7 +1062,6 @@
 		clocks = <&mmsys CLK_MM_SMI_COMMON>,
 			 <&mmsys CLK_MM_SMI_COMMON>;
 		clock-names = "apb", "smi";
-		status = "disabled";
 	};
 
 	imgsys: syscon@15000000  {
@@ -1114,7 +1112,30 @@
 		clocks = <&vencsys CLK_VENC_1>,
 			 <&vencsys CLK_VENC_1>;
 		clock-names = "apb", "smi";
-		status = "disabled";
+	};
+
+	jpegenc: jpeg-encoder@17003000 {
+		compatible = "mediatek,mt6797-jpgenc",
+			     "mediatek,mtk-jpgenc";
+		reg = <0 0x17003000 0 0x1000>;
+		interrupts = <GIC_SPI 237 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vencsys CLK_VENC_2>;
+		clock-names = "jpgenc";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+		iommus = <&m4u M4U_PORT_JPGENC_RDMA>,
+			 <&m4u M4U_PORT_JPGENC_BSDMA>;
+	};
+
+	jpegdec: jpeg-decoder@17004000 {
+		compatible = "mediatek,mt6797-jpgdec";
+		reg = <0 0x17004000 0 0x1000>;
+		interrupts = <GIC_SPI 239 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vencsys CLK_VENC_1>,
+			 <&vencsys CLK_VENC_3>;
+		clock-names = "jpgdec-smi", "jpgdec";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+		iommus = <&m4u M4U_PORT_JPGDEC_WDMA>,
+			 <&m4u M4U_PORT_JPGDEC_BSDMA>;
 	};
 
 	gic: interrupt-controller@19000000 {

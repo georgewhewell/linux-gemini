@@ -141,6 +141,43 @@ struct mt6797_hevc_bitreader {
 	u8 zero_bytes;
 };
 
+static inline int
+mt6797_hevc_validate_frame_slices(const struct v4l2_ctrl_hevc_slice_params *slices,
+				  unsigned int count, u32 ctb_count)
+{
+	const struct v4l2_ctrl_hevc_slice_params *first;
+	unsigned int i;
+
+	if (!slices || !count || !ctb_count)
+		return -EINVAL;
+	first = &slices[0];
+	for (i = 0; i < count; i++) {
+		const struct v4l2_ctrl_hevc_slice_params *slice = &slices[i];
+
+		if (!slice->bit_size ||
+		    (u64)slice->data_byte_offset * 8 >= slice->bit_size ||
+		    slice->slice_segment_addr >= ctb_count)
+			return -EINVAL;
+		if (slice->num_entry_point_offsets)
+			return -EOPNOTSUPP;
+		if (slice->nal_unit_type != first->nal_unit_type ||
+		    slice->nuh_temporal_id_plus1 != first->nuh_temporal_id_plus1 ||
+		    slice->slice_pic_order_cnt != first->slice_pic_order_cnt)
+			return -EINVAL;
+		if (!i) {
+			if (slice->slice_segment_addr ||
+			    (slice->flags &
+			     V4L2_HEVC_SLICE_PARAMS_FLAG_DEPENDENT_SLICE_SEGMENT))
+				return -EINVAL;
+		} else if (slice->slice_segment_addr <=
+			   slices[i - 1].slice_segment_addr) {
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
 static inline u32 mt6797_hevc_ceil_log2_nonzero(u32 value)
 {
 	return value <= 2 ? 1 : fls(value - 1);

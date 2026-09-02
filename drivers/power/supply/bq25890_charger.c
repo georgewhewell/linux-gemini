@@ -14,11 +14,14 @@
 #include <linux/types.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
+#include <linux/jiffies.h>
 #include <linux/delay.h>
 #include <linux/usb/phy.h>
 
 #include <linux/acpi.h>
 #include <linux/of.h>
+
+#include "bq25890_charger_internal.h"
 
 #define BQ25890_MANUFACTURER		"Texas Instruments"
 #define BQ25890_IRQ_PIN			"bq25890_irq"
@@ -30,6 +33,48 @@
 #define PUMP_EXPRESS_START_DELAY	(5 * HZ)
 #define PUMP_EXPRESS_MAX_TRIES		6
 #define PUMP_EXPRESS_VBUS_MARGIN_uV	1000000
+
+/* REG07 WD=1/2/3 selects a 40/80/160 second watchdog timeout. */
+static const unsigned int bq25890_watchdog_timeout_ms[] = {
+	0, 40000, 80000, 160000,
+};
+
+int bq25890_control_mode_from_flags(bool read_only, bool adopt_firmware,
+				    enum bq25890_control_mode *mode)
+{
+	if (!mode || (read_only && adopt_firmware))
+		return -EINVAL;
+
+	if (read_only)
+		*mode = BQ25890_CONTROL_READ_ONLY;
+	else if (adopt_firmware)
+		*mode = BQ25890_CONTROL_ADOPT_FIRMWARE;
+	else
+		*mode = BQ25890_CONTROL_NORMAL;
+
+	return 0;
+}
+
+bool bq25890_control_mode_is_locked(enum bq25890_control_mode mode)
+{
+	return mode != BQ25890_CONTROL_NORMAL;
+}
+
+bool bq25890_control_mode_allows_write(enum bq25890_control_mode mode,
+				       bool watchdog_reset)
+{
+	return mode == BQ25890_CONTROL_NORMAL ||
+		(mode == BQ25890_CONTROL_ADOPT_FIRMWARE && watchdog_reset);
+}
+
+unsigned int bq25890_adopt_watchdog_delay_ms(u8 setting)
+{
+	if (setting >= ARRAY_SIZE(bq25890_watchdog_timeout_ms))
+		return 0;
+
+	/* Four service opportunities per hardware timeout. */
+	return bq25890_watchdog_timeout_ms[setting] / 4;
+}
 
 enum bq25890_chip_version {
 	BQ25890,
@@ -118,6 +163,7 @@ struct bq25890_device {
 	struct work_struct usb_work;
 	struct delayed_work pump_express_work;
 	struct delayed_work status_poll_work;
+	struct delayed_work watchdog_work;
 	unsigned long usb_event;
 
 	struct regmap *rmap;
@@ -125,13 +171,15 @@ struct bq25890_device {
 
 	bool skip_reset;
 	bool read_back_init_data;
-	bool read_only;
 	bool read_only_adc;
 	bool status_poll_enabled;
 	bool force_hiz;
+	bool watchdog_work_enabled;
+	u8 watchdog_setting;
 	u32 pump_express_vbus_max;
 	u32 iinlim_percentage;
 	u32 status_poll_interval_ms;
+	enum bq25890_control_mode control_mode;
 	enum bq25890_chip_version chip_version;
 	struct bq25890_init_data init_data;
 	struct bq25890_state state;
@@ -379,12 +427,8 @@ static int bq25890_field_read(struct bq25890_device *bq,
 static int bq25890_field_write(struct bq25890_device *bq,
 			       enum bq25890_fields field_id, u8 val)
 {
-	/*
-	 * Do not let a status-only consumer accidentally transition the charger
-	 * out of its autonomous mode.  In particular, an I2C write starts the
-	 * watchdog on BQ2589x parts, even when the written value is unchanged.
-	 */
-	if (bq->read_only)
+	if (!bq25890_control_mode_allows_write(bq->control_mode,
+					       field_id == F_WD_RST))
 		return -EPERM;
 
 	return regmap_field_write(bq->rmap_fields[field_id], val);
@@ -488,7 +532,8 @@ static void bq25890_update_state(struct bq25890_device *bq,
 	/* update state in case we lost an interrupt */
 	__bq25890_handle_irq(bq);
 	*state = bq->state;
-	do_adc_conv = !bq->read_only && (!state->online || state->hiz) &&
+	do_adc_conv = !bq25890_control_mode_is_locked(bq->control_mode) &&
+		(!state->online || state->hiz) &&
 		bq25890_is_adc_property(psp);
 	if (do_adc_conv)
 		bq25890_field_write(bq, F_CONV_START, 1);
@@ -580,7 +625,7 @@ static int bq25890_power_supply_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_CURRENT_NOW:	/* I_BAT now */
-		if (bq->read_only) {
+		if (bq->control_mode == BQ25890_CONTROL_READ_ONLY) {
 			ret = bq25890_field_read(bq, F_CONV_RATE);
 			if (ret < 0)
 				return ret;
@@ -643,7 +688,7 @@ static int bq25890_power_supply_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:	/* V_BAT now */
-		if (bq->read_only) {
+		if (bq->control_mode == BQ25890_CONTROL_READ_ONLY) {
 			ret = bq25890_field_read(bq, F_CONV_RATE);
 			if (ret < 0)
 				return ret;
@@ -719,7 +764,7 @@ static int bq25890_power_supply_set_property(struct power_supply *psy,
 	int maxval, ret;
 	u8 lval;
 
-	if (bq->read_only)
+	if (bq25890_control_mode_is_locked(bq->control_mode))
 		return -EPERM;
 
 	switch (psp) {
@@ -750,7 +795,7 @@ static int bq25890_power_supply_property_is_writeable(struct power_supply *psy,
 {
 	struct bq25890_device *bq = power_supply_get_drvdata(psy);
 
-	if (bq->read_only)
+	if (bq25890_control_mode_is_locked(bq->control_mode))
 		return false;
 
 	switch (psp) {
@@ -783,7 +828,8 @@ static void bq25890_charger_external_power_changed(struct power_supply *psy)
 	union power_supply_propval val;
 	int input_current_limit, ret;
 
-	if (bq->read_only || bq->chip_version != BQ25892)
+	if (bq25890_control_mode_is_locked(bq->control_mode) ||
+	    bq->chip_version != BQ25892)
 		return;
 
 	ret = power_supply_get_property_from_supplier(psy,
@@ -835,10 +881,10 @@ static int bq25890_get_chip_state(struct bq25890_device *bq,
 
 	/*
 	 * REG0C latches some fault state until it is read.  Do not consume that
-	 * diagnostic state in ti,read-only mode: the observation interface is
+	 * diagnostic state in either locked mode: the observation interface is
 	 * deliberately limited to the non-destructive status fields above.
 	 */
-	if (bq->read_only)
+	if (bq25890_control_mode_is_locked(bq->control_mode))
 		num_state_fields = 4;
 	else
 		num_state_fields = ARRAY_SIZE(state_fields);
@@ -878,7 +924,8 @@ static irqreturn_t __bq25890_handle_irq(struct bq25890_device *bq)
 	 * Restore HiZ bit in case it was set by user. The chip does not retain
 	 * this bit on cable replug, hence the bit must be reset manually here.
 	 */
-	if (!bq->read_only && new_state.online && !bq->state.online &&
+	if (!bq25890_control_mode_is_locked(bq->control_mode) &&
+	    new_state.online && !bq->state.online &&
 	    bq->force_hiz) {
 		ret = bq25890_field_write(bq, F_EN_HIZ, bq->force_hiz);
 		if (ret < 0)
@@ -890,7 +937,8 @@ static irqreturn_t __bq25890_handle_irq(struct bq25890_device *bq)
 	adc_conv_rate = bq->state.online && !bq->state.hiz;
 	new_adc_conv_rate = new_state.online && !new_state.hiz;
 
-	if (!bq->read_only && new_adc_conv_rate != adc_conv_rate) {
+	if (!bq25890_control_mode_is_locked(bq->control_mode) &&
+	    new_adc_conv_rate != adc_conv_rate) {
 		ret = bq25890_field_write(bq, F_CONV_RATE, new_adc_conv_rate);
 		if (ret < 0)
 			goto error;
@@ -1004,14 +1052,64 @@ static int bq25890_rw_init_data(struct bq25890_device *bq)
 	return 0;
 }
 
+static void bq25890_watchdog_work(struct work_struct *work)
+{
+	struct bq25890_device *bq = container_of(to_delayed_work(work),
+						  struct bq25890_device,
+						  watchdog_work);
+	unsigned int delay_ms;
+	int ret;
+
+	delay_ms = bq25890_adopt_watchdog_delay_ms(bq->watchdog_setting);
+	if (!delay_ms)
+		return;
+
+	mutex_lock(&bq->lock);
+	ret = bq25890_field_write(bq, F_WD_RST, 1);
+	mutex_unlock(&bq->lock);
+	if (ret)
+		dev_err_ratelimited(bq->dev,
+				    "failed to service adopted watchdog: %d\n",
+				    ret);
+
+	if (READ_ONCE(bq->watchdog_work_enabled))
+		schedule_delayed_work(&bq->watchdog_work,
+				      msecs_to_jiffies(delay_ms));
+}
+
+static int bq25890_adopt_firmware_settings(struct bq25890_device *bq)
+{
+	int ret;
+
+	ret = bq25890_field_read(bq, F_WD);
+	if (ret < 0)
+		return ret;
+	bq->watchdog_setting = ret;
+
+	/* The remaining time is unknown, so establish a full interval now. */
+	if (bq->watchdog_setting) {
+		ret = bq25890_field_write(bq, F_WD_RST, 1);
+		if (ret < 0)
+			return ret;
+	}
+
+	ret = bq25890_rw_init_data(bq);
+	if (ret < 0)
+		return ret;
+
+	return bq25890_get_chip_state(bq, &bq->state);
+}
+
 static int bq25890_hw_init(struct bq25890_device *bq)
 {
 	int ret;
 
-	if (bq->read_only) {
+	if (bq->control_mode == BQ25890_CONTROL_READ_ONLY) {
 		/* No write and no read-to-clear fault-register access. */
 		return bq25890_get_chip_state(bq, &bq->state);
 	}
+	if (bq->control_mode == BQ25890_CONTROL_ADOPT_FIRMWARE)
+		return bq25890_adopt_firmware_settings(bq);
 
 	if (!bq->skip_reset) {
 		ret = bq25890_chip_reset(bq);
@@ -1137,7 +1235,7 @@ static int bq25890_power_supply_init(struct bq25890_device *bq)
 		return bq->id;
 
 	snprintf(bq->name, sizeof(bq->name), "bq25890-charger-%d", bq->id);
-	if (bq->read_only) {
+	if (bq25890_control_mode_is_locked(bq->control_mode)) {
 		bq->desc = bq25890_read_only_desc;
 		if (bq->read_only_adc) {
 			bq->desc.properties = bq25890_read_only_adc_props;
@@ -1148,7 +1246,7 @@ static int bq25890_power_supply_init(struct bq25890_device *bq)
 	}
 	bq->desc.name = bq->name;
 
-	if (!bq->read_only) {
+	if (!bq25890_control_mode_is_locked(bq->control_mode)) {
 		psy_cfg.supplied_to = bq25890_charger_supplied_to;
 		psy_cfg.num_supplicants = ARRAY_SIZE(bq25890_charger_supplied_to);
 	}
@@ -1507,13 +1605,22 @@ static int bq25890_fw_read_u32_props(struct bq25890_device *bq)
 
 static int bq25890_fw_probe(struct bq25890_device *bq)
 {
+	bool adopt_firmware;
+	bool read_only;
 	int ret;
 	struct bq25890_init_data *init = &bq->init_data;
 	const char *str;
 	u32 val;
 
-	bq->read_only = device_property_read_bool(bq->dev, "ti,read-only");
-	if (bq->read_only) {
+	read_only = device_property_read_bool(bq->dev, "ti,read-only");
+	adopt_firmware = device_property_read_bool(bq->dev,
+						   "ti,adopt-firmware-settings");
+	ret = bq25890_control_mode_from_flags(read_only, adopt_firmware,
+					      &bq->control_mode);
+	if (ret)
+		return ret;
+
+	if (read_only) {
 		bq->read_only_adc = device_property_read_bool(bq->dev,
 							      "ti,read-only-adc");
 		ret = device_property_read_u32(bq->dev,
@@ -1526,11 +1633,14 @@ static int bq25890_fw_probe(struct bq25890_device *bq)
 			     bq->status_poll_interval_ms > 3600000))
 			return dev_err_probe(bq->dev, -EINVAL,
 				"invalid status poll interval\n");
+	}
 
+	if (bq25890_control_mode_is_locked(bq->control_mode)) {
 		/*
-		 * Do not require, infer, or program any battery or charge limits in
-		 * status-only mode. bq25890_hw_init() reads only live status fields.
+		 * Do not require, infer, or program battery or charge limits in a
+		 * locked mode. Adoption reads the existing settings instead.
 		 */
+		bq->read_back_init_data = adopt_firmware;
 		return 0;
 	}
 
@@ -1576,6 +1686,8 @@ static void bq25890_non_devm_cleanup(void *data)
 {
 	struct bq25890_device *bq = data;
 
+	WRITE_ONCE(bq->watchdog_work_enabled, false);
+	cancel_delayed_work_sync(&bq->watchdog_work);
 	cancel_delayed_work_sync(&bq->pump_express_work);
 
 	if (bq->id >= 0) {
@@ -1602,6 +1714,7 @@ static int bq25890_probe(struct i2c_client *client)
 	mutex_init(&bq->lock);
 	INIT_DELAYED_WORK(&bq->pump_express_work, bq25890_pump_express_work);
 	INIT_DELAYED_WORK(&bq->status_poll_work, bq25890_status_poll_work);
+	INIT_DELAYED_WORK(&bq->watchdog_work, bq25890_watchdog_work);
 
 	bq->rmap = devm_regmap_init_i2c(client, &bq25890_regmap_config);
 	if (IS_ERR(bq->rmap))
@@ -1631,7 +1744,7 @@ static int bq25890_probe(struct i2c_client *client)
 		return ret;
 	}
 
-	if (!bq->read_only) {
+	if (!bq25890_control_mode_is_locked(bq->control_mode)) {
 		if (client->irq <= 0)
 			client->irq = bq25890_irq_probe(bq);
 
@@ -1652,7 +1765,7 @@ static int bq25890_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 
-	if (!bq->read_only) {
+	if (!bq25890_control_mode_is_locked(bq->control_mode)) {
 		ret = bq25890_register_regulator(bq);
 		if (ret)
 			return ret;
@@ -1668,7 +1781,7 @@ static int bq25890_probe(struct i2c_client *client)
 				      msecs_to_jiffies(bq->status_poll_interval_ms));
 	}
 
-	if (!bq->read_only) {
+	if (!bq25890_control_mode_is_locked(bq->control_mode)) {
 		ret = devm_request_threaded_irq(dev, client->irq, NULL,
 						bq25890_irq_handler_thread,
 						IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
@@ -1677,10 +1790,22 @@ static int bq25890_probe(struct i2c_client *client)
 			return ret;
 	}
 
-	if (!bq->read_only && !IS_ERR_OR_NULL(bq->usb_phy)) {
+	if (!bq25890_control_mode_is_locked(bq->control_mode) &&
+	    !IS_ERR_OR_NULL(bq->usb_phy)) {
 		INIT_WORK(&bq->usb_work, bq25890_usb_work);
 		bq->usb_nb.notifier_call = bq25890_usb_notifier;
 		usb_register_notifier(bq->usb_phy, &bq->usb_nb);
+	}
+
+	if (bq->control_mode == BQ25890_CONTROL_ADOPT_FIRMWARE &&
+	    bq->watchdog_setting) {
+		unsigned int delay_ms =
+			bq25890_adopt_watchdog_delay_ms(bq->watchdog_setting);
+
+		WRITE_ONCE(bq->watchdog_work_enabled, true);
+		schedule_delayed_work(&bq->watchdog_work,
+				      msecs_to_jiffies(delay_ms));
+		dev_info(dev, "adopted firmware settings; watchdog service enabled\n");
 	}
 
 	return 0;
@@ -1698,7 +1823,8 @@ static void bq25890_remove(struct i2c_client *client)
 		cancel_work_sync(&bq->usb_work);
 	}
 
-	if (!bq->read_only && !bq->skip_reset) {
+	if (!bq25890_control_mode_is_locked(bq->control_mode) &&
+	    !bq->skip_reset) {
 		/* reset all registers to default values */
 		bq25890_chip_reset(bq);
 	}
@@ -1708,7 +1834,7 @@ static void bq25890_shutdown(struct i2c_client *client)
 {
 	struct bq25890_device *bq = i2c_get_clientdata(client);
 
-	if (bq->read_only)
+	if (bq25890_control_mode_is_locked(bq->control_mode))
 		return;
 
 	/*
@@ -1738,8 +1864,10 @@ static int bq25890_suspend(struct device *dev)
 	 * If charger is removed, while in suspend, make sure ADC is diabled
 	 * since it consumes slightly more power.
 	 */
-	if (bq->read_only)
+	if (bq->control_mode == BQ25890_CONTROL_READ_ONLY)
 		return 0;
+	if (bq->control_mode == BQ25890_CONTROL_ADOPT_FIRMWARE)
+		return bq->watchdog_setting ? -EBUSY : 0;
 
 	return bq25890_field_write(bq, F_CONV_RATE, 0);
 }
@@ -1756,7 +1884,8 @@ static int bq25890_resume(struct device *dev)
 		goto unlock;
 
 	/* Re-enable ADC only if charger is plugged in. */
-	if (!bq->read_only && bq->state.online) {
+	if (!bq25890_control_mode_is_locked(bq->control_mode) &&
+	    bq->state.online) {
 		ret = bq25890_field_write(bq, F_CONV_RATE, 1);
 		if (ret < 0)
 			goto unlock;

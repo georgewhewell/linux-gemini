@@ -37,7 +37,9 @@ relative to ``drivers/misc/mediatek/eccci`` unless otherwise stated.
   registers in the power-down bank.  ``mt6797/cldma_reg.h:47-105`` places
   downlink queue start/current and RX interrupt masks in the always-on bank.
   ``mt6797/cldma_reg.h:220-257`` defines the shared interrupt status and mask
-  registers.
+  registers.  Its queue-start helpers at lines 276-289 write only the low
+  32 address bits.  Coherent GPD roots therefore stay below 4 GiB, while
+  streaming payload mappings may use the descriptor's 36-bit packed pointer.
 * ``modem_cldma.c:1494-1530`` programs all ring heads, issues a write barrier,
   starts queues 0 through 6 with mask ``0x7f`` and unmasks DONE and ERROR
   interrupts.  ``modem_cldma.c:1115-1221`` acknowledges status before handing

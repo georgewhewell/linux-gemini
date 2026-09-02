@@ -160,12 +160,20 @@ mt6797_md1_cldma_prepare_dma(struct mt6797_md1_cldma_prepare *prepare)
 	unsigned int i;
 	int ret;
 
-	ret = dma_set_mask_and_coherent(
-		dev, DMA_BIT_MASK(MT6797_MD1_CLDMA_ADDR_BITS));
+	/*
+	 * Payload pointers carry a 36-bit high nibble in each GPD, but queue
+	 * start-address registers accept only 32 bits. Keep coherent GPD roots
+	 * below 4 GiB while allowing streaming buffers in the full aperture.
+	 */
+	ret = dma_set_mask(dev, DMA_BIT_MASK(MT6797_MD1_CLDMA_ADDR_BITS));
 	if (ret)
 		return dev_err_probe(
 			dev, ret,
-			"could not establish a 36-bit coherent DMA domain\n");
+			"could not establish a 36-bit streaming DMA domain\n");
+	ret = dma_set_coherent_mask(dev, DMA_BIT_MASK(32));
+	if (ret)
+		return dev_err_probe(dev, ret,
+			"could not keep CLDMA ring roots in the 32-bit aperture\n");
 
 	prepare->gpd_pool = dma_pool_create("mt6797-md1-cldma-gpd", dev,
 					    MT6797_MD1_CLDMA_GPD_BYTES,

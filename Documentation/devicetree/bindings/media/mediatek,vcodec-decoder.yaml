@@ -16,26 +16,17 @@ description: |+
 properties:
   compatible:
     enum:
+      - mediatek,mt6797-vcodec-dec
       - mediatek,mt8173-vcodec-dec
       - mediatek,mt8183-vcodec-dec
 
   reg:
-    minItems: 11
+    minItems: 10
     maxItems: 11
 
   reg-names:
-    items:
-      - const: misc
-      - const: ld
-      - const: top
-      - const: cm
-      - const: ad
-      - const: av
-      - const: pp
-      - const: hwd
-      - const: hwq
-      - const: hwb
-      - const: hwg
+    minItems: 10
+    maxItems: 11
 
   interrupts:
     maxItems: 1
@@ -88,6 +79,66 @@ required:
   - mediatek,vdecsys
 
 allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: mediatek,mt6797-vcodec-dec
+
+    then:
+      required:
+        - power-domains
+
+      properties:
+        reg:
+          minItems: 10
+          maxItems: 10
+
+        reg-names:
+          items:
+            - const: misc
+            - const: vld
+            - const: vld-top
+            - const: mc
+            - const: avc-vld
+            - const: avc-mv
+            - const: pp
+            - const: vp8-vld
+            - const: vld2
+            - const: hevc-vld
+
+        clocks:
+          minItems: 1
+          maxItems: 1
+
+        clock-names:
+          items:
+            - const: vdec
+
+        iommus:
+          minItems: 10
+          maxItems: 10
+
+    else:
+      properties:
+        reg:
+          minItems: 11
+          maxItems: 11
+
+        reg-names:
+          items:
+            - const: misc
+            - const: ld
+            - const: top
+            - const: cm
+            - const: ad
+            - const: av
+            - const: pp
+            - const: hwd
+            - const: hwq
+            - const: hwb
+            - const: hwg
+
   - if:
       properties:
         compatible:

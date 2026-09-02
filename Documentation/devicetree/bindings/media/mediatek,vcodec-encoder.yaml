@@ -18,6 +18,7 @@ properties:
     oneOf:
       - items:
           - enum:
+              - mediatek,mt6797-vcodec-enc
               - mediatek,mt8173-vcodec-enc-vp8
               - mediatek,mt8173-vcodec-enc
               - mediatek,mt8183-vcodec-enc
@@ -80,6 +81,29 @@ allOf:
       properties:
         compatible:
           contains:
+            const: mediatek,mt6797-vcodec-enc
+
+    then:
+      required:
+        - power-domains
+
+      properties:
+        clocks:
+          minItems: 1
+          maxItems: 1
+
+        clock-names:
+          items:
+            - const: venc
+
+        iommus:
+          minItems: 11
+          maxItems: 11
+
+  - if:
+      properties:
+        compatible:
+          contains:
             enum:
               - mediatek,mt8183-vcodec-enc
               - mediatek,mt8188-vcodec-enc
@@ -110,22 +134,35 @@ allOf:
 
     then:
       properties:
-        clock:
-          items:
-            minItems: 1
-            maxItems: 1
+        clocks:
+          minItems: 1
+          maxItems: 1
         clock-names:
           items:
             - const: venc_lt_sel
     else:
-      properties:
-        clock:
-          items:
+      if:
+        properties:
+          compatible:
+            const: mediatek,mt6797-vcodec-enc
+
+      then:
+        properties:
+          clocks:
             minItems: 1
             maxItems: 1
-        clock-names:
-          items:
-            - const: venc_sel
+          clock-names:
+            items:
+              - const: venc
+
+      else:
+        properties:
+          clocks:
+            minItems: 1
+            maxItems: 1
+          clock-names:
+            items:
+              - const: venc_sel
 
 additionalProperties: false
 

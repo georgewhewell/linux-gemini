@@ -6,6 +6,7 @@
 #include <linux/ieee80211.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
+#include <net/cfg80211.h>
 
 #include "wire.h"
 
@@ -17,6 +18,16 @@
 #define MT6797_WIFI_GEN3_KEY_LEN 16U
 #define MT6797_WIFI_GEN3_MAX_RSC_LEN 16U
 #define MT6797_WIFI_GEN3_MAX_KEY_INDEX 5U
+
+enum mt6797_wifi_gen3_scan_type
+mt6797_wifi_gen3_scan_type_for_flags(u32 channel_flags)
+{
+	if (channel_flags & IEEE80211_CHAN_NO_IR)
+		return MT6797_WIFI_GEN3_SCAN_PASSIVE;
+
+	return MT6797_WIFI_GEN3_SCAN_ACTIVE;
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_gen3_scan_type_for_flags);
 
 static void mt6797_wifi_gen3_init_cmd(u8 *buf, size_t len, u8 command,
 				      u8 sequence)

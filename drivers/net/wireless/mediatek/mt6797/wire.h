@@ -14,6 +14,14 @@ enum mt6797_wifi_gen3_cipher {
 	MT6797_WIFI_GEN3_CIPHER_BIP = 6,
 };
 
+enum mt6797_wifi_gen3_scan_type {
+	MT6797_WIFI_GEN3_SCAN_PASSIVE = 0,
+	MT6797_WIFI_GEN3_SCAN_ACTIVE = 1,
+};
+
+enum mt6797_wifi_gen3_scan_type
+mt6797_wifi_gen3_scan_type_for_flags(u32 channel_flags);
+
 int mt6797_wifi_gen3_build_key_cmd(u8 *buf, size_t buf_len, u8 sequence,
 				   bool add, bool pairwise, const u8 *peer,
 				   u8 key_index, u8 wlan_index,

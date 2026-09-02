@@ -257,13 +257,12 @@ static irqreturn_t nvt36xxx_irq(int irq, void *arg)
 				     "failed to read touch data: %d\n", ret);
 
 		if (data->transfer_errors >= NVT36XXX_RECOVERY_THRESHOLD) {
+			data->transfer_errors = 0;
 			ret = nvt36xxx_reinitialize(data, NVT36XXX_RESET_STATE_REK);
 			if (ret)
 				dev_err_ratelimited(&data->client->dev,
 						    "controller recovery failed: %d\n",
 						    ret);
-			else
-				data->transfer_errors = 0;
 		}
 		goto out;
 	}

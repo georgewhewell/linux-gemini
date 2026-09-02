@@ -121,12 +121,11 @@
 				status = "disabled";
 			};
 
-			/* HCI endpoint stays dormant until its independent DT/parameter gate. */
-			consys_bt_hci: consys-bt-hci {
-				compatible = "mediatek,mt6797-stp-hci";
+			/* HCI endpoint stays dormant until its hardware matrix is ready. */
+			consys_bt_hci: bluetooth {
+				compatible = "mediatek,mt6797-bluetooth";
 				mediatek,controller = <&consys_g2c_controller>;
 				vcn33-bt-supply = <&mt6351_vcn33_bt_reg>;
-				mediatek,experimental-stp-hci;
 				status = "disabled";
 			};
 		};

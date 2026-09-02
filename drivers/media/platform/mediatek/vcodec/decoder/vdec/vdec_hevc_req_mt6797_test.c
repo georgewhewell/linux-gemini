@@ -167,6 +167,138 @@ static void mt6797_hevc_reject_registers_test(struct kunit *test)
 			-ERANGE);
 }
 
+static void mt6797_hevc_barrel_plan_test(struct kunit *test)
+{
+	struct v4l2_ctrl_hevc_slice_params slice = {
+		.data_byte_offset = 37,
+	};
+	struct mt6797_hevc_barrel_plan plan;
+	int ret;
+
+	ret = mt6797_hevc_barrel_plan(0x20000000, 1000, &slice, &plan);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, plan.fetch_start_64, 0x00800000U);
+	KUNIT_EXPECT_EQ(test, plan.fetch_end_64, 0x00800017U);
+	KUNIT_EXPECT_EQ(test, plan.read_start, 0x20000025U);
+	KUNIT_EXPECT_EQ(test, plan.read_end, 0x200005c0U);
+}
+
+static void mt6797_hevc_output_plan_test(struct kunit *test)
+{
+	struct mt6797_hevc_buffer_layout layout;
+	struct mt6797_hevc_output_plan plan;
+	int ret;
+
+	KUNIT_ASSERT_EQ(test, mt6797_hevc_buffer_layout(1920, 1080, &layout), 0);
+	ret = mt6797_hevc_output_plan(0x10000000, 0x101fe000, &layout, &plan);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, plan.y_addr, 0x10000000U);
+	KUNIT_EXPECT_EQ(test, plan.c_addr, 0x101fe000U);
+	KUNIT_EXPECT_EQ(test, plan.y_addr_512, 0x00080000U);
+	KUNIT_EXPECT_EQ(test, plan.c_addr_256, 0x00101fe0U);
+	KUNIT_EXPECT_EQ(test, plan.c_offset, 2088960U);
+	KUNIT_EXPECT_EQ(test, plan.mb_width, 120U);
+	KUNIT_EXPECT_EQ(test, plan.mb_height, 68U);
+}
+
+static void mt6797_hevc_ref_plan_test(struct kunit *test)
+{
+	struct v4l2_ctrl_hevc_decode_params dec = {
+		.pic_order_cnt_val = 100,
+		.num_active_dpb_entries = 2,
+		.dpb = {
+			{ .timestamp = 11, .pic_order_cnt_val = 90 },
+			{
+				.timestamp = 22,
+				.pic_order_cnt_val = 300,
+				.flags = V4L2_HEVC_DPB_ENTRY_LONG_TERM_REFERENCE,
+			},
+		},
+	};
+	struct v4l2_ctrl_hevc_slice_params slice = {
+		.slice_type = V4L2_HEVC_SLICE_TYPE_B,
+		.num_ref_idx_l0_active_minus1 = 1,
+		.ref_idx_l0 = { 1, 0 },
+		.ref_idx_l1 = { 1 },
+	};
+	struct mt6797_hevc_ref_buffer buffers[2] = {
+		{
+			.reference_ts = 11,
+			.y_addr = 0x10000000,
+			.c_addr = 0x101fe000,
+			.mv_addr = 0x30000000,
+			.mv_slot = 3,
+			.valid = true,
+		},
+		{
+			.reference_ts = 22,
+			.y_addr = 0x11000000,
+			.c_addr = 0x111fe000,
+			.mv_addr = 0x30100000,
+			.mv_slot = 7,
+			.valid = true,
+		},
+	};
+	struct mt6797_hevc_ref_plan plan;
+
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_ref_plan(&slice, &dec, buffers, &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.num_l0, (u8)2);
+	KUNIT_EXPECT_EQ(test, plan.num_l1, (u8)1);
+	KUNIT_EXPECT_EQ(test, plan.current_after_all, 0U);
+	KUNIT_EXPECT_EQ(test, plan.long_term_flags, 0xffff5555U);
+	KUNIT_EXPECT_EQ(test, plan.l0[0].y_addr, 0x11000000U);
+	KUNIT_EXPECT_EQ(test, plan.l0[0].c_addr, 0x111fe000U);
+	KUNIT_EXPECT_EQ(test, plan.l0[0].mv_addr_16, 0x03010000U);
+	KUNIT_EXPECT_EQ(test, plan.l0[0].poc_slot, 0x00000880U);
+	KUNIT_EXPECT_EQ(test, plan.l0[1].poc_slot, 0x0000040aU);
+	KUNIT_EXPECT_EQ(test, plan.l0[2].poc_slot, 0x00000880U);
+	KUNIT_EXPECT_EQ(test, plan.l1[0].poc_slot, 0x00000880U);
+}
+
+static void mt6797_hevc_mv_slot_plan_test(struct kunit *test)
+{
+	struct v4l2_ctrl_hevc_decode_params dec = {
+		.num_active_dpb_entries = 2,
+		.dpb = {
+			{ .timestamp = 11 },
+			{ .timestamp = 22 },
+		},
+	};
+	struct mt6797_hevc_mv_slot slots[MT6797_HEVC_MV_BUFFER_COUNT] = {
+		[3] = { .reference_ts = 11, .valid = true },
+		[7] = { .reference_ts = 22, .valid = true },
+	};
+	struct mt6797_hevc_mv_slot_plan plan;
+
+	KUNIT_ASSERT_EQ(test, mt6797_hevc_mv_slot_plan(&dec, slots, &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.dpb_slots[0], (u8)3);
+	KUNIT_EXPECT_EQ(test, plan.dpb_slots[1], (u8)7);
+	KUNIT_EXPECT_EQ(test, plan.current_slot, (u8)0);
+	KUNIT_ASSERT_EQ(test, mt6797_hevc_mv_slot_commit(slots, 0, 33), 0);
+	KUNIT_EXPECT_TRUE(test, slots[0].valid);
+	KUNIT_EXPECT_EQ(test, slots[0].reference_ts, 33ULL);
+}
+
+static void mt6797_hevc_reject_plans_test(struct kunit *test)
+{
+	struct mt6797_hevc_buffer_layout layout;
+	struct mt6797_hevc_output_plan output;
+	struct mt6797_hevc_barrel_plan barrel;
+	struct v4l2_ctrl_hevc_slice_params slice = {};
+	int ret;
+
+	KUNIT_ASSERT_EQ(test, mt6797_hevc_buffer_layout(1920, 1080, &layout), 0);
+	ret = mt6797_hevc_output_plan(0x10000000, 0x10200000, &layout,
+				      &output);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	ret = mt6797_hevc_barrel_plan(0x20000001, 1000, &slice, &barrel);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	slice.data_byte_offset = 1000;
+	ret = mt6797_hevc_barrel_plan(0x20000000, 1000, &slice, &barrel);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+}
+
 static void mt6797_hevc_1080p_layout_test(struct kunit *test)
 {
 	struct mt6797_hevc_buffer_layout layout;
@@ -229,6 +361,11 @@ static struct kunit_case mt6797_hevc_test_cases[] = {
 	KUNIT_CASE(mt6797_hevc_slice_regs_test),
 	KUNIT_CASE(mt6797_hevc_tile_regs_test),
 	KUNIT_CASE(mt6797_hevc_reject_registers_test),
+	KUNIT_CASE(mt6797_hevc_barrel_plan_test),
+	KUNIT_CASE(mt6797_hevc_output_plan_test),
+	KUNIT_CASE(mt6797_hevc_ref_plan_test),
+	KUNIT_CASE(mt6797_hevc_mv_slot_plan_test),
+	KUNIT_CASE(mt6797_hevc_reject_plans_test),
 	KUNIT_CASE(mt6797_hevc_1080p_layout_test),
 	KUNIT_CASE(mt6797_hevc_min_layout_test),
 	KUNIT_CASE(mt6797_hevc_reject_layout_test),

@@ -41,6 +41,10 @@ struct mt6797_btif_stp_bootstrap_ops {
 typedef int (*mt6797_btif_stp_bootstrap_full_wmt_stage_t)(void *context,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
 
+/* True only while the bootstrap is synchronously executing that stage. */
+bool mt6797_btif_stp_bootstrap_full_wmt_lease_active(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
+
 struct mt6797_btif_stp_bootstrap *
 mt6797_btif_stp_bootstrap_create(
 		const struct mt6797_btif_pio_lease *pio_lease,
@@ -79,6 +83,32 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction(
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
 		u8 opcode, const u8 *data, size_t data_len,
 		const struct mtk_wmt_match *expected, unsigned long timeout);
+
+/* Capture a variable WMT event SDU without exposing the private endpoint. */
+int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		u8 opcode, const u8 *data, size_t data_len,
+		u8 expected_opcode, size_t expected_data_len,
+		u8 *reply, size_t reply_len, unsigned long timeout);
+
+int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		u8 opcode, const u8 *data, size_t data_len,
+		u8 expected_opcode, size_t min_data_len, size_t max_data_len,
+		u8 *reply, size_t reply_len, size_t *actual_data_len,
+		unsigned long timeout);
+
+/*
+ * Send one syntactically complete H4 command through private STP channel zero.
+ * This is valid only in the synchronous post-full stage.  The supplied matcher
+ * requires the exact Command Complete opcode, zero status, and total H4 event
+ * length; it neither registers nor exposes an HCI endpoint.
+ */
+int mt6797_btif_stp_bootstrap_full_bt_hci_exchange(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		const u8 *command, size_t command_len, u16 expected_opcode,
+		size_t expected_reply_len, u8 *reply, size_t reply_size,
+		size_t *reply_len, unsigned long timeout);
 
 /*
  * The returned full session remains owned by bootstrap until destroy().

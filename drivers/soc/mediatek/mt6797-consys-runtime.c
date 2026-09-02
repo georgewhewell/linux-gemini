@@ -71,8 +71,10 @@
 
 #define MT6797_CONSYS_RUNTIME_CHIP_POLL_INTERVAL_US	20000
 #define MT6797_CONSYS_RUNTIME_CHIP_POLL_TIMEOUT_US	200000
+#define MT6797_CONSYS_RUNTIME_RESET_SETTLE_MS		20
 #define MT6797_CONSYS_RUNTIME_MCU_CFG_ACR		0x110
 #define MT6797_CONSYS_RUNTIME_MCU_CFG_ACR_MBIST	BIT(18)
+#define MT6797_CONSYS_RUNTIME_MCU_CPUPCR		0x160
 #define MT6797_CONSYS_RUNTIME_AFE_BASE		0x180b6000
 #define MT6797_CONSYS_RUNTIME_AFE_SIZE		0x100
 
@@ -119,6 +121,12 @@ struct mt6797_consys_runtime {
 	struct reset_control *conn_mcu_reset;
 	struct resource shared_mem;
 	struct of_phandle_args conn_domain;
+	/*
+	 * A domain-vote helper deliberately remains unbound.  Attaching the
+	 * provider device itself after its probe has started changes pm_domain too
+	 * late (drivers/base/power/common.c requires that before binding).
+	 */
+	struct platform_device *conn_domain_dev;
 	struct mt6797_consys_lifecycle lifecycle;
 	struct mt6797_consys_runtime_lease lease;
 	int bgf_irq;
@@ -136,6 +144,13 @@ struct mt6797_consys_runtime {
 	enum mt6797_consys_runtime_provider_state provider_state;
 	bool identity_external;
 };
+
+static bool mt6797_consys_runtime_domain_vote_active(
+		const struct mt6797_consys_runtime *runtime)
+{
+	return runtime->conn_domain_dev && runtime->conn_domain_attached &&
+		runtime->conn_domain_vote;
+}
 
 /* The vendor DT order is MCU, AP-RGU, TOPCKGEN, then SPM. */
 static const struct mt6797_consys_runtime_resource
@@ -320,46 +335,83 @@ static int mt6797_consys_runtime_configure_pwron(void *context)
 static int mt6797_consys_runtime_enable_scp_sys_conn(void *context)
 {
 	struct mt6797_consys_runtime *runtime = context;
+	struct platform_device *domain_dev;
 	int ret;
 
-	ret = of_genpd_add_device(&runtime->conn_domain, runtime->dev);
+	/*
+	 * Vendor acquires SCP_SYS_CONN only after the VCN, reset, and PWRON
+	 * prefix.  Do not use the runtime provider here: it is already bound, and
+	 * dev_pm_domain_set() expressly requires an unbound device.  A private
+	 * platform device has no matching driver, so its genpd attachment remains
+	 * unbound while this lifecycle controls the later runtime-PM vote.
+	 */
+	domain_dev = platform_device_alloc("mt6797-consys-domain-vote",
+					 PLATFORM_DEVID_AUTO);
+	if (!domain_dev)
+		return -ENOMEM;
+	domain_dev->dev.parent = runtime->dev;
+
+	ret = platform_device_add(domain_dev);
 	if (ret)
-		return ret;
+		goto put_domain_dev;
+
+	ret = of_genpd_add_device(&runtime->conn_domain, &domain_dev->dev);
+	if (ret)
+		goto unregister_domain_dev;
+	runtime->conn_domain_dev = domain_dev;
 	runtime->conn_domain_attached = true;
 
-	pm_runtime_enable(runtime->dev);
+	pm_runtime_enable(&domain_dev->dev);
 	runtime->runtime_pm_enabled = true;
-	ret = pm_runtime_resume_and_get(runtime->dev);
+	ret = pm_runtime_resume_and_get(&domain_dev->dev);
 	if (!ret)
 		runtime->conn_domain_vote = true;
+	return ret;
+
+unregister_domain_dev:
+	platform_device_unregister(domain_dev);
+	return ret;
+
+put_domain_dev:
+	platform_device_put(domain_dev);
 	return ret;
 }
 
 static int mt6797_consys_runtime_disable_scp_sys_conn(void *context)
 {
 	struct mt6797_consys_runtime *runtime = context;
+	struct platform_device *domain_dev = runtime->conn_domain_dev;
 	int ret;
 
 	if (runtime->conn_domain_vote) {
-		ret = pm_runtime_put_sync_suspend(runtime->dev);
+		if (!domain_dev)
+			return -EUCLEAN;
+		ret = pm_runtime_put_sync_suspend(&domain_dev->dev);
 		if (ret < 0) {
 			/* The failed put consumed a usage count; keep the vote explicit. */
-			pm_runtime_get_noresume(runtime->dev);
+			pm_runtime_get_noresume(&domain_dev->dev);
 			return ret;
 		}
 		runtime->conn_domain_vote = false;
 	}
 
 	if (runtime->runtime_pm_enabled) {
-		pm_runtime_disable(runtime->dev);
+		if (!domain_dev)
+			return -EUCLEAN;
+		pm_runtime_disable(&domain_dev->dev);
 		runtime->runtime_pm_enabled = false;
 	}
 	if (!runtime->conn_domain_attached)
 		return 0;
+	if (!domain_dev)
+		return -EUCLEAN;
 
-	ret = pm_genpd_remove_device(runtime->dev);
-	if (!ret)
+	ret = pm_genpd_remove_device(&domain_dev->dev);
+	if (!ret) {
 		runtime->conn_domain_attached = false;
+		runtime->conn_domain_dev = NULL;
+		platform_device_unregister(domain_dev);
+	}
 	return ret;
 }
 
@@ -369,7 +421,7 @@ static void mt6797_consys_runtime_release_domain(
 	int ret;
 
 	if (!runtime->conn_domain_vote && !runtime->runtime_pm_enabled &&
-	    !runtime->conn_domain_attached)
+	    !runtime->conn_domain_attached && !runtime->conn_domain_dev)
 		return;
 
 	ret = mt6797_consys_runtime_disable_scp_sys_conn(runtime);
@@ -434,9 +486,16 @@ static int mt6797_consys_runtime_configure_afe(void *context)
 static int mt6797_consys_runtime_release_reset(void *context)
 {
 	struct mt6797_consys_runtime *runtime = context;
+	int ret;
 
 	/* The reset provider owns WDT keying and bit 12. */
-	return reset_control_deassert(runtime->conn_mcu_reset);
+	ret = reset_control_deassert(runtime->conn_mcu_reset);
+	if (ret)
+		return ret;
+
+	/* Vendor mtk_wcn_consys_hw.c:492-496,609, before first WMT. */
+	msleep(MT6797_CONSYS_RUNTIME_RESET_SETTLE_MS);
+	return 0;
 }
 
 static const struct mt6797_consys_postid_ops
@@ -464,7 +523,8 @@ int mt6797_consys_runtime_postid_backend(struct device *dev,
 	if (identity != &runtime->lease ||
 	    runtime->provider_state !=
 		    MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD ||
-	    !runtime->lease_held || !runtime->conn_domain_vote ||
+	    !runtime->lease_held ||
+	    !mt6797_consys_runtime_domain_vote_active(runtime) ||
 	    !mt6797_consys_runtime_lease_active(&runtime->lease)) {
 		mutex_unlock(&runtime->provider_lock);
 		return -ESHUTDOWN;
@@ -475,6 +535,54 @@ int mt6797_consys_runtime_postid_backend(struct device *dev,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_postid_backend);
+
+int mt6797_consys_runtime_postid_owner_init(struct device *dev,
+		const struct mt6797_consys_runtime_lease *identity,
+		struct mt6797_consys_postid_owner *owner)
+{
+	const struct mt6797_consys_postid_ops *ops;
+	struct mt6797_consys_runtime *runtime;
+	void *context;
+	int ret;
+
+	if (!owner)
+		return -EINVAL;
+	ret = mt6797_consys_runtime_postid_backend(dev, identity, &ops, &context);
+	if (ret)
+		return ret;
+	runtime = context;
+
+	/* postid_backend() verified this identity while provider_lock was held. */
+	return mt6797_consys_postid_init(owner, &runtime->lifecycle, ops, context);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_postid_owner_init);
+
+int mt6797_consys_runtime_read_cpupcr(struct device *dev, u32 *cpupcr)
+{
+	struct mt6797_consys_runtime *runtime;
+	int ret = 0;
+
+	if (!dev || !cpupcr)
+		return -EINVAL;
+	runtime = dev_get_drvdata(dev);
+	if (!runtime || !runtime->mcu)
+		return -ENODEV;
+
+	mutex_lock(&runtime->provider_lock);
+	if (runtime->provider_state !=
+			MT6797_CONSYS_RUNTIME_PROVIDER_IDENTITY_HELD ||
+	    !runtime->lease_held ||
+	    !mt6797_consys_runtime_domain_vote_active(runtime) ||
+	    !mt6797_consys_runtime_lease_active(&runtime->lease))
+		ret = -ESHUTDOWN;
+	else
+		*cpupcr = readl(runtime->mcu +
+				MT6797_CONSYS_RUNTIME_MCU_CPUPCR);
+	mutex_unlock(&runtime->provider_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_read_cpupcr);
 
 static const struct mt6797_consys_ops mt6797_consys_runtime_ops = {
 	.abi = MT6797_CONSYS_LIFECYCLE_ABI,
@@ -1265,6 +1373,8 @@ static void mt6797_consys_runtime_test_failure_unwinds(struct kunit *test)
 
 static void mt6797_consys_runtime_test_contracts(struct kunit *test)
 {
+	struct mt6797_consys_runtime runtime = { };
+	static struct platform_device domain_dev;
 	struct mt6797_consys_runtime_resource expected = {
 		.name = "mcu",
 		.start = 0x18070000,
@@ -1318,7 +1428,14 @@ static void mt6797_consys_runtime_test_contracts(struct kunit *test)
 									 MT6797_CONSYS_RUNTIME_BGF_SPI));
 	spec.args[2] = IRQ_TYPE_EDGE_FALLING;
 	KUNIT_EXPECT_FALSE(test, mt6797_consys_runtime_irq_spec_valid(&spec,
-								 MT6797_CONSYS_RUNTIME_BGF_SPI));
+							 MT6797_CONSYS_RUNTIME_BGF_SPI));
+
+	KUNIT_EXPECT_FALSE(test, mt6797_consys_runtime_domain_vote_active(&runtime));
+	runtime.conn_domain_dev = &domain_dev;
+	runtime.conn_domain_attached = true;
+	KUNIT_EXPECT_FALSE(test, mt6797_consys_runtime_domain_vote_active(&runtime));
+	runtime.conn_domain_vote = true;
+	KUNIT_EXPECT_TRUE(test, mt6797_consys_runtime_domain_vote_active(&runtime));
 }
 
 static void mt6797_consys_runtime_test_device_release(struct device *dev)
@@ -1354,12 +1471,15 @@ static void mt6797_consys_runtime_test_postid_backend_requires_identity(
 	const struct mt6797_consys_postid_ops *ops;
 	void *context;
 	struct device dev = { };
+	static struct platform_device domain_dev;
 
 	mt6797_consys_runtime_test_provider_setup(test, &runtime, &dev,
 		&backend);
 	KUNIT_EXPECT_EQ(test,
 		mt6797_consys_runtime_postid_backend(&dev, &runtime.lease,
 			&ops, &context), -ESHUTDOWN);
+	runtime.conn_domain_dev = &domain_dev;
+	runtime.conn_domain_attached = true;
 	runtime.conn_domain_vote = true;
 	KUNIT_ASSERT_EQ(test,
 		mt6797_consys_runtime_postid_backend(&dev, &runtime.lease,

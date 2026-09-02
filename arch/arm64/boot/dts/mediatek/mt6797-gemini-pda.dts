@@ -41,6 +41,10 @@
 			mt6797_cpu_efuse_identity: cpu-efuse-identity@58 {
 				reg = <88 12>;
 			};
+
+			mt6797_gpu_devinfo: gpu-devinfo@64 {
+				reg = <100 12>;
+			};
 		};
 	};
 
@@ -198,6 +202,19 @@
 		regulator-name = "vcn28";
 		regulator-min-microvolt = <2800000>;
 		regulator-max-microvolt = <2800000>;
+	};
+
+	/* Vendor CONSYS separates these rails (CONSYS_BT_WIFI_SHARE_V33 == 0). */
+	mt6351_vcn33_bt_reg: ldo-vcn33-bt {
+		regulator-name = "vcn33-bt";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3600000>;
+	};
+
+	mt6351_vcn33_wifi_reg: ldo-vcn33-wifi {
+		regulator-name = "vcn33-wifi";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3600000>;
 	};
 
 	mt6351_vemc_reg: ldo-vemc {

@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA MT6797 one-OPP Panfrost experiment.
+ *
+ * This is deliberately a separate opt-in image from the staged diagnostic.
+ * The captured LK devinfo selects the vendor type-12 table, whose 520 MHz
+ * entry uses 975000 uV.  This board's live MFGPLL/mfg_sel/BG3D rate is
+ * 500500000 Hz, so the only OPP here keeps that already-programmed rate and
+ * uses the source-proven voltage of the next higher vendor entry.  There is
+ * no dynamic voltage/frequency table in this image.
+ *
+ * RT5735 constraints are applied before regulator-boot-on enables the rail.
+ * Panfrost then links and synchronously runtime-resumes every MFG supplier
+ * before reset, clock, OPP, or GPU MMIO.  The CCF OPP set-rate request is a
+ * no-op when the captured boot rate remains 500500000 Hz.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&i2c7 {
+	status = "okay";
+};
+
+&rt5735_vgpu {
+	regulator-min-microvolt = <975000>;
+	regulator-max-microvolt = <975000>;
+	regulator-boot-on;
+	status = "okay";
+};
+
+&mfgsys {
+	status = "okay";
+};
+
+&gpu {
+	operating-points-v2 = <&gpu_fixed_opp_table>;
+	status = "okay";
+};
+
+&{/} {
+	gpu_fixed_opp_table: gpu-opp-table {
+		compatible = "operating-points-v2";
+
+		opp-500500000 {
+			opp-hz = /bits/ 64 <500500000>;
+			opp-microvolt = <975000>;
+		};
+	};
+};

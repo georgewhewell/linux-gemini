@@ -19,6 +19,7 @@
 /* MTKSTP_TX_TIMEOUT and MTKSTP_RETRY_LIMIT in the MT6797 vendor tree. */
 #define MT6797_CONSYS_STP_TX_TIMEOUT_MS	180
 #define MT6797_CONSYS_STP_RETRY_LIMIT		10
+#define MT6797_CONSYS_STP_EVIDENCE_SIZE	8
 
 struct mt6797_consys_stp_session;
 struct mt6797_consys_stp_session_lease;
@@ -45,6 +46,27 @@ struct mt6797_consys_stp_session_ops {
 	mt6797_consys_stp_rx_cb_t receive;
 	void *transmit_context;
 	void *receive_context;
+};
+
+struct mt6797_consys_stp_session_diagnostics {
+	u64 rx_bytes;
+	u64 tx_frames;
+	u64 tx_ack_frames;
+	u64 tx_resync_frames;
+	u64 rx_ack_frames;
+	u64 rx_data_frames;
+	u64 rx_wmt_frames;
+	u64 rx_crc_failures;
+	u64 rx_parser_failures;
+	u64 retry_ticks;
+	u8 txseq, txack, rxack, expected_rxseq, credits, retries;
+	u8 rx_state, channel;
+	u16 payload_length, payload_position;
+	u8 ingress_prefix_length, ingress_tail_length;
+	u8 ingress_prefix[MT6797_CONSYS_STP_EVIDENCE_SIZE];
+	u8 ingress_tail[MT6797_CONSYS_STP_EVIDENCE_SIZE];
+	u8 last_header[MTK_STP_HEADER_SIZE];
+	u8 last_crc[MTK_STP_TRAILER_SIZE];
 };
 
 /*
@@ -87,6 +109,11 @@ int mt6797_consys_stp_session_bootstrap_receive(
 /* Run the same 180-ms retained-frame timeout/retry semantics while provisional. */
 int mt6797_consys_stp_session_bootstrap_timeout(
 		const struct mt6797_consys_stp_session_bootstrap_lease *lease);
+
+/* Read-only full-STP state/evidence while a provisional owner is still live. */
+int mt6797_consys_stp_session_bootstrap_diagnostics_snapshot(
+		const struct mt6797_consys_stp_session_bootstrap_lease *lease,
+		struct mt6797_consys_stp_session_diagnostics *diagnostics);
 
 /*
  * Record that the bootstrap controller's strict WMT transaction matcher

@@ -20,6 +20,8 @@
 
 #define MTK_WMT_HEADER_SIZE	4
 #define MTK_WMT_MAX_DATA	(MTK_STP_MAX_PAYLOAD - MTK_WMT_HEADER_SIZE)
+#define MTK_WMT_TRACE_EVENTS	8
+#define MTK_WMT_TRACE_BYTES	8
 
 /*
  * Vendor drivers/misc/mediatek/connectivity/common/common_main/core/include/
@@ -47,6 +49,30 @@ struct mtk_wmt_match {
 	/* Exact raw-SDU match; this may be empty. */
 	const u8 *data;
 	size_t data_len;
+};
+
+/* Bounded evidence for one explicitly armed WMT transaction. */
+struct mtk_wmt_trace_event {
+	u8 opcode;
+	u16 data_len;
+	u32 elapsed_ms;
+	u8 prefix_length;
+	u8 tail_length;
+	u8 prefix[MTK_WMT_TRACE_BYTES];
+	u8 tail[MTK_WMT_TRACE_BYTES];
+};
+
+struct mtk_wmt_trace {
+	u8 command_opcode;
+	u64 decoded_events;
+	u64 decode_failures;
+	u32 malformed_length;
+	u8 malformed_prefix_length;
+	u8 malformed_tail_length;
+	u8 malformed_prefix[MTK_WMT_TRACE_BYTES];
+	u8 malformed_tail[MTK_WMT_TRACE_BYTES];
+	u8 event_count;
+	struct mtk_wmt_trace_event events[MTK_WMT_TRACE_EVENTS];
 };
 
 typedef int (*mtk_wmt_tx_cb_t)(void *context, const u8 *frame,
@@ -78,11 +104,23 @@ struct mtk_wmt {
 	mtk_wmt_unsolicited_cb_t unsolicited;
 	void *unsolicited_context;
 	struct mtk_wmt_match expected;
+	/* A capture transaction matches opcode/a bounded length range. */
+	bool capture_pending;
+	u8 capture_opcode;
+	size_t capture_min_data_len;
+	size_t capture_max_data_len;
+	size_t capture_copy_len;
+	u8 *capture_data;
+	size_t *capture_actual_data_len;
 	u32 generation;
 	int result;
 	bool pending;
 	/* A timeout/cancel may leave an indistinguishable late reply behind. */
 	bool reset_required;
+	/* Protected by state_lock; armed only for bounded failure evidence. */
+	bool trace_active;
+	unsigned long trace_started;
+	struct mtk_wmt_trace trace;
 };
 
 void mtk_wmt_init(struct mtk_wmt *wmt, enum mtk_stp_mode stp_mode,
@@ -116,6 +154,10 @@ int mtk_wmt_decode_event(const u8 *packet, size_t packet_len,
 /* STP WMT-channel callback; it may also be called directly by a transport. */
 int mtk_wmt_receive(void *context, const u8 *payload, size_t payload_len);
 
+/* Arm/snapshot/disarm bounded event evidence around one caller-selected request. */
+void mtk_wmt_trace_begin(struct mtk_wmt *wmt, u8 command_opcode);
+void mtk_wmt_trace_end(struct mtk_wmt *wmt, struct mtk_wmt_trace *trace);
+
 /*
  * Send exactly one command and await one exact reply.  On timeout, signal, or
  * transport failure this returns an error and fences subsequent commands with
@@ -126,6 +168,33 @@ int mtk_wmt_transaction(struct mtk_wmt *wmt, u8 opcode,
 			const u8 *data, size_t data_len,
 			const struct mtk_wmt_match *expected,
 			unsigned long timeout);
+
+/*
+ * As mtk_wmt_transaction(), but accept an event by opcode and exact SDU
+ * length, then copy that raw SDU into @reply.  This exists for controller
+ * commands such as the vendor MT6631 efuse read whose final byte is data, not
+ * a pre-known status value.  @reply_len must equal @expected_data_len.
+ */
+int mtk_wmt_transaction_capture(struct mtk_wmt *wmt, u8 opcode,
+				const u8 *data, size_t data_len,
+				u8 expected_opcode, size_t expected_data_len,
+				u8 *reply, size_t reply_len,
+				unsigned long timeout);
+
+/*
+ * As mtk_wmt_transaction_capture(), but accept a complete event whose SDU
+ * length is within [@min_data_len, @max_data_len].  Copy only the first
+ * @reply_len bytes and return the controller's complete declared SDU length
+ * through @actual_data_len.  Requiring @reply_len <= @min_data_len makes the
+ * prefix copy safe for every accepted event; the complete event is still
+ * decoded and length-checked by mtk_wmt_receive().
+ */
+int mtk_wmt_transaction_capture_range(struct mtk_wmt *wmt, u8 opcode,
+				      const u8 *data, size_t data_len,
+				      u8 expected_opcode, size_t min_data_len,
+				      size_t max_data_len, u8 *reply,
+				      size_t reply_len, size_t *actual_data_len,
+				      unsigned long timeout);
 
 /*
  * Local cancellation/generation fence; this never emits a controller reset.

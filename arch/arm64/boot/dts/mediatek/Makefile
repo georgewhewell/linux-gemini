@@ -6,11 +6,41 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-sony-xperia-m5.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-boot-status-observe.dtbo
+mt6797-gemini-pda-md1-boot-status-observe-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-md1-boot-status-observe.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-boot-status-observe.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-prerelease.dtbo
+mt6797-gemini-pda-md1-prerelease-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-md1-prerelease.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-md1-prerelease.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-vgpu-identity.dtbo
+mt6797-gemini-pda-gpu-vgpu-identity-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-gpu-vgpu-identity.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-vgpu-identity.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-staged.dtbo
+mt6797-gemini-pda-gpu-staged-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-gpu-staged.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-staged.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-fixed-opp.dtbo
+mt6797-gemini-pda-gpu-fixed-opp-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-gpu-fixed-opp.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-fixed-opp.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-identity.dtbo
 mt6797-gemini-pda-consys-identity-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-consys-identity.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-identity.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-runtime-preflight.dtbo
+mt6797-gemini-pda-consys-runtime-preflight-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-runtime-preflight.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-runtime-preflight.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-prepostid-observe.dtbo
 mt6797-gemini-pda-consys-prepostid-observe-dtbs := \
 	mt6797-gemini-pda.dtb \
@@ -39,6 +69,31 @@ mt6797-gemini-pda-btif-pio-loopback-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-btif-pio-loopback.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-btif-pio-loopback.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-g2b-no-firmware.dtbo
+mt6797-gemini-pda-consys-g2b-no-firmware-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-g2b-no-firmware.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2b-no-firmware.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-g2c-patch-only.dtbo
+mt6797-gemini-pda-consys-g2c-patch-only-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-g2c-patch-only.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2c-patch-only.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-g2d-vcn33-preflight.dtbo
+mt6797-gemini-pda-consys-g2d-vcn33-preflight-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-g2d-vcn33-preflight.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2d-vcn33-preflight.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-g2e-bt-function.dtbo
+mt6797-gemini-pda-consys-g2e-bt-function-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-g2e-bt-function.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2e-bt-function.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-g2f-bt-hci-proof.dtbo
+mt6797-gemini-pda-consys-g2f-bt-hci-proof-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-consys-g2f-bt-hci-proof.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-consys-g2f-bt-hci-proof.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-display.dtbo
 mt6797-gemini-pda-display-test-dtbs := \
 	mt6797-gemini-pda.dtb \

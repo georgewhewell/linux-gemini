@@ -90,16 +90,25 @@ struct mt6797_consys_runtime_controller {
 	struct mutex lock;
 	struct completion run_complete;
 	struct completion gnss_released;
+	struct completion wifi_released;
 	struct completion stop_complete;
 	const struct mt6797_consys_runtime_lease *runtime_lease;
 	const struct mt6797_btif_pio_platform_lease *platform_lease;
 	struct mt6797_btif_stp_bootstrap *bootstrap;
 	const struct mt6797_consys_stp_session_lease *session_lease;
 	struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease_owner;
+	struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease_owner;
 	u64 session_generation;
 	bool run_in_progress;
 	bool stop_requested;
+	bool no_patch_stage;
 	enum mt6797_consys_runtime_controller_state state;
+};
+
+struct mt6797_consys_runtime_controller_stage_context {
+	struct mt6797_consys_runtime_controller *controller;
+	mt6797_consys_runtime_controller_postpatch_stage_t postpatch_stage;
+	void *postpatch_context;
 };
 
 static bool mt6797_consys_runtime_controller_ops_valid(
@@ -125,6 +134,8 @@ static int mt6797_consys_runtime_controller_init(
 	init_completion(&controller->run_complete);
 	init_completion(&controller->gnss_released);
 	complete_all(&controller->gnss_released);
+	init_completion(&controller->wifi_released);
+	complete_all(&controller->wifi_released);
 	init_completion(&controller->stop_complete);
 	complete_all(&controller->stop_complete);
 	return 0;
@@ -168,10 +179,13 @@ static void mt6797_consys_runtime_controller_abort(
 static int mt6797_consys_runtime_controller_patch_stage(void *context,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
 {
-	struct mt6797_consys_runtime_controller *controller = context;
+	struct mt6797_consys_runtime_controller_stage_context *stage_context = context;
+	struct mt6797_consys_runtime_controller *controller;
+	int ret;
 
-	if (!controller || !lease)
+	if (!stage_context || !stage_context->controller || !lease)
 		return -EINVAL;
+	controller = stage_context->controller;
 	if (mt6797_consys_runtime_controller_stop_requested(controller))
 		return -ESHUTDOWN;
 
@@ -181,17 +195,29 @@ static int mt6797_consys_runtime_controller_patch_stage(void *context,
 	 * SoC initialization returns.  The opaque lease keeps this controller
 	 * from acquiring a second WMT/STP endpoint or bypassing its retry owner.
 	 */
-	return controller->ops->patch_download(controller->ops_context,
-						 controller->dev, lease);
+	ret = controller->ops->patch_download(controller->ops_context,
+						     controller->dev, lease);
+	if (ret || !stage_context->postpatch_stage)
+		return ret;
+	if (mt6797_consys_runtime_controller_stop_requested(controller))
+		return -ESHUTDOWN;
+	return stage_context->postpatch_stage(stage_context->postpatch_context, lease);
 }
 
-static int mt6797_consys_runtime_controller_start_unchecked(
-		struct mt6797_consys_runtime_controller *controller)
+static int mt6797_consys_runtime_controller_start_with_stage_unchecked(
+		struct mt6797_consys_runtime_controller *controller,
+		mt6797_consys_runtime_controller_postpatch_stage_t postpatch_stage,
+		void *postpatch_context)
 {
 	const struct mt6797_consys_runtime_lease *runtime_lease = NULL;
 	const struct mt6797_btif_pio_platform_lease *platform_lease = NULL;
 	const struct mt6797_consys_stp_session_lease *session_lease;
 	struct mt6797_btif_stp_bootstrap *bootstrap = NULL;
+	struct mt6797_consys_runtime_controller_stage_context stage_context = {
+		.controller = controller,
+		.postpatch_stage = postpatch_stage,
+		.postpatch_context = postpatch_context,
+	};
 	int ret;
 
 	mutex_lock(&controller->lock);
@@ -239,9 +265,18 @@ static int mt6797_consys_runtime_controller_start_unchecked(
 		goto abort;
 	}
 
-	session_lease = controller->ops->bootstrap_run(
-		controller->ops_context, bootstrap,
-		mt6797_consys_runtime_controller_patch_stage, controller);
+	/*
+	 * A G2b diagnostic may prove the vendor mandatory-to-full query sequence
+	 * without loading a patch.  Patch download remains the normal controller
+	 * path and is never selected implicitly.
+	 */
+	if (controller->no_patch_stage)
+		session_lease = controller->ops->bootstrap_run(
+			controller->ops_context, bootstrap, NULL, NULL);
+	else
+		session_lease = controller->ops->bootstrap_run(
+			controller->ops_context, bootstrap,
+			mt6797_consys_runtime_controller_patch_stage, &stage_context);
 	if (IS_ERR_OR_NULL(session_lease)) {
 		ret = session_lease ? PTR_ERR(session_lease) : -EIO;
 		goto abort;
@@ -277,6 +312,13 @@ abort:
 	return ret;
 }
 
+static int mt6797_consys_runtime_controller_start_unchecked(
+		struct mt6797_consys_runtime_controller *controller)
+{
+	return mt6797_consys_runtime_controller_start_with_stage_unchecked(controller,
+							      NULL, NULL);
+}
+
 static int mt6797_consys_runtime_controller_start_controller(
 		struct mt6797_consys_runtime_controller *controller)
 {
@@ -287,6 +329,27 @@ static int mt6797_consys_runtime_controller_start_controller(
 
 	return mt6797_consys_runtime_controller_start_unchecked(controller);
 }
+
+int mt6797_consys_runtime_controller_preflight(struct device *dev)
+{
+	struct mt6797_consys_runtime_controller *controller;
+	int ret = 0;
+
+	if (!dev)
+		return -EINVAL;
+	controller = dev_get_drvdata(dev);
+	if (!controller || !controller->btif_dev ||
+	    !dev_get_drvdata(controller->btif_dev))
+		return -EPROBE_DEFER;
+
+	mutex_lock(&controller->lock);
+	if (controller->state != MT6797_CONSYS_RUNTIME_CONTROLLER_READY)
+		ret = controller->state == MT6797_CONSYS_RUNTIME_CONTROLLER_FENCED ?
+			-ESHUTDOWN : -EBUSY;
+	mutex_unlock(&controller->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_preflight);
 
 int mt6797_consys_runtime_controller_start(struct device *dev)
 {
@@ -301,6 +364,22 @@ int mt6797_consys_runtime_controller_start(struct device *dev)
 	return mt6797_consys_runtime_controller_start_controller(controller);
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_start);
+
+int mt6797_consys_runtime_controller_start_with_postpatch_stage(struct device *dev,
+		mt6797_consys_runtime_controller_postpatch_stage_t stage,
+		void *stage_context)
+{
+	struct mt6797_consys_runtime_controller *controller;
+
+	if (!dev || !stage)
+		return -EINVAL;
+	controller = dev_get_drvdata(dev);
+	if (!controller || !READ_ONCE(enable_experimental_runtime_controller))
+		return -EPERM;
+	return mt6797_consys_runtime_controller_start_with_stage_unchecked(controller,
+								       stage, stage_context);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_start_with_postpatch_stage);
 
 static int mt6797_consys_runtime_controller_gnss_session_get_controller(
 		struct mt6797_consys_runtime_controller *controller,
@@ -329,7 +408,7 @@ static int mt6797_consys_runtime_controller_gnss_session_get_controller(
 			-EAGAIN : -ESHUTDOWN;
 		goto unlock;
 	}
-	if (controller->gnss_lease_owner) {
+	if (controller->gnss_lease_owner || controller->wifi_lease_owner) {
 		ret = -EBUSY;
 		goto unlock;
 	}
@@ -390,6 +469,72 @@ void mt6797_consys_runtime_controller_gnss_session_put(
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_gnss_session_put);
 
+static int mt6797_consys_runtime_controller_wifi_session_get_controller(
+		struct mt6797_consys_runtime_controller *controller,
+		struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease,
+		const struct mt6797_consys_stp_session_lease **session_lease)
+{
+	int ret;
+
+	if (!controller || !wifi_lease || !session_lease)
+		return -EINVAL;
+	*session_lease = NULL;
+	if (wifi_lease->controller)
+		return -EBUSY;
+	mutex_lock(&controller->lock);
+	if (controller->state != MT6797_CONSYS_RUNTIME_CONTROLLER_ACTIVE ||
+	    controller->stop_requested || !controller->session_lease) {
+		ret = controller->state == MT6797_CONSYS_RUNTIME_CONTROLLER_READY ||
+			controller->state == MT6797_CONSYS_RUNTIME_CONTROLLER_STARTING ?
+			-EAGAIN : -ESHUTDOWN;
+		goto unlock;
+	}
+	if (controller->wifi_lease_owner || controller->gnss_lease_owner) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	reinit_completion(&controller->wifi_released);
+	controller->wifi_lease_owner = wifi_lease;
+	wifi_lease->controller = controller;
+	wifi_lease->generation = controller->session_generation;
+	*session_lease = controller->session_lease;
+	ret = 0;
+unlock:
+	mutex_unlock(&controller->lock);
+	return ret;
+}
+
+int mt6797_consys_runtime_controller_wifi_session_get(struct device *dev,
+		struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease,
+		const struct mt6797_consys_stp_session_lease **session_lease)
+{
+	if (!dev)
+		return -EINVAL;
+	return mt6797_consys_runtime_controller_wifi_session_get_controller(
+		dev_get_drvdata(dev), wifi_lease, session_lease);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_wifi_session_get);
+
+void mt6797_consys_runtime_controller_wifi_session_put(
+		struct mt6797_consys_runtime_controller_wifi_lease *wifi_lease)
+{
+	struct mt6797_consys_runtime_controller *controller;
+
+	if (!wifi_lease || !wifi_lease->controller)
+		return;
+	controller = wifi_lease->controller;
+	mutex_lock(&controller->lock);
+	if (controller->wifi_lease_owner == wifi_lease &&
+	    controller->session_generation == wifi_lease->generation) {
+		controller->wifi_lease_owner = NULL;
+		complete_all(&controller->wifi_released);
+	}
+	wifi_lease->controller = NULL;
+	wifi_lease->generation = 0;
+	mutex_unlock(&controller->lock);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_controller_wifi_session_put);
+
 static void mt6797_consys_runtime_controller_stop_controller(
 		struct mt6797_consys_runtime_controller *controller)
 {
@@ -430,6 +575,7 @@ static void mt6797_consys_runtime_controller_stop_controller(
 	reinit_completion(&controller->stop_complete);
 	mutex_unlock(&controller->lock);
 	wait_for_completion(&controller->gnss_released);
+	wait_for_completion(&controller->wifi_released);
 
 	mutex_lock(&controller->lock);
 	/* The active-stop winner alone owns bootstrap destruction and PIO close. */
@@ -487,6 +633,9 @@ mt6797_consys_runtime_controller_run_bootstrap(void *context,
 		mt6797_btif_stp_bootstrap_full_wmt_stage_t stage,
 		void *stage_context)
 {
+	if (!stage)
+		return mt6797_btif_stp_bootstrap_run(bootstrap);
+
 	return mt6797_btif_stp_bootstrap_run_with_full_wmt_stage(bootstrap, stage,
 								    stage_context);
 }
@@ -559,6 +708,8 @@ static int mt6797_consys_runtime_controller_probe(struct platform_device *pdev)
 	if (!controller)
 		return -ENOMEM;
 	controller->dev = dev;
+	controller->no_patch_stage = device_property_read_bool(dev,
+			"mediatek,experimental-bootstrap-no-patch");
 	ret = mt6797_consys_runtime_controller_init(controller,
 					    &mt6797_consys_runtime_controller_platform_ops,
 					    controller);
@@ -736,6 +887,8 @@ mt6797_consys_runtime_controller_test_run(void *context,
 	}
 	if (backend->run_error)
 		return ERR_PTR(backend->run_error);
+	if (!stage)
+		return (const void *)&backend->session_token;
 	ret = stage(stage_context, (const void *)&backend->session_token);
 	if (ret)
 		return ERR_PTR(ret);
@@ -899,6 +1052,28 @@ static void mt6797_consys_runtime_controller_test_patch_failure_fences(
 		-ETIMEDOUT);
 	KUNIT_EXPECT_EQ(test, controller->state,
 			MT6797_CONSYS_RUNTIME_CONTROLLER_FENCED);
+	KUNIT_EXPECT_EQ(test, backend->call_count, ARRAY_SIZE(expected));
+	KUNIT_EXPECT_MEMEQ(test, backend->calls, expected, sizeof(expected));
+}
+
+static void mt6797_consys_runtime_controller_test_no_patch_stage(struct kunit *test)
+{
+	static const enum mt6797_consys_runtime_controller_test_call expected[] = {
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUNTIME,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_PLATFORM,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CREATE,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_RUN,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_DESTROY,
+		MT6797_CONSYS_RUNTIME_CONTROLLER_TEST_CLOSE,
+	};
+	struct mt6797_consys_runtime_controller_test_backend *backend;
+	struct mt6797_consys_runtime_controller *controller;
+
+	controller = mt6797_consys_runtime_controller_test_init(test, &backend);
+	controller->no_patch_stage = true;
+	KUNIT_ASSERT_EQ(test,
+		mt6797_consys_runtime_controller_start_unchecked(controller), 0);
+	mt6797_consys_runtime_controller_stop_controller(controller);
 	KUNIT_EXPECT_EQ(test, backend->call_count, ARRAY_SIZE(expected));
 	KUNIT_EXPECT_MEMEQ(test, backend->calls, expected, sizeof(expected));
 }
@@ -1150,6 +1325,7 @@ static struct kunit_case mt6797_consys_runtime_controller_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_order),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_failure_unwinds),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_patch_failure_fences),
+	KUNIT_CASE(mt6797_consys_runtime_controller_test_no_patch_stage),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_gate),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_stop_waits_for_run),
 	KUNIT_CASE(mt6797_consys_runtime_controller_test_stop_waits_for_patch_stage),

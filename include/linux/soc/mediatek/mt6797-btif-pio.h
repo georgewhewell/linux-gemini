@@ -15,7 +15,11 @@
 #include <linux/types.h>
 
 #define MT6797_BTIF_PIO_TX_BUFFER_SIZE	4096
+/* Vendor btif_plat.c uses this as a local PIO callback buffer, not a cap. */
 #define MT6797_BTIF_PIO_RX_BUDGET		256
+/* One full MTK STP payload; a wire frame may span two threaded dispatches. */
+#define MT6797_BTIF_PIO_RX_WORK_CEILING	2048
+#define MT6797_BTIF_PIO_RX_EVIDENCE_SIZE	32
 
 struct mt6797_consys_stp_session_lease;
 struct mt6797_consys_runtime_lease;
@@ -42,6 +46,43 @@ struct mt6797_btif_pio_io_ops {
 	u8 (*read8)(void *context, u32 offset);
 	void (*write8)(void *context, u32 offset, u8 value);
 	void *context;
+};
+
+/*
+ * A read-only transport snapshot for a bounded failure report.  The register
+ * set intentionally excludes THR/RBR, FIFOCTRL and WAK: their vendor access
+ * directions make them unsafe or unhelpful to sample after a timeout.
+ */
+struct mt6797_btif_pio_diagnostics {
+	u64 tx_enqueue_count;
+	u64 tx_enqueue_bytes;
+	u64 tx_thr_writes;
+	u64 irq_count;
+	u64 iir_reads;
+	u64 iir_rx;
+	u64 iir_tx_empty;
+	u64 iir_spurious;
+	u64 rx_bytes;
+	u64 rx_callbacks;
+	u64 rx_chunks;
+	u64 rx_work_ceiling_yields;
+	u64 rx_callback_failures;
+	u64 rx_protocol_failures;
+	u64 rx_fences;
+	u32 rx_last_irq_bytes;
+	u32 rx_yield_evidence_bytes;
+	u8 rx_yield_prefix_length;
+	u8 rx_yield_tail_length;
+	u8 rx_yield_prefix[MT6797_BTIF_PIO_RX_EVIDENCE_SIZE];
+	u8 rx_yield_tail[MT6797_BTIF_PIO_RX_EVIDENCE_SIZE];
+	u32 tx_queued;
+	u32 ier;
+	u32 iir;
+	u32 fakelcr;
+	u32 lsr;
+	u32 dma_en;
+	u32 tri_lvl;
+	u32 handshake;
 };
 
 /* Allocate an inert owner. No register access occurs here. */
@@ -130,9 +171,21 @@ int mt6797_btif_pio_transmit(void *context, const u8 *frame,
 
 /*
  * Handle one already-delivered BTIF core interrupt in threaded-IRQ context.
- * RX bytes are passed as arbitrary fragments to exactly one attached consumer.
+ * RX bytes are passed in ordered, 256-byte-or-smaller fragments to exactly one
+ * attached consumer.  One invocation consumes at most the vendor-supported
+ * MTK STP payload ceiling; a still-asserted level IRQ is left enabled so it can
+ * retrigger without losing already-delivered fragments.
  */
 int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease);
+
+/*
+ * Snapshot transport progress and only safe readable BTIF registers.  It may
+ * also report a fenced owner for post-fence diagnosis, but never changes PIO
+ * state or accesses write-only FIFOCTRL/WAK registers.
+ */
+int mt6797_btif_pio_diagnostics_snapshot(
+		const struct mt6797_btif_pio_lease *lease,
+		struct mt6797_btif_pio_diagnostics *diagnostics);
 
 /*
  * A future owner calls this only after its separately evidenced TX deadline.

@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA MT6797 staged GPU diagnostic.
+ *
+ * This is an opt-in diagnostic image, not a Panfrost image.  The target GPU
+ * remains disabled, so it cannot bind, request its interrupts, or create a
+ * render node.  MFGSYS is enabled solely to register its BG3D clock provider.
+ * The current MFGSYS driver only registers a gate and does not vote an MFG
+ * domain.  Every MFG power-domain vote is made and released by the
+ * diagnostic's explicitly gated stage 1 or 2 transaction.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/clock/mt6797-clk.h>
+#include <dt-bindings/power/mt6797-power.h>
+
+&i2c7 {
+	status = "okay";
+};
+
+&rt5735_vgpu {
+	status = "okay";
+};
+
+&mfgsys {
+	status = "okay";
+};
+
+&gpu {
+	status = "disabled";
+};
+
+&{/} {
+	mt6797_gpu_staged: gpu-staged {
+		compatible = "mediatek,mt6797-gpu-staged";
+		vgpu-supply = <&rt5735_vgpu>;
+		mediatek,spm = <&scpsys>;
+		mediatek,gpu = <&gpu>;
+		nvmem-cells = <&mt6797_gpu_devinfo>;
+		nvmem-cell-names = "gpu-devinfo";
+		clocks = <&mfgsys CLK_MFG_BG3D>,
+			 <&topckgen CLK_TOP_MUX_MFG>,
+			 <&apmixedsys CLK_APMIXED_MFGPLL>;
+		clock-names = "core", "mfg-sel", "mfgpll";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MFG_CORE0>,
+				<&scpsys MT6797_POWER_DOMAIN_MFG_CORE1>,
+				<&scpsys MT6797_POWER_DOMAIN_MFG_CORE2>,
+				<&scpsys MT6797_POWER_DOMAIN_MFG_CORE3>;
+		power-domain-names = "core0", "core1", "core2", "core3";
+		status = "okay";
+	};
+};

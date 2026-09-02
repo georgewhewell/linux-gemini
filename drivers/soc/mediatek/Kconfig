@@ -45,6 +45,54 @@ config MTK_INFRACFG
 	  INFRACFG controller contains various infrastructure registers not
 	  directly associated to any device.
 
+config MTK_MT6797_MD1_BOOT_STATUS_OBSERVE
+	tristate "MT6797 MD1 boot-status observer"
+	depends on OF
+	help
+	  Build one explicitly gated, read-only observation of the two AP-visible
+	  MD1 boot-status registers. The vendor MT6797 CCCI driver reads these
+	  registers to report modem boot status, before it exposes a userspace
+	  transport.
+
+	  The driver has no matching Gemini node by default. A separately loaded
+	  overlay must provide exactly the vendor 0x10201300/8 resource and the
+	  mediatek,experimental-md1-boot-status property. Probe also requires
+	  mt6797_md1_boot_status_observe.enable_experimental_boot_status=1.
+	  The one-shot probe performs exactly three reads of each status register;
+	  it does not acquire or enable clocks, power domains, resets, IRQs, DMA,
+	  shared memory, firmware, SIM, or radio functions, and contains no
+	  write/poll/retry path. It cannot make a fabric-wide stalled MMIO read
+	  recoverable.
+
+config MTK_MT6797_MD1_PRERELEASE
+	tristate "MT6797 MD1 pre-release controller foundation"
+	depends on OF
+	help
+	  Build the default-disabled MT6797 MD1 pre-release controller foundation.
+	  It validates the complete vendor CLDMA/CCIF resource inventory and the
+	  bootloader-owned MD1/shared-memory carve-outs, but has no matching Gemini
+	  node by default. The only supplied DT profile is disabled.
+
+	  The PMIC helper snapshots and restores every VMODEM/VMD1/VSRAM enable,
+	  sleep, selector, and hardware-control field before leaving stage two. The
+	  Stage four additionally snapshots MD_EXT_BUCK_ISO[0] and the two owned
+	  MD1 power-request bits, requires the shared SPM control bit to be already
+	  enabled, gets both status acknowledgements with a finite retry count, then
+	  restores power, clock-buffer, and PMIC state in that order. Stage five is
+	  separately gated and releases only clock-disable, isolation, and SRAM
+	  power-down, before restoring them while reset stays held and bus protection
+	  stays set. No supplied stage reaches reset release, source-clock enable,
+	  CLDMA, CCIF, shared memory, firmware, SIM, or radio action.
+
+config MTK_MT6797_MD1_PRERELEASE_KUNIT_TEST
+	bool "KUnit tests for the MT6797 MD1 pre-release transaction core"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_PRERELEASE=y
+	help
+	  Exercise hardware-free PMIC field capture/apply/restore, failure unwind,
+	  domain ordering and bounded observation using fake callbacks. The platform
+	  adapter is never instantiated and no Gemini hardware is accessed.
+
 config MTK_STP
 	tristate "MediaTek STP codec and WMT/GNSS multiplexer"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
@@ -98,6 +146,26 @@ config MTK_MT6797_CONSYS_STP_SESSION_KUNIT_TEST
 	  malformed-frame rejection and permanent quiesce fencing using an in-memory
 	  byte link. The test does not access Device Tree, MMIO, DMA, firmware or
 	  Gemini hardware.
+
+config MTK_MT6797_BT_H4_COLLECTOR
+	bool "Bounded MT6797 Bluetooth H4 command collector"
+	depends on MTK_MT6797_CONSYS_STP_SESSION
+	help
+	  Build the transport-neutral, bounded H4 receiver used only by a future
+	  one-shot Bluetooth proof. It handles arbitrary STP channel-zero fragments,
+	  Event/ACL/SCO framing, and exact Command Complete opcode/status matching.
+	  It owns no transport, Device Tree node, clock, IRQ, regulator, radio
+	  function or HCI device. Its synchronous STP-stage owner must quiesce RX
+	  before fencing and releasing the caller-owned collector.
+
+config MTK_MT6797_BT_H4_COLLECTOR_KUNIT_TEST
+	bool "KUnit tests for the MT6797 Bluetooth H4 command collector"
+	depends on KUNIT=y
+	depends on MTK_MT6797_BT_H4_COLLECTOR=y
+	help
+	  Exercise fragmented/coalesced H4 input, unrelated asynchronous packets,
+	  bounded malformed input, status validation, timeout fencing and an ACL
+	  packet larger than 256 bytes. No transport or Gemini hardware is used.
 
 config MTK_MT6797_BTIF_PIO
 	tristate "MediaTek MT6797 dormant BTIF PIO transport owner"
@@ -156,7 +224,7 @@ config MTK_MT6797_BTIF_PIO_PLATFORM_KUNIT_TEST
 
 config MTK_MT6797_BTIF_STP_BOOTSTRAP
 	tristate "MediaTek MT6797 dormant BTIF STP bootstrap controller"
-	depends on MTK_MT6797_BTIF_PIO && MTK_WMT
+	depends on MTK_MT6797_BTIF_PIO && MTK_WMT && MTK_MT6797_BT_H4_COLLECTOR
 	depends on MTK_MT6797_CONSYS_WMT_INITIAL
 	help
 	  Build the single-owner controller for the exact vendor BTIF handover:
@@ -251,6 +319,26 @@ config MTK_MT6797_A72_POWER
 	  This initial implementation never changes power state and never
 	  authorizes CPU_ON.  It is groundwork for a later provider that can
 	  reproduce the hardware power sequence.
+
+config MTK_MT6797_GPU_STAGED_DIAGNOSTIC
+	tristate "Experimental MT6797 staged Mali-T880 diagnostic"
+	depends on ARM64 && ARCH_MEDIATEK && OF && PM
+	depends on PM_GENERIC_DOMAINS_OF && MTK_SCPSYS && REGULATOR_RT5735
+	depends on NVMEM_MTK_ATAG_DEVINFO
+	select MFD_SYSCON
+	help
+	  Build the default-disabled, explicitly gated MT6797 GPU diagnostic.
+	  Stage 0 proves the RT5735 regulator has registered after its product-ID
+	  read.  Stage 1 makes one fixed VGPU vote and powers the four MFG core
+	  domains, verifies both SPM status words, then releases every vote.  Stage
+	  2 additionally enables the BG3D clock and reads only Mali ID/features,
+	  before the same reverse-order release.
+
+	  The driver rejects every stage unless both its module gate and an explicit
+	  stage number are supplied.  It has no Panfrost match and never registers a
+	  DRM device, requests an IRQ, submits work, or writes Mali registers.  A
+	  stage above 2 is rejected: Panfrost needs a separately reviewed image and
+	  is not a continuation of this diagnostic.
 
 config MTK_MT6797_CONSYS_INVENTORY
 	bool "MediaTek MT6797 CONSYS resource inventory"
@@ -492,6 +580,51 @@ config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER_KUNIT_TEST
 	  provider operations. No platform device, Device Tree, MMIO, WMT packet,
 	  firmware, CONSYS resource, or Gemini hardware is used.
 
+config MTK_MT6797_CONSYS_G2B_OWNER
+	bool "Experimental MT6797 CONSYS G2b no-firmware chronology owner"
+	depends on OF
+	depends on MTK_MT6797_CONSYS_RUNTIME=y
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER=y
+	depends on MTK_MT6797_CONSYS_POSTID=y
+	depends on MTK_MT6797_CONSYS_EMI_MPU=y
+	help
+	  Build the missing, default-disabled chronology owner for one bounded G2b
+	  diagnostic. It claims persistent shared EMI, acquires reset-held identity,
+	  applies the reviewed MBIST/AFE/reset-release prefix, and starts the STP
+	  controller only in its explicit no-patch mode. That executes raw HCR/HVR/FVR
+	  reads and the vendor mandatory-to-full query sequence, then fences BTIF,
+	  reasserts reset, and drops reversible votes. It never requests firmware or
+	  enables a radio client.
+
+	  A matching DT node additionally needs both experimental booleans and the
+	  mt6797_consys_g2b_owner.enable_experimental_g2b_owner=1 parameter. The
+	  dependent EMI/provider/BTIF/bootstrap/controller parameters retain their
+	  own gates. EMI and AFE have no vendor inverse; an uncertain post-ID cleanup
+	  is terminal for the boot and requires watchdog recovery.
+
+config MTK_MT6797_CONSYS_G2C_PATCH_OWNER
+	bool "Experimental MT6797 CONSYS G2c patch-only chronology owner"
+	depends on OF
+	depends on MTK_MT6797_CONSYS_RUNTIME=y
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER=y
+	depends on MTK_MT6797_CONSYS_POSTID=y
+	depends on MTK_MT6797_CONSYS_EMI_MPU=y
+	help
+	  Build the default-disabled successor to the G2b no-firmware diagnostic.
+	  It runs the same reviewed EMI, identity, MBIST/AFE, reset-release, and
+	  mandatory-to-full STP chronology, but requires the controller's normal
+	  hash-pinned patch stage. After that stage returns, it immediately fences
+	  BTIF, reasserts reset, and releases reversible votes. It does not issue a
+	  Wi-Fi, Bluetooth, GNSS, FM, or other WMT function-control command and
+	  creates no network or HCI device.
+
+	  A matching DT node needs its experimental boolean and the
+	  mt6797_consys_g2c_patch_owner.enable_experimental_g2c_patch_owner=1
+	  parameter. The patch, EMI/provider/BTIF/bootstrap/controller gates remain
+	  independent. The patch reset's internal effect, shared-EMI, and AFE have
+	  no proven inverse; uncertain post-ID cleanup is terminal for the boot and
+	  requires watchdog recovery.
+
 config MTK_MT6797_CONSYS_FIRMWARE_PREFLIGHT
 	bool "MediaTek MT6797 CONSYS firmware preflight gate"
 	depends on MTK_MT6797_CONSYS_CORE
@@ -560,6 +693,192 @@ config MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD_KUNIT_TEST
 	  window/ACK/retry ownership, request firmware, bind Device Tree, access
 	  hardware, or enable a connectivity function.
 
+config MTK_MT6797_CONSYS_WMT_BT_FUNCTION_CHOREOGRAPHY_KUNIT_TEST
+	bool "KUnit tests for MT6797 Bluetooth WMT function choreography"
+	depends on KUNIT=y
+	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
+	help
+	  Exercise the vendor MT6797 SoC Bluetooth function sequence with an
+	  in-memory PALDO and WMT transport: BT VCN33/PALDO on, WMT FUNC_CTRL BT
+	  on/status, WMT FUNC_CTRL BT off/status, then PALDO off. Every command
+	  timeout or cleanup failure is terminal and requires the outer CONSYS/BTIF
+	  owner to fence and recover the hardware before another attempt.
+
+	  This is deliberately test-only choreography. It has no Device Tree node,
+	  module parameter, platform driver, WMT endpoint, or callable live entry
+	  point, and cannot enable a regulator or a Bluetooth function on Gemini.
+
+config MTK_MT6797_CONSYS_G2D_VCN33_PREFLIGHT
+	tristate "Experimental MT6797 G2d VCN33 resource preflight"
+	depends on OF && REGULATOR
+	help
+	  Build the default-disabled G2d provider that acquires and validates the
+	  distinct MT6351 vcn33-bt and vcn33-wifi regulator handles. It has no
+	  regulator_enable(), voltage change, WMT, BTIF, calibration, radio, or
+	  userspace path. Binding needs its DT boolean and read-only parameter.
+
+	  Vendor MT6797 uses a fixed 3.3 V selector for both PALDO paths. The
+	  MT6580-only efuse VCN33 operation is deliberately not part of MT6797 G2d.
+
+config MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	tristate "Experimental MT6797 G2d post-patch owner"
+	depends on OF && REGULATOR && MTK_MT6797_CONSYS_G2C_PATCH_OWNER
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
+	help
+	  Default-disabled one-shot post-patch experiment. It uses the vendor
+	  MT6797 fixed 3.3 V VCN33 selector over the controller-owned full-STP WMT
+	  lease, rejects pre-enabled or disagreeing rail snapshots, runs the exact
+	  LTE coexistence and RF calibration transactions, then disables BT and
+	  Wi-Fi before restoring their shared selector. Both its DT property and
+	  read-only module parameter are required. Its distinct G2e and G2f
+	  compatibles each require their own DT property and read-only module
+	  parameter, then reuse the completed G2d sequence for a one-shot BT
+	  PALDO/FUNC_CTRL proof; G2f additionally sends private H4 Reset and Read
+	  Local Version commands with exact Command Complete checks. Every path
+	  returns to the bootstrap fence/reset unwind; no HCI device or radio
+	  endpoint is exposed.
+
+config MTK_MT6797_CONSYS_WMT_POSTPATCH_KUNIT_TEST
+	bool "KUnit tests for MT6797 post-patch calibration choreography"
+	depends on KUNIT=y
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER=y
+	help
+	  Exercise the exact MT6797 post-patch sequence in memory: vendor 5-ms
+	  delay, five LTE coexistence packets, fixed-3.3-V BT/Wi-Fi PALDOs, RF
+	  calibration, BT-then-Wi-Fi release, antenna coexistence, and the firmware
+	  FM strap. It checks every WMT and rail failure path and proves the shared
+	  MT6351 selector is not restored until both consumers are off. It does not
+	  access a regulator, WMT endpoint, Device Tree, or Gemini.
+
+config MTK_MT6797_WIFI_AHB_WCIR_OBSERVE
+	tristate "MT6797 WLAN GEN3 AHB post-patch WCIR observer"
+	depends on ARM64 && ARCH_MEDIATEK && OF && REGULATOR
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	help
+	  Build the smallest live MT6797 WLAN AHB milestone. A corrected G2d
+	  post-patch owner must call it synchronously while retaining its full WMT
+	  lease and enabled Wi-Fi PALDO. It sends one fixed-port CMD53 WCIR read.
+	  The owner DT property and its read-only module parameter are both required.
+	  It never creates a WLAN transport, IRQ, DMA path, firmware load, or netdev.
+
+config MTK_MT6797_WIFI_AHB_WCIR_KUNIT_TEST
+	bool "KUnit tests for the MT6797 WLAN AHB WCIR observer"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_WCIR_OBSERVE=y
+	help
+	  Exercise WCIR decoding, guards, command encoding, and fault cleanup in
+	  memory only. No Device Tree, MMIO, regulator, WMT, or radio is accessed.
+
+config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT
+	tristate "MT6797 WLAN GEN3 AHB W1 pinned firmware/READY proof"
+	depends on ARM64 && ARCH_MEDIATEK && OF && FW_LOADER
+	depends on CRYPTO_SHA256
+	depends on MTK_MT6797_WIFI_AHB_WCIR_OBSERVE
+	depends on MTK_MT6797_CONSYS_G2D_POSTPATCH_OWNER
+	help
+	  Verify and parse the exact WIFI_RAM_CODE_6797 image, send both IDLM
+	  sections through the vendor HIF framing, copy both EMI sections through
+	  the provider-owned temporary region-18 window, start firmware and poll
+	  WCIR.READY while the completed G2d full-WMT lease is active. Its own DT
+	  property and read-only module parameter are both required, in addition to
+	  the corrected W0 HIF observation gate.
+
+	  W1 clears post-ready status and TX release counters, then leaves global IRQ
+	  delivery disabled unless the separately gated W2 NIC-capability proof is
+	  selected. It creates no WLAN transport, netdev, DMA path, cfg80211 device,
+	  or user API.
+
+config MTK_MT6797_WIFI_AHB_W1_FIRMWARE_KUNIT_TEST
+	bool "KUnit tests for MT6797 WLAN W1 firmware preflight"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT=y
+	help
+	  Exercise the exact firmware size/SHA-256 pin policy, divided-header parser,
+	  complete IDLM frame accounting, and cleanup-failure fencing in memory only.
+	  The fixture rejects every changed section field even after its CRC is
+	  recomputed. No firmware request, Device Tree, MMIO, regulator, WMT, or
+	  radio is used.
+
+config MTK_MT6797_WIFI_AHB_W2_NIC_CAPABILITY
+	bool "MT6797 WLAN GEN3 W2 vendor-polled NIC-capability proof"
+	depends on MTK_MT6797_WIFI_AHB_W1_FIRMWARE_PREFLIGHT=y
+	help
+	  After the complete W1 firmware start/READY sequence has cleared WHISR and
+	  TX release counts, issue the vendor's ordinary CMD_ID_GET_NIC_CAPABILITY
+	  query. The command is the exact 124-byte port-1 command (CID 0x80,
+	  sequence 1), and its only accepted response is the exact 124-byte port-1
+	  EVENT_ID_NIC_CAPABILITY (EID 0x01, sequence 1). As in the vendor's
+	  wlanQueryNicCapability() route, the response is polled through WRPLR/WRDR1
+	  before device global interrupt delivery is enabled. Any stale RX0 packet is
+	  read and discarded with the vendor's bounded port framing while delivery is
+	  still disabled; a non-empty port-1 length before the command, a malformed
+	  packet, a non-quiescent bounded drain, wrong event, length, sequence, or
+	  timeout fails closed.
+
+	  This proves command acceptance only. It deliberately requests no Linux IRQ
+	  and proves neither an interrupt service loop nor a WLAN transport: it
+	  creates no netdev, MAC, DMA path, cfg80211 device, or user API.
+
+config MTK_MT6797_WIFI_AHB_W3_SESSION
+	bool "MT6797 WLAN GEN3 W3 persistent HIF-session core"
+	depends on MTK_MT6797_WIFI_AHB_W2_NIC_CAPABILITY=y
+	help
+	  Build the hardware-independent lifecycle core required by a future retained
+	  MT6797 WLAN HIF owner. It requires that owner to acquire the long-lived
+	  CONSYS/HIF session and request a masked Linux IRQ, acknowledges WHISR and
+	  accounts TX release state, drains both receive ports, performs the exact W2
+	  capability callback, applies basic/MAC configuration, switches WHCR to
+	  interrupt read-clear, writes WHLPCR INT_SET, and only then unmasks the host
+	  IRQ. Teardown masks host then device IRQ, acknowledges/drains and releases
+	  the owner in reverse order.
+
+	  This is not a platform driver: no backend calls it, it maps no register,
+	  requests no IRQ, retains no CONSYS lease, and creates no netdev, cfg80211
+	  device, DMA path, scan, association, or userspace API. Keep it default-off
+	  until a separately reviewed retained CONSYS/HIF owner exists.
+
+config MTK_MT6797_WIFI_AHB_W3_SESSION_KUNIT_TEST
+	bool "KUnit tests for MT6797 WLAN W3 persistent HIF session"
+	depends on KUNIT=y
+	depends on MTK_MT6797_WIFI_AHB_W3_SESSION=y
+	help
+	  Exercise W3 ordering, TX accounting, both RX-port drain ownership,
+	  read-clear/WHLPCR/host-IRQ order and failure teardown through fake MMIO.
+	  It touches no Device Tree, IRQ, MMIO, CONSYS session or radio.
+
+	  No platform device, firmware, register or interrupt is used.
+
+config MTK_MT6797_WIFI_GEN3_WIRE
+	tristate
+
+config MTK_MT6797_WIFI_AHB_W4_PLATFORM
+	tristate "MT6797 WLAN GEN3 retained AHB HIF platform owner"
+	depends on MTK_MT6797_WIFI_AHB_W3_SESSION
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
+	depends on CFG80211
+	select MTK_MT6797_WIFI_GEN3_WIRE
+	help
+	  Build the opt-in live owner of the exact 0x180f0000/0x1100 GEN3
+	  AHB SDIO-like portal. It starts the retained W1/W2 firmware transaction,
+	  borrows the controller full-STP lease, performs the vendor HIF IRQ/TX
+	  accounting/RX drain ordering, and registers a station wiphy/netdev.
+
+	  No shipped Gemini DT node enables this driver. Its explicit DT property,
+	  controller gates and W1 image pin remain mandatory. Stop masks host and
+	  device IRQs, drains both ports and releases HIF, PALDO and CONSYS in
+	  reverse order.
+
+config MTK_MT6797_WIFI_GEN3_WIRE_KUNIT_TEST
+	bool "KUnit tests for MT6797 WLAN GEN3 security command encoding"
+	depends on KUNIT=y
+	select MTK_MT6797_WIFI_GEN3_WIRE
+	help
+	  Validate the byte-exact CCMP, BIP, replay-counter, default-key and BSS
+	  state commands used by the MT6797 GEN3 firmware. The tests reject invalid
+	  key/index combinations before the live driver can advertise protected-
+	  network support.
+
+	  No platform device, firmware, register, interrupt or radio is used.
 config MTK_MT6797_BTIF_INVENTORY
 	tristate "MediaTek MT6797 BTIF/APDMA resource inventory"
 	depends on ARM64 && ARCH_MEDIATEK && OF && COMMON_CLK

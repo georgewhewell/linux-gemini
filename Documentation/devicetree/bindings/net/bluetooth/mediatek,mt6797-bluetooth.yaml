@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/bluetooth/mediatek,mt6797-bluetooth.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 built-in Bluetooth
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The MT6797 connectivity subsystem transports MT6631 Bluetooth H4 packets on
+  channel zero of its internal full-STP link. A shared CONSYS controller owns
+  the STP link, BTIF clock and interrupt, connectivity reset, and firmware
+  lifecycle. This node owns only the Bluetooth-specific 3.3 V supply and HCI
+  function lifetime.
+
+allOf:
+  - $ref: bluetooth-controller.yaml#
+
+properties:
+  compatible:
+    const: mediatek,mt6797-bluetooth
+
+  mediatek,controller:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: CONSYS controller which owns the active full-STP session.
+
+  vcn33-bt-supply:
+    description: Bluetooth-specific 3.3 V connectivity supply.
+
+required:
+  - compatible
+  - mediatek,controller
+  - vcn33-bt-supply
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    bluetooth {
+        compatible = "mediatek,mt6797-bluetooth";
+        mediatek,controller = <&consys_controller>;
+        vcn33-bt-supply = <&vcn33_bt>;
+        status = "disabled";
+    };

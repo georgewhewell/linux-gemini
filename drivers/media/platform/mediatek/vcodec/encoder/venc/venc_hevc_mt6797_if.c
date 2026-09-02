@@ -426,9 +426,12 @@ mt6797_venc_hevc_encode_frame(struct mt6797_venc_hevc_inst *inst,
 
 	if (!frm_buf || !frm_buf->fb_addr[0].size)
 		return -EINVAL;
-	if (inst->prepend_header && !inst->headers_ready)
-		return -EINVAL;
 	if (inst->prepend_header) {
+		if (!inst->headers_ready) {
+			ret = mt6797_venc_hevc_build_headers(inst);
+			if (ret)
+				return ret;
+		}
 		ret = check_add_overflow(inst->header_sizes[0],
 					 inst->header_sizes[1], &header_size);
 		if (ret || check_add_overflow(header_size, inst->header_sizes[2],
@@ -645,7 +648,7 @@ static int mt6797_venc_hevc_set_param(void *handle,
 		}
 		return ret;
 	case VENC_SET_PARAM_PREPEND_HEADER:
-		if (!inst->headers_ready)
+		if (!inst->configured)
 			return -EINVAL;
 		inst->prepend_header = true;
 		return 0;

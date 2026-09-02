@@ -88,6 +88,16 @@ static int vidioc_venc_s_ctrl(struct v4l2_ctrl *ctrl)
 		mtk_v4l2_venc_dbg(2, ctx, "V4L2_CID_MPEG_VIDEO_H264_LEVEL val = %d", ctrl->val);
 		p->h264_level = ctrl->val;
 		break;
+	case V4L2_CID_MPEG_VIDEO_HEVC_PROFILE:
+		mtk_v4l2_venc_dbg(2, ctx, "V4L2_CID_MPEG_VIDEO_HEVC_PROFILE val = %d",
+				  ctrl->val);
+		p->hevc_profile = ctrl->val;
+		break;
+	case V4L2_CID_MPEG_VIDEO_HEVC_LEVEL:
+		mtk_v4l2_venc_dbg(2, ctx, "V4L2_CID_MPEG_VIDEO_HEVC_LEVEL val = %d",
+				  ctrl->val);
+		p->hevc_level = ctrl->val;
+		break;
 	case V4L2_CID_MPEG_VIDEO_H264_I_PERIOD:
 		mtk_v4l2_venc_dbg(2, ctx, "V4L2_CID_MPEG_VIDEO_H264_I_PERIOD val = %d", ctrl->val);
 		p->intra_period = ctrl->val;
@@ -377,6 +387,7 @@ static void mtk_venc_set_param(struct mtk_vcodec_enc_ctx *ctx,
 			       struct venc_enc_param *param)
 {
 	struct mtk_q_data *q_data_src = &ctx->q_data[MTK_Q_DATA_SRC];
+	struct mtk_q_data *q_data_dst = &ctx->q_data[MTK_Q_DATA_DST];
 	struct mtk_enc_params *enc_params = &ctx->enc_params;
 
 	switch (q_data_src->fmt->fourcc) {
@@ -399,6 +410,8 @@ static void mtk_venc_set_param(struct mtk_vcodec_enc_ctx *ctx,
 	}
 	param->h264_profile = enc_params->h264_profile;
 	param->h264_level = enc_params->h264_level;
+	param->hevc_profile = enc_params->hevc_profile;
+	param->hevc_level = enc_params->hevc_level;
 
 	/* Config visible resolution */
 	param->width = q_data_src->visible_width;
@@ -410,15 +423,24 @@ static void mtk_venc_set_param(struct mtk_vcodec_enc_ctx *ctx,
 			enc_params->framerate_denom;
 	param->intra_period = enc_params->intra_period;
 	param->gop_size = enc_params->gop_size;
+	if (q_data_dst->fmt->fourcc == V4L2_PIX_FMT_HEVC &&
+	    !param->intra_period)
+		param->intra_period = param->gop_size ?: 30;
 	param->bitrate = enc_params->bitrate;
 
 	mtk_v4l2_venc_dbg(0, ctx,
-			  "fmt 0x%x, P/L %d/%d w/h %d/%d buf %d/%d fps/bps %d/%d gop %d i_per %d",
+			  "fmt 0x%x, H264 P/L %d/%d HEVC P/L %d/%d w/h %d/%d buf %d/%d fps/bps %d/%d gop %d i_per %d",
 			  param->input_yuv_fmt, param->h264_profile,
-			  param->h264_level, param->width, param->height,
+			  param->h264_level, param->hevc_profile,
+			  param->hevc_level, param->width, param->height,
 			  param->buf_width, param->buf_height,
 			  param->frm_rate, param->bitrate,
 			  param->gop_size, param->intra_period);
+}
+
+static bool mtk_venc_needs_header(u32 fourcc)
+{
+	return fourcc == V4L2_PIX_FMT_H264 || fourcc == V4L2_PIX_FMT_HEVC;
 }
 
 static int vidioc_venc_s_fmt_cap(struct file *file, void *priv,
@@ -891,9 +913,9 @@ static int vb2ops_venc_start_streaming(struct vb2_queue *q, unsigned int count)
 	}
 	ctx->param_change = MTK_ENCODE_PARAM_NONE;
 
-	if ((ctx->q_data[MTK_Q_DATA_DST].fmt->fourcc == V4L2_PIX_FMT_H264) &&
-	    (ctx->enc_params.seq_hdr_mode !=
-				V4L2_MPEG_VIDEO_HEADER_MODE_SEPARATE)) {
+	if (mtk_venc_needs_header(ctx->q_data[MTK_Q_DATA_DST].fmt->fourcc) &&
+	    ctx->enc_params.seq_hdr_mode !=
+				V4L2_MPEG_VIDEO_HEADER_MODE_SEPARATE) {
 		ret = venc_if_set_param(ctx,
 					VENC_SET_PARAM_PREPEND_HEADER,
 					NULL);
@@ -1211,9 +1233,9 @@ static void m2mops_venc_device_run(void *priv)
 {
 	struct mtk_vcodec_enc_ctx *ctx = priv;
 
-	if ((ctx->q_data[MTK_Q_DATA_DST].fmt->fourcc == V4L2_PIX_FMT_H264) &&
-	    (ctx->state != MTK_STATE_HEADER)) {
-		/* encode h264 sps/pps header */
+	if (mtk_venc_needs_header(ctx->q_data[MTK_Q_DATA_DST].fmt->fourcc) &&
+	    ctx->state != MTK_STATE_HEADER) {
+		/* Encode codec parameter-set headers. */
 		mtk_venc_encode_header(ctx);
 		queue_work(ctx->dev->encode_workqueue, &ctx->encode_work);
 		return;
@@ -1360,6 +1382,17 @@ int mtk_vcodec_enc_ctrls_setup(struct mtk_vcodec_enc_ctx *ctx)
 	v4l2_ctrl_new_std_menu(handler, ops, V4L2_CID_MPEG_VIDEO_H264_LEVEL,
 			       h264_max_level,
 			       0, V4L2_MPEG_VIDEO_H264_LEVEL_4_0);
+	if (ctx->dev->venc_pdata->hevc_if) {
+		v4l2_ctrl_new_std_menu(handler, ops,
+				       V4L2_CID_MPEG_VIDEO_HEVC_PROFILE,
+				       V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN_10,
+				       ~BIT(V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN),
+				       V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN);
+		v4l2_ctrl_new_std_menu(handler, ops,
+				       V4L2_CID_MPEG_VIDEO_HEVC_LEVEL,
+				       V4L2_MPEG_VIDEO_HEVC_LEVEL_5, 0,
+				       V4L2_MPEG_VIDEO_HEVC_LEVEL_4);
+	}
 	v4l2_ctrl_new_std_menu(handler, ops, V4L2_CID_MPEG_VIDEO_VP8_PROFILE,
 			       V4L2_MPEG_VIDEO_VP8_PROFILE_0, 0, V4L2_MPEG_VIDEO_VP8_PROFILE_0);
 	v4l2_ctrl_new_std_menu(handler, ops, V4L2_CID_MPEG_VIDEO_BITRATE_MODE,

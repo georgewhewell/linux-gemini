@@ -30,6 +30,7 @@
  * @core_id: stand for h264 or vp8 encode index
  * @uses_34bit: whether the encoder uses 34-bit iova
  * @h264_if: optional direct H.264 encoder interface
+ * @hevc_if: optional direct HEVC encoder interface
  */
 struct mtk_vcodec_enc_pdata {
 	bool uses_ext;
@@ -42,6 +43,7 @@ struct mtk_vcodec_enc_pdata {
 	u8 core_id;
 	bool uses_34bit;
 	const struct venc_common_if *h264_if;
+	const struct venc_common_if *hevc_if;
 };
 
 /*
@@ -73,6 +75,8 @@ enum mtk_encode_param {
  * @h264_max_qp: Max value for H.264 quantization parameter
  * @h264_profile: V4L2 defined H.264 profile
  * @h264_level: V4L2 defined H.264 level
+ * @hevc_profile: V4L2 defined HEVC profile
+ * @hevc_level: V4L2 defined HEVC level
  * @force_intra: force/insert intra frame
  */
 struct mtk_enc_params {
@@ -88,6 +92,8 @@ struct mtk_enc_params {
 	unsigned int	h264_max_qp;
 	unsigned int	h264_profile;
 	unsigned int	h264_level;
+	unsigned int	hevc_profile;
+	unsigned int	hevc_level;
 	unsigned int	force_intra;
 };
 

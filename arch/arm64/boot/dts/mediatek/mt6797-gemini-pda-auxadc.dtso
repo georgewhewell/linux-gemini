@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA MT6351 battery-voltage observation.
+ *
+ * Enabling this node deliberately gives Linux ownership of the AUXADC clock,
+ * averaging, buffer, and AP request fields. MT6351 channel 0 is the BATSNS
+ * node. The Gemini vendor and LK builds use channel 1, ISENSE, as VBAT when
+ * the BQ25896 switching-charger power path is enabled. Both are exposed here
+ * without selecting either for battery policy. No thermistor, charger,
+ * capacity, or shutdown policy is enabled.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&mt6351auxadc {
+	status = "okay";
+};

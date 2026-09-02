@@ -159,17 +159,6 @@
 	clock-frequency = <1391000000>;
 };
 
-/*
- * Keep all native-display consumers behind a userspace boundary. MMSYS still
- * publishes its clock provider at probe time; guarded power-domain, SMI, DSI
- * and panel consumers defer against the same MMSYS opt-in. Stage1 releases
- * that one-way boundary by writing 1 to activate_drm after watchdog service
- * is known good.
- */
-&mmsys {
-	mediatek,drm-on-demand;
-};
-
 &cpu3 {
 	clock-frequency = <1391000000>;
 };

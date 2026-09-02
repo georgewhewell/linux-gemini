@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Diagnostics-only Gemini PDA display activation gate.
+ *
+ * Do not compose this overlay into the default or full system image. It keeps
+ * the native display consumers deferred until userspace writes 1 to the MMSYS
+ * activate_drm attribute, and exists only to bisect early display bring-up.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&mmsys {
+	mediatek,drm-on-demand;
+};

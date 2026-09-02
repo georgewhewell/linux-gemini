@@ -2,11 +2,10 @@
 /*
  * Planet Computers Gemini PDA native display preparation overlay.
  *
- * This is safe to compose at boot with mt6797-gemini-pda.dtb: that board DT
- * sets mediatek,drm-on-demand on MMSYS. The matching drivers defer before
- * acquiring MM power, SMI, DSI or panel resources. Stage1 must first
- * establish watchdog service and then write 1 to MMSYS activate_drm. This is
- * a one-way bring-up boundary, not a permanent display disable switch.
+ * This is safe to compose at boot with mt6797-gemini-pda.dtb. The complete
+ * display pipeline probes during normal kernel boot; no userspace activation
+ * step is required. Bring-up experiments which need the old one-way boundary
+ * may additionally compose mt6797-gemini-pda-display-gated.dtbo.
  *
  * The graph avoids the legacy MT6797 fallback path, whose OVL0 -> OVL0_2L
  * hop is not routable. The documented hardware path is instead:

@@ -15,9 +15,9 @@ config VIDEO_MTK_MT6797_SENINF
 	select VIDEO_MTK_MT6797_SENINF_CORE
 	help
 	  Build the V4L2 bridge for the MT6797 sensor interface and CSI-2
-	  receiver. The driver supports the evidence-backed Gemini camera1/sub
-	  NCSI2 route at 2592x1944, with two data lanes and a 440 MHz link.
-	  Unestablished routes and modes fail closed.
+	  receiver. The driver supports the source-recovered NCSI2 route at
+	  2592x1944, with two data lanes and a 440 MHz link. Board topology,
+	  unestablished routes and other modes fail closed.
 
 config VIDEO_MTK_MT6797_SENINF_KUNIT_TEST
 	tristate "KUnit tests for the MT6797 SENINF core" if !KUNIT_ALL_TESTS
@@ -25,5 +25,7 @@ config VIDEO_MTK_MT6797_SENINF_KUNIT_TEST
 	select VIDEO_MTK_MT6797_SENINF_CORE
 	default KUNIT_ALL_TESTS
 	help
-	  Test MT6797 SENINF resource, endpoint, format and register-plan helpers.
-	  The tests use fake register banks and never touch hardware.
+	  Test MT6797 SENINF resource, endpoint, format and register-plan
+	  helpers. The tests verify programming and rollback with fake register
+	  banks. They never touch hardware and can run on any KUnit-capable
+	  architecture.

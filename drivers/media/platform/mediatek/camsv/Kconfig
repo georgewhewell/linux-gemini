@@ -15,9 +15,10 @@ config VIDEO_MTK_MT6797_CAMSV
 	select VIDEO_MTK_MT6797_CAMSV_CORE
 	help
 	  Build the V4L2 capture driver for the first MT6797 CAMSV engine.
-	  It exposes the evidence-backed CAMSV0 RAW10 packed path through a
+	  It exposes the source-recovered CAMSV0 RAW10 packed path through a
 	  standard media-controller graph and videobuf2 DMA queue. Other engines,
 	  formats and dimensions remain unavailable until independently proven.
+	  This does not provide an ISP or establish a particular board topology.
 
 config VIDEO_MTK_MT6797_CAMSV_KUNIT_TEST
 	tristate "KUnit tests for the MT6797 CAMSV core" if !KUNIT_ALL_TESTS

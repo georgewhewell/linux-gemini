@@ -440,17 +440,6 @@
 		};
 	};
 
-	camera1_pins: camera1-pins {
-		pins-mclk {
-			pinmux = <MT6797_GPIO31__FUNC_CMMCLK1>;
-		};
-
-		pins-control {
-			pinmux = <MT6797_GPIO33__FUNC_GPIO33>,
-				 <MT6797_GPIO29__FUNC_GPIO29>;
-		};
-	};
-
 	mmc0_pins_default: mmc0-default-pins {
 		pins-cmd-dat {
 			pinmux = <MT6797_GPIO114__FUNC_MSDC0_DAT0>,
@@ -605,40 +594,12 @@
 };
 
 /*
- * The populated SLS camera1 module is intentionally disabled with its bus.
- * Enabling the complete candidate requires i2c3, sp5509, larb2, seninf and
- * camsv0 together; no partial route is safe or useful.
+ * Stock runtime state identifies the logical sub camera as SP5509 SLS.  The
+ * vendor source maps it to I2C3, MCLK2, reset GPIO33, power-down GPIO29 and a
+ * two-lane NCSI2 route.  Its probe table contains both 7-bit addresses 0x20
+ * and 0x28, however, and the successful address was not recorded.  Describe
+ * no camera client or media links until the populated address is established.
  */
-&i2c3 {
-	clock-frequency = <300000>;
-	pinctrl-names = "default";
-	pinctrl-0 = <&i2c3_pins_a>;
-
-	sp5509: camera@20 {
-		compatible = "siliconfile,sp5509";
-		reg = <0x20>;
-		clocks = <&seninf>;
-		clock-names = "clk";
-		pinctrl-names = "default";
-		pinctrl-0 = <&camera1_pins>;
-		dovdd-supply = <&mt6351_vcamio_reg>;
-		avdd-supply = <&mt6351_vcama_reg>;
-		dvdd-supply = <&mt6351_vcamd_reg>;
-		reset-gpios = <&pio 33 GPIO_ACTIVE_LOW>;
-		powerdown-gpios = <&pio 29 GPIO_ACTIVE_LOW>;
-		status = "disabled";
-
-		port {
-			sp5509_out: endpoint {
-				remote-endpoint = <&seninf_sub_in>;
-				data-lanes = <1 2>;
-				link-frequencies = /bits/ 64 <440000000
-							       220000000
-							       110000000>;
-			};
-		};
-	};
-};
 
 &i2c4 {
 	/*
@@ -1147,34 +1108,8 @@
 &seninf {
 	nvmem-cells = <&mt6797_csi_calibration>;
 	nvmem-cell-names = "csi-calibration-data";
-
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		port@0 {
-			reg = <0>;
-
-			seninf_sub_in: endpoint {
-				remote-endpoint = <&sp5509_out>;
-				bus-type = <4>;
-				data-lanes = <1 2>;
-			};
-		};
-
-		port@1 {
-			reg = <1>;
-
-			seninf_sub_out: endpoint {
-				remote-endpoint = <&camsv0_in>;
-			};
-		};
-	};
 };
 
-&camsv0_in {
-	remote-endpoint = <&seninf_sub_out>;
-};
 &i2c0 {
 	#address-cells = <1>;
 	#size-cells = <0>;

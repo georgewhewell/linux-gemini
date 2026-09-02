@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_MTK_MT6797_SENINF_CORE
+	tristate
+
+config VIDEO_MTK_MT6797_SENINF
+	tristate "MediaTek MT6797 SENINF receiver core"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on VIDEO_DEV
+	depends on OF
+	select MEDIA_CONTROLLER
+	select V4L2_ASYNC
+	select V4L2_FWNODE
+	select VIDEO_MTK_MT6797_SENINF_CORE
+	help
+	  Build the structural V4L2 bridge for the MT6797 sensor interface and
+	  CSI-2 receiver. The driver validates and reserves the documented SENINF
+	  and MIPI analog resources and represents a single, explicitly described
+	  media link. Streaming remains unavailable until the MT6797 D-PHY power
+	  and lane-routing sequence is independently established.
+
+config VIDEO_MTK_MT6797_SENINF_KUNIT_TEST
+	tristate "KUnit tests for the MT6797 SENINF core" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	select VIDEO_MTK_MT6797_SENINF_CORE
+	default KUNIT_ALL_TESTS
+	help
+	  Test the side-effect-free MT6797 SENINF resource, endpoint and format
+	  validation helpers. The tests cover undersized and overlapping register
+	  windows, address overflow, unsupported PHY types and lane counts, and
+	  deterministic media-bus format normalization without touching hardware.

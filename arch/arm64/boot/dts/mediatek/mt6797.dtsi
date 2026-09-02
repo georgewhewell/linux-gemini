@@ -1098,6 +1098,38 @@
 		status = "disabled";
 	};
 
+	vcodec_dec: video-codec@16020000 {
+		compatible = "mediatek,mt6797-vcodec-dec";
+		reg = <0 0x16020000 0 0x1000>,
+		      <0 0x16021000 0 0x800>,
+		      <0 0x16021800 0 0x800>,
+		      <0 0x16022000 0 0x1000>,
+		      <0 0x16023000 0 0x1000>,
+		      <0 0x16024000 0 0x1000>,
+		      <0 0x16025000 0 0x1000>,
+		      <0 0x16026800 0 0x800>,
+		      <0 0x16027800 0 0x800>,
+		      <0 0x16028000 0 0x1000>;
+		reg-names = "misc", "vld", "vld-top", "mc", "avc-vld",
+			    "avc-mv", "pp", "vp8-vld", "vld2", "hevc-vld";
+		interrupts = <GIC_SPI 240 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vdecsys CLK_VDEC_CKEN>;
+		clock-names = "vdec";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VDEC>;
+		iommus = <&m4u M4U_PORT_VDEC_MC>,
+			 <&m4u M4U_PORT_VDEC_PP>,
+			 <&m4u M4U_PORT_VDEC_UFO>,
+			 <&m4u M4U_PORT_VDEC_VLD>,
+			 <&m4u M4U_PORT_VDEC_VLD2>,
+			 <&m4u M4U_PORT_VDEC_AVC_MV>,
+			 <&m4u M4U_PORT_VDEC_PRED_RD>,
+			 <&m4u M4U_PORT_VDEC_PRED_WR>,
+			 <&m4u M4U_PORT_VDEC_PPWRAP>,
+			 <&m4u M4U_PORT_VDEC_TILE>;
+		mediatek,vdecsys = <&vdecsys>;
+		status = "disabled";
+	};
+
 	vencsys: syscon@17000000 {
 		compatible = "mediatek,mt6797-vencsys", "syscon";
 		reg = <0 0x17000000 0 0x1000>;
@@ -1109,9 +1141,30 @@
 		reg = <0 0x17001000 0 0x1000>;
 		mediatek,smi = <&smi_common>;
 		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
-		clocks = <&vencsys CLK_VENC_1>,
-			 <&vencsys CLK_VENC_1>;
+		clocks = <&vencsys CLK_VENC_0>,
+			 <&vencsys CLK_VENC_0>;
 		clock-names = "apb", "smi";
+	};
+
+	vcodec_enc: video-codec@17002000 {
+		compatible = "mediatek,mt6797-vcodec-enc";
+		reg = <0 0x17002000 0 0x1000>;
+		interrupts = <GIC_SPI 235 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vencsys CLK_VENC_1>;
+		clock-names = "venc";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+		iommus = <&m4u M4U_PORT_VENC_RCPU>,
+			 <&m4u M4U_PORT_VENC_REC>,
+			 <&m4u M4U_PORT_VENC_BSDMA>,
+			 <&m4u M4U_PORT_VENC_SV_COMV>,
+			 <&m4u M4U_PORT_VENC_RD_COMV>,
+			 <&m4u M4U_PORT_VENC_CUR_LUMA>,
+			 <&m4u M4U_PORT_VENC_CUR_CHROMA>,
+			 <&m4u M4U_PORT_VENC_REF_LUMA>,
+			 <&m4u M4U_PORT_VENC_REF_CHROMA>,
+			 <&m4u M4U_PORT_VENC_NBM_RDMA>,
+			 <&m4u M4U_PORT_VENC_NBM_WDMA>;
+		status = "disabled";
 	};
 
 	jpegenc: jpeg-encoder@17003000 {

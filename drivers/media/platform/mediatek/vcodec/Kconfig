@@ -34,3 +34,14 @@ config VIDEO_MEDIATEK_VCODEC
 
 	  To compile this driver as modules, choose M here: the
 	  modules will be called mtk-vcodec-dec and mtk-vcodec-enc.
+
+config VIDEO_MEDIATEK_VCODEC_KUNIT_TEST
+	tristate "KUnit tests for MediaTek video codec register translation" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test pure register translation and request validation helpers used by
+	  firmwareless MediaTek video codec backends. These tests do not access
+	  codec hardware and are safe to run on any KUnit-supported architecture.
+
+	  If unsure, say N.

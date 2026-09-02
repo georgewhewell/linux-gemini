@@ -902,7 +902,9 @@ static void mtk_init_vdec_params(struct mtk_vcodec_dec_ctx *ctx)
 	src_vq = v4l2_m2m_get_vq(ctx->m2m_ctx,
 				 V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
 
-	if (!ctx->dev->vdec_pdata->is_subdev_supported)
+	/* Firmwareless platforms provide a complete, fixed format mask. */
+	if (!ctx->dev->vdec_pdata->is_subdev_supported &&
+	    ctx->dev->vdec_pdata->uses_fw)
 		ctx->dev->dec_capability |=
 			MTK_VDEC_FORMAT_H264_SLICE | MTK_VDEC_FORMAT_MM21;
 	mtk_vcodec_get_supported_formats(ctx);

@@ -2,6 +2,7 @@
 #include <kunit/test.h>
 #include <linux/if_ether.h>
 #include <linux/unaligned.h>
+#include <net/cfg80211.h>
 
 #include "wire.h"
 
@@ -12,6 +13,18 @@ static const u8 test_key[16] = {
 };
 
 static const u8 test_rsc[6] = { 0x06, 0x05, 0x04, 0x03, 0x02, 0x01 };
+
+static void mt6797_wifi_gen3_scan_type_test(struct kunit *test)
+{
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_gen3_scan_type_for_flags(0),
+			MT6797_WIFI_GEN3_SCAN_ACTIVE);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_wifi_gen3_scan_type_for_flags(IEEE80211_CHAN_NO_IR),
+			MT6797_WIFI_GEN3_SCAN_PASSIVE);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_wifi_gen3_scan_type_for_flags(IEEE80211_CHAN_INDOOR_ONLY),
+			MT6797_WIFI_GEN3_SCAN_ACTIVE);
+}
 
 static const u8 expected_pairwise_cmd[MT6797_WIFI_GEN3_KEY_CMD_LEN] = {
 	0x48, 0x00, 0x00, 0x80, 0x07, 0xa0, 0x01, 0x09,
@@ -174,6 +187,7 @@ static void mt6797_wifi_gen3_bss_info_test(struct kunit *test)
 }
 
 static struct kunit_case mt6797_wifi_gen3_wire_cases[] = {
+	KUNIT_CASE(mt6797_wifi_gen3_scan_type_test),
 	KUNIT_CASE(mt6797_wifi_gen3_pairwise_ccmp_test),
 	KUNIT_CASE(mt6797_wifi_gen3_igtk_test),
 	KUNIT_CASE(mt6797_wifi_gen3_rsc_test),

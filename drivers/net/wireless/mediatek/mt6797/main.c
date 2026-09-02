@@ -1121,6 +1121,7 @@ static int mt6797_wifi_send_scan(struct mt6797_wifi *wifi,
 	size_t command_len, wire_len;
 	u8 *cmd;
 	unsigned int i, n = min_t(unsigned int, req->n_channels, 32);
+	u32 channel_flags = 0;
 	u8 ssid_num = req->n_ssids && req->ssids[0].ssid_len ? 1 : 0;
 	u32 ssid_len = ssid_num ? req->ssids[0].ssid_len : 0;
 	u8 channel_type = n ? MT6797_WIFI_SCAN_CHANNEL_SPECIFIED :
@@ -1146,7 +1147,10 @@ static int mt6797_wifi_send_scan(struct mt6797_wifi *wifi,
 	cmd[7] = MT6797_WIFI_CMD_SEQUENCE_SCAN;
 	cmd[8] = MT6797_WIFI_SCAN_SEQUENCE;
 	cmd[9] = 0; /* AIS BSS index */
-	cmd[10] = 1; /* active scan */
+	/* The firmware accepts one scan type for the entire channel list. */
+	for (i = 0; i < n; i++)
+		channel_flags |= req->channels[i]->flags;
+	cmd[10] = mt6797_wifi_gen3_scan_type_for_flags(channel_flags);
 	cmd[11] = req->n_ssids ? BIT(2) : BIT(0);
 	cmd[12] = ssid_num;
 	put_unaligned_le32(ssid_len,

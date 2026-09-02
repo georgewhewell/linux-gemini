@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/* Opt-in MT6797 full-STP GNSS composition for the Planet Gemini PDA. */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&gnss_lna {
+	status = "okay";
+};
+
+&gnss {
+	status = "okay";
+};

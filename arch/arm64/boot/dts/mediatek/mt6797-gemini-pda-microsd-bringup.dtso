@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA MicroSD (MSDC1) 3.0 V bring-up overlay.
+ *
+ * This is deliberately opt-in.  The base Gemini DT leaves MMC1 disabled;
+ * this overlay enables a 4-bit, 400 kHz SD path with card and signalling
+ * rails fixed at 3.0 V.  It advertises neither SD high-speed nor a UHS mode,
+ * so the unverified VMC 1.8 V transition and tuning paths remain unreachable.
+ *
+ * Vendor MT6797 evidence, from the Gemini 3.18 source:
+ *
+ * - arch/arm64/boot/dts/aeon6797_6m_n.dts:748-771 enables MMC1 as a
+ *   4-bit SD host, selects clk_src 2 and names GPIO67 as active-high CD.
+ * - The same file:775-783 assigns GPIO67 to EINT6 for card detection.
+ * - drivers/mmc/host/mediatek/mt6797/msdc_io.c:296-312 uses VMCH for
+ *   card power and VMC for signalling, both at 3.0 V.
+ * - The same file:1049-1135 programs 10 kohm pull-ups on CMD/DAT and a
+ *   50 kohm pull-down on CLK; :1288-1322 applies raw drive code 6.
+ * - Its :199-220 changes VMC to 1.8 V only for UHS operation.
+ *
+ * Mainline maps MSDC1 mux parent index 2 to CLK_TOP_MSDCPLL_D2 and maps
+ * GPIO129..134 to the six MSDC1 signals.  The MT6797 pinctrl driver supports
+ * the evidence-backed input, Schmitt, pull and drive fields used below.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/clock/mt6797-clk.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/mt65xx.h>
+#include <dt-bindings/pinctrl/mt6797-pinfunc.h>
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&mt6351regulator {
+	mt6351_vmch_reg: ldo-vmch {
+		regulator-name = "vmch";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+	};
+
+	mt6351_vmc_reg: ldo-vmc {
+		regulator-name = "vmc";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+	};
+};
+
+&pio {
+	microsd_mmc1_pins: microsd-mmc1-pins {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>,
+				 <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
+				 <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
+				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>,
+				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <8>;
+			input-enable;
+			input-schmitt-enable;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <8>;
+			input-enable;
+			input-schmitt-enable;
+		};
+
+		pins-cd {
+			pinmux = <MT6797_GPIO67__FUNC_EINT6>;
+			input-enable;
+			input-schmitt-enable;
+		};
+	};
+};
+
+&mmc1 {
+	assigned-clocks = <&topckgen CLK_TOP_MUX_MSDC30_1>;
+	assigned-clock-parents = <&topckgen CLK_TOP_MSDCPLL_D2>;
+
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&microsd_mmc1_pins>;
+	/* No 1.8 V transition is advertised; retain the 3.0 V state. */
+	pinctrl-1 = <&microsd_mmc1_pins>;
+
+	bus-width = <4>;
+	max-frequency = <400000>;
+	cd-gpios = <&pio 67 GPIO_ACTIVE_HIGH>;
+	vmmc-supply = <&mt6351_vmch_reg>;
+	vqmmc-supply = <&mt6351_vmc_reg>;
+	status = "okay";
+};

@@ -557,8 +557,9 @@
 	status = "okay";
 
 	da9214: regulator@68 {
-		compatible = "dlg,da9214";
-		reg = <0x68>;
+		compatible = "dlg,da9214-legacy";
+		reg = <0x68>, <0x69>;
+		reg-names = "primary", "page2";
 
 		regulators {
 			da9214_bucka: BUCKA {

@@ -192,6 +192,78 @@ static void mt6797_md1_test_rejects_unbound_image_size(struct kunit *test)
 		mt6797_md1_test_validate(header, sizeof(header), &info), -ERANGE);
 }
 
+static void mt6797_md1_test_valid_complete_image(struct kunit *test)
+{
+	const size_t raw_size = 0x2000;
+	const size_t total = raw_size + MT6797_MD1_CHECK_HEADER_V6_SIZE;
+	struct mt6797_md1_firmware_contract contract = mt6797_md1_test_contract;
+	struct mt6797_md1_firmware_image image;
+	u8 *data = kunit_kzalloc(test, total, GFP_KERNEL);
+	u8 *header;
+
+	KUNIT_ASSERT_NOT_NULL(test, data);
+	header = data + raw_size;
+	mt6797_md1_test_make_header(header, 6, MT6797_MD1_CHECK_HEADER_V6_SIZE);
+	put_unaligned_le32(raw_size,
+		header + MT6797_MD1_CHECK_HEADER_IMAGE_SIZE_OFFSET);
+	contract.raw_image_size = 0;
+	KUNIT_ASSERT_EQ(test, mt6797_md1_firmware_image_validate(data, total,
+		&contract, &image), 0);
+	KUNIT_EXPECT_EQ(test, image.payload_offset, 0UL);
+	KUNIT_EXPECT_EQ(test, image.payload_size, total);
+	KUNIT_EXPECT_EQ(test, image.check_header_offset, raw_size);
+	KUNIT_EXPECT_EQ(test, image.info.raw_image_size, (u32)raw_size);
+}
+
+static void mt6797_md1_test_valid_wrapped_image(struct kunit *test)
+{
+	const size_t raw_size = 0x2000;
+	const size_t payload_size = raw_size + MT6797_MD1_CHECK_HEADER_V34_SIZE;
+	const size_t total = MT6797_MD1_IMAGE_WRAPPER_SIZE + payload_size;
+	struct mt6797_md1_firmware_contract contract = mt6797_md1_test_contract;
+	struct mt6797_md1_firmware_image image;
+	u8 *data = kunit_kzalloc(test, total, GFP_KERNEL);
+	u8 *header;
+
+	KUNIT_ASSERT_NOT_NULL(test, data);
+	put_unaligned_le32(MT6797_MD1_IMAGE_WRAPPER_MAGIC, data);
+	put_unaligned_le32(payload_size,
+		data + MT6797_MD1_IMAGE_WRAPPER_DSIZE_OFFSET);
+	put_unaligned_le32(MT6797_MD1_IMAGE_WRAPPER_EXT_MAGIC,
+		data + MT6797_MD1_IMAGE_WRAPPER_EXT_MAGIC_OFFSET);
+	put_unaligned_le32(MT6797_MD1_IMAGE_WRAPPER_SIZE,
+		data + MT6797_MD1_IMAGE_WRAPPER_HEADER_SIZE_OFFSET);
+	header = data + MT6797_MD1_IMAGE_WRAPPER_SIZE + raw_size;
+	mt6797_md1_test_make_header(header, 4, MT6797_MD1_CHECK_HEADER_V34_SIZE);
+	put_unaligned_le32(raw_size,
+		header + MT6797_MD1_CHECK_HEADER_IMAGE_SIZE_OFFSET);
+	contract.raw_image_size = 0;
+	KUNIT_ASSERT_EQ(test, mt6797_md1_firmware_image_validate(data, total,
+		&contract, &image), 0);
+	KUNIT_EXPECT_EQ(test, image.payload_offset,
+		(size_t)MT6797_MD1_IMAGE_WRAPPER_SIZE);
+	KUNIT_EXPECT_EQ(test, image.payload_size, payload_size);
+	KUNIT_EXPECT_EQ(test, image.check_header_offset,
+		MT6797_MD1_IMAGE_WRAPPER_SIZE + raw_size);
+}
+
+static void mt6797_md1_test_rejects_malformed_wrapper(struct kunit *test)
+{
+	u8 data[MT6797_MD1_IMAGE_WRAPPER_SIZE] = {};
+	size_t offset = 0xa5, size = 0x5a;
+
+	put_unaligned_le32(MT6797_MD1_IMAGE_WRAPPER_MAGIC, data);
+	put_unaligned_le32(MT6797_MD1_IMAGE_WRAPPER_EXT_MAGIC,
+		data + MT6797_MD1_IMAGE_WRAPPER_EXT_MAGIC_OFFSET);
+	put_unaligned_le32(MT6797_MD1_IMAGE_WRAPPER_SIZE,
+		data + MT6797_MD1_IMAGE_WRAPPER_HEADER_SIZE_OFFSET);
+	put_unaligned_le32(1, data + MT6797_MD1_IMAGE_WRAPPER_DSIZE_OFFSET);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_firmware_payload(data, sizeof(data),
+		&offset, &size), -EMSGSIZE);
+	KUNIT_EXPECT_EQ(test, offset, (size_t)0xa5);
+	KUNIT_EXPECT_EQ(test, size, (size_t)0x5a);
+}
+
 static struct kunit_case mt6797_md1_firmware_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_test_valid_v6),
 	KUNIT_CASE(mt6797_md1_test_rejects_non_md1_header),
@@ -203,6 +275,9 @@ static struct kunit_case mt6797_md1_firmware_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_test_does_not_mutate_output_on_failure),
 	KUNIT_CASE(mt6797_md1_test_rejects_overflowed_region),
 	KUNIT_CASE(mt6797_md1_test_rejects_unbound_image_size),
+	KUNIT_CASE(mt6797_md1_test_valid_complete_image),
+	KUNIT_CASE(mt6797_md1_test_valid_wrapped_image),
+	KUNIT_CASE(mt6797_md1_test_rejects_malformed_wrapper),
 	{}
 };
 

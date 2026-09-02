@@ -200,4 +200,10 @@ mt6797_md1_cold_owner_cldma_register_activity(
 int mt6797_md1_cold_owner_post_vector_evidence_get(
 	struct mt6797_md1_post_vector_evidence *evidence);
 
+/* Finalize vendor region 13 after HS1 and before publishing runtime data. */
+int mt6797_md1_cold_owner_hs1_stage2(void);
+
+/* IRQ-safe terminal latch: no second in-boot ownership attempt is permitted. */
+void mt6797_md1_cold_owner_transport_fatal(int reason);
+
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_MD1_COLD_OWNER_H */

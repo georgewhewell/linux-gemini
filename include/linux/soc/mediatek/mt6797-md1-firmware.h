@@ -2,10 +2,9 @@
 /*
  * MT6797 MD1 firmware hand-off validation.
  *
- * This is intentionally only a parser and layout validator.  It does not
- * acquire a block device, request firmware, map modem memory, or start MD1.
- * A future acquisition owner must supply the exact check-header bytes and
- * independently-authenticated raw-image length from the boot-loader hand-off.
+ * The value-only helpers validate either an extracted check-header or the
+ * complete request_firmware() file shape used by the vendor fallback loader.
+ * They do not acquire firmware, map modem memory, or start MD1.
  */
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_MD1_FIRMWARE_H
 #define __LINUX_SOC_MEDIATEK_MT6797_MD1_FIRMWARE_H
@@ -50,6 +49,14 @@
 #define MT6797_MD1_DSP_ON_EMI_DISABLED	0xcdcdcdaa
 #define MT6797_MD1_MAX_IMAGE_TYPE		22
 
+/* Optional 512-byte MediaTek partition-image wrapper accepted by the BSP. */
+#define MT6797_MD1_IMAGE_WRAPPER_MAGIC		0x58881688U
+#define MT6797_MD1_IMAGE_WRAPPER_EXT_MAGIC	0x58891689U
+#define MT6797_MD1_IMAGE_WRAPPER_SIZE		512U
+#define MT6797_MD1_IMAGE_WRAPPER_DSIZE_OFFSET	4U
+#define MT6797_MD1_IMAGE_WRAPPER_EXT_MAGIC_OFFSET	44U
+#define MT6797_MD1_IMAGE_WRAPPER_HEADER_SIZE_OFFSET	48U
+
 /*
  * Values in this contract must come from one coherent, read-only boot-loader
  * hand-off and partition acquisition.  A zero value means that the contract
@@ -84,8 +91,28 @@ struct mt6797_md1_firmware_info {
 	bool has_v6_shared_memory;
 };
 
+/* Validated offsets into one immutable request_firmware() byte array. */
+struct mt6797_md1_firmware_image {
+	struct mt6797_md1_firmware_info info;
+	size_t payload_offset;
+	size_t payload_size;
+	size_t check_header_offset;
+};
+
 int mt6797_md1_firmware_validate(const void *header, size_t header_size,
 				 const struct mt6797_md1_firmware_contract *contract,
 				 struct mt6797_md1_firmware_info *info);
+
+/*
+ * Strip the optional vendor wrapper without interpreting the payload.  This is
+ * shared by the MD, DSP and ARM7 loaders; malformed wrappers fail closed.
+ */
+int mt6797_md1_firmware_payload(const void *data, size_t size,
+				 size_t *payload_offset, size_t *payload_size);
+
+/* Locate the trailing CHECK_HEADER and bind md_img_size to the payload. */
+int mt6797_md1_firmware_image_validate(const void *data, size_t size,
+			 const struct mt6797_md1_firmware_contract *contract,
+			 struct mt6797_md1_firmware_image *image);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_MD1_FIRMWARE_H */

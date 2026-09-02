@@ -189,3 +189,85 @@ int mt6797_md1_firmware_validate(const void *data, size_t header_size,
 	info->has_v6_shared_memory = version == 6;
 	return 0;
 }
+
+int mt6797_md1_firmware_payload(const void *data, size_t size,
+				 size_t *payload_offset, size_t *payload_size)
+{
+	const u8 *bytes = data;
+	u32 data_size, header_size;
+
+	if (!bytes || !payload_offset || !payload_size || !size)
+		return -EINVAL;
+
+	if (size >= MT6797_MD1_IMAGE_WRAPPER_SIZE &&
+	    get_unaligned_le32(bytes) == MT6797_MD1_IMAGE_WRAPPER_MAGIC) {
+		if (get_unaligned_le32(bytes +
+			MT6797_MD1_IMAGE_WRAPPER_EXT_MAGIC_OFFSET) !=
+			MT6797_MD1_IMAGE_WRAPPER_EXT_MAGIC)
+			return -EBADMSG;
+		header_size = get_unaligned_le32(bytes +
+			MT6797_MD1_IMAGE_WRAPPER_HEADER_SIZE_OFFSET);
+		data_size = get_unaligned_le32(bytes +
+			MT6797_MD1_IMAGE_WRAPPER_DSIZE_OFFSET);
+		if (header_size < MT6797_MD1_IMAGE_WRAPPER_SIZE ||
+		    header_size > size || !data_size || data_size > size - header_size)
+			return -EMSGSIZE;
+		*payload_offset = header_size;
+		*payload_size = data_size;
+		return 0;
+	}
+
+	*payload_offset = 0;
+	*payload_size = size;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_firmware_payload);
+
+int mt6797_md1_firmware_image_validate(const void *data, size_t size,
+			 const struct mt6797_md1_firmware_contract *contract,
+			 struct mt6797_md1_firmware_image *image)
+{
+	struct mt6797_md1_firmware_contract file_contract;
+	struct mt6797_md1_firmware_image result;
+	const u8 *payload;
+	size_t header_offset;
+	u32 header_size, raw_size;
+	int ret;
+
+	if (!data || !contract || !image || !contract->md_reserved_size)
+		return -EINVAL;
+
+	memset(&result, 0, sizeof(result));
+	ret = mt6797_md1_firmware_payload(data, size, &result.payload_offset,
+					 &result.payload_size);
+	if (ret)
+		return ret;
+	if (result.payload_size < MT6797_MD1_CHECK_HEADER_V34_SIZE)
+		return -EMSGSIZE;
+	payload = (const u8 *)data + result.payload_offset;
+	header_size = get_unaligned_le32(payload + result.payload_size - sizeof(u32));
+	if (header_size != MT6797_MD1_CHECK_HEADER_V34_SIZE &&
+	    header_size != MT6797_MD1_CHECK_HEADER_V5_SIZE &&
+	    header_size != MT6797_MD1_CHECK_HEADER_V6_SIZE)
+		return -EBADMSG;
+	header_offset = result.payload_size - header_size;
+	if (memcmp(payload + header_offset, MT6797_MD1_CHECK_HEADER_MAGIC,
+		   MT6797_MD1_CHECK_HEADER_MAGIC_SIZE))
+		return -EBADMSG;
+	raw_size = get_unaligned_le32(payload + header_offset +
+		MT6797_MD1_CHECK_HEADER_IMAGE_SIZE_OFFSET);
+	/* Vendor accepts padding between md_img_size and the trailing header. */
+	if (!raw_size || raw_size > header_offset)
+		return -ERANGE;
+
+	file_contract = *contract;
+	file_contract.raw_image_size = raw_size;
+	ret = mt6797_md1_firmware_validate(payload + header_offset, header_size,
+					   &file_contract, &result.info);
+	if (ret)
+		return ret;
+	result.check_header_offset = result.payload_offset + header_offset;
+	*image = result;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_firmware_image_validate);

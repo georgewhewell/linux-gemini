@@ -1255,6 +1255,7 @@ config MTK_MT6797_MD1_COLD_OWNER_CORE
 config MTK_MT6797_MD1_COLD_OWNER
 	tristate "MT6797 MD1 gated CCF boot-vector candidate"
 	depends on OF && ARM64
+	depends on FW_LOADER
 	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
 	depends on MTK_MT6797_MD1_BOOT_STATUS_OBSERVE=y
 	depends on MTK_MT6797_MD1_PRERELEASE=y
@@ -1266,12 +1267,11 @@ config MTK_MT6797_MD1_COLD_OWNER
 	help
 	  Build the default-disabled candidate which requires validated LK image and
 	  remap evidence, an explicitly armed secure EMI-MPU provider, the active
-	  vendor CCF MD1 sequence, exact vendor WDT key writes with diagnostic status
-	  samples, stage-one MPU and the single vendor boot-vector write. It requires
-	  two module parameters and disabled DT nodes to be changed before any write.
-	  A bounded AP boot-status/CCIF oracle and a scheduled five-second passive
-	  register observer are the terminal result. It does not install MD IRQs,
-	  CLDMA, shared-memory, CCCI transport, SIM or RF.
+	  vendor CCF MD1 sequence, exact vendor WDT key writes, staged MPU and the
+	  single vendor boot-vector write. A separately gated firmware-name path can
+	  replace the LK image with a strictly validated MD/DSP/ARM7 split-image set
+	  while reset remains proved asserted. The CCCI owner finalizes region 13 at
+	  HS1. Any post-release failure remains latched until a full platform reset.
 
 config MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 cold owner"
@@ -1402,9 +1402,10 @@ config MTK_MT6797_MD1_FIRMWARE_PREFLIGHT
 	bool "MT6797 MD1 firmware hand-off preflight"
 	help
 	  Build a hardware-free parser for the MT6797 MD1 CCCI check-header handed
-	  from LK to the vendor loader. It validates only an already-acquired header
-	  together with an independently supplied, coherent raw-image and reserved
-	  memory contract. It cannot locate a header in a padded partition by itself.
+	  from LK to the vendor loader. It validates an already-acquired header or a
+	  complete request_firmware image, including the optional 512-byte partition
+	  wrapper, against an independent reserved-memory contract. It never reads a
+	  block partition or scans for an unanchored header.
 
 config MTK_MT6797_MD1_FIRMWARE_PREFLIGHT_KUNIT_TEST
 	bool "KUnit tests for MT6797 MD1 firmware hand-off preflight"
@@ -1412,9 +1413,8 @@ config MTK_MT6797_MD1_FIRMWARE_PREFLIGHT_KUNIT_TEST
 	depends on MTK_MT6797_MD1_FIRMWARE_PREFLIGHT=y
 	help
 	  Exercise known check-header layouts, identity binding, trailing-size,
-	  integer-overflow and image/reserved-memory fencing without Device Tree,
-	  block I/O, firmware, MMIO, DMA or Gemini hardware. The suite has no
-	  platform driver and cannot access modem power, reset, CCCI, SIM or RF.
+	  optional wrapper, integer-overflow and image/reserved-memory fencing
+	  without Device Tree, block I/O, firmware, MMIO, DMA or Gemini hardware.
 
 config MTK_MT6797_MD1_MPU_REMAP_PLAN
 	bool "MT6797 MD1 RMPU/remap diagnostic plan"

@@ -9,9 +9,9 @@
 #include <linux/soc/mediatek/mt6797-md1-emi-mpu.h>
 
 struct mt6797_md1_emi_mpu_test_smc {
-	u64 starts[MT6797_MD1_MPU_PLAN_ENTRIES];
-	u64 ends[MT6797_MD1_MPU_PLAN_ENTRIES];
-	u32 region_permissions[MT6797_MD1_MPU_PLAN_ENTRIES];
+	u64 starts[MT6797_MD1_MPU_PLAN_ENTRIES + 1];
+	u64 ends[MT6797_MD1_MPU_PLAN_ENTRIES + 1];
+	u32 region_permissions[MT6797_MD1_MPU_PLAN_ENTRIES + 1];
 	unsigned int calls;
 	int fail_at;
 	unsigned int begin_calls;
@@ -79,8 +79,8 @@ static void mt6797_md1_emi_mpu_exact_order_and_permission(struct kunit *test)
 	struct mt6797_md1_emi_mpu_core core;
 	struct mt6797_md1_emi_mpu_test_smc smc = { .fail_at = -1 };
 	struct mt6797_md1_mpu_remap_plan plan = mt6797_md1_emi_mpu_test_plan();
-	struct mt6797_md1_mpu_plan_entry initial[2], stage1[4];
-	static const u8 order[] = { 11, 7, 12, 13, 10, 14 };
+	struct mt6797_md1_mpu_plan_entry initial[2], stage1[4], stage2;
+	static const u8 order[] = { 11, 7, 12, 13, 10, 14, 13 };
 	unsigned int i;
 
 	mt6797_md1_emi_mpu_test_entries(&plan, initial, stage1);
@@ -91,6 +91,10 @@ static void mt6797_md1_emi_mpu_exact_order_and_permission(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, mt6797_md1_emi_mpu_core_apply(&core,
 		mt6797_md1_emi_mpu_test_begin, mt6797_md1_emi_mpu_test_set, &smc,
 		&plan, MT6797_MD1_EMI_MPU_STAGE1, stage1, ARRAY_SIZE(stage1)), 0);
+	stage2 = plan.mpu[2];
+	KUNIT_ASSERT_EQ(test, mt6797_md1_emi_mpu_core_apply(&core,
+		mt6797_md1_emi_mpu_test_begin, mt6797_md1_emi_mpu_test_set, &smc,
+		&plan, MT6797_MD1_EMI_MPU_STAGE2, &stage2, 1), 0);
 	KUNIT_EXPECT_EQ(test, smc.begin_calls, 1U);
 	KUNIT_ASSERT_EQ(test, smc.calls, ARRAY_SIZE(order));
 	for (i = 0; i < ARRAY_SIZE(order); i++)
@@ -104,8 +108,11 @@ static void mt6797_md1_emi_mpu_exact_order_and_permission(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, smc.region_permissions[3],
 		MT6797_MD1_BRINGUP_STAGE1_REGION2_PERMISSION |
 		(13U << MT6797_MD1_EMI_MPU_REGION_SHIFT));
+	KUNIT_EXPECT_EQ(test, smc.region_permissions[6],
+		plan.mpu[2].access_permission |
+		(13U << MT6797_MD1_EMI_MPU_REGION_SHIFT));
 	KUNIT_EXPECT_EQ(test, mt6797_md1_emi_mpu_core_state(&core),
-		MT6797_MD1_EMI_MPU_STAGE1_COMMITTED);
+		MT6797_MD1_EMI_MPU_STAGE2_COMMITTED);
 }
 
 static void mt6797_md1_emi_mpu_initial_partial_failure_is_fatal(struct kunit *test)
@@ -164,6 +171,36 @@ static void mt6797_md1_emi_mpu_stage1_partial_failure_is_fatal(struct kunit *tes
 		KUNIT_EXPECT_EQ(test, mt6797_md1_emi_mpu_core_state(&core),
 			MT6797_MD1_EMI_MPU_FATAL);
 	}
+}
+
+static void mt6797_md1_emi_mpu_stage2_failure_is_fatal(struct kunit *test)
+{
+	struct mt6797_md1_emi_mpu_core core;
+	struct mt6797_md1_emi_mpu_test_smc smc = {
+		.fail_at = MT6797_MD1_MPU_PLAN_ENTRIES,
+	};
+	struct mt6797_md1_mpu_remap_plan plan = mt6797_md1_emi_mpu_test_plan();
+	struct mt6797_md1_mpu_plan_entry initial[2], stage1[4], stage2;
+
+	mt6797_md1_emi_mpu_test_entries(&plan, initial, stage1);
+	mt6797_md1_emi_mpu_core_init(&core);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_emi_mpu_core_apply(&core,
+		mt6797_md1_emi_mpu_test_begin, mt6797_md1_emi_mpu_test_set, &smc,
+		&plan, MT6797_MD1_EMI_MPU_INITIAL, initial, ARRAY_SIZE(initial)), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_emi_mpu_core_apply(&core,
+		mt6797_md1_emi_mpu_test_begin, mt6797_md1_emi_mpu_test_set, &smc,
+		&plan, MT6797_MD1_EMI_MPU_STAGE1, stage1, ARRAY_SIZE(stage1)), 0);
+	stage2 = plan.mpu[2];
+	KUNIT_EXPECT_EQ(test, mt6797_md1_emi_mpu_core_apply(&core,
+		mt6797_md1_emi_mpu_test_begin, mt6797_md1_emi_mpu_test_set, &smc,
+		&plan, MT6797_MD1_EMI_MPU_STAGE2, &stage2, 1), -EIO);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_emi_mpu_core_state(&core),
+		MT6797_MD1_EMI_MPU_FATAL);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_emi_mpu_core_apply(&core,
+		mt6797_md1_emi_mpu_test_begin, mt6797_md1_emi_mpu_test_set, &smc,
+		&plan, MT6797_MD1_EMI_MPU_STAGE2, &stage2, 1), -EIO);
+	KUNIT_EXPECT_EQ(test, smc.calls,
+		(unsigned int)MT6797_MD1_MPU_PLAN_ENTRIES + 1);
 }
 
 static void mt6797_md1_emi_mpu_rejects_unpinned_handoff_before_smc(struct kunit *test)
@@ -244,6 +281,7 @@ static struct kunit_case mt6797_md1_emi_mpu_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_emi_mpu_exact_order_and_permission),
 	KUNIT_CASE(mt6797_md1_emi_mpu_initial_partial_failure_is_fatal),
 	KUNIT_CASE(mt6797_md1_emi_mpu_stage1_partial_failure_is_fatal),
+	KUNIT_CASE(mt6797_md1_emi_mpu_stage2_failure_is_fatal),
 	KUNIT_CASE(mt6797_md1_emi_mpu_rejects_unpinned_handoff_before_smc),
 	KUNIT_CASE(mt6797_md1_emi_mpu_invalid_continuation_latches_fatal),
 	KUNIT_CASE(mt6797_md1_emi_mpu_plan_match_exact_lk_values),

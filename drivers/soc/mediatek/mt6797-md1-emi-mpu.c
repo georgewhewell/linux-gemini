@@ -37,6 +37,7 @@ MODULE_PARM_DESC(enable_experimental_md1_emi_mpu,
 
 struct mt6797_md1_emi_mpu {
 	struct device *dev;
+	enum mt6797_md1_emi_mpu_phase phase;
 };
 
 /* This deliberately outlives DT unbind/rebind attempts during one boot. */
@@ -91,12 +92,14 @@ static int mt6797_md1_emi_mpu_set(void *context, u64 start, u64 end,
 	struct arm_smccc_res res;
 	long status;
 
-	if (mt6797_md1_emi_mpu_lk_locked_match(start, end, region_permission)) {
+	/* Stage one deliberately changed region 13; HS1 must always restore it. */
+	if (mpu->phase != MT6797_MD1_EMI_MPU_STAGE2 &&
+	    mt6797_md1_emi_mpu_lk_locked_match(start, end, region_permission)) {
 		dev_info(mpu->dev,
 			 "MD1 EMI-MPU region %u [%#llx-%#llx] permission %#07x already locked by LK with identical values; skipping secure SET, mirroring vendor bypass\n",
 			 region_permission >> MT6797_MD1_EMI_MPU_REGION_SHIFT,
 			 start, end,
-			 region_permission & MT6797_MD1_EMI_MPU_PERMISSION_MASK);
+			 (u32)(region_permission & MT6797_MD1_EMI_MPU_PERMISSION_MASK));
 		return 0;
 	}
 
@@ -121,13 +124,15 @@ static int mt6797_md1_emi_mpu_apply_provider(
 {
 	int ret;
 
+	mpu->phase = phase;
 	ret = mt6797_md1_emi_mpu_core_apply(&mt6797_md1_emi_mpu_boot_core,
 		mt6797_md1_emi_mpu_begin, mt6797_md1_emi_mpu_set, mpu, plan, phase,
 		entries, count);
 	if (ret)
 		dev_crit(mpu->dev,
 			 "MD1 secure MPU %s failed (%d), state %u; reset/reboot required before any MD1 release\n",
-			 phase == MT6797_MD1_EMI_MPU_INITIAL ? "initial" : "stage-one",
+			 phase == MT6797_MD1_EMI_MPU_INITIAL ? "initial" :
+			 phase == MT6797_MD1_EMI_MPU_STAGE1 ? "stage-one" : "stage-two",
 			 ret, mt6797_md1_emi_mpu_core_state(&mt6797_md1_emi_mpu_boot_core));
 	return ret;
 }

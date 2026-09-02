@@ -4,7 +4,8 @@
  *
  * Exact vendor order: initial header region 0 / EMI 11, shared EMI 7, then
  * after reset-held power header regions 1..4 / EMI 12,13,10,14.  Region 13
- * uses the vendor temporary 0x0016db44 permission in the latter phase.
+ * uses the vendor temporary 0x0016db44 permission in the latter phase.  HS1
+ * then replaces only region 13 with the final CHECK_HEADER permission.
  *
  * There is deliberately no GET/readback or inverse callback.  The vendor
  * secure call can have changed a region before reporting failure, so every
@@ -71,6 +72,9 @@ static bool mt6797_md1_emi_mpu_entries_valid(
 		}
 		return true;
 	}
+	if (phase == MT6797_MD1_EMI_MPU_STAGE2)
+		return count == 1 &&
+		       !memcmp(entries, &plan->mpu[2], sizeof(*entries));
 	if (phase != MT6797_MD1_EMI_MPU_STAGE1 ||
 	    count != MT6797_MD1_BRINGUP_STAGE1_MPU_ENTRIES)
 		return false;
@@ -133,14 +137,16 @@ int mt6797_md1_emi_mpu_core_apply(struct mt6797_md1_emi_mpu_core *core,
 		return -EINVAL;
 	mutex_lock(&core->lock);
 	if (core->state == MT6797_MD1_EMI_MPU_FATAL ||
-	    core->state == MT6797_MD1_EMI_MPU_STAGE1_COMMITTED) {
+	    core->state == MT6797_MD1_EMI_MPU_STAGE2_COMMITTED) {
 		ret = -EIO;
 		goto unlock;
 	}
 	if ((phase == MT6797_MD1_EMI_MPU_INITIAL &&
 	     core->state != MT6797_MD1_EMI_MPU_IDLE) ||
 	    (phase == MT6797_MD1_EMI_MPU_STAGE1 &&
-	     core->state != MT6797_MD1_EMI_MPU_INITIAL_COMMITTED)) {
+	     core->state != MT6797_MD1_EMI_MPU_INITIAL_COMMITTED) ||
+	    (phase == MT6797_MD1_EMI_MPU_STAGE2 &&
+	     core->state != MT6797_MD1_EMI_MPU_STAGE1_COMMITTED)) {
 		ret = -EINVAL;
 		goto unlock;
 	}
@@ -168,9 +174,12 @@ int mt6797_md1_emi_mpu_core_apply(struct mt6797_md1_emi_mpu_core *core,
 			goto unlock;
 		}
 	}
-	core->state = phase == MT6797_MD1_EMI_MPU_INITIAL ?
-		MT6797_MD1_EMI_MPU_INITIAL_COMMITTED :
-		MT6797_MD1_EMI_MPU_STAGE1_COMMITTED;
+	if (phase == MT6797_MD1_EMI_MPU_INITIAL)
+		core->state = MT6797_MD1_EMI_MPU_INITIAL_COMMITTED;
+	else if (phase == MT6797_MD1_EMI_MPU_STAGE1)
+		core->state = MT6797_MD1_EMI_MPU_STAGE1_COMMITTED;
+	else
+		core->state = MT6797_MD1_EMI_MPU_STAGE2_COMMITTED;
 	ret = 0;
 unlock:
 	mutex_unlock(&core->lock);

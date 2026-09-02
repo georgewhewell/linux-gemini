@@ -25,6 +25,7 @@
 #include <linux/soc/mediatek/mt6797-md1-mpu-remap-plan.h>
 #include <linux/string.h>
 #include <linux/wwan.h>
+#include <linux/workqueue.h>
 
 #include "mtk_ccci_common.h"
 
@@ -33,6 +34,7 @@
 #define MT6797_CCCI_RX_SIZE		3584U
 #define MT6797_CCCI_NAPI_WEIGHT		64
 #define MT6797_CCCI_CHANNEL_COUNT	256U
+#define MT6797_CCCI_HANDSHAKE_TIMEOUT	(30 * HZ)
 #define MT6797_CCCI_ACTIVE_IRQS \
 	(MT6797_MD1_CLDMA_ACTIVE_QUEUES | \
 	 (MT6797_MD1_CLDMA_ACTIVE_QUEUES << 16))
@@ -122,6 +124,9 @@ struct mt6797_ccci {
 	struct net_device *napi_dev;
 	struct napi_struct napi;
 	struct mt6797_md1_hs hs;
+	struct work_struct hs1_work;
+	struct delayed_work handshake_timeout_work;
+	struct sk_buff *hs1_skb;
 	struct mtk_ccci_runtime_config runtime_config;
 	struct wwan_port *at_port;
 	struct mt6797_ccci_link __rcu *link[MTK_CCCI_MAX_NET_LINKS];
@@ -131,6 +136,7 @@ struct mt6797_ccci {
 	atomic_t failed;
 	atomic_t ready;
 	atomic_t at_open;
+	atomic_t hs1_pending;
 	atomic_t tx_sequence[MT6797_CCCI_CHANNEL_COUNT];
 	s16 rx_sequence[MT6797_CCCI_CHANNEL_COUNT];
 	int cldma_irq;
@@ -214,6 +220,8 @@ static void mt6797_ccci_quiesce(struct mt6797_ccci *ccci, int reason)
 	writel(MT6797_MD1_CLDMA_ACTIVE_QUEUES, ccci->pdn + CLDMA_SO_STOP_CMD);
 	readl(ccci->pdn + CLDMA_SO_STOP_CMD);
 	mt6797_md1_hs_crash(&ccci->hs, reason);
+	if (reason != -ESHUTDOWN)
+		mt6797_md1_cold_owner_transport_fatal(reason);
 }
 
 static void mt6797_ccci_free_rings(void *data)
@@ -618,6 +626,82 @@ static const struct wwan_ops mt6797_ccci_wwan_ops = {
 	.dellink = mt6797_ccci_net_dellink,
 };
 
+static void mt6797_ccci_hs1_work(struct work_struct *work)
+{
+	struct mt6797_ccci *ccci = container_of(work, struct mt6797_ccci, hs1_work);
+	struct sk_buff *skb = xchg(&ccci->hs1_skb, NULL);
+	struct mtk_ccci_frame frame;
+	struct mt6797_md1_hs_frame hs_frame = {
+		.wire_size = skb ? skb->len : 0,
+	};
+	enum mt6797_md1_hs_action action;
+	struct sk_buff *reply;
+	size_t runtime_len, reply_len;
+	int ret;
+
+	if (!skb) {
+		ret = -ENODATA;
+		goto failed;
+	}
+	if (atomic_read(&ccci->failed)) {
+		ret = -ESHUTDOWN;
+		goto failed;
+	}
+	ret = mtk_ccci_header_decode(skb->data, skb->len, &frame);
+	if (ret)
+		goto failed;
+	hs_frame.data0 = frame.data0;
+	hs_frame.data1 = frame.data1;
+	hs_frame.channel = frame.channel;
+	hs_frame.reserved = frame.reserved;
+	reply = alloc_skb(MTK_CCCI_RUNTIME_V2_REPLY_SIZE, GFP_KERNEL);
+	if (!reply) {
+		ret = -ENOMEM;
+		goto failed;
+	}
+	skb_put(reply, MTK_CCCI_RUNTIME_V2_REPLY_SIZE);
+	ret = mtk_ccci_runtime_v2_reply(skb->data, skb->len,
+					&ccci->runtime_config, 0, ccci->runtime,
+					MTK_CCCI_RUNTIME_AP_SIZE, &runtime_len,
+					reply->data, reply->len, &reply_len);
+	if (ret)
+		goto free_reply;
+	ret = mt6797_md1_hs_rx(&ccci->hs, &hs_frame, &action);
+	if (ret || action != MT6797_MD1_HS_ACTION_HS1_V2_NEEDS_RUNTIME) {
+		ret = ret ?: -EPROTO;
+		goto free_reply;
+	}
+	/* Vendor port_proxy_md_hs1_msg_notify() finalizes region 13 here. */
+	ret = mt6797_md1_cold_owner_hs1_stage2();
+	if (ret)
+		goto free_reply;
+	memcpy_toio(ccci->smem + MTK_CCCI_RUNTIME_OFFSET,
+		    ccci->runtime, runtime_len);
+	/* Publish the complete runtime block before queuing its HS1 response. */
+	wmb();
+	ret = mt6797_ccci_tx(ccci, 0, reply, MTK_CCCI_CONTROL_TX);
+	if (!ret) {
+		kfree_skb(skb);
+		atomic_set(&ccci->hs1_pending, 0);
+		return;
+	}
+free_reply:
+	kfree_skb(reply);
+failed:
+	kfree_skb(skb);
+	atomic_set(&ccci->hs1_pending, 0);
+	mt6797_ccci_quiesce(ccci, ret);
+}
+
+static void mt6797_ccci_handshake_timeout_work(struct work_struct *work)
+{
+	struct mt6797_ccci *ccci = container_of(to_delayed_work(work),
+		struct mt6797_ccci, handshake_timeout_work);
+
+	if (!atomic_read(&ccci->ready))
+		mt6797_ccci_quiesce(ccci, -ETIMEDOUT);
+}
+
 static int mt6797_ccci_control_rx(struct mt6797_ccci *ccci,
 				  struct sk_buff *skb,
 				  const struct mtk_ccci_frame *frame)
@@ -630,41 +714,24 @@ static int mt6797_ccci_control_rx(struct mt6797_ccci *ccci,
 		.wire_size = skb->len,
 	};
 	enum mt6797_md1_hs_action action;
-	struct sk_buff *reply;
-	size_t runtime_len, reply_len;
+	struct sk_buff *copy;
 	int ret;
 
 	if (skb->len == MTK_CCCI_HEADER_SIZE + MTK_CCCI_FEATURE_QUERY_SIZE &&
 	    frame->data1 == 0 && frame->reserved == MTK_CCCI_MD_INIT_CHK_ID) {
-		reply = alloc_skb(MTK_CCCI_RUNTIME_V2_REPLY_SIZE, GFP_ATOMIC);
-		if (!reply)
-			return -ENOMEM;
-		skb_put(reply, MTK_CCCI_RUNTIME_V2_REPLY_SIZE);
-		ret = mtk_ccci_runtime_v2_reply(skb->data, skb->len,
-						&ccci->runtime_config,
-						0,
-						ccci->runtime,
-						MTK_CCCI_RUNTIME_AP_SIZE,
-						&runtime_len, reply->data,
-						reply->len, &reply_len);
-		if (ret)
-			goto free_reply;
-		ret = mt6797_md1_hs_rx(&ccci->hs, &hs_frame, &action);
-		if (ret || action != MT6797_MD1_HS_ACTION_HS1_V2_NEEDS_RUNTIME) {
-			ret = ret ?: -EPROTO;
-			goto free_reply;
+		if (atomic_cmpxchg(&ccci->hs1_pending, 0, 1)) {
+			mt6797_ccci_quiesce(ccci, -EPROTO);
+			return -EPROTO;
 		}
-		memcpy_toio(ccci->smem + MTK_CCCI_RUNTIME_OFFSET,
-			    ccci->runtime, runtime_len);
-		/* Publish runtime bytes before the queued HS1 response. */
-		wmb();
-		ret = mt6797_ccci_tx(ccci, 0, reply, MTK_CCCI_CONTROL_TX);
-		if (!ret)
-			return 0;
-free_reply:
-		mt6797_ccci_quiesce(ccci, ret);
-		kfree_skb(reply);
-		return ret;
+		copy = skb_copy(skb, GFP_ATOMIC);
+		if (!copy) {
+			atomic_set(&ccci->hs1_pending, 0);
+			mt6797_ccci_quiesce(ccci, -ENOMEM);
+			return -ENOMEM;
+		}
+		WRITE_ONCE(ccci->hs1_skb, copy);
+		schedule_work(&ccci->hs1_work);
+		return 0;
 	}
 	if (skb->len == MTK_CCCI_HEADER_SIZE && frame->data1 == 0 &&
 	    frame->reserved == MTK_CCCI_MD_INIT_CHK_ID) {
@@ -674,6 +741,7 @@ free_reply:
 
 	ret = mt6797_md1_hs_rx(&ccci->hs, &hs_frame, &action);
 	if (!ret && action == MT6797_MD1_HS_ACTION_HS2_READY) {
+		cancel_delayed_work(&ccci->handshake_timeout_work);
 		mt6797_ccci_frontend_ready(ccci, true);
 		dev_info(ccci->dev, "MD1 completed CCCI HS2\n");
 	}
@@ -1086,6 +1154,10 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	atomic_set(&ccci->failed, 0);
 	atomic_set(&ccci->ready, 0);
 	atomic_set(&ccci->at_open, 0);
+	atomic_set(&ccci->hs1_pending, 0);
+	INIT_WORK(&ccci->hs1_work, mt6797_ccci_hs1_work);
+	INIT_DELAYED_WORK(&ccci->handshake_timeout_work,
+			  mt6797_ccci_handshake_timeout_work);
 	memset(ccci->rx_sequence, 0xff, sizeof(ccci->rx_sequence));
 	ccci->napi_dev = alloc_netdev_dummy(0);
 	if (!ccci->napi_dev)
@@ -1174,6 +1246,8 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 		return ret;
 	}
 	platform_set_drvdata(pdev, ccci);
+	schedule_delayed_work(&ccci->handshake_timeout_work,
+			      MT6797_CCCI_HANDSHAKE_TIMEOUT);
 	dev_info(&pdev->dev,
 		 "owns seven CLDMA queues; waiting for CCCI HS1 v2\n");
 	return 0;
@@ -1185,8 +1259,11 @@ static void mt6797_ccci_remove(struct platform_device *pdev)
 
 	disable_irq(ccci->cldma_irq);
 	disable_irq(ccci->wdt_irq);
-	mt6797_ccci_quiesce(ccci, -ESHUTDOWN);
 	napi_disable(&ccci->napi);
+	cancel_delayed_work_sync(&ccci->handshake_timeout_work);
+	cancel_work_sync(&ccci->hs1_work);
+	kfree_skb(xchg(&ccci->hs1_skb, NULL));
+	mt6797_ccci_quiesce(ccci, -ESHUTDOWN);
 }
 
 static const struct of_device_id mt6797_ccci_of_match[] = {

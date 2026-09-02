@@ -31,6 +31,7 @@
 #include <linux/soc/mediatek/mt6797-md1-boot-status-observe.h>
 #include <linux/soc/mediatek/mt6797-md1-cold-owner.h>
 #include <linux/soc/mediatek/mt6797-md1-emi-mpu.h>
+#include <linux/soc/mediatek/mt6797-md1-firmware-loader.h>
 #include <linux/soc/mediatek/mt6797-md1-lk-handoff.h>
 #include <linux/soc/mediatek/mt6797-md1-mpu-remap-plan.h>
 #include <linux/soc/mediatek/mt6797-md1-prerelease.h>
@@ -227,10 +228,16 @@ struct mt6797_md1_cold_owner_backend {
 
 static bool enable_experimental_md1_cold_owner;
 static bool enable_experimental_md1_boot_vector_release;
+static bool enable_experimental_md1_firmware_load;
 /* A failed post-observation transaction may have changed MD1 state. */
 static atomic_t mt6797_md1_cold_owner_fatal_latch = ATOMIC_INIT(0);
 static DEFINE_MUTEX(mt6797_md1_post_vector_evidence_lock);
 static struct mt6797_md1_post_vector_evidence mt6797_md1_post_vector_evidence;
+static DEFINE_MUTEX(mt6797_md1_stage2_lock);
+static struct device *mt6797_md1_stage2_dev;
+static struct mt6797_md1_mpu_remap_plan mt6797_md1_stage2_plan;
+static bool mt6797_md1_stage2_armed;
+static bool mt6797_md1_stage2_complete;
 module_param_named(enable_experimental_md1_cold_owner,
 			   enable_experimental_md1_cold_owner, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_md1_cold_owner,
@@ -239,6 +246,10 @@ module_param_named(enable_experimental_md1_boot_vector_release,
 			enable_experimental_md1_boot_vector_release, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_md1_boot_vector_release,
 	"allow the separately gated MT6797 MD1 WDT/boot-vector candidate (default: false)");
+module_param_named(enable_experimental_md1_firmware_load,
+			enable_experimental_md1_firmware_load, bool, 0400);
+MODULE_PARM_DESC(enable_experimental_md1_firmware_load,
+	"allow validated request_firmware images to replace the LK-loaded MD1 image");
 
 int mt6797_md1_cold_owner_post_vector_evidence_get(
 	struct mt6797_md1_post_vector_evidence *evidence)
@@ -252,6 +263,46 @@ int mt6797_md1_cold_owner_post_vector_evidence_get(
 	return evidence->observed ? 0 : -ENODATA;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_post_vector_evidence_get);
+
+void mt6797_md1_cold_owner_transport_fatal(int reason)
+{
+	if (reason < 0)
+		atomic_set(&mt6797_md1_cold_owner_fatal_latch, 1);
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_transport_fatal);
+
+int mt6797_md1_cold_owner_hs1_stage2(void)
+{
+	struct mt6797_md1_mpu_plan_entry entry;
+	int ret;
+
+	mutex_lock(&mt6797_md1_stage2_lock);
+	if (atomic_read(&mt6797_md1_cold_owner_fatal_latch)) {
+		ret = -EUCLEAN;
+		goto out;
+	}
+	if (!mt6797_md1_stage2_armed || !mt6797_md1_stage2_dev) {
+		ret = -ENODATA;
+		goto out;
+	}
+	if (mt6797_md1_stage2_complete) {
+		ret = -EALREADY;
+		goto out;
+	}
+	entry = mt6797_md1_stage2_plan.mpu[2];
+	ret = mt6797_md1_emi_mpu_apply(mt6797_md1_stage2_dev,
+		&mt6797_md1_stage2_plan, MT6797_MD1_EMI_MPU_STAGE2, &entry, 1);
+	if (ret) {
+		mt6797_md1_emi_mpu_latch_fatal();
+		atomic_set(&mt6797_md1_cold_owner_fatal_latch, 1);
+	} else {
+		mt6797_md1_stage2_complete = true;
+	}
+out:
+	mutex_unlock(&mt6797_md1_stage2_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_hs1_stage2);
 
 static void mt6797_md1_cold_post_vector_publish(
 	const struct mt6797_md1_post_vector_evidence *evidence)
@@ -342,7 +393,7 @@ static int mt6797_md1_cold_wait_bus_protect(
 	dev_warn(backend->dev,
 		 "MD1 bus protect %s wait timed out after %u polls: protect_sta1=%#x mask=%#x\n",
 		 asserted ? "assert" : "release", MT6797_MD1_MAX_POWER_POLLS,
-		 value, MT6797_MD1_INFRA_MD1_PROT_MASK);
+		 value, (u32)MT6797_MD1_INFRA_MD1_PROT_MASK);
 	return -ETIMEDOUT;
 }
 
@@ -880,6 +931,34 @@ static int mt6797_md1_cold_candidate_plan_get(
 	return 0;
 }
 
+static int mt6797_md1_cold_firmware_names_get(struct device *dev,
+				 struct mt6797_md1_firmware_names *names)
+{
+	const char *firmware[3] = {};
+	int count, ret;
+
+	count = of_property_count_strings(dev->of_node, "firmware-name");
+	if (count < 1 || count > ARRAY_SIZE(firmware))
+		return -EINVAL;
+	ret = device_property_read_string_array(dev, "firmware-name", firmware,
+						count);
+	if (ret != count)
+		return ret < 0 ? ret : -EINVAL;
+	names->md = firmware[0];
+	if (count > 1)
+		names->dsp = firmware[1];
+	if (count > 2)
+		names->arm7 = firmware[2];
+	return 0;
+}
+
+static int mt6797_md1_cold_firmware_verify(void *context)
+{
+	struct mt6797_md1_cold_state state;
+
+	return mt6797_md1_cold_verify(context, &state);
+}
+
 static int mt6797_md1_cold_apply_initial_mpu(struct device *dev,
 	const struct mt6797_md1_mpu_remap_plan *plan)
 {
@@ -1219,7 +1298,9 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 {
 	struct mt6797_md1_boot_status_evidence boot_status;
 	struct mt6797_md1_boot_status_preflight preflight;
+	struct mt6797_md1_mpu_remap_layout layout;
 	struct mt6797_md1_mpu_remap_plan plan;
+	struct mt6797_md1_firmware_names firmware_names = {};
 	struct mt6797_md1_cold_owner_backend *backend;
 	struct mt6797_md1_cold_owner *owner;
 	bool mpu_started = false;
@@ -1280,6 +1361,31 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	ret = mt6797_md1_cold_owner_init(owner, &mt6797_md1_cold_owner_ops, backend);
 	if (ret)
 		return ret;
+	if (device_property_read_bool(&pdev->dev,
+				      "mediatek,stage-mainline-firmware-load")) {
+		struct mt6797_md1_mpu_remap_plan loaded_plan;
+
+		if (!READ_ONCE(enable_experimental_md1_firmware_load))
+			return dev_err_probe(&pdev->dev, -EPERM,
+				"mainline firmware load needs its independent module gate\n");
+		ret = mt6797_md1_cold_firmware_names_get(&pdev->dev,
+						  &firmware_names);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+				"firmware-name must contain MD and any required DSP/ARM7 files\n");
+		ret = mt6797_md1_lk_handoff_layout_get(&layout);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+				"validated MD1 memory layout unavailable\n");
+		ret = mt6797_md1_firmware_load(&pdev->dev, &firmware_names, &layout,
+						&plan,
+						mt6797_md1_cold_firmware_verify, backend,
+						&loaded_plan);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+				"validated MD1 firmware load failed before release\n");
+		plan = loaded_plan;
+	}
 	preflight = (struct mt6797_md1_boot_status_preflight) {
 		.lk_image_loaded = true,
 		.boot_status_observed = boot_status.observed,
@@ -1312,6 +1418,12 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 		&backend->passive_evidence);
 	if (ret)
 		goto out_fatal;
+	mutex_lock(&mt6797_md1_stage2_lock);
+	mt6797_md1_stage2_dev = &pdev->dev;
+	mt6797_md1_stage2_plan = plan;
+	mt6797_md1_stage2_complete = false;
+	mt6797_md1_stage2_armed = true;
+	mutex_unlock(&mt6797_md1_stage2_lock);
 	schedule_work(&backend->passive_observe_work);
 
 	platform_set_drvdata(pdev, owner);

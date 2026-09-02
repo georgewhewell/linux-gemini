@@ -57,29 +57,46 @@ relative to ``drivers/misc/mediatek/eccci`` unless otherwise stated.
   HS1; a 16-byte frame requests the legacy runtime block and an 88-byte frame
   requests feature-negotiated v2 runtime data.  A subsequent control message
   zero is HS2 and makes data/control ports ready.
+* ``port_proxy.c:1636-1659`` calls
+  ``ccci_set_mem_access_protection_second_stage()`` after decoding HS1 and
+  before sending AP runtime data.  ``mt6797/ccci_platform.c:579-605`` shows
+  that this rewrites only CHECK_HEADER region 2 / EMI region 13 with its final
+  permission.  It cannot be skipped merely because LK programmed that tuple
+  before stage one temporarily replaced it.
 * ``ccci_core.h:309-402`` defines the v2 feature-query and runtime-feature
   records.  ``ccci_modem.c:592-851`` validates the query patterns, negotiates
   each feature, and writes AP runtime records into shared memory.
 * ``arch/arm64/boot/dts/mt6797.dtsi:1782-1817`` supplies six register windows,
   CLDMA/CCIF/WDT interrupts 265/147/266, capability 6 and a 1 MiB MD1 shared
   memory requirement.
+* ``../ccci_util/ccci_util_lib_load_img.c:729-873`` implements the Linux
+  ``request_firmware()`` fallback for MD, DSP and ARM7 split images.  Lines
+  923-946 and 1005-1019 define the optional 512-byte partition wrapper; lines
+  424-449 bind the trailing CHECK_HEADER ``md_img_size`` to the loaded image.
+  ``modem_cldma.c:2064-2108`` places auxiliaries only at header-supplied offsets
+  before MPU, power and boot-vector release.
 
 Driver boundaries
 -----------------
 
 The implementation is divided into four ownership layers:
 
-1. The MD1 lifecycle owner validates the LK-loaded image and CCCI carveouts,
-   establishes MPU/remap, powers MD1 and releases its boot vector.  Transport
-   is allowed to attach only after a positive post-vector activity token.
+1. The MD1 lifecycle owner validates the LK-loaded image and CCCI carveouts.
+   Its independently gated ``firmware-name`` path can instead request and
+   validate a complete MD image plus every header-required DSP/ARM7 image.  It
+   rechecks the reset-held proof after firmware acquisition, clears the MD
+   reservation, copies only wrapper-declared bytes, then establishes MPU/remap,
+   powers MD1 and releases its boot vector.  Transport is allowed to attach
+   only after a positive post-vector activity token.
 2. The CLDMA transport owns the AP-side register windows, IRQ and coherent GPD
    rings.  It uses DMA API mappings, per-TX-ring locks and NAPI for RX/TX
    completion.  Descriptor contents are published before HWO with ``dma_wmb``;
    completion reads HWO before consuming descriptor fields with ``dma_rmb``.
 3. The CCCI router validates lengths and channels, performs sequence tracking,
-   completes HS1/HS2, and routes payloads.  Unknown channels are counted and
-   dropped; they are never surfaced through a generic private character
-   device.
+   completes HS1/HS2, and routes payloads.  HS1 runs in sleepable context so
+   the final one-way region-13 secure SET completes before the runtime reply.
+   Unknown channels are counted and dropped; they are never surfaced through a
+   generic private character device.
 4. The WWAN frontend exposes UART2 as ``WWAN_PORT_AT`` and CCMNI sessions as
    point-to-point ``ARPHRD_NONE`` links.  Link identifiers map directly to
    firmware PDP contexts, so standard WWAN rtnetlink creates and removes
@@ -88,12 +105,13 @@ The implementation is divided into four ownership layers:
 Failure model
 -------------
 
-Malformed CCCI or GPD lengths are isolated to the packet and counted.  A CLDMA
-error or MD WDT event masks every queue, stops netdev carrier and prevents new
-TX.  Rings are reclaimed only after DMA is stopped.  Restart is delegated to
-the lifecycle owner because CLDMA cannot safely infer power, remap, firmware or
-MPU state.  A recovery transaction must re-establish those prerequisites,
-reinitialize every descriptor, then repeat HS1/HS2 before carrier returns.
+Malformed CCCI or GPD lengths are isolated to the packet and counted.  A
+duplicate or invalid HS1, a 30-second HS2 timeout, CLDMA error, region-13 SET
+failure or MD WDT event masks every queue, stops netdev carrier and prevents new
+TX.  The lifecycle owner latches every post-release failure: the source does
+not prove that an in-boot reset can safely undo power, remap and one-way secure
+MPU state.  Recovery therefore requires a platform reset, followed by firmware
+validation, descriptor reinitialization and a fresh HS1/HS2 exchange.
 
 Known hardware-validation gaps
 -------------------------------
@@ -102,6 +120,10 @@ The installed SIM is expired, so successful registration and packet service
 cannot currently be used as gates.  Hardware validation must still prove
 CLDMA interrupt polarity, all queue head/current transitions, HS1 v2 contents,
 AT command/response flow, raw IPv4/IPv6 delivery, WDT quiesce and a full
-lifecycle-owner recovery.  eSIM support cannot be claimed until the modem's AT
-command set and eUICC presence are identified from real responses; the kernel
-interface does not assume either.
+lifecycle-owner recovery.  The vendor SIM switch at
+``drivers/misc/mediatek/ssw/ssw_single_v2/sim_switch.c:168-193`` proves only
+physical pinctrl routing to MD1.  No EID, eUICC profile, LPA or eSIM operation
+was found in the vendor or Gemini userspace sources.  eSIM support therefore
+cannot be claimed until ``WWAN_PORT_AT`` answers the established 3GPP logical
+channel/APDU commands and an LPA can read an EID.  A failed capability probe
+must leave ordinary physical-SIM ModemManager operation unchanged.

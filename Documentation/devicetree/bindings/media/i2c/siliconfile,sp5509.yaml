@@ -63,8 +63,10 @@ properties:
               - const: 2
 
           link-frequencies:
+            minItems: 3
+            maxItems: 3
             items:
-              - const: 440000000
+              enum: [440000000, 220000000, 110000000]
 
         required:
           - data-lanes
@@ -110,7 +112,8 @@ examples:
                 sp5509_out: endpoint {
                     remote-endpoint = <&seninf_in>;
                     data-lanes = <1 2>;
-                    link-frequencies = /bits/ 64 <440000000>;
+                    link-frequencies = /bits/ 64 <440000000 220000000
+                                                       110000000>;
                 };
             };
         };

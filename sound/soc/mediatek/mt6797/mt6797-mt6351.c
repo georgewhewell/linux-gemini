@@ -6,6 +6,7 @@
 // Author: KaiChieh Chuang <kaichieh.chuang@mediatek.com>
 
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <sound/soc.h>
 
 #include "mt6797-afe-common.h"
@@ -181,14 +182,80 @@ static struct snd_soc_card mt6797_mt6351_card = {
 	.num_links = ARRAY_SIZE(mt6797_mt6351_dai_links),
 };
 
+static int mt6797_mt6351_init_card(struct device *dev,
+				   struct snd_soc_card **cardp)
+{
+	struct snd_soc_card *card;
+	struct snd_soc_dai_link *dai_links;
+	unsigned int num_links = ARRAY_SIZE(mt6797_mt6351_dai_links);
+	int i;
+
+	card = devm_kmemdup(dev, &mt6797_mt6351_card, sizeof(*card), GFP_KERNEL);
+	if (!card)
+		return -ENOMEM;
+
+	dai_links = devm_kmemdup_array(dev, mt6797_mt6351_dai_links,
+				       num_links,
+				       sizeof(*dai_links), GFP_KERNEL);
+	if (!dai_links)
+		return -ENOMEM;
+
+	card->dai_link = dai_links;
+	for (i = 0; i < card->num_links; i++) {
+		struct snd_soc_dai_link *dai_link = &dai_links[i];
+
+		dai_link->cpus = devm_kmemdup_array(dev, dai_link->cpus,
+						    dai_link->num_cpus,
+						    sizeof(*dai_link->cpus),
+						    GFP_KERNEL);
+		dai_link->codecs = devm_kmemdup_array(dev, dai_link->codecs,
+						      dai_link->num_codecs,
+						      sizeof(*dai_link->codecs),
+						      GFP_KERNEL);
+		dai_link->platforms = devm_kmemdup_array(dev,
+							 dai_link->platforms,
+							 dai_link->num_platforms,
+							 sizeof(*dai_link->platforms),
+							 GFP_KERNEL);
+		if (!dai_link->cpus || !dai_link->codecs ||
+		    !dai_link->platforms)
+			return -ENOMEM;
+	}
+
+	*cardp = card;
+	return 0;
+}
+
 static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 {
-	struct snd_soc_card *card = &mt6797_mt6351_card;
+	struct snd_soc_card *card;
 	struct device_node *platform_node, *codec_node;
 	struct snd_soc_dai_link *dai_link;
 	int ret, i;
 
+	ret = mt6797_mt6351_init_card(&pdev->dev, &card);
+	if (ret)
+		return ret;
+
 	card->dev = &pdev->dev;
+
+	ret = snd_soc_of_parse_card_name(card, "model");
+	if (ret)
+		return ret;
+
+	if (of_property_present(pdev->dev.of_node, "audio-widgets")) {
+		ret = snd_soc_of_parse_audio_simple_widgets(card, "audio-widgets");
+		if (ret)
+			return ret;
+	}
+
+	if (of_property_present(pdev->dev.of_node, "audio-routing")) {
+		ret = snd_soc_of_parse_audio_routing(card, "audio-routing");
+		if (ret)
+			return ret;
+
+		card->fully_routed = true;
+	}
 
 	platform_node = of_parse_phandle(pdev->dev.of_node,
 					 "mediatek,platform", 0);
@@ -252,4 +319,3 @@ MODULE_DESCRIPTION("MT6797 MT6351 ALSA SoC machine driver");
 MODULE_AUTHOR("KaiChieh Chuang <kaichieh.chuang@mediatek.com>");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("mt6797 mt6351 soc card");
-

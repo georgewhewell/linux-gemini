@@ -376,6 +376,7 @@ with no padding between each component. A group of 4 components are stored over
 .. _V4L2-PIX-FMT-NV12M-8L128:
 .. _V4L2-PIX-FMT-NV12-8L128:
 .. _V4L2-PIX-FMT-MM21:
+.. _V4L2-PIX-FMT-MS21:
 
 Tiled NV12
 ----------
@@ -444,6 +445,11 @@ in 16x16 tiles. The line stride must be aligned to a multiple of 16 and the
 image height must be aligned to a multiple of 32. The number of luma and chroma
 tiles are identical, even though the tile size differ. The image is formed of
 two non-contiguous planes.
+
+``V4L2_PIX_FMT_MS21`` has the same luma and chroma tile layout as
+``V4L2_PIX_FMT_MM21``, but stores both planes in one memory. The luma plane
+starts at the beginning of the memory and the chroma plane follows it
+immediately.
 
 
 .. _V4L2-PIX-FMT-NV15-4L4:

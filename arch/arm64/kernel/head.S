@@ -38,6 +38,11 @@
 
 #include "efi-header.S"
 
+#ifdef CONFIG_ARM64_MT6797_A72_SMPEN
+#define SYS_CORTEX_A72_ECTLR_EL1		sys_reg(3, 1, 15, 2, 1)
+#define CORTEX_A72_ECTLR_SMPEN		(1 << 6)
+#endif
+
 #if (PAGE_OFFSET & 0x1fffff) != 0
 #error PAGE_OFFSET must be at least 2MB aligned
 #endif
@@ -355,6 +360,24 @@ SYM_FUNC_END(secondary_holding_pen)
 SYM_FUNC_START(secondary_entry)
 	mov	x0, xzr
 	bl	init_kernel_el			// w0=cpu_boot_mode
+#ifdef CONFIG_ARM64_MT6797_A72_SMPEN
+	/*
+	 * TF-A's Cortex-A72 reset function sets CPUECTLR_EL1.SMPEN before
+	 * entering the normal world. Repeat that idempotent prerequisite here
+	 * for the MT6797 PSCI path, before __cpu_setup enables the MMU/caches.
+	 */
+	mrs	x1, midr_el1
+	mov_q	x2, MIDR_CPU_MODEL_MASK
+	and	x1, x1, x2
+	mov_q	x2, MIDR_CORTEX_A72
+	cmp	x1, x2
+	b.ne	.Lmt6797_a72_smpen_done
+	mrs_s	x1, SYS_CORTEX_A72_ECTLR_EL1
+	orr	x1, x1, #CORTEX_A72_ECTLR_SMPEN
+	msr_s	SYS_CORTEX_A72_ECTLR_EL1, x1
+	isb
+.Lmt6797_a72_smpen_done:
+#endif
 	b	secondary_startup
 SYM_FUNC_END(secondary_entry)
 

@@ -17,7 +17,8 @@ int mt6797_wifi_gen3_build_key_cmd(u8 *buf, size_t buf_len, u8 sequence,
 				   bool add, bool pairwise, const u8 *peer,
 				   u8 key_index, u8 wlan_index,
 				   enum mt6797_wifi_gen3_cipher cipher,
-				   const u8 *key, size_t key_len);
+				   const u8 *key, size_t key_len,
+				   const u8 *rsc, size_t rsc_len);
 
 int mt6797_wifi_gen3_build_default_key_cmd(u8 *buf, size_t buf_len,
 					   u8 sequence, u8 key_index,

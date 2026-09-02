@@ -10,6 +10,8 @@ static const u8 test_key[16] = {
 	0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
 };
 
+static const u8 test_rsc[6] = { 0x06, 0x05, 0x04, 0x03, 0x02, 0x01 };
+
 static const u8 expected_pairwise_cmd[MT6797_WIFI_GEN3_KEY_CMD_LEN] = {
 	0x48, 0x00, 0x00, 0x80, 0x07, 0x20, 0x01, 0x09,
 	0x01, 0x01, 0x01, 0x00, 0x02, 0x11, 0x22, 0x33,
@@ -31,7 +33,7 @@ static void mt6797_wifi_gen3_pairwise_ccmp_test(struct kunit *test)
 	ret = mt6797_wifi_gen3_build_key_cmd(cmd, sizeof(cmd), 9, true, true,
 					     test_peer, 0, 1,
 					     MT6797_WIFI_GEN3_CIPHER_CCMP,
-					     test_key, sizeof(test_key));
+					     test_key, sizeof(test_key), NULL, 0);
 	KUNIT_ASSERT_EQ(test, ret, (int)sizeof(cmd));
 	KUNIT_EXPECT_MEMEQ(test, cmd, expected_pairwise_cmd, sizeof(cmd));
 }
@@ -44,13 +46,29 @@ static void mt6797_wifi_gen3_igtk_test(struct kunit *test)
 	ret = mt6797_wifi_gen3_build_key_cmd(cmd, sizeof(cmd), 10, true, false,
 					     test_peer, 4, 0,
 					     MT6797_WIFI_GEN3_CIPHER_BIP,
-					     test_key, sizeof(test_key));
+					     test_key, sizeof(test_key), NULL, 0);
 	KUNIT_ASSERT_EQ(test, ret, (int)sizeof(cmd));
 	KUNIT_EXPECT_EQ(test, cmd[9], (u8)0);
 	KUNIT_EXPECT_EQ(test, cmd[10], (u8)0);
 	KUNIT_EXPECT_EQ(test, cmd[19], (u8)MT6797_WIFI_GEN3_CIPHER_BIP);
 	KUNIT_EXPECT_EQ(test, cmd[20], (u8)4);
 	KUNIT_EXPECT_EQ(test, cmd[22], (u8)0);
+}
+
+static void mt6797_wifi_gen3_rsc_test(struct kunit *test)
+{
+	u8 cmd[MT6797_WIFI_GEN3_KEY_CMD_LEN];
+	u8 zero[10] = { };
+	int ret;
+
+	ret = mt6797_wifi_gen3_build_key_cmd(cmd, sizeof(cmd), 10, true,
+					     false, test_peer, 2, 0,
+					     MT6797_WIFI_GEN3_CIPHER_CCMP,
+					     test_key, sizeof(test_key),
+					     test_rsc, sizeof(test_rsc));
+	KUNIT_ASSERT_EQ(test, ret, (int)sizeof(cmd));
+	KUNIT_EXPECT_MEMEQ(test, cmd + 56, test_rsc, sizeof(test_rsc));
+	KUNIT_EXPECT_MEMEQ(test, cmd + 62, zero, sizeof(zero));
 }
 
 static void mt6797_wifi_gen3_rejects_invalid_keys_test(struct kunit *test)
@@ -61,17 +79,22 @@ static void mt6797_wifi_gen3_rejects_invalid_keys_test(struct kunit *test)
 	ret = mt6797_wifi_gen3_build_key_cmd(cmd, sizeof(cmd), 1, true, true,
 					     test_peer, 1, 1,
 					     MT6797_WIFI_GEN3_CIPHER_CCMP,
-					     test_key, sizeof(test_key));
+					     test_key, sizeof(test_key), NULL, 0);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 	ret = mt6797_wifi_gen3_build_key_cmd(cmd, sizeof(cmd), 1, true, false,
 					     test_peer, 4, 0,
 					     MT6797_WIFI_GEN3_CIPHER_CCMP,
-					     test_key, sizeof(test_key));
+					     test_key, sizeof(test_key), NULL, 0);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 	ret = mt6797_wifi_gen3_build_key_cmd(cmd, sizeof(cmd), 1, true, false,
 					     test_peer, 1, 0,
 					     MT6797_WIFI_GEN3_CIPHER_BIP,
-					     test_key, sizeof(test_key));
+					     test_key, sizeof(test_key), NULL, 0);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	ret = mt6797_wifi_gen3_build_key_cmd(cmd, sizeof(cmd), 1, true, false,
+					     test_peer, 1, 0,
+					     MT6797_WIFI_GEN3_CIPHER_CCMP,
+					     test_key, sizeof(test_key), test_rsc, 17);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 }
 
@@ -84,7 +107,7 @@ static void mt6797_wifi_gen3_remove_and_default_test(struct kunit *test)
 	ret = mt6797_wifi_gen3_build_key_cmd(key_cmd, sizeof(key_cmd), 11,
 					     false, false, test_peer, 4, 0,
 					     MT6797_WIFI_GEN3_CIPHER_NONE,
-					     NULL, 0);
+					     NULL, 0, NULL, 0);
 	KUNIT_ASSERT_EQ(test, ret, (int)sizeof(key_cmd));
 	KUNIT_EXPECT_EQ(test, key_cmd[8], (u8)0);
 	KUNIT_EXPECT_EQ(test, key_cmd[19], (u8)0);
@@ -101,6 +124,7 @@ static void mt6797_wifi_gen3_remove_and_default_test(struct kunit *test)
 static struct kunit_case mt6797_wifi_gen3_wire_cases[] = {
 	KUNIT_CASE(mt6797_wifi_gen3_pairwise_ccmp_test),
 	KUNIT_CASE(mt6797_wifi_gen3_igtk_test),
+	KUNIT_CASE(mt6797_wifi_gen3_rsc_test),
 	KUNIT_CASE(mt6797_wifi_gen3_rejects_invalid_keys_test),
 	KUNIT_CASE(mt6797_wifi_gen3_remove_and_default_test),
 	{}

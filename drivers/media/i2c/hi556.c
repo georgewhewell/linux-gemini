@@ -7,6 +7,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/unaligned.h>
@@ -20,7 +21,9 @@
 #define HI556_REG_VALUE_24BIT		3
 
 #define HI556_LINK_FREQ_437MHZ		437000000ULL
+#define SP5509_LINK_FREQ_440MHZ		440000000ULL
 #define HI556_MCLK			19200000
+#define SP5509_MCLK			24000000
 #define HI556_DATA_LANES		2
 #define HI556_RGB_DEPTH			10
 
@@ -76,7 +79,7 @@
 #define HI556_PIXEL_ARRAY_HEIGHT	1944U
 
 enum {
-	HI556_LINK_FREQ_437MHZ_INDEX,
+	HI556_LINK_FREQ_INDEX,
 };
 
 struct hi556_reg {
@@ -87,10 +90,6 @@ struct hi556_reg {
 struct hi556_reg_list {
 	u32 num_of_regs;
 	const struct hi556_reg *regs;
-};
-
-struct hi556_link_freq_config {
-	const struct hi556_reg_list reg_list;
 };
 
 struct hi556_mode {
@@ -119,10 +118,21 @@ struct hi556_mode {
 	const struct hi556_reg_list reg_list;
 };
 
+struct hi556_config {
+	const struct hi556_reg_list global_regs;
+	const struct hi556_mode *modes;
+	u32 num_modes;
+	const s64 *link_freq_menu_items;
+	u32 num_link_freqs;
+	unsigned long mclk;
+	u32 power_delay_us;
+};
+
 #define to_hi556(_sd) container_of(_sd, struct hi556, sd)
 
-//SENSOR_INITIALIZATION
-static const struct hi556_reg mipi_data_rate_874mbps[] = {
+/* Sensor initialization. */
+/* Firmware sequencer shared by HI556 and the SP5509 module. */
+static const struct hi556_reg hi556_common_regs[] = {
 	{0x0e00, 0x0102},
 	{0x0e02, 0x0102},
 	{0x0e0c, 0x0100},
@@ -272,7 +282,14 @@ static const struct hi556_reg mipi_data_rate_874mbps[] = {
 	{0x3022, 0x140f},
 	{0x3024, 0x0040},
 	{0x3026, 0x000f},
+};
 
+static const struct hi556_reg_list hi556_common_reg_list = {
+	.num_of_regs = ARRAY_SIZE(hi556_common_regs),
+	.regs = hi556_common_regs,
+};
+
+static const struct hi556_reg hi556_global_regs[] = {
 	{0x0b00, 0x0000},
 	{0x0b02, 0x0045},
 	{0x0b04, 0xb405},
@@ -348,6 +365,85 @@ static const struct hi556_reg mipi_data_rate_874mbps[] = {
 	{0x0a1a, 0x0800},
 };
 
+static const struct hi556_reg sp5509_global_regs[] = {
+	{0x0b00, 0x0000},
+	{0x0b02, 0x0045},
+	{0x0b04, 0xb405},
+	{0x0b06, 0xc403},
+	{0x0b08, 0x0081},
+	{0x0b0a, 0x8252},
+	{0x0b0c, 0xf814},
+	{0x0b0e, 0xc618},
+	{0x0b10, 0xa828},
+	{0x0b12, 0x002c},
+	{0x0b14, 0x4068},
+	{0x0b16, 0x0000},
+	{0x0f30, 0x6e25},
+	{0x0f32, 0x7067},
+	{0x0954, 0x0009},
+	{0x0956, 0x0000},
+	{0x0958, 0xff80},
+	{0x095a, 0x5140},
+	{0x0c00, 0x1111},
+	{0x0c02, 0x0011},
+	{0x0c04, 0x0000},
+	{0x0c06, 0x0200},
+	{0x0c10, 0x0040},
+	{0x0c12, 0x0040},
+	{0x0c14, 0x0040},
+	{0x0c16, 0x0040},
+	{0x0a10, 0x4000},
+	{0x0c08, 0x01c0},
+	{0x0c0a, 0x01c0},
+	{0x0c0c, 0x01c0},
+	{0x0c0e, 0x01c0},
+	{0x3068, 0xf800},
+	{0x306a, 0xf876},
+	{0x006c, 0x0000},
+	{0x005e, 0x0200},
+	{0x000e, 0x0200},
+	{0x0e0a, 0x0001},
+	{0x004a, 0x0100},
+	{0x004c, 0x0000},
+	{0x004e, 0x0100},
+	{0x000c, 0x0022},
+	{0x0008, 0x0b00},
+	{0x005a, 0x0202},
+	{0x0012, 0x000e},
+	{0x0018, 0x0a31},
+	{0x0022, 0x0008},
+	{0x0028, 0x0017},
+	{0x0024, 0x0028},
+	{0x002a, 0x002d},
+	{0x0026, 0x0030},
+	{0x002c, 0x07c7},
+	{0x002e, 0x1111},
+	{0x0030, 0x1111},
+	{0x0032, 0x1111},
+	{0x0006, 0x07bc},
+	{0x0a22, 0x0000},
+	{0x0a12, 0x0a20},
+	{0x0a14, 0x0798},
+	{0x003e, 0x0000},
+	{0x0074, 0x080e},
+	{0x0070, 0x0407},
+	{0x0002, 0x0000},
+	{0x0a02, 0x0100},
+	{0x0a24, 0x0100},
+	{0x0046, 0x0000},
+	{0x0076, 0x0000},
+	{0x0060, 0x0000},
+	{0x0062, 0x0530},
+	{0x0064, 0x0500},
+	{0x0066, 0x0530},
+	{0x0068, 0x0500},
+	{0x0122, 0x0300},
+	{0x015a, 0xff08},
+	{0x0804, 0x0200},
+	{0x005c, 0x0182},
+	{0x0a1a, 0x0800},
+};
+
 static const struct hi556_reg mode_2592x1944_regs[] = {
 	{0x0a00, 0x0000},
 	{0x0b0a, 0x8252},
@@ -391,6 +487,44 @@ static const struct hi556_reg mode_2592x1944_regs[] = {
 	{0x091c, 0x0f09},
 	{0x091e, 0x0a00},
 	{0x0958, 0xbb80},
+};
+
+static const struct hi556_reg sp5509_mode_2592x1944_regs[] = {
+	{0x0b0a, 0x8252},
+	{0x0f30, 0x6e25},
+	{0x0f32, 0x7067},
+	{0x004a, 0x0100},
+	{0x004c, 0x0000},
+	{0x000c, 0x0022},
+	{0x0008, 0x0b00},
+	{0x005a, 0x0202},
+	{0x0012, 0x000e},
+	{0x0018, 0x0a31},
+	{0x0022, 0x0008},
+	{0x0028, 0x0017},
+	{0x0024, 0x0028},
+	{0x002a, 0x002d},
+	{0x0026, 0x0030},
+	{0x002c, 0x07c7},
+	{0x002e, 0x1111},
+	{0x0030, 0x1111},
+	{0x0032, 0x1111},
+	{0x0006, 0x0823},
+	{0x0a22, 0x0000},
+	{0x0a12, 0x0a20},
+	{0x0a14, 0x0798},
+	{0x003e, 0x0000},
+	{0x0804, 0x0200},
+	{0x0a04, 0x0148},
+	{0x090c, 0x0fdc},
+	{0x090e, 0x002d},
+	{0x0902, 0x4319},
+	{0x0914, 0xc10a},
+	{0x0916, 0x071f},
+	{0x0918, 0x0408},
+	{0x091a, 0x0c0d},
+	{0x091c, 0x0f09},
+	{0x091e, 0x0a00},
 };
 
 static const struct hi556_reg mode_2592x1444_regs[] = {
@@ -537,17 +671,12 @@ static const char * const hi556_test_pattern_menu[] = {
 	"Slant Pattern",
 };
 
-static const s64 link_freq_menu_items[] = {
+static const s64 hi556_link_freq_menu_items[] = {
 	HI556_LINK_FREQ_437MHZ,
 };
 
-static const struct hi556_link_freq_config link_freq_configs[] = {
-	[HI556_LINK_FREQ_437MHZ_INDEX] = {
-		.reg_list = {
-			.num_of_regs = ARRAY_SIZE(mipi_data_rate_874mbps),
-			.regs = mipi_data_rate_874mbps,
-		}
-	}
+static const s64 sp5509_link_freq_menu_items[] = {
+	SP5509_LINK_FREQ_440MHZ,
 };
 
 static const struct hi556_mode supported_modes[] = {
@@ -567,7 +696,7 @@ static const struct hi556_mode supported_modes[] = {
 			.num_of_regs = ARRAY_SIZE(mode_2592x1944_regs),
 			.regs = mode_2592x1944_regs,
 		},
-		.link_freq_index = HI556_LINK_FREQ_437MHZ_INDEX,
+		.link_freq_index = HI556_LINK_FREQ_INDEX,
 	},
 	{
 		.width = HI556_PIXEL_ARRAY_WIDTH,
@@ -585,7 +714,7 @@ static const struct hi556_mode supported_modes[] = {
 			.num_of_regs = ARRAY_SIZE(mode_2592x1444_regs),
 			.regs = mode_2592x1444_regs,
 		},
-		.link_freq_index = HI556_LINK_FREQ_437MHZ_INDEX,
+		.link_freq_index = HI556_LINK_FREQ_INDEX,
 	},
 	{
 		.width = 1296,
@@ -603,7 +732,7 @@ static const struct hi556_mode supported_modes[] = {
 			.num_of_regs = ARRAY_SIZE(mode_1296x972_regs),
 			.regs = mode_1296x972_regs,
 		},
-		.link_freq_index = HI556_LINK_FREQ_437MHZ_INDEX,
+		.link_freq_index = HI556_LINK_FREQ_INDEX,
 	},
 	{
 		.width = 1296,
@@ -621,8 +750,55 @@ static const struct hi556_mode supported_modes[] = {
 			.num_of_regs = ARRAY_SIZE(mode_1296x722_regs),
 			.regs = mode_1296x722_regs,
 		},
-		.link_freq_index = HI556_LINK_FREQ_437MHZ_INDEX,
+		.link_freq_index = HI556_LINK_FREQ_INDEX,
 	},
+};
+
+static const struct hi556_mode sp5509_modes[] = {
+	{
+		.width = HI556_PIXEL_ARRAY_WIDTH,
+		.height = HI556_PIXEL_ARRAY_HEIGHT,
+		.crop = {
+			.left = HI556_PIXEL_ARRAY_LEFT,
+			.top = HI556_PIXEL_ARRAY_TOP,
+			.width = HI556_PIXEL_ARRAY_WIDTH,
+			.height = HI556_PIXEL_ARRAY_HEIGHT,
+		},
+		.fll_def = 0x0823,
+		.fll_min = 0x0823,
+		.llp = 0x0b00,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(sp5509_mode_2592x1944_regs),
+			.regs = sp5509_mode_2592x1944_regs,
+		},
+		.link_freq_index = HI556_LINK_FREQ_INDEX,
+	},
+};
+
+static const struct hi556_config hi556_config = {
+	.global_regs = {
+		.num_of_regs = ARRAY_SIZE(hi556_global_regs),
+		.regs = hi556_global_regs,
+	},
+	.modes = supported_modes,
+	.num_modes = ARRAY_SIZE(supported_modes),
+	.link_freq_menu_items = hi556_link_freq_menu_items,
+	.num_link_freqs = ARRAY_SIZE(hi556_link_freq_menu_items),
+	.mclk = HI556_MCLK,
+	.power_delay_us = 5000,
+};
+
+static const struct hi556_config sp5509_config = {
+	.global_regs = {
+		.num_of_regs = ARRAY_SIZE(sp5509_global_regs),
+		.regs = sp5509_global_regs,
+	},
+	.modes = sp5509_modes,
+	.num_modes = ARRAY_SIZE(sp5509_modes),
+	.link_freq_menu_items = sp5509_link_freq_menu_items,
+	.num_link_freqs = ARRAY_SIZE(sp5509_link_freq_menu_items),
+	.mclk = SP5509_MCLK,
+	.power_delay_us = 10000,
 };
 
 static const char * const hi556_supply_names[] = {
@@ -649,6 +825,8 @@ struct hi556 {
 	struct gpio_desc *reset_gpio;
 	struct clk *clk;
 	struct regulator_bulk_data supplies[ARRAY_SIZE(hi556_supply_names)];
+	struct gpio_desc *powerdown_gpio;
+	const struct hi556_config *config;
 
 	/* Current mode */
 	const struct hi556_mode *cur_mode;
@@ -660,9 +838,10 @@ struct hi556 {
 	bool identified;
 };
 
-static u64 to_pixel_rate(u32 f_index)
+static u64 to_pixel_rate(const struct hi556 *hi556, u32 f_index)
 {
-	u64 pixel_rate = link_freq_menu_items[f_index] * 2 * HI556_DATA_LANES;
+	u64 pixel_rate = hi556->config->link_freq_menu_items[f_index] * 2 *
+			 HI556_DATA_LANES;
 
 	do_div(pixel_rate, HI556_RGB_DEPTH);
 
@@ -859,17 +1038,20 @@ static int hi556_init_controls(struct hi556 *hi556)
 	ctrl_hdlr->lock = &hi556->mutex;
 	hi556->link_freq = v4l2_ctrl_new_int_menu(ctrl_hdlr, &hi556_ctrl_ops,
 						  V4L2_CID_LINK_FREQ,
-					ARRAY_SIZE(link_freq_menu_items) - 1,
-					0, link_freq_menu_items);
+						hi556->config->num_link_freqs - 1,
+						hi556->cur_mode->link_freq_index,
+						hi556->config->link_freq_menu_items);
 	if (hi556->link_freq)
 		hi556->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	hi556->pixel_rate = v4l2_ctrl_new_std
 			    (ctrl_hdlr, &hi556_ctrl_ops,
 			     V4L2_CID_PIXEL_RATE, 0,
-			     to_pixel_rate(HI556_LINK_FREQ_437MHZ_INDEX),
+			     to_pixel_rate(hi556,
+					   hi556->cur_mode->link_freq_index),
 			     1,
-			     to_pixel_rate(HI556_LINK_FREQ_437MHZ_INDEX));
+			     to_pixel_rate(hi556,
+					   hi556->cur_mode->link_freq_index));
 	hi556->vblank = v4l2_ctrl_new_std(ctrl_hdlr, &hi556_ctrl_ops,
 					  V4L2_CID_VBLANK,
 					  hi556->cur_mode->fll_min -
@@ -999,17 +1181,28 @@ static int hi556_get_selection(struct v4l2_subdev *sd,
 static int hi556_start_streaming(struct hi556 *hi556)
 {
 	const struct hi556_reg_list *reg_list;
-	int link_freq_index, ret;
+	int ret;
 
 	ret = hi556_identify_module(hi556);
 	if (ret)
 		return ret;
 
-	link_freq_index = hi556->cur_mode->link_freq_index;
-	reg_list = &link_freq_configs[link_freq_index].reg_list;
+	ret = hi556_write_reg(hi556, HI556_REG_MODE_SELECT,
+			      HI556_REG_VALUE_16BIT, HI556_MODE_STANDBY);
+	if (ret)
+		return ret;
+
+	reg_list = &hi556_common_reg_list;
 	ret = hi556_write_reg_list(hi556, reg_list);
 	if (ret) {
-		dev_err(hi556->dev, "failed to set plls\n");
+		dev_err(hi556->dev, "failed to load firmware sequencer\n");
+		return ret;
+	}
+
+	reg_list = &hi556->config->global_regs;
+	ret = hi556_write_reg_list(hi556, reg_list);
+	if (ret) {
+		dev_err(hi556->dev, "failed to set global registers\n");
 		return ret;
 	}
 
@@ -1078,8 +1271,8 @@ static int hi556_set_format(struct v4l2_subdev *sd,
 	const struct hi556_mode *mode;
 	s32 vblank_def, h_blank;
 
-	mode = v4l2_find_nearest_size(supported_modes,
-				      ARRAY_SIZE(supported_modes), width,
+	mode = v4l2_find_nearest_size(hi556->config->modes,
+				      hi556->config->num_modes, width,
 				      height, fmt->format.width,
 				      fmt->format.height);
 
@@ -1091,7 +1284,8 @@ static int hi556_set_format(struct v4l2_subdev *sd,
 		hi556->cur_mode = mode;
 		__v4l2_ctrl_s_ctrl(hi556->link_freq, mode->link_freq_index);
 		__v4l2_ctrl_s_ctrl_int64(hi556->pixel_rate,
-					 to_pixel_rate(mode->link_freq_index));
+					 to_pixel_rate(hi556,
+						       mode->link_freq_index));
 
 		/* Update limits and set FPS to default */
 		vblank_def = mode->fll_def - mode->height;
@@ -1146,15 +1340,17 @@ static int hi556_enum_frame_size(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_frame_size_enum *fse)
 {
-	if (fse->index >= ARRAY_SIZE(supported_modes))
+	struct hi556 *hi556 = to_hi556(sd);
+
+	if (fse->index >= hi556->config->num_modes)
 		return -EINVAL;
 
 	if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
 		return -EINVAL;
 
-	fse->min_width = supported_modes[fse->index].width;
+	fse->min_width = hi556->config->modes[fse->index].width;
 	fse->max_width = fse->min_width;
-	fse->min_height = supported_modes[fse->index].height;
+	fse->min_height = hi556->config->modes[fse->index].height;
 	fse->max_height = fse->min_height;
 
 	return 0;
@@ -1166,7 +1362,7 @@ static int hi556_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	struct v4l2_rect *try_crop;
 
 	mutex_lock(&hi556->mutex);
-	hi556_assign_pad_format(&supported_modes[0],
+	hi556_assign_pad_format(&hi556->config->modes[0],
 				v4l2_subdev_state_get_format(fh->state, 0));
 
 	/* Initialize try_crop rectangle. */
@@ -1206,7 +1402,8 @@ static const struct v4l2_subdev_internal_ops hi556_internal_ops = {
 	.open = hi556_open,
 };
 
-static int hi556_check_hwcfg(struct device *dev)
+static int hi556_check_hwcfg(struct device *dev,
+			     const struct hi556_config *config)
 {
 	struct fwnode_handle *ep;
 	struct fwnode_handle *fwnode = dev_fwnode(dev);
@@ -1243,16 +1440,16 @@ static int hi556_check_hwcfg(struct device *dev)
 		goto check_hwcfg_error;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(link_freq_menu_items); i++) {
+	for (i = 0; i < config->num_link_freqs; i++) {
 		for (j = 0; j < bus_cfg.nr_of_link_frequencies; j++) {
-			if (link_freq_menu_items[i] ==
+			if (config->link_freq_menu_items[i] ==
 				bus_cfg.link_frequencies[j])
 				break;
 		}
 
 		if (j == bus_cfg.nr_of_link_frequencies) {
 			dev_err(dev, "no link frequency %lld supported\n",
-				link_freq_menu_items[i]);
+				config->link_freq_menu_items[i]);
 			ret = -EINVAL;
 			goto check_hwcfg_error;
 		}
@@ -1281,6 +1478,7 @@ static int hi556_suspend(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct hi556 *hi556 = to_hi556(sd);
 
+	gpiod_set_value_cansleep(hi556->powerdown_gpio, 1);
 	gpiod_set_value_cansleep(hi556->reset_gpio, 1);
 	regulator_bulk_disable(ARRAY_SIZE(hi556_supply_names),
 			       hi556->supplies);
@@ -1306,24 +1504,39 @@ static int hi556_resume(struct device *dev)
 		return ret;
 	}
 
+	if (hi556->reset_gpio || hi556->powerdown_gpio) {
+		usleep_range(hi556->config->power_delay_us,
+			     hi556->config->power_delay_us + 500);
+	}
+
 	if (hi556->reset_gpio) {
-		/* Assert reset for at least 2ms on back to back off-on */
-		usleep_range(2000, 2200);
 		gpiod_set_value_cansleep(hi556->reset_gpio, 0);
 	}
 
-	usleep_range(5000, 5500);
+	usleep_range(hi556->config->power_delay_us,
+		     hi556->config->power_delay_us + 500);
+
+	if (hi556->powerdown_gpio) {
+		gpiod_set_value_cansleep(hi556->powerdown_gpio, 0);
+		usleep_range(hi556->config->power_delay_us,
+			     hi556->config->power_delay_us + 500);
+	}
 	return 0;
 }
 
 static int hi556_probe(struct i2c_client *client)
 {
+	const struct hi556_config *config;
 	struct hi556 *hi556;
 	unsigned long freq;
 	bool full_power;
 	int i, ret;
 
-	ret = hi556_check_hwcfg(&client->dev);
+	config = device_get_match_data(&client->dev);
+	if (!config)
+		config = &hi556_config;
+
+	ret = hi556_check_hwcfg(&client->dev, config);
 	if (ret)
 		return ret;
 
@@ -1332,6 +1545,7 @@ static int hi556_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	hi556->dev = &client->dev;
+	hi556->config = config;
 
 	v4l2_i2c_subdev_init(&hi556->sd, client, &hi556_subdev_ops);
 
@@ -1341,13 +1555,21 @@ static int hi556_probe(struct i2c_client *client)
 		return dev_err_probe(hi556->dev, PTR_ERR(hi556->reset_gpio),
 				     "failed to get reset GPIO\n");
 
+	hi556->powerdown_gpio = devm_gpiod_get_optional(hi556->dev,
+							"powerdown",
+							GPIOD_OUT_HIGH);
+	if (IS_ERR(hi556->powerdown_gpio))
+		return dev_err_probe(hi556->dev,
+				     PTR_ERR(hi556->powerdown_gpio),
+				     "failed to get powerdown GPIO\n");
+
 	hi556->clk = devm_v4l2_sensor_clk_get(hi556->dev, "clk");
 	if (IS_ERR(hi556->clk))
 		return dev_err_probe(hi556->dev, PTR_ERR(hi556->clk),
 				     "failed to get clock\n");
 
 	freq = clk_get_rate(hi556->clk);
-	if (freq != HI556_MCLK)
+	if (freq != hi556->config->mclk)
 		return dev_err_probe(hi556->dev, -EINVAL,
 				     "external clock %lu is not supported\n",
 				     freq);
@@ -1378,7 +1600,7 @@ static int hi556_probe(struct i2c_client *client)
 	}
 
 	mutex_init(&hi556->mutex);
-	hi556->cur_mode = &supported_modes[0];
+	hi556->cur_mode = &hi556->config->modes[0];
 	ret = hi556_init_controls(hi556);
 	if (ret) {
 		dev_err(hi556->dev, "failed to init controls: %d\n", ret);
@@ -1437,10 +1659,17 @@ static const struct acpi_device_id hi556_acpi_ids[] = {
 MODULE_DEVICE_TABLE(acpi, hi556_acpi_ids);
 #endif
 
+static const struct of_device_id hi556_of_match[] = {
+	{ .compatible = "siliconfile,sp5509", .data = &sp5509_config },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, hi556_of_match);
+
 static struct i2c_driver hi556_i2c_driver = {
 	.driver = {
 		.name = "hi556",
 		.acpi_match_table = ACPI_PTR(hi556_acpi_ids),
+		.of_match_table = hi556_of_match,
 		.pm = pm_sleep_ptr(&hi556_pm_ops),
 	},
 	.probe = hi556_probe,
@@ -1451,5 +1680,5 @@ static struct i2c_driver hi556_i2c_driver = {
 module_i2c_driver(hi556_i2c_driver);
 
 MODULE_AUTHOR("Shawn Tu");
-MODULE_DESCRIPTION("Hynix HI556 sensor driver");
+MODULE_DESCRIPTION("Hynix HI556 and SiliconFile SP5509 sensor driver");
 MODULE_LICENSE("GPL v2");

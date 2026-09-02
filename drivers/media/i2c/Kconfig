@@ -111,10 +111,10 @@ config VIDEO_GC2145
 	  module will be called gc2145.
 
 config VIDEO_HI556
-	tristate "Hynix Hi-556 sensor support"
+	tristate "Hynix Hi-556 and SiliconFile SP5509 sensor support"
 	help
-	  This is a Video4Linux2 sensor driver for the Hynix
-	  Hi-556 camera.
+	  This is a Video4Linux2 sensor driver for the Hynix Hi-556
+	  camera sensor and compatible SiliconFile SP5509 modules.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called hi556.

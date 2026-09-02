@@ -14,7 +14,7 @@ static const u8 test_key[16] = {
 static const u8 test_rsc[6] = { 0x06, 0x05, 0x04, 0x03, 0x02, 0x01 };
 
 static const u8 expected_pairwise_cmd[MT6797_WIFI_GEN3_KEY_CMD_LEN] = {
-	0x48, 0x00, 0x00, 0x80, 0x07, 0x20, 0x01, 0x09,
+	0x48, 0x00, 0x00, 0x80, 0x07, 0xa0, 0x01, 0x09,
 	0x01, 0x01, 0x01, 0x00, 0x02, 0x11, 0x22, 0x33,
 	0x44, 0x55, 0x00, 0x04, 0x00, 0x10, 0x01, 0x00,
 	0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
@@ -22,7 +22,7 @@ static const u8 expected_pairwise_cmd[MT6797_WIFI_GEN3_KEY_CMD_LEN] = {
 };
 
 static const u8 expected_default_cmd[MT6797_WIFI_GEN3_DEFAULT_KEY_CMD_LEN] = {
-	0x0c, 0x00, 0x00, 0x80, 0x08, 0x20, 0x01, 0x0c,
+	0x0c, 0x00, 0x00, 0x80, 0x08, 0xa0, 0x01, 0x0c,
 	0x00, 0x02, 0x00, 0x01,
 };
 
@@ -129,11 +129,14 @@ static void mt6797_wifi_gen3_bss_info_test(struct kunit *test)
 	int ret;
 
 	ret = mt6797_wifi_gen3_build_bss_info_cmd(cmd, sizeof(cmd), 13, true,
-						  true, ssid, sizeof(ssid) - 1,
+						  true, 0x354f, 0x000f, 0,
+						  BIT(0) | BIT(1),
+						  ssid, sizeof(ssid) - 1,
 						  test_peer, 6);
 	KUNIT_ASSERT_EQ(test, ret, (int)sizeof(cmd));
 	KUNIT_EXPECT_EQ(test, get_unaligned_le16(cmd), (u16)sizeof(cmd));
 	KUNIT_EXPECT_EQ(test, cmd[4], (u8)0x12);
+	KUNIT_EXPECT_EQ(test, cmd[5], (u8)0xa0);
 	KUNIT_EXPECT_EQ(test, cmd[7], (u8)13);
 	KUNIT_EXPECT_EQ(test, cmd[9], (u8)0);
 	KUNIT_EXPECT_EQ(test, cmd[11], (u8)(sizeof(ssid) - 1));
@@ -149,14 +152,24 @@ static void mt6797_wifi_gen3_bss_info_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, cmd[95], (u8)0);
 
 	ret = mt6797_wifi_gen3_build_bss_info_cmd(cmd, sizeof(cmd), 14, false,
-						  false, NULL, 0, test_peer, 1);
+						  false, 0x354f, 0x000f, 0,
+						  BIT(0) | BIT(1), NULL, 0,
+						  test_peer, 1);
 	KUNIT_ASSERT_EQ(test, ret, (int)sizeof(cmd));
 	KUNIT_EXPECT_EQ(test, cmd[9], (u8)1);
 	KUNIT_EXPECT_EQ(test, cmd[61], (u8)0);
 	KUNIT_EXPECT_EQ(test, cmd[62], (u8)1);
 
 	ret = mt6797_wifi_gen3_build_bss_info_cmd(cmd, sizeof(cmd), 15, false,
-						  false, NULL, 0, test_peer, 0);
+						  false, 0x354f, 0x000f, 0,
+						  BIT(0) | BIT(1), NULL, 0,
+						  test_peer, 0);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+
+	ret = mt6797_wifi_gen3_build_bss_info_cmd(cmd, sizeof(cmd), 15, false,
+						  false, BIT(6), BIT(0), 1,
+						  BIT(1), NULL, 0,
+						  test_peer, 6);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 }
 

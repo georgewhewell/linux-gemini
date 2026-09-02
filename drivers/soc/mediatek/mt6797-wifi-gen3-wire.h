@@ -27,6 +27,8 @@ int mt6797_wifi_gen3_build_default_key_cmd(u8 *buf, size_t buf_len,
 
 int mt6797_wifi_gen3_build_bss_info_cmd(u8 *buf, size_t buf_len, u8 sequence,
 					bool connected, bool protected,
+					u16 rate_set, u16 basic_rate_set,
+					u8 non_ht_basic_phy, u8 phy_type_set,
 					const u8 *ssid, size_t ssid_len,
 					const u8 *bssid, u8 channel);
 

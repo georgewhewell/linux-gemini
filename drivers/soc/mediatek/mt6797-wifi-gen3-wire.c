@@ -10,7 +10,7 @@
 #include "mt6797-wifi-gen3-wire.h"
 
 #define MT6797_WIFI_GEN3_CMD_PQ_ID 0x8000U
-#define MT6797_WIFI_GEN3_CMD_PACKET_TYPE 0x20U
+#define MT6797_WIFI_GEN3_CMD_PACKET_TYPE 0xa0U
 #define MT6797_WIFI_GEN3_CMD_ADD_REMOVE_KEY 0x07U
 #define MT6797_WIFI_GEN3_CMD_DEFAULT_KEY 0x08U
 #define MT6797_WIFI_GEN3_CMD_SET_BSS_INFO 0x12U
@@ -105,11 +105,15 @@ EXPORT_SYMBOL_GPL(mt6797_wifi_gen3_build_default_key_cmd);
 
 int mt6797_wifi_gen3_build_bss_info_cmd(u8 *buf, size_t buf_len, u8 sequence,
 					bool connected, bool protected,
+					u16 rate_set, u16 basic_rate_set,
+					u8 non_ht_basic_phy, u8 phy_type_set,
 					const u8 *ssid, size_t ssid_len,
 					const u8 *bssid, u8 channel)
 {
 	if (!buf || buf_len < MT6797_WIFI_GEN3_BSS_INFO_CMD_LEN || !bssid ||
 	    ssid_len > IEEE80211_MAX_SSID_LEN || (ssid_len && !ssid) ||
+	    !rate_set || (basic_rate_set & rate_set) != basic_rate_set ||
+	    non_ht_basic_phy > 1 || !phy_type_set || (phy_type_set & ~0x3) ||
 	    channel < 1 || channel > 14)
 		return -EINVAL;
 
@@ -123,13 +127,13 @@ int mt6797_wifi_gen3_build_bss_info_cmd(u8 *buf, size_t buf_len, u8 sequence,
 	if (ssid_len)
 		memcpy(buf + 12, ssid, ssid_len);
 	memcpy(buf + 44, bssid, ETH_ALEN);
-	put_unaligned_le16(0x354f, buf + 52); /* RATE_SET_ERP */
-	put_unaligned_le16(0x000f, buf + 54); /* BASIC_RATE_SET_ERP */
+	put_unaligned_le16(rate_set, buf + 52);
+	put_unaligned_le16(basic_rate_set, buf + 54);
 	buf[56] = 0; /* AIS AP STA-record index */
-	buf[60] = 0; /* PHY_TYPE_HR_DSSS_INDEX */
+	buf[60] = non_ht_basic_phy;
 	buf[61] = protected ? 7 : 0; /* WPA2-PSK or open */
 	buf[62] = protected ? 6 : 1; /* AES or encryption disabled */
-	buf[63] = BIT(0) | BIT(1); /* HR-DSSS and ERP */
+	buf[63] = phy_type_set;
 	buf[66] = 0; /* AIS BMC WTBL index */
 	buf[76] = 0; /* RLM AIS BSS index */
 	buf[77] = 1; /* BAND_2G4 */

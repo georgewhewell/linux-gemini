@@ -11,4 +11,5 @@ mtk-vcodec-enc-y := venc/venc_vp8_if.o \
 		venc_drv_if.o \
 		venc_vpu_if.o \
 
-obj-$(CONFIG_VIDEO_MEDIATEK_VCODEC_KUNIT_TEST) += venc/venc_h264_mt6797_test.o
+obj-$(CONFIG_VIDEO_MEDIATEK_VCODEC_KUNIT_TEST) += venc/venc_h264_mt6797_test.o \
+		venc/venc_hevc_mt6797_test.o

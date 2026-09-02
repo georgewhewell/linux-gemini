@@ -480,28 +480,71 @@ void panfrost_gpu_power_on(struct panfrost_device *pfdev)
 		dev_err(pfdev->base.dev, "error powering up gpu tiler");
 }
 
+static void
+panfrost_gpu_log_poweroff_state(struct panfrost_device *pfdev, const char *phase)
+{
+	dev_info(pfdev->base.dev,
+		 "poweroff diagnostic phase=%s masks shader=%#llx tiler=%#llx l2=%#llx\n",
+		 phase, pfdev->features.shader_present,
+		 pfdev->features.tiler_present, pfdev->features.l2_present);
+	dev_info(pfdev->base.dev,
+		 "poweroff diagnostic phase=%s trans=%#x/%#x/%#x ready=%#x/%#x/%#x active=%#x/%#x/%#x\n",
+		 phase,
+		 gpu_read(pfdev, SHADER_PWRTRANS_LO),
+		 gpu_read(pfdev, TILER_PWRTRANS_LO),
+		 gpu_read(pfdev, L2_PWRTRANS_LO),
+		 gpu_read(pfdev, SHADER_READY_LO),
+		 gpu_read(pfdev, TILER_READY_LO),
+		 gpu_read(pfdev, L2_READY_LO),
+		 gpu_read(pfdev, SHADER_PWRACTIVE_LO),
+		 gpu_read(pfdev, TILER_PWRACTIVE_LO),
+		 gpu_read(pfdev, L2_PWRACTIVE_LO));
+	dev_info(pfdev->base.dev,
+		 "poweroff diagnostic phase=%s irq_raw=%#x fault=%#x status=%#x\n",
+		 phase,
+		 gpu_read(pfdev, GPU_INT_RAWSTAT),
+		 gpu_read(pfdev, GPU_FAULT_STATUS),
+		 gpu_read(pfdev, GPU_STATUS));
+}
+
 void panfrost_gpu_power_off(struct panfrost_device *pfdev)
 {
+	const char *phase;
 	int ret;
 	u32 val;
+
+	panfrost_gpu_log_poweroff_state(pfdev, "before");
 
 	gpu_write(pfdev, SHADER_PWROFF_LO, pfdev->features.shader_present);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + SHADER_PWRTRANS_LO,
 					 val, !val, 1, 2000);
-	if (ret)
+	if (ret) {
 		dev_err(pfdev->base.dev, "shader power transition timeout");
+		panfrost_gpu_log_poweroff_state(pfdev, "shader-timeout-2ms");
+
+		ret = readl_relaxed_poll_timeout(pfdev->iomem +
+						 SHADER_PWRTRANS_LO,
+						 val, !val, 1, 200000);
+		phase = ret ? "shader-stuck-after-200ms" :
+			      "shader-cleared-within-200ms";
+		panfrost_gpu_log_poweroff_state(pfdev, phase);
+	}
 
 	gpu_write(pfdev, TILER_PWROFF_LO, pfdev->features.tiler_present);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + TILER_PWRTRANS_LO,
 					 val, !val, 1, 2000);
-	if (ret)
+	if (ret) {
 		dev_err(pfdev->base.dev, "tiler power transition timeout");
+		panfrost_gpu_log_poweroff_state(pfdev, "tiler-timeout-2ms");
+	}
 
 	gpu_write(pfdev, L2_PWROFF_LO, pfdev->features.l2_present);
 	ret = readl_poll_timeout(pfdev->iomem + L2_PWRTRANS_LO,
 				 val, !val, 0, 2000);
-	if (ret)
+	if (ret) {
 		dev_err(pfdev->base.dev, "l2 power transition timeout");
+		panfrost_gpu_log_poweroff_state(pfdev, "l2-timeout-2ms");
+	}
 }
 
 void panfrost_gpu_suspend_irq(struct panfrost_device *pfdev)

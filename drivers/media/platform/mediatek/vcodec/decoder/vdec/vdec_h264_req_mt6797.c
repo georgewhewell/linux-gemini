@@ -46,6 +46,7 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	const struct v4l2_ctrl_h264_slice_params *slice;
 	const struct v4l2_ctrl_h264_sps *sps;
 	const struct v4l2_ctrl_h264_pps *pps;
+	struct mt6797_h264_barrel_plan barrel;
 	u32 sps_reg, pps_reg, slice_reg;
 	int ret;
 
@@ -69,8 +70,11 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	ret = mt6797_h264_validate_request(sps, pps, slice, dec);
 	if (ret)
 		return ret;
-	if (!slice->header_bit_size || slice->header_bit_size >= bs->size * 8)
-		return -EINVAL;
+	ret = mt6797_h264_barrel_plan(bs->dma_addr, bs->size,
+				      slice->header_bit_size,
+				      &barrel);
+	if (ret)
+		return ret;
 
 	/*
 	 * These words are independently recovered and unit tested.  Do not
@@ -82,8 +86,9 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	pps_reg = mt6797_h264_pps_reg(pps);
 	slice_reg = mt6797_h264_slice_reg(slice, false, false);
 	mtk_v4l2_vdec_dbg(3, inst->ctx,
-			  "direct register plan sps=%#x pps=%#x slice=%#x",
-			  sps_reg, pps_reg, slice_reg);
+			  "direct plan sps=%#x pps=%#x slice=%#x bs=%#x-%#x shift=%u/%u",
+			  sps_reg, pps_reg, slice_reg, barrel.fetch_start,
+			  barrel.fetch_end, barrel.shift_reads, barrel.final_shift);
 
 	return -EOPNOTSUPP;
 }

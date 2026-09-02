@@ -85,6 +85,63 @@ static void mt6797_h264_reject_layout_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_h264_buffer_layout(1920, 1089, &layout), -ERANGE);
 }
 
+static void mt6797_h264_barrel_plan_test(struct kunit *test)
+{
+	struct mt6797_h264_barrel_plan plan;
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_barrel_plan(0x12340000, 0x20000, 65,
+						      &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.start_addr, 0x12340000U);
+	KUNIT_EXPECT_EQ(test, plan.end_addr, 0x12360000U);
+	KUNIT_EXPECT_EQ(test, plan.fetch_start, 0x48d000U);
+	KUNIT_EXPECT_EQ(test, plan.fetch_end, 0x48d804U);
+	KUNIT_EXPECT_EQ(test, plan.shift_reads, 3U);
+	KUNIT_EXPECT_EQ(test, plan.final_shift, 1U);
+	KUNIT_EXPECT_EQ(test, mt6797_h264_barrel_shift_chunk(65), 32U);
+	KUNIT_EXPECT_EQ(test, mt6797_h264_barrel_shift_chunk(1), 1U);
+}
+
+static void mt6797_h264_reject_barrel_plan_test(struct kunit *test)
+{
+	struct mt6797_h264_barrel_plan plan;
+
+	KUNIT_EXPECT_EQ(test, mt6797_h264_barrel_plan(0x12340001, 0x1000, 8,
+						      &plan), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_h264_barrel_plan(0x12340000, 4, 32, &plan),
+			-ERANGE);
+}
+
+static void mt6797_h264_output_plan_test(struct kunit *test)
+{
+	struct mt6797_h264_buffer_layout layout;
+	struct mt6797_h264_output_plan plan;
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_buffer_layout(1920, 1080, &layout), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_h264_output_plan(0x10000000, 0x101fe000,
+						      0x20000000, &layout,
+						      &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.y_addr_512, 0x80000U);
+	KUNIT_EXPECT_EQ(test, plan.c_addr_256, 0x101fe0U);
+	KUNIT_EXPECT_EQ(test, plan.end_addr_16, 0x102fd00U);
+	KUNIT_EXPECT_EQ(test, plan.y_addr_16, 0x1000000U);
+	KUNIT_EXPECT_EQ(test, plan.y_addr, 0x10000000U);
+	KUNIT_EXPECT_EQ(test, plan.c_offset, 2088960U);
+	KUNIT_EXPECT_EQ(test, plan.mv_addr_16, 0x2000000U);
+	KUNIT_EXPECT_EQ(test, plan.crc_y_addr, 0x10000000U);
+	KUNIT_EXPECT_EQ(test, plan.crc_end_addr, 0x1017e800U);
+}
+
+static void mt6797_h264_reject_split_output_test(struct kunit *test)
+{
+	struct mt6797_h264_buffer_layout layout;
+	struct mt6797_h264_output_plan plan;
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_buffer_layout(1920, 1080, &layout), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_h264_output_plan(0x10000000, 0x11000000,
+						      0x20000000, &layout,
+						      &plan), -EOPNOTSUPP);
+}
+
 static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_sps_pack_test),
 	KUNIT_CASE(mt6797_h264_pps_pack_test),
@@ -92,6 +149,10 @@ static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_1080p_layout_test),
 	KUNIT_CASE(mt6797_h264_min_layout_test),
 	KUNIT_CASE(mt6797_h264_reject_layout_test),
+	KUNIT_CASE(mt6797_h264_barrel_plan_test),
+	KUNIT_CASE(mt6797_h264_reject_barrel_plan_test),
+	KUNIT_CASE(mt6797_h264_output_plan_test),
+	KUNIT_CASE(mt6797_h264_reject_split_output_test),
 	{}
 };
 

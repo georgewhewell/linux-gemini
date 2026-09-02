@@ -5,6 +5,7 @@
 #include <linux/align.h>
 #include <linux/bitfield.h>
 #include <linux/errno.h>
+#include <linux/overflow.h>
 #include <media/v4l2-ctrls.h>
 
 #define MT6797_H264_SPS_CHROMA		GENMASK(1, 0)
@@ -39,6 +40,10 @@
 
 #define MT6797_H264_MAX_WIDTH		1920U
 #define MT6797_H264_MAX_HEIGHT		1088U
+#define MT6797_H264_DMA_ALIGN		512U
+#define MT6797_H264_BS_ALIGN		64U
+#define MT6797_H264_BS_GUARD		0x100U
+#define MT6797_H264_BARREL_MAX_SHIFT	32U
 
 struct mt6797_h264_buffer_layout {
 	u32 width;
@@ -47,6 +52,27 @@ struct mt6797_h264_buffer_layout {
 	u32 chroma_size;
 	u32 mv_size;
 	u32 crc_span;
+};
+
+struct mt6797_h264_barrel_plan {
+	u32 start_addr;
+	u32 end_addr;
+	u32 fetch_start;
+	u32 fetch_end;
+	u32 shift_reads;
+	u32 final_shift;
+};
+
+struct mt6797_h264_output_plan {
+	u32 y_addr_512;
+	u32 c_addr_256;
+	u32 end_addr_16;
+	u32 y_addr_16;
+	u32 y_addr;
+	u32 c_offset;
+	u32 mv_addr_16;
+	u32 crc_y_addr;
+	u32 crc_end_addr;
 };
 
 static inline int
@@ -66,6 +92,76 @@ mt6797_h264_buffer_layout(u32 width, u32 height,
 	layout->chroma_size = layout->luma_size / 2;
 	layout->mv_size = layout->width / 16 * (layout->height / 16) * 64 + 512;
 	layout->crc_span = ALIGN(tile_count * 384, 512);
+
+	return 0;
+}
+
+static inline int
+mt6797_h264_barrel_plan(u64 dma_addr, u64 size, u32 header_bits,
+			struct mt6797_h264_barrel_plan *plan)
+{
+	u64 end_addr, fetch_end;
+	u64 bit_size;
+
+	if (!size || !header_bits || (dma_addr & (MT6797_H264_BS_ALIGN - 1)))
+		return -EINVAL;
+	if (check_mul_overflow(size, 8ULL, &bit_size) || header_bits >= bit_size)
+		return -ERANGE;
+	if (check_add_overflow(dma_addr, size, &end_addr) ||
+	    check_add_overflow(end_addr, (u64)MT6797_H264_BS_GUARD, &fetch_end) ||
+	    fetch_end > U32_MAX)
+		return -ERANGE;
+
+	plan->start_addr = dma_addr;
+	plan->end_addr = end_addr;
+	plan->fetch_start = dma_addr >> 6;
+	plan->fetch_end = fetch_end >> 6;
+	plan->shift_reads = DIV_ROUND_UP(header_bits,
+					 MT6797_H264_BARREL_MAX_SHIFT);
+	plan->final_shift = header_bits % MT6797_H264_BARREL_MAX_SHIFT;
+	if (!plan->final_shift)
+		plan->final_shift = MT6797_H264_BARREL_MAX_SHIFT;
+
+	return 0;
+}
+
+static inline u32 mt6797_h264_barrel_shift_chunk(u32 remaining_bits)
+{
+	if (remaining_bits > MT6797_H264_BARREL_MAX_SHIFT)
+		return MT6797_H264_BARREL_MAX_SHIFT;
+
+	return remaining_bits;
+}
+
+static inline int
+mt6797_h264_output_plan(u64 y_addr, u64 c_addr, u64 mv_addr,
+			const struct mt6797_h264_buffer_layout *layout,
+			struct mt6797_h264_output_plan *plan)
+{
+	u64 expected_c, end_addr, crc_end_addr;
+
+	if ((y_addr & (MT6797_H264_DMA_ALIGN - 1)) ||
+	    (c_addr & (MT6797_H264_DMA_ALIGN - 1)) || (mv_addr & 0xf))
+		return -EINVAL;
+	if (check_add_overflow(y_addr, (u64)layout->luma_size, &expected_c) ||
+	    check_add_overflow(c_addr, (u64)layout->chroma_size, &end_addr) ||
+	    check_add_overflow(y_addr, (u64)layout->crc_span, &crc_end_addr) ||
+	    end_addr > U32_MAX || crc_end_addr > U32_MAX || mv_addr > U32_MAX)
+		return -ERANGE;
+
+	/* The recovered MT6797 path only establishes this contiguous layout. */
+	if (c_addr != expected_c)
+		return -EOPNOTSUPP;
+
+	plan->y_addr_512 = y_addr >> 9;
+	plan->c_addr_256 = c_addr >> 8;
+	plan->end_addr_16 = end_addr >> 4;
+	plan->y_addr_16 = y_addr >> 4;
+	plan->y_addr = y_addr;
+	plan->c_offset = layout->luma_size;
+	plan->mv_addr_16 = mv_addr >> 4;
+	plan->crc_y_addr = y_addr;
+	plan->crc_end_addr = crc_end_addr;
 
 	return 0;
 }

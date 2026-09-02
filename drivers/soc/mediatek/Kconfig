@@ -848,11 +848,15 @@ config MTK_MT6797_WIFI_AHB_W3_SESSION_KUNIT_TEST
 
 	  No platform device, firmware, register or interrupt is used.
 
+config MTK_MT6797_WIFI_GEN3_WIRE
+	tristate
+
 config MTK_MT6797_WIFI_AHB_W4_PLATFORM
 	tristate "MT6797 WLAN GEN3 retained AHB HIF platform owner"
 	depends on MTK_MT6797_WIFI_AHB_W3_SESSION
 	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
 	depends on CFG80211
+	select MTK_MT6797_WIFI_GEN3_WIRE
 	help
 	  Build the opt-in live owner of the exact 0x180f0000/0x1100 GEN3
 	  AHB SDIO-like portal. It starts the retained W1/W2 firmware transaction,
@@ -867,7 +871,7 @@ config MTK_MT6797_WIFI_AHB_W4_PLATFORM
 config MTK_MT6797_WIFI_GEN3_WIRE_KUNIT_TEST
 	bool "KUnit tests for MT6797 WLAN GEN3 security command encoding"
 	depends on KUNIT=y
-	depends on MTK_MT6797_WIFI_AHB_W4_PLATFORM=y
+	select MTK_MT6797_WIFI_GEN3_WIRE
 	help
 	  Validate the byte-exact CCMP, BIP, replay-counter, default-key and BSS
 	  state commands used by the MT6797 GEN3 firmware. The tests reject invalid

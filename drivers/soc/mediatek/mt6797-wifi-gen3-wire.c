@@ -13,6 +13,7 @@
 #define MT6797_WIFI_GEN3_CMD_ADD_REMOVE_KEY 0x07U
 #define MT6797_WIFI_GEN3_CMD_DEFAULT_KEY 0x08U
 #define MT6797_WIFI_GEN3_KEY_LEN 16U
+#define MT6797_WIFI_GEN3_MAX_RSC_LEN 16U
 #define MT6797_WIFI_GEN3_MAX_KEY_INDEX 5U
 
 static void mt6797_wifi_gen3_init_cmd(u8 *buf, size_t len, u8 command,
@@ -45,14 +46,18 @@ int mt6797_wifi_gen3_build_key_cmd(u8 *buf, size_t buf_len, u8 sequence,
 				   bool add, bool pairwise, const u8 *peer,
 				   u8 key_index, u8 wlan_index,
 				   enum mt6797_wifi_gen3_cipher cipher,
-				   const u8 *key, size_t key_len)
+				   const u8 *key, size_t key_len,
+				   const u8 *rsc, size_t rsc_len)
 {
 	if (!buf || !peer || buf_len < MT6797_WIFI_GEN3_KEY_CMD_LEN)
 		return -EINVAL;
 	if (add && (!key || key_len != MT6797_WIFI_GEN3_KEY_LEN ||
-		    !mt6797_wifi_gen3_key_valid(pairwise, key_index, cipher)))
+		    !mt6797_wifi_gen3_key_valid(pairwise, key_index, cipher) ||
+		    rsc_len > MT6797_WIFI_GEN3_MAX_RSC_LEN ||
+		    (rsc_len && !rsc)))
 		return -EINVAL;
-	if (!add && (key || key_len || key_index > MT6797_WIFI_GEN3_MAX_KEY_INDEX))
+	if (!add && (key || key_len || rsc || rsc_len ||
+		     key_index > MT6797_WIFI_GEN3_MAX_KEY_INDEX))
 		return -EINVAL;
 
 	memset(buf, 0, MT6797_WIFI_GEN3_KEY_CMD_LEN);
@@ -69,6 +74,8 @@ int mt6797_wifi_gen3_build_key_cmd(u8 *buf, size_t buf_len, u8 sequence,
 	buf[22] = wlan_index;
 	if (add)
 		memcpy(buf + 24, key, key_len);
+	if (rsc_len)
+		memcpy(buf + 56, rsc, rsc_len);
 
 	return MT6797_WIFI_GEN3_KEY_CMD_LEN;
 }

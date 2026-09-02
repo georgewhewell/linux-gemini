@@ -25,6 +25,8 @@
 #include <linux/soc/mediatek/mt6797-wifi-ahb.h>
 #include <linux/soc/mediatek/mt6797-wifi-ahb-w3-session.h>
 
+#include "mt6797-wifi-gen3-wire.h"
+
 #define W4_WHIER 0x0014
 #define W4_WRDR0 0x0050
 #define W4_WRDR1 0x0054
@@ -112,6 +114,7 @@ struct mt6797_wifi_w4 {
 	u8 candidate_channel;
 	u8 wlan_index;
 	u8 sta_index;
+	u8 command_sequence;
 	u8 join_ssid[IEEE80211_MAX_SSID_LEN];
 	u8 join_ssid_len;
 	u8 assoc_req_ies[IEEE80211_MAX_SSID_LEN + 16];
@@ -121,6 +124,11 @@ struct mt6797_wifi_w4 {
 	enum w4_join_state join_state;
 	bool candidate_valid, retained_owner_released;
 	bool controller_started, w1_retained, opened;
+};
+
+static const u32 w4_cipher_suites[] = {
+	WLAN_CIPHER_SUITE_CCMP,
+	WLAN_CIPHER_SUITE_AES_CMAC,
 };
 
 static const struct ieee80211_channel w4_channels[] = {
@@ -642,6 +650,7 @@ static int w4_open(struct net_device *ndev)
 	ret = mt6797_wifi_ahb_w3_session_start(&w4->session, &w4_hif_ops, w4);
 	if (ret) { mt6797_consys_runtime_controller_wifi_session_put(&w4->runtime); goto fail; }
 	w4_diag_hif(w4, "hif-ready");
+	w4->command_sequence = 4;
 	w4->opened = true;
 	netif_tx_start_all_queues(ndev);
 	dev_info(w4->dev, "W4 retained HIF session live: irq=%d whisr=%#x\n",
@@ -1060,8 +1069,141 @@ static int w4_disconnect(struct wiphy *wiphy, struct net_device *ndev, u16 reaso
 		cfg80211_disconnected(ndev, reason, NULL, 0, true, GFP_KERNEL);
 	return 0;
 }
+
+static int w4_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
+		      int link_id, u8 key_index, bool pairwise,
+		      const u8 *mac_addr, struct key_params *params)
+{
+	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
+	enum mt6797_wifi_gen3_cipher cipher;
+	u8 peer[ETH_ALEN];
+	u8 cmd[MT6797_WIFI_GEN3_KEY_CMD_LEN];
+	u8 wlan_index;
+	int ret;
+
+	if (wdev != w4->wdev || link_id >= 0 || !params)
+		return -EINVAL;
+	if (params->cipher == WLAN_CIPHER_SUITE_CCMP)
+		cipher = MT6797_WIFI_GEN3_CIPHER_CCMP;
+	else if (params->cipher == WLAN_CIPHER_SUITE_AES_CMAC)
+		cipher = MT6797_WIFI_GEN3_CIPHER_BIP;
+	else
+		return -EOPNOTSUPP;
+	if (pairwise) {
+		if (!mac_addr || !ether_addr_equal(mac_addr, w4->candidate_bssid))
+			return -EINVAL;
+		ether_addr_copy(peer, mac_addr);
+		wlan_index = W4_WLAN_INDEX_AIS_AP;
+	} else {
+		eth_broadcast_addr(peer);
+		wlan_index = W4_WLAN_INDEX_AIS_BMC;
+	}
+
+	mutex_lock(&w4->lock);
+	if (!w4->opened || w4->join_state != W4_JOIN_CONNECTED) {
+		ret = -ENOTCONN;
+		goto out;
+	}
+	ret = mt6797_wifi_gen3_build_key_cmd(cmd, sizeof(cmd),
+					     ++w4->command_sequence, true,
+					     pairwise, peer, key_index,
+					     wlan_index, cipher, params->key,
+					     params->key_len, params->seq,
+					     params->seq_len);
+	if (ret < 0)
+		goto out;
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, ret);
+out:
+	mutex_unlock(&w4->lock);
+	return ret;
+}
+
+static int w4_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
+		      int link_id, u8 key_index, bool pairwise,
+		      const u8 *mac_addr)
+{
+	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
+	u8 peer[ETH_ALEN];
+	u8 cmd[MT6797_WIFI_GEN3_KEY_CMD_LEN];
+	u8 wlan_index;
+	int ret;
+
+	if (wdev != w4->wdev || link_id >= 0)
+		return -EINVAL;
+	if (pairwise) {
+		if (!mac_addr || !ether_addr_equal(mac_addr, w4->candidate_bssid))
+			return -EINVAL;
+		ether_addr_copy(peer, mac_addr);
+		wlan_index = W4_WLAN_INDEX_AIS_AP;
+	} else {
+		eth_broadcast_addr(peer);
+		wlan_index = W4_WLAN_INDEX_AIS_BMC;
+	}
+
+	mutex_lock(&w4->lock);
+	if (!w4->opened) {
+		ret = -ENETDOWN;
+		goto out;
+	}
+	ret = mt6797_wifi_gen3_build_key_cmd(cmd, sizeof(cmd),
+					     ++w4->command_sequence, false,
+					     pairwise, peer, key_index,
+					     wlan_index,
+					     MT6797_WIFI_GEN3_CIPHER_NONE,
+					     NULL, 0, NULL, 0);
+	if (ret < 0)
+		goto out;
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, ret);
+out:
+	mutex_unlock(&w4->lock);
+	return ret;
+}
+
+static int w4_set_default_key(struct wiphy *wiphy, struct net_device *ndev,
+			      int link_id, u8 key_index, bool unicast,
+			      bool multicast)
+{
+	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
+	u8 cmd[MT6797_WIFI_GEN3_DEFAULT_KEY_CMD_LEN];
+	int ret;
+
+	if (ndev != w4->ndev || link_id >= 0)
+		return -EINVAL;
+	mutex_lock(&w4->lock);
+	if (!w4->opened || w4->join_state != W4_JOIN_CONNECTED) {
+		ret = -ENOTCONN;
+		goto out;
+	}
+	ret = mt6797_wifi_gen3_build_default_key_cmd(cmd, sizeof(cmd),
+						     ++w4->command_sequence,
+						     key_index, unicast,
+						     multicast);
+	if (ret < 0)
+		goto out;
+	ret = w4_cmd53(w4, true, W4_WTDR1, cmd, ret);
+out:
+	mutex_unlock(&w4->lock);
+	return ret;
+}
+
+static int w4_set_default_mgmt_key(struct wiphy *wiphy,
+				   struct wireless_dev *wdev, int link_id,
+				   u8 key_index)
+{
+	struct mt6797_wifi_w4 *w4 = w4_wiphy(wiphy);
+
+	if (wdev != w4->wdev || link_id >= 0 || key_index < 4 || key_index > 5)
+		return -EINVAL;
+
+	/* GEN3 selects the receive BIP slot from the IGTK key ID itself. */
+	return 0;
+}
+
 static const struct cfg80211_ops w4_cfg80211_ops = {
 	.scan = w4_scan, .connect = w4_connect, .disconnect = w4_disconnect,
+	.add_key = w4_add_key, .del_key = w4_del_key,
+	.set_default_key = w4_set_default_key,
+	.set_default_mgmt_key = w4_set_default_mgmt_key,
 };
 static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 {
@@ -1124,6 +1266,8 @@ static int mt6797_wifi_w4_probe(struct platform_device *pdev)
 	if (!w4->wiphy) { ret = -ENOMEM; goto put_owner; }
 	*(struct mt6797_wifi_w4 **)wiphy_priv(w4->wiphy) = w4;
 	w4->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
+	w4->wiphy->cipher_suites = w4_cipher_suites;
+	w4->wiphy->n_cipher_suites = ARRAY_SIZE(w4_cipher_suites);
 	/* iw's ordinary wildcard probe is one SSID entry; zero makes nl80211
 	 * reject it before ->scan() is reached.  CMD_SCAN_REQ implements one. */
 	w4->wiphy->max_scan_ssids = 1;

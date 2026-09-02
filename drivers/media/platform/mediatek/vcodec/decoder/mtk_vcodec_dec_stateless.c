@@ -14,10 +14,12 @@
  * struct mtk_stateless_control  - CID control type
  * @cfg: control configuration
  * @codec_type: codec type (V4L2 pixel format) for CID control type
+ * @direct_hevc_only: control is only used by a direct HEVC backend
  */
 struct mtk_stateless_control {
 	struct v4l2_ctrl_config cfg;
 	int codec_type;
+	bool direct_hevc_only;
 };
 
 static const struct mtk_stateless_control mtk_stateless_controls[] = {
@@ -134,6 +136,16 @@ static const struct mtk_stateless_control mtk_stateless_controls[] = {
 			.id = V4L2_CID_STATELESS_HEVC_PPS,
 		},
 		.codec_type = V4L2_PIX_FMT_HEVC_SLICE,
+	},
+	{
+		.cfg = {
+			.id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
+			.flags = V4L2_CTRL_FLAG_DYNAMIC_ARRAY,
+			.type = V4L2_CTRL_TYPE_HEVC_SLICE_PARAMS,
+			.dims = { 600 },
+		},
+		.codec_type = V4L2_PIX_FMT_HEVC_SLICE,
+		.direct_hevc_only = true,
 	},
 	{
 		.cfg = {
@@ -721,6 +733,9 @@ static int mtk_vcodec_dec_ctrls_setup_common(struct mtk_vcodec_dec_ctx *ctx)
 	for (i = 0; i < NUM_CTRLS; i++) {
 		struct v4l2_ctrl_config cfg = mtk_stateless_controls[i].cfg;
 
+		if (mtk_stateless_controls[i].direct_hevc_only &&
+		    !ctx->dev->vdec_pdata->hevc_slice_if)
+			continue;
 		cfg.ops = &mtk_vcodec_dec_ctrl_ops;
 
 		mtk_vcodec_dec_reset_controls(&cfg, ctx);

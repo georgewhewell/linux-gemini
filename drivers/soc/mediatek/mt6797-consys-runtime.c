@@ -53,8 +53,11 @@
 #endif
 
 #include <linux/soc/mediatek/mt6797-consys-runtime.h>
-#include <linux/soc/mediatek/mt6797-consys-handoff.h>
 #include <linux/soc/mediatek/mt6797-consys-postid.h>
+
+#if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_HANDOFF_KUNIT_TEST)
+#include <linux/soc/mediatek/mt6797-consys-handoff.h>
+#endif
 
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 

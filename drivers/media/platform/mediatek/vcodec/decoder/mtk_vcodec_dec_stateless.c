@@ -393,6 +393,19 @@ static void mtk_vdec_worker(struct work_struct *work)
 	}
 
 	v4l2_ctrl_request_complete(mreq, &ctx->ctrl_hdl);
+	if (dev->vdec_pdata->supports_hold_capture_buf) {
+		/* An errored slice must not retain the capture buffer. */
+		if (ret)
+			vb2_v4l2_src->flags &=
+				~V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF;
+		v4l2_m2m_buf_done_and_job_finish(dev->m2m_dev_dec,
+						 ctx->m2m_ctx, buf_state);
+
+		/* Drop the capture-path and local worker references. */
+		kref_put(&req->refcount, mtk_vcodec_dec_request_release);
+		kref_put(&req->refcount, mtk_vcodec_dec_request_release);
+		return;
+	}
 	v4l2_m2m_src_buf_remove(ctx->m2m_ctx);
 	v4l2_m2m_buf_done(vb2_v4l2_src, buf_state);
 
@@ -982,6 +995,7 @@ const struct mtk_vcodec_dec_pdata mtk_vdec_6797_pdata = {
 	.default_cap_fmt = &default_cap_format,
 	.uses_stateless_api = true,
 	.uses_fw = false,
+	.supports_hold_capture_buf = true,
 	.dec_capability = MTK_VDEC_FORMAT_H264_SLICE | MTK_VDEC_FORMAT_MS21,
 	.h264_slice_if = &mtk_vdec_6797_h264_slice_if,
 	.worker = mtk_vdec_worker,

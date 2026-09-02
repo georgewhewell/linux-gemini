@@ -112,6 +112,7 @@ struct vdec_pic_info {
  * @is_subdev_supported: whether support parent-node architecture(subdev)
  * @uses_stateless_api: whether the decoder uses the stateless API with requests
  * @uses_fw: whether the decoder requires a VPU or SCP firmware endpoint
+ * @supports_hold_capture_buf: whether one capture buffer may span output slices
  * @dec_capability: fixed capability mask for firmwareless decoders
  * @h264_slice_if: optional direct H.264 Request API backend
  */
@@ -136,6 +137,7 @@ struct mtk_vcodec_dec_pdata {
 	bool is_subdev_supported;
 	bool uses_stateless_api;
 	bool uses_fw;
+	bool supports_hold_capture_buf;
 	u32 dec_capability;
 	const struct vdec_common_if *h264_slice_if;
 };

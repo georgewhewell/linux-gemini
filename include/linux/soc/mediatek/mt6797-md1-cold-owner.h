@@ -87,6 +87,20 @@ struct mt6797_md1_cold_owner_ccif {
 };
 
 /*
+ * Read-only AP-side CLDMA evidence.  No descriptor, queue, IRQ or mask is
+ * owned by this observer; the values are only sampled after boot-vector GO.
+ */
+struct mt6797_md1_cold_owner_cldma {
+	u32 coda_version;
+	u32 ul_status;
+	u32 so_status;
+	u32 l2_tx_status;
+	u32 l2_rx_status;
+	u32 irq_mask;
+	u32 ip_busy;
+};
+
+/*
  * A terminal, AP-visible observation made immediately around the one vendor
  * boot-vector write. It is an activity token only: it is not CCCI HS1, does
  * not decode CCIF channel contents and grants no CLDMA/IRQ ownership.
@@ -121,6 +135,10 @@ struct mt6797_md1_post_vector_evidence {
 	u32 ccif_register_transitions;
 	u32 first_ccif_activity_poll;
 	bool ccif_register_activity;
+	struct mt6797_md1_cold_owner_cldma cldma_after;
+	u32 cldma_register_transitions;
+	u32 first_cldma_activity_poll;
+	bool cldma_register_activity;
 	bool passive_complete;
 };
 
@@ -172,6 +190,11 @@ bool mt6797_md1_cold_owner_post_vector_activity(
 /* Pure classifier for the passive CCIF register observer; performs no I/O. */
 bool mt6797_md1_cold_owner_ccif_register_activity(
 	const struct mt6797_md1_cold_owner_ccif *ccif);
+
+/* Pure classifier for the passive AP-side CLDMA observer; performs no I/O. */
+bool
+mt6797_md1_cold_owner_cldma_register_activity(
+	const struct mt6797_md1_cold_owner_cldma *cldma);
 
 /* Returns -ENODATA until the boot-vector observer reports GO or NO-GO. */
 int mt6797_md1_cold_owner_post_vector_evidence_get(

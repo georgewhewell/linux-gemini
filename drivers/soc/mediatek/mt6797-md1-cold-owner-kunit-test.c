@@ -300,6 +300,22 @@ static void mt6797_md1_cold_owner_post_vector_activity_requires_delta(
 		mt6797_md1_cold_owner_ccif_register_activity(&evidence.ccif_after));
 }
 
+static void
+mt6797_md1_cold_owner_cldma_activity_ignores_identity_and_mask(
+	struct kunit *test)
+{
+	struct mt6797_md1_cold_owner_cldma cldma = {
+		.coda_version = 0x62970000,
+		.irq_mask = ~0U,
+	};
+
+	KUNIT_EXPECT_FALSE(test,
+			   mt6797_md1_cold_owner_cldma_register_activity(&cldma));
+	cldma.l2_rx_status = BIT(0);
+	KUNIT_EXPECT_TRUE(test,
+			  mt6797_md1_cold_owner_cldma_register_activity(&cldma));
+}
+
 static struct kunit_case mt6797_md1_cold_owner_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_cold_owner_success_stops_before_boot_vector),
 	KUNIT_CASE(mt6797_md1_cold_owner_refuses_missing_observation_without_touching_hw),
@@ -307,6 +323,7 @@ static struct kunit_case mt6797_md1_cold_owner_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_cold_owner_every_post_observation_failure_is_fatal),
 	KUNIT_CASE(mt6797_md1_cold_owner_pll_timeout_continues_degraded),
 	KUNIT_CASE(mt6797_md1_cold_owner_post_vector_activity_requires_delta),
+	KUNIT_CASE(mt6797_md1_cold_owner_cldma_activity_ignores_identity_and_mask),
 	{}
 };
 

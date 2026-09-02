@@ -194,3 +194,11 @@ bool mt6797_md1_cold_owner_ccif_register_activity(
 	return ccif && (ccif->ap_busy || ccif->md_busy || ccif->ap_rchnum ||
 		ccif->md_rchnum || ccif->ap_ack || ccif->md_ack);
 }
+
+bool
+mt6797_md1_cold_owner_cldma_register_activity(
+	const struct mt6797_md1_cold_owner_cldma *cldma)
+{
+	return cldma && (cldma->ul_status || cldma->so_status ||
+		cldma->l2_tx_status || cldma->l2_rx_status || cldma->ip_busy);
+}

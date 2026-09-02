@@ -9,8 +9,9 @@
  * the secure EMI-MPU provider, then the cold owner. It is inert without all
  * six built-in command-line gates. The owner stops after one boot-vector
  * write, a 100 ms immediate oracle and a scheduled five-second register-only
- * follow-up; it installs no IRQ, CLDMA, shared-memory, CCCI, SIM, RF, or modem
- * firmware transport.
+ * follow-up. The latter samples CCIF and AP-side CLDMA status but installs no
+ * IRQ, descriptor, queue, shared-memory, CCCI, SIM, RF, or modem firmware
+ * transport.
  */
 
 /dts-v1/;
@@ -65,6 +66,8 @@
 				reg = <0 0x10001000 0 0x1000>,
 				      <0 0x10209000 0 0x1000>,
 				      <0 0x1020a000 0 0x1000>,
+				      <0 0x10014000 0 0x1e00>,
+				      <0 0x10219000 0 0x1e00>,
 				      <0 0x1000c000 0 0x1000>,
 				      <0 0x20150000 0 0x118>,
 				      <0 0x20130000 0 0x1004>,
@@ -76,7 +79,8 @@
 				      <0 0x26010000 0 0x40>,
 				      <0 0x20000024 0 0x4>,
 				      <0 0x10201300 0 0x8>;
-				reg-names = "infracfg", "ap-ccif", "md-ccif", "apmixed",
+				reg-names = "infracfg", "ap-ccif", "md-ccif", "ap-cldma-ao",
+					    "ap-cldma-pdn", "apmixed",
 					    "md-clksw", "md-dcm", "md-peri-misc", "md-l1-a0",
 					    "md-top-pll", "md-sys-clk", "md-rgu", "l1-rgu",
 					    "boot-vector", "boot-status";

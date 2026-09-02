@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * MediaTek MT6797 LK devinfo thermal calibration provider.
+ * MediaTek MT6797 LK devinfo calibration provider.
  *
  * The retained MT6797 LK appends an opaque, little-endian 103-word property
- * at /chosen/atag,devinfo.  Only the three words consumed by the MT6797
- * thermal extractor are retained here; the efuse MMIO block is never mapped.
+ * at /chosen/atag,devinfo.  Only payload fields with identified in-kernel
+ * consumers are retained here; the efuse MMIO block is never mapped.
  */
 
 #include <linux/init.h>
@@ -24,9 +24,15 @@
 					 MT6797_ATAG_PAYLOAD_WORDS + \
 					 MT6797_ATAG_TRAILER_WORDS)
 #define MT6797_THERMAL_CELL_BYTES	(3 * sizeof(u32))
+#define MT6797_CSI_FIRST_PAYLOAD_WORD	0x25
+#define MT6797_CSI_WORDS		5
+#define MT6797_CSI_CELL_BYTES		(MT6797_CSI_WORDS * sizeof(u32))
+#define MT6797_CSI_CELL_OFFSET		100
+#define MT6797_ATAG_CELL_BYTES		(MT6797_CSI_CELL_OFFSET + \
+					 MT6797_CSI_CELL_BYTES)
 
 struct mt6797_atag_devinfo {
-	u8 calibration[MT6797_THERMAL_CELL_BYTES];
+	u8 cells[MT6797_ATAG_CELL_BYTES];
 };
 
 static const unsigned int mt6797_thermal_word_order[] = { 32, 31, 33 };
@@ -69,7 +75,16 @@ static int mt6797_atag_parse(struct mt6797_atag_devinfo *data)
 					MT6797_ATAG_HEADER_WORDS +
 					mt6797_thermal_word_order[i]);
 
-		put_unaligned_le32(value, &data->calibration[i * sizeof(u32)]);
+		put_unaligned_le32(value, &data->cells[i * sizeof(u32)]);
+	}
+
+	for (i = 0; i < MT6797_CSI_WORDS; i++) {
+		u32 value = mt6797_atag_word(property,
+					MT6797_ATAG_HEADER_WORDS +
+					MT6797_CSI_FIRST_PAYLOAD_WORD + i);
+
+		put_unaligned_le32(value, &data->cells[MT6797_CSI_CELL_OFFSET +
+							 i * sizeof(u32)]);
 	}
 
 out:
@@ -78,15 +93,15 @@ out:
 }
 
 static int mt6797_atag_read(void *context, unsigned int offset,
-				void *value, size_t bytes)
+			void *value, size_t bytes)
 {
 	struct mt6797_atag_devinfo *data = context;
 
-	if (offset > sizeof(data->calibration) ||
-	    bytes > sizeof(data->calibration) - offset)
+	if (offset > sizeof(data->cells) ||
+	    bytes > sizeof(data->cells) - offset)
 		return -EINVAL;
 
-	memcpy(value, data->calibration + offset, bytes);
+	memcpy(value, data->cells + offset, bytes);
 	return 0;
 }
 
@@ -101,7 +116,7 @@ static int mt6797_atag_devinfo_probe(struct platform_device *pdev)
 		.read_only = true,
 		.root_only = true,
 		.reg_read = mt6797_atag_read,
-		.size = MT6797_THERMAL_CELL_BYTES,
+		.size = MT6797_ATAG_CELL_BYTES,
 		.word_size = sizeof(u32),
 		.stride = sizeof(u32),
 	};

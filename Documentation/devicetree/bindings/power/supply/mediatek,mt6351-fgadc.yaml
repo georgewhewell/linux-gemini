@@ -66,12 +66,13 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     minimum: 1
 
-  mediatek,initialize-battery-detection:
+  mediatek,baton-connected:
     description: |
-      Permit Linux to enable the MT6351 BATON and temperature-detection
-      circuits and report POWER_SUPPLY_PROP_PRESENT from BATON_UNDET. The
-      driver snapshots and restores both enable bits. Without this property
-      it neither changes the detector nor exposes battery presence.
+      The board connects the MT6351 BATON input to the monitored battery's
+      presence-detection path. The driver enables the BATON and temperature-
+      detection circuits, reports POWER_SUPPLY_PROP_PRESENT from BATON_UNDET,
+      and snapshots and restores both enable bits. Without this property it
+      does not assume that BATON describes the monitored battery.
     type: boolean
 
 required:

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * MT6797 WLAN GEN3 W3 persistent HIF-session core.
+ * MT6797 WLAN GEN3 persistent HIF-session core.
  *
  * Vendor wlan_lib.c:512-537 orders post-READY acknowledgement/TX reset,
  * NIC capability, basic configuration, and MAC application.  Lines 671-677
@@ -16,26 +16,14 @@
 #include <linux/module.h>
 #include <linux/string.h>
 
-#include <linux/soc/mediatek/mt6797-wifi-ahb-w3-session.h>
+#include "hif.h"
 
-static bool enable_experimental_wifi_w3_session;
-module_param_named(enable_experimental_wifi_w3_session,
-		enable_experimental_wifi_w3_session, bool, 0400);
-MODULE_PARM_DESC(enable_experimental_wifi_w3_session,
-	"allow MT6797 W3 retained HIF and IRQ ownership (default: false)");
-
-bool mt6797_wifi_ahb_w3_session_enabled(void)
-{
-	return READ_ONCE(enable_experimental_wifi_w3_session);
-}
-EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w3_session_enabled);
-
-static int mt6797_wifi_w3_drain_rx(struct mt6797_wifi_ahb_w3_session *session)
+static int mt6797_wifi_hif_drain_rx(struct mt6797_wifi_hif_session *session)
 {
 	unsigned int i;
 	int ret;
 
-	for (i = 0; i < MT6797_WIFI_AHB_W3_RX_DRAIN_MAX_PACKETS; i++) {
+	for (i = 0; i < MT6797_WIFI_HIF_RX_DRAIN_MAX_PACKETS; i++) {
 		u16 rx0_length;
 		u16 rx1_length;
 
@@ -46,7 +34,7 @@ static int mt6797_wifi_w3_drain_rx(struct mt6797_wifi_ahb_w3_session *session)
 		if (!rx0_length && !rx1_length)
 			return 0;
 		if (rx0_length) {
-			if (rx0_length > MT6797_WIFI_AHB_W3_RX_PACKET_MAX)
+			if (rx0_length > MT6797_WIFI_HIF_RX_PACKET_MAX)
 				return -EMSGSIZE;
 			ret = session->ops->rx_drain(session->context, 0, rx0_length);
 			if (ret)
@@ -54,7 +42,7 @@ static int mt6797_wifi_w3_drain_rx(struct mt6797_wifi_ahb_w3_session *session)
 			session->rx0_drained++;
 		}
 		if (rx1_length) {
-			if (rx1_length > MT6797_WIFI_AHB_W3_RX_PACKET_MAX)
+			if (rx1_length > MT6797_WIFI_HIF_RX_PACKET_MAX)
 				return -EMSGSIZE;
 			ret = session->ops->rx_drain(session->context, 1, rx1_length);
 			if (ret)
@@ -65,15 +53,15 @@ static int mt6797_wifi_w3_drain_rx(struct mt6797_wifi_ahb_w3_session *session)
 	return -EOVERFLOW;
 }
 
-static int mt6797_wifi_w3_ack_and_reset_tx(struct mt6797_wifi_ahb_w3_session *session)
+static int mt6797_wifi_hif_ack_and_reset_tx(struct mt6797_wifi_hif_session *session)
 {
 	int ret;
 
-	ret = session->ops->mcr_read(session->context, MT6797_WIFI_AHB_W3_MCR_WHISR,
+	ret = session->ops->mcr_read(session->context, MT6797_WIFI_HIF_MCR_WHISR,
 		&session->last_whisr);
 	if (ret)
 		return ret;
-	if (session->last_whisr & MT6797_WIFI_AHB_W3_WHISR_TX_DONE) {
+	if (session->last_whisr & MT6797_WIFI_HIF_WHISR_TX_DONE) {
 		ret = session->ops->tx_released(session->context, session->tx_released);
 		if (ret)
 			return ret;
@@ -83,20 +71,20 @@ static int mt6797_wifi_w3_ack_and_reset_tx(struct mt6797_wifi_ahb_w3_session *se
 	return 0;
 }
 
-static int mt6797_wifi_w3_select_read_clear(struct mt6797_wifi_ahb_w3_session *session)
+static int mt6797_wifi_hif_select_read_clear(struct mt6797_wifi_hif_session *session)
 {
 	u32 whcr;
 	int ret;
 
-	ret = session->ops->mcr_read(session->context, MT6797_WIFI_AHB_W3_MCR_WHCR,
+	ret = session->ops->mcr_read(session->context, MT6797_WIFI_HIF_MCR_WHCR,
 		&whcr);
 	if (ret)
 		return ret;
-	return session->ops->mcr_write(session->context, MT6797_WIFI_AHB_W3_MCR_WHCR,
-		whcr & ~MT6797_WIFI_AHB_W3_WHCR_INT_READ_CLEAR);
+	return session->ops->mcr_write(session->context, MT6797_WIFI_HIF_MCR_WHCR,
+		whcr & ~MT6797_WIFI_HIF_WHCR_INT_READ_CLEAR);
 }
 
-static int mt6797_wifi_w3_stop_owned(struct mt6797_wifi_ahb_w3_session *session)
+static int mt6797_wifi_hif_stop_owned(struct mt6797_wifi_hif_session *session)
 {
 	int causal = 0;
 	int ret;
@@ -109,16 +97,16 @@ static int mt6797_wifi_w3_stop_owned(struct mt6797_wifi_ahb_w3_session *session)
 	}
 	if (session->device_irq_enabled) {
 		ret = session->ops->mcr_write(session->context,
-			MT6797_WIFI_AHB_W3_MCR_WHLPCR,
-			MT6797_WIFI_AHB_W3_WHLPCR_INT_CLR);
+			MT6797_WIFI_HIF_MCR_WHLPCR,
+			MT6797_WIFI_HIF_WHLPCR_INT_CLR);
 		if (ret && !causal)
 			causal = ret;
 		session->device_irq_enabled = false;
 	}
-	ret = mt6797_wifi_w3_ack_and_reset_tx(session);
+	ret = mt6797_wifi_hif_ack_and_reset_tx(session);
 	if (ret && !causal)
 		causal = ret;
-	ret = mt6797_wifi_w3_drain_rx(session);
+	ret = mt6797_wifi_hif_drain_rx(session);
 	if (ret && !causal)
 		causal = ret;
 	if (session->host_irq_requested) {
@@ -133,8 +121,8 @@ static int mt6797_wifi_w3_stop_owned(struct mt6797_wifi_ahb_w3_session *session)
 	return causal;
 }
 
-int mt6797_wifi_ahb_w3_session_start(struct mt6797_wifi_ahb_w3_session *session,
-		const struct mt6797_wifi_ahb_w3_ops *ops, void *context)
+int mt6797_wifi_hif_session_start(struct mt6797_wifi_hif_session *session,
+		const struct mt6797_wifi_hif_ops *ops, void *context)
 {
 	int ret;
 
@@ -157,28 +145,28 @@ int mt6797_wifi_ahb_w3_session_start(struct mt6797_wifi_ahb_w3_session *session,
 	if (ret)
 		goto out_stop;
 	session->host_irq_requested = true;
-	ret = mt6797_wifi_w3_ack_and_reset_tx(session);
+	ret = mt6797_wifi_hif_ack_and_reset_tx(session);
 	if (ret)
 		goto out_stop;
-	ret = mt6797_wifi_w3_drain_rx(session);
+	ret = mt6797_wifi_hif_drain_rx(session);
 	if (ret)
 		goto out_stop;
 	ret = ops->capability_query(context);
 	if (ret)
 		goto out_stop;
-	ret = mt6797_wifi_w3_drain_rx(session);
+	ret = mt6797_wifi_hif_drain_rx(session);
 	if (ret)
 		goto out_stop;
 	ret = ops->configure(context);
 	if (ret)
 		goto out_stop;
-	ret = mt6797_wifi_w3_select_read_clear(session);
+	ret = mt6797_wifi_hif_select_read_clear(session);
 	if (ret)
 		goto out_stop;
 	/* Match nicEnableInterrupt(): ready software state before device INT_SET. */
 	session->active = true;
-	ret = ops->mcr_write(context, MT6797_WIFI_AHB_W3_MCR_WHLPCR,
-		MT6797_WIFI_AHB_W3_WHLPCR_INT_SET);
+	ret = ops->mcr_write(context, MT6797_WIFI_HIF_MCR_WHLPCR,
+		MT6797_WIFI_HIF_WHLPCR_INT_SET);
 	if (ret)
 		goto out_stop;
 	session->device_irq_enabled = true;
@@ -189,24 +177,24 @@ int mt6797_wifi_ahb_w3_session_start(struct mt6797_wifi_ahb_w3_session *session,
 	return 0;
 
 out_stop:
-	session->cleanup_error = mt6797_wifi_w3_stop_owned(session);
+	session->cleanup_error = mt6797_wifi_hif_stop_owned(session);
 out:
 	session->causal_error = ret;
 	return ret;
 }
-EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w3_session_start);
+EXPORT_SYMBOL_GPL(mt6797_wifi_hif_session_start);
 
-int mt6797_wifi_ahb_w3_session_stop(struct mt6797_wifi_ahb_w3_session *session)
+int mt6797_wifi_hif_session_stop(struct mt6797_wifi_hif_session *session)
 {
 	int ret;
 
 	if (!session || !session->ops)
 		return -EINVAL;
-	ret = mt6797_wifi_w3_stop_owned(session);
+	ret = mt6797_wifi_hif_stop_owned(session);
 	session->cleanup_error = ret;
 	return ret;
 }
-EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_w3_session_stop);
+EXPORT_SYMBOL_GPL(mt6797_wifi_hif_session_stop);
 
-MODULE_DESCRIPTION("MT6797 WLAN GEN3 W3 persistent HIF session core");
+MODULE_DESCRIPTION("MediaTek MT6797 WLAN persistent HIF session core");
 MODULE_LICENSE("GPL");

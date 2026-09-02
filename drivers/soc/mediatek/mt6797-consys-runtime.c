@@ -476,6 +476,26 @@ int mt6797_consys_runtime_postid_backend(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_runtime_postid_backend);
 
+int mt6797_consys_runtime_postid_owner_init(struct device *dev,
+		const struct mt6797_consys_runtime_lease *identity,
+		struct mt6797_consys_postid_owner *owner)
+{
+	const struct mt6797_consys_postid_ops *ops;
+	struct mt6797_consys_runtime *runtime;
+	void *context;
+	int ret;
+
+	if (!owner)
+		return -EINVAL;
+	ret = mt6797_consys_runtime_postid_backend(dev, identity, &ops, &context);
+	if (ret)
+		return ret;
+	runtime = context;
+
+	return mt6797_consys_postid_init(owner, &runtime->lifecycle, ops, context);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_runtime_postid_owner_init);
+
 static const struct mt6797_consys_ops mt6797_consys_runtime_ops = {
 	.abi = MT6797_CONSYS_LIFECYCLE_ABI,
 	.enable_vcn18 = mt6797_consys_runtime_enable_vcn18,

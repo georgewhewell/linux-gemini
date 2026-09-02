@@ -13,6 +13,7 @@
 
 struct device;
 struct mt6797_consys_postid_ops;
+struct mt6797_consys_postid_owner;
 
 enum mt6797_consys_runtime_provider_state {
 	MT6797_CONSYS_RUNTIME_PROVIDER_UNINITIALIZED,
@@ -76,5 +77,8 @@ int mt6797_consys_runtime_platform_lease_release(
 int mt6797_consys_runtime_postid_backend(struct device *dev,
 		const struct mt6797_consys_runtime_lease *identity,
 		const struct mt6797_consys_postid_ops **ops, void **context);
+int mt6797_consys_runtime_postid_owner_init(struct device *dev,
+		const struct mt6797_consys_runtime_lease *identity,
+		struct mt6797_consys_postid_owner *owner);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_CONSYS_RUNTIME_H */

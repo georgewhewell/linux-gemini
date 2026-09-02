@@ -3,7 +3,7 @@
 #include <linux/if_ether.h>
 #include <linux/unaligned.h>
 
-#include "mt6797-wifi-gen3-wire.h"
+#include "wire.h"
 
 static const u8 test_peer[ETH_ALEN] = { 0x02, 0x11, 0x22, 0x33, 0x44, 0x55 };
 static const u8 test_key[16] = {

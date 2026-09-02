@@ -7,7 +7,7 @@
 #include <linux/string.h>
 #include <linux/unaligned.h>
 
-#include "mt6797-wifi-gen3-wire.h"
+#include "wire.h"
 
 #define MT6797_WIFI_GEN3_CMD_PQ_ID 0x8000U
 #define MT6797_WIFI_GEN3_CMD_PACKET_TYPE 0xa0U

@@ -151,6 +151,7 @@ static void mt6797_venc_h264_seq_regs_baseline_test(struct kunit *test)
 		.buf_width = 1920,
 		.buf_height = 1088,
 		.intra_period = 30,
+		.gop_size = 30,
 		.bitrate = 4000000,
 		.framerate = 30,
 		.profile_idc = MT6797_VENC_H264_PROFILE_BASELINE,
@@ -183,6 +184,7 @@ static void mt6797_venc_h264_seq_regs_profile_test(struct kunit *test)
 		.buf_width = 1280,
 		.buf_height = 736,
 		.intra_period = 60,
+		.gop_size = 60,
 		.bitrate = 2000000,
 		.framerate = 25,
 		.profile_idc = MT6797_VENC_H264_PROFILE_MAIN,
@@ -203,6 +205,102 @@ static void mt6797_venc_h264_seq_regs_profile_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, regs.reg_030, (u32)0xc7e00000);
 }
 
+static void mt6797_venc_h264_frame_regs_test(struct kunit *test)
+{
+	struct mt6797_venc_h264_frame_params params = {
+		.intra_period = 30,
+		.gop_size = 60,
+		.profile_idc = MT6797_VENC_H264_PROFILE_HIGH,
+	};
+	struct mt6797_venc_h264_frame_regs regs = { };
+	int ret;
+
+	ret = mt6797_venc_h264_calc_frame_regs(&params, &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.reg_010, (u32)0xb406);
+	KUNIT_EXPECT_EQ(test, regs.reg_014, (u32)0);
+	KUNIT_EXPECT_EQ(test, regs.reg_018, (u32)0);
+	KUNIT_EXPECT_EQ(test, regs.reg_01c, (u32)0);
+	KUNIT_EXPECT_EQ(test, regs.reg_128, (u32)0x10000);
+	KUNIT_EXPECT_EQ(test, regs.mode, (u32)0x0f600010);
+	KUNIT_EXPECT_TRUE(test, regs.is_intra);
+	KUNIT_EXPECT_TRUE(test, regs.is_idr);
+	KUNIT_EXPECT_EQ(test, regs.next_idr_pic_id, (u8)1);
+
+	params.frame_num = 2;
+	params.idr_pic_id = regs.next_idr_pic_id;
+	ret = mt6797_venc_h264_calc_frame_regs(&params, &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.reg_010, (u32)0x8500);
+	KUNIT_EXPECT_EQ(test, regs.reg_014, (u32)2);
+	KUNIT_EXPECT_EQ(test, regs.reg_018, (u32)2);
+	KUNIT_EXPECT_EQ(test, regs.mode, (u32)0x0fa00010);
+	KUNIT_EXPECT_FALSE(test, regs.is_intra);
+	KUNIT_EXPECT_FALSE(test, regs.is_idr);
+	KUNIT_EXPECT_EQ(test, regs.next_idr_pic_id, (u8)1);
+
+	params.frame_num = 60;
+	ret = mt6797_venc_h264_calc_frame_regs(&params, &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.reg_010, (u32)0xb40e);
+	KUNIT_EXPECT_EQ(test, regs.reg_01c, (u32)60);
+	KUNIT_EXPECT_TRUE(test, regs.is_intra);
+	KUNIT_EXPECT_TRUE(test, regs.is_idr);
+	KUNIT_EXPECT_EQ(test, regs.next_idr_pic_id, (u8)0);
+}
+
+static void mt6797_venc_h264_frame_force_intra_test(struct kunit *test)
+{
+	struct mt6797_venc_h264_frame_params params = {
+		.frame_num = 7,
+		.intra_period = 30,
+		.gop_size = 60,
+		.profile_idc = MT6797_VENC_H264_PROFILE_BASELINE,
+		.force_intra = true,
+	};
+	struct mt6797_venc_h264_frame_regs regs = { };
+	int ret;
+
+	ret = mt6797_venc_h264_calc_frame_regs(&params, &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.reg_010, (u32)0xb406);
+	KUNIT_EXPECT_EQ(test, regs.reg_128, (u32)0);
+	KUNIT_EXPECT_TRUE(test, regs.is_intra);
+	KUNIT_EXPECT_TRUE(test, regs.is_idr);
+}
+
+static void mt6797_venc_h264_ref_regs_test(struct kunit *test)
+{
+	u32 work_buf_regs[MT6797_VENC_H264_WORK_BUF_MAX] = {
+		[MT6797_VENC_H264_WORK_BUF_REC_LUMA] = 0x10,
+		[MT6797_VENC_H264_WORK_BUF_REC_CHROMA] = 0x20,
+		[MT6797_VENC_H264_WORK_BUF_REF_LUMA] = 0x30,
+		[MT6797_VENC_H264_WORK_BUF_REF_CHROMA] = 0x40,
+		[MT6797_VENC_H264_WORK_BUF_MV_INFO_1] = 0x50,
+		[MT6797_VENC_H264_WORK_BUF_MV_INFO_2] = 0x60,
+	};
+	struct mt6797_venc_h264_ref_regs regs = { };
+	int ret;
+
+	ret = mt6797_venc_h264_calc_ref_regs(work_buf_regs, 0, &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.ref_luma, (u32)0x30);
+	KUNIT_EXPECT_EQ(test, regs.ref_chroma, (u32)0x40);
+	KUNIT_EXPECT_EQ(test, regs.rec_luma, (u32)0x10);
+	KUNIT_EXPECT_EQ(test, regs.rec_chroma, (u32)0x20);
+	KUNIT_EXPECT_EQ(test, regs.mv_info_1, (u32)0x50);
+	KUNIT_EXPECT_EQ(test, regs.mv_info_2, (u32)0x60);
+
+	ret = mt6797_venc_h264_calc_ref_regs(work_buf_regs, 1, &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.ref_luma, (u32)0x10);
+	KUNIT_EXPECT_EQ(test, regs.ref_chroma, (u32)0x20);
+	KUNIT_EXPECT_EQ(test, regs.rec_luma, (u32)0x30);
+	KUNIT_EXPECT_EQ(test, regs.rec_chroma, (u32)0x40);
+	KUNIT_EXPECT_EQ(test, regs.mv_info_1, (u32)0x60);
+	KUNIT_EXPECT_EQ(test, regs.mv_info_2, (u32)0x50);
+}
+
 static struct kunit_case mt6797_venc_h264_cases[] = {
 	KUNIT_CASE(mt6797_venc_h264_rcpu_size_test),
 	KUNIT_CASE(mt6797_venc_h264_work_buf_1080p_test),
@@ -213,6 +311,9 @@ static struct kunit_case mt6797_venc_h264_cases[] = {
 	KUNIT_CASE(mt6797_venc_h264_io_regs_reject_test),
 	KUNIT_CASE(mt6797_venc_h264_seq_regs_baseline_test),
 	KUNIT_CASE(mt6797_venc_h264_seq_regs_profile_test),
+	KUNIT_CASE(mt6797_venc_h264_frame_regs_test),
+	KUNIT_CASE(mt6797_venc_h264_frame_force_intra_test),
+	KUNIT_CASE(mt6797_venc_h264_ref_regs_test),
 	{}
 };
 

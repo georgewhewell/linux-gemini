@@ -63,6 +63,7 @@ struct mt6797_venc_h264_seq_params {
 	u32 buf_width;
 	u32 buf_height;
 	u32 intra_period;
+	u32 gop_size;
 	u32 bitrate;
 	u32 framerate;
 	u32 profile_idc;
@@ -84,6 +85,37 @@ struct mt6797_venc_h264_seq_regs {
 	u32 reg_0f4;
 	u32 reg_0fc;
 	u32 reg_12c;
+};
+
+struct mt6797_venc_h264_frame_params {
+	u32 frame_num;
+	u32 intra_period;
+	u32 gop_size;
+	u32 profile_idc;
+	u8 idr_pic_id;
+	bool force_intra;
+};
+
+struct mt6797_venc_h264_frame_regs {
+	u32 reg_010;
+	u32 reg_014;
+	u32 reg_018;
+	u32 reg_01c;
+	u32 reg_124;
+	u32 reg_128;
+	u32 mode;
+	u8 next_idr_pic_id;
+	bool is_intra;
+	bool is_idr;
+};
+
+struct mt6797_venc_h264_ref_regs {
+	u32 ref_luma;
+	u32 ref_chroma;
+	u32 rec_luma;
+	u32 rec_chroma;
+	u32 mv_info_1;
+	u32 mv_info_2;
 };
 
 static inline int
@@ -223,7 +255,9 @@ mt6797_venc_h264_calc_seq_regs(const struct mt6797_venc_h264_seq_params *params,
 	if (params->intra_period <= 30)
 		intra_bits = params->intra_period << 14;
 
-	regs->reg_004 = 0x58000000 + intra_bits + params->intra_period;
+	if (check_add_overflow(0x58000000U + intra_bits, params->gop_size,
+			       &regs->reg_004))
+		return -EINVAL;
 	regs->reg_008 = 0x626e5fae;
 	regs->reg_00c = params->profile_idc ==
 				MT6797_VENC_H264_PROFILE_BASELINE ?
@@ -241,6 +275,101 @@ mt6797_venc_h264_calc_seq_regs(const struct mt6797_venc_h264_seq_params *params,
 	regs->reg_0f4 = 0;
 	regs->reg_0fc = 0;
 	regs->reg_12c = 0x0fff0fff;
+
+	return 0;
+}
+
+static inline int
+mt6797_venc_h264_calc_frame_regs(const struct mt6797_venc_h264_frame_params *params,
+				 struct mt6797_venc_h264_frame_regs *regs)
+{
+	u32 intra_pos = 0;
+	u32 ref_guard = 0;
+	bool vendor_intra;
+
+	if (!params || !regs || params->idr_pic_id > 1)
+		return -EINVAL;
+
+	switch (params->profile_idc) {
+	case MT6797_VENC_H264_PROFILE_BASELINE:
+	case MT6797_VENC_H264_PROFILE_MAIN:
+	case MT6797_VENC_H264_PROFILE_HIGH:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (params->intra_period)
+		intra_pos = params->frame_num % params->intra_period;
+	vendor_intra = !params->frame_num ||
+			 (params->intra_period && !intra_pos) ||
+			 params->force_intra;
+
+	regs->is_idr = !params->frame_num ||
+			(params->gop_size &&
+			 !(params->frame_num % params->gop_size)) ||
+			params->force_intra;
+	regs->is_intra = vendor_intra || regs->is_idr;
+
+	if (!params->force_intra && params->frame_num &&
+	    !(!params->intra_period && params->frame_num == 1) &&
+	    (!params->intra_period || intra_pos > 1))
+		ref_guard = 0x100;
+
+	regs->reg_010 = 0x8400 | ref_guard;
+	if (vendor_intra)
+		regs->reg_010 |= 0x3002;
+	if (regs->is_idr)
+		regs->reg_010 |= 4 | params->idr_pic_id << 3;
+
+	regs->reg_014 = params->frame_num;
+	regs->reg_018 = params->frame_num;
+	regs->reg_01c = params->gop_size ?
+		params->frame_num / params->gop_size * params->gop_size : 0;
+	regs->reg_124 = 0;
+	regs->reg_128 = params->profile_idc ==
+		MT6797_VENC_H264_PROFILE_BASELINE ? 0 : 0x10000;
+	regs->mode = params->frame_num ? 0x0fa00010 : 0x0f600010;
+	regs->next_idr_pic_id = regs->is_idr ? !params->idr_pic_id :
+		params->idr_pic_id;
+
+	return 0;
+}
+
+static inline int
+mt6797_venc_h264_calc_ref_regs(const u32 *work_buf_regs, u32 frame_num,
+			       struct mt6797_venc_h264_ref_regs *regs)
+{
+	if (!work_buf_regs || !regs)
+		return -EINVAL;
+
+	if (!(frame_num & 1)) {
+		regs->ref_luma =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_REF_LUMA];
+		regs->ref_chroma =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_REF_CHROMA];
+		regs->rec_luma =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_REC_LUMA];
+		regs->rec_chroma =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_REC_CHROMA];
+		regs->mv_info_1 =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_MV_INFO_1];
+		regs->mv_info_2 =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_MV_INFO_2];
+	} else {
+		regs->ref_luma =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_REC_LUMA];
+		regs->ref_chroma =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_REC_CHROMA];
+		regs->rec_luma =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_REF_LUMA];
+		regs->rec_chroma =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_REF_CHROMA];
+		regs->mv_info_1 =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_MV_INFO_2];
+		regs->mv_info_2 =
+			work_buf_regs[MT6797_VENC_H264_WORK_BUF_MV_INFO_1];
+	}
 
 	return 0;
 }

@@ -6,9 +6,10 @@
 #include <linux/cpu.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/mfd/syscon.h>
 #include <linux/mutex.h>
-#include <linux/of_address.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
 #include <linux/soc/mediatek/mt6797-a72-power.h>
@@ -33,8 +34,6 @@
 #define MT6797_BIGIDVFS_SRAM_SEL_MASK	GENMASK(11, 0)
 #define MT6797_BIGIDVFS_SRAM_SEL_1100MV	0x8fb
 
-#define MT6797_VPROC_UV			1000000
-
 enum mt6797_a72_state {
 	MT6797_A72_OFF,
 	MT6797_A72_STARTING,
@@ -46,17 +45,19 @@ struct mt6797_a72_power {
 	struct device *dev;
 	struct regulator *vproc;
 	struct reset_control *pwrap_reset;
-	void __iomem *spm;
+	struct regmap *spm;
 	void __iomem *mcucfg;
 	struct mutex lock; /* Serializes cluster state and hardware operations. */
+	raw_spinlock_t state_lock;
 	cpumask_t cpus;
+	cpumask_t accepted;
 	cpumask_t powered;
 	unsigned int cpu8;
 	unsigned int cpu9;
 	enum mt6797_a72_state state;
 	bool allow_cpu9;
-	bool allow_cpu_off;
 	bool rail_vote;
+	int vproc_uv;
 };
 
 static DEFINE_MUTEX(mt6797_a72_owner_lock);
@@ -113,73 +114,98 @@ static int mt6797_a72_sram_enable(void)
 	return 0;
 }
 
+static void mt6797_a72_set_state(struct mt6797_a72_power *power,
+				 enum mt6797_a72_state state)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&power->state_lock, flags);
+	power->state = state;
+	raw_spin_unlock_irqrestore(&power->state_lock, flags);
+}
+
 static int mt6797_a72_prepare_first(struct mt6797_a72_power *power)
 {
-	u32 isolation, poweron;
+	u32 isolation, poweron, value;
 	bool reset_asserted = false;
-	int old_uv;
+	bool vproc_was_enabled;
+	int cleanup_ret = 0;
+	int enabled;
+	int uv;
 	int ret;
 
-	poweron = readl(power->spm + SPM_POWERON_CONFIG_EN);
+	/* Capture the inherited provider state before the first hardware write. */
+	enabled = regulator_is_enabled(power->vproc);
+	if (enabled < 0)
+		return enabled;
+	vproc_was_enabled = enabled;
+	uv = regulator_get_voltage(power->vproc);
+	if (uv <= 0)
+		return uv ?: -ERANGE;
+	power->vproc_uv = uv;
+
+	ret = regmap_read(power->spm, SPM_POWERON_CONFIG_EN, &poweron);
+	if (ret)
+		return ret;
 	if (poweron != SPM_POWERON_PROOF_OFF &&
 	    poweron != SPM_POWERON_PROOF_ON)
 		return -ERANGE;
 
-	writel(poweron | BIT(0), power->spm + SPM_POWERON_CONFIG_EN);
-	if (readl(power->spm + SPM_POWERON_CONFIG_EN) !=
-	    SPM_POWERON_PROOF_ON) {
-		ret = -EIO;
+	ret = regmap_update_bits(power->spm, SPM_POWERON_CONFIG_EN, BIT(0),
+				 BIT(0));
+	if (ret)
+		return ret;
+	ret = regmap_read(power->spm, SPM_POWERON_CONFIG_EN, &value);
+	if (ret || value != SPM_POWERON_PROOF_ON) {
+		ret = ret ?: -EIO;
 		goto restore_poweron;
 	}
 
-	/* Vendor ordering read from BIG_ARMPLL_CON0 before latching PWRAP. */
+	/* The initial PLL, mux and divider remain secure-firmware owned. */
 	readl(power->mcucfg + MCUCFG_BIG_ARMPLL_CON0);
 	ret = reset_control_assert(power->pwrap_reset);
 	if (ret)
 		goto restore_poweron;
 	reset_asserted = true;
 
-	old_uv = regulator_get_voltage(power->vproc);
-	if (old_uv < 0) {
-		ret = old_uv;
-		goto rollback;
-	}
-	ret = regulator_set_voltage(power->vproc, MT6797_VPROC_UV,
-				    MT6797_VPROC_UV);
-	if (ret)
-		goto rollback;
 	ret = regulator_enable(power->vproc);
 	if (ret)
-		goto restore_voltage;
+		goto rollback_preisolation;
 	power->rail_vote = true;
 	usleep_range(1000, 1250);
-	ret = regulator_is_enabled(power->vproc);
-	if (ret <= 0) {
-		ret = ret ?: -EIO;
-		goto disable_rail;
+	enabled = regulator_is_enabled(power->vproc);
+	if (enabled <= 0) {
+		ret = enabled ?: -EIO;
+		goto rollback_preisolation;
 	}
 	ret = regulator_get_voltage(power->vproc);
-	if (ret != MT6797_VPROC_UV) {
+	if (ret != uv) {
 		ret = ret < 0 ? ret : -ERANGE;
-		goto disable_rail;
+		goto rollback_preisolation;
 	}
 
-	isolation = readl(power->spm + SPM_EXT_BUCK_ISO);
+	ret = regmap_read(power->spm, SPM_EXT_BUCK_ISO, &isolation);
+	if (ret)
+		goto rollback_preisolation;
 	if ((isolation & SPM_EXT_BUCK_ISO_MASK) != BIT(1) &&
 	    (isolation & SPM_EXT_BUCK_ISO_MASK)) {
 		ret = -ERANGE;
-		goto disable_rail;
+		goto rollback_preisolation;
 	}
-	writel(isolation & ~SPM_EXT_BUCK_ISO_MASK,
-	       power->spm + SPM_EXT_BUCK_ISO);
-	if (readl(power->spm + SPM_EXT_BUCK_ISO) &
-	    SPM_EXT_BUCK_ISO_MASK) {
-		ret = -EIO;
-		goto restore_isolation;
+
+	/* No proven inverse exists once the isolation write is attempted. */
+	ret = regmap_update_bits(power->spm, SPM_EXT_BUCK_ISO,
+				 SPM_EXT_BUCK_ISO_MASK, 0);
+	if (ret)
+		goto faulted;
+	ret = regmap_read(power->spm, SPM_EXT_BUCK_ISO, &value);
+	if (ret || (value & SPM_EXT_BUCK_ISO_MASK)) {
+		ret = ret ?: -EIO;
+		goto faulted;
 	}
 	ret = reset_control_deassert(power->pwrap_reset);
 	if (ret)
-		goto restore_isolation;
+		goto faulted;
 	reset_asserted = false;
 
 	usleep_range(240, 260);
@@ -187,50 +213,91 @@ static int mt6797_a72_prepare_first(struct mt6797_a72_power *power)
 	if (ret)
 		goto faulted;
 	dev_info(power->dev,
-		 "CPU%u power ready: VPROC=1000000uV SRAM=1100000uV\n",
-		 power->cpu8);
+		 "CPU%u power ready: inherited VPROC=%duV SRAM=1100000uV\n",
+		 power->cpu8, power->vproc_uv);
 	return 0;
 
 faulted:
-	/* No firmware ABI exists to undo the SRAM write safely. Keep rails on. */
-	dev_err(power->dev, "SRAM LDO sequence failed after mutation: %d\n", ret);
-	power->state = MT6797_A72_FAULT;
+	if (reset_asserted) {
+		cleanup_ret = reset_control_deassert(power->pwrap_reset);
+		if (cleanup_ret)
+			dev_err(power->dev,
+				"failed to release PWRAP reset after fault: %d\n",
+				cleanup_ret);
+	}
+	/* Keep the rail, SPM reset release and isolation state as observed. */
+	mt6797_a72_set_state(power, MT6797_A72_FAULT);
+	dev_err(power->dev,
+		"power sequence failed beyond isolation boundary: %d%s\n", ret,
+		cleanup_ret ? "; PWRAP reset state uncertain" : "");
 	return ret;
 
-restore_isolation:
-	writel(isolation, power->spm + SPM_EXT_BUCK_ISO);
-disable_rail:
-	regulator_disable(power->vproc);
-	power->rail_vote = false;
-restore_voltage:
-	regulator_set_voltage(power->vproc, old_uv, old_uv);
-rollback:
-	if (reset_asserted)
-		reset_control_deassert(power->pwrap_reset);
+rollback_preisolation:
+	if (reset_asserted) {
+		cleanup_ret = reset_control_deassert(power->pwrap_reset);
+		reset_asserted = false;
+	}
+	if (!cleanup_ret && power->rail_vote) {
+		if (vproc_was_enabled) {
+			/* Dropping the vote could disable an inherited live rail. */
+			cleanup_ret = -EBUSY;
+		} else {
+			enabled = regulator_is_enabled(power->vproc);
+			uv = regulator_get_voltage(power->vproc);
+			if (enabled <= 0 || uv != power->vproc_uv)
+				cleanup_ret = -EBUSY;
+			else
+				cleanup_ret = regulator_disable(power->vproc);
+			if (!cleanup_ret)
+				power->rail_vote = false;
+		}
+	}
+	if (cleanup_ret) {
+		mt6797_a72_set_state(power, MT6797_A72_FAULT);
+		dev_err(power->dev,
+			"pre-isolation cleanup retained power: %d\n", cleanup_ret);
+		return ret;
+	}
+
 restore_poweron:
-	writel(poweron, power->spm + SPM_POWERON_CONFIG_EN);
+	cleanup_ret = regmap_update_bits(power->spm, SPM_POWERON_CONFIG_EN,
+					 BIT(0), poweron & BIT(0));
+	if (!cleanup_ret)
+		cleanup_ret = regmap_read(power->spm, SPM_POWERON_CONFIG_EN,
+					  &value);
+	if (cleanup_ret || value != poweron) {
+		mt6797_a72_set_state(power, MT6797_A72_FAULT);
+		return cleanup_ret ?: -EIO;
+	}
 	return ret;
 }
 
-static void mt6797_a72_dcm_set(struct mt6797_a72_power *power, bool on)
+static int mt6797_a72_dcm_enable(struct mt6797_a72_power *power)
 {
-	u32 value = readl(power->mcucfg + MCUCFG_MP2_SYNC_DCM);
+	u32 base = readl(power->mcucfg + MCUCFG_MP2_SYNC_DCM);
+	u32 value;
 
-	value &= ~MCUCFG_MP2_SYNC_DCM_MASK;
-	if (on) {
-		writel(value | MCUCFG_MP2_SYNC_DCM_TOGGLE,
-		       power->mcucfg + MCUCFG_MP2_SYNC_DCM);
-		writel(value | MCUCFG_MP2_SYNC_DCM_ON,
-		       power->mcucfg + MCUCFG_MP2_SYNC_DCM);
-	} else {
-		writel(value | BIT(1), power->mcucfg + MCUCFG_MP2_SYNC_DCM);
-		writel(value, power->mcucfg + MCUCFG_MP2_SYNC_DCM);
-	}
+	base &= ~MCUCFG_MP2_SYNC_DCM_MASK;
+	writel(base | MCUCFG_MP2_SYNC_DCM_TOGGLE,
+	       power->mcucfg + MCUCFG_MP2_SYNC_DCM);
+	value = readl(power->mcucfg + MCUCFG_MP2_SYNC_DCM);
+	if ((value & MCUCFG_MP2_SYNC_DCM_MASK) !=
+	    MCUCFG_MP2_SYNC_DCM_TOGGLE)
+		return -EIO;
+
+	writel(base | MCUCFG_MP2_SYNC_DCM_ON,
+	       power->mcucfg + MCUCFG_MP2_SYNC_DCM);
+	value = readl(power->mcucfg + MCUCFG_MP2_SYNC_DCM);
+	if ((value & MCUCFG_MP2_SYNC_DCM_MASK) != MCUCFG_MP2_SYNC_DCM_ON)
+		return -EIO;
+
+	return 0;
 }
 
 int mt6797_a72_power_prepare(unsigned int cpu)
 {
 	struct mt6797_a72_power *power;
+	unsigned long flags;
 	int ret = 0;
 
 	mutex_lock(&mt6797_a72_owner_lock);
@@ -248,21 +315,32 @@ int mt6797_a72_power_prepare(unsigned int cpu)
 		ret = -EPERM;
 		goto out;
 	}
+	raw_spin_lock_irqsave(&power->state_lock, flags);
 	if (power->state == MT6797_A72_FAULT ||
 	    power->state == MT6797_A72_STARTING) {
 		ret = -EIO;
-		goto out;
+		goto out_state;
 	}
 	if (power->state == MT6797_A72_OFF) {
 		if (cpu != power->cpu8) {
 			ret = -EPERM;
-			goto out;
+			goto out_state;
 		}
 		power->state = MT6797_A72_STARTING;
+		cpumask_clear_cpu(cpu, &power->accepted);
+		raw_spin_unlock_irqrestore(&power->state_lock, flags);
 		ret = mt6797_a72_prepare_first(power);
-		if (ret && power->state != MT6797_A72_FAULT)
-			power->state = MT6797_A72_OFF;
+		if (ret) {
+			raw_spin_lock_irqsave(&power->state_lock, flags);
+			if (power->state == MT6797_A72_STARTING)
+				power->state = MT6797_A72_OFF;
+			raw_spin_unlock_irqrestore(&power->state_lock, flags);
+		}
+		goto out;
 	}
+	cpumask_clear_cpu(cpu, &power->accepted);
+out_state:
+	raw_spin_unlock_irqrestore(&power->state_lock, flags);
 out:
 	mutex_unlock(&power->lock);
 out_owner:
@@ -270,85 +348,68 @@ out_owner:
 	return ret;
 }
 
-void mt6797_a72_power_complete(unsigned int cpu, int psci_ret)
+void mt6797_a72_power_psci_return(unsigned int cpu, int psci_ret)
 {
 	struct mt6797_a72_power *power;
+	unsigned long flags;
 
 	mutex_lock(&mt6797_a72_owner_lock);
 	power = mt6797_a72_owner;
 	if (!power)
 		goto out_owner;
-	mutex_lock(&power->lock);
+	raw_spin_lock_irqsave(&power->state_lock, flags);
 	if (psci_ret) {
-		if (power->state == MT6797_A72_STARTING) {
-			power->state = MT6797_A72_FAULT;
-			dev_err(power->dev,
-				"PSCI CPU_ON failed after power-up: CPU%u: %d\n",
-				cpu, psci_ret);
-		}
-		goto out;
+		power->state = MT6797_A72_FAULT;
+		raw_spin_unlock_irqrestore(&power->state_lock, flags);
+		dev_err(power->dev,
+			"PSCI CPU_ON failed after power-up: CPU%u: %d\n",
+			cpu, psci_ret);
+		goto out_owner;
 	}
-	if (power->state == MT6797_A72_STARTING) {
-		mt6797_a72_dcm_set(power, true);
+	cpumask_set_cpu(cpu, &power->accepted);
+	raw_spin_unlock_irqrestore(&power->state_lock, flags);
+	dev_info(power->dev, "PSCI accepted CPU%u; awaiting postboot\n", cpu);
+out_owner:
+	mutex_unlock(&mt6797_a72_owner_lock);
+}
+
+int mt6797_a72_power_postboot(unsigned int cpu)
+{
+	struct mt6797_a72_power *power = READ_ONCE(mt6797_a72_owner);
+	int ret = 0;
+
+	if (!power || !cpumask_test_cpu(cpu, &power->cpus))
+		return -ENODEV;
+
+	raw_spin_lock(&power->state_lock);
+	if (!cpumask_test_cpu(cpu, &power->accepted)) {
+		ret = -EPROTO;
+		goto fault;
+	}
+	if (cpu == power->cpu8) {
+		if (power->state != MT6797_A72_STARTING) {
+			ret = -EPROTO;
+			goto fault;
+		}
+		ret = mt6797_a72_dcm_enable(power);
+		if (ret)
+			goto fault;
 		power->state = MT6797_A72_ON;
+	} else if (power->state != MT6797_A72_ON || !power->allow_cpu9) {
+		ret = -EPERM;
+		goto fault;
 	}
 	cpumask_set_cpu(cpu, &power->powered);
-	dev_info(power->dev, "PSCI accepted CPU%u; cluster mask=%*pbl\n",
-		 cpu, cpumask_pr_args(&power->powered));
-out:
-	mutex_unlock(&power->lock);
-out_owner:
-	mutex_unlock(&mt6797_a72_owner_lock);
-}
+	raw_spin_unlock(&power->state_lock);
+	dev_info(power->dev, "CPU%u postboot complete; DCM=0x%02x\n",
+		 cpu, MCUCFG_MP2_SYNC_DCM_ON);
+	return 0;
 
-int mt6797_a72_power_can_disable(unsigned int cpu)
-{
-	struct mt6797_a72_power *power;
-	int ret = -EPERM;
-
-	mutex_lock(&mt6797_a72_owner_lock);
-	power = mt6797_a72_owner;
-	if (!power)
-		goto out;
-	mutex_lock(&power->lock);
-	if (cpumask_test_cpu(cpu, &power->cpus) && power->allow_cpu_off &&
-	    power->state == MT6797_A72_ON)
-		ret = 0;
-	mutex_unlock(&power->lock);
-out:
-	mutex_unlock(&mt6797_a72_owner_lock);
+fault:
+	power->state = MT6797_A72_FAULT;
+	raw_spin_unlock(&power->state_lock);
+	dev_err(power->dev, "CPU%u postboot completion failed: %d\n", cpu, ret);
 	return ret;
-}
-
-void mt6797_a72_power_off(unsigned int cpu)
-{
-	struct mt6797_a72_power *power;
-
-	mutex_lock(&mt6797_a72_owner_lock);
-	power = mt6797_a72_owner;
-	if (!power)
-		goto out_owner;
-	mutex_lock(&power->lock);
-	cpumask_clear_cpu(cpu, &power->powered);
-	if (power->state == MT6797_A72_ON && cpumask_empty(&power->powered)) {
-		mt6797_a72_dcm_set(power, false);
-		if (power->rail_vote) {
-			int ret = regulator_disable(power->vproc);
-
-			if (ret) {
-				power->state = MT6797_A72_FAULT;
-				dev_err(power->dev,
-					"failed to disable VPROC: %d\n", ret);
-				goto out;
-			}
-			power->rail_vote = false;
-		}
-		power->state = MT6797_A72_OFF;
-	}
-out:
-	mutex_unlock(&power->lock);
-out_owner:
-	mutex_unlock(&mt6797_a72_owner_lock);
 }
 
 static int mt6797_a72_parse_cpus(struct device *dev,
@@ -381,8 +442,6 @@ static int mt6797_a72_parse_cpus(struct device *dev,
 
 static int mt6797_a72_power_probe(struct platform_device *pdev)
 {
-	struct device_node *spm_np;
-	struct resource spm_res;
 	struct mt6797_a72_power *power;
 	struct device *dev = &pdev->dev;
 	int ret;
@@ -392,6 +451,9 @@ static int mt6797_a72_power_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	power->dev = dev;
 	mutex_init(&power->lock);
+	raw_spin_lock_init(&power->state_lock);
+	cpumask_clear(&power->accepted);
+	cpumask_clear(&power->powered);
 	ret = mt6797_a72_parse_cpus(dev, power);
 	if (ret)
 		return ret;
@@ -400,8 +462,6 @@ static int mt6797_a72_power_probe(struct platform_device *pdev)
 				     "A72 CPU online before power owner\n");
 	power->allow_cpu9 = of_property_read_bool(dev->of_node,
 						  "mediatek,allow-cpu9");
-	power->allow_cpu_off = of_property_read_bool(dev->of_node,
-						     "mediatek,allow-cpu-off");
 	power->vproc = devm_regulator_get(dev, "vproc");
 	if (IS_ERR(power->vproc))
 		return dev_err_probe(dev, PTR_ERR(power->vproc),
@@ -413,29 +473,23 @@ static int mt6797_a72_power_probe(struct platform_device *pdev)
 	power->mcucfg = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(power->mcucfg))
 		return PTR_ERR(power->mcucfg);
-	spm_np = of_parse_phandle(dev->of_node, "mediatek,spm", 0);
-	if (!spm_np)
-		return dev_err_probe(dev, -EINVAL, "missing SPM phandle\n");
-	ret = of_address_to_resource(spm_np, 0, &spm_res);
-	of_node_put(spm_np);
-	if (ret)
-		return dev_err_probe(dev, ret, "invalid SPM resource\n");
-	power->spm = devm_ioremap(dev, spm_res.start, resource_size(&spm_res));
-	if (!power->spm)
-		return -ENOMEM;
+	power->spm = syscon_regmap_lookup_by_phandle(dev->of_node,
+						     "mediatek,spm");
+	if (IS_ERR(power->spm))
+		return dev_err_probe(dev, PTR_ERR(power->spm),
+				     "failed to get SPM regmap\n");
 
 	mutex_lock(&mt6797_a72_owner_lock);
 	if (mt6797_a72_owner)
 		ret = -EBUSY;
 	else
-		mt6797_a72_owner = power;
+		WRITE_ONCE(mt6797_a72_owner, power);
 	mutex_unlock(&mt6797_a72_owner_lock);
 	if (ret)
 		return ret;
 
-	dev_info(dev, "CPU8 admission ready; CPU9 %s; CPU_OFF %s\n",
-		 power->allow_cpu9 ? "enabled" : "vetoed",
-		 power->allow_cpu_off ? "enabled" : "vetoed");
+	dev_info(dev, "CPU8 admission ready; CPU9 %s; CPU_OFF unavailable\n",
+		 power->allow_cpu9 ? "enabled" : "vetoed");
 	return 0;
 }
 

@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA battery-less USB power survival.
+ *
+ * LK configures the BQ25896 power path and leaves its charger watchdog
+ * running.  Adopt that configuration without resetting the charger or
+ * changing its input/charge limits, and service only the inherited watchdog.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	status = "okay";
+
+	bq25896_usb_power: charger@6b {
+		compatible = "ti,bq25896", "ti,bq25890";
+		reg = <0x6b>;
+		ti,adopt-firmware-settings;
+		status = "okay";
+	};
+};

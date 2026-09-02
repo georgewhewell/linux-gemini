@@ -665,11 +665,19 @@
 	status = "okay";
 };
 
+&m4u {
+	status = "okay";
+};
+
 &smi_common {
 	status = "okay";
 };
 
 &larb0 {
+	status = "okay";
+};
+
+&larb5 {
 	status = "okay";
 };
 
@@ -687,8 +695,6 @@
 
 &ovl0_2l {
 	status = "okay";
-	/delete-property/ iommus;
-	mediatek,larb = <&larb0>;
 
 	ports {
 		#address-cells = <1>;
@@ -714,8 +720,6 @@
 
 &ovl1_2l {
 	status = "okay";
-	/delete-property/ iommus;
-	mediatek,larb = <&larb0>;
 
 	ports {
 		#address-cells = <1>;

@@ -11952,6 +11952,7 @@ M:	Sakari Ailus <sakari.ailus@linux.intel.com>
 L:	linux-media@vger.kernel.org
 S:	Maintained
 T:	git git://linuxtv.org/media.git
+F:	Documentation/devicetree/bindings/media/i2c/siliconfile,sp5509.yaml
 F:	drivers/media/i2c/hi556.c
 
 HYNIX HI846 SENSOR DRIVER

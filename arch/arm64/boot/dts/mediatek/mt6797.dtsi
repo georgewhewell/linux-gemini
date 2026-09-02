@@ -1110,8 +1110,8 @@
 		      <0 0x16026800 0 0x800>,
 		      <0 0x16027800 0 0x800>,
 		      <0 0x16028000 0 0x1000>;
-		reg-names = "misc", "vld", "vld-top", "mc", "avc-vld",
-			    "avc-mv", "pp", "vp8-vld", "vld2", "hevc-vld";
+		reg-names = "misc", "ld", "top", "cm", "ad", "av", "pp",
+			    "hwd", "hwq", "hwb";
 		interrupts = <GIC_SPI 240 IRQ_TYPE_LEVEL_LOW>;
 		clocks = <&vdecsys CLK_VDEC_CKEN>;
 		clock-names = "vdec";

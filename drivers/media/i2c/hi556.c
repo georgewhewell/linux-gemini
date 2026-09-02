@@ -141,6 +141,7 @@ struct hi556_config {
 	u8 exposure_margin;
 	bool supports_digital_gain;
 	bool is_sp5509;
+	bool sequential_power;
 };
 
 #define to_hi556(_sd) container_of(_sd, struct hi556, sd)
@@ -944,6 +945,7 @@ static const struct hi556_config sp5509_config = {
 	.exposure_min = 4,
 	.exposure_margin = 4,
 	.is_sp5509 = true,
+	.sequential_power = true,
 };
 
 static const char * const hi556_supply_names[] = {
@@ -1687,11 +1689,25 @@ static int hi556_suspend(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct hi556 *hi556 = to_hi556(sd);
+	unsigned int i;
 
 	gpiod_set_value_cansleep(hi556->powerdown_gpio, 1);
+	if (hi556->config->sequential_power)
+		usleep_range(hi556->config->power_delay_us,
+			     hi556->config->power_delay_us + 500);
 	gpiod_set_value_cansleep(hi556->reset_gpio, 1);
-	regulator_bulk_disable(ARRAY_SIZE(hi556_supply_names),
-			       hi556->supplies);
+	if (hi556->config->sequential_power) {
+		usleep_range(hi556->config->power_delay_us,
+			     hi556->config->power_delay_us + 500);
+		for (i = ARRAY_SIZE(hi556_supply_names); i-- > 0;) {
+			regulator_disable(hi556->supplies[i].consumer);
+			usleep_range(hi556->config->power_delay_us,
+				     hi556->config->power_delay_us + 500);
+		}
+	} else {
+		regulator_bulk_disable(ARRAY_SIZE(hi556_supply_names),
+				       hi556->supplies);
+	}
 	clk_disable_unprepare(hi556->clk);
 	return 0;
 }
@@ -1700,28 +1716,38 @@ static int hi556_resume(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct hi556 *hi556 = to_hi556(sd);
+	unsigned int i;
 	int ret;
 
 	ret = clk_prepare_enable(hi556->clk);
 	if (ret)
 		return ret;
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(hi556_supply_names),
-				    hi556->supplies);
-	if (ret) {
-		dev_err(dev, "failed to enable regulators: %d", ret);
-		clk_disable_unprepare(hi556->clk);
-		return ret;
+	if (hi556->config->sequential_power) {
+		for (i = 0; i < ARRAY_SIZE(hi556_supply_names); i++) {
+			ret = regulator_enable(hi556->supplies[i].consumer);
+			if (ret)
+				goto disable_supplies;
+			usleep_range(hi556->config->power_delay_us,
+				     hi556->config->power_delay_us + 500);
+		}
+	} else {
+		ret = regulator_bulk_enable(ARRAY_SIZE(hi556_supply_names),
+					    hi556->supplies);
+		if (ret) {
+			dev_err(dev, "failed to enable regulators: %d\n", ret);
+			goto disable_clock;
+		}
 	}
 
-	if (hi556->reset_gpio || hi556->powerdown_gpio) {
+	if (!hi556->config->sequential_power &&
+	    (hi556->reset_gpio || hi556->powerdown_gpio)) {
 		usleep_range(hi556->config->power_delay_us,
 			     hi556->config->power_delay_us + 500);
 	}
 
-	if (hi556->reset_gpio) {
+	if (hi556->reset_gpio)
 		gpiod_set_value_cansleep(hi556->reset_gpio, 0);
-	}
 
 	usleep_range(hi556->config->power_delay_us,
 		     hi556->config->power_delay_us + 500);
@@ -1732,6 +1758,15 @@ static int hi556_resume(struct device *dev)
 			     hi556->config->power_delay_us + 500);
 	}
 	return 0;
+
+disable_supplies:
+	dev_err(dev, "failed to enable regulator %s: %d\n",
+		hi556->supplies[i].supply, ret);
+	while (i-- > 0)
+		regulator_disable(hi556->supplies[i].consumer);
+disable_clock:
+	clk_disable_unprepare(hi556->clk);
+	return ret;
 }
 
 static int hi556_probe(struct i2c_client *client)

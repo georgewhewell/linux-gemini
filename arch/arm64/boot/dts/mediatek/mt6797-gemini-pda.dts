@@ -158,6 +158,27 @@
 	};
 };
 
+/*
+ * LK leaves the MT6351 FGADC configured with the vendor board calibration.
+ * Linux takes ownership of coherent current and coulomb-counter sampling, but
+ * does not infer capacity, voltage, or charger policy from those readings.
+ */
+&mt6351fg {
+	status = "disabled";
+};
+
+&mt6351fgadc {
+	status = "okay";
+	mediatek,initialize-fgadc;
+	mediatek,fgadc-init-control = <0x28>;
+	mediatek,fgadc-osr = <8>;
+	mediatek,fg-resistance-milliohm = <10>;
+	mediatek,fg-board-base = <1000>;
+	mediatek,fg-board-slope = <1000>;
+	mediatek,car-tune = <118>;
+	mediatek,fg-trim-permille = <1000>;
+};
+
 &mt6351regulator {
 	mt6351_vemc_reg: ldo-vemc {
 		regulator-name = "vemc_3v3";
@@ -828,6 +849,17 @@
 			typec-power-opmode = "default";
 			pd-disable;
 		};
+	};
+
+	/*
+	 * LK establishes the BQ25896 input and charge policy. Preserve those
+	 * limits and service only the watchdog it handed to Linux.
+	 */
+	bq25896_charger: charger@6b {
+		compatible = "ti,bq25896", "ti,bq25890";
+		reg = <0x6b>;
+		ti,adopt-firmware-settings;
+		status = "okay";
 	};
 
 	/* FAN49101 is populated, but keep the regulator and consumer disabled. */

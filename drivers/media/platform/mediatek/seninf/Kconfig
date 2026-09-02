@@ -8,16 +8,16 @@ config VIDEO_MTK_MT6797_SENINF
 	depends on ARCH_MEDIATEK || COMPILE_TEST
 	depends on VIDEO_DEV
 	depends on OF
+	depends on NVMEM
 	select MEDIA_CONTROLLER
 	select V4L2_ASYNC
 	select V4L2_FWNODE
 	select VIDEO_MTK_MT6797_SENINF_CORE
 	help
-	  Build the structural V4L2 bridge for the MT6797 sensor interface and
-	  CSI-2 receiver. The driver validates and reserves the documented SENINF
-	  and MIPI analog resources and represents a single, explicitly described
-	  media link. Streaming remains unavailable until the MT6797 D-PHY power
-	  and lane-routing sequence is independently established.
+	  Build the V4L2 bridge for the MT6797 sensor interface and CSI-2
+	  receiver. The driver supports the evidence-backed Gemini camera1/sub
+	  NCSI2 route at 2592x1944, with two data lanes and a 440 MHz link.
+	  Unestablished routes and modes fail closed.
 
 config VIDEO_MTK_MT6797_SENINF_KUNIT_TEST
 	tristate "KUnit tests for the MT6797 SENINF core" if !KUNIT_ALL_TESTS
@@ -25,7 +25,5 @@ config VIDEO_MTK_MT6797_SENINF_KUNIT_TEST
 	select VIDEO_MTK_MT6797_SENINF_CORE
 	default KUNIT_ALL_TESTS
 	help
-	  Test the side-effect-free MT6797 SENINF resource, endpoint and format
-	  validation helpers. The tests cover undersized and overlapping register
-	  windows, address overflow, unsupported PHY types and lane counts, and
-	  deterministic media-bus format normalization without touching hardware.
+	  Test MT6797 SENINF resource, endpoint, format and register-plan helpers.
+	  The tests use fake register banks and never touch hardware.

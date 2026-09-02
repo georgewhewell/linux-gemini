@@ -1,18 +1,26 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Structural V4L2 bridge for the MediaTek MT6797 SENINF/CSI-2 receiver.
+ * V4L2 bridge for the MediaTek MT6797 SENINF/CSI-2 receiver.
  *
- * The source evidence does not establish a safe D-PHY power and lane-routing
- * sequence. Consequently this driver never enables a clock or accesses a
- * register, and streaming deliberately fails with -EOPNOTSUPP.
+ * Only the Gemini camera1/sub NCSI2 route is enabled. Other sensor-interface
+ * instances and modes remain unavailable until their hardware sequences are
+ * independently established.
  */
 
 #include <linux/clk.h>
+#include <linux/delay.h>
+#include <linux/io.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
+#include <linux/slab.h>
+#include <linux/unaligned.h>
 
 #include <media/media-entity.h>
 #include <media/v4l2-async.h>
+#include <media/v4l2-common.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-mc.h>
 #include <media/v4l2-subdev.h>
@@ -25,7 +33,11 @@ struct mt6797_seninf {
 	void __iomem *core;
 	void __iomem *csi0_ana;
 	void __iomem *csi1_ana;
+	u32 calibration[MT6797_SENINF_CAL_WORDS];
+	unsigned int data_lanes[4];
 	unsigned int num_data_lanes;
+	bool streaming;
+	struct mutex lock; /* Protects streaming state and receiver programming. */
 
 	struct v4l2_subdev subdev;
 	struct media_pad pads[MT6797_SENINF_NUM_PADS];
@@ -37,10 +49,43 @@ static inline struct mt6797_seninf *to_mt6797_seninf(struct v4l2_subdev *sd)
 	return container_of(sd, struct mt6797_seninf, subdev);
 }
 
-static int
-mt6797_seninf_enum_mbus_code(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_state *state,
-			     struct v4l2_subdev_mbus_code_enum *code)
+static u8 __iomem *mt6797_seninf_bank_base(struct mt6797_seninf *seninf,
+					   enum mt6797_seninf_bank bank)
+{
+	return bank == MT6797_SENINF_BANK_CORE ? seninf->core :
+						 seninf->csi0_ana;
+}
+
+static u32 mt6797_seninf_io_read(void *context, enum mt6797_seninf_bank bank,
+				 u32 offset)
+{
+	struct mt6797_seninf *seninf = context;
+
+	return readl(mt6797_seninf_bank_base(seninf, bank) + offset);
+}
+
+static void mt6797_seninf_io_write(void *context, enum mt6797_seninf_bank bank,
+				   u32 offset, u32 value)
+{
+	struct mt6797_seninf *seninf = context;
+
+	writel(value, mt6797_seninf_bank_base(seninf, bank) + offset);
+}
+
+static void mt6797_seninf_io_delay(void *context, unsigned int min,
+				   unsigned int max)
+{
+	(void)context;
+
+	if (max <= 30)
+		udelay(min);
+	else
+		usleep_range(min, max + 1);
+}
+
+static int mt6797_seninf_enum_mbus_code(struct v4l2_subdev *sd,
+					struct v4l2_subdev_state *state,
+					struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->pad >= MT6797_SENINF_NUM_PADS || code->index)
 		return -EINVAL;
@@ -78,13 +123,73 @@ static int mt6797_seninf_set_fmt(struct v4l2_subdev *sd,
 static int mt6797_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct mt6797_seninf *seninf = to_mt6797_seninf(sd);
+	const struct mt6797_seninf_io io = {
+		.read = mt6797_seninf_io_read,
+		.write = mt6797_seninf_io_write,
+		.delay_us = mt6797_seninf_io_delay,
+		.context = seninf,
+	};
+	struct mt6797_seninf_config config = {
+		.num_data_lanes = seninf->num_data_lanes,
+		.settle_ns = MT6797_SENINF_FULL_SETTLE_NS,
+	};
+	struct v4l2_mbus_framefmt format;
+	struct v4l2_subdev_state *state;
+	struct media_pad *remote;
+	s64 link_freq;
+	int ret = 0;
 
-	if (!enable)
-		return 0;
+	mutex_lock(&seninf->lock);
+	if (!!enable == seninf->streaming)
+		goto out_unlock;
 
-	dev_err_ratelimited(seninf->dev,
-			    "streaming refused: MT6797 D-PHY sequence is not established\n");
-	return -EOPNOTSUPP;
+	if (!enable) {
+		mt6797_seninf_hw_stop(&io);
+		pm_runtime_put(seninf->dev);
+		seninf->streaming = false;
+		goto out_unlock;
+	}
+
+	state = v4l2_subdev_lock_and_get_active_state(sd);
+	format = *v4l2_subdev_state_get_format(state, MT6797_SENINF_PAD_SINK);
+	v4l2_subdev_unlock_state(state);
+
+	remote = media_pad_remote_pad_first(&seninf->pads[MT6797_SENINF_PAD_SINK]);
+	if (!remote) {
+		ret = -ENOLINK;
+		goto out_unlock;
+	}
+
+	link_freq = v4l2_get_link_freq(remote, 0, 0);
+	if (link_freq < 0) {
+		ret = link_freq;
+		goto out_unlock;
+	}
+
+	ret = mt6797_seninf_route_validate(seninf->data_lanes,
+					   seninf->num_data_lanes, &format,
+					   link_freq);
+	if (ret)
+		goto out_unlock;
+
+	memcpy(config.calibration, seninf->calibration,
+	       sizeof(config.calibration));
+	ret = pm_runtime_resume_and_get(seninf->dev);
+	if (ret < 0)
+		goto out_unlock;
+
+	ret = mt6797_seninf_hw_start(&io, &config);
+	if (ret) {
+		dev_err(seninf->dev, "NCSI2 calibration failed: %d\n", ret);
+		pm_runtime_put(seninf->dev);
+		goto out_unlock;
+	}
+
+	seninf->streaming = true;
+
+out_unlock:
+	mutex_unlock(&seninf->lock);
+	return ret;
 }
 
 static const struct v4l2_subdev_pad_ops mt6797_seninf_pad_ops = {
@@ -129,10 +234,9 @@ static const struct media_entity_operations mt6797_seninf_media_ops = {
 	.link_validate = v4l2_subdev_link_validate,
 };
 
-static int
-mt6797_seninf_notify_bound(struct v4l2_async_notifier *notifier,
-			   struct v4l2_subdev *subdev,
-			   struct v4l2_async_connection *connection)
+static int mt6797_seninf_notify_bound(struct v4l2_async_notifier *notifier,
+				      struct v4l2_subdev *subdev,
+				      struct v4l2_async_connection *connection)
 {
 	struct mt6797_seninf *seninf =
 		container_of(notifier, struct mt6797_seninf, notifier);
@@ -146,20 +250,25 @@ static const struct v4l2_async_notifier_operations mt6797_seninf_notify_ops = {
 	.bound = mt6797_seninf_notify_bound,
 };
 
-static int
-mt6797_seninf_resources_get(struct platform_device *pdev,
-			    struct mt6797_seninf *seninf)
+static int mt6797_seninf_resources_get(struct platform_device *pdev,
+				       struct mt6797_seninf *seninf)
 {
-	static const char * const names[] = {
-		"seninf", "csi0-ana", "csi1-ana",
+	static const char *const names[] = {
+		"seninf",
+		"csi0-ana",
+		"csi1-ana",
 	};
 	struct mt6797_seninf_res resources = {};
 	struct resource *resource;
 	void __iomem **bases[] = {
-		&seninf->core, &seninf->csi0_ana, &seninf->csi1_ana,
+		&seninf->core,
+		&seninf->csi0_ana,
+		&seninf->csi1_ana,
 	};
 	struct mt6797_seninf_range *ranges[] = {
-		&resources.core, &resources.csi0_ana, &resources.csi1_ana,
+		&resources.core,
+		&resources.csi0_ana,
+		&resources.csi1_ana,
 	};
 	unsigned int i;
 	int ret;
@@ -179,7 +288,8 @@ mt6797_seninf_resources_get(struct platform_device *pdev,
 				     "invalid SENINF/CSI analog resource layout\n");
 
 	for (i = 0; i < ARRAY_SIZE(names); i++) {
-		*bases[i] = devm_platform_ioremap_resource_byname(pdev, names[i]);
+		*bases[i] =
+			devm_platform_ioremap_resource_byname(pdev, names[i]);
 		if (IS_ERR(*bases[i]))
 			return PTR_ERR(*bases[i]);
 	}
@@ -212,6 +322,8 @@ static int mt6797_seninf_notifier_register(struct mt6797_seninf *seninf)
 		goto out_free_endpoint;
 	}
 	seninf->num_data_lanes = endpoint.bus.mipi_csi2.num_data_lanes;
+	memcpy(seninf->data_lanes, endpoint.bus.mipi_csi2.data_lanes,
+	       seninf->num_data_lanes * sizeof(seninf->data_lanes[0]));
 
 	v4l2_async_subdev_nf_init(&seninf->notifier, &seninf->subdev);
 	seninf->notifier.ops = &mt6797_seninf_notify_ops;
@@ -239,6 +351,53 @@ out_put_endpoint:
 	return ret;
 }
 
+static int mt6797_seninf_calibration_get(struct mt6797_seninf *seninf)
+{
+	struct nvmem_cell *cell;
+	const u8 *buffer;
+	size_t length;
+	unsigned int i;
+	int ret = 0;
+
+	cell = devm_nvmem_cell_get(seninf->dev, "csi-calibration-data");
+	if (IS_ERR(cell))
+		return dev_err_probe(seninf->dev, PTR_ERR(cell),
+				     "failed to get CSI calibration\n");
+
+	buffer = nvmem_cell_read(cell, &length);
+	if (IS_ERR(buffer))
+		return dev_err_probe(seninf->dev, PTR_ERR(buffer),
+				     "failed to read CSI calibration\n");
+	if (length != sizeof(seninf->calibration)) {
+		ret = dev_err_probe(seninf->dev, -EINVAL,
+				    "CSI calibration must contain five words\n");
+		goto out_free;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(seninf->calibration); i++)
+		seninf->calibration[i] =
+			get_unaligned_le32(buffer + i * sizeof(u32));
+
+out_free:
+	kfree(buffer);
+	return ret;
+}
+
+static int mt6797_seninf_runtime_resume(struct device *dev)
+{
+	struct mt6797_seninf *seninf = dev_get_drvdata(dev);
+
+	return clk_prepare_enable(seninf->seninf_clk);
+}
+
+static int mt6797_seninf_runtime_suspend(struct device *dev)
+{
+	struct mt6797_seninf *seninf = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(seninf->seninf_clk);
+	return 0;
+}
+
 static int mt6797_seninf_probe(struct platform_device *pdev)
 {
 	struct mt6797_seninf *seninf;
@@ -260,6 +419,16 @@ static int mt6797_seninf_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, PTR_ERR(seninf->seninf_clk),
 				     "failed to get SENINF clock\n");
 
+	ret = mt6797_seninf_calibration_get(seninf);
+	if (ret)
+		return ret;
+
+	mutex_init(&seninf->lock);
+	ret = devm_pm_runtime_enable(&pdev->dev);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "failed to enable runtime PM\n");
+
 	sd = &seninf->subdev;
 	v4l2_subdev_init(sd, &mt6797_seninf_subdev_ops);
 	sd->dev = &pdev->dev;
@@ -271,8 +440,8 @@ static int mt6797_seninf_probe(struct platform_device *pdev)
 	snprintf(sd->name, sizeof(sd->name), "mt6797-seninf %s",
 		 dev_name(&pdev->dev));
 
-	seninf->pads[MT6797_SENINF_PAD_SINK].flags =
-		MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT;
+	seninf->pads[MT6797_SENINF_PAD_SINK].flags = MEDIA_PAD_FL_SINK |
+						     MEDIA_PAD_FL_MUST_CONNECT;
 	seninf->pads[MT6797_SENINF_PAD_SOURCE].flags = MEDIA_PAD_FL_SOURCE;
 	ret = media_entity_pads_init(&sd->entity, MT6797_SENINF_NUM_PADS,
 				     seninf->pads);
@@ -291,8 +460,7 @@ static int mt6797_seninf_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_unregister_notifier;
 
-	dev_info(&pdev->dev,
-		 "registered structural %u-lane receiver; streaming is unavailable\n",
+	dev_info(&pdev->dev, "registered %u-lane NCSI2 receiver\n",
 		 seninf->num_data_lanes);
 	return 0;
 
@@ -309,6 +477,20 @@ err_cleanup_entity:
 static void mt6797_seninf_remove(struct platform_device *pdev)
 {
 	struct mt6797_seninf *seninf = platform_get_drvdata(pdev);
+	const struct mt6797_seninf_io io = {
+		.read = mt6797_seninf_io_read,
+		.write = mt6797_seninf_io_write,
+		.delay_us = mt6797_seninf_io_delay,
+		.context = seninf,
+	};
+
+	mutex_lock(&seninf->lock);
+	if (seninf->streaming) {
+		mt6797_seninf_hw_stop(&io);
+		pm_runtime_put(seninf->dev);
+		seninf->streaming = false;
+	}
+	mutex_unlock(&seninf->lock);
 
 	v4l2_async_unregister_subdev(&seninf->subdev);
 	v4l2_async_nf_unregister(&seninf->notifier);
@@ -319,9 +501,13 @@ static void mt6797_seninf_remove(struct platform_device *pdev)
 
 static const struct of_device_id mt6797_seninf_of_match[] = {
 	{ .compatible = "mediatek,mt6797-seninf" },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(of, mt6797_seninf_of_match);
+
+static DEFINE_RUNTIME_DEV_PM_OPS(mt6797_seninf_pm_ops,
+				 mt6797_seninf_runtime_suspend,
+				 mt6797_seninf_runtime_resume, NULL);
 
 static struct platform_driver mt6797_seninf_driver = {
 	.probe = mt6797_seninf_probe,
@@ -329,9 +515,10 @@ static struct platform_driver mt6797_seninf_driver = {
 	.driver = {
 		.name = "mt6797-seninf",
 		.of_match_table = mt6797_seninf_of_match,
+		.pm = pm_ptr(&mt6797_seninf_pm_ops),
 	},
 };
 module_platform_driver(mt6797_seninf_driver);
 
-MODULE_DESCRIPTION("MediaTek MT6797 structural SENINF/CSI-2 receiver");
+MODULE_DESCRIPTION("MediaTek MT6797 SENINF/CSI-2 receiver");
 MODULE_LICENSE("GPL");

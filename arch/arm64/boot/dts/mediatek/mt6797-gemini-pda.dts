@@ -52,6 +52,10 @@
 			mt6797_thermal_calibration: calibration-data@0 {
 				reg = <0 12>;
 			};
+
+			mt6797_csi_calibration: csi-calibration-data@64 {
+				reg = <100 20>;
+			};
 		};
 	};
 
@@ -825,6 +829,10 @@
 	nvmem-cell-names = "calibration-data";
 };
 
+&seninf {
+	nvmem-cells = <&mt6797_csi_calibration>;
+	nvmem-cell-names = "csi-calibration-data";
+};
 &i2c0 {
 	#address-cells = <1>;
 	#size-cells = <0>;

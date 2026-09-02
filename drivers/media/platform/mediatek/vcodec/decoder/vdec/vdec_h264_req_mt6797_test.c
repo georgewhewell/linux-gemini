@@ -95,8 +95,8 @@ static void mt6797_h264_barrel_plan_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, plan.end_addr, 0x12360000U);
 	KUNIT_EXPECT_EQ(test, plan.fetch_start, 0x48d000U);
 	KUNIT_EXPECT_EQ(test, plan.fetch_end, 0x48d804U);
-	KUNIT_EXPECT_EQ(test, plan.shift_reads, 3U);
-	KUNIT_EXPECT_EQ(test, plan.final_shift, 1U);
+	KUNIT_EXPECT_EQ(test, plan.shift_reads, 2U);
+	KUNIT_EXPECT_EQ(test, plan.final_shift, 25U);
 	KUNIT_EXPECT_EQ(test, mt6797_h264_barrel_shift_chunk(65), 32U);
 	KUNIT_EXPECT_EQ(test, mt6797_h264_barrel_shift_chunk(1), 1U);
 }
@@ -109,6 +109,12 @@ static void mt6797_h264_reject_barrel_plan_test(struct kunit *test)
 						      &plan), -EINVAL);
 	KUNIT_EXPECT_EQ(test, mt6797_h264_barrel_plan(0x12340000, 4, 32, &plan),
 			-ERANGE);
+	KUNIT_EXPECT_EQ(test, mt6797_h264_barrel_plan(0x12340000, 0x1000, 8,
+						      &plan), -EINVAL);
+	KUNIT_ASSERT_EQ(test, mt6797_h264_barrel_plan(0x12340000, 0x1000, 40,
+						      &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.shift_reads, 1U);
+	KUNIT_EXPECT_EQ(test, plan.final_shift, 32U);
 }
 
 static void mt6797_h264_output_plan_test(struct kunit *test)

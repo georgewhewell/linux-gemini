@@ -24,11 +24,126 @@ struct mt6797_venc_h264_inst {
 	dma_addr_t rcpu_dma;
 	struct mtk_vcodec_mem work_bufs[MT6797_VENC_H264_WORK_BUF_MAX];
 	struct venc_enc_param config;
+	struct mt6797_venc_h264_seq_regs seq_regs;
 	bool work_bufs_allocated;
 	bool configured;
 	bool force_intra;
 	bool prepend_header;
 };
+
+static int mt6797_venc_h264_profile_idc(unsigned int profile, u32 *profile_idc)
+{
+	switch (profile) {
+	case V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE:
+		*profile_idc = MT6797_VENC_H264_PROFILE_BASELINE;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_PROFILE_MAIN:
+		*profile_idc = MT6797_VENC_H264_PROFILE_MAIN;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_PROFILE_HIGH:
+		*profile_idc = MT6797_VENC_H264_PROFILE_HIGH;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int mt6797_venc_h264_level_idc(unsigned int level, u32 *level_idc)
+{
+	switch (level) {
+	case V4L2_MPEG_VIDEO_H264_LEVEL_1_0:
+		*level_idc = 10;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_1_1:
+		*level_idc = 11;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_1_2:
+		*level_idc = 12;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_1_3:
+		*level_idc = 13;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_2_0:
+		*level_idc = 20;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_2_1:
+		*level_idc = 21;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_2_2:
+		*level_idc = 22;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_3_0:
+		*level_idc = 30;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_3_1:
+		*level_idc = 31;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_3_2:
+		*level_idc = 32;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_4_0:
+		*level_idc = 40;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_4_1:
+		*level_idc = 41;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_4_2:
+		*level_idc = 42;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_5_0:
+		*level_idc = 50;
+		return 0;
+	case V4L2_MPEG_VIDEO_H264_LEVEL_5_1:
+		*level_idc = 51;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int
+mt6797_venc_h264_prepare_seq_regs(const struct venc_enc_param *config,
+				  struct mt6797_venc_h264_seq_regs *regs)
+{
+	struct mt6797_venc_h264_seq_params params = {
+		.width = config->width,
+		.height = config->height,
+		.buf_width = config->buf_width,
+		.buf_height = config->buf_height,
+		.intra_period = config->intra_period,
+		.bitrate = config->bitrate,
+		.framerate = config->frm_rate,
+	};
+	int ret;
+
+	ret = mt6797_venc_h264_profile_idc(config->h264_profile,
+					   &params.profile_idc);
+	if (ret)
+		return ret;
+
+	ret = mt6797_venc_h264_level_idc(config->h264_level,
+					 &params.level_idc);
+	if (ret)
+		return ret;
+
+	return mt6797_venc_h264_calc_seq_regs(&params, regs);
+}
+
+static int
+mt6797_venc_h264_update_config(struct mt6797_venc_h264_inst *inst,
+			       const struct venc_enc_param *config)
+{
+	struct mt6797_venc_h264_seq_regs regs;
+	int ret;
+
+	ret = mt6797_venc_h264_prepare_seq_regs(config, &regs);
+	if (ret)
+		return ret;
+
+	inst->config = *config;
+	inst->seq_regs = regs;
+	return 0;
+}
 
 static void mt6797_venc_h264_free_work_bufs(struct mt6797_venc_h264_inst *inst)
 {
@@ -185,6 +300,8 @@ static int mt6797_venc_h264_set_param(void *handle,
 				      struct venc_enc_param *in)
 {
 	struct mt6797_venc_h264_inst *inst = handle;
+	struct mt6797_venc_h264_seq_regs regs;
+	struct venc_enc_param config;
 	int ret;
 
 	switch (type) {
@@ -192,12 +309,17 @@ static int mt6797_venc_h264_set_param(void *handle,
 		ret = mt6797_venc_h264_validate_config(in);
 		if (ret)
 			return ret;
+		ret = mt6797_venc_h264_prepare_seq_regs(in, &regs);
+		if (ret)
+			return ret;
 
+		inst->configured = false;
 		ret = mt6797_venc_h264_alloc_work_bufs(inst, in);
 		if (ret)
 			return ret;
 
 		inst->config = *in;
+		inst->seq_regs = regs;
 		inst->configured = true;
 		inst->force_intra = false;
 		return 0;
@@ -209,13 +331,15 @@ static int mt6797_venc_h264_set_param(void *handle,
 	case VENC_SET_PARAM_ADJUST_BITRATE:
 		if (!inst->configured || !in->bitrate)
 			return -EINVAL;
-		inst->config.bitrate = in->bitrate;
-		return 0;
+		config = inst->config;
+		config.bitrate = in->bitrate;
+		return mt6797_venc_h264_update_config(inst, &config);
 	case VENC_SET_PARAM_ADJUST_FRAMERATE:
 		if (!inst->configured || !in->frm_rate)
 			return -EINVAL;
-		inst->config.frm_rate = in->frm_rate;
-		return 0;
+		config = inst->config;
+		config.frm_rate = in->frm_rate;
+		return mt6797_venc_h264_update_config(inst, &config);
 	case VENC_SET_PARAM_GOP_SIZE:
 		if (!inst->configured)
 			return -EINVAL;
@@ -224,8 +348,9 @@ static int mt6797_venc_h264_set_param(void *handle,
 	case VENC_SET_PARAM_INTRA_PERIOD:
 		if (!inst->configured)
 			return -EINVAL;
-		inst->config.intra_period = in->intra_period;
-		return 0;
+		config = inst->config;
+		config.intra_period = in->intra_period;
+		return mt6797_venc_h264_update_config(inst, &config);
 	case VENC_SET_PARAM_PREPEND_HEADER:
 		inst->prepend_header = true;
 		return 0;

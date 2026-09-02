@@ -21,6 +21,10 @@
 #define MT6797_VENC_H264_RC_INFO_SIZE		0x400U
 #define MT6797_VENC_H264_SKIP_FRAME_SIZE	0x80U
 
+#define MT6797_VENC_H264_PROFILE_BASELINE	66U
+#define MT6797_VENC_H264_PROFILE_MAIN		77U
+#define MT6797_VENC_H264_PROFILE_HIGH		100U
+
 enum mt6797_venc_h264_work_buf {
 	MT6797_VENC_H264_WORK_BUF_RC_INFO,
 	MT6797_VENC_H264_WORK_BUF_REC_LUMA,
@@ -51,6 +55,35 @@ struct mt6797_venc_h264_io_bufs {
 	u32 buf_height;
 	dma_addr_t bs_addr;
 	size_t bs_size;
+};
+
+struct mt6797_venc_h264_seq_params {
+	u32 width;
+	u32 height;
+	u32 buf_width;
+	u32 buf_height;
+	u32 intra_period;
+	u32 bitrate;
+	u32 framerate;
+	u32 profile_idc;
+	u32 level_idc;
+};
+
+struct mt6797_venc_h264_seq_regs {
+	u32 reg_004;
+	u32 reg_008;
+	u32 reg_00c;
+	u32 reg_024;
+	u32 reg_028;
+	u32 reg_02c;
+	u32 reg_030;
+	u32 reg_048;
+	u32 reg_04c;
+	u32 reg_050;
+	u32 reg_054;
+	u32 reg_0f4;
+	u32 reg_0fc;
+	u32 reg_12c;
 };
 
 static inline int
@@ -115,6 +148,99 @@ static inline int mt6797_venc_h264_validate_rcpu(const u8 *data, size_t size)
 {
 	if (!data || size != MT6797_VENC_H264_RCPU_SIZE)
 		return -EINVAL;
+
+	return 0;
+}
+
+static inline int
+mt6797_venc_h264_calc_seq_regs(const struct mt6797_venc_h264_seq_params *params,
+			       struct mt6797_venc_h264_seq_regs *regs)
+{
+	u32 entropy_coding, profile, transform_8x8;
+	u32 mb_width, mb_height, pad_width, pad_height;
+	u32 intra_bits = 0;
+
+	if (!params || !regs || !params->width || !params->height ||
+	    params->width > params->buf_width ||
+	    params->height > params->buf_height ||
+	    params->buf_width > 1920 || params->buf_height > 1088 ||
+	    !params->bitrate || params->bitrate / 1000 > 0x3fffff ||
+	    !params->framerate || params->framerate > 0xff)
+		return -EINVAL;
+
+	pad_width = params->buf_width - params->width;
+	pad_height = ALIGN(params->height, 16) - params->height;
+	if (pad_width == 16)
+		pad_width = 0;
+	else if (pad_width > 16)
+		pad_width -= 16;
+	if (pad_width > 16 || pad_height > 15)
+		return -EINVAL;
+
+	switch (params->level_idc) {
+	case 10:
+	case 11:
+	case 12:
+	case 13:
+	case 20:
+	case 21:
+	case 22:
+	case 30:
+	case 31:
+	case 32:
+	case 40:
+	case 41:
+	case 42:
+	case 50:
+	case 51:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	switch (params->profile_idc) {
+	case MT6797_VENC_H264_PROFILE_BASELINE:
+		profile = 0;
+		entropy_coding = 0;
+		transform_8x8 = 0;
+		break;
+	case MT6797_VENC_H264_PROFILE_MAIN:
+		profile = 0x20000000;
+		entropy_coding = 1;
+		transform_8x8 = 1;
+		break;
+	case MT6797_VENC_H264_PROFILE_HIGH:
+		profile = 0x40000000;
+		entropy_coding = 1;
+		transform_8x8 = 1;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	mb_width = DIV_ROUND_UP(params->width, 16);
+	mb_height = DIV_ROUND_UP(params->height, 16);
+	if (params->intra_period <= 30)
+		intra_bits = params->intra_period << 14;
+
+	regs->reg_004 = 0x58000000 + intra_bits + params->intra_period;
+	regs->reg_008 = 0x626e5fae;
+	regs->reg_00c = params->profile_idc ==
+				MT6797_VENC_H264_PROFILE_BASELINE ?
+				0x104e0000 : 0x924e0000;
+	regs->reg_024 = mb_height << 16 | mb_width;
+	regs->reg_028 = mb_width << 20 | mb_width << 11 |
+			pad_width << 5 | pad_height;
+	regs->reg_02c = mb_width * mb_height;
+	regs->reg_030 = profile | entropy_coding << 31 |
+			params->level_idc << 22 | transform_8x8 << 21;
+	regs->reg_048 = 0x40000 + params->bitrate / 1000;
+	regs->reg_04c = params->framerate << 16 | 0x303;
+	regs->reg_050 = 0x3308;
+	regs->reg_054 = 0x800;
+	regs->reg_0f4 = 0;
+	regs->reg_0fc = 0;
+	regs->reg_12c = 0x0fff0fff;
 
 	return 0;
 }

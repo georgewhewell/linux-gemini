@@ -18,5 +18,5 @@
 };
 
 &mt6351fgadc {
-	mediatek,initialize-battery-detection;
+	mediatek,baton-connected;
 };

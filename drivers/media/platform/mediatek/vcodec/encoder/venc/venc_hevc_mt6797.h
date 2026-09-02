@@ -19,6 +19,9 @@
 #define MT6797_VENC_HEVC_WORK_BUF_ALIGN 0x80U
 #define MT6797_VENC_HEVC_RC_INFO_SIZE 0x400U
 #define MT6797_VENC_HEVC_PARAMETER_SET_SIZE 0x100000U
+#define MT6797_VENC_HEVC_DEFAULT_QP 28U
+#define MT6797_VENC_HEVC_MAX_WIDTH 3840U
+#define MT6797_VENC_HEVC_MAX_HEIGHT 2176U
 
 enum mt6797_venc_hevc_work_buf {
 	MT6797_VENC_HEVC_WORK_BUF_RC_INFO,
@@ -52,6 +55,37 @@ struct mt6797_venc_hevc_io_regs {
 	u32 src_c;
 	u32 bs_addr;
 	u32 bs_limit;
+};
+
+struct mt6797_venc_hevc_seq_params {
+	u32 width;
+	u32 height;
+	u32 buf_width;
+	u32 buf_height;
+	u32 intra_period;
+	u32 bitrate;
+	u32 framerate;
+	u32 level_idc;
+};
+
+struct mt6797_venc_hevc_seq_regs {
+	u32 reg_004;
+	u32 reg_008;
+	u32 reg_00c;
+	u32 reg_024;
+	u32 reg_028;
+	u32 reg_02c;
+	u32 reg_030;
+	u32 reg_038;
+	u32 reg_048_header;
+	u32 reg_048_frame;
+	u32 reg_04c;
+	u32 reg_050;
+	u32 reg_054;
+	u32 reg_128;
+	u32 reg_12c;
+	u32 reg_1c0;
+	u32 reg_1f0;
 };
 
 static inline int mt6797_venc_hevc_validate_rcpu(const u8 *data, size_t size)
@@ -166,6 +200,93 @@ mt6797_venc_hevc_calc_io_regs(const struct mt6797_venc_hevc_io_bufs *bufs,
 		return ret;
 
 	regs->bs_limit = bufs->bs_size >> 7;
+	return 0;
+}
+
+/*
+ * Model the vendor's normal, Main-profile, rate-controlled, non-UFO sequence
+ * setup.  UFO/NBM, WFD, ViLTE, Main 10 and interlaced modes deliberately stay
+ * outside this contract.
+ */
+static inline int
+mt6797_venc_hevc_calc_seq_regs(const struct mt6797_venc_hevc_seq_params *params,
+			       struct mt6797_venc_hevc_seq_regs *regs)
+{
+	u32 bitrate_kbps, config, ctu_count;
+	u32 crop_right, crop_bottom;
+	u32 width_div16, height_div16;
+
+	if (!params || !regs || !params->width || !params->height ||
+	    params->width > params->buf_width ||
+	    params->height > params->buf_height ||
+	    params->buf_width > MT6797_VENC_HEVC_MAX_WIDTH ||
+	    params->buf_height > MT6797_VENC_HEVC_MAX_HEIGHT ||
+	    !IS_ALIGNED(params->buf_width, 32) ||
+	    !IS_ALIGNED(params->buf_height, 32) || !params->intra_period ||
+	    params->intra_period > 0x3fff || !params->bitrate ||
+	    params->bitrate > 60000000 || !params->framerate ||
+	    params->framerate > 0xff)
+		return -EINVAL;
+
+	switch (params->level_idc) {
+	case 10:
+	case 11:
+	case 12:
+	case 13:
+	case 20:
+	case 21:
+	case 22:
+	case 30:
+	case 31:
+	case 32:
+	case 40:
+	case 41:
+	case 50:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	width_div16 = params->buf_width / 16;
+	height_div16 = params->buf_height / 16;
+	crop_right = params->buf_width - params->width;
+	crop_bottom = params->buf_height - params->height;
+	if (crop_right > 31 || crop_bottom > 31)
+		return -EINVAL;
+	if (check_mul_overflow(params->buf_width / 32, params->buf_height / 32,
+			       &ctu_count))
+		return -EOVERFLOW;
+
+	if (params->width <= 1920 && params->height <= 1080 &&
+	    params->framerate == 30)
+		config = 0;
+	else if (params->width == 1920 && params->height == 1080 &&
+		 params->framerate == 60)
+		config = 2;
+	else
+		config = 7;
+
+	bitrate_kbps = params->bitrate / 1000;
+	regs->reg_004 = MT6797_VENC_HEVC_DEFAULT_QP * 0x4000000U +
+			params->intra_period * 0x4000 + params->intra_period;
+	regs->reg_008 = MT6797_VENC_HEVC_DEFAULT_QP * 0x400 + 0x3a0;
+	regs->reg_00c = 0;
+	regs->reg_024 = width_div16 | height_div16 << 16;
+	regs->reg_028 = width_div16 << 20 | width_div16 << 11 |
+			crop_right << 5 | crop_bottom;
+	regs->reg_02c = ctu_count;
+	regs->reg_030 = 0x20000000 | params->level_idc * 0x400000;
+	regs->reg_038 = config * 0x400 + 0x2123;
+	regs->reg_048_header = bitrate_kbps + 0x60000;
+	regs->reg_048_frame = bitrate_kbps + 0x40000;
+	regs->reg_04c = params->framerate << 16 | 0x306;
+	regs->reg_050 = 0x3308;
+	regs->reg_054 = 0;
+	regs->reg_128 = 0;
+	regs->reg_12c = 0x600;
+	regs->reg_1c0 = 0x10;
+	regs->reg_1f0 = 2;
+
 	return 0;
 }
 

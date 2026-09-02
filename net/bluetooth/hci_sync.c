@@ -4314,6 +4314,7 @@ static const struct hci_init_stage hci_init3[] = {
 static int hci_le_set_event_mask_sync(struct hci_dev *hdev)
 {
 	u8 events[8];
+	int err;
 
 	if (!lmp_le_capable(hdev))
 		return 0;
@@ -4457,6 +4458,29 @@ static int hci_le_set_event_mask_sync(struct hci_dev *hdev)
 		events[6] |= 0x02;	/* LE CS Subevent Result Continue event */
 		events[6] |= 0x04;	/* LE CS Test End Complete event */
 	}
+	err = __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_EVENT_MASK,
+				    sizeof(events), events, HCI_CMD_TIMEOUT);
+	if (err != -EOPNOTSUPP ||
+	    !hci_test_quirk(hdev, HCI_QUIRK_BROKEN_LE_EVENT_MASK))
+		return err;
+
+	/* Bluetooth 4.2 defines LE subevents zero through ten. A controller may
+	 * reject a sparse mask even though every selected bit is supported; retry
+	 * the complete version-valid mask before dropping optional subevents.
+	 */
+	memset(events, 0, sizeof(events));
+	events[0] = 0xff;
+	events[1] = 0x07;
+	err = __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_EVENT_MASK,
+				    sizeof(events), events, HCI_CMD_TIMEOUT);
+	if (err != -EOPNOTSUPP)
+		return err;
+
+	/* Preserve basic LE rather than disabling it: these are the foundational
+	 * Bluetooth 4.0 connection, advertising, update, feature and LTK events.
+	 */
+	memset(events, 0, sizeof(events));
+	events[0] = 0x1f;
 	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_EVENT_MASK,
 				     sizeof(events), events, HCI_CMD_TIMEOUT);
 }
@@ -5000,6 +5024,9 @@ static const struct {
 			 "but not supported."),
 	HCI_QUIRK_BROKEN(FILTER_CLEAR_ALL,
 			 "HCI Set Event Filter command not supported."),
+	HCI_QUIRK_BROKEN(LE_EVENT_MASK,
+			 "HCI LE Set Event Mask rejects a sparse valid mask; "
+			 "compatibility retry enabled."),
 	HCI_QUIRK_BROKEN(ENHANCED_SETUP_SYNC_CONN,
 			 "HCI Enhanced Setup Synchronous Connection command is "
 			 "advertised, but not supported."),

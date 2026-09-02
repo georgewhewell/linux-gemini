@@ -115,6 +115,18 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_LOCAL_COMMANDS,
 
+	/* When this quirk is set, retry a rejected LE Set Event Mask command
+	 * with complete Bluetooth 4.2 and foundational LE masks. Some controllers
+	 * report valid LE features but reject the sparse feature-derived mask with
+	 * Unsupported Parameter Value.
+	 *
+	 * The retry is restricted to that status, so a transport error or an
+	 * actually unsupported command remains fatal.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_BROKEN_LE_EVENT_MASK,
+
 	/* When this quirk is set, then no stored link key handling
 	 * is performed. This is mainly due to the fact that the
 	 * HCI Delete Stored Link Key command is advertised, but

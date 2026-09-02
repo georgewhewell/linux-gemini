@@ -3,6 +3,7 @@
 #include <linux/errno.h>
 #include <linux/export.h>
 #include <linux/if_ether.h>
+#include <linux/ieee80211.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 
@@ -12,6 +13,7 @@
 #define MT6797_WIFI_GEN3_CMD_PACKET_TYPE 0x20U
 #define MT6797_WIFI_GEN3_CMD_ADD_REMOVE_KEY 0x07U
 #define MT6797_WIFI_GEN3_CMD_DEFAULT_KEY 0x08U
+#define MT6797_WIFI_GEN3_CMD_SET_BSS_INFO 0x12U
 #define MT6797_WIFI_GEN3_KEY_LEN 16U
 #define MT6797_WIFI_GEN3_MAX_RSC_LEN 16U
 #define MT6797_WIFI_GEN3_MAX_KEY_INDEX 5U
@@ -100,3 +102,39 @@ int mt6797_wifi_gen3_build_default_key_cmd(u8 *buf, size_t buf_len,
 	return MT6797_WIFI_GEN3_DEFAULT_KEY_CMD_LEN;
 }
 EXPORT_SYMBOL_GPL(mt6797_wifi_gen3_build_default_key_cmd);
+
+int mt6797_wifi_gen3_build_bss_info_cmd(u8 *buf, size_t buf_len, u8 sequence,
+					bool connected, bool protected,
+					const u8 *ssid, size_t ssid_len,
+					const u8 *bssid, u8 channel)
+{
+	if (!buf || buf_len < MT6797_WIFI_GEN3_BSS_INFO_CMD_LEN || !bssid ||
+	    ssid_len > IEEE80211_MAX_SSID_LEN || (ssid_len && !ssid) ||
+	    channel < 1 || channel > 14)
+		return -EINVAL;
+
+	memset(buf, 0, MT6797_WIFI_GEN3_BSS_INFO_CMD_LEN);
+	mt6797_wifi_gen3_init_cmd(buf, MT6797_WIFI_GEN3_BSS_INFO_CMD_LEN,
+				  MT6797_WIFI_GEN3_CMD_SET_BSS_INFO, sequence);
+	buf[8] = 0; /* AIS BSS index */
+	buf[9] = connected ? 0 : 1; /* PARAM_MEDIA_STATE_* */
+	buf[10] = 0; /* OP_MODE_INFRASTRUCTURE */
+	buf[11] = ssid_len;
+	if (ssid_len)
+		memcpy(buf + 12, ssid, ssid_len);
+	memcpy(buf + 44, bssid, ETH_ALEN);
+	put_unaligned_le16(0x354f, buf + 52); /* RATE_SET_ERP */
+	put_unaligned_le16(0x000f, buf + 54); /* BASIC_RATE_SET_ERP */
+	buf[56] = 0; /* AIS AP STA-record index */
+	buf[60] = 0; /* PHY_TYPE_HR_DSSS_INDEX */
+	buf[61] = protected ? 7 : 0; /* WPA2-PSK or open */
+	buf[62] = protected ? 6 : 1; /* AES or encryption disabled */
+	buf[63] = BIT(0) | BIT(1); /* HR-DSSS and ERP */
+	buf[66] = 0; /* AIS BMC WTBL index */
+	buf[76] = 0; /* RLM AIS BSS index */
+	buf[77] = 1; /* BAND_2G4 */
+	buf[78] = channel;
+
+	return MT6797_WIFI_GEN3_BSS_INFO_CMD_LEN;
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_gen3_build_bss_info_cmd);

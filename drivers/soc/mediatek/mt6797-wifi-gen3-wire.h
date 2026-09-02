@@ -6,6 +6,7 @@
 
 #define MT6797_WIFI_GEN3_KEY_CMD_LEN 72U
 #define MT6797_WIFI_GEN3_DEFAULT_KEY_CMD_LEN 12U
+#define MT6797_WIFI_GEN3_BSS_INFO_CMD_LEN 96U
 
 enum mt6797_wifi_gen3_cipher {
 	MT6797_WIFI_GEN3_CIPHER_NONE = 0,
@@ -23,5 +24,10 @@ int mt6797_wifi_gen3_build_key_cmd(u8 *buf, size_t buf_len, u8 sequence,
 int mt6797_wifi_gen3_build_default_key_cmd(u8 *buf, size_t buf_len,
 					   u8 sequence, u8 key_index,
 					   bool unicast, bool multicast);
+
+int mt6797_wifi_gen3_build_bss_info_cmd(u8 *buf, size_t buf_len, u8 sequence,
+					bool connected, bool protected,
+					const u8 *ssid, size_t ssid_len,
+					const u8 *bssid, u8 channel);
 
 #endif

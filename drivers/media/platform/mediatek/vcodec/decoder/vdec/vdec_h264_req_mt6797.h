@@ -5,6 +5,7 @@
 #include <linux/align.h>
 #include <linux/bitfield.h>
 #include <linux/errno.h>
+#include <linux/limits.h>
 #include <linux/overflow.h>
 #include <media/v4l2-ctrls.h>
 
@@ -47,6 +48,13 @@
 #define MT6797_H264_SH2_CABAC_INIT	GENMASK(21, 20)
 
 #define MT6797_H264_POC_VALUE		GENMASK(17, 0)
+
+#define MT6797_H264_REF_PIC_NUM		GENMASK(18, 0)
+#define MT6797_H264_REF_PIC_LONG_TERM	BIT(19)
+#define MT6797_H264_REF_MV_LONG_TERM	BIT(20)
+#define MT6797_H264_REF_BOTTOM		BIT(22)
+#define MT6797_H264_REF_DPB_SLOT	GENMASK(27, 23)
+#define MT6797_H264_REF_POC_VALID	BIT(21)
 
 #define MT6797_H264_MAX_WIDTH		1920U
 #define MT6797_H264_MAX_HEIGHT		1088U
@@ -108,6 +116,23 @@ struct mt6797_h264_idr_plan {
 	u32 bottom_poc;
 	u32 ref_y_addr;
 	u32 ref_mv_addr_16;
+};
+
+struct mt6797_h264_ref_buffer {
+	u64 y_addr;
+	u8 dpb_slot;
+};
+
+struct mt6797_h264_p_ref {
+	u32 y_addr;
+	u32 pic_num;
+	u32 top;
+	u32 bottom;
+};
+
+struct mt6797_h264_p_ref_plan {
+	u8 num_refs;
+	struct mt6797_h264_p_ref refs[V4L2_H264_REF_LIST_LEN];
 };
 
 static inline int
@@ -345,6 +370,69 @@ mt6797_h264_idr_plan(const struct v4l2_ctrl_h264_sps *sps,
 	plan->bottom_poc = (u32)dec->bottom_field_order_cnt & MT6797_H264_POC_VALUE;
 	plan->ref_y_addr = y_addr;
 	plan->ref_mv_addr_16 = mv_addr >> 4;
+
+	return 0;
+}
+
+static inline int
+mt6797_h264_p_ref_plan(const struct v4l2_ctrl_h264_slice_params *slice,
+		       const struct v4l2_ctrl_h264_decode_params *dec,
+		       const struct mt6797_h264_ref_buffer buffers[V4L2_H264_NUM_DPB_ENTRIES],
+		       struct mt6797_h264_p_ref_plan *plan)
+{
+	u32 num_refs = slice->num_ref_idx_l0_active_minus1 + 1;
+	unsigned int i;
+
+	if (slice->slice_type != V4L2_H264_SLICE_TYPE_P ||
+	    !(dec->flags & V4L2_H264_DECODE_PARAM_FLAG_PFRAME) ||
+	    dec->flags & (V4L2_H264_DECODE_PARAM_FLAG_FIELD_PIC |
+			  V4L2_H264_DECODE_PARAM_FLAG_BOTTOM_FIELD |
+			  V4L2_H264_DECODE_PARAM_FLAG_BFRAME) ||
+	    num_refs > V4L2_H264_REF_LIST_LEN)
+		return -EINVAL;
+
+	plan->num_refs = num_refs;
+	for (i = 0; i < num_refs; i++) {
+		const struct v4l2_h264_reference *ref = &slice->ref_pic_list0[i];
+		const struct v4l2_h264_dpb_entry *dpb;
+		const struct mt6797_h264_ref_buffer *buffer;
+		struct mt6797_h264_p_ref *entry = &plan->refs[i];
+		u32 common;
+		bool long_term;
+
+		if (ref->index >= V4L2_H264_NUM_DPB_ENTRIES ||
+		    ref->fields != V4L2_H264_FRAME_REF)
+			return -EINVAL;
+
+		dpb = &dec->dpb[ref->index];
+		buffer = &buffers[ref->index];
+		if ((dpb->flags & (V4L2_H264_DPB_ENTRY_FLAG_VALID |
+				   V4L2_H264_DPB_ENTRY_FLAG_ACTIVE)) !=
+		    (V4L2_H264_DPB_ENTRY_FLAG_VALID |
+		     V4L2_H264_DPB_ENTRY_FLAG_ACTIVE) ||
+		    dpb->fields != V4L2_H264_FRAME_REF ||
+		    buffer->dpb_slot >= MT6797_H264_MV_BUFFER_COUNT ||
+		    (buffer->y_addr & (MT6797_H264_DMA_ALIGN - 1)))
+			return -EINVAL;
+		if (buffer->y_addr > U32_MAX)
+			return -ERANGE;
+
+		long_term = dpb->flags & V4L2_H264_DPB_ENTRY_FLAG_LONG_TERM;
+		entry->y_addr = buffer->y_addr;
+		entry->pic_num = (long_term ? dpb->frame_num : dpb->pic_num) &
+				 MT6797_H264_REF_PIC_NUM;
+		common = FIELD_PREP(MT6797_H264_REF_DPB_SLOT,
+				    buffer->dpb_slot);
+		if (long_term) {
+			entry->pic_num |= MT6797_H264_REF_PIC_LONG_TERM;
+			common |= MT6797_H264_REF_MV_LONG_TERM;
+		}
+		if (dpb->top_field_order_cnt <= dpb->bottom_field_order_cnt &&
+		    dpb->top_field_order_cnt != INT_MAX)
+			common |= MT6797_H264_REF_POC_VALID;
+		entry->top = common;
+		entry->bottom = common | MT6797_H264_REF_BOTTOM;
+	}
 
 	return 0;
 }

@@ -15,9 +15,13 @@ description: |
   sensor-interface windows, and two MIPI receiver analog windows. It has no
   independently described interrupt in the MT6797 platform source.
 
-  The binding describes the complete resource owner. The currently supported
-  route is the MT6797 Gemini camera1/sub NCSI2 port with two data lanes. Other
-  routes remain disabled until their D-PHY programming is established.
+  The binding describes the complete resource owner. A disabled SoC inventory
+  node may omit the media graph. An enabled instance needs both endpoints; the
+  driver rejects a missing input or output route.
+
+  The only route currently implemented by the driver is the source-recovered
+  MT6797 NCSI2 port with two data lanes. Board wiring and populated sensor
+  identity belong in a board Device Tree only after they are established.
 
 properties:
   compatible:

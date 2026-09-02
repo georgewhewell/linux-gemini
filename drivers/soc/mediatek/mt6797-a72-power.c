@@ -33,6 +33,8 @@
 #define MT6797_BIGIDVFS_SRAM_MV_X100	110000
 #define MT6797_BIGIDVFS_SRAM_SEL_MASK	GENMASK(11, 0)
 #define MT6797_BIGIDVFS_SRAM_SEL_1100MV	0x8fb
+#define MT6797_BIGIDVFS_SRAM_UV		1100000
+#define MT6797_BIGIDVFS_MAX_RAIL_DIFF_UV	300000
 
 enum mt6797_a72_state {
 	MT6797_A72_OFF,
@@ -138,17 +140,48 @@ static int mt6797_a72_prepare_first(struct mt6797_a72_power *power)
 	enabled = regulator_is_enabled(power->vproc);
 	if (enabled < 0)
 		return enabled;
+	if (enabled) {
+		dev_err(power->dev, "VPROC already enabled at cold entry\n");
+		return -EBUSY;
+	}
 	uv = regulator_get_voltage(power->vproc);
 	if (uv <= 0)
 		return uv ?: -ERANGE;
+	/* The fixed SRAM entry point must obey the vendor rail invariant. */
+	if (uv > MT6797_BIGIDVFS_SRAM_UV ||
+	    MT6797_BIGIDVFS_SRAM_UV - uv >
+				MT6797_BIGIDVFS_MAX_RAIL_DIFF_UV) {
+		dev_err(power->dev,
+			"cold-entry VPROC %duV is incompatible with SRAM %duV\n",
+			uv, MT6797_BIGIDVFS_SRAM_UV);
+		return -ERANGE;
+	}
 	power->vproc_uv = uv;
 
 	ret = regmap_read(power->spm, SPM_POWERON_CONFIG_EN, &poweron);
 	if (ret)
 		return ret;
-	if (poweron != SPM_POWERON_PROOF_OFF &&
-	    poweron != SPM_POWERON_PROOF_ON)
+	if (poweron != SPM_POWERON_PROOF_OFF) {
+		dev_err(power->dev,
+			"unexpected cold-entry SPM power state: %#x\n", poweron);
 		return -ERANGE;
+	}
+
+	ret = regmap_read(power->spm, SPM_EXT_BUCK_ISO, &isolation);
+	if (ret)
+		return ret;
+	if ((isolation & SPM_EXT_BUCK_ISO_MASK) != BIT(1)) {
+		dev_err(power->dev, "unexpected cold-entry isolation: %#x\n",
+			(u32)(isolation & SPM_EXT_BUCK_ISO_MASK));
+		return -ERANGE;
+	}
+
+	value = readl(power->mcucfg + MCUCFG_MP2_SYNC_DCM);
+	if (value & MCUCFG_MP2_SYNC_DCM_MASK) {
+		dev_err(power->dev, "MP2 DCM already active at cold entry: %#x\n",
+			(u32)(value & MCUCFG_MP2_SYNC_DCM_MASK));
+		return -EBUSY;
+	}
 
 	ret = regmap_update_bits(power->spm, SPM_POWERON_CONFIG_EN, BIT(0),
 				 BIT(0));
@@ -186,8 +219,7 @@ static int mt6797_a72_prepare_first(struct mt6797_a72_power *power)
 	ret = regmap_read(power->spm, SPM_EXT_BUCK_ISO, &isolation);
 	if (ret)
 		goto rollback_preisolation;
-	if ((isolation & SPM_EXT_BUCK_ISO_MASK) != BIT(1) &&
-	    (isolation & SPM_EXT_BUCK_ISO_MASK)) {
+	if ((isolation & SPM_EXT_BUCK_ISO_MASK) != BIT(1)) {
 		ret = -ERANGE;
 		goto rollback_preisolation;
 	}

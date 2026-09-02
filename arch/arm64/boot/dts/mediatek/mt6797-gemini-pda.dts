@@ -23,6 +23,25 @@
 		stdout-path = "serial0:921600n8";
 	};
 
+	usb11_drvvbus: regulator-usb11-drvvbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb11-drvvbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&pio 94 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	usb11_vbus: regulator-usb11-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb11-vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&pio 72 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&usb11_drvvbus>;
+	};
+
 	firmware {
 		mt6797_atag_devinfo: atag-devinfo {
 			compatible = "mediatek,mt6797-atag-devinfo";
@@ -197,6 +216,22 @@
 	hall_pins: hall-pins {
 		pins-hall {
 			pinmux = <MT6797_GPIO66__FUNC_GPIO66>;
+		};
+	};
+
+	usb11_fusb301a_pins: usb11-fusb301a-pins {
+		pins-attach {
+			pinmux = <MT6797_GPIO64__FUNC_EINT3>;
+		};
+
+		pins-data-mux-enable {
+			pinmux = <MT6797_GPIO70__FUNC_GPIO70>;
+			output-high;
+		};
+
+		pins-data-mux-select {
+			pinmux = <MT6797_GPIO71__FUNC_GPIO71>;
+			output-low;
 		};
 	};
 };
@@ -770,6 +805,31 @@
 };
 
 &i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	status = "okay";
+
+	fusb301a: typec@25 {
+		compatible = "onsemi,fusb301a";
+		reg = <0x25>;
+		interrupt-parent = <&pio>;
+		interrupts = <3 IRQ_TYPE_EDGE_BOTH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&usb11_fusb301a_pins>;
+		vbus-supply = <&usb11_vbus>;
+
+		connector {
+			compatible = "usb-c-connector";
+			label = "Gemini right USB-C";
+			power-role = "source";
+			data-role = "host";
+			typec-power-opmode = "default";
+			pd-disable;
+		};
+	};
+
 	/* FAN49101 is populated, but keep the regulator and consumer disabled. */
 	fan49101: regulator@70 {
 		compatible = "onsemi,fan49101";
@@ -784,6 +844,19 @@
 			};
 		};
 	};
+};
+
+&usb11_tphy {
+	status = "okay";
+};
+
+&usb11_u2 {
+	mediatek,force-a-session-valid;
+	status = "okay";
+};
+
+&usb11 {
+	status = "okay";
 };
 
 /* The RT5735 VGPU rail remains disabled until a fixed OPP is validated. */

@@ -61,6 +61,19 @@ static const struct mtk_video_fmt mtk_video_formats_capture_h264[] =  {
 	},
 };
 
+static const struct mtk_video_fmt mt6797_video_formats_capture[] =  {
+	{
+		.fourcc = V4L2_PIX_FMT_H264,
+		.type = MTK_FMT_ENC,
+		.num_planes = 1,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_HEVC,
+		.type = MTK_FMT_ENC,
+		.num_planes = 1,
+	},
+};
+
 static const struct mtk_video_fmt mtk_video_formats_capture_vp8[] =  {
 	{
 		.fourcc = V4L2_PIX_FMT_VP8,
@@ -413,14 +426,15 @@ static const struct mtk_vcodec_enc_pdata mt8173_avc_pdata = {
 };
 
 static const struct mtk_vcodec_enc_pdata mt6797_pdata = {
-	.capture_formats = mtk_video_formats_capture_h264,
-	.num_capture_formats = ARRAY_SIZE(mtk_video_formats_capture_h264),
+	.capture_formats = mt6797_video_formats_capture,
+	.num_capture_formats = ARRAY_SIZE(mt6797_video_formats_capture),
 	.output_formats = mt6797_video_formats_output,
 	.num_output_formats = ARRAY_SIZE(mt6797_video_formats_output),
 	.min_bitrate = 64,
 	.max_bitrate = 60000000,
 	.core_id = VENC_SYS,
 	.h264_if = &mtk_venc_6797_h264_if,
+	.hevc_if = &mtk_venc_6797_hevc_if,
 };
 
 static const struct mtk_vcodec_enc_pdata mt8173_vp8_pdata = {

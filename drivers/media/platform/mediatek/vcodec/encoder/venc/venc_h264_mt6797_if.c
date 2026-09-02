@@ -231,6 +231,7 @@ mt6797_venc_h264_alloc_work_bufs(struct mt6797_venc_h264_inst *inst,
 		ret = mtk_vcodec_mem_alloc(inst->ctx, &inst->work_bufs[i]);
 		if (ret)
 			goto err_free;
+		memset(inst->work_bufs[i].va, 0, inst->work_bufs[i].size);
 
 		dma_addr = inst->work_bufs[i].dma_addr;
 		size = inst->work_bufs[i].size;

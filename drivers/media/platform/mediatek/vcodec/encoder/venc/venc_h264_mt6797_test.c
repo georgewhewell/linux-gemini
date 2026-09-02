@@ -363,6 +363,38 @@ static void mt6797_venc_h264_headers_reject_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 }
 
+static void mt6797_venc_h264_prepend_test(struct kunit *test)
+{
+	struct mt6797_venc_h264_header_params params = {
+		.width = 1920,
+		.height = 1080,
+		.profile_idc = MT6797_VENC_H264_PROFILE_HIGH,
+		.level_idc = 31,
+	};
+	u8 *data;
+	size_t frame_offset = 0;
+	int ret;
+
+	data = kunit_kzalloc(test, 256, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, data);
+
+	ret = mt6797_venc_h264_build_prepend(&params, data, 256,
+					     &frame_offset);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, frame_offset, (size_t)128);
+	KUNIT_EXPECT_MEMEQ(test, data + 33,
+			   ((const u8[]){ 0, 0, 0, 1, 0x0c }), 5);
+	KUNIT_EXPECT_EQ(test, data[frame_offset - 2], (u8)0xff);
+	KUNIT_EXPECT_EQ(test, data[frame_offset - 1], (u8)0x80);
+	KUNIT_EXPECT_EQ(test, data[frame_offset], (u8)0);
+
+	ret = mt6797_venc_h264_build_prepend(&params, data, 127,
+					     &frame_offset);
+	KUNIT_EXPECT_EQ(test, ret, -ENOSPC);
+	ret = mt6797_venc_h264_build_prepend(&params, data, 256, NULL);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+}
+
 static struct kunit_case mt6797_venc_h264_cases[] = {
 	KUNIT_CASE(mt6797_venc_h264_rcpu_size_test),
 	KUNIT_CASE(mt6797_venc_h264_work_buf_1080p_test),
@@ -378,6 +410,7 @@ static struct kunit_case mt6797_venc_h264_cases[] = {
 	KUNIT_CASE(mt6797_venc_h264_ref_regs_test),
 	KUNIT_CASE(mt6797_venc_h264_headers_test),
 	KUNIT_CASE(mt6797_venc_h264_headers_reject_test),
+	KUNIT_CASE(mt6797_venc_h264_prepend_test),
 	{}
 };
 

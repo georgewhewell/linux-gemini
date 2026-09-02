@@ -68,6 +68,8 @@ enum venc_set_param_type {
  * @input_fourcc: input yuv format
  * @h264_profile: V4L2 defined H.264 profile
  * @h264_level: V4L2 defined H.264 level
+ * @hevc_profile: V4L2 defined HEVC profile
+ * @hevc_level: V4L2 defined HEVC level
  * @width: image width
  * @height: image height
  * @buf_width: buffer width
@@ -81,6 +83,8 @@ struct venc_enc_param {
 	enum venc_yuv_fmt input_yuv_fmt;
 	unsigned int h264_profile;
 	unsigned int h264_level;
+	unsigned int hevc_profile;
+	unsigned int hevc_level;
 	unsigned int width;
 	unsigned int height;
 	unsigned int buf_width;
@@ -124,6 +128,7 @@ struct venc_done_result {
 
 extern const struct venc_common_if venc_h264_if;
 extern const struct venc_common_if mtk_venc_6797_h264_if;
+extern const struct venc_common_if mtk_venc_6797_hevc_if;
 extern const struct venc_common_if venc_vp8_if;
 
 /*

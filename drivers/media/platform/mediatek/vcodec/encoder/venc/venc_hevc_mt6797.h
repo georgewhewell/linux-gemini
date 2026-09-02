@@ -377,6 +377,7 @@ static inline int
 mt6797_hevc_frame_regs(const struct mt6797_venc_hevc_frame_params *params,
 		       struct mt6797_venc_hevc_frame_regs *regs)
 {
+	/* This is the vendor's NonRefPFrmPeriod == 1 path. */
 	u32 non_ref = 0;
 	u32 slice_type = 0;
 

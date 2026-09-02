@@ -17,6 +17,11 @@
 struct device;
 struct mt6797_consys_runtime_controller;
 struct mt6797_consys_stp_session_lease;
+struct mt6797_btif_stp_bootstrap_full_wmt_lease;
+
+typedef int (*mt6797_consys_runtime_controller_postpatch_stage_t)(
+		void *context,
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease);
 
 /*
  * One controller-owned GNSS borrower.  The object is caller-owned, must be
@@ -42,6 +47,9 @@ struct mt6797_consys_runtime_controller_wifi_lease {
  * removal; managed supplier links then preserve the runtime/BTIF providers.
  */
 int mt6797_consys_runtime_controller_start(struct device *dev);
+int mt6797_consys_runtime_controller_start_with_postpatch_stage(struct device *dev,
+		mt6797_consys_runtime_controller_postpatch_stage_t stage,
+		void *stage_context);
 
 /* Safe for teardown and idempotent after a failed or completed handover. */
 void mt6797_consys_runtime_controller_stop(struct device *dev);

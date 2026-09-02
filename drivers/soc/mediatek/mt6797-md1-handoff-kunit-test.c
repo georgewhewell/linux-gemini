@@ -68,6 +68,8 @@ static void mt6797_md1_rejects_unsafe_layouts(struct kunit *test)
 	layout.shared_base = 0x88000000;
 	layout.firmware_size = 0x09ff0000;
 	KUNIT_EXPECT_EQ(test, mt6797_md1_layout_validate(&layout), -ENOSPC);
+	layout.firmware_size = MT6797_MD1_REMAP_WINDOW_SIZE + SZ_64K;
+	KUNIT_EXPECT_EQ(test, mt6797_md1_layout_validate(&layout), -ERANGE);
 }
 
 static void mt6797_md1_builds_vendor_remap_words(struct kunit *test)

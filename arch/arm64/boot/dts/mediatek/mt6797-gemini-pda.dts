@@ -43,7 +43,7 @@
 		vcn28-supply = <&mt6351_vcn28_reg>;
 		memory-region = <&consys_reserved_memory>;
 		memory-region-names = "shared";
-		status = "disabled";
+		status = "okay";
 	};
 
 	consys_emi_mpu: emi-mpu@10203000 {
@@ -53,14 +53,14 @@
 		reg-names = "emi", "topckgen";
 		memory-region = <&consys_reserved_memory>;
 		memory-region-names = "shared";
-		status = "disabled";
+		status = "okay";
 	};
 
 	consys_controller: consys-controller {
 		compatible = "mediatek,mt6797-consys-runtime-controller";
 		mediatek,runtime-provider = <&consys>;
 		mediatek,btif-provider = <&btif>;
-		status = "disabled";
+		status = "okay";
 	};
 
 	wifi: wifi@180f0000 {
@@ -73,7 +73,7 @@
 		mediatek,emi-mpu = <&consys_emi_mpu>;
 		bt-paldo-supply = <&mt6351_vcn33_bt_reg>;
 		wifi-paldo-supply = <&mt6351_vcn33_wifi_reg>;
-		status = "disabled";
+		status = "okay";
 	};
 
 	usb11_drvvbus: regulator-usb11-drvvbus {
@@ -315,7 +315,7 @@
 	clock-names = "btifc";
 	/delete-property/ reg-shift;
 	/delete-property/ reg-io-width;
-	status = "disabled";
+	status = "okay";
 };
 
 &pio {

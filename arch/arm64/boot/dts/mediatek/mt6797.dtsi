@@ -1151,9 +1151,33 @@
 		      <0 0x10217000 0 0x1000>,
 		      <0 0x10218000 0 0x1000>;
 		reg-names = "seninf", "csi0-ana", "csi1-ana";
-		clocks = <&camsys CLK_CAM_SENINF>;
-		clock-names = "seninf";
+		clocks = <&camsys CLK_CAM_SENINF>,
+			 <&camsys CLK_CAM_CAMTG>,
+			 <&topckgen CLK_TOP_MUX_CAMTG>;
+		clock-names = "seninf", "camtg", "mclk-parent";
+		assigned-clocks = <&topckgen CLK_TOP_MUX_CAMTG>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_D26>;
+		#clock-cells = <0>;
 		power-domains = <&scpsys MT6797_POWER_DOMAIN_ISP>;
 		status = "disabled";
+	};
+
+	camsv0: camsv@1a050000 {
+		compatible = "mediatek,mt6797-camsv";
+		reg = <0 0x1a050000 0 0x1000>;
+		interrupts = <GIC_SPI 252 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&camsys CLK_CAM_LARB2>,
+			 <&camsys CLK_CAM_CAMSYS>,
+			 <&camsys CLK_CAM_CAMTG>,
+			 <&camsys CLK_CAM_CAMSV0>;
+		clock-names = "larb", "camsys", "camtg", "camsv";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_ISP>;
+		iommus = <&m4u M4U_PORT_CAM_SV0>;
+		status = "disabled";
+
+		port {
+			camsv0_in: endpoint {
+			};
+		};
 	};
 };

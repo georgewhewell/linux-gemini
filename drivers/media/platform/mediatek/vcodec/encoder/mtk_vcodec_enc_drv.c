@@ -89,6 +89,9 @@ static void clean_irq_status(unsigned int irq_status, void __iomem *addr)
 	if (irq_status & MTK_VENC_IRQ_STATUS_FRM)
 		writel(MTK_VENC_IRQ_STATUS_FRM, addr);
 
+	if (irq_status & MTK_VENC_IRQ_STATUS_VPS)
+		writel(MTK_VENC_IRQ_STATUS_VPS, addr);
+
 }
 static irqreturn_t mtk_vcodec_enc_irq_handler(int irq, void *priv)
 {

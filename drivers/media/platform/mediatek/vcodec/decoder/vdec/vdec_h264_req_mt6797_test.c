@@ -285,7 +285,7 @@ static void mt6797_h264_reject_modified_list_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 }
 
-static void mt6797_h264_reject_multi_slice_frame_test(struct kunit *test)
+static void mt6797_h264_multi_slice_frame_test(struct kunit *test)
 {
 	struct mt6797_h264_test_bits first_stream, second_stream;
 	static const struct v4l2_ctrl_h264_sps sps;
@@ -307,6 +307,15 @@ static void mt6797_h264_reject_multi_slice_frame_test(struct kunit *test)
 	memcpy(frame, first_stream.data, first_size);
 	memcpy(frame + first_size, second_stream.data, second_size);
 
+	frame_size = first_size + second_size;
+	ret = mt6797_h264_parse_frame_headers(frame, frame_size, &sps, &pps, &dec, &slice);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, slice.first_mb_in_slice, 0U);
+	KUNIT_EXPECT_EQ(test, slice.slice_type, (u8)V4L2_H264_SLICE_TYPE_I);
+
+	mt6797_test_idr(&second_stream, 10, 1);
+	second_size = mt6797_h264_test_size(&second_stream);
+	memcpy(frame + first_size, second_stream.data, second_size);
 	frame_size = first_size + second_size;
 	ret = mt6797_h264_parse_frame_headers(frame, frame_size, &sps, &pps, &dec, &slice);
 	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
@@ -718,7 +727,7 @@ static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_staging_size_test),
 	KUNIT_CASE(mt6797_h264_frame_header_test),
 	KUNIT_CASE(mt6797_h264_reject_modified_list_test),
-	KUNIT_CASE(mt6797_h264_reject_multi_slice_frame_test),
+	KUNIT_CASE(mt6797_h264_multi_slice_frame_test),
 	KUNIT_CASE(mt6797_h264_barrel_plan_test),
 	KUNIT_CASE(mt6797_h264_reject_barrel_plan_test),
 	KUNIT_CASE(mt6797_h264_output_plan_test),

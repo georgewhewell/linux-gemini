@@ -55,6 +55,7 @@ struct mt6797_a72_power {
 	unsigned int cpu9;
 	enum mt6797_a72_state state;
 	bool allow_cpu9;
+	bool allow_cpu_off;
 	bool rail_vote;
 };
 
@@ -185,6 +186,9 @@ static int mt6797_a72_prepare_first(struct mt6797_a72_power *power)
 	ret = mt6797_a72_sram_enable();
 	if (ret)
 		goto faulted;
+	dev_info(power->dev,
+		 "CPU%u power ready: VPROC=1000000uV SRAM=1100000uV\n",
+		 power->cpu8);
 	return 0;
 
 faulted:
@@ -289,10 +293,31 @@ void mt6797_a72_power_complete(unsigned int cpu, int psci_ret)
 		power->state = MT6797_A72_ON;
 	}
 	cpumask_set_cpu(cpu, &power->powered);
+	dev_info(power->dev, "PSCI accepted CPU%u; cluster mask=%*pbl\n",
+		 cpu, cpumask_pr_args(&power->powered));
 out:
 	mutex_unlock(&power->lock);
 out_owner:
 	mutex_unlock(&mt6797_a72_owner_lock);
+}
+
+int mt6797_a72_power_can_disable(unsigned int cpu)
+{
+	struct mt6797_a72_power *power;
+	int ret = -EPERM;
+
+	mutex_lock(&mt6797_a72_owner_lock);
+	power = mt6797_a72_owner;
+	if (!power)
+		goto out;
+	mutex_lock(&power->lock);
+	if (cpumask_test_cpu(cpu, &power->cpus) && power->allow_cpu_off &&
+	    power->state == MT6797_A72_ON)
+		ret = 0;
+	mutex_unlock(&power->lock);
+out:
+	mutex_unlock(&mt6797_a72_owner_lock);
+	return ret;
 }
 
 void mt6797_a72_power_off(unsigned int cpu)
@@ -375,6 +400,8 @@ static int mt6797_a72_power_probe(struct platform_device *pdev)
 				     "A72 CPU online before power owner\n");
 	power->allow_cpu9 = of_property_read_bool(dev->of_node,
 						  "mediatek,allow-cpu9");
+	power->allow_cpu_off = of_property_read_bool(dev->of_node,
+						     "mediatek,allow-cpu-off");
 	power->vproc = devm_regulator_get(dev, "vproc");
 	if (IS_ERR(power->vproc))
 		return dev_err_probe(dev, PTR_ERR(power->vproc),
@@ -406,8 +433,9 @@ static int mt6797_a72_power_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	dev_info(dev, "CPU8 admission ready; CPU9 is %s\n",
-		 power->allow_cpu9 ? "enabled" : "vetoed");
+	dev_info(dev, "CPU8 admission ready; CPU9 %s; CPU_OFF %s\n",
+		 power->allow_cpu9 ? "enabled" : "vetoed",
+		 power->allow_cpu_off ? "enabled" : "vetoed");
 	return 0;
 }
 

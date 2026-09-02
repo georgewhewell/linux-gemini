@@ -138,6 +138,16 @@ static int mt6797_a72_psci_cpu_boot(unsigned int cpu)
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
+static int mt6797_a72_psci_cpu_disable(unsigned int cpu)
+{
+	int ret;
+
+	ret = mt6797_a72_power_can_disable(cpu);
+	if (ret)
+		return ret;
+	return cpu_psci_ops.cpu_disable(cpu);
+}
+
 static int mt6797_a72_psci_cpu_kill(unsigned int cpu)
 {
 	int ret = cpu_psci_ops.cpu_kill(cpu);
@@ -155,7 +165,7 @@ const struct cpu_operations mt6797_a72_psci_ops = {
 	.cpu_boot	= mt6797_a72_psci_cpu_boot,
 #ifdef CONFIG_HOTPLUG_CPU
 	.cpu_can_disable = cpu_psci_cpu_can_disable,
-	.cpu_disable	= cpu_psci_cpu_disable,
+	.cpu_disable	= mt6797_a72_psci_cpu_disable,
 	.cpu_die	= cpu_psci_cpu_die,
 	.cpu_kill	= mt6797_a72_psci_cpu_kill,
 #endif

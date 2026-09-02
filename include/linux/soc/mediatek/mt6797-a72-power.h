@@ -9,6 +9,7 @@
 #if IS_ENABLED(CONFIG_MTK_MT6797_A72_POWER)
 int mt6797_a72_power_prepare(unsigned int cpu);
 void mt6797_a72_power_complete(unsigned int cpu, int psci_ret);
+int mt6797_a72_power_can_disable(unsigned int cpu);
 void mt6797_a72_power_off(unsigned int cpu);
 #else
 static inline int mt6797_a72_power_prepare(unsigned int cpu)
@@ -18,6 +19,11 @@ static inline int mt6797_a72_power_prepare(unsigned int cpu)
 
 static inline void mt6797_a72_power_complete(unsigned int cpu, int psci_ret)
 {
+}
+
+static inline int mt6797_a72_power_can_disable(unsigned int cpu)
+{
+	return -EPERM;
 }
 
 static inline void mt6797_a72_power_off(unsigned int cpu)

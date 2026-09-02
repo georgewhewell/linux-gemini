@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Opt-in BMI120 IMU composition for the Planet Gemini PDA.
+ *
+ * The base board keeps this hardware disabled. This overlay is intended for
+ * a recovery-backed IIO orientation, sampling and suspend/resume test.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&bmi120 {
+	status = "okay";
+};

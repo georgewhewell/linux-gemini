@@ -549,12 +549,18 @@
 	};
 
 	/*
-	 * Keep this candidate disabled until the physical ID, rails, and
-	 * interrupt/polling contract are verified on a recoverable image.
-	 * The vendor's logical 0x68 client is rewritten to 0x69 in probe.
+	 * The shipping vendor kernel reads chip ID 0xd1 at 0x69.  Model its
+	 * BMI120 identity through the upstream BMI160-compatible register
+	 * interface.  The legacy 0x68 accelerometer client is rewritten to
+	 * 0x69 before access, so there is only one physical IMU here.
+	 *
+	 * Keep it disabled until an opt-in mainline run verifies measurements
+	 * and suspend/resume.  The vendor driver has no controlled supply and
+	 * its attempted interrupt wiring collides with the ALS/PS interrupt;
+	 * neither resource is described here.
 	 */
-	bmi160_candidate: bmi160@69 {
-		compatible = "bosch,bmi160";
+	bmi120: imu@69 {
+		compatible = "bosch,bmi120", "bosch,bmi160";
 		reg = <0x69>;
 		mount-matrix = "0", "-1", "0",
 				       "-1", "0", "0",

@@ -114,6 +114,7 @@ struct vdec_pic_info {
  * @uses_fw: whether the decoder requires a VPU or SCP firmware endpoint
  * @dec_capability: fixed capability mask for firmwareless decoders
  * @h264_slice_if: optional direct H.264 Request API backend
+ * @hevc_slice_if: optional direct HEVC Request API backend
  */
 struct mtk_vcodec_dec_pdata {
 	void (*init_vdec_params)(struct mtk_vcodec_dec_ctx *ctx);
@@ -138,6 +139,7 @@ struct mtk_vcodec_dec_pdata {
 	bool uses_fw;
 	u32 dec_capability;
 	const struct vdec_common_if *h264_slice_if;
+	const struct vdec_common_if *hevc_slice_if;
 };
 
 /**

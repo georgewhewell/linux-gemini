@@ -29,6 +29,7 @@
  * @num_output_formats: number of entries in output_formats
  * @core_id: stand for h264 or vp8 encode index
  * @uses_34bit: whether the encoder uses 34-bit iova
+ * @h264_if: optional direct H.264 encoder interface
  */
 struct mtk_vcodec_enc_pdata {
 	bool uses_ext;
@@ -40,6 +41,7 @@ struct mtk_vcodec_enc_pdata {
 	size_t num_output_formats;
 	u8 core_id;
 	bool uses_34bit;
+	const struct venc_common_if *h264_if;
 };
 
 /*

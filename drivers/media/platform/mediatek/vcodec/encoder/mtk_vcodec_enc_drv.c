@@ -154,7 +154,7 @@ static int fops_vcodec_open(struct file *file)
 	ctx->empty_flush_buf.vb.vb2_buf.vb2_queue = src_vq;
 	mtk_vcodec_enc_set_default_params(ctx);
 
-	if (v4l2_fh_is_singular(&ctx->fh)) {
+	if (v4l2_fh_is_singular(&ctx->fh) && dev->fw_handler) {
 		/*
 		 * load fireware to checks if it was loaded already and
 		 * does nothing in that case
@@ -255,6 +255,7 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 
 	INIT_LIST_HEAD(&dev->ctx_list);
 	dev->plat_dev = pdev;
+	dev->venc_pdata = of_device_get_match_data(&pdev->dev);
 
 	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,vpu",
 				  &rproc_phandle)) {
@@ -262,17 +263,18 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 	} else if (!of_property_read_u32(pdev->dev.of_node, "mediatek,scp",
 					 &rproc_phandle)) {
 		fw_type = SCP;
-	} else {
+	} else if (!dev->venc_pdata->h264_if) {
 		dev_err(&pdev->dev, "[MTK VCODEC] Could not get venc IPI device");
 		return -ENODEV;
 	}
 	dma_set_max_seg_size(&pdev->dev, UINT_MAX);
 
-	dev->fw_handler = mtk_vcodec_fw_select(dev, fw_type, ENCODER);
-	if (IS_ERR(dev->fw_handler))
-		return PTR_ERR(dev->fw_handler);
+	if (!dev->venc_pdata->h264_if) {
+		dev->fw_handler = mtk_vcodec_fw_select(dev, fw_type, ENCODER);
+		if (IS_ERR(dev->fw_handler))
+			return PTR_ERR(dev->fw_handler);
+	}
 
-	dev->venc_pdata = of_device_get_match_data(&pdev->dev);
 	ret = mtk_vcodec_init_enc_clk(dev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "[MTK VCODEC] Failed to get mtk vcodec clock source!");
@@ -382,7 +384,8 @@ err_enc_alloc:
 err_res:
 	pm_runtime_disable(dev->pm.dev);
 err_enc_pm:
-	mtk_vcodec_fw_release(dev->fw_handler);
+	if (dev->fw_handler)
+		mtk_vcodec_fw_release(dev->fw_handler);
 	return ret;
 }
 
@@ -478,7 +481,8 @@ static void mtk_vcodec_enc_remove(struct platform_device *pdev)
 	mtk_vcodec_dbgfs_deinit(&dev->dbgfs);
 	v4l2_device_unregister(&dev->v4l2_dev);
 	pm_runtime_disable(dev->pm.dev);
-	mtk_vcodec_fw_release(dev->fw_handler);
+	if (dev->fw_handler)
+		mtk_vcodec_fw_release(dev->fw_handler);
 }
 
 static struct platform_driver mtk_vcodec_enc_driver = {

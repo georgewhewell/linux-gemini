@@ -16410,6 +16410,7 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/media/mediatek,mt6797-camsv.yaml
 F:	Documentation/devicetree/bindings/media/mediatek,mt6797-seninf.yaml
 F:	Documentation/driver-api/media/drivers/mtk-mt6797-seninf.rst
+F:	drivers/media/platform/mediatek/camsv/
 F:	drivers/media/platform/mediatek/seninf/
 
 MEDIATEK MT76 WIRELESS LAN DRIVER

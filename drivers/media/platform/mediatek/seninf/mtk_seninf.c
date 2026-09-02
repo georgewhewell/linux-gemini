@@ -8,6 +8,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -27,9 +28,17 @@
 
 #include "mtk_seninf_core.h"
 
+#define MT6797_SENINF_MCLK2_CTRL	0x1600
+#define MT6797_SENINF_MCLK2_ON		(BIT(31) | BIT(29))
+#define MT6797_SENINF_MCLK2_GATE	BIT(29)
+#define MT6797_SENINF_MCLK_RATE		24000000UL
+
 struct mt6797_seninf {
 	struct device *dev;
 	struct clk *seninf_clk;
+	struct clk *camtg_clk;
+	struct clk *mclk_parent;
+	struct clk_hw mclk_hw;
 	void __iomem *core;
 	void __iomem *csi0_ana;
 	void __iomem *csi1_ana;
@@ -42,6 +51,60 @@ struct mt6797_seninf {
 	struct v4l2_subdev subdev;
 	struct media_pad pads[MT6797_SENINF_NUM_PADS];
 	struct v4l2_async_notifier notifier;
+	struct v4l2_subdev *source;
+	unsigned int source_pad;
+};
+
+static inline struct mt6797_seninf *
+to_mt6797_seninf_mclk(struct clk_hw *hw)
+{
+	return container_of(hw, struct mt6797_seninf, mclk_hw);
+}
+
+static int mt6797_seninf_mclk_prepare(struct clk_hw *hw)
+{
+	struct mt6797_seninf *seninf = to_mt6797_seninf_mclk(hw);
+	u32 value;
+	int ret;
+
+	ret = pm_runtime_resume_and_get(seninf->dev);
+	if (ret < 0)
+		return ret;
+
+	ret = clk_prepare_enable(seninf->camtg_clk);
+	if (ret) {
+		pm_runtime_put(seninf->dev);
+		return ret;
+	}
+
+	value = readl(seninf->core + MT6797_SENINF_MCLK2_CTRL);
+	writel(value | MT6797_SENINF_MCLK2_ON,
+	       seninf->core + MT6797_SENINF_MCLK2_CTRL);
+	return 0;
+}
+
+static void mt6797_seninf_mclk_unprepare(struct clk_hw *hw)
+{
+	struct mt6797_seninf *seninf = to_mt6797_seninf_mclk(hw);
+	u32 value;
+
+	value = readl(seninf->core + MT6797_SENINF_MCLK2_CTRL);
+	writel(value & ~MT6797_SENINF_MCLK2_GATE,
+	       seninf->core + MT6797_SENINF_MCLK2_CTRL);
+	clk_disable_unprepare(seninf->camtg_clk);
+	pm_runtime_put(seninf->dev);
+}
+
+static unsigned long mt6797_seninf_mclk_recalc_rate(struct clk_hw *hw,
+						    unsigned long parent_rate)
+{
+	return parent_rate / 2;
+}
+
+static const struct clk_ops mt6797_seninf_mclk_ops = {
+	.prepare = mt6797_seninf_mclk_prepare,
+	.unprepare = mt6797_seninf_mclk_unprepare,
+	.recalc_rate = mt6797_seninf_mclk_recalc_rate,
 };
 
 static inline struct mt6797_seninf *to_mt6797_seninf(struct v4l2_subdev *sd)
@@ -144,6 +207,8 @@ static int mt6797_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		goto out_unlock;
 
 	if (!enable) {
+		v4l2_subdev_disable_streams(seninf->source,
+					    seninf->source_pad, BIT(0));
 		mt6797_seninf_hw_stop(&io);
 		pm_runtime_put(seninf->dev);
 		seninf->streaming = false;
@@ -155,7 +220,7 @@ static int mt6797_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	v4l2_subdev_unlock_state(state);
 
 	remote = media_pad_remote_pad_first(&seninf->pads[MT6797_SENINF_PAD_SINK]);
-	if (!remote) {
+	if (!remote || !seninf->source) {
 		ret = -ENOLINK;
 		goto out_unlock;
 	}
@@ -181,6 +246,14 @@ static int mt6797_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	ret = mt6797_seninf_hw_start(&io, &config);
 	if (ret) {
 		dev_err(seninf->dev, "NCSI2 calibration failed: %d\n", ret);
+		pm_runtime_put(seninf->dev);
+		goto out_unlock;
+	}
+
+	ret = v4l2_subdev_enable_streams(seninf->source,
+					 seninf->source_pad, BIT(0));
+	if (ret) {
+		mt6797_seninf_hw_stop(&io);
 		pm_runtime_put(seninf->dev);
 		goto out_unlock;
 	}
@@ -240,10 +313,23 @@ static int mt6797_seninf_notify_bound(struct v4l2_async_notifier *notifier,
 {
 	struct mt6797_seninf *seninf =
 		container_of(notifier, struct mt6797_seninf, notifier);
+	struct media_pad *sink = &seninf->pads[MT6797_SENINF_PAD_SINK];
+	struct media_pad *source;
+	int ret;
 
-	return v4l2_create_fwnode_links_to_pad(subdev,
-		&seninf->pads[MT6797_SENINF_PAD_SINK],
-		MEDIA_LNK_FL_ENABLED | MEDIA_LNK_FL_IMMUTABLE);
+	ret = v4l2_create_fwnode_links_to_pad(subdev, sink,
+					      MEDIA_LNK_FL_ENABLED |
+					      MEDIA_LNK_FL_IMMUTABLE);
+	if (ret)
+		return ret;
+
+	source = media_pad_remote_pad_unique(sink);
+	if (IS_ERR(source))
+		return PTR_ERR(source);
+
+	seninf->source = subdev;
+	seninf->source_pad = source->index;
+	return 0;
 }
 
 static const struct v4l2_async_notifier_operations mt6797_seninf_notify_ops = {
@@ -383,6 +469,37 @@ out_free:
 	return ret;
 }
 
+static int mt6797_seninf_mclk_register(struct mt6797_seninf *seninf)
+{
+	const struct clk_hw *parent_hw = __clk_get_hw(seninf->mclk_parent);
+	struct clk_init_data init = {};
+	const char *name;
+	int ret;
+
+	if (clk_get_rate(seninf->mclk_parent) != MT6797_SENINF_MCLK_RATE * 2)
+		return dev_err_probe(seninf->dev, -EINVAL,
+				     "MCLK parent must be 48 MHz\n");
+
+	name = devm_kasprintf(seninf->dev, GFP_KERNEL, "%s-mclk2",
+			      dev_name(seninf->dev));
+	if (!name)
+		return -ENOMEM;
+
+	init.name = name;
+	init.ops = &mt6797_seninf_mclk_ops;
+	init.parent_hws = &parent_hw;
+	init.num_parents = 1;
+	seninf->mclk_hw.init = &init;
+
+	ret = devm_clk_hw_register(seninf->dev, &seninf->mclk_hw);
+	if (ret)
+		return dev_err_probe(seninf->dev, ret,
+				     "failed to register camera MCLK2\n");
+
+	return devm_of_clk_add_hw_provider(seninf->dev, of_clk_hw_simple_get,
+					   &seninf->mclk_hw);
+}
+
 static int mt6797_seninf_runtime_resume(struct device *dev)
 {
 	struct mt6797_seninf *seninf = dev_get_drvdata(dev);
@@ -418,6 +535,14 @@ static int mt6797_seninf_probe(struct platform_device *pdev)
 	if (IS_ERR(seninf->seninf_clk))
 		return dev_err_probe(&pdev->dev, PTR_ERR(seninf->seninf_clk),
 				     "failed to get SENINF clock\n");
+	seninf->camtg_clk = devm_clk_get(&pdev->dev, "camtg");
+	if (IS_ERR(seninf->camtg_clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(seninf->camtg_clk),
+				     "failed to get camera TG clock\n");
+	seninf->mclk_parent = devm_clk_get(&pdev->dev, "mclk-parent");
+	if (IS_ERR(seninf->mclk_parent))
+		return dev_err_probe(&pdev->dev, PTR_ERR(seninf->mclk_parent),
+				     "failed to get camera MCLK parent\n");
 
 	ret = mt6797_seninf_calibration_get(seninf);
 	if (ret)
@@ -428,6 +553,10 @@ static int mt6797_seninf_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret,
 				     "failed to enable runtime PM\n");
+
+	ret = mt6797_seninf_mclk_register(seninf);
+	if (ret)
+		return ret;
 
 	sd = &seninf->subdev;
 	v4l2_subdev_init(sd, &mt6797_seninf_subdev_ops);
@@ -486,6 +615,8 @@ static void mt6797_seninf_remove(struct platform_device *pdev)
 
 	mutex_lock(&seninf->lock);
 	if (seninf->streaming) {
+		v4l2_subdev_disable_streams(seninf->source,
+					    seninf->source_pad, BIT(0));
 		mt6797_seninf_hw_stop(&io);
 		pm_runtime_put(seninf->dev);
 		seninf->streaming = false;

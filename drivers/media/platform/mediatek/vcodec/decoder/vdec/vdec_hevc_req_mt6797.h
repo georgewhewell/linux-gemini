@@ -171,6 +171,78 @@ mt6797_hevc_rps_add_s1(struct mt6797_hevc_rps_set *set, s32 delta)
 }
 
 static inline int
+mt6797_hevc_predict_rps(const struct mt6797_hevc_rps_set *ref,
+			s32 delta_rps, u32 use_delta_flag,
+			struct mt6797_hevc_rps_set *set)
+{
+	u32 num_delta;
+	unsigned int j;
+	int j_signed;
+	int ret;
+
+	if (!ref || !set)
+		return -EINVAL;
+	num_delta = ref->num_negative_pics + ref->num_positive_pics;
+	if (num_delta >= MT6797_HEVC_MAX_RPS_PICS)
+		return -ERANGE;
+	memset(set, 0, sizeof(*set));
+
+	for (j_signed = ref->num_positive_pics - 1; j_signed >= 0;
+	     j_signed--) {
+		s32 delta = ref->delta_poc_s1[j_signed] + delta_rps;
+		u32 bit = ref->num_negative_pics + j_signed;
+
+		if (delta < 0 && (use_delta_flag & BIT(bit))) {
+			ret = mt6797_hevc_rps_add_s0(set, delta);
+			if (ret)
+				return ret;
+		}
+	}
+	if (delta_rps < 0 && (use_delta_flag & BIT(num_delta))) {
+		ret = mt6797_hevc_rps_add_s0(set, delta_rps);
+		if (ret)
+			return ret;
+	}
+	for (j = 0; j < ref->num_negative_pics; j++) {
+		s32 delta = ref->delta_poc_s0[j] + delta_rps;
+
+		if (delta < 0 && (use_delta_flag & BIT(j))) {
+			ret = mt6797_hevc_rps_add_s0(set, delta);
+			if (ret)
+				return ret;
+		}
+	}
+
+	for (j_signed = ref->num_negative_pics - 1; j_signed >= 0;
+	     j_signed--) {
+		s32 delta = ref->delta_poc_s0[j_signed] + delta_rps;
+
+		if (delta > 0 && (use_delta_flag & BIT(j_signed))) {
+			ret = mt6797_hevc_rps_add_s1(set, delta);
+			if (ret)
+				return ret;
+		}
+	}
+	if (delta_rps > 0 && (use_delta_flag & BIT(num_delta))) {
+		ret = mt6797_hevc_rps_add_s1(set, delta_rps);
+		if (ret)
+			return ret;
+	}
+	for (j = 0; j < ref->num_positive_pics; j++) {
+		s32 delta = ref->delta_poc_s1[j] + delta_rps;
+		u32 bit = ref->num_negative_pics + j;
+
+		if (delta > 0 && (use_delta_flag & BIT(bit))) {
+			ret = mt6797_hevc_rps_add_s1(set, delta);
+			if (ret)
+				return ret;
+		}
+	}
+
+	return 0;
+}
+
+static inline int
 mt6797_hevc_sps_rps_sets(const struct v4l2_ctrl_hevc_ext_sps_st_rps *rps,
 			 unsigned int count, struct mt6797_hevc_rps_set *sets)
 {
@@ -184,9 +256,7 @@ mt6797_hevc_sps_rps_sets(const struct v4l2_ctrl_hevc_ext_sps_st_rps *rps,
 		struct mt6797_hevc_rps_set *set = &sets[i];
 		const struct mt6797_hevc_rps_set *ref;
 		s32 delta_rps;
-		u32 num_delta;
 		unsigned int j;
-		int j_signed;
 		int ret = 0;
 
 		if (!(src->flags &
@@ -216,65 +286,13 @@ mt6797_hevc_sps_rps_sets(const struct v4l2_ctrl_hevc_ext_sps_st_rps *rps,
 		if (!i || src->delta_idx_minus1 >= i)
 			return -EINVAL;
 		ref = &sets[i - src->delta_idx_minus1 - 1];
-		num_delta = ref->num_negative_pics + ref->num_positive_pics;
-		if (num_delta >= MT6797_HEVC_MAX_RPS_PICS)
-			return -ERANGE;
 		delta_rps = src->abs_delta_rps_minus1 + 1;
 		if (src->delta_rps_sign)
 			delta_rps = -delta_rps;
-
-		for (j_signed = ref->num_positive_pics - 1; j_signed >= 0;
-		     j_signed--) {
-			s32 delta = ref->delta_poc_s1[j_signed] + delta_rps;
-			u32 bit = ref->num_negative_pics + j_signed;
-
-			if (delta < 0 && (src->use_delta_flag & BIT(bit))) {
-				ret = mt6797_hevc_rps_add_s0(set, delta);
-				if (ret)
-					return ret;
-			}
-		}
-		if (delta_rps < 0 && (src->use_delta_flag & BIT(num_delta))) {
-			ret = mt6797_hevc_rps_add_s0(set, delta_rps);
-			if (ret)
-				return ret;
-		}
-		for (j = 0; j < ref->num_negative_pics; j++) {
-			s32 delta = ref->delta_poc_s0[j] + delta_rps;
-
-			if (delta < 0 && (src->use_delta_flag & BIT(j))) {
-				ret = mt6797_hevc_rps_add_s0(set, delta);
-				if (ret)
-					return ret;
-			}
-		}
-
-		for (j_signed = ref->num_negative_pics - 1; j_signed >= 0;
-		     j_signed--) {
-			s32 delta = ref->delta_poc_s0[j_signed] + delta_rps;
-
-			if (delta > 0 &&
-			    (src->use_delta_flag & BIT(j_signed))) {
-				ret = mt6797_hevc_rps_add_s1(set, delta);
-			}
-			if (ret)
-				return ret;
-		}
-		if (delta_rps > 0 && (src->use_delta_flag & BIT(num_delta))) {
-			ret = mt6797_hevc_rps_add_s1(set, delta_rps);
-			if (ret)
-				return ret;
-		}
-		for (j = 0; j < ref->num_positive_pics; j++) {
-			s32 delta = ref->delta_poc_s1[j] + delta_rps;
-			u32 bit = ref->num_negative_pics + j;
-
-			if (delta > 0 && (src->use_delta_flag & BIT(bit))) {
-				ret = mt6797_hevc_rps_add_s1(set, delta);
-				if (ret)
-					return ret;
-			}
-		}
+		ret = mt6797_hevc_predict_rps(ref, delta_rps,
+					      src->use_delta_flag, set);
+		if (ret)
+			return ret;
 	}
 
 	return 0;
@@ -381,9 +399,11 @@ mt6797_hevc_slice_rps_regs(const u8 *data, size_t size,
 			   struct mt6797_hevc_rps_regs *regs)
 {
 	struct mt6797_hevc_bitreader br = {};
+	struct mt6797_hevc_rps_set predicted_set;
 	const struct mt6797_hevc_rps_set *set;
 	u32 prefix, nal_type, temporal_id, value;
 	u32 num_negative, num_positive;
+	u32 num_delta_ref = 0;
 	u32 num_long_sps = 0, num_long_pics = 0;
 	u32 poc_bits, poc_mask;
 	unsigned int i;
@@ -477,11 +497,65 @@ mt6797_hevc_slice_rps_regs(const u8 *data, size_t size,
 		num_positive = set->num_positive_pics;
 	} else {
 		if (sps->num_short_term_ref_pic_sets) {
+			u32 delta_idx_minus1, use_delta_flag = 0;
+			u32 delta_rps_sign;
+			s32 delta_rps;
+
 			ret = mt6797_hevc_get_bits(&br, 1, &value);
 			if (ret)
 				return ret;
-			if (value)
-				return -EOPNOTSUPP;
+			if (value) {
+				if (!sps_sets)
+					return -EINVAL;
+				ret = mt6797_hevc_get_ue(&br, &delta_idx_minus1);
+				if (ret)
+					return ret;
+				if (delta_idx_minus1 >=
+				    sps->num_short_term_ref_pic_sets)
+					return -EINVAL;
+				set = &sps_sets[sps->num_short_term_ref_pic_sets -
+						 delta_idx_minus1 - 1];
+				num_delta_ref = set->num_negative_pics +
+						set->num_positive_pics;
+				if (num_delta_ref >= MT6797_HEVC_MAX_RPS_PICS ||
+				    dec->num_delta_pocs_of_ref_rps_idx !=
+				    num_delta_ref)
+					return -EINVAL;
+				ret = mt6797_hevc_get_bits(&br, 1,
+							   &delta_rps_sign);
+				if (ret)
+					return ret;
+				ret = mt6797_hevc_get_ue(&br, &value);
+				if (ret)
+					return ret;
+				if (value >= S16_MAX)
+					return -ERANGE;
+				delta_rps = value + 1;
+				if (delta_rps_sign)
+					delta_rps = -delta_rps;
+				for (i = 0; i <= num_delta_ref; i++) {
+					ret = mt6797_hevc_get_bits(&br, 1, &value);
+					if (ret)
+						return ret;
+					if (value) {
+						use_delta_flag |= BIT(i);
+						continue;
+					}
+					ret = mt6797_hevc_get_bits(&br, 1, &value);
+					if (ret)
+						return ret;
+					if (value)
+						use_delta_flag |= BIT(i);
+				}
+				ret = mt6797_hevc_predict_rps(set, delta_rps,
+							      use_delta_flag,
+							      &predicted_set);
+				if (ret)
+					return ret;
+				num_negative = predicted_set.num_negative_pics;
+				num_positive = predicted_set.num_positive_pics;
+				goto parsed_short_rps;
+			}
 		}
 		ret = mt6797_hevc_get_ue(&br, &num_negative);
 		if (ret)
@@ -501,6 +575,7 @@ mt6797_hevc_slice_rps_regs(const u8 *data, size_t size,
 		}
 	}
 
+parsed_short_rps:
 	if (sps->flags & V4L2_HEVC_SPS_FLAG_LONG_TERM_REF_PICS_PRESENT) {
 		if (sps->num_long_term_ref_pics_sps) {
 			ret = mt6797_hevc_get_ue(&br, &num_long_sps);
@@ -515,7 +590,8 @@ mt6797_hevc_slice_rps_regs(const u8 *data, size_t size,
 	    num_negative + num_positive > 0x3f ||
 	    num_long_sps + num_long_pics > 0x1f || num_long_sps > 0x1f)
 		return -ERANGE;
-	regs->vld_0c8 = (num_negative + num_positive) << 8 |
+	regs->vld_0c8 = num_delta_ref |
+			(num_negative + num_positive) << 8 |
 				(num_long_sps + num_long_pics) << 16 |
 				num_long_sps << 24;
 

@@ -31,6 +31,9 @@
 #define MT6797_H264_PPS_TRANSFORM_8X8	BIT(18)
 #define MT6797_H264_PPS_SECOND_CHROMA_QP GENMASK(23, 19)
 
+#define MT6797_H264_PPS_ID		GENMASK(4, 0)
+#define MT6797_H264_PPS_SPS_ID		GENMASK(9, 5)
+
 #define MT6797_H264_SH_FIRST_MB		GENMASK(12, 0)
 #define MT6797_H264_SH_TYPE		GENMASK(16, 13)
 #define MT6797_H264_SH_FIELD		BIT(17)
@@ -509,21 +512,6 @@ mt6797_h264_find_start_code(const u8 *data, size_t size, size_t from,
 	return -ENODATA;
 }
 
-static inline bool
-mt6797_h264_same_slice_config(const struct v4l2_ctrl_h264_slice_params *a,
-			      const struct v4l2_ctrl_h264_slice_params *b)
-{
-	return a->slice_type == b->slice_type &&
-	       a->cabac_init_idc == b->cabac_init_idc &&
-	       a->slice_qp_delta == b->slice_qp_delta &&
-	       a->disable_deblocking_filter_idc == b->disable_deblocking_filter_idc &&
-	       a->slice_alpha_c0_offset_div2 == b->slice_alpha_c0_offset_div2 &&
-	       a->slice_beta_offset_div2 == b->slice_beta_offset_div2 &&
-	       a->num_ref_idx_l0_active_minus1 == b->num_ref_idx_l0_active_minus1 &&
-	       a->num_ref_idx_l1_active_minus1 == b->num_ref_idx_l1_active_minus1 &&
-	       a->flags == b->flags;
-}
-
 static inline int
 mt6797_h264_parse_frame_headers(const u8 *data, size_t size,
 				const struct v4l2_ctrl_h264_sps *sps,
@@ -535,7 +523,6 @@ mt6797_h264_parse_frame_headers(const u8 *data, size_t size,
 	const u8 *nal_data;
 	size_t nal_size;
 	size_t offset = 0, next;
-	u32 previous_mb = 0;
 	unsigned int slices = 0;
 	int ret;
 
@@ -559,12 +546,9 @@ mt6797_h264_parse_frame_headers(const u8 *data, size_t size,
 				return -EINVAL;
 			*first = slice_hdr;
 		} else {
-			if (slice_hdr.first_mb_in_slice <= previous_mb)
-				return -EINVAL;
-			if (!mt6797_h264_same_slice_config(first, &slice_hdr))
-				return -EOPNOTSUPP;
+			/* The progressive multi-slice launch protocol is unknown. */
+			return -EOPNOTSUPP;
 		}
-		previous_mb = slice_hdr.first_mb_in_slice;
 		slices++;
 		if (next == size)
 			return 0;
@@ -758,6 +742,13 @@ static inline u32 mt6797_h264_pps_reg(const struct v4l2_ctrl_h264_pps *pps)
 			  (u32)pps->second_chroma_qp_index_offset & 0x1f);
 
 	return reg;
+}
+
+static inline u32
+mt6797_h264_pps_id_reg(const struct v4l2_ctrl_h264_pps *pps)
+{
+	return FIELD_PREP(MT6797_H264_PPS_ID, pps->pic_parameter_set_id) |
+	       FIELD_PREP(MT6797_H264_PPS_SPS_ID, pps->seq_parameter_set_id);
 }
 
 static inline u32 mt6797_h264_slice_reg(const struct v4l2_ctrl_h264_slice_params *slice,
@@ -1075,26 +1066,27 @@ mt6797_h264_mv_range_plan(const u64 addrs[MT6797_H264_MV_BUFFER_COUNT],
 }
 
 static inline int
-mt6797_h264_start_plan(const struct mt6797_h264_buffer_layout *layout,
+mt6797_h264_start_plan(u32 coded_width, u32 coded_height,
+		       const struct mt6797_h264_buffer_layout *layout,
 		       const struct v4l2_ctrl_h264_pps *pps,
 		       struct mt6797_h264_start_plan *plan)
 {
 	u32 mb_width, mb_height;
 
-	if (!layout->width || !layout->height ||
-	    !IS_ALIGNED(layout->width, 16) ||
-	    !IS_ALIGNED(layout->height, 16) || layout->width > U16_MAX ||
-	    layout->height > U16_MAX)
+	if (!coded_width || !coded_height ||
+	    !IS_ALIGNED(coded_width, 16) || !IS_ALIGNED(coded_height, 16) ||
+	    coded_width > layout->width || coded_height > layout->height ||
+	    coded_width > U16_MAX || coded_height > U16_MAX)
 		return -EINVAL;
 
-	mb_width = layout->width / 16;
-	mb_height = layout->height / 16;
+	mb_width = coded_width / 16;
+	mb_height = coded_height / 16;
 	if (check_mul_overflow(mb_width, mb_height, &plan->mb_count))
 		return -ERANGE;
 
-	plan->width = layout->width;
-	plan->height = layout->height;
-	plan->packed_size = layout->width | layout->height << 16;
+	plan->width = coded_width;
+	plan->height = coded_height;
+	plan->packed_size = coded_width | coded_height << 16;
 	plan->mb_width_minus1 = mb_width - 1;
 	plan->mb_height_minus1 = mb_height - 1;
 	plan->mb_width = mb_width;
@@ -1121,6 +1113,8 @@ mt6797_h264_validate_request(const struct v4l2_ctrl_h264_sps *sps,
 	    sps->pic_height_in_map_units_minus1 > 67)
 		return -ERANGE;
 	if (pps->num_slice_groups_minus1 ||
+	    pps->pic_parameter_set_id > FIELD_MAX(MT6797_H264_PPS_ID) ||
+	    pps->seq_parameter_set_id > FIELD_MAX(MT6797_H264_PPS_SPS_ID) ||
 	    pps->flags & (V4L2_H264_PPS_FLAG_WEIGHTED_PRED |
 			  V4L2_H264_PPS_FLAG_SCALING_MATRIX_PRESENT |
 			  V4L2_H264_PPS_FLAG_TRANSFORM_8X8_MODE) ||

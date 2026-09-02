@@ -179,6 +179,401 @@ struct mt6797_h264_start_plan {
 	bool constrained_intra_pred;
 };
 
+struct mt6797_h264_bitreader {
+	const u8 *data;
+	size_t size;
+	size_t pos;
+	u32 raw_bits;
+	u8 byte;
+	u8 bits_left;
+	u8 zero_bytes;
+};
+
+static inline int mt6797_h264_next_byte(struct mt6797_h264_bitreader *br)
+{
+	u8 byte;
+
+	while (br->pos < br->size) {
+		byte = br->data[br->pos++];
+		if (br->zero_bytes >= 2 && byte == 0x03) {
+			br->zero_bytes = 0;
+			br->raw_bits += 8;
+			continue;
+		}
+
+		if (byte)
+			br->zero_bytes = 0;
+		else if (br->zero_bytes < 2)
+			br->zero_bytes++;
+		br->byte = byte;
+		br->bits_left = 8;
+		return 0;
+	}
+
+	return -ENODATA;
+}
+
+static inline int
+mt6797_h264_get_bits(struct mt6797_h264_bitreader *br, u8 count, u32 *value)
+{
+	u32 result = 0;
+	unsigned int i;
+	int ret;
+
+	if (count > 32)
+		return -EINVAL;
+
+	for (i = 0; i < count; i++) {
+		if (!br->bits_left) {
+			ret = mt6797_h264_next_byte(br);
+			if (ret)
+				return ret;
+		}
+
+		result = result << 1 | ((br->byte >> (br->bits_left - 1)) & 1);
+		br->bits_left--;
+		br->raw_bits++;
+	}
+	*value = result;
+
+	return 0;
+}
+
+static inline int
+mt6797_h264_get_ue(struct mt6797_h264_bitreader *br, u32 *value)
+{
+	u32 bit, suffix;
+	u8 leading = 0;
+	int ret;
+
+	do {
+		ret = mt6797_h264_get_bits(br, 1, &bit);
+		if (ret)
+			return ret;
+		if (!bit && ++leading == 32)
+			return -ERANGE;
+	} while (!bit);
+
+	if (!leading) {
+		*value = 0;
+		return 0;
+	}
+
+	ret = mt6797_h264_get_bits(br, leading, &suffix);
+	if (ret)
+		return ret;
+	*value = (BIT(leading) - 1) + suffix;
+
+	return 0;
+}
+
+static inline int
+mt6797_h264_get_se(struct mt6797_h264_bitreader *br, s32 *value)
+{
+	u32 code_num;
+	int ret;
+
+	ret = mt6797_h264_get_ue(br, &code_num);
+	if (ret)
+		return ret;
+	if (code_num == U32_MAX)
+		return -ERANGE;
+
+	if (code_num & 1)
+		*value = (code_num + 1) / 2;
+	else
+		*value = -(s32)(code_num / 2);
+
+	return 0;
+}
+
+static inline int mt6797_h264_skip_bits(struct mt6797_h264_bitreader *br,
+					u32 count)
+{
+	u32 unused;
+	u8 chunk;
+	int ret;
+
+	while (count) {
+		chunk = min_t(u32, count, 32);
+		ret = mt6797_h264_get_bits(br, chunk, &unused);
+		if (ret)
+			return ret;
+		count -= chunk;
+	}
+
+	return 0;
+}
+
+static inline int
+mt6797_h264_parse_frame_header(const u8 *data, size_t size,
+			       const struct v4l2_ctrl_h264_sps *sps,
+			       const struct v4l2_ctrl_h264_pps *pps,
+			       const struct v4l2_ctrl_h264_decode_params *dec,
+			       struct v4l2_ctrl_h264_slice_params *slice)
+{
+	struct mt6797_h264_bitreader br = {};
+	u32 prefix_size, nal, nal_type, value;
+	s32 signed_value;
+	u8 frame_num_bits;
+	bool is_idr;
+	int ret;
+
+	if (!data || !slice || size < 4)
+		return -EINVAL;
+	if (data[0] || data[1])
+		return -EINVAL;
+	if (data[2] == 1)
+		prefix_size = 3;
+	else if (size >= 5 && !data[2] && data[3] == 1)
+		prefix_size = 4;
+	else
+		return -EINVAL;
+	if (prefix_size >= size)
+		return -ENODATA;
+
+	nal = data[prefix_size];
+	nal_type = nal & 0x1f;
+	is_idr = nal_type == 5;
+	if ((nal & BIT(7)) || (nal_type != 1 && nal_type != 5))
+		return -EINVAL;
+	if ((nal >> 5) != dec->nal_ref_idc)
+		return -EINVAL;
+	if (is_idr != !!(dec->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC))
+		return -EINVAL;
+
+	memset(slice, 0, sizeof(*slice));
+	br.data = data;
+	br.size = size;
+	br.pos = prefix_size + 1;
+	br.raw_bits = 8;
+
+	ret = mt6797_h264_get_ue(&br, &slice->first_mb_in_slice);
+	if (ret)
+		return ret;
+	ret = mt6797_h264_get_ue(&br, &value);
+	if (ret)
+		return ret;
+	if (value > 9)
+		return -EINVAL;
+	slice->slice_type = value % 5;
+	if (slice->slice_type > V4L2_H264_SLICE_TYPE_I)
+		return -EOPNOTSUPP;
+
+	ret = mt6797_h264_get_ue(&br, &value);
+	if (ret)
+		return ret;
+	if (value != pps->pic_parameter_set_id)
+		return -EINVAL;
+
+	frame_num_bits = sps->log2_max_frame_num_minus4 + 4;
+	if (frame_num_bits > 16)
+		return -ERANGE;
+	ret = mt6797_h264_get_bits(&br, frame_num_bits, &value);
+	if (ret)
+		return ret;
+	if (value != dec->frame_num)
+		return -EINVAL;
+
+	if (is_idr) {
+		ret = mt6797_h264_get_ue(&br, &value);
+		if (ret)
+			return ret;
+		if (value != dec->idr_pic_id)
+			return -EINVAL;
+	}
+
+	ret = mt6797_h264_skip_bits(&br, dec->pic_order_cnt_bit_size);
+	if (ret)
+		return ret;
+	if (pps->flags & V4L2_H264_PPS_FLAG_REDUNDANT_PIC_CNT_PRESENT) {
+		ret = mt6797_h264_get_ue(&br, &value);
+		if (ret)
+			return ret;
+		if (value > U8_MAX)
+			return -ERANGE;
+		slice->redundant_pic_cnt = value;
+	}
+	if (slice->slice_type == V4L2_H264_SLICE_TYPE_B) {
+		ret = mt6797_h264_get_bits(&br, 1, &value);
+		if (ret)
+			return ret;
+		if (value)
+			slice->flags |= V4L2_H264_SLICE_FLAG_DIRECT_SPATIAL_MV_PRED;
+	}
+
+	slice->num_ref_idx_l0_active_minus1 =
+		pps->num_ref_idx_l0_default_active_minus1;
+	slice->num_ref_idx_l1_active_minus1 =
+		pps->num_ref_idx_l1_default_active_minus1;
+	if (slice->slice_type != V4L2_H264_SLICE_TYPE_I) {
+		ret = mt6797_h264_get_bits(&br, 1, &value);
+		if (ret)
+			return ret;
+		if (value) {
+			ret = mt6797_h264_get_ue(&br, &value);
+			if (ret)
+				return ret;
+			if (value >= V4L2_H264_REF_LIST_LEN)
+				return -ERANGE;
+			slice->num_ref_idx_l0_active_minus1 = value;
+			if (slice->slice_type == V4L2_H264_SLICE_TYPE_B) {
+				ret = mt6797_h264_get_ue(&br, &value);
+				if (ret)
+					return ret;
+				if (value >= V4L2_H264_REF_LIST_LEN)
+					return -ERANGE;
+				slice->num_ref_idx_l1_active_minus1 = value;
+			}
+		}
+
+		/* The first tranche supports the default lists only. */
+		ret = mt6797_h264_get_bits(&br, 1, &value);
+		if (ret)
+			return ret;
+		if (value)
+			return -EOPNOTSUPP;
+		if (slice->slice_type == V4L2_H264_SLICE_TYPE_B) {
+			ret = mt6797_h264_get_bits(&br, 1, &value);
+			if (ret)
+				return ret;
+			if (value)
+				return -EOPNOTSUPP;
+		}
+	}
+
+	if (V4L2_H264_CTRL_PRED_WEIGHTS_REQUIRED(pps, slice))
+		return -EOPNOTSUPP;
+	if (dec->nal_ref_idc) {
+		ret = mt6797_h264_skip_bits(&br,
+					    dec->dec_ref_pic_marking_bit_size);
+		if (ret)
+			return ret;
+	}
+	if (pps->flags & V4L2_H264_PPS_FLAG_ENTROPY_CODING_MODE &&
+	    slice->slice_type != V4L2_H264_SLICE_TYPE_I) {
+		ret = mt6797_h264_get_ue(&br, &value);
+		if (ret)
+			return ret;
+		if (value > 2)
+			return -EINVAL;
+		slice->cabac_init_idc = value;
+	}
+
+	ret = mt6797_h264_get_se(&br, &signed_value);
+	if (ret)
+		return ret;
+	if (signed_value < S8_MIN || signed_value > S8_MAX)
+		return -ERANGE;
+	slice->slice_qp_delta = signed_value;
+	if (pps->flags & V4L2_H264_PPS_FLAG_DEBLOCKING_FILTER_CONTROL_PRESENT) {
+		ret = mt6797_h264_get_ue(&br, &value);
+		if (ret)
+			return ret;
+		if (value > 2)
+			return -EINVAL;
+		slice->disable_deblocking_filter_idc = value;
+		if (value != 1) {
+			ret = mt6797_h264_get_se(&br, &signed_value);
+			if (ret)
+				return ret;
+			if (signed_value < -6 || signed_value > 6)
+				return -ERANGE;
+			slice->slice_alpha_c0_offset_div2 = signed_value;
+			ret = mt6797_h264_get_se(&br, &signed_value);
+			if (ret)
+				return ret;
+			if (signed_value < -6 || signed_value > 6)
+				return -ERANGE;
+			slice->slice_beta_offset_div2 = signed_value;
+		}
+	}
+
+	slice->header_bit_size = br.raw_bits;
+	return 0;
+}
+
+static inline int
+mt6797_h264_find_start_code(const u8 *data, size_t size, size_t from,
+			    size_t *offset)
+{
+	size_t i;
+
+	for (i = from; i + 3 <= size; i++) {
+		if (!data[i] && !data[i + 1] && data[i + 2] == 1) {
+			*offset = i;
+			return 0;
+		}
+	}
+
+	return -ENODATA;
+}
+
+static inline bool
+mt6797_h264_same_slice_config(const struct v4l2_ctrl_h264_slice_params *a,
+			      const struct v4l2_ctrl_h264_slice_params *b)
+{
+	return a->slice_type == b->slice_type &&
+	       a->cabac_init_idc == b->cabac_init_idc &&
+	       a->slice_qp_delta == b->slice_qp_delta &&
+	       a->disable_deblocking_filter_idc == b->disable_deblocking_filter_idc &&
+	       a->slice_alpha_c0_offset_div2 == b->slice_alpha_c0_offset_div2 &&
+	       a->slice_beta_offset_div2 == b->slice_beta_offset_div2 &&
+	       a->num_ref_idx_l0_active_minus1 == b->num_ref_idx_l0_active_minus1 &&
+	       a->num_ref_idx_l1_active_minus1 == b->num_ref_idx_l1_active_minus1 &&
+	       a->flags == b->flags;
+}
+
+static inline int
+mt6797_h264_parse_frame_headers(const u8 *data, size_t size,
+				const struct v4l2_ctrl_h264_sps *sps,
+				const struct v4l2_ctrl_h264_pps *pps,
+				const struct v4l2_ctrl_h264_decode_params *dec,
+				struct v4l2_ctrl_h264_slice_params *first)
+{
+	struct v4l2_ctrl_h264_slice_params slice_hdr;
+	const u8 *nal_data;
+	size_t nal_size;
+	size_t offset = 0, next;
+	u32 previous_mb = 0;
+	unsigned int slices = 0;
+	int ret;
+
+	while (offset < size) {
+		ret = mt6797_h264_find_start_code(data, size, offset, &offset);
+		if (ret)
+			return slices ? 0 : ret;
+		if (!slices && offset)
+			return -EINVAL;
+
+		ret = mt6797_h264_find_start_code(data, size, offset + 3, &next);
+		if (ret)
+			next = size;
+		nal_data = data + offset;
+		nal_size = next - offset;
+		ret = mt6797_h264_parse_frame_header(nal_data, nal_size, sps, pps, dec, &slice_hdr);
+		if (ret)
+			return ret;
+		if (!slices) {
+			if (slice_hdr.first_mb_in_slice)
+				return -EINVAL;
+			*first = slice_hdr;
+		} else {
+			if (slice_hdr.first_mb_in_slice <= previous_mb)
+				return -EINVAL;
+			if (!mt6797_h264_same_slice_config(first, &slice_hdr))
+				return -EOPNOTSUPP;
+		}
+		previous_mb = slice_hdr.first_mb_in_slice;
+		slices++;
+		if (next == size)
+			return 0;
+		offset = next;
+	}
+
+	return slices ? 0 : -ENODATA;
+}
+
 static inline int mt6797_h264_staging_size(size_t payload_size,
 					   size_t *allocation_size)
 {

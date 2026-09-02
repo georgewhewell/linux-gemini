@@ -4,6 +4,66 @@
 
 #include "vdec_h264_req_mt6797.h"
 
+struct mt6797_h264_test_bits {
+	u8 data[64];
+	u32 bits;
+};
+
+static void
+mt6797_h264_test_bit(struct mt6797_h264_test_bits *stream, bool value)
+{
+	u32 bit = stream->bits++;
+
+	if (value)
+		stream->data[4 + bit / 8] |= BIT(7 - bit % 8);
+}
+
+static void
+mt6797_h264_test_bits(struct mt6797_h264_test_bits *stream, u32 value, u8 count)
+{
+	while (count--)
+		mt6797_h264_test_bit(stream, value & BIT(count));
+}
+
+static void mt6797_h264_test_ue(struct mt6797_h264_test_bits *stream, u32 value)
+{
+	u32 code = value + 1;
+	u8 bits = fls(code);
+	u8 i;
+
+	for (i = 1; i < bits; i++)
+		mt6797_h264_test_bit(stream, false);
+	mt6797_h264_test_bits(stream, code, bits);
+}
+
+static void mt6797_h264_test_se(struct mt6797_h264_test_bits *stream, s32 value)
+{
+	u32 code = value <= 0 ? -2 * value : 2 * value - 1;
+
+	mt6797_h264_test_ue(stream, code);
+}
+
+static size_t mt6797_h264_test_size(const struct mt6797_h264_test_bits *stream)
+{
+	return 4 + DIV_ROUND_UP(stream->bits, 8);
+}
+
+static void mt6797_test_idr(struct mt6797_h264_test_bits *stream, u32 first_mb,
+			    s32 qp_delta)
+{
+	static const u8 prefix[] = { 0, 0, 1, 0x65 };
+
+	memset(stream, 0, sizeof(*stream));
+	memcpy(stream->data, prefix, sizeof(prefix));
+	mt6797_h264_test_ue(stream, first_mb);
+	mt6797_h264_test_ue(stream, V4L2_H264_SLICE_TYPE_I);
+	mt6797_h264_test_ue(stream, 0);	/* pic_parameter_set_id */
+	mt6797_h264_test_bits(stream, 0, 4);	/* frame_num */
+	mt6797_h264_test_ue(stream, 0);	/* idr_pic_id */
+	mt6797_h264_test_bits(stream, 0, 2);	/* reference marking */
+	mt6797_h264_test_se(stream, qp_delta);
+}
+
 static void mt6797_h264_sps_pack_test(struct kunit *test)
 {
 	struct v4l2_ctrl_h264_sps sps = {
@@ -133,6 +193,122 @@ static void mt6797_h264_staging_size_test(struct kunit *test)
 			mt6797_h264_staging_size(SIZE_MAX - MT6797_H264_BS_GUARD + 1,
 						 &allocation_size),
 			-EOVERFLOW);
+}
+
+static void mt6797_h264_frame_header_test(struct kunit *test)
+{
+	struct mt6797_h264_test_bits stream = {
+		.data = { 0, 0, 1, 0x41 },
+	};
+	struct v4l2_ctrl_h264_sps sps = {
+		.log2_max_frame_num_minus4 = 0,
+	};
+	struct v4l2_ctrl_h264_pps pps = {
+		.flags = V4L2_H264_PPS_FLAG_ENTROPY_CODING_MODE |
+			 V4L2_H264_PPS_FLAG_DEBLOCKING_FILTER_CONTROL_PRESENT,
+	};
+	struct v4l2_ctrl_h264_decode_params dec = {
+		.nal_ref_idc = 2,
+		.frame_num = 3,
+		.pic_order_cnt_bit_size = 4,
+		.dec_ref_pic_marking_bit_size = 3,
+		.flags = V4L2_H264_DECODE_PARAM_FLAG_PFRAME,
+	};
+	struct v4l2_ctrl_h264_slice_params slice;
+	size_t size;
+	int ret;
+
+	mt6797_h264_test_ue(&stream, 0);	/* first_mb_in_slice */
+	mt6797_h264_test_ue(&stream, V4L2_H264_SLICE_TYPE_P);
+	mt6797_h264_test_ue(&stream, 0);	/* pic_parameter_set_id */
+	mt6797_h264_test_bits(&stream, 3, 4);	/* frame_num */
+	mt6797_h264_test_bits(&stream, 0xa, 4);	/* POC syntax */
+	mt6797_h264_test_bit(&stream, true);	/* ref count override */
+	mt6797_h264_test_ue(&stream, 1);	/* two L0 references */
+	mt6797_h264_test_bit(&stream, false);	/* default L0 ordering */
+	mt6797_h264_test_bits(&stream, 5, 3);	/* marking syntax */
+	mt6797_h264_test_ue(&stream, 2);	/* cabac_init_idc */
+	mt6797_h264_test_se(&stream, -3);	/* slice_qp_delta */
+	mt6797_h264_test_ue(&stream, 0);	/* deblocking enabled */
+	mt6797_h264_test_se(&stream, -2);	/* alpha offset */
+	mt6797_h264_test_se(&stream, 2);	/* beta offset */
+
+	size = mt6797_h264_test_size(&stream);
+	ret = mt6797_h264_parse_frame_header(stream.data, size, &sps, &pps, &dec, &slice);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, slice.header_bit_size, stream.bits + 8);
+	KUNIT_EXPECT_EQ(test, slice.slice_type, (u8)V4L2_H264_SLICE_TYPE_P);
+	KUNIT_EXPECT_EQ(test, slice.num_ref_idx_l0_active_minus1, (u8)1);
+	KUNIT_EXPECT_EQ(test, slice.cabac_init_idc, (u8)2);
+	KUNIT_EXPECT_EQ(test, slice.slice_qp_delta, (s8)-3);
+	KUNIT_EXPECT_EQ(test, slice.disable_deblocking_filter_idc, (u8)0);
+	KUNIT_EXPECT_EQ(test, slice.slice_alpha_c0_offset_div2, (s8)-2);
+	KUNIT_EXPECT_EQ(test, slice.slice_beta_offset_div2, (s8)2);
+}
+
+static void mt6797_h264_reject_modified_list_test(struct kunit *test)
+{
+	struct mt6797_h264_test_bits stream = {
+		.data = { 0, 0, 1, 0x01 },
+	};
+	static const struct v4l2_ctrl_h264_sps sps;
+	static const struct v4l2_ctrl_h264_pps pps;
+	static const struct v4l2_ctrl_h264_decode_params dec = {
+		.flags = V4L2_H264_DECODE_PARAM_FLAG_PFRAME,
+	};
+	struct v4l2_ctrl_h264_slice_params slice;
+	size_t size;
+	int ret;
+
+	mt6797_h264_test_ue(&stream, 0);
+	mt6797_h264_test_ue(&stream, V4L2_H264_SLICE_TYPE_P);
+	mt6797_h264_test_ue(&stream, 0);
+	mt6797_h264_test_bits(&stream, 0, 4);
+	mt6797_h264_test_bit(&stream, false);	/* default ref counts */
+	mt6797_h264_test_bit(&stream, true);	/* modified L0 ordering */
+
+	size = mt6797_h264_test_size(&stream);
+	ret = mt6797_h264_parse_frame_header(stream.data, size, &sps, &pps, &dec, &slice);
+	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
+	stream.data[0] = 1;
+	ret = mt6797_h264_parse_frame_header(stream.data, size, &sps, &pps, &dec, &slice);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+}
+
+static void mt6797_h264_multi_slice_frame_test(struct kunit *test)
+{
+	struct mt6797_h264_test_bits first_stream, second_stream;
+	static const struct v4l2_ctrl_h264_sps sps;
+	static const struct v4l2_ctrl_h264_pps pps;
+	static const struct v4l2_ctrl_h264_decode_params dec = {
+		.nal_ref_idc = 3,
+		.dec_ref_pic_marking_bit_size = 2,
+		.flags = V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC,
+	};
+	struct v4l2_ctrl_h264_slice_params slice;
+	u8 frame[128];
+	size_t first_size, second_size, frame_size;
+	int ret;
+
+	mt6797_test_idr(&first_stream, 0, 0);
+	mt6797_test_idr(&second_stream, 10, 0);
+	first_size = mt6797_h264_test_size(&first_stream);
+	second_size = mt6797_h264_test_size(&second_stream);
+	memcpy(frame, first_stream.data, first_size);
+	memcpy(frame + first_size, second_stream.data, second_size);
+
+	frame_size = first_size + second_size;
+	ret = mt6797_h264_parse_frame_headers(frame, frame_size, &sps, &pps, &dec, &slice);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, slice.first_mb_in_slice, 0U);
+	KUNIT_EXPECT_EQ(test, slice.slice_type, (u8)V4L2_H264_SLICE_TYPE_I);
+
+	mt6797_test_idr(&second_stream, 10, 1);
+	second_size = mt6797_h264_test_size(&second_stream);
+	memcpy(frame + first_size, second_stream.data, second_size);
+	frame_size = first_size + second_size;
+	ret = mt6797_h264_parse_frame_headers(frame, frame_size, &sps, &pps, &dec, &slice);
+	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
 }
 
 static void mt6797_h264_barrel_plan_test(struct kunit *test)
@@ -520,6 +696,9 @@ static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_min_layout_test),
 	KUNIT_CASE(mt6797_h264_reject_layout_test),
 	KUNIT_CASE(mt6797_h264_staging_size_test),
+	KUNIT_CASE(mt6797_h264_frame_header_test),
+	KUNIT_CASE(mt6797_h264_reject_modified_list_test),
+	KUNIT_CASE(mt6797_h264_multi_slice_frame_test),
 	KUNIT_CASE(mt6797_h264_barrel_plan_test),
 	KUNIT_CASE(mt6797_h264_reject_barrel_plan_test),
 	KUNIT_CASE(mt6797_h264_output_plan_test),

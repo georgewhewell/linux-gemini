@@ -708,15 +708,11 @@ static void mtk_vcodec_dec_reset_controls(struct v4l2_ctrl_config *cfg,
 	}
 }
 
-static int mtk_vcodec_dec_ctrls_setup_common(struct mtk_vcodec_dec_ctx *ctx,
-					     bool slice_params)
+static int mtk_vcodec_dec_ctrls_setup_common(struct mtk_vcodec_dec_ctx *ctx)
 {
 	unsigned int i;
-	struct v4l2_ctrl_config cfg = {
-		.id = V4L2_CID_STATELESS_H264_SLICE_PARAMS,
-	};
 
-	v4l2_ctrl_handler_init(&ctx->ctrl_hdl, NUM_CTRLS + slice_params);
+	v4l2_ctrl_handler_init(&ctx->ctrl_hdl, NUM_CTRLS);
 	if (ctx->ctrl_hdl.error) {
 		mtk_v4l2_vdec_err(ctx, "v4l2_ctrl_handler_init failed\n");
 		return ctx->ctrl_hdl.error;
@@ -725,11 +721,6 @@ static int mtk_vcodec_dec_ctrls_setup_common(struct mtk_vcodec_dec_ctx *ctx,
 	for (i = 0; i < NUM_CTRLS; i++) {
 		struct v4l2_ctrl_config cfg = mtk_stateless_controls[i].cfg;
 
-		if (slice_params && cfg.id == V4L2_CID_STATELESS_H264_DECODE_MODE) {
-			cfg.min = V4L2_STATELESS_H264_DECODE_MODE_SLICE_BASED;
-			cfg.def = V4L2_STATELESS_H264_DECODE_MODE_SLICE_BASED;
-			cfg.max = V4L2_STATELESS_H264_DECODE_MODE_SLICE_BASED;
-		}
 		cfg.ops = &mtk_vcodec_dec_ctrl_ops;
 
 		mtk_vcodec_dec_reset_controls(&cfg, ctx);
@@ -740,13 +731,6 @@ static int mtk_vcodec_dec_ctrls_setup_common(struct mtk_vcodec_dec_ctx *ctx,
 			return ctx->ctrl_hdl.error;
 		}
 	}
-	if (slice_params) {
-		cfg.ops = &mtk_vcodec_dec_ctrl_ops;
-		v4l2_ctrl_new_custom(&ctx->ctrl_hdl, &cfg, NULL);
-		if (ctx->ctrl_hdl.error)
-			return ctx->ctrl_hdl.error;
-	}
-
 	v4l2_ctrl_handler_setup(&ctx->ctrl_hdl);
 
 	return 0;
@@ -754,12 +738,7 @@ static int mtk_vcodec_dec_ctrls_setup_common(struct mtk_vcodec_dec_ctx *ctx,
 
 static int mtk_vcodec_dec_ctrls_setup(struct mtk_vcodec_dec_ctx *ctx)
 {
-	return mtk_vcodec_dec_ctrls_setup_common(ctx, false);
-}
-
-static int mtk_vcodec_dec_ctrls_setup_mt6797(struct mtk_vcodec_dec_ctx *ctx)
-{
-	return mtk_vcodec_dec_ctrls_setup_common(ctx, true);
+	return mtk_vcodec_dec_ctrls_setup_common(ctx);
 }
 
 static struct media_request *fops_media_request_alloc(struct media_device *mdev)
@@ -974,7 +953,7 @@ const struct mtk_vcodec_dec_pdata mtk_vdec_8183_pdata = {
 
 const struct mtk_vcodec_dec_pdata mtk_vdec_6797_pdata = {
 	.init_vdec_params = mtk_init_vdec_params,
-	.ctrls_setup = mtk_vcodec_dec_ctrls_setup_mt6797,
+	.ctrls_setup = mtk_vcodec_dec_ctrls_setup,
 	.vdec_vb2_ops = &mtk_vdec_request_vb2_ops,
 	.vdec_formats = mtk_video_formats,
 	.num_formats = &num_formats,

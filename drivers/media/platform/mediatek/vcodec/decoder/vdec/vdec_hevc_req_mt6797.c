@@ -361,6 +361,7 @@ static void
 mt6797_hevc_program_syntax(struct mt6797_hevc_inst *inst,
 			   const struct mt6797_hevc_sps_regs *sps,
 			   const struct mt6797_hevc_pps_regs *pps,
+			   const struct mt6797_hevc_rps_regs *rps,
 			   const struct mt6797_hevc_slice_regs *slice,
 			   const struct mt6797_hevc_tile_regs *tiles)
 {
@@ -371,7 +372,7 @@ mt6797_hevc_program_syntax(struct mt6797_hevc_inst *inst,
 	writel(slice->vld_0bc, regs->hevc + 0xbc);
 	writel(slice->vld_0c0, regs->hevc + 0xc0);
 	writel(slice->vld_0c4, regs->hevc + 0xc4);
-	writel(0, regs->hevc + 0xc8);
+	writel(rps->vld_0c8, regs->hevc + 0xc8);
 	writel(slice->vld_0f4, regs->hevc + 0xf4);
 	writel(sps->top_068, regs->top + 0x68);
 	writel(sps->top_070, regs->top + 0x70);
@@ -504,6 +505,7 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	struct mt6797_hevc_ref_plan refs;
 	struct mt6797_hevc_sps_regs sps_regs;
 	struct mt6797_hevc_pps_regs pps_regs;
+	struct mt6797_hevc_rps_regs rps_regs;
 	struct mt6797_hevc_slice_regs slice_regs;
 	struct mt6797_hevc_tile_regs tiles;
 	struct mtk_video_dec_buf *dst_buf, *src_buf;
@@ -529,6 +531,10 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	if (IS_ERR(slices))
 		return PTR_ERR(slices);
 	ret = mt6797_hevc_validate_idr(sps, pps, slices, dec, slice_count);
+	if (ret)
+		return ret;
+	ret = mt6797_hevc_slice_rps_regs(bs->va, bs->size, sps, pps, slices,
+					 dec, NULL, &rps_regs);
 	if (ret)
 		return ret;
 
@@ -602,8 +608,8 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	mt6797_hevc_program_refs(inst, &refs);
 	mt6797_hevc_program_output(inst, sps, &output,
 				   inst->mv[mv_slots.current_slot].dma_addr);
-	mt6797_hevc_program_syntax(inst, &sps_regs, &pps_regs, &slice_regs,
-				   &tiles);
+	mt6797_hevc_program_syntax(inst, &sps_regs, &pps_regs, &rps_regs,
+				   &slice_regs, &tiles);
 	ret = mt6797_hevc_start(inst, sps_regs.ctb_width, sps_regs.ctb_height);
 	if (ret)
 		return ret;

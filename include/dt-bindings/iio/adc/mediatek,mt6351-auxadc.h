@@ -1,0 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause */
+
+#ifndef _DT_BINDINGS_MEDIATEK_MT6351_AUXADC_H
+#define _DT_BINDINGS_MEDIATEK_MT6351_AUXADC_H
+
+#define MT6351_AUXADC_BATSNS	0
+#define MT6351_AUXADC_ISENSE	1
+
+#endif

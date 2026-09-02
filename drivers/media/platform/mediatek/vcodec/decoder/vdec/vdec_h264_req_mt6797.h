@@ -167,6 +167,17 @@ struct mt6797_h264_mv_range {
 	u32 max_end;
 };
 
+struct mt6797_h264_start_plan {
+	u32 width;
+	u32 height;
+	u32 packed_size;
+	u32 mb_width_minus1;
+	u32 mb_height_minus1;
+	u32 mb_width;
+	u32 mb_count;
+	bool constrained_intra_pred;
+};
+
 static inline int
 mt6797_h264_buffer_layout(u32 width, u32 height,
 			  struct mt6797_h264_buffer_layout *layout)
@@ -645,6 +656,36 @@ mt6797_h264_mv_range_plan(const u64 addrs[MT6797_H264_MV_BUFFER_COUNT],
 
 	range->min_addr = min_addr;
 	range->max_end = max_end;
+	return 0;
+}
+
+static inline int
+mt6797_h264_start_plan(const struct mt6797_h264_buffer_layout *layout,
+		       const struct v4l2_ctrl_h264_pps *pps,
+		       struct mt6797_h264_start_plan *plan)
+{
+	u32 mb_width, mb_height;
+
+	if (!layout->width || !layout->height ||
+	    !IS_ALIGNED(layout->width, 16) ||
+	    !IS_ALIGNED(layout->height, 16) || layout->width > U16_MAX ||
+	    layout->height > U16_MAX)
+		return -EINVAL;
+
+	mb_width = layout->width / 16;
+	mb_height = layout->height / 16;
+	if (check_mul_overflow(mb_width, mb_height, &plan->mb_count))
+		return -ERANGE;
+
+	plan->width = layout->width;
+	plan->height = layout->height;
+	plan->packed_size = layout->width | layout->height << 16;
+	plan->mb_width_minus1 = mb_width - 1;
+	plan->mb_height_minus1 = mb_height - 1;
+	plan->mb_width = mb_width;
+	plan->constrained_intra_pred =
+		pps->flags & V4L2_H264_PPS_FLAG_CONSTRAINED_INTRA_PRED;
+
 	return 0;
 }
 

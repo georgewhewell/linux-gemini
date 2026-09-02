@@ -440,6 +440,43 @@ static void mt6797_h264_mv_range_test(struct kunit *test)
 			-ERANGE);
 }
 
+static void mt6797_h264_start_plan_test(struct kunit *test)
+{
+	struct mt6797_h264_buffer_layout layout;
+	struct v4l2_ctrl_h264_pps pps = {
+		.flags = V4L2_H264_PPS_FLAG_CONSTRAINED_INTRA_PRED,
+	};
+	struct mt6797_h264_start_plan plan;
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_buffer_layout(1920, 1080, &layout), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_h264_start_plan(&layout, &pps, &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.width, 1920U);
+	KUNIT_EXPECT_EQ(test, plan.height, 1088U);
+	KUNIT_EXPECT_EQ(test, plan.packed_size, 0x04400780U);
+	KUNIT_EXPECT_EQ(test, plan.mb_width_minus1, 119U);
+	KUNIT_EXPECT_EQ(test, plan.mb_height_minus1, 67U);
+	KUNIT_EXPECT_EQ(test, plan.mb_width, 120U);
+	KUNIT_EXPECT_EQ(test, plan.mb_count, 8160U);
+	KUNIT_EXPECT_TRUE(test, plan.constrained_intra_pred);
+}
+
+static void mt6797_h264_reject_start_plan_test(struct kunit *test)
+{
+	struct mt6797_h264_buffer_layout layout = {
+		.width = 1921,
+		.height = 1088,
+	};
+	struct v4l2_ctrl_h264_pps pps = {};
+	struct mt6797_h264_start_plan plan;
+
+	KUNIT_EXPECT_EQ(test, mt6797_h264_start_plan(&layout, &pps, &plan),
+			-EINVAL);
+	layout.width = 1920;
+	layout.height = 0;
+	KUNIT_EXPECT_EQ(test, mt6797_h264_start_plan(&layout, &pps, &plan),
+			-EINVAL);
+}
+
 static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_sps_pack_test),
 	KUNIT_CASE(mt6797_h264_pps_pack_test),
@@ -460,6 +497,8 @@ static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_mv_slot_lifetime_test),
 	KUNIT_CASE(mt6797_h264_mv_slot_missing_ref_test),
 	KUNIT_CASE(mt6797_h264_mv_range_test),
+	KUNIT_CASE(mt6797_h264_start_plan_test),
+	KUNIT_CASE(mt6797_h264_reject_start_plan_test),
 	{}
 };
 

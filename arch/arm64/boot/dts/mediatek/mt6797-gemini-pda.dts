@@ -158,6 +158,19 @@
 	};
 };
 
+&cpu8 {
+	enable-method = "mediatek,mt6797-a72-psci";
+};
+
+&cpu9 {
+	enable-method = "mediatek,mt6797-a72-psci";
+};
+
+&a72_power {
+	status = "okay";
+	vproc-supply = <&da9214_buckb>;
+};
+
 &mt6351regulator {
 	mt6351_vemc_reg: ldo-vemc {
 		regulator-name = "vemc_3v3";
@@ -274,6 +287,8 @@
 
 			da9214_buckb: BUCKB {
 				regulator-name = "vproc-big";
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <1000000>;
 			};
 		};
 	};

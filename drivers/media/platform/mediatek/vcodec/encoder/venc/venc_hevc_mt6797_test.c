@@ -119,6 +119,104 @@ static void mt6797_venc_hevc_io_regs_reject_test(struct kunit *test)
 			-ERANGE);
 }
 
+static void mt6797_venc_hevc_seq_regs_1080p_test(struct kunit *test)
+{
+	struct mt6797_venc_hevc_seq_params params = {
+		.width = 1920,
+		.height = 1080,
+		.buf_width = 1920,
+		.buf_height = 1088,
+		.intra_period = 30,
+		.bitrate = 4000000,
+		.framerate = 30,
+		.level_idc = 40,
+	};
+	struct mt6797_venc_hevc_seq_regs regs = {};
+	int ret;
+
+	ret = mt6797_venc_hevc_calc_seq_regs(&params, &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.reg_004, (u32)0x7007801e);
+	KUNIT_EXPECT_EQ(test, regs.reg_008, (u32)0x000073a0);
+	KUNIT_EXPECT_EQ(test, regs.reg_00c, (u32)0);
+	KUNIT_EXPECT_EQ(test, regs.reg_024, (u32)0x00440078);
+	KUNIT_EXPECT_EQ(test, regs.reg_028, (u32)0x0783c008);
+	KUNIT_EXPECT_EQ(test, regs.reg_02c, (u32)0x000007f8);
+	KUNIT_EXPECT_EQ(test, regs.reg_030, (u32)0x2a000000);
+	KUNIT_EXPECT_EQ(test, regs.reg_038, (u32)0x00002123);
+	KUNIT_EXPECT_EQ(test, regs.reg_048_header, (u32)0x00060fa0);
+	KUNIT_EXPECT_EQ(test, regs.reg_048_frame, (u32)0x00040fa0);
+	KUNIT_EXPECT_EQ(test, regs.reg_04c, (u32)0x001e0306);
+	KUNIT_EXPECT_EQ(test, regs.reg_050, (u32)0x00003308);
+	KUNIT_EXPECT_EQ(test, regs.reg_054, (u32)0);
+	KUNIT_EXPECT_EQ(test, regs.reg_128, (u32)0);
+	KUNIT_EXPECT_EQ(test, regs.reg_12c, (u32)0x00000600);
+	KUNIT_EXPECT_EQ(test, regs.reg_1c0, (u32)0x00000010);
+	KUNIT_EXPECT_EQ(test, regs.reg_1f0, (u32)0x00000002);
+}
+
+static void mt6797_venc_hevc_seq_regs_modes_test(struct kunit *test)
+{
+	struct mt6797_venc_hevc_seq_params params = {
+		.width = 1920,
+		.height = 1080,
+		.buf_width = 1920,
+		.buf_height = 1088,
+		.intra_period = 60,
+		.bitrate = 8000000,
+		.framerate = 60,
+		.level_idc = 41,
+	};
+	struct mt6797_venc_hevc_seq_regs regs = {};
+	int ret;
+
+	ret = mt6797_venc_hevc_calc_seq_regs(&params, &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.reg_038, (u32)0x00002923);
+
+	params.width = 3840;
+	params.height = 2176;
+	params.buf_width = 3840;
+	params.buf_height = 2176;
+	params.framerate = 30;
+	params.level_idc = 50;
+	ret = mt6797_venc_hevc_calc_seq_regs(&params, &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.reg_024, (u32)0x008800f0);
+	KUNIT_EXPECT_EQ(test, regs.reg_028, (u32)0x0f078000);
+	KUNIT_EXPECT_EQ(test, regs.reg_02c, (u32)0x00001fe0);
+	KUNIT_EXPECT_EQ(test, regs.reg_030, (u32)0x2c800000);
+	KUNIT_EXPECT_EQ(test, regs.reg_038, (u32)0x00003d23);
+}
+
+static void mt6797_venc_hevc_seq_regs_reject_test(struct kunit *test)
+{
+	struct mt6797_venc_hevc_seq_params params = {
+		.width = 1920,
+		.height = 1080,
+		.buf_width = 1920,
+		.buf_height = 1088,
+		.intra_period = 30,
+		.bitrate = 4000000,
+		.framerate = 30,
+		.level_idc = 40,
+	};
+	struct mt6797_venc_hevc_seq_regs regs = {};
+	int ret;
+
+	params.buf_height = 1080;
+	ret = mt6797_venc_hevc_calc_seq_regs(&params, &regs);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	params.buf_height = 1088;
+	params.level_idc = 42;
+	ret = mt6797_venc_hevc_calc_seq_regs(&params, &regs);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	params.level_idc = 40;
+	params.bitrate = 60000001;
+	ret = mt6797_venc_hevc_calc_seq_regs(&params, &regs);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+}
+
 static struct kunit_case mt6797_venc_hevc_cases[] = {
 	KUNIT_CASE(mt6797_venc_hevc_rcpu_size_test),
 	KUNIT_CASE(mt6797_venc_hevc_work_buf_1080p_test),
@@ -126,6 +224,9 @@ static struct kunit_case mt6797_venc_hevc_cases[] = {
 	KUNIT_CASE(mt6797_venc_hevc_work_buf_reject_test),
 	KUNIT_CASE(mt6797_venc_hevc_io_regs_test),
 	KUNIT_CASE(mt6797_venc_hevc_io_regs_reject_test),
+	KUNIT_CASE(mt6797_venc_hevc_seq_regs_1080p_test),
+	KUNIT_CASE(mt6797_venc_hevc_seq_regs_modes_test),
+	KUNIT_CASE(mt6797_venc_hevc_seq_regs_reject_test),
 	{}
 };
 

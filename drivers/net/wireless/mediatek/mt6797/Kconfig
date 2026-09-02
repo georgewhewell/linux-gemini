@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config MT6797_WIFI
+	bool "MediaTek MT6797 integrated WLAN"
+	depends on ARM64 && ARCH_MEDIATEK && OF && REGULATOR && FW_LOADER
+	depends on CFG80211=y
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER=y
+	depends on MTK_MT6797_CONSYS_EMI_MPU=y
+	depends on MTK_MT6797_CONSYS_POSTID=y
+	help
+	  Build the integrated 2.4 GHz WLAN driver for MT6797. The driver owns the
+	  CONSYS identity, post-ID, WMT patch/calibration, WLAN firmware and AHB HIF
+	  lifetimes, and exposes a station interface through cfg80211.
+
+config MT6797_WIFI_KUNIT_TEST
+	bool "KUnit tests for MediaTek MT6797 WLAN"
+	depends on KUNIT=y
+	depends on MT6797_WIFI=y
+	help
+	  Exercise firmware parsing, HIF sequencing, packet codecs, WPA3 SAE host
+	  MLME helpers and cleanup paths without accessing hardware or firmware.

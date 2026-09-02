@@ -835,16 +835,22 @@ static int mt6797_afe_pcm_dev_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, afe);
 
 	pm_runtime_enable(dev);
-	if (!pm_runtime_enabled(dev))
-		goto err_pm_disable;
-	pm_runtime_get_sync(&pdev->dev);
+	if (pm_runtime_enabled(dev)) {
+		ret = pm_runtime_resume_and_get(dev);
+		if (ret)
+			goto err_pm_disable;
+	} else {
+		ret = mt6797_afe_runtime_resume(dev);
+		if (ret)
+			goto err_pm_disable;
+	}
 
 	/* register component */
 	ret = devm_snd_soc_register_component(dev, &mtk_afe_pcm_platform,
 					      NULL, 0);
 	if (ret) {
 		dev_warn(dev, "err_platform\n");
-		goto err_pm_disable;
+		goto err_pm_put;
 	}
 
 	ret = devm_snd_soc_register_component(afe->dev,
@@ -853,11 +859,16 @@ static int mt6797_afe_pcm_dev_probe(struct platform_device *pdev)
 				     afe->num_dai_drivers);
 	if (ret) {
 		dev_warn(dev, "err_dai_component\n");
-		goto err_pm_disable;
+		goto err_pm_put;
 	}
 
 	return 0;
 
+err_pm_put:
+	if (pm_runtime_enabled(dev))
+		pm_runtime_put_sync(dev);
+	else
+		mt6797_afe_runtime_suspend(dev);
 err_pm_disable:
 	pm_runtime_disable(dev);
 
@@ -866,10 +877,14 @@ err_pm_disable:
 
 static void mt6797_afe_pcm_dev_remove(struct platform_device *pdev)
 {
-	pm_runtime_disable(&pdev->dev);
-	if (!pm_runtime_status_suspended(&pdev->dev))
-		mt6797_afe_runtime_suspend(&pdev->dev);
-	pm_runtime_put_sync(&pdev->dev);
+	struct device *dev = &pdev->dev;
+
+	if (pm_runtime_enabled(dev))
+		pm_runtime_put_sync(dev);
+	else
+		mt6797_afe_runtime_suspend(dev);
+
+	pm_runtime_disable(dev);
 }
 
 static const struct of_device_id mt6797_afe_pcm_dt_match[] = {

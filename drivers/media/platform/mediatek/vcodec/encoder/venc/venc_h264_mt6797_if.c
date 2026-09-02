@@ -17,6 +17,7 @@
 #include "../mtk_vcodec_enc.h"
 #include "../venc_drv_base.h"
 #include "venc_h264_mt6797.h"
+#include "venc_h264_mt6797_headers.h"
 
 struct mt6797_venc_h264_inst {
 	struct mtk_vcodec_enc_ctx *ctx;
@@ -208,6 +209,7 @@ static int mt6797_venc_h264_validate_config(const struct venc_enc_param *config)
 {
 	if (!config || config->input_yuv_fmt != VENC_YUV_FORMAT_NV12 ||
 	    !config->width || !config->height ||
+	    (config->width & 1) || (config->height & 1) ||
 	    config->width > config->buf_width ||
 	    config->height > config->buf_height ||
 	    !IS_ALIGNED(config->buf_width, 16) ||
@@ -295,7 +297,37 @@ static int mt6797_venc_h264_encode(void *handle, enum venc_start_opt opt,
 				   struct mtk_vcodec_mem *bs_buf,
 				   struct venc_done_result *result)
 {
-	return -EOPNOTSUPP;
+	struct mt6797_venc_h264_header_params params;
+	struct mt6797_venc_h264_header_sizes sizes;
+	struct mt6797_venc_h264_inst *inst = handle;
+	int ret;
+
+	if (!inst || !inst->configured || !bs_buf || !bs_buf->va || !result)
+		return -EINVAL;
+
+	switch (opt) {
+	case VENC_START_OPT_ENCODE_SEQUENCE_HEADER:
+		params.width = inst->config.width;
+		params.height = inst->config.height;
+		ret = mt6797_venc_h264_profile_idc(inst->config.h264_profile,
+						   &params.profile_idc);
+		if (ret)
+			return ret;
+		ret = mt6797_venc_h264_level_idc(inst->config.h264_level,
+						 &params.level_idc);
+		if (ret)
+			return ret;
+		ret = mt6797_venc_h264_build_headers(&params, bs_buf->va, bs_buf->size, &sizes);
+		if (ret)
+			return ret;
+		result->bs_size = sizes.sps + sizes.pps;
+		result->is_key_frm = false;
+		return 0;
+	case VENC_START_OPT_ENCODE_FRAME:
+		return -EOPNOTSUPP;
+	default:
+		return -EINVAL;
+	}
 }
 
 static int mt6797_venc_h264_set_param(void *handle,

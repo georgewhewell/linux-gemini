@@ -425,6 +425,8 @@ config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
 	bool "MediaTek MT6797 CONSYS STP-bootstrap coordinator"
 	depends on OF
 	depends on MTK_MT6797_CONSYS_RUNTIME=y
+	depends on MTK_MT6797_CONSYS_POSTID=y
+	depends on MTK_MT6797_CONSYS_EMI_MPU=y
 	depends on MTK_MT6797_BTIF_PIO_PLATFORM=y
 	depends on MTK_MT6797_BTIF_STP_BOOTSTRAP=y
 	depends on MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD=y
@@ -432,16 +434,15 @@ config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
 	help
 	  Build the coordinator that joins
 	  MT6797 runtime and BTIF PIO platform providers through managed device
-	  links. It does not activate the resources-only runtime provider: an
-	  earlier true-chronology owner must already hold identity. An explicit
-	  in-kernel start then uses the held lease and invokes the exact
+	  links. On first use it claims shared EMI, acquires the runtime identity,
+	  performs the post-ID sequence, and invokes the exact
 	  mandatory-to-full STP bootstrap controller, patch download and post-patch
-	  calibration before publishing a session.
+	  calibration before publishing a session. This common lifecycle remains
+	  controller-owned while Wi-Fi, Bluetooth and GNSS take independent leases.
 
-	  The coordinator creates no wireless client. It releases no CONMCU reset
-	  and accesses no AFE or shared EMI. Retained channel owners may issue only
-	  their explicitly bounded function-control operation; there is no general
-	  WMT or userspace ABI.
+	  The coordinator creates no wireless client. Retained channel owners may
+	  issue only their explicitly bounded function-control operation; there is
+	  no general WMT or userspace ABI.
 
 config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 CONSYS STP-bootstrap coordinator"

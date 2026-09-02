@@ -23,8 +23,6 @@
 
 #define MT6797_STP_HCI_TX_RETRY_MS	20
 #define MT6797_STP_HCI_VCN33_UV		3300000
-#define MT6797_STP_HCI_START_RETRY_MS	200
-#define MT6797_STP_HCI_START_RETRIES	300
 
 struct mt6797_h4_rx {
 	struct sk_buff *skb;
@@ -240,7 +238,6 @@ static void mt6797_stp_hci_release_locked(struct mt6797_stp_hci *data,
 static int mt6797_stp_hci_open(struct hci_dev *hdev)
 {
 	struct mt6797_stp_hci *data = hci_get_drvdata(hdev);
-	unsigned int attempt;
 	bool terminal = false;
 	int ret;
 
@@ -249,23 +246,13 @@ static int mt6797_stp_hci_open(struct hci_dev *hdev)
 	mutex_lock(&data->rx_lock);
 	mt6797_h4_reset(&data->rx);
 	mutex_unlock(&data->rx_lock);
-	for (attempt = 0; ; attempt++) {
-		mutex_lock(&data->lock);
-		if (data->stp_lease) {
-			ret = -EBUSY;
-			goto unlock;
-		}
-		ret = mt6797_consys_runtime_controller_bt_session_get(
-			data->controller, &data->controller_lease,
-			&data->stp_lease);
-		if (ret != -EAGAIN)
-			break;
-		mutex_unlock(&data->lock);
-		if (attempt == MT6797_STP_HCI_START_RETRIES)
-			return -ETIMEDOUT;
-		if (msleep_interruptible(MT6797_STP_HCI_START_RETRY_MS))
-			return -EINTR;
+	mutex_lock(&data->lock);
+	if (data->stp_lease) {
+		ret = -EBUSY;
+		goto unlock;
 	}
+	ret = mt6797_consys_runtime_controller_bt_session_get(data->controller,
+		&data->controller_lease, &data->stp_lease);
 	if (ret)
 		goto unlock;
 	ret = mt6797_consys_stp_session_bind_bt(data->stp_lease,
@@ -293,8 +280,6 @@ release:
 	mt6797_stp_hci_release_locked(data, &terminal);
 unlock:
 	mutex_unlock(&data->lock);
-	if (terminal)
-		mt6797_consys_runtime_controller_stop(data->controller);
 	return ret;
 }
 
@@ -314,8 +299,6 @@ static int mt6797_stp_hci_close(struct hci_dev *hdev)
 	mutex_lock(&data->rx_lock);
 	mt6797_h4_reset(&data->rx);
 	mutex_unlock(&data->rx_lock);
-	if (terminal)
-		mt6797_consys_runtime_controller_stop(data->controller);
 	return terminal ? -EIO : 0;
 }
 

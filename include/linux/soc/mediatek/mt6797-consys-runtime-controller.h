@@ -15,7 +15,6 @@
 #include <linux/types.h>
 
 struct device;
-struct regulator;
 struct mt6797_consys_runtime_controller;
 struct mt6797_consys_stp_session_lease;
 struct mt6797_btif_stp_bootstrap_full_wmt_lease;
@@ -45,31 +44,25 @@ struct mt6797_consys_runtime_controller_bt_lease {
 };
 
 /*
- * The caller must retain @dev and serialize this operation with controller
- * removal; managed supplier links then preserve the runtime/BTIF providers.
- */
-int mt6797_consys_runtime_controller_start(struct device *dev,
-		struct regulator *bt_paldo, struct regulator *wifi_paldo);
-
-/* Safe for teardown and idempotent after a failed or completed handover. */
-void mt6797_consys_runtime_controller_stop(struct device *dev);
-
-/*
  * Borrow the controller's active full-STP lease for exactly one GNSS endpoint.
  * This neither registers /dev/gnssN nor issues WMT GPS function control.  The
  * returned session stays valid only until the matching put(); a GNSS caller
- * must detach its channel-2 callback (mtk_gnss_unregister()) before that put.
- * stop() rejects new borrows and waits for the outstanding borrower, then
- * destroys the bootstrap/session in the required reverse order.
+ * must unbind its channel-2 callback before that put. Provider removal rejects
+ * new borrows and waits for outstanding borrowers before destroying full STP.
  *
- * The caller must keep @dev alive while this lease is held.  This is separate
- * from the runtime lifecycle; it cannot make an inactive controller runnable.
+ * The first borrower starts the controller and the final put quiesces it.
+ * A get racing final put waits for teardown and starts a fresh generation.
+ * The caller must keep @dev alive while this lease is held.
  */
 int mt6797_consys_runtime_controller_gnss_session_get(struct device *dev,
 		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease,
 		const struct mt6797_consys_stp_session_lease **session_lease);
 void mt6797_consys_runtime_controller_gnss_session_put(
 		struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease);
+int
+mt6797_consys_runtime_controller_gnss_function_set(
+	struct mt6797_consys_runtime_controller_gnss_lease *gnss_lease,
+	bool enable);
 
 /*
  * Channel-zero endpoint lease. It may coexist with the separately owned GNSS

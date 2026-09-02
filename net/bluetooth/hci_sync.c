@@ -4561,11 +4561,26 @@ static int hci_le_set_rpa_timeout_sync(struct hci_dev *hdev)
 /* Read LE Maximum Data Length */
 static int hci_le_read_max_data_len_sync(struct hci_dev *hdev)
 {
+	int err;
+
 	if (!(hdev->le_features[0] & HCI_LE_DATA_LEN_EXT))
 		return 0;
 
-	return __hci_cmd_sync_status(hdev, HCI_OP_LE_READ_MAX_DATA_LEN, 0, NULL,
-				     HCI_CMD_TIMEOUT);
+	err = __hci_cmd_sync_status(hdev, HCI_OP_LE_READ_MAX_DATA_LEN, 0, NULL,
+				    HCI_CMD_TIMEOUT);
+	if (err == -EBADRQC &&
+	    hci_test_quirk(hdev, HCI_QUIRK_BROKEN_LE_DATA_LEN)) {
+		/* The controller's feature bit and command implementation disagree.
+		 * Clear the feature so the remaining DLE init commands are skipped;
+		 * hci_alloc_dev_priv() already supplied the 27-byte/328-us minimums.
+		 */
+		hdev->le_features[0] &= ~HCI_LE_DATA_LEN_EXT;
+		bt_dev_warn(hdev,
+			    "LE data length feature advertised without command support; disabling DLE");
+		return 0;
+	}
+
+	return err;
 }
 
 /* Read LE Suggested Default Data Length */
@@ -5027,6 +5042,8 @@ static const struct {
 	HCI_QUIRK_BROKEN(LE_EVENT_MASK,
 			 "HCI LE Set Event Mask rejects a sparse valid mask; "
 			 "compatibility retry enabled."),
+	HCI_QUIRK_BROKEN(LE_DATA_LEN,
+			 "HCI LE Data Length Extension falsely advertised."),
 	HCI_QUIRK_BROKEN(ENHANCED_SETUP_SYNC_CONN,
 			 "HCI Enhanced Setup Synchronous Connection command is "
 			 "advertised, but not supported."),

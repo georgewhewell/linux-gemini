@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA battery-presence detection.
+ *
+ * The MT6797 LK and vendor kernel both enable MT6351 BATON and temperature
+ * detection before reading BATON_UNDET. Keep that state-changing sequence out
+ * of the default board description until its connected/disconnected readings
+ * have been captured on this handset. This overlay only opts the existing
+ * current/coulomb monitor into that exact detector; it adds no charge, thermal,
+ * capacity, shutdown, or USB policy.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&mt6351fgadc {
+	mediatek,initialize-battery-detection;
+};

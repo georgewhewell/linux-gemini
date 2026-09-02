@@ -41,6 +41,11 @@ mt6797-gemini-pda-fuel-gauge-active-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-fuel-gauge-active.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-fuel-gauge-active.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-battery-presence.dtbo
+mt6797-gemini-pda-battery-presence-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-battery-presence.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-battery-presence.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-microsd-bringup.dtbo
 mt6797-gemini-pda-microsd-bringup-dtbs := \
 	mt6797-gemini-pda.dtb \

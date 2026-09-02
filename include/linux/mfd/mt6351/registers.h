@@ -127,4 +127,7 @@
 #define MT6351_LDO_VMIPI_VOSEL		0x0b1c
 #define MT6351_LDO_VDRAM_VOSEL		0x0b22
 
+#define MT6351_CHR_CON7			0x0f86
+#define MT6351_CHR_CON44			0x0fd2
+
 #endif /* __MFD_MT6351_REGISTERS_H__ */

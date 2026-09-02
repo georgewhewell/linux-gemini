@@ -28,6 +28,9 @@
 #define MT6351_FGADC_LATCHDATA_ST	BIT(10)
 #define MT6351_FGADC_SW_READ_PRE	BIT(9)
 #define MT6351_FGADC_SW_CLEAR		BIT(11)
+#define MT6351_BATON_EN			BIT(0)
+#define MT6351_BATON_TDET_EN		BIT(2)
+#define MT6351_BATON_UNDET		BIT(1)
 
 /* Vendor UNIT_FGCURRENT (158122) expressed as nanoamps per raw count. */
 #define MT6351_FGADC_CURRENT_LSB_NA	1581220
@@ -49,28 +52,47 @@ struct mt6351_fgadc {
 	u32 board_slope;
 	u32 car_tune_percent;
 	u32 trim_permille;
+	bool initialize_battery_detection;
 
 	unsigned int saved_clkpdn;
 	unsigned int saved_con0;
 	unsigned int saved_osr;
+	unsigned int saved_baton_control;
 };
 
 static int mt6351_fgadc_restore(struct mt6351_fgadc *fg)
 {
-	int ret;
+	int ret = 0, tmp;
 
-	ret = regmap_update_bits(fg->regmap, MT6351_FGADC_CON15,
+	if (fg->initialize_battery_detection) {
+		tmp = regmap_update_bits(fg->regmap, MT6351_CHR_CON7,
+					 MT6351_BATON_EN,
+					 fg->saved_baton_control);
+		if (tmp)
+			ret = tmp;
+		tmp = regmap_update_bits(fg->regmap, MT6351_CHR_CON7,
+					 MT6351_BATON_TDET_EN,
+					 fg->saved_baton_control);
+		if (tmp && !ret)
+			ret = tmp;
+	}
+
+	tmp = regmap_update_bits(fg->regmap, MT6351_FGADC_CON15,
 				 MT6351_FGADC_OSR_MASK, fg->saved_osr);
-	if (ret)
-		return ret;
+	if (tmp && !ret)
+		ret = tmp;
 
-	ret = regmap_update_bits(fg->regmap, MT6351_FGADC_CON0,
+	tmp = regmap_update_bits(fg->regmap, MT6351_FGADC_CON0,
 				 MT6351_FGADC_CON0_LOW_MASK, fg->saved_con0);
-	if (ret)
-		return ret;
+	if (tmp && !ret)
+		ret = tmp;
 
-	return regmap_update_bits(fg->regmap, MT6351_TOP_CKPDN_CON2,
-				  MT6351_FGADC_CLK_PDN_MASK, fg->saved_clkpdn);
+	tmp = regmap_update_bits(fg->regmap, MT6351_TOP_CKPDN_CON2,
+				 MT6351_FGADC_CLK_PDN_MASK, fg->saved_clkpdn);
+	if (tmp && !ret)
+		ret = tmp;
+
+	return ret;
 }
 
 static void mt6351_fgadc_restore_action(void *data)
@@ -100,6 +122,12 @@ static int mt6351_fgadc_initialize(struct mt6351_fgadc *fg)
 	ret = regmap_read(fg->regmap, MT6351_FGADC_CON15, &fg->saved_osr);
 	if (ret)
 		return ret;
+	if (fg->initialize_battery_detection) {
+		ret = regmap_read(fg->regmap, MT6351_CHR_CON7,
+				  &fg->saved_baton_control);
+		if (ret)
+			return ret;
+	}
 
 	/* The vendor sequence enables the analog and digital clocks first. */
 	ret = regmap_update_bits(fg->regmap, MT6351_TOP_CKPDN_CON2,
@@ -122,6 +150,19 @@ static int mt6351_fgadc_initialize(struct mt6351_fgadc *fg)
 				 MT6351_FGADC_OSR_MASK, fg->osr);
 	if (ret)
 		goto restore;
+
+	if (fg->initialize_battery_detection) {
+		/* This is the battery-presence sequence used by MT6797 LK. */
+		ret = regmap_update_bits(fg->regmap, MT6351_CHR_CON7,
+					 MT6351_BATON_TDET_EN,
+					 MT6351_BATON_TDET_EN);
+		if (ret)
+			goto restore;
+		ret = regmap_update_bits(fg->regmap, MT6351_CHR_CON7,
+					 MT6351_BATON_EN, MT6351_BATON_EN);
+		if (ret)
+			goto restore;
+	}
 
 	return 0;
 
@@ -266,7 +307,21 @@ static enum power_supply_property mt6351_fgadc_properties[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+	POWER_SUPPLY_PROP_PRESENT,
 };
+
+static int mt6351_fgadc_battery_present(struct mt6351_fgadc *fg, int *present)
+{
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(fg->regmap, MT6351_CHR_CON44, &value);
+	if (ret)
+		return ret;
+
+	*present = !(value & MT6351_BATON_UNDET);
+	return 0;
+}
 
 static int mt6351_fgadc_get_property(struct power_supply *psy,
 				     enum power_supply_property psp,
@@ -283,6 +338,10 @@ static int mt6351_fgadc_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_MODEL_NAME:
 		val->strval = "MT6351 FGADC";
 		return 0;
+	case POWER_SUPPLY_PROP_PRESENT:
+		if (!fg->initialize_battery_detection)
+			return -ENODATA;
+		return mt6351_fgadc_battery_present(fg, &val->intval);
 	default:
 		break;
 	}
@@ -345,6 +404,9 @@ static int mt6351_fgadc_parse_dt(struct mt6351_fgadc *fg)
 	if (ret || !fg->trim_permille)
 		return -EINVAL;
 
+	fg->initialize_battery_detection =
+		of_property_read_bool(np, "mediatek,initialize-battery-detection");
+
 	return 0;
 }
 
@@ -385,7 +447,8 @@ static int mt6351_fgadc_probe(struct platform_device *pdev)
 	fg->psy_desc.name = "mt6351-fgadc";
 	fg->psy_desc.type = POWER_SUPPLY_TYPE_BATTERY;
 	fg->psy_desc.properties = mt6351_fgadc_properties;
-	fg->psy_desc.num_properties = ARRAY_SIZE(mt6351_fgadc_properties);
+	fg->psy_desc.num_properties = ARRAY_SIZE(mt6351_fgadc_properties) -
+		!fg->initialize_battery_detection;
 	fg->psy_desc.get_property = mt6351_fgadc_get_property;
 	psy_cfg.drv_data = fg;
 	psy_cfg.fwnode = dev_fwnode(&pdev->dev);

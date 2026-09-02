@@ -158,6 +158,36 @@ static void mt6797_hevc_tile_regs_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, regs.row[0], 0x22U);
 }
 
+static void mt6797_hevc_scaling_regs_test(struct kunit *test)
+{
+	struct v4l2_ctrl_hevc_scaling_matrix matrix = {};
+	struct mt6797_hevc_scaling_dc_regs dc;
+	unsigned int i;
+	u32 word;
+
+	for (i = 0; i < ARRAY_SIZE(matrix.scaling_list_4x4[0]); i++)
+		matrix.scaling_list_4x4[0][i] = i;
+	for (i = 0; i < ARRAY_SIZE(matrix.scaling_list_8x8[0]); i++)
+		matrix.scaling_list_8x8[0][i] = i;
+	for (i = 0; i < ARRAY_SIZE(matrix.scaling_list_dc_coef_16x16); i++)
+		matrix.scaling_list_dc_coef_16x16[i] = i + 1;
+	matrix.scaling_list_dc_coef_32x32[0] = 7;
+	matrix.scaling_list_dc_coef_32x32[1] = 8;
+
+	word = mt6797_hevc_pack_scaling_column(matrix.scaling_list_4x4[0], 4, 0);
+	KUNIT_EXPECT_EQ(test, word, 0x0c080400U);
+	word = mt6797_hevc_pack_scaling_column(matrix.scaling_list_4x4[0], 4, 3);
+	KUNIT_EXPECT_EQ(test, word, 0x0f0b0703U);
+	word = mt6797_hevc_pack_scaling_column(matrix.scaling_list_8x8[0], 8, 4);
+	KUNIT_EXPECT_EQ(test, word, 0x1a120a02U);
+	word = mt6797_hevc_pack_scaling_column(matrix.scaling_list_8x8[0], 8, 5);
+	KUNIT_EXPECT_EQ(test, word, 0x3a322a22U);
+
+	mt6797_hevc_scaling_dc_regs(&matrix, &dc);
+	KUNIT_EXPECT_EQ(test, dc.pp_634, 0x04030201U);
+	KUNIT_EXPECT_EQ(test, dc.pp_638, 0x08070605U);
+}
+
 static void mt6797_hevc_reject_registers_test(struct kunit *test)
 {
 	struct v4l2_ctrl_hevc_sps sps = {
@@ -590,6 +620,7 @@ static struct kunit_case mt6797_hevc_test_cases[] = {
 	KUNIT_CASE(mt6797_hevc_pps_regs_test),
 	KUNIT_CASE(mt6797_hevc_slice_regs_test),
 	KUNIT_CASE(mt6797_hevc_tile_regs_test),
+	KUNIT_CASE(mt6797_hevc_scaling_regs_test),
 	KUNIT_CASE(mt6797_hevc_reject_registers_test),
 	KUNIT_CASE(mt6797_hevc_barrel_plan_test),
 	KUNIT_CASE(mt6797_hevc_output_plan_test),

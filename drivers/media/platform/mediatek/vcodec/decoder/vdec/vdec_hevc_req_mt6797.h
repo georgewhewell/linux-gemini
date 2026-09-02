@@ -131,6 +131,11 @@ struct mt6797_hevc_rps_regs {
 	u32 vld_0c8;
 };
 
+struct mt6797_hevc_scaling_dc_regs {
+	u32 pp_634;
+	u32 pp_638;
+};
+
 struct mt6797_hevc_bitreader {
 	const u8 *data;
 	size_t size;
@@ -140,6 +145,33 @@ struct mt6797_hevc_bitreader {
 	u8 bits_left;
 	u8 zero_bytes;
 };
+
+static inline u32 mt6797_hevc_pack_scaling_column(const u8 *matrix,
+						  unsigned int width,
+						  unsigned int word)
+{
+	unsigned int column = width == 4 ? word : word / 2;
+	unsigned int row = width == 4 ? 0 : (word & 1) * 4;
+
+	return (u32)matrix[(row + 0) * width + column] |
+	       (u32)matrix[(row + 1) * width + column] << 8 |
+	       (u32)matrix[(row + 2) * width + column] << 16 |
+	       (u32)matrix[(row + 3) * width + column] << 24;
+}
+
+static inline void
+mt6797_hevc_scaling_dc_regs(const struct v4l2_ctrl_hevc_scaling_matrix *matrix,
+			    struct mt6797_hevc_scaling_dc_regs *regs)
+{
+	regs->pp_634 = (u32)matrix->scaling_list_dc_coef_16x16[0] |
+		(u32)matrix->scaling_list_dc_coef_16x16[1] << 8 |
+		(u32)matrix->scaling_list_dc_coef_16x16[2] << 16 |
+		(u32)matrix->scaling_list_dc_coef_16x16[3] << 24;
+	regs->pp_638 = (u32)matrix->scaling_list_dc_coef_16x16[4] |
+		(u32)matrix->scaling_list_dc_coef_16x16[5] << 8 |
+		(u32)matrix->scaling_list_dc_coef_32x32[0] << 16 |
+		(u32)matrix->scaling_list_dc_coef_32x32[1] << 24;
+}
 
 static inline int
 mt6797_hevc_validate_frame_slices(const struct v4l2_ctrl_hevc_slice_params *slices,

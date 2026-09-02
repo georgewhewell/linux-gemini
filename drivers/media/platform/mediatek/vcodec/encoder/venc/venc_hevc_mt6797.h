@@ -88,6 +88,37 @@ struct mt6797_venc_hevc_seq_regs {
 	u32 reg_1f0;
 };
 
+struct mt6797_venc_hevc_frame_params {
+	u32 frame_num;
+	u32 intra_period;
+	u32 last_idr_frame;
+	u32 seq_reg_038;
+	bool idr_toggle;
+	bool sao_luma;
+	bool sao_chroma;
+};
+
+struct mt6797_venc_hevc_frame_regs {
+	u32 reg_010;
+	u32 reg_014;
+	u32 reg_018;
+	u32 reg_01c;
+	u32 reg_038;
+	u32 mode;
+	u32 next_last_idr_frame;
+	bool next_idr_toggle;
+	bool is_idr;
+};
+
+struct mt6797_venc_hevc_ref_regs {
+	u32 ref_luma;
+	u32 ref_chroma;
+	u32 rec_luma;
+	u32 rec_chroma;
+	u32 mv_info_1;
+	u32 mv_info_2;
+};
+
 static inline int mt6797_venc_hevc_validate_rcpu(const u8 *data, size_t size)
 {
 	if (!data || size != MT6797_VENC_HEVC_RCPU_SIZE)
@@ -286,6 +317,74 @@ mt6797_venc_hevc_calc_seq_regs(const struct mt6797_venc_hevc_seq_params *params,
 	regs->reg_12c = 0x600;
 	regs->reg_1c0 = 0x10;
 	regs->reg_1f0 = 2;
+
+	return 0;
+}
+
+static inline int
+mt6797_hevc_frame_regs(const struct mt6797_venc_hevc_frame_params *params,
+		       struct mt6797_venc_hevc_frame_regs *regs)
+{
+	u32 non_ref = 0;
+	u32 slice_type = 0;
+
+	if (!params || !regs || !params->intra_period ||
+	    params->intra_period > 0x3fff)
+		return -EINVAL;
+
+	regs->is_idr = !(params->frame_num % params->intra_period);
+	regs->next_idr_toggle = params->idr_toggle;
+	regs->next_last_idr_frame = params->last_idr_frame;
+	if (regs->is_idr) {
+		regs->next_idr_toggle = !params->idr_toggle;
+		regs->next_last_idr_frame = params->frame_num;
+		slice_type = 2;
+	} else {
+		non_ref = (params->frame_num - 1) % params->intra_period != 0;
+	}
+
+	regs->reg_010 = 0x8000 | non_ref << 8 | params->idr_toggle << 3 |
+			regs->is_idr << 2 | slice_type;
+	if (regs->is_idr)
+		regs->reg_010 ^= BIT(3);
+	regs->reg_014 = params->frame_num;
+	regs->reg_018 = params->frame_num;
+	regs->reg_01c = regs->next_last_idr_frame;
+	regs->reg_038 = params->seq_reg_038 | 0x80 | params->sao_luma << 4 |
+			params->sao_chroma << 3;
+	regs->mode = params->frame_num ? 0x0fa03ff5 : 0x0f603ff5;
+
+	return 0;
+}
+
+static inline int
+mt6797_hevc_ref_regs(const u32 work_buf_regs[MT6797_VENC_HEVC_WORK_BUF_MAX],
+		     u32 frame_num, struct mt6797_venc_hevc_ref_regs *regs)
+{
+	bool odd;
+
+	if (!work_buf_regs || !regs)
+		return -EINVAL;
+
+	odd = frame_num & 1;
+	regs->ref_luma =
+		work_buf_regs[odd ? MT6797_VENC_HEVC_WORK_BUF_REC_LUMA :
+				    MT6797_VENC_HEVC_WORK_BUF_REF_LUMA];
+	regs->ref_chroma =
+		work_buf_regs[odd ? MT6797_VENC_HEVC_WORK_BUF_REC_CHROMA :
+				    MT6797_VENC_HEVC_WORK_BUF_REF_CHROMA];
+	regs->rec_luma =
+		work_buf_regs[odd ? MT6797_VENC_HEVC_WORK_BUF_REF_LUMA :
+				    MT6797_VENC_HEVC_WORK_BUF_REC_LUMA];
+	regs->rec_chroma =
+		work_buf_regs[odd ? MT6797_VENC_HEVC_WORK_BUF_REF_CHROMA :
+				    MT6797_VENC_HEVC_WORK_BUF_REC_CHROMA];
+	regs->mv_info_1 =
+		work_buf_regs[odd ? MT6797_VENC_HEVC_WORK_BUF_MV_INFO_2 :
+				    MT6797_VENC_HEVC_WORK_BUF_MV_INFO_1];
+	regs->mv_info_2 =
+		work_buf_regs[odd ? MT6797_VENC_HEVC_WORK_BUF_MV_INFO_1 :
+				    MT6797_VENC_HEVC_WORK_BUF_MV_INFO_2];
 
 	return 0;
 }

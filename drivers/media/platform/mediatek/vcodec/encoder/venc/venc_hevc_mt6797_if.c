@@ -4,8 +4,8 @@
  *
  * This remains deliberately unselected by platform data.  It models only the
  * independently recovered normal/Main/NV12/non-UFO path with the vendor's
- * NonRefPFrmPeriod == 1 policy.  Exposing HEVC waits for the remaining host
- * rate-control policy and hardware validation.
+ * NonRefPFrmPeriod == 1 policy.  Exposing HEVC waits for coordinated hardware
+ * validation and an approved source for the runtime RCPU image.
  */
 
 #include <linux/dma-mapping.h>
@@ -72,6 +72,7 @@ struct mt6797_venc_hevc_inst {
 	u32 work_buf_regs[MT6797_VENC_HEVC_WORK_BUF_MAX];
 	struct venc_enc_param config;
 	struct mt6797_venc_hevc_seq_regs seq_regs;
+	struct mt6797_venc_hevc_rate_control rate_control;
 	size_t header_sizes[3];
 	u32 frame_num;
 	u32 last_idr_frame;
@@ -232,7 +233,7 @@ mt6797_venc_hevc_write_rate_regs(struct mt6797_venc_hevc_inst *inst,
 	mt6797_venc_hevc_write(inst, MT6797_VENC_HEVC_REG_RC_04C,
 			       regs->reg_04c);
 	mt6797_venc_hevc_write(inst, MT6797_VENC_HEVC_REG_RC_050,
-			       regs->reg_050);
+			       mt6797_hevc_rc_reg(&inst->rate_control));
 	mt6797_venc_hevc_write(inst, MT6797_VENC_HEVC_REG_RC_054,
 			       regs->reg_054);
 }
@@ -521,6 +522,8 @@ mt6797_venc_hevc_encode_frame(struct mt6797_venc_hevc_inst *inst,
 	result->bs_size = header_size + bs_size;
 	result->is_key_frm = frame_regs.is_idr;
 	inst->frame_num++;
+	mt6797_hevc_rc_update(&inst->rate_control, inst->config.frm_rate,
+			      inst->frame_num - 1, bs_size);
 	inst->last_idr_frame = frame_regs.next_last_idr_frame;
 	inst->idr_toggle = frame_regs.next_idr_toggle;
 	inst->prepend_header = false;
@@ -607,6 +610,7 @@ static int mt6797_venc_hevc_set_param(void *handle,
 		inst->last_idr_frame = 0;
 		inst->idr_toggle = false;
 		inst->prepend_header = false;
+		mt6797_hevc_rc_init(&inst->rate_control);
 		inst->configured = true;
 		return 0;
 	case VENC_SET_PARAM_FORCE_INTRA:

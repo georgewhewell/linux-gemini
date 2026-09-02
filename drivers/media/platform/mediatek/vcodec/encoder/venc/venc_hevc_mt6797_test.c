@@ -24,6 +24,42 @@ static void mt6797_venc_hevc_rcpu_size_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 }
 
+static void mt6797_venc_hevc_header_regs_test(struct kunit *test)
+{
+	struct mt6797_venc_hevc_header_regs regs = {};
+	int ret;
+
+	ret = mt6797_venc_hevc_header_regs(MT6797_VENC_HEVC_HEADER_SPS, true,
+					   &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.mode, (u32)0x02083ff5);
+	KUNIT_EXPECT_EQ(test, regs.start, (u32)0x1);
+	KUNIT_EXPECT_EQ(test, regs.expected_irq, (u32)0x1);
+
+	ret = mt6797_venc_hevc_header_regs(MT6797_VENC_HEVC_HEADER_VPS, false,
+					   &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.mode, (u32)0x02003ff5);
+	KUNIT_EXPECT_EQ(test, regs.start, (u32)0x20);
+	KUNIT_EXPECT_EQ(test, regs.expected_irq, (u32)0x80);
+
+	ret = mt6797_venc_hevc_header_regs(MT6797_VENC_HEVC_HEADER_PPS, false,
+					   &regs);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, regs.mode, (u32)0x02003ff5);
+	KUNIT_EXPECT_EQ(test, regs.start, (u32)0x2);
+	KUNIT_EXPECT_EQ(test, regs.expected_irq, (u32)0x2);
+
+	ret = mt6797_venc_hevc_header_regs(MT6797_VENC_HEVC_HEADER_VPS, true,
+					   &regs);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	ret = mt6797_venc_hevc_header_regs(3, false, &regs);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	ret = mt6797_venc_hevc_header_regs(MT6797_VENC_HEVC_HEADER_SPS, true,
+					   NULL);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+}
+
 static void mt6797_venc_hevc_work_buf_1080p_test(struct kunit *test)
 {
 	struct mt6797_venc_hevc_work_buf_sizes sizes = {};
@@ -299,6 +335,7 @@ static void mt6797_venc_hevc_ref_regs_test(struct kunit *test)
 
 static struct kunit_case mt6797_venc_hevc_cases[] = {
 	KUNIT_CASE(mt6797_venc_hevc_rcpu_size_test),
+	KUNIT_CASE(mt6797_venc_hevc_header_regs_test),
 	KUNIT_CASE(mt6797_venc_hevc_work_buf_1080p_test),
 	KUNIT_CASE(mt6797_venc_hevc_work_buf_alignment_test),
 	KUNIT_CASE(mt6797_venc_hevc_work_buf_reject_test),

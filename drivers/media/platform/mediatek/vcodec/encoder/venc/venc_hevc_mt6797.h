@@ -22,6 +22,20 @@
 #define MT6797_VENC_HEVC_DEFAULT_QP 28U
 #define MT6797_VENC_HEVC_MAX_WIDTH 3840U
 #define MT6797_VENC_HEVC_MAX_HEIGHT 2176U
+#define MT6797_VENC_HEVC_HEADER_MODE 0x02003ff5U
+#define MT6797_VENC_HEVC_FIRST_HEADER_MODE 0x02083ff5U
+
+enum mt6797_venc_hevc_header_type {
+	MT6797_VENC_HEVC_HEADER_SPS,
+	MT6797_VENC_HEVC_HEADER_VPS,
+	MT6797_VENC_HEVC_HEADER_PPS,
+};
+
+struct mt6797_venc_hevc_header_regs {
+	u32 mode;
+	u32 start;
+	u32 expected_irq;
+};
 
 enum mt6797_venc_hevc_work_buf {
 	MT6797_VENC_HEVC_WORK_BUF_RC_INFO,
@@ -118,6 +132,44 @@ struct mt6797_venc_hevc_ref_regs {
 	u32 mv_info_1;
 	u32 mv_info_2;
 };
+
+/*
+ * Header production is three distinct hardware jobs.  The first SPS after a
+ * sequence reset carries the new-session bit; SetHWModeSel consumes it, so
+ * the following VPS and PPS always use the ordinary header mode.
+ */
+static inline int
+mt6797_venc_hevc_header_regs(enum mt6797_venc_hevc_header_type type,
+			     bool first_sequence_header,
+			     struct mt6797_venc_hevc_header_regs *regs)
+{
+	if (!regs)
+		return -EINVAL;
+	if (first_sequence_header && type != MT6797_VENC_HEVC_HEADER_SPS)
+		return -EINVAL;
+
+	switch (type) {
+	case MT6797_VENC_HEVC_HEADER_SPS:
+		regs->start = BIT(0);
+		regs->expected_irq = BIT(0);
+		break;
+	case MT6797_VENC_HEVC_HEADER_VPS:
+		regs->start = BIT(5);
+		regs->expected_irq = BIT(7);
+		break;
+	case MT6797_VENC_HEVC_HEADER_PPS:
+		regs->start = BIT(1);
+		regs->expected_irq = BIT(1);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	regs->mode = first_sequence_header ?
+		     MT6797_VENC_HEVC_FIRST_HEADER_MODE :
+		     MT6797_VENC_HEVC_HEADER_MODE;
+	return 0;
+}
 
 static inline int mt6797_venc_hevc_validate_rcpu(const u8 *data, size_t size)
 {

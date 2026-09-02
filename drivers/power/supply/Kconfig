@@ -850,6 +850,17 @@ config CHARGER_BQ25890
 	help
 	  Say Y to enable support for the TI BQ25890 battery charger.
 
+config CHARGER_BQ25890_KUNIT_TEST
+	bool "KUnit tests for BQ25890 firmware-setting adoption"
+	depends on KUNIT=y
+	depends on CHARGER_BQ25890=y
+	default KUNIT_ALL_TESTS
+	help
+	  Exercise the hardware-free control-mode gate and the watchdog service
+	  cadence used when the driver adopts settings left by firmware. These
+	  tests do not access charger hardware or enable firmware-setting
+	  adoption on any board. If unsure, say N.
+
 config CHARGER_BQ25980
 	tristate "TI BQ25980 battery charger driver"
 	depends on I2C

@@ -36,6 +36,11 @@ mt6797-gemini-pda-microsd-bringup-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-microsd-bringup.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-microsd-bringup.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gnss.dtbo
+mt6797-gemini-pda-gnss-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-gnss.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gnss.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-dev.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-rfb1.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-bananapi-bpi-r64.dtb

@@ -1217,12 +1217,13 @@ static int mtk_iommu_mm_dts_parse(struct device *dev, struct component_match **m
 		}
 
 		plarbdev = of_find_device_by_node(larbnode);
-		of_node_put(larbnode);
 		if (!plarbdev) {
+			of_node_put(larbnode);
 			ret = -ENODEV;
 			goto err_larbdev_put;
 		}
 		if (data->larb_imu[id].dev) {
+			of_node_put(larbnode);
 			platform_device_put(plarbdev);
 			ret = -EEXIST;
 			goto err_larbdev_put;
@@ -1230,12 +1231,14 @@ static int mtk_iommu_mm_dts_parse(struct device *dev, struct component_match **m
 		data->larb_imu[id].dev = &plarbdev->dev;
 
 		if (!plarbdev->dev.driver) {
+			of_node_put(larbnode);
 			ret = -EPROBE_DEFER;
 			goto err_larbdev_put;
 		}
 
 		/* Get smi-(sub)-common dev from the last larb. */
 		smi_subcomm_node = of_parse_phandle(larbnode, "mediatek,smi", 0);
+		of_node_put(larbnode);
 		if (!smi_subcomm_node) {
 			ret = -EINVAL;
 			goto err_larbdev_put;

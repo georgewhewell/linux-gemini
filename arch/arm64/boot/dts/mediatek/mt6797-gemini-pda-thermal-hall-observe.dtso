@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA thermal and Hall switch observation overlay.
+ *
+ * The MT6797 thermal path, including its five sensor calibration values and
+ * six hardware banks, is described by the SoC DT and AUXADC thermal driver.
+ * The Gemini base DT supplies the 12-byte LK calibration cell.  A prior
+ * attended mainline run bound this path and reported a plausible temperature.
+ * This overlay makes that proven readout selectable without adding an
+ * unverified thermal policy.
+ *
+ * The provider returns the maximum temperature across all banks, so one SoC
+ * observation zone can use it without inventing per-bank sensor identities.
+ * The one-second polling period matches the vendor aggregate CPU zone.  There
+ * are deliberately no trips or cooling maps until Gemini thresholds and CPU
+ * cooling integration have been validated.
+ *
+ * The vendor Hall driver reads GPIO66 and maps a raw low level to a closed
+ * cover.  The base DT models that evidence as an active-low SW_LID gpio-key.
+ * Enable it for observation, but do not mark it as a wake source: EINT wake
+ * routing and suspend polarity have not been measured on mainline.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	thermal-zones {
+		soc-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <1000>;
+			thermal-sensors = <&thermal>;
+		};
+	};
+};
+
+&auxadc {
+	status = "okay";
+};
+
+&thermal {
+	status = "okay";
+};
+
+&hall_gpio_keys {
+	status = "okay";
+};

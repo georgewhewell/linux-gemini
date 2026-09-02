@@ -16406,11 +16406,14 @@ F:	include/dt-bindings/reset/mediatek,mt6735-vdecsys.h
 MEDIATEK MT6797 CONSYS AND WLAN SUPPORT
 M:	George Whewell <georgerw@gmail.com>
 L:	linux-mediatek@lists.infradead.org (moderated for non-subscribers)
+L:	linux-bluetooth@vger.kernel.org
 L:	linux-wireless@vger.kernel.org
 S:	Maintained
+F:	Documentation/devicetree/bindings/net/bluetooth/mediatek,mt6797-bluetooth.yaml
 F:	Documentation/devicetree/bindings/net/wireless/mediatek,mt6797-wifi.yaml
 F:	Documentation/devicetree/bindings/soc/mediatek/mediatek,mt6797-btif-pio.yaml
 F:	Documentation/devicetree/bindings/soc/mediatek/mediatek,mt6797-consys*.yaml
+F:	drivers/bluetooth/mt6797-stp-hci.c
 F:	drivers/net/wireless/mediatek/mt6797/
 F:	drivers/soc/mediatek/mt6797-btif-pio*
 F:	drivers/soc/mediatek/mt6797-btif-stp-bootstrap.c

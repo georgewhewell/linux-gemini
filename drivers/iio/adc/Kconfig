@@ -1144,6 +1144,17 @@ config MCP3911
 	  This driver can also be built as a module. If so, the module will be
 	  called mcp3911.
 
+config MEDIATEK_MT6351_AUXADC
+	tristate "MediaTek MT6351 PMIC AUXADC driver"
+	depends on MFD_MT6397
+	help
+	  Say yes here to enable support for the Auxiliary ADC in the
+	  MediaTek MT6351 PMIC. This driver currently exposes the two
+	  evidence-backed AP battery voltage channels.
+
+	  This driver can also be built as a module. If so, the module will be
+	  called mt6351-auxadc.
+
 config MEDIATEK_MT6359_AUXADC
 	tristate "MediaTek MT6359 PMIC AUXADC driver"
 	depends on MFD_MT6397

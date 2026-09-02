@@ -156,7 +156,6 @@ struct mtk_smi_larb { /* larb: local arbiter */
 	const struct mtk_smi_larb_gen	*larb_gen;
 	int				larbid;
 	u32				*mmu;
-	u32				mmu_bypass;
 	unsigned char			*bank;
 };
 
@@ -664,13 +663,6 @@ static int mtk_smi_larb_probe(struct platform_device *pdev)
 		return ret;
 
 	larb->smi.dev = dev;
-	/*
-	 * An IOMMU component normally supplies the per-port MMU mask in bind().
-	 * Keep IOMMU-less display clients in physical-address mode until then;
-	 * runtime resume always programs this mask before a component can bind.
-	 */
-	larb->mmu = &larb->mmu_bypass;
-
 	ret = mtk_smi_device_link_common(dev, &larb->smi_common_dev);
 	if (ret < 0)
 		return ret;

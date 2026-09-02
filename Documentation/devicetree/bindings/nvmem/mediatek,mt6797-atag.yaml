@@ -4,13 +4,13 @@
 $id: http://devicetree.org/schemas/nvmem/mediatek,mt6797-atag.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: MediaTek MT6797 LK devinfo thermal calibration
+title: MediaTek MT6797 LK devinfo calibration
 
 description: |
   The retained MT6797 Little Kernel bootloader appends a fixed-format,
   read-only devinfo payload to /chosen/atag,devinfo.  This provider validates
-  that handoff property and exposes the ordered thermal calibration cell.
-  It does not access the efuse MMIO block.
+  that handoff property and exposes identified thermal and camera CSI
+  calibration cells. It does not access the efuse MMIO block.
 
 maintainers:
   - Julien Etienne <julien.etienne@gmail.com>
@@ -46,6 +46,19 @@ patternProperties:
           - items:
               - const: 0
               - const: 12
+    required:
+      - reg
+    additionalProperties: false
+  "^csi-calibration-data@64$":
+    type: object
+    properties:
+      reg:
+        minItems: 1
+        maxItems: 1
+        items:
+          - items:
+              - const: 100
+              - const: 20
     required:
       - reg
     additionalProperties: false

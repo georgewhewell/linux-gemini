@@ -254,6 +254,13 @@ static void mt6797_hevc_ref_plan_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, plan.l0[1].poc_slot, 0x0000040aU);
 	KUNIT_EXPECT_EQ(test, plan.l0[2].poc_slot, 0x00000880U);
 	KUNIT_EXPECT_EQ(test, plan.l1[0].poc_slot, 0x00000880U);
+
+	memset(&dec, 0, sizeof(dec));
+	memset(&slice, 0, sizeof(slice));
+	slice.slice_type = V4L2_HEVC_SLICE_TYPE_I;
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_ref_plan(&slice, &dec, buffers, &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.current_after_all, 0U);
 }
 
 static void mt6797_hevc_mv_slot_plan_test(struct kunit *test)

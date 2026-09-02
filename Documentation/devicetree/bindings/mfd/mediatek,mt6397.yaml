@@ -24,6 +24,7 @@ description: |
   - LED
   - Keys
   - Power controller
+  - Fuel gauge
 
   It is interfaced to host controller using SPI interface by a proprietary hardware
   called PMIC wrapper or pwrap. MT6397/MT6323 PMIC is a child device of pwrap.
@@ -221,6 +222,16 @@ properties:
 
       '#power-domain-cells':
         const: 0
+
+  fuel-gauge:
+    type: object
+    $ref: /schemas/power/supply/mediatek,mt6351-fg-readonly.yaml#
+    unevaluatedProperties: false
+
+  fuel-gauge-active:
+    type: object
+    $ref: /schemas/power/supply/mediatek,mt6351-fgadc.yaml#
+    unevaluatedProperties: false
 
   pinctrl:
     type: object

@@ -139,9 +139,12 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	const struct v4l2_ctrl_h264_pps *pps;
 	struct mt6797_h264_barrel_plan barrel;
 	struct mt6797_h264_buffer_layout layout;
+	struct mt6797_h264_idr_plan idr;
 	struct mt6797_h264_mv_range mv_range;
+	struct mt6797_h264_output_plan output;
 	struct mt6797_h264_start_plan start;
 	struct mt6797_h264_working_plan working;
+	struct vdec_fb *fb;
 	u64 mv_addrs[MT6797_H264_MV_BUFFER_COUNT];
 	u32 sps_reg, pps_reg, slice_reg, slice2_reg;
 	unsigned int i;
@@ -177,6 +180,12 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 					&layout);
 	if (ret)
 		return ret;
+	fb = inst->ctx->dev->vdec_pdata->get_cap_buffer(inst->ctx);
+	if (!fb)
+		return -EBUSY;
+	if (fb->base_y.size < layout.luma_size ||
+	    fb->base_c.size < layout.chroma_size)
+		return -ENOSPC;
 	ret = mt6797_h264_alloc_mv(inst, layout.mv_size);
 	if (ret)
 		return ret;
@@ -193,6 +202,15 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	ret = mt6797_h264_start_plan(&layout, pps, &start);
 	if (ret)
 		return ret;
+	ret = mt6797_h264_output_plan(fb->base_y.dma_addr,
+				      fb->base_c.dma_addr,
+				      inst->mv[0].dma_addr, &layout, &output);
+	if (ret)
+		return ret;
+	ret = mt6797_h264_idr_plan(sps, dec, fb->base_y.dma_addr,
+				   inst->mv[0].dma_addr, &idr);
+	if (ret)
+		return ret;
 
 	/*
 	 * These words are independently recovered and unit tested.  Do not
@@ -205,13 +223,14 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	slice_reg = mt6797_h264_slice_reg(slice, false, false);
 	slice2_reg = mt6797_h264_slice2_reg(slice, dec);
 	mtk_v4l2_vdec_dbg(3, inst->ctx,
-			  "direct plan sps=%#x pps=%#x slice=%#x/%#x bs=%#x-%#x shift=%u/%u size=%#x mb=%u pred=%#x pp=%#x ld=%#x mv=%#x range=%#x-%#x",
+			  "direct plan sps=%#x pps=%#x slice=%#x/%#x bs=%#x-%#x shift=%u/%u size=%#x mb=%u y=%#x c=%#x pred=%#x pp=%#x ld=%#x mv=%#x range=%#x-%#x frame=%u poc=%#x",
 			  sps_reg, pps_reg, slice_reg, slice2_reg, barrel.fetch_start,
 			  barrel.fetch_end, barrel.shift_reads, barrel.final_shift,
 			  start.packed_size, start.mb_count,
+			  output.y_addr, output.c_addr_256,
 			  working.prediction_addr, working.pp_addr,
 			  working.ld_addr, working.mv_addr_16,
-			  mv_range.min_addr, mv_range.max_end);
+			  mv_range.min_addr, mv_range.max_end, idr.frame_num, idr.poc);
 
 	return -EOPNOTSUPP;
 }
@@ -238,7 +257,7 @@ static int mt6797_h264_get_param(void *h_vdec, enum vdec_get_param_type type,
 		pic->buf_h = layout.height;
 		pic->fb_sz[0] = layout.luma_size;
 		pic->fb_sz[1] = layout.chroma_size;
-		pic->cap_fourcc = V4L2_PIX_FMT_MM21;
+		pic->cap_fourcc = V4L2_PIX_FMT_MS21;
 		break;
 	case GET_PARAM_DPB_SIZE:
 		*(unsigned int *)out = V4L2_H264_NUM_DPB_ENTRIES;

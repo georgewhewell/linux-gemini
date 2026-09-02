@@ -227,7 +227,7 @@ static const struct mtk_stateless_control mtk_stateless_controls[] = {
 
 #define NUM_CTRLS ARRAY_SIZE(mtk_stateless_controls)
 
-static struct mtk_video_fmt mtk_video_formats[9];
+static struct mtk_video_fmt mtk_video_formats[10];
 
 static struct mtk_video_fmt default_out_format;
 static struct mtk_video_fmt default_cap_format;
@@ -285,14 +285,19 @@ static struct vdec_fb *vdec_get_cap_buffer(struct mtk_vcodec_dec_ctx *ctx)
 	pfb = &framebuf->frame_buffer;
 	pfb->base_y.va = vb2_plane_vaddr(dst_buf, 0);
 	pfb->base_y.dma_addr = vb2_dma_contig_plane_dma_addr(dst_buf, 0);
-	pfb->base_y.size = ctx->q_data[MTK_Q_DATA_DST].sizeimage[0];
+	pfb->base_y.size = ctx->picinfo.fb_sz[0];
 
 	if (ctx->q_data[MTK_Q_DATA_DST].fmt->num_planes == 2) {
 		pfb->base_c.va = vb2_plane_vaddr(dst_buf, 1);
 		pfb->base_c.dma_addr =
 			vb2_dma_contig_plane_dma_addr(dst_buf, 1);
-		pfb->base_c.size = ctx->q_data[MTK_Q_DATA_DST].sizeimage[1];
+	} else {
+		if (pfb->base_y.va)
+			pfb->base_c.va = pfb->base_y.va + ctx->picinfo.fb_sz[0];
+		pfb->base_c.dma_addr = pfb->base_y.dma_addr +
+					ctx->picinfo.fb_sz[0];
 	}
+	pfb->base_c.size = ctx->picinfo.fb_sz[1];
 	mtk_v4l2_vdec_dbg(1, ctx,
 			  "id=%d Framebuf pfb=%p VA=%p Y/C_DMA=%pad_%pad Sz=%zx frame_count = %d",
 			  dst_buf->index, pfb, pfb->base_y.va, &pfb->base_y.dma_addr,
@@ -843,6 +848,11 @@ static void mtk_vcodec_add_formats(unsigned int fourcc,
 		mtk_video_formats[count_formats].type = MTK_FMT_FRAME;
 		mtk_video_formats[count_formats].num_planes = 2;
 		break;
+	case V4L2_PIX_FMT_MS21:
+		mtk_video_formats[count_formats].fourcc = fourcc;
+		mtk_video_formats[count_formats].type = MTK_FMT_FRAME;
+		mtk_video_formats[count_formats].num_planes = 1;
+		break;
 	default:
 		mtk_v4l2_vdec_err(ctx, "Can not add unsupported format type");
 		return;
@@ -872,6 +882,10 @@ static void mtk_vcodec_get_supported_formats(struct mtk_vcodec_dec_ctx *ctx)
 	}
 	if (ctx->dev->dec_capability & MTK_VDEC_FORMAT_MM21) {
 		mtk_vcodec_add_formats(V4L2_PIX_FMT_MM21, ctx);
+		cap_format_count++;
+	}
+	if (ctx->dev->dec_capability & MTK_VDEC_FORMAT_MS21) {
+		mtk_vcodec_add_formats(V4L2_PIX_FMT_MS21, ctx);
 		cap_format_count++;
 	}
 	if (ctx->dev->dec_capability & MTK_VDEC_FORMAT_H264_SLICE) {
@@ -968,7 +982,7 @@ const struct mtk_vcodec_dec_pdata mtk_vdec_6797_pdata = {
 	.default_cap_fmt = &default_cap_format,
 	.uses_stateless_api = true,
 	.uses_fw = false,
-	.dec_capability = MTK_VDEC_FORMAT_H264_SLICE | MTK_VDEC_FORMAT_MM21,
+	.dec_capability = MTK_VDEC_FORMAT_H264_SLICE | MTK_VDEC_FORMAT_MS21,
 	.h264_slice_if = &mtk_vdec_6797_h264_slice_if,
 	.worker = mtk_vdec_worker,
 	.flush_decoder = mtk_vdec_flush_decoder,

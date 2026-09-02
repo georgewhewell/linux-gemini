@@ -362,6 +362,36 @@ static void mt6797_hevc_staging_size_test(struct kunit *test)
 			-EOVERFLOW);
 }
 
+static void mt6797_hevc_sps_rps_sets_test(struct kunit *test)
+{
+	struct v4l2_ctrl_hevc_ext_sps_st_rps rps[2] = {
+		{
+			.num_negative_pics = 1,
+			.num_positive_pics = 1,
+			.delta_poc_s1_minus1 = { 1 },
+		},
+		{
+			.abs_delta_rps_minus1 = 0,
+			.use_delta_flag = GENMASK(2, 0),
+			.flags = V4L2_HEVC_EXT_SPS_ST_RPS_FLAG_INTER_REF_PIC_SET_PRED,
+		},
+	};
+	struct mt6797_hevc_rps_set sets[2];
+
+	KUNIT_ASSERT_EQ(test, mt6797_hevc_sps_rps_sets(rps, 2, sets), 0);
+	KUNIT_EXPECT_EQ(test, sets[0].num_negative_pics, (u8)1);
+	KUNIT_EXPECT_EQ(test, sets[0].num_positive_pics, (u8)1);
+	KUNIT_EXPECT_EQ(test, sets[0].delta_poc_s0[0], (s16)-1);
+	KUNIT_EXPECT_EQ(test, sets[0].delta_poc_s1[0], (s16)2);
+	KUNIT_EXPECT_EQ(test, sets[1].num_negative_pics, (u8)0);
+	KUNIT_EXPECT_EQ(test, sets[1].num_positive_pics, (u8)2);
+	KUNIT_EXPECT_EQ(test, sets[1].delta_poc_s1[0], (s16)1);
+	KUNIT_EXPECT_EQ(test, sets[1].delta_poc_s1[1], (s16)3);
+
+	rps[0].flags = V4L2_HEVC_EXT_SPS_ST_RPS_FLAG_INTER_REF_PIC_SET_PRED;
+	KUNIT_EXPECT_EQ(test, mt6797_hevc_sps_rps_sets(rps, 1, sets), -EINVAL);
+}
+
 static struct kunit_case mt6797_hevc_test_cases[] = {
 	KUNIT_CASE(mt6797_hevc_sps_regs_test),
 	KUNIT_CASE(mt6797_hevc_pps_regs_test),
@@ -377,6 +407,7 @@ static struct kunit_case mt6797_hevc_test_cases[] = {
 	KUNIT_CASE(mt6797_hevc_min_layout_test),
 	KUNIT_CASE(mt6797_hevc_reject_layout_test),
 	KUNIT_CASE(mt6797_hevc_staging_size_test),
+	KUNIT_CASE(mt6797_hevc_sps_rps_sets_test),
 	{},
 };
 

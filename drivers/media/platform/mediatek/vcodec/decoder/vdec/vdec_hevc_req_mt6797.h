@@ -24,6 +24,8 @@
 #define MT6797_HEVC_C_ALIGN		0x100U
 #define MT6797_HEVC_REF_LIST_LEN	16U
 #define MT6797_HEVC_TILE_WORDS		17U
+#define MT6797_HEVC_MAX_SPS_RPS		65U
+#define MT6797_HEVC_MAX_RPS_PICS	16U
 
 struct mt6797_hevc_sps_regs {
 	u32 top_068;
@@ -118,15 +120,155 @@ struct mt6797_hevc_mv_slot_plan {
 	u8 current_slot;
 };
 
+struct mt6797_hevc_rps_set {
+	s16 delta_poc_s0[MT6797_HEVC_MAX_RPS_PICS];
+	s16 delta_poc_s1[MT6797_HEVC_MAX_RPS_PICS];
+	u8 num_negative_pics;
+	u8 num_positive_pics;
+};
+
 static inline u32 mt6797_hevc_ceil_log2_nonzero(u32 value)
 {
 	return value <= 2 ? 1 : fls(value - 1);
 }
 
+static inline int mt6797_hevc_rps_add(s16 *pocs, u8 *count, s32 delta)
+{
+	if (*count >= MT6797_HEVC_MAX_RPS_PICS || delta < S16_MIN ||
+	    delta > S16_MAX)
+		return -ERANGE;
+	pocs[(*count)++] = delta;
+
+	return 0;
+}
+
 static inline int
-mt6797_hevc_sps_regs(const struct v4l2_ctrl_hevc_sps *sps,
-		     const struct v4l2_ctrl_hevc_pps *pps,
-		     struct mt6797_hevc_sps_regs *regs)
+mt6797_hevc_rps_add_s0(struct mt6797_hevc_rps_set *set, s32 delta)
+{
+	return mt6797_hevc_rps_add(set->delta_poc_s0,
+				     &set->num_negative_pics, delta);
+}
+
+static inline int
+mt6797_hevc_rps_add_s1(struct mt6797_hevc_rps_set *set, s32 delta)
+{
+	return mt6797_hevc_rps_add(set->delta_poc_s1,
+				     &set->num_positive_pics, delta);
+}
+
+static inline int
+mt6797_hevc_sps_rps_sets(const struct v4l2_ctrl_hevc_ext_sps_st_rps *rps,
+			 unsigned int count, struct mt6797_hevc_rps_set *sets)
+{
+	unsigned int i;
+
+	if ((!rps && count) || !sets || count > MT6797_HEVC_MAX_SPS_RPS)
+		return -EINVAL;
+	memset(sets, 0, sizeof(*sets) * count);
+	for (i = 0; i < count; i++) {
+		const struct v4l2_ctrl_hevc_ext_sps_st_rps *src = &rps[i];
+		struct mt6797_hevc_rps_set *set = &sets[i];
+		const struct mt6797_hevc_rps_set *ref;
+		s32 delta_rps;
+		u32 num_delta;
+		unsigned int j;
+		int j_signed;
+		int ret = 0;
+
+		if (!(src->flags &
+		      V4L2_HEVC_EXT_SPS_ST_RPS_FLAG_INTER_REF_PIC_SET_PRED)) {
+			if (src->num_negative_pics + src->num_positive_pics >
+			    MT6797_HEVC_MAX_RPS_PICS)
+				return -ERANGE;
+			for (j = 0; j < src->num_negative_pics; j++) {
+				s32 delta = (j ? set->delta_poc_s0[j - 1] : 0) -
+					    (src->delta_poc_s0_minus1[j] + 1);
+
+				ret = mt6797_hevc_rps_add_s0(set, delta);
+				if (ret)
+					return ret;
+			}
+			for (j = 0; j < src->num_positive_pics; j++) {
+				s32 delta = (j ? set->delta_poc_s1[j - 1] : 0) +
+					    src->delta_poc_s1_minus1[j] + 1;
+
+				ret = mt6797_hevc_rps_add_s1(set, delta);
+				if (ret)
+					return ret;
+			}
+			continue;
+		}
+
+		if (!i || src->delta_idx_minus1 >= i)
+			return -EINVAL;
+		ref = &sets[i - src->delta_idx_minus1 - 1];
+		num_delta = ref->num_negative_pics + ref->num_positive_pics;
+		if (num_delta >= MT6797_HEVC_MAX_RPS_PICS)
+			return -ERANGE;
+		delta_rps = src->abs_delta_rps_minus1 + 1;
+		if (src->delta_rps_sign)
+			delta_rps = -delta_rps;
+
+		for (j_signed = ref->num_positive_pics - 1; j_signed >= 0;
+		     j_signed--) {
+			s32 delta = ref->delta_poc_s1[j_signed] + delta_rps;
+			u32 bit = ref->num_negative_pics + j_signed;
+
+			if (delta < 0 && (src->use_delta_flag & BIT(bit))) {
+				ret = mt6797_hevc_rps_add_s0(set, delta);
+				if (ret)
+					return ret;
+			}
+		}
+		if (delta_rps < 0 && (src->use_delta_flag & BIT(num_delta))) {
+			ret = mt6797_hevc_rps_add_s0(set, delta_rps);
+			if (ret)
+				return ret;
+		}
+		for (j = 0; j < ref->num_negative_pics; j++) {
+			s32 delta = ref->delta_poc_s0[j] + delta_rps;
+
+			if (delta < 0 && (src->use_delta_flag & BIT(j))) {
+				ret = mt6797_hevc_rps_add_s0(set, delta);
+				if (ret)
+					return ret;
+			}
+		}
+
+		for (j_signed = ref->num_negative_pics - 1; j_signed >= 0;
+		     j_signed--) {
+			s32 delta = ref->delta_poc_s0[j_signed] + delta_rps;
+
+			if (delta > 0 &&
+			    (src->use_delta_flag & BIT(j_signed))) {
+				ret = mt6797_hevc_rps_add_s1(set, delta);
+			}
+			if (ret)
+				return ret;
+		}
+		if (delta_rps > 0 && (src->use_delta_flag & BIT(num_delta))) {
+			ret = mt6797_hevc_rps_add_s1(set, delta_rps);
+			if (ret)
+				return ret;
+		}
+		for (j = 0; j < ref->num_positive_pics; j++) {
+			s32 delta = ref->delta_poc_s1[j] + delta_rps;
+			u32 bit = ref->num_negative_pics + j;
+
+			if (delta > 0 && (src->use_delta_flag & BIT(bit))) {
+				ret = mt6797_hevc_rps_add_s1(set, delta);
+				if (ret)
+					return ret;
+			}
+		}
+	}
+
+	return 0;
+}
+
+static inline int mt6797_hevc_sps_regs(const struct v4l2_ctrl_hevc_sps *sps,
+				       const struct v4l2_ctrl_hevc_pps *pps,
+				       struct mt6797_hevc_sps_regs *regs)
 {
 	u32 min_cb_log2, ctb_log2, ctb_size;
 	u32 min_tb_log2, max_tb_log2;

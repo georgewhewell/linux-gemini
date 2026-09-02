@@ -215,11 +215,51 @@
 	};
 };
 
+/*
+ * Planet's Android 8 LK requires clock-frequency on every CPU node while it
+ * applies fuse-derived frequency limits.  Its iterator does not advance when
+ * the property is absent, so preserve the shipping DT values for the LK to
+ * Linux handoff even though Linux does not otherwise require them here.
+ */
+&cpu0 {
+	clock-frequency = <1391000000>;
+};
+
+&cpu1 {
+	clock-frequency = <1391000000>;
+};
+
+&cpu2 {
+	clock-frequency = <1391000000>;
+};
+
+&cpu3 {
+	clock-frequency = <1391000000>;
+};
+
+&cpu4 {
+	clock-frequency = <1950000000>;
+};
+
+&cpu5 {
+	clock-frequency = <1950000000>;
+};
+
+&cpu6 {
+	clock-frequency = <1950000000>;
+};
+
+&cpu7 {
+	clock-frequency = <1950000000>;
+};
+
 &cpu8 {
+	clock-frequency = <2288000000>;
 	enable-method = "mediatek,mt6797-a72-psci";
 };
 
 &cpu9 {
+	clock-frequency = <2288000000>;
 	enable-method = "mediatek,mt6797-a72-psci";
 };
 

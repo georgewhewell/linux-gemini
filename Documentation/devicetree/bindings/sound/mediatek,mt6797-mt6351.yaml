@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/mediatek,mt6797-mt6351.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 sound card with MT6351 codec
+
+maintainers:
+  - Tzung-Bi Shih <tzungbi@chromium.org>
+  - Jiaxin Yu <jiaxin.yu@mediatek.com>
+
+properties:
+  compatible:
+    const: mediatek,mt6797-mt6351-sound
+
+  model:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: User-visible name of the sound card.
+
+  audio-widgets:
+    $ref: /schemas/types.yaml#/definitions/non-unique-string-array
+    description:
+      User-visible endpoint widgets. Each widget is described by a pair of
+      strings containing its type and name.
+
+  audio-routing:
+    $ref: /schemas/types.yaml#/definitions/non-unique-string-array
+    description:
+      Connections between board endpoints and codec pins. Each connection is
+      a pair of strings containing its sink and source.
+
+  mediatek,platform:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the MT6797 audio front end.
+
+  mediatek,audio-codec:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the MT6351 audio codec.
+
+required:
+  - compatible
+  - mediatek,platform
+  - mediatek,audio-codec
+
+additionalProperties: false
+
+examples:
+  - |
+    sound {
+        compatible = "mediatek,mt6797-mt6351-sound";
+        model = "mt6797-mt6351";
+        audio-widgets = "Headphone", "Headphone Jack";
+        audio-routing =
+            "Headphone Jack", "HPL",
+            "Headphone Jack", "HPR";
+        mediatek,platform = <&afe>;
+        mediatek,audio-codec = <&mt6351_codec>;
+    };
+
+...

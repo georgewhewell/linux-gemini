@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA haptics qualification overlay.
+ *
+ * The base board keeps the motor consumer disabled. This overlay enables the
+ * generic regulator-backed force-feedback path at the vendor and live-system
+ * confirmed 2.8 V setting; it does not add PWM timing or effect tables.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&haptics {
+	status = "okay";
+};

@@ -5,7 +5,7 @@
  * MT6797 does not use the VPU/SCP command interface used by the other
  * MediaTek stateless decoder backends.  Keep the control translation here,
  * separate from those firmware ABIs.  The device-tree node stays disabled
- * until the remaining output/DPB address sequence has been verified.
+ * until the complete reset, start and interrupt sequence is implemented.
  */
 
 #include <linux/slab.h>
@@ -21,6 +21,7 @@ struct mt6797_h264_inst {
 	struct mtk_vcodec_mem pp;
 	struct mtk_vcodec_mem ld;
 	struct mtk_vcodec_mem mv[MT6797_H264_MV_BUFFER_COUNT];
+	struct mt6797_h264_mv_slot mv_slots[MT6797_H264_MV_BUFFER_COUNT];
 	u32 mv_size;
 };
 
@@ -37,7 +38,51 @@ static void mt6797_h264_free_mv(struct mt6797_h264_inst *inst)
 
 	for (i = 0; i < ARRAY_SIZE(inst->mv); i++)
 		mt6797_h264_free_mem(inst, &inst->mv[i]);
+	memset(inst->mv_slots, 0, sizeof(inst->mv_slots));
 	inst->mv_size = 0;
+}
+
+static int
+mt6797_h264_fill_ref_buffers(struct mt6797_h264_inst *inst,
+			     const struct v4l2_ctrl_h264_decode_params *dec,
+			     const struct mt6797_h264_mv_slot_plan *slot_plan,
+			     const struct mt6797_h264_buffer_layout *layout,
+			     struct mt6797_h264_ref_buffer *buffers)
+{
+	struct vb2_queue *vq;
+	unsigned int i;
+	u32 frame_size;
+
+	frame_size = layout->luma_size + layout->chroma_size;
+	vq = v4l2_m2m_get_vq(inst->ctx->m2m_ctx,
+			     V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+	for (i = 0; i < V4L2_H264_NUM_DPB_ENTRIES; i++) {
+		const struct v4l2_h264_dpb_entry *dpb = &dec->dpb[i];
+		struct vb2_buffer *vb;
+		u8 slot;
+
+		if (!(dpb->flags & V4L2_H264_DPB_ENTRY_FLAG_ACTIVE))
+			continue;
+
+		slot = slot_plan->dpb_slots[i];
+		if (slot >= ARRAY_SIZE(inst->mv))
+			return -EINVAL;
+		vb = vb2_find_buffer(vq, dpb->reference_ts);
+		if (!vb) {
+			mtk_v4l2_vdec_err(inst->ctx,
+					  "missing DPB %u timestamp %llu", i,
+					  dpb->reference_ts);
+			return -ENOENT;
+		}
+		if (vb2_plane_size(vb, 0) < frame_size)
+			return -ENOSPC;
+
+		buffers[i].y_addr = vb2_dma_contig_plane_dma_addr(vb, 0);
+		buffers[i].mv_addr = inst->mv[slot].dma_addr;
+		buffers[i].dpb_slot = slot;
+	}
+
+	return 0;
 }
 
 static int mt6797_h264_alloc_mem(struct mt6797_h264_inst *inst,
@@ -140,8 +185,12 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	struct mt6797_h264_barrel_plan barrel;
 	struct mt6797_h264_buffer_layout layout;
 	struct mt6797_h264_idr_plan idr;
+	struct mt6797_h264_b_ref_plan b_refs;
 	struct mt6797_h264_mv_range mv_range;
+	struct mt6797_h264_mv_slot_plan mv_slots;
 	struct mt6797_h264_output_plan output;
+	struct mt6797_h264_p_ref_plan p_refs;
+	struct mt6797_h264_ref_buffer ref_buffers[V4L2_H264_NUM_DPB_ENTRIES] = {};
 	struct mt6797_h264_start_plan start;
 	struct mt6797_h264_working_plan working;
 	struct vdec_fb *fb;
@@ -194,9 +243,13 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	ret = mt6797_h264_mv_range_plan(mv_addrs, layout.mv_size, &mv_range);
 	if (ret)
 		return ret;
+	ret = mt6797_h264_mv_slot_plan(dec, inst->mv_slots, &mv_slots);
+	if (ret)
+		return ret;
 	ret = mt6797_h264_working_plan(inst->prediction.dma_addr,
 				       inst->pp.dma_addr, inst->ld.dma_addr,
-				       inst->mv[0].dma_addr, &working);
+				       inst->mv[mv_slots.current_slot].dma_addr,
+				       &working);
 	if (ret)
 		return ret;
 	ret = mt6797_h264_start_plan(&layout, pps, &start);
@@ -204,33 +257,59 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 		return ret;
 	ret = mt6797_h264_output_plan(fb->base_y.dma_addr,
 				      fb->base_c.dma_addr,
-				      inst->mv[0].dma_addr, &layout, &output);
+				      inst->mv[mv_slots.current_slot].dma_addr,
+				      &layout, &output);
 	if (ret)
 		return ret;
-	ret = mt6797_h264_idr_plan(sps, dec, fb->base_y.dma_addr,
-				   inst->mv[0].dma_addr, &idr);
-	if (ret)
-		return ret;
+	if (dec->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC) {
+		ret = mt6797_h264_idr_plan(sps, dec, fb->base_y.dma_addr,
+					   inst->mv[mv_slots.current_slot].dma_addr,
+					   &idr);
+		if (ret)
+			return ret;
+	} else {
+		ret = mt6797_h264_fill_ref_buffers(inst, dec, &mv_slots,
+						   &layout, ref_buffers);
+		if (ret)
+			return ret;
+		if (slice->slice_type == V4L2_H264_SLICE_TYPE_P)
+			ret = mt6797_h264_p_ref_plan(slice, dec, ref_buffers,
+						     &p_refs);
+		else
+			ret = mt6797_h264_b_ref_plan(slice, dec, ref_buffers,
+						     &b_refs);
+		if (ret)
+			return ret;
+	}
 
 	/*
-	 * These words are independently recovered and unit tested.  Do not
-	 * issue them until the capture-layout, MV-buffer and DPB address
-	 * sequence is equally established: a partly programmed decoder can DMA
-	 * outside the submitted buffers.
+	 * These words are independently recovered and unit tested. Do not issue
+	 * them until the complete reset, start and interrupt sequence is present:
+	 * a partly programmed decoder can DMA outside the submitted buffers.
 	 */
 	sps_reg = mt6797_h264_sps_reg(sps);
 	pps_reg = mt6797_h264_pps_reg(pps);
 	slice_reg = mt6797_h264_slice_reg(slice, false, false);
 	slice2_reg = mt6797_h264_slice2_reg(slice, dec);
 	mtk_v4l2_vdec_dbg(3, inst->ctx,
-			  "direct plan sps=%#x pps=%#x slice=%#x/%#x bs=%#x-%#x shift=%u/%u size=%#x mb=%u y=%#x c=%#x pred=%#x pp=%#x ld=%#x mv=%#x range=%#x-%#x frame=%u poc=%#x",
+			  "direct plan sps=%#x pps=%#x slice=%#x/%#x bs=%#x-%#x shift=%u/%u size=%#x mb=%u y=%#x c=%#x pred=%#x pp=%#x ld=%#x mv=%#x slot=%u range=%#x-%#x",
 			  sps_reg, pps_reg, slice_reg, slice2_reg, barrel.fetch_start,
 			  barrel.fetch_end, barrel.shift_reads, barrel.final_shift,
 			  start.packed_size, start.mb_count,
 			  output.y_addr, output.c_addr_256,
 			  working.prediction_addr, working.pp_addr,
 			  working.ld_addr, working.mv_addr_16,
-			  mv_range.min_addr, mv_range.max_end, idr.frame_num, idr.poc);
+			  mv_slots.current_slot, mv_range.min_addr, mv_range.max_end);
+	if (dec->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC)
+		mtk_v4l2_vdec_dbg(3, inst->ctx,
+				  "direct IDR frame=%u poc=%#x", idr.frame_num,
+				  idr.poc);
+	else if (slice->slice_type == V4L2_H264_SLICE_TYPE_P)
+		mtk_v4l2_vdec_dbg(3, inst->ctx, "direct P refs=%u",
+				  p_refs.num_refs);
+	else
+		mtk_v4l2_vdec_dbg(3, inst->ctx, "direct B refs=%u/%u",
+				  b_refs.num_l0, b_refs.num_l1);
 
 	return -EOPNOTSUPP;
 }

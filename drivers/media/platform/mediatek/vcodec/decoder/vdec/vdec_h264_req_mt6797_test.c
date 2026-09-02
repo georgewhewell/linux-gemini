@@ -49,7 +49,21 @@ static void mt6797_h264_slice2_pack_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_h264_slice2_reg(&slice, &dec), 0x2e7d7dU);
 }
 
-static void mt6797_h264_reject_inter_test(struct kunit *test)
+static void mt6797_h264_slice_pack_test(struct kunit *test)
+{
+	struct v4l2_ctrl_h264_slice_params slice = {
+		.first_mb_in_slice = 0x123,
+		.slice_type = V4L2_H264_SLICE_TYPE_B,
+		.num_ref_idx_l0_active_minus1 = 2,
+		.num_ref_idx_l1_active_minus1 = 1,
+		.flags = V4L2_H264_SLICE_FLAG_DIRECT_SPATIAL_MV_PRED,
+	};
+
+	KUNIT_EXPECT_EQ(test, mt6797_h264_slice_reg(&slice, false, false),
+			0x2282123U);
+}
+
+static void mt6797_h264_validate_inter_test(struct kunit *test)
 {
 	struct v4l2_ctrl_h264_sps sps = {
 		.chroma_format_idc = 1,
@@ -63,6 +77,11 @@ static void mt6797_h264_reject_inter_test(struct kunit *test)
 		.flags = V4L2_H264_DECODE_PARAM_FLAG_PFRAME,
 	};
 
+	KUNIT_EXPECT_EQ(test, mt6797_h264_validate_request(&sps, &pps, &slice, &dec), 0);
+	dec.flags = V4L2_H264_DECODE_PARAM_FLAG_BFRAME;
+	KUNIT_EXPECT_EQ(test, mt6797_h264_validate_request(&sps, &pps, &slice, &dec),
+			-EINVAL);
+	slice.first_mb_in_slice = 1;
 	KUNIT_EXPECT_EQ(test, mt6797_h264_validate_request(&sps, &pps, &slice, &dec),
 			-EOPNOTSUPP);
 }
@@ -480,8 +499,9 @@ static void mt6797_h264_reject_start_plan_test(struct kunit *test)
 static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_sps_pack_test),
 	KUNIT_CASE(mt6797_h264_pps_pack_test),
+	KUNIT_CASE(mt6797_h264_slice_pack_test),
 	KUNIT_CASE(mt6797_h264_slice2_pack_test),
-	KUNIT_CASE(mt6797_h264_reject_inter_test),
+	KUNIT_CASE(mt6797_h264_validate_inter_test),
 	KUNIT_CASE(mt6797_h264_1080p_layout_test),
 	KUNIT_CASE(mt6797_h264_min_layout_test),
 	KUNIT_CASE(mt6797_h264_reject_layout_test),

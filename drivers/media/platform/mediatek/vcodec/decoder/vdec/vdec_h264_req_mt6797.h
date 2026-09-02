@@ -351,7 +351,8 @@ static inline u32 mt6797_h264_slice_reg(const struct v4l2_ctrl_h264_slice_params
 {
 	u32 reg;
 
-	reg = FIELD_PREP(MT6797_H264_SH_TYPE, slice->slice_type);
+	reg = FIELD_PREP(MT6797_H264_SH_FIRST_MB, slice->first_mb_in_slice);
+	reg |= FIELD_PREP(MT6797_H264_SH_TYPE, slice->slice_type);
 	reg |= FIELD_PREP(MT6797_H264_SH_REFS_L0,
 			  slice->num_ref_idx_l0_active_minus1);
 	reg |= FIELD_PREP(MT6797_H264_SH_REFS_L1,
@@ -711,15 +712,30 @@ mt6797_h264_validate_request(const struct v4l2_ctrl_h264_sps *sps,
 			  V4L2_H264_PPS_FLAG_TRANSFORM_8X8_MODE) ||
 	    pps->weighted_bipred_idc)
 		return -EINVAL;
-	if (slice->first_mb_in_slice || slice->slice_type != V4L2_H264_SLICE_TYPE_I)
-		return -EOPNOTSUPP;
-	if (!(dec->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC))
+	if (slice->first_mb_in_slice)
 		return -EOPNOTSUPP;
 	if (dec->flags & (V4L2_H264_DECODE_PARAM_FLAG_FIELD_PIC |
-			  V4L2_H264_DECODE_PARAM_FLAG_BOTTOM_FIELD |
-			  V4L2_H264_DECODE_PARAM_FLAG_PFRAME |
-			  V4L2_H264_DECODE_PARAM_FLAG_BFRAME))
+			  V4L2_H264_DECODE_PARAM_FLAG_BOTTOM_FIELD))
 		return -EOPNOTSUPP;
+
+	switch (slice->slice_type) {
+	case V4L2_H264_SLICE_TYPE_I:
+		if (!(dec->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC) ||
+		    dec->flags & (V4L2_H264_DECODE_PARAM_FLAG_PFRAME |
+				  V4L2_H264_DECODE_PARAM_FLAG_BFRAME))
+			return -EOPNOTSUPP;
+		break;
+	case V4L2_H264_SLICE_TYPE_P:
+		if (dec->flags != V4L2_H264_DECODE_PARAM_FLAG_PFRAME)
+			return -EINVAL;
+		break;
+	case V4L2_H264_SLICE_TYPE_B:
+		if (dec->flags != V4L2_H264_DECODE_PARAM_FLAG_BFRAME)
+			return -EINVAL;
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
 
 	return 0;
 }

@@ -125,11 +125,53 @@ static void mtk_ccci_runtime_rejects_unsupported_must(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EBADMSG);
 }
 
+static void mtk_ccci_builds_complete_hs1_v2_reply(struct kunit *test)
+{
+	struct mtk_ccci_runtime_config config = {
+		.smem_md_addr = 0x40000000,
+		.smem_size = 0x100000,
+		.ccmni_mtu = MTK_CCCI_NET_RX_SIZE,
+	};
+	u8 hs1[MTK_CCCI_HEADER_SIZE + MTK_CCCI_FEATURE_QUERY_SIZE] = {};
+	u8 reply[MTK_CCCI_RUNTIME_V2_REPLY_SIZE];
+	u8 *runtime;
+	struct mtk_ccci_frame frame;
+	size_t runtime_len, reply_len;
+	int ret;
+
+	runtime = kunit_kzalloc(test, MTK_CCCI_RUNTIME_AP_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, runtime);
+	mtk_ccci_header_init((struct mtk_ccci_header *)hs1,
+			     MTK_CCCI_CONTROL_RX, 7, 0);
+	((struct mtk_ccci_header *)hs1)->data1 = 0;
+	((struct mtk_ccci_header *)hs1)->reserved =
+		cpu_to_le32(MTK_CCCI_MD_INIT_CHK_ID);
+	mtk_ccci_make_query(hs1 + MTK_CCCI_HEADER_SIZE);
+	hs1[MTK_CCCI_HEADER_SIZE + 4 + MTK_CCCI_RT_BOOT_INFO] =
+		MTK_CCCI_FEATURE_MUST_SUPPORT;
+
+	ret = mtk_ccci_runtime_v2_reply(hs1, sizeof(hs1), &config, 9,
+					runtime, MTK_CCCI_RUNTIME_AP_SIZE,
+					&runtime_len, reply, sizeof(reply),
+					&reply_len);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_GT(test, runtime_len, (size_t)0);
+	KUNIT_EXPECT_EQ(test, reply_len, sizeof(reply));
+	KUNIT_ASSERT_EQ(test, mtk_ccci_header_decode(reply, reply_len, &frame), 0);
+	KUNIT_EXPECT_EQ(test, frame.channel, (u16)MTK_CCCI_CONTROL_TX);
+	KUNIT_EXPECT_EQ(test, frame.sequence, (u16)9);
+	KUNIT_EXPECT_EQ(test, frame.data1, (u32)sizeof(reply));
+	KUNIT_EXPECT_EQ(test, frame.reserved, MTK_CCCI_MD_INIT_CHK_ID);
+	KUNIT_EXPECT_EQ(test, get_unaligned_le32(reply + MTK_CCCI_HEADER_SIZE),
+			MTK_CCCI_AP_FEATURE_PATTERN);
+}
+
 static struct kunit_case mtk_ccci_common_cases[] = {
 	KUNIT_CASE(mtk_ccci_header_roundtrip),
 	KUNIT_CASE(mtk_ccci_net_map),
 	KUNIT_CASE(mtk_ccci_runtime_v2_minimal),
 	KUNIT_CASE(mtk_ccci_runtime_rejects_unsupported_must),
+	KUNIT_CASE(mtk_ccci_builds_complete_hs1_v2_reply),
 	{}
 };
 

@@ -18,7 +18,6 @@
 #define MTK_CCCI_MISC_RECORD_SIZE	16U
 #define MTK_CCCI_BOOT_RECORD_SIZE	16U
 #define MTK_CCCI_SHM_RECORD_SIZE	8U
-#define MTK_CCCI_V2_RESPONSE_SIZE	100U
 
 struct mtk_ccci_feature_query {
 	__le32 head_pattern;
@@ -43,7 +42,7 @@ static_assert(sizeof(struct mtk_ccci_header) == MTK_CCCI_HEADER_SIZE);
 static_assert(sizeof(struct mtk_ccci_feature_query) ==
 	      MTK_CCCI_FEATURE_QUERY_SIZE);
 static_assert(sizeof(struct mtk_ccci_feature_response) ==
-	      MTK_CCCI_V2_RESPONSE_SIZE);
+	      MTK_CCCI_RUNTIME_V2_RESPONSE_SIZE);
 
 static u8 mtk_ccci_feature(u8 support, u8 version)
 {
@@ -365,3 +364,45 @@ int mtk_ccci_runtime_v2_response(const struct mtk_ccci_runtime_config *config,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mtk_ccci_runtime_v2_response);
+
+int mtk_ccci_runtime_v2_reply(const void *hs1, size_t hs1_len,
+			      const struct mtk_ccci_runtime_config *config,
+			      u16 sequence, void *runtime, size_t runtime_size,
+			      size_t *runtime_len, void *reply, size_t reply_size,
+			      size_t *reply_len)
+{
+	struct mtk_ccci_header *reply_header = reply;
+	struct mtk_ccci_frame frame;
+	size_t feature_len;
+	int ret;
+
+	if (!hs1 || !config || !runtime || !runtime_len || !reply || !reply_len ||
+	    hs1_len != MTK_CCCI_HEADER_SIZE + MTK_CCCI_FEATURE_QUERY_SIZE ||
+	    reply_size < MTK_CCCI_RUNTIME_V2_REPLY_SIZE)
+		return -EINVAL;
+	ret = mtk_ccci_header_decode(hs1, hs1_len, &frame);
+	if (ret)
+		return ret;
+	if (frame.channel != MTK_CCCI_CONTROL_RX || frame.data1 ||
+	    frame.reserved != MTK_CCCI_MD_INIT_CHK_ID)
+		return -ENOMSG;
+
+	ret = mtk_ccci_runtime_v2_build((const u8 *)hs1 + MTK_CCCI_HEADER_SIZE,
+					MTK_CCCI_FEATURE_QUERY_SIZE, config,
+					runtime, runtime_size, runtime_len);
+	if (ret)
+		return ret;
+	ret = mtk_ccci_runtime_v2_response(config,
+					   (u8 *)reply + MTK_CCCI_HEADER_SIZE,
+					   reply_size - MTK_CCCI_HEADER_SIZE,
+					   &feature_len);
+	if (ret)
+		return ret;
+
+	mtk_ccci_header_init(reply_header, MTK_CCCI_CONTROL_TX, sequence,
+			     MTK_CCCI_HEADER_SIZE + feature_len);
+	reply_header->reserved = cpu_to_le32(MTK_CCCI_MD_INIT_CHK_ID);
+	*reply_len = MTK_CCCI_HEADER_SIZE + feature_len;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mtk_ccci_runtime_v2_reply);

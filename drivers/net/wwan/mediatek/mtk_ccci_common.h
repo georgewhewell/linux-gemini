@@ -7,6 +7,9 @@
 #define MTK_CCCI_HEADER_SIZE		16U
 #define MTK_CCCI_FEATURE_COUNT		64U
 #define MTK_CCCI_FEATURE_QUERY_SIZE	72U
+#define MTK_CCCI_RUNTIME_V2_RESPONSE_SIZE 100U
+#define MTK_CCCI_RUNTIME_V2_REPLY_SIZE \
+	(MTK_CCCI_HEADER_SIZE + MTK_CCCI_RUNTIME_V2_RESPONSE_SIZE)
 #define MTK_CCCI_RUNTIME_AP_SIZE	0x800U
 #define MTK_CCCI_RUNTIME_MD_SIZE	0x800U
 #define MTK_CCCI_RUNTIME_OFFSET		0x10000U
@@ -98,5 +101,10 @@ int mtk_ccci_runtime_v2_build(const void *query, size_t query_len,
 int mtk_ccci_runtime_v2_response(const struct mtk_ccci_runtime_config *config,
 				 void *response, size_t response_size,
 				 size_t *response_len);
+int mtk_ccci_runtime_v2_reply(const void *hs1, size_t hs1_len,
+			      const struct mtk_ccci_runtime_config *config,
+			      u16 sequence, void *runtime, size_t runtime_size,
+			      size_t *runtime_len, void *reply, size_t reply_size,
+			      size_t *reply_len);
 
 #endif /* __MTK_CCCI_COMMON_H */

@@ -18,10 +18,12 @@ description: |
 
 properties:
   $nodename:
-    pattern: '^power-controller(@[0-9a-f]+)?$'
+    pattern: '^syscon(@[0-9a-f]+)?$'
 
   compatible:
-    const: mediatek,mt6797-scpsys
+    items:
+      - const: mediatek,mt6797-scpsys
+      - const: syscon
 
   reg:
     maxItems: 1
@@ -63,8 +65,8 @@ examples:
         #address-cells = <2>;
         #size-cells = <2>;
 
-        scpsys: power-controller@10006000 {
-            compatible = "mediatek,mt6797-scpsys";
+        scpsys: syscon@10006000 {
+            compatible = "mediatek,mt6797-scpsys", "syscon";
             #power-domain-cells = <1>;
             reg = <0 0x10006000 0 0x1000>;
             infracfg = <&infracfg>;

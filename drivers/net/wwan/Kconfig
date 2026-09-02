@@ -137,6 +137,24 @@ config MTK_CCCI_KUNIT_TEST
 	  malformed feature queries and modem requirements which this driver
 	  cannot safely satisfy.
 
+config MTK_MT6797_CCCI_CORE
+	bool
+	select MTK_CCCI_COMMON
+	help
+	  Internal CLDMA descriptor and CCCI boot-handshake helpers for the
+	  integrated MT6797 modem. The helpers perform no I/O and do not manage
+	  modem power, reset or firmware.
+
+config MTK_MT6797_CCCI_KUNIT_TEST
+	bool "KUnit tests for MediaTek MT6797 CCCI transport helpers"
+	depends on KUNIT=y
+	select MTK_MT6797_CCCI_CORE
+	help
+	  Exercise the MT6797 CLDMA descriptor wire format, ownership barriers,
+	  address restrictions and CCCI boot-handshake state machine without
+	  modem hardware. This is intended for kernel developers validating
+	  changes to the integrated modem transport.
+
 endif # WWAN
 
 endmenu

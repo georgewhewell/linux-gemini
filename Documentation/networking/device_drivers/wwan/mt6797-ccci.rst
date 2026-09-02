@@ -67,13 +67,19 @@ Driver boundaries
 
 The implementation is divided into four ownership layers:
 
-1. The MD1 lifecycle owner validates the LK-loaded image and CCCI carveouts,
-   establishes MPU/remap, powers MD1 and releases its boot vector.  Transport
-   is allowed to attach only after a positive post-vector activity token.
+1. The MD1 remoteproc provider owns firmware validation/loading, MPU/remap,
+   reset, watchdog and crash recovery.  Its power domain owns only the
+   reversible SoC power sequence.  The transport is an ``rproc_subdev``: it
+   starts CLDMA only from the remoteproc start callback and quiesces it before
+   the remote processor stops.
 2. The CLDMA transport owns the AP-side register windows, IRQ and coherent GPD
    rings.  It uses DMA API mappings, per-TX-ring locks and NAPI for RX/TX
    completion.  Descriptor contents are published before HWO with ``dma_wmb``;
    completion reads HWO before consuming descriptor fields with ``dma_rmb``.
+   The queue-start registers contain only a 32-bit ring address.  GPD rings
+   must therefore be allocated below 4 GiB even though buffer pointers in a
+   GPD carry 36 bits.  The transport must set a 36-bit DMA mask and separately
+   enforce the stricter ring-root limit.
 3. The CCCI router validates lengths and channels, performs sequence tracking,
    completes HS1/HS2, and routes payloads.  Unknown channels are counted and
    dropped; they are never surfaced through a generic private character

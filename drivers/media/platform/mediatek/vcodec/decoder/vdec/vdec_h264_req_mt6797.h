@@ -43,6 +43,7 @@
 #define MT6797_H264_DMA_ALIGN		512U
 #define MT6797_H264_BS_ALIGN		64U
 #define MT6797_H264_BS_GUARD		0x100U
+#define MT6797_H264_NAL_HEADER_BITS	8U
 #define MT6797_H264_BARREL_MAX_SHIFT	32U
 
 struct mt6797_h264_buffer_layout {
@@ -102,8 +103,10 @@ mt6797_h264_barrel_plan(u64 dma_addr, u64 size, u32 header_bits,
 {
 	u64 end_addr, fetch_end;
 	u64 bit_size;
+	u32 shift_bits;
 
-	if (!size || !header_bits || (dma_addr & (MT6797_H264_BS_ALIGN - 1)))
+	if (!size || header_bits <= MT6797_H264_NAL_HEADER_BITS ||
+	    (dma_addr & (MT6797_H264_BS_ALIGN - 1)))
 		return -EINVAL;
 	if (check_mul_overflow(size, 8ULL, &bit_size) || header_bits >= bit_size)
 		return -ERANGE;
@@ -116,9 +119,10 @@ mt6797_h264_barrel_plan(u64 dma_addr, u64 size, u32 header_bits,
 	plan->end_addr = end_addr;
 	plan->fetch_start = dma_addr >> 6;
 	plan->fetch_end = fetch_end >> 6;
-	plan->shift_reads = DIV_ROUND_UP(header_bits,
+	shift_bits = header_bits - MT6797_H264_NAL_HEADER_BITS;
+	plan->shift_reads = DIV_ROUND_UP(shift_bits,
 					 MT6797_H264_BARREL_MAX_SHIFT);
-	plan->final_shift = header_bits % MT6797_H264_BARREL_MAX_SHIFT;
+	plan->final_shift = shift_bits % MT6797_H264_BARREL_MAX_SHIFT;
 	if (!plan->final_shift)
 		plan->final_shift = MT6797_H264_BARREL_MAX_SHIFT;
 

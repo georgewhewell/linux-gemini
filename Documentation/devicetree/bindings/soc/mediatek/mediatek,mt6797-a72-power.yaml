@@ -11,8 +11,8 @@ maintainers:
 
 description: |
   The MT6797 Cortex-A72 cluster needs its external processor regulator, SRAM
-  LDO, SPM isolation, TOPRGU reset, and MCUCFG controls sequenced around PSCI
-  CPU_ON and CPU_OFF.
+  LDO, SPM isolation, TOPRGU reset, and MCUCFG controls sequenced before PSCI
+  CPU_ON. The first implementation deliberately provides no CPU_OFF path.
 
 properties:
   compatible:
@@ -43,10 +43,6 @@ properties:
   mediatek,allow-cpu9:
     type: boolean
     description: Allow CPU9 after the separately gated coherency test passes.
-
-  mediatek,allow-cpu-off:
-    type: boolean
-    description: Allow CPU_OFF after the separately gated hotplug test passes.
 
 required:
   - compatible

@@ -32,6 +32,23 @@ static void mt6797_h264_pps_pack_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_h264_pps_reg(&pps), 0x19f7a1U);
 }
 
+static void mt6797_h264_slice2_pack_test(struct kunit *test)
+{
+	struct v4l2_ctrl_h264_slice_params slice = {
+		.cabac_init_idc = 2,
+		.slice_qp_delta = -3,
+		.disable_deblocking_filter_idc = 2,
+		.slice_alpha_c0_offset_div2 = -2,
+		.slice_beta_offset_div2 = 3,
+	};
+	struct v4l2_ctrl_h264_decode_params dec = {
+		.nal_ref_idc = 3,
+		.flags = V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC,
+	};
+
+	KUNIT_EXPECT_EQ(test, mt6797_h264_slice2_reg(&slice, &dec), 0x2e7d7dU);
+}
+
 static void mt6797_h264_reject_inter_test(struct kunit *test)
 {
 	struct v4l2_ctrl_h264_sps sps = {
@@ -148,9 +165,56 @@ static void mt6797_h264_reject_split_output_test(struct kunit *test)
 						      &plan), -EOPNOTSUPP);
 }
 
+static void mt6797_h264_working_plan_test(struct kunit *test)
+{
+	struct mt6797_h264_working_plan plan;
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_working_plan(0x10000000, 0x10008000,
+						       0x10026000, 0x20000000,
+						       &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.prediction_addr, 0x10000000U);
+	KUNIT_EXPECT_EQ(test, plan.pp_addr, 0x10008000U);
+	KUNIT_EXPECT_EQ(test, plan.ld_addr, 0x10026000U);
+	KUNIT_EXPECT_EQ(test, plan.mv_addr_16, 0x2000000U);
+	KUNIT_EXPECT_EQ(test, mt6797_h264_working_plan(0x10000001, 0x10008000,
+						       0x10026000, 0x20000000,
+						       &plan), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_h264_working_plan(0x10000000, 0x10008000,
+						       0x10026000, BIT_ULL(32),
+						       &plan), -ERANGE);
+}
+
+static void mt6797_h264_idr_plan_test(struct kunit *test)
+{
+	struct v4l2_ctrl_h264_sps sps = {
+		.log2_max_frame_num_minus4 = 4,
+	};
+	struct v4l2_ctrl_h264_decode_params dec = {
+		.frame_num = 7,
+		.top_field_order_cnt = -2,
+		.bottom_field_order_cnt = 3,
+		.flags = V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC,
+	};
+	struct mt6797_h264_idr_plan plan;
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_idr_plan(&sps, &dec, 0x10000000,
+						   0x20000000, &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.max_frame_num, 256U);
+	KUNIT_EXPECT_EQ(test, plan.frame_num, 7U);
+	KUNIT_EXPECT_EQ(test, plan.poc, 0x3fffeU);
+	KUNIT_EXPECT_EQ(test, plan.top_poc, 0x3fffeU);
+	KUNIT_EXPECT_EQ(test, plan.bottom_poc, 3U);
+	KUNIT_EXPECT_EQ(test, plan.ref_y_addr, 0x10000000U);
+	KUNIT_EXPECT_EQ(test, plan.ref_mv_addr_16, 0x2000000U);
+	dec.flags = 0;
+	KUNIT_EXPECT_EQ(test, mt6797_h264_idr_plan(&sps, &dec, 0x10000000,
+						   0x20000000, &plan), -EINVAL);
+}
+
 static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_sps_pack_test),
 	KUNIT_CASE(mt6797_h264_pps_pack_test),
+	KUNIT_CASE(mt6797_h264_slice2_pack_test),
 	KUNIT_CASE(mt6797_h264_reject_inter_test),
 	KUNIT_CASE(mt6797_h264_1080p_layout_test),
 	KUNIT_CASE(mt6797_h264_min_layout_test),
@@ -159,6 +223,8 @@ static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_reject_barrel_plan_test),
 	KUNIT_CASE(mt6797_h264_output_plan_test),
 	KUNIT_CASE(mt6797_h264_reject_split_output_test),
+	KUNIT_CASE(mt6797_h264_working_plan_test),
+	KUNIT_CASE(mt6797_h264_idr_plan_test),
 	{}
 };
 

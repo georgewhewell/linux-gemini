@@ -1,0 +1,66 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef __MTK_CAMSV_CORE_H__
+#define __MTK_CAMSV_CORE_H__
+
+#include <linux/bits.h>
+#include <linux/types.h>
+
+#define MT6797_CAMSV_WIDTH		2592U
+#define MT6797_CAMSV_HEIGHT		1944U
+#define MT6797_CAMSV_BYTESPERLINE	3240U
+#define MT6797_CAMSV_SIZEIMAGE		(MT6797_CAMSV_BYTESPERLINE * \
+					 MT6797_CAMSV_HEIGHT)
+#define MT6797_CAMSV_MAX_BUFFERS		31U
+
+#define MT6797_CAMSV_REG_MODULE_EN	0x010
+#define MT6797_CAMSV_REG_FMT_SEL		0x014
+#define MT6797_CAMSV_REG_INT_EN		0x018
+#define MT6797_CAMSV_REG_INT_STATUS	0x01c
+#define MT6797_CAMSV_REG_SW_CTL		0x020
+#define MT6797_CAMSV_REG_IMGO_FBC	0x02c
+#define MT6797_CAMSV_REG_CLK_EN		0x030
+#define MT6797_CAMSV_REG_PAK		0x04c
+#define MT6797_CAMSV_REG_FBC_CTL1	0x110
+#define MT6797_CAMSV_REG_FBC_CTL2	0x114
+#define MT6797_CAMSV_REG_FBC_ENQ_ADDR	0x118
+#define MT6797_CAMSV_REG_SPECIAL_FUN_EN	0x218
+#define MT6797_CAMSV_REG_IMGO_BASE_ADDR	0x220
+#define MT6797_CAMSV_REG_IMGO_OFST_ADDR	0x228
+#define MT6797_CAMSV_REG_IMGO_XSIZE	0x230
+#define MT6797_CAMSV_REG_IMGO_YSIZE	0x234
+#define MT6797_CAMSV_REG_IMGO_STRIDE	0x238
+#define MT6797_CAMSV_REG_IMGO_CROP	0x248
+#define MT6797_CAMSV_REG_DMA_RSV1	0x470
+#define MT6797_CAMSV_REG_DMA_RSV6	0x484
+#define MT6797_CAMSV_REG_TG_SEN_MODE	0x500
+#define MT6797_CAMSV_REG_TG_VF_CON	0x504
+#define MT6797_CAMSV_REG_TG_GRAB_PXL	0x508
+#define MT6797_CAMSV_REG_TG_GRAB_LIN	0x50c
+#define MT6797_CAMSV_REG_TG_INTER_ST	0x53c
+#define MT6797_CAMSV_REG_TG_SUB_PERIOD	0x574
+#define MT6797_CAMSV_REG_DMA_FH_EN	0xc00
+
+#define MT6797_CAMSV_INT_SOF		BIT(7)
+#define MT6797_CAMSV_INT_HW_DONE		BIT(10)
+#define MT6797_CAMSV_INT_SW_DONE		BIT(20)
+#define MT6797_CAMSV_INT_ERRORS		(BIT(4) | BIT(5) | BIT(16) | BIT(17))
+#define MT6797_CAMSV_INT_MASK		0x001104b1U
+
+struct mt6797_camsv_reg {
+	u16 offset;
+	u32 value;
+};
+
+struct mt6797_camsv_format {
+	u32 width;
+	u32 height;
+	u32 bytesperline;
+	u32 sizeimage;
+	u32 pixelformat;
+};
+
+int mt6797_camsv_format_validate(const struct mt6797_camsv_format *format);
+unsigned int mt6797_camsv_build_config_plan(struct mt6797_camsv_reg *plan,
+					    unsigned int capacity);
+
+#endif

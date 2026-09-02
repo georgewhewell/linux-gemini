@@ -343,6 +343,9 @@ static int vidioc_try_fmt(struct mtk_vcodec_dec_ctx *ctx, struct v4l2_format *f,
 				(pix_fmt_mp->width * pix_fmt_mp->height) / 2;
 			pix_fmt_mp->plane_fmt[1].bytesperline =
 				pix_fmt_mp->width;
+		} else if (fmt->fourcc == V4L2_PIX_FMT_MS21) {
+			pix_fmt_mp->plane_fmt[0].sizeimage +=
+				pix_fmt_mp->plane_fmt[0].sizeimage / 2;
 		}
 	}
 
@@ -692,10 +695,16 @@ static int vidioc_vdec_g_fmt(struct file *file, void *priv,
 		 * So we just return picinfo yet, and update picinfo in
 		 * stop_streaming hook function
 		 */
-		q_data->sizeimage[0] = ctx->picinfo.fb_sz[0];
-		q_data->sizeimage[1] = ctx->picinfo.fb_sz[1];
+		if (q_data->fmt->num_planes == 1) {
+			q_data->sizeimage[0] = ctx->picinfo.fb_sz[0] +
+						   ctx->picinfo.fb_sz[1];
+		} else {
+			q_data->sizeimage[0] = ctx->picinfo.fb_sz[0];
+			q_data->sizeimage[1] = ctx->picinfo.fb_sz[1];
+		}
 		q_data->bytesperline[0] = ctx->last_decoded_picinfo.buf_w;
-		q_data->bytesperline[1] = ctx->last_decoded_picinfo.buf_w;
+		if (q_data->fmt->num_planes == 2)
+			q_data->bytesperline[1] = ctx->last_decoded_picinfo.buf_w;
 		q_data->coded_width = ctx->picinfo.buf_w;
 		q_data->coded_height = ctx->picinfo.buf_h;
 		ctx->last_decoded_picinfo.cap_fourcc = q_data->fmt->fourcc;
@@ -717,8 +726,10 @@ static int vidioc_vdec_g_fmt(struct file *file, void *priv,
 		pix_mp->pixelformat = q_data->fmt->fourcc;
 		pix_mp->plane_fmt[0].bytesperline = q_data->bytesperline[0];
 		pix_mp->plane_fmt[0].sizeimage = q_data->sizeimage[0];
-		pix_mp->plane_fmt[1].bytesperline = q_data->bytesperline[1];
-		pix_mp->plane_fmt[1].sizeimage = q_data->sizeimage[1];
+		if (pix_mp->num_planes == 2) {
+			pix_mp->plane_fmt[1].bytesperline = q_data->bytesperline[1];
+			pix_mp->plane_fmt[1].sizeimage = q_data->sizeimage[1];
+		}
 
 	} else if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		/*
@@ -740,8 +751,10 @@ static int vidioc_vdec_g_fmt(struct file *file, void *priv,
 		pix_mp->pixelformat = q_data->fmt->fourcc;
 		pix_mp->plane_fmt[0].bytesperline = q_data->bytesperline[0];
 		pix_mp->plane_fmt[0].sizeimage = q_data->sizeimage[0];
-		pix_mp->plane_fmt[1].bytesperline = q_data->bytesperline[1];
-		pix_mp->plane_fmt[1].sizeimage = q_data->sizeimage[1];
+		if (pix_mp->num_planes == 2) {
+			pix_mp->plane_fmt[1].bytesperline = q_data->bytesperline[1];
+			pix_mp->plane_fmt[1].sizeimage = q_data->sizeimage[1];
+		}
 
 		mtk_v4l2_vdec_dbg(1, ctx, "[%d] type=%d state=%d Format information not ready!",
 				  ctx->id, f->type, ctx->state);

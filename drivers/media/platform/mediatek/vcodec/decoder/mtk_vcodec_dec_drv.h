@@ -41,6 +41,7 @@ enum mtk_vcodec_dec_chip_name {
 enum mtk_vdec_format_types {
 	MTK_VDEC_FORMAT_MM21 = 0x20,
 	MTK_VDEC_FORMAT_MT21C = 0x40,
+	MTK_VDEC_FORMAT_MS21 = 0x80,
 	MTK_VDEC_FORMAT_H264_SLICE = 0x100,
 	MTK_VDEC_FORMAT_VP8_FRAME = 0x200,
 	MTK_VDEC_FORMAT_VP9_FRAME = 0x400,

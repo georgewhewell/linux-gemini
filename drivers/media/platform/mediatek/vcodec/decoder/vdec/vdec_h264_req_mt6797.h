@@ -2,6 +2,7 @@
 #ifndef _VDEC_H264_REQ_MT6797_H_
 #define _VDEC_H264_REQ_MT6797_H_
 
+#include <linux/align.h>
 #include <linux/bitfield.h>
 #include <linux/errno.h>
 #include <media/v4l2-ctrls.h>
@@ -35,6 +36,39 @@
 #define MT6797_H264_SH_DIRECT_SPATIAL	BIT(19)
 #define MT6797_H264_SH_REFS_L0		GENMASK(24, 20)
 #define MT6797_H264_SH_REFS_L1		GENMASK(29, 25)
+
+#define MT6797_H264_MAX_WIDTH		1920U
+#define MT6797_H264_MAX_HEIGHT		1088U
+
+struct mt6797_h264_buffer_layout {
+	u32 width;
+	u32 height;
+	u32 luma_size;
+	u32 chroma_size;
+	u32 mv_size;
+	u32 crc_span;
+};
+
+static inline int
+mt6797_h264_buffer_layout(u32 width, u32 height,
+			  struct mt6797_h264_buffer_layout *layout)
+{
+	u32 tile_count;
+
+	if (!width || !height || width > MT6797_H264_MAX_WIDTH ||
+	    height > MT6797_H264_MAX_HEIGHT)
+		return -ERANGE;
+
+	layout->width = ALIGN(width, 16);
+	layout->height = ALIGN(height, 32);
+	tile_count = layout->width / 16 * (layout->height / 32);
+	layout->luma_size = tile_count * 512;
+	layout->chroma_size = layout->luma_size / 2;
+	layout->mv_size = layout->width / 16 * (layout->height / 16) * 64 + 512;
+	layout->crc_span = ALIGN(tile_count * 384, 512);
+
+	return 0;
+}
 
 static inline u32 mt6797_h264_sps_reg(const struct v4l2_ctrl_h264_sps *sps)
 {

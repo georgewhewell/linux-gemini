@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/mediatek,mt6797-ccci.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 CCCI modem transport
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The MT6797 application processor exchanges CCCI frames with the integrated
+  MD1 modem through the on-SoC CLDMA engine. This node describes only the AP
+  transport view: CLDMA registers and interrupt, the shared-memory carveout,
+  and its bus clock.
+
+  Modem firmware, reset, power, watchdog and crash recovery are owned by the
+  remote processor referenced by mediatek,rproc. The transport is a remoteproc
+  subdevice and must not start CLDMA before that remote processor starts. It
+  must quiesce CLDMA before the remote processor stops.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-ccci
+
+  reg:
+    items:
+      - description: AP view of the always-on CLDMA registers
+      - description: AP view of the power-domain CLDMA registers
+
+  reg-names:
+    items:
+      - const: ap-cldma-ao
+      - const: ap-cldma-pdn
+
+  interrupts:
+    maxItems: 1
+
+  interrupt-names:
+    const: cldma
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: cldma
+
+  memory-region:
+    maxItems: 1
+    description: Reserved AP-to-modem CCCI shared-memory window.
+
+  memory-region-names:
+    const: md-shared
+
+  mediatek,rproc:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the MT6797 MD1 remote processor.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
+  - memory-region
+  - memory-region-names
+  - mediatek,rproc
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    reserved-memory {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+
+        ccci_shared: memory@88000000 {
+            reg = <0x88000000 0x600000>;
+            no-map;
+        };
+    };
+
+    md1: remoteproc {
+        compatible = "mediatek,mt6797-md1";
+    };
+
+    modem@10014000 {
+        compatible = "mediatek,mt6797-ccci";
+        reg = <0x10014000 0x1e00>, <0x10219000 0x1e00>;
+        reg-names = "ap-cldma-ao", "ap-cldma-pdn";
+        interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "cldma";
+        clocks = <&infrasys CLK_INFRA_CLDMA>;
+        clock-names = "cldma";
+        memory-region = <&ccci_shared>;
+        memory-region-names = "md-shared";
+        mediatek,rproc = <&md1>;
+    };

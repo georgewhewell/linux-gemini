@@ -3,13 +3,14 @@
  * MediaTek MT6797 direct HEVC Request API backend.
  *
  * The shipping MT6797 path is host-programmed and has no VPU/SCP decoder
- * firmware ABI.  Keep this backend dormant until the remaining inter-frame
- * header-parser operations are implemented and hardware-tested.  In
- * particular, no platform data selects this interface and no HEVC format is
- * advertised yet.
+ * firmware ABI.  Keep this backend dormant until its direct register path,
+ * including the autonomous inter-frame header operations, is hardware-tested.
+ * In particular, no platform data selects this interface and no HEVC format
+ * is advertised yet.
  */
 
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/slab.h>
 #include <media/v4l2-mem2mem.h>
 #include <media/videobuf2-dma-contig.h>
@@ -21,6 +22,7 @@
 
 #define MT6797_HEVC_RESET_POLL_COUNT 50000U
 #define MT6797_HEVC_FETCH_POLL_COUNT 50000U
+#define MT6797_HEVC_SYNTAX_TIMEOUT_US 1500U
 
 struct mt6797_hevc_regs {
 	void __iomem *misc;
@@ -311,6 +313,64 @@ static int mt6797_hevc_init_barrel(struct mt6797_hevc_inst *inst,
 	return 0;
 }
 
+static void mt6797_hevc_shift_barrel(struct mt6797_hevc_inst *inst, u32 bits)
+{
+	/* H265_HAL_HEVCVLDGetBitS: 0x80 shifts 32, n * 4 shifts n bits. */
+	while (bits >= 32) {
+		readl(inst->regs.hevc + 0x80);
+		bits -= 32;
+	}
+	if (bits)
+		readl(inst->regs.hevc + bits * 4);
+}
+
+static int
+mt6797_hevc_run_header_plan(struct mt6797_hevc_inst *inst,
+			    const struct mt6797_hevc_header_plan *plan)
+{
+	u32 cursor = 0, value;
+	int ret;
+
+	if (!plan || !plan->header_end_bit)
+		return -EINVAL;
+	if (plan->rpl_start_bit != MT6797_HEVC_HEADER_CMD_NONE) {
+		if (plan->rpl_start_bit < cursor ||
+		    plan->rpl_end_bit < plan->rpl_start_bit ||
+		    plan->num_pic_total_curr < 2)
+			return -EINVAL;
+		mt6797_hevc_shift_barrel(inst, plan->rpl_start_bit - cursor);
+		/* H265_HAL_RPL_Modification consumes ref_pic_lists_modification(). */
+		writel(mt6797_hevc_rpl_config(plan->num_pic_total_curr),
+		       inst->regs.hevc + 0xcc);
+		writel(BIT(4), inst->regs.hevc + 0x94);
+		ret = readl_poll_timeout_atomic(inst->regs.hevc + 0x94, value,
+						!(value & BIT(4)), 1,
+						MT6797_HEVC_SYNTAX_TIMEOUT_US);
+		if (ret)
+			return ret;
+		cursor = plan->rpl_end_bit;
+	}
+	if (plan->weight_start_bit != MT6797_HEVC_HEADER_CMD_NONE) {
+		if (plan->weight_start_bit < cursor ||
+		    plan->weight_end_bit < plan->weight_start_bit)
+			return -EINVAL;
+		mt6797_hevc_shift_barrel(inst, plan->weight_start_bit - cursor);
+		/* H265_HAL_PredWeightTable consumes pred_weight_table(). */
+		writel(BIT(0), inst->regs.hevc + 0x94);
+		ret = readl_poll_timeout_atomic(inst->regs.hevc + 0x94, value,
+						!(value & BIT(0)), 1,
+						MT6797_HEVC_SYNTAX_TIMEOUT_US);
+		if (ret)
+			return ret;
+		cursor = plan->weight_end_bit;
+	}
+	if (plan->header_end_bit < cursor)
+		return -EINVAL;
+	mt6797_hevc_shift_barrel(inst, plan->header_end_bit - cursor);
+
+	return 0;
+}
+
 static void
 mt6797_hevc_program_output(struct mt6797_hevc_inst *inst,
 			   const struct v4l2_ctrl_hevc_sps *sps,
@@ -497,10 +557,7 @@ mt6797_hevc_validate_request(const struct v4l2_ctrl_hevc_sps *sps,
 	u64 unsupported_pps;
 	int ret;
 
-	unsupported_pps = V4L2_HEVC_PPS_FLAG_WEIGHTED_PRED |
-			  V4L2_HEVC_PPS_FLAG_WEIGHTED_BIPRED |
-			  V4L2_HEVC_PPS_FLAG_LISTS_MODIFICATION_PRESENT |
-			  V4L2_HEVC_PPS_FLAG_TILES_ENABLED |
+	unsupported_pps = V4L2_HEVC_PPS_FLAG_TILES_ENABLED |
 			  V4L2_HEVC_PPS_FLAG_ENTROPY_CODING_SYNC_ENABLED;
 	ret = mt6797_hevc_validate_frame_slices(slices, slice_count, ctb_count);
 	if (ret)
@@ -554,6 +611,7 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	struct mt6797_hevc_inst *inst = h_vdec;
 	const struct v4l2_ctrl_hevc_decode_params *dec;
 	const struct v4l2_ctrl_hevc_ext_sps_st_rps *ext_sps_rps = NULL;
+	const struct v4l2_ctrl_hevc_ext_sps_lt_rps *ext_sps_lt_rps = NULL;
 	const struct v4l2_ctrl_hevc_scaling_matrix *scaling = NULL;
 	const struct mt6797_hevc_rps_set *sps_rps = NULL;
 	const struct v4l2_ctrl_hevc_sps *sps;
@@ -568,12 +626,14 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	struct mt6797_hevc_sps_regs sps_regs;
 	struct mt6797_hevc_pps_regs pps_regs;
 	struct mt6797_hevc_rps_regs rps_regs;
+	struct mt6797_hevc_header_plan header;
 	struct mt6797_hevc_slice_regs slice_regs;
 	struct mt6797_hevc_tile_regs tiles;
 	struct mtk_video_dec_buf *dst_buf, *src_buf;
 	struct mtk_vcodec_mem staged_bs;
 	struct vdec_fb *fb;
 	const u32 ext_rps_id = V4L2_CID_STATELESS_HEVC_EXT_SPS_ST_RPS;
+	const u32 ext_lt_rps_id = V4L2_CID_STATELESS_HEVC_EXT_SPS_LT_RPS;
 	const u32 scaling_id = V4L2_CID_STATELESS_HEVC_SCALING_MATRIX;
 	unsigned int slice_count;
 	int ret;
@@ -618,8 +678,14 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 			return ret;
 		sps_rps = inst->sps_rps;
 	}
-	ret = mt6797_hevc_slice_rps_regs(bs->va, bs->size, sps, pps,
-					 slices, dec, sps_rps, &rps_regs);
+	if (sps->num_long_term_ref_pics_sps) {
+		ext_sps_lt_rps = mt6797_hevc_get_ctrl(inst, ext_lt_rps_id);
+		if (IS_ERR(ext_sps_lt_rps))
+			return PTR_ERR(ext_sps_lt_rps);
+	}
+	ret = mt6797_hevc_slice_header_parse(bs->va, bs->size, sps, pps,
+					    slices, dec, sps_rps, ext_sps_lt_rps,
+					    &rps_regs, &header);
 	if (ret)
 		return ret;
 
@@ -641,12 +707,11 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 					&layout);
 	if (ret)
 		return ret;
-	ret = mt6797_hevc_stage_slice(inst, bs, slices->data_byte_offset,
-				      &staged_bs);
+	ret = mt6797_hevc_stage_slice(inst, bs, 0, &staged_bs);
 	if (ret)
 		return ret;
 	staged_slice = *slices;
-	staged_slice.data_byte_offset = 0;
+	staged_slice.data_byte_offset = header.payload_offset;
 	ret = mt6797_hevc_barrel_plan(staged_bs.dma_addr, staged_bs.size,
 				      &staged_slice, &barrel);
 	if (ret)
@@ -692,12 +757,18 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	ret = mt6797_hevc_init_barrel(inst, &barrel);
 	if (ret)
 		return ret;
+	/* The autonomous syntax ops consume the already-programmed picture state. */
+	mt6797_hevc_program_syntax(inst, &sps_regs, &pps_regs, &rps_regs,
+				   &slice_regs, &tiles);
+	ret = mt6797_hevc_run_header_plan(inst, &header);
+	if (ret) {
+		mt6797_hevc_safe_break(inst);
+		return ret;
+	}
 	mt6797_hevc_program_refs(inst, &refs);
 	mt6797_hevc_program_output(inst, sps, &sps_regs, &output,
 				   inst->mv[mv_slots.current_slot].dma_addr);
 	mt6797_hevc_program_scaling(inst, scaling);
-	mt6797_hevc_program_syntax(inst, &sps_regs, &pps_regs, &rps_regs,
-				   &slice_regs, &tiles);
 	ret = mt6797_hevc_start(inst, sps_regs.ctb_width, sps_regs.ctb_height);
 	if (ret)
 		return ret;

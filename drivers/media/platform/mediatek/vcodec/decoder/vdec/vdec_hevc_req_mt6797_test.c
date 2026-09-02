@@ -32,6 +32,36 @@ static void mt6797_hevc_test_put_ue(struct mt6797_hevc_test_bits *bits,
 	mt6797_hevc_test_put_bits(bits, code, width);
 }
 
+static void mt6797_hevc_test_put_se(struct mt6797_hevc_test_bits *bits,
+				    s32 value)
+{
+	u32 code = value > 0 ? 2 * value - 1 : -2 * value;
+
+	mt6797_hevc_test_put_ue(bits, code);
+}
+
+static void mt6797_hevc_test_byte_align(struct mt6797_hevc_test_bits *bits)
+{
+	mt6797_hevc_test_put_bits(bits, 1, 1);
+	while (bits->bit & 7)
+		mt6797_hevc_test_put_bits(bits, 0, 1);
+}
+
+static void mt6797_hevc_bitreader_position_test(struct kunit *test)
+{
+	const u8 data[] = { 0, 0, 3, 1 };
+	struct mt6797_hevc_bitreader br = {
+		.data = data,
+		.size = sizeof(data),
+	};
+	u32 value;
+
+	KUNIT_ASSERT_EQ(test, mt6797_hevc_get_bits(&br, 24, &value), 0);
+	KUNIT_EXPECT_EQ(test, value, 1U);
+	KUNIT_EXPECT_EQ(test, br.raw_bits, 32U);
+	KUNIT_EXPECT_EQ(test, br.rbsp_bits, 24U);
+}
+
 static void mt6797_hevc_sps_regs_test(struct kunit *test)
 {
 	struct v4l2_ctrl_hevc_pps pps = {
@@ -548,6 +578,7 @@ static void mt6797_hevc_sps_rps_sets_test(struct kunit *test)
 		},
 		{
 			.abs_delta_rps_minus1 = 0,
+			.used_by_curr_pic = BIT(2),
 			.use_delta_flag = GENMASK(2, 0),
 			.flags = V4L2_HEVC_EXT_SPS_ST_RPS_FLAG_INTER_REF_PIC_SET_PRED,
 		},
@@ -563,6 +594,11 @@ static void mt6797_hevc_sps_rps_sets_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, sets[1].num_positive_pics, (u8)2);
 	KUNIT_EXPECT_EQ(test, sets[1].delta_poc_s1[0], (s16)1);
 	KUNIT_EXPECT_EQ(test, sets[1].delta_poc_s1[1], (s16)3);
+	KUNIT_EXPECT_EQ(test, sets[1].used_by_curr_pic, BIT(0));
+
+	rps[1].used_by_curr_pic = BIT(3);
+	KUNIT_EXPECT_EQ(test, mt6797_hevc_sps_rps_sets(rps, 2, sets), -EINVAL);
+	rps[1].used_by_curr_pic = BIT(2);
 
 	rps[0].flags = V4L2_HEVC_EXT_SPS_ST_RPS_FLAG_INTER_REF_PIC_SET_PRED;
 	KUNIT_EXPECT_EQ(test, mt6797_hevc_sps_rps_sets(rps, 1, sets), -EINVAL);
@@ -638,6 +674,7 @@ static void mt6797_hevc_slice_rps_regs_test(struct kunit *test)
 	mt6797_hevc_test_put_ue(&bits, 0);
 	mt6797_hevc_test_put_ue(&bits, V4L2_HEVC_SLICE_TYPE_P);
 	mt6797_hevc_test_put_bits(&bits, 1, 4);
+	mt6797_hevc_test_put_bits(&bits, 0, 1);
 	mt6797_hevc_test_put_ue(&bits, 1);
 	mt6797_hevc_test_put_ue(&bits, 0);
 	mt6797_hevc_test_put_ue(&bits, 0);
@@ -685,7 +722,94 @@ static void mt6797_hevc_slice_rps_regs_test(struct kunit *test)
 			-EINVAL);
 }
 
+static void mt6797_hevc_inter_header_plan_test(struct kunit *test)
+{
+	struct v4l2_ctrl_hevc_slice_params slice = {
+		.nal_unit_type = 1,
+		.nuh_temporal_id_plus1 = 1,
+		.slice_type = V4L2_HEVC_SLICE_TYPE_P,
+		.slice_pic_order_cnt = 1,
+		.pred_weight_table = {
+			.delta_luma_weight_l0 = { 1 },
+			.luma_offset_l0 = { -1 },
+			.delta_chroma_weight_l0 = { { 0, -1 } },
+			.chroma_offset_l0 = { { 0, 1 } },
+		},
+	};
+	struct v4l2_ctrl_hevc_decode_params dec = {
+		.pic_order_cnt_val = 1,
+		.num_poc_st_curr_before = 2,
+	};
+	struct v4l2_ctrl_hevc_sps sps = {
+		.chroma_format_idc = 1,
+	};
+	struct v4l2_ctrl_hevc_pps pps = {
+		.flags = V4L2_HEVC_PPS_FLAG_LISTS_MODIFICATION_PRESENT |
+			 V4L2_HEVC_PPS_FLAG_WEIGHTED_PRED,
+	};
+	struct mt6797_hevc_rps_regs regs;
+	struct mt6797_hevc_header_plan plan;
+	struct mt6797_hevc_test_bits bits = {
+		.data = { 0, 0, 1, 0x02, 1 },
+		.bit = 40,
+	};
+
+	mt6797_hevc_test_put_bits(&bits, 1, 1); /* first slice */
+	mt6797_hevc_test_put_ue(&bits, 0); /* PPS id */
+	mt6797_hevc_test_put_ue(&bits, V4L2_HEVC_SLICE_TYPE_P);
+	mt6797_hevc_test_put_bits(&bits, 1, 4); /* POC LSB */
+	mt6797_hevc_test_put_bits(&bits, 0, 1); /* embedded short-term RPS */
+	mt6797_hevc_test_put_ue(&bits, 2); /* NumNegativePics */
+	mt6797_hevc_test_put_ue(&bits, 0); /* NumPositivePics */
+	mt6797_hevc_test_put_ue(&bits, 0); /* delta_poc_s0_minus1 */
+	mt6797_hevc_test_put_bits(&bits, 1, 1); /* used_by_curr_pic_s0 */
+	mt6797_hevc_test_put_ue(&bits, 0); /* delta_poc_s0_minus1 */
+	mt6797_hevc_test_put_bits(&bits, 1, 1); /* used_by_curr_pic_s0 */
+	mt6797_hevc_test_put_bits(&bits, 0, 1); /* ref count override */
+	mt6797_hevc_test_put_bits(&bits, 1, 1); /* modify L0 */
+	mt6797_hevc_test_put_bits(&bits, 0, 1); /* list_entry_l0 */
+	mt6797_hevc_test_put_ue(&bits, 0); /* luma_log2_weight_denom */
+	mt6797_hevc_test_put_se(&bits, 0); /* delta chroma denom */
+	mt6797_hevc_test_put_bits(&bits, 1, 1); /* luma weight L0 */
+	mt6797_hevc_test_put_bits(&bits, 1, 1); /* chroma weight L0 */
+	mt6797_hevc_test_put_se(&bits, 1);
+	mt6797_hevc_test_put_se(&bits, -1);
+	mt6797_hevc_test_put_se(&bits, 0);
+	mt6797_hevc_test_put_se(&bits, 0);
+	mt6797_hevc_test_put_se(&bits, -1);
+	mt6797_hevc_test_put_se(&bits, 1);
+	mt6797_hevc_test_put_ue(&bits, 0); /* five_minus_max_num_merge_cand */
+	mt6797_hevc_test_put_se(&bits, 0); /* slice_qp_delta */
+	mt6797_hevc_test_byte_align(&bits);
+	slice.data_byte_offset = bits.bit / 8;
+	slice.bit_size = bits.bit + 8;
+
+	KUNIT_ASSERT_EQ(test,
+		mt6797_hevc_slice_header_parse(bits.data, sizeof(bits.data),
+						&sps, &pps, &slice, &dec, NULL, NULL,
+						&regs, &plan),
+		0);
+	KUNIT_EXPECT_EQ(test, regs.vld_0c8, 0x00000200U);
+	KUNIT_EXPECT_EQ(test, plan.payload_offset, 5U);
+	KUNIT_EXPECT_EQ(test, plan.rpl_start_bit, 19U);
+	KUNIT_EXPECT_EQ(test, plan.rpl_end_bit, 21U);
+	KUNIT_EXPECT_EQ(test, plan.weight_start_bit, 21U);
+	KUNIT_EXPECT_EQ(test, plan.weight_end_bit, 35U);
+	KUNIT_EXPECT_EQ(test, plan.header_end_bit, 40U);
+	KUNIT_EXPECT_EQ(test, plan.num_pic_total_curr, (u8)2);
+	KUNIT_EXPECT_EQ(test, mt6797_hevc_rpl_config(2), 0x12U);
+	KUNIT_EXPECT_EQ(test, mt6797_hevc_rpl_config(16), 0x40U);
+
+	slice.pred_weight_table.luma_offset_l0[0] = 0;
+	KUNIT_EXPECT_EQ(test,
+		mt6797_hevc_slice_header_parse(bits.data, sizeof(bits.data),
+						&sps, &pps, &slice, &dec, NULL, NULL,
+						&regs, &plan),
+		-EINVAL);
+}
+
 static struct kunit_case mt6797_hevc_test_cases[] = {
+	KUNIT_CASE(mt6797_hevc_bitreader_position_test),
 	KUNIT_CASE(mt6797_hevc_sps_regs_test),
 	KUNIT_CASE(mt6797_hevc_main10_sps_regs_test),
 	KUNIT_CASE(mt6797_hevc_pps_regs_test),
@@ -706,6 +830,7 @@ static struct kunit_case mt6797_hevc_test_cases[] = {
 	KUNIT_CASE(mt6797_hevc_frame_slices_test),
 	KUNIT_CASE(mt6797_hevc_sps_rps_sets_test),
 	KUNIT_CASE(mt6797_hevc_slice_rps_regs_test),
+	KUNIT_CASE(mt6797_hevc_inter_header_plan_test),
 	{},
 };
 

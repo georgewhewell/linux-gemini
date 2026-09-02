@@ -126,6 +126,12 @@ bool mt6797_consys_stp_session_lease_active(
 int mt6797_consys_stp_session_bind_gnss(
 		const struct mt6797_consys_stp_session_lease *lease,
 		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context);
+/* Submit one channel-two payload only from the bound GNSS endpoint. */
+int
+mt6797_consys_stp_session_transmit_gnss(
+	const struct mt6797_consys_stp_session_lease *lease,
+	mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context,
+	const u8 *payload, size_t payload_length);
 
 /*
  * Bind one HCI endpoint to STP channel zero without exposing STP framing.

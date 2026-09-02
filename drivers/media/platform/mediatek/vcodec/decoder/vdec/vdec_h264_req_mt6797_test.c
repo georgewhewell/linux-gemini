@@ -121,6 +121,20 @@ static void mt6797_h264_reject_layout_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_h264_buffer_layout(1920, 1089, &layout), -ERANGE);
 }
 
+static void mt6797_h264_staging_size_test(struct kunit *test)
+{
+	size_t allocation_size;
+
+	KUNIT_ASSERT_EQ(test, mt6797_h264_staging_size(1000, &allocation_size), 0);
+	KUNIT_EXPECT_EQ(test, allocation_size, (size_t)1280);
+	KUNIT_EXPECT_EQ(test, mt6797_h264_staging_size(0, &allocation_size),
+			-EINVAL);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_h264_staging_size(SIZE_MAX - MT6797_H264_BS_GUARD + 1,
+						 &allocation_size),
+			-EOVERFLOW);
+}
+
 static void mt6797_h264_barrel_plan_test(struct kunit *test)
 {
 	struct mt6797_h264_barrel_plan plan;
@@ -505,6 +519,7 @@ static struct kunit_case mt6797_h264_cases[] = {
 	KUNIT_CASE(mt6797_h264_1080p_layout_test),
 	KUNIT_CASE(mt6797_h264_min_layout_test),
 	KUNIT_CASE(mt6797_h264_reject_layout_test),
+	KUNIT_CASE(mt6797_h264_staging_size_test),
 	KUNIT_CASE(mt6797_h264_barrel_plan_test),
 	KUNIT_CASE(mt6797_h264_reject_barrel_plan_test),
 	KUNIT_CASE(mt6797_h264_output_plan_test),

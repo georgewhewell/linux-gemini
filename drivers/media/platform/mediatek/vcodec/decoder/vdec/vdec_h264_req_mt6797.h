@@ -61,6 +61,7 @@
 #define MT6797_H264_DMA_ALIGN		512U
 #define MT6797_H264_BS_ALIGN		64U
 #define MT6797_H264_BS_GUARD		0x100U
+#define MT6797_H264_END_MARKER_SIZE	5U
 #define MT6797_H264_NAL_HEADER_BITS	8U
 #define MT6797_H264_BARREL_MAX_SHIFT	32U
 #define MT6797_H264_MV_BUFFER_COUNT	17U
@@ -177,6 +178,24 @@ struct mt6797_h264_start_plan {
 	u32 mb_count;
 	bool constrained_intra_pred;
 };
+
+static inline int mt6797_h264_staging_size(size_t payload_size,
+					   size_t *allocation_size)
+{
+	size_t guarded_size;
+
+	if (!payload_size)
+		return -EINVAL;
+	if (check_add_overflow(payload_size, (size_t)MT6797_H264_BS_GUARD,
+			       &guarded_size))
+		return -EOVERFLOW;
+
+	*allocation_size = ALIGN(guarded_size, MT6797_H264_BS_ALIGN);
+	if (*allocation_size < guarded_size)
+		return -EOVERFLOW;
+
+	return 0;
+}
 
 static inline int
 mt6797_h264_buffer_layout(u32 width, u32 height,

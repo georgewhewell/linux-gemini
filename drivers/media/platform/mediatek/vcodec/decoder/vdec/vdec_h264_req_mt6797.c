@@ -20,6 +20,7 @@ struct mt6797_h264_inst {
 	struct mtk_vcodec_mem prediction;
 	struct mtk_vcodec_mem pp;
 	struct mtk_vcodec_mem ld;
+	struct mtk_vcodec_mem bitstream;
 	struct mtk_vcodec_mem mv[MT6797_H264_MV_BUFFER_COUNT];
 	struct mt6797_h264_mv_slot mv_slots[MT6797_H264_MV_BUFFER_COUNT];
 	u32 mv_size;
@@ -98,6 +99,37 @@ static int mt6797_h264_alloc_mem(struct mt6797_h264_inst *inst,
 	return ret;
 }
 
+static int mt6797_h264_stage_bitstream(struct mt6797_h264_inst *inst,
+				       const struct mtk_vcodec_mem *source,
+				       struct mtk_vcodec_mem *staged)
+{
+	static const u8 end_marker[MT6797_H264_END_MARKER_SIZE] = {
+		0x00, 0x00, 0x00, 0x01, 0x09,
+	};
+	size_t allocation_size;
+	int ret;
+
+	ret = mt6797_h264_staging_size(source->size, &allocation_size);
+	if (ret)
+		return ret;
+	if (inst->bitstream.size < allocation_size) {
+		mt6797_h264_free_mem(inst, &inst->bitstream);
+		ret = mt6797_h264_alloc_mem(inst, &inst->bitstream,
+					    allocation_size);
+		if (ret)
+			return ret;
+	}
+
+	memcpy(inst->bitstream.va, source->va, source->size);
+	memset(inst->bitstream.va + source->size, 0, MT6797_H264_BS_GUARD);
+	memcpy(inst->bitstream.va + source->size, end_marker,
+	       sizeof(end_marker));
+
+	*staged = inst->bitstream;
+	staged->size = source->size;
+	return 0;
+}
+
 static int mt6797_h264_alloc_fixed(struct mt6797_h264_inst *inst)
 {
 	int ret;
@@ -131,6 +163,7 @@ static int mt6797_h264_alloc_mv(struct mt6797_h264_inst *inst, u32 size)
 		return 0;
 
 	mt6797_h264_free_mv(inst);
+	mt6797_h264_free_mem(inst, &inst->bitstream);
 	for (i = 0; i < ARRAY_SIZE(inst->mv); i++) {
 		ret = mt6797_h264_alloc_mem(inst, &inst->mv[i], size);
 		if (ret) {
@@ -193,6 +226,7 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	struct mt6797_h264_ref_buffer ref_buffers[V4L2_H264_NUM_DPB_ENTRIES] = {};
 	struct mt6797_h264_start_plan start;
 	struct mt6797_h264_working_plan working;
+	struct mtk_vcodec_mem staged_bs;
 	struct vdec_fb *fb;
 	u64 mv_addrs[MT6797_H264_MV_BUFFER_COUNT];
 	u32 sps_reg, pps_reg, slice_reg, slice2_reg;
@@ -219,7 +253,10 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	ret = mt6797_h264_validate_request(sps, pps, slice, dec);
 	if (ret)
 		return ret;
-	ret = mt6797_h264_barrel_plan(bs->dma_addr, bs->size,
+	ret = mt6797_h264_stage_bitstream(inst, bs, &staged_bs);
+	if (ret)
+		return ret;
+	ret = mt6797_h264_barrel_plan(staged_bs.dma_addr, staged_bs.size,
 				      slice->header_bit_size,
 				      &barrel);
 	if (ret)

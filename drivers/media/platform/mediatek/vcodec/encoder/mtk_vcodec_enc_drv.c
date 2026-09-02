@@ -18,6 +18,7 @@
 
 #include "mtk_vcodec_enc.h"
 #include "mtk_vcodec_enc_pm.h"
+#include "venc_drv_if.h"
 #include "../common/mtk_vcodec_intr.h"
 
 static const struct mtk_video_fmt mtk_video_formats_output[] = {
@@ -40,6 +41,15 @@ static const struct mtk_video_fmt mtk_video_formats_output[] = {
 		.fourcc = V4L2_PIX_FMT_YVU420M,
 		.type = MTK_FMT_FRAME,
 		.num_planes = 3,
+	},
+};
+
+/* MT6797 derives the chroma address from one contiguous NV12 allocation. */
+static const struct mtk_video_fmt mt6797_video_formats_output[] = {
+	{
+		.fourcc = V4L2_PIX_FMT_NV12,
+		.type = MTK_FMT_FRAME,
+		.num_planes = 1,
 	},
 };
 
@@ -399,6 +409,17 @@ static const struct mtk_vcodec_enc_pdata mt8173_avc_pdata = {
 	.core_id = VENC_SYS,
 };
 
+static const struct mtk_vcodec_enc_pdata mt6797_pdata = {
+	.capture_formats = mtk_video_formats_capture_h264,
+	.num_capture_formats = ARRAY_SIZE(mtk_video_formats_capture_h264),
+	.output_formats = mt6797_video_formats_output,
+	.num_output_formats = ARRAY_SIZE(mt6797_video_formats_output),
+	.min_bitrate = 64,
+	.max_bitrate = 60000000,
+	.core_id = VENC_SYS,
+	.h264_if = &mtk_venc_6797_h264_if,
+};
+
 static const struct mtk_vcodec_enc_pdata mt8173_vp8_pdata = {
 	.capture_formats = mtk_video_formats_capture_vp8,
 	.num_capture_formats = ARRAY_SIZE(mtk_video_formats_capture_vp8),
@@ -455,6 +476,7 @@ static const struct mtk_vcodec_enc_pdata mt8195_pdata = {
 };
 
 static const struct of_device_id mtk_vcodec_enc_match[] = {
+	{.compatible = "mediatek,mt6797-vcodec-enc", .data = &mt6797_pdata},
 	{.compatible = "mediatek,mt8173-vcodec-enc",
 			.data = &mt8173_avc_pdata},
 	{.compatible = "mediatek,mt8173-vcodec-enc-vp8",

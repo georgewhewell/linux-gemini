@@ -335,6 +335,16 @@ static int vidioc_try_fmt_out(struct mtk_vcodec_enc_ctx *ctx, struct v4l2_format
 			  pix_fmt_mp->plane_fmt[1].sizeimage);
 
 	pix_fmt_mp->num_planes = fmt->num_planes;
+	if (fmt->fourcc == V4L2_PIX_FMT_NV12) {
+		pix_fmt_mp->plane_fmt[0].sizeimage =
+			pix_fmt_mp->width * pix_fmt_mp->height * 3 / 2;
+		pix_fmt_mp->plane_fmt[0].bytesperline = pix_fmt_mp->width;
+		pix_fmt_mp->plane_fmt[1] = (struct v4l2_plane_pix_format) { };
+		pix_fmt_mp->plane_fmt[2] = (struct v4l2_plane_pix_format) { };
+		pix_fmt_mp->flags = 0;
+		return 0;
+	}
+
 	pix_fmt_mp->plane_fmt[0].sizeimage =
 			pix_fmt_mp->width * pix_fmt_mp->height +
 			((ALIGN(pix_fmt_mp->width, 16) * 2) * 16);
@@ -377,6 +387,7 @@ static void mtk_venc_set_param(struct mtk_vcodec_enc_ctx *ctx,
 		param->input_yuv_fmt = VENC_YUV_FORMAT_YV12;
 		break;
 	case V4L2_PIX_FMT_NV12M:
+	case V4L2_PIX_FMT_NV12:
 		param->input_yuv_fmt = VENC_YUV_FORMAT_NV12;
 		break;
 	case V4L2_PIX_FMT_NV21M:
@@ -1275,14 +1286,20 @@ void mtk_vcodec_enc_set_default_params(struct mtk_vcodec_enc_ctx *ctx)
 		(q_data->coded_height + 32) <= MTK_VENC_HD_MAX_H)
 		q_data->coded_height += 32;
 
-	q_data->sizeimage[0] =
-		q_data->coded_width * q_data->coded_height+
-		((ALIGN(q_data->coded_width, 16) * 2) * 16);
-	q_data->bytesperline[0] = q_data->coded_width;
-	q_data->sizeimage[1] =
-		(q_data->coded_width * q_data->coded_height) / 2 +
-		(ALIGN(q_data->coded_width, 16) * 16);
-	q_data->bytesperline[1] = q_data->coded_width;
+	if (q_data->fmt->fourcc == V4L2_PIX_FMT_NV12) {
+		q_data->sizeimage[0] = q_data->coded_width *
+			q_data->coded_height * 3 / 2;
+		q_data->bytesperline[0] = q_data->coded_width;
+	} else {
+		q_data->sizeimage[0] = q_data->coded_width *
+			q_data->coded_height +
+			((ALIGN(q_data->coded_width, 16) * 2) * 16);
+		q_data->bytesperline[0] = q_data->coded_width;
+		q_data->sizeimage[1] =
+			(q_data->coded_width * q_data->coded_height) / 2 +
+			(ALIGN(q_data->coded_width, 16) * 16);
+		q_data->bytesperline[1] = q_data->coded_width;
+	}
 
 	q_data = &ctx->q_data[MTK_Q_DATA_DST];
 	memset(q_data, 0, sizeof(struct mtk_q_data));

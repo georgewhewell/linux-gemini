@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/* Opt-in passive MD1 LK handoff validation for the Planet Gemini PDA. */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+/*
+ * This only binds the no-write handoff validator. It does not release MD1,
+ * start CLDMA, request a radio, or modify the LK/secure-world MPU state.
+ */
+&md1 {
+	status = "okay";
+};

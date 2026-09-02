@@ -791,9 +791,13 @@ mt6797_hevc_slice_header_parse(const u8 *data, size_t size,
 	    dec->pic_order_cnt_val != slice->slice_pic_order_cnt)
 		return -EINVAL;
 
-	ret = mt6797_hevc_get_bits(&br, 1, &value);
-	if (ret)
-		return ret;
+	if (sps->num_short_term_ref_pic_sets) {
+		ret = mt6797_hevc_get_bits(&br, 1, &value);
+		if (ret)
+			return ret;
+	} else {
+		value = 0;
+	}
 	if (value) {
 		if (!sps->num_short_term_ref_pic_sets || !sps_sets)
 			return -EINVAL;

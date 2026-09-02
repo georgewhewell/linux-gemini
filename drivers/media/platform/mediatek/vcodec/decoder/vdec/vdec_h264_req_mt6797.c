@@ -9,6 +9,7 @@
  */
 
 #include <linux/slab.h>
+#include <media/v4l2-h264.h>
 
 #include "../mtk_vcodec_dec.h"
 #include "../vdec_drv_base.h"
@@ -212,9 +213,13 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 {
 	struct mt6797_h264_inst *inst = h_vdec;
 	const struct v4l2_ctrl_h264_decode_params *dec;
-	const struct v4l2_ctrl_h264_slice_params *slice;
 	const struct v4l2_ctrl_h264_sps *sps;
 	const struct v4l2_ctrl_h264_pps *pps;
+	struct v4l2_ctrl_h264_slice_params slice_params;
+	struct v4l2_h264_reflist_builder reflist_builder;
+	struct v4l2_ctrl_h264_slice_params *slice = &slice_params;
+	struct v4l2_h264_reference *ref_list0 = slice_params.ref_pic_list0;
+	struct v4l2_h264_reference *ref_list1 = slice_params.ref_pic_list1;
 	struct mt6797_h264_barrel_plan barrel;
 	struct mt6797_h264_buffer_layout layout;
 	struct mt6797_h264_idr_plan idr;
@@ -243,13 +248,21 @@ static int mt6797_h264_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	pps = mtk_vdec_h264_get_ctrl_ptr(inst->ctx, V4L2_CID_STATELESS_H264_PPS);
 	if (IS_ERR(pps))
 		return PTR_ERR(pps);
-	slice = mtk_vdec_h264_get_ctrl_ptr(inst->ctx, V4L2_CID_STATELESS_H264_SLICE_PARAMS);
-	if (IS_ERR(slice))
-		return PTR_ERR(slice);
 	dec = mtk_vdec_h264_get_ctrl_ptr(inst->ctx, V4L2_CID_STATELESS_H264_DECODE_PARAMS);
 	if (IS_ERR(dec))
 		return PTR_ERR(dec);
 
+	ret = mt6797_h264_parse_frame_headers(bs->va, bs->size, sps, pps, dec, slice);
+	if (ret)
+		return ret;
+	if (slice->slice_type == V4L2_H264_SLICE_TYPE_P ||
+	    slice->slice_type == V4L2_H264_SLICE_TYPE_B) {
+		v4l2_h264_init_reflist_builder(&reflist_builder, dec, sps, dec->dpb);
+		if (slice->slice_type == V4L2_H264_SLICE_TYPE_P)
+			v4l2_h264_build_p_ref_list(&reflist_builder, ref_list0);
+		else
+			v4l2_h264_build_b_ref_lists(&reflist_builder, ref_list0, ref_list1);
+	}
 	ret = mt6797_h264_validate_request(sps, pps, slice, dec);
 	if (ret)
 		return ret;

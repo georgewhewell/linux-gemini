@@ -21,8 +21,11 @@
 #define IS_VDEC_INNER_RACING(capability) ((capability) & MTK_VCODEC_INNER_RACING)
 #define IS_VDEC_SUPPORT_EXT(capability) ((capability) & MTK_VDEC_IS_SUPPORT_EXT)
 
+struct vdec_common_if;
+
 enum mtk_vcodec_dec_chip_name {
 	MTK_VDEC_INVAL = 0,
+	MTK_VDEC_MT6797 = 6797,
 	MTK_VDEC_MT8173 = 8173,
 	MTK_VDEC_MT8183 = 8183,
 	MTK_VDEC_MT8186 = 8186,
@@ -107,6 +110,9 @@ struct vdec_pic_info {
  *
  * @is_subdev_supported: whether support parent-node architecture(subdev)
  * @uses_stateless_api: whether the decoder uses the stateless API with requests
+ * @uses_fw: whether the decoder requires a VPU or SCP firmware endpoint
+ * @dec_capability: fixed capability mask for firmwareless decoders
+ * @h264_slice_if: optional direct H.264 Request API backend
  */
 struct mtk_vcodec_dec_pdata {
 	void (*init_vdec_params)(struct mtk_vcodec_dec_ctx *ctx);
@@ -128,6 +134,9 @@ struct mtk_vcodec_dec_pdata {
 
 	bool is_subdev_supported;
 	bool uses_stateless_api;
+	bool uses_fw;
+	u32 dec_capability;
+	const struct vdec_common_if *h264_slice_if;
 };
 
 /**

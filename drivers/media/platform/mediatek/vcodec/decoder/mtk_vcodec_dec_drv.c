@@ -246,7 +246,7 @@ static int fops_vcodec_open(struct file *file)
 	ctx->empty_flush_buf.vb.vb2_buf.vb2_queue = src_vq;
 	mtk_vcodec_dec_set_default_params(ctx);
 
-	if (v4l2_fh_is_singular(&ctx->fh)) {
+	if (v4l2_fh_is_singular(&ctx->fh) && dev->vdec_pdata->uses_fw) {
 		/*
 		 * Does nothing if firmware was already loaded.
 		 */
@@ -265,6 +265,8 @@ static int fops_vcodec_open(struct file *file)
 
 		mtk_v4l2_vdec_dbg(0, ctx, "decoder capability %x", dev->dec_capability);
 	}
+	if (!dev->vdec_pdata->uses_fw)
+		dev->dec_capability = dev->vdec_pdata->dec_capability;
 
 	ctx->dev->vdec_pdata->init_vdec_params(ctx);
 
@@ -337,6 +339,8 @@ static void mtk_vcodec_dec_get_chip_name(struct mtk_vcodec_dec_dev *vdec_dev)
 
 	if (of_device_is_compatible(dev->of_node, "mediatek,mt8173-vcodec-dec"))
 		vdec_dev->chip_name = MTK_VDEC_MT8173;
+	else if (of_device_is_compatible(dev->of_node, "mediatek,mt6797-vcodec-dec"))
+		vdec_dev->chip_name = MTK_VDEC_MT6797;
 	else if (of_device_is_compatible(dev->of_node, "mediatek,mt8183-vcodec-dec"))
 		vdec_dev->chip_name = MTK_VDEC_MT8183;
 	else if (of_device_is_compatible(dev->of_node, "mediatek,mt8192-vcodec-dec"))
@@ -373,7 +377,12 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 	}
 
 	dev->vdec_pdata = of_device_get_match_data(&pdev->dev);
-	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,vpu",
+	if (!dev->vdec_pdata)
+		return -EINVAL;
+
+	if (!dev->vdec_pdata->uses_fw) {
+		dev->fw_handler = NULL;
+	} else if (!of_property_read_u32(pdev->dev.of_node, "mediatek,vpu",
 				  &rproc_phandle)) {
 		fw_type = VPU;
 	} else if (!of_property_read_u32(pdev->dev.of_node, "mediatek,scp",
@@ -385,9 +394,11 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 	}
 	dma_set_max_seg_size(&pdev->dev, UINT_MAX);
 
-	dev->fw_handler = mtk_vcodec_fw_select(dev, fw_type, DECODER);
-	if (IS_ERR(dev->fw_handler))
-		return PTR_ERR(dev->fw_handler);
+	if (dev->vdec_pdata->uses_fw) {
+		dev->fw_handler = mtk_vcodec_fw_select(dev, fw_type, DECODER);
+		if (IS_ERR(dev->fw_handler))
+			return PTR_ERR(dev->fw_handler);
+	}
 
 	ret = mtk_vcodec_init_dec_resources(dev);
 	if (ret) {
@@ -531,7 +542,8 @@ err_res:
 	if (!dev->vdec_pdata->is_subdev_supported)
 		pm_runtime_disable(dev->pm.dev);
 err_dec_pm:
-	mtk_vcodec_fw_release(dev->fw_handler);
+	if (dev->fw_handler)
+		mtk_vcodec_fw_release(dev->fw_handler);
 	return ret;
 }
 
@@ -587,7 +599,8 @@ static void mtk_vcodec_dec_remove(struct platform_device *pdev)
 	v4l2_device_unregister(&dev->v4l2_dev);
 	if (!dev->vdec_pdata->is_subdev_supported)
 		pm_runtime_disable(dev->pm.dev);
-	mtk_vcodec_fw_release(dev->fw_handler);
+	if (dev->fw_handler)
+		mtk_vcodec_fw_release(dev->fw_handler);
 }
 
 static struct platform_driver mtk_vcodec_dec_driver = {

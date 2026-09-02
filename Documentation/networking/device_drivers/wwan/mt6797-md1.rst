@@ -1,0 +1,59 @@
+.. SPDX-License-Identifier: GPL-2.0-only
+
+MediaTek MT6797 MD1 handoff
+===========================
+
+Current boundary
+----------------
+
+The MT6797 MD1 node is one aggregate ownership domain for modem power, reset,
+remap, memory protection, watchdog, CCIF and CLDMA.  The current driver is a
+strictly passive LK handoff validator.  It verifies the exact vendor register
+and interrupt topology and consumes the final physical reserved-memory ranges
+which LK writes into the FDT.  Both ranges must be 64-KiB aligned, disjoint and
+entirely below 4 GiB.  The firmware region must retain the 160-MiB minimum
+observed in the Gemini LK handoff.  Bank 0 must be 32-MiB aligned; bank 4 is
+rounded down to that granule.  Each base must support the complete vendor
+eight-slot, 256-MiB remap window.  The driver calculates both vendor address
+modes (physical and 0x40000000-relative), but writes neither.
+
+Probe has no write path.  It does not map MMIO, call secure firmware, request an
+IRQ, enable a clock or regulator, allocate DMA, load firmware, release a reset,
+or activate cellular RF.  The Gemini node is disabled in the base DT and its
+separate overlay only opts into these passive checks.
+
+CLDMA queue 0
+-------------
+
+The hardware-neutral helper describes one 16-byte TGPD and one 16-byte RGPD.
+It constructs cyclic queue-0 descriptor geometry with IOC set and HWO clear.
+Queue-root addresses are rejected unless 16-byte aligned and below 4 GiB,
+because the vendor AP queue-start helpers write only 32 address bits.  GPD data
+pointers have a 36-bit representation, but no data pointer, buffer, queue
+register or ownership bit is published by this milestone.
+
+Activation blocker
+------------------
+
+The vendor sequence is staged:
+
+1. establish the firmware/shared layout and initial EMI regions;
+2. hold reset while programming remap, power and the remaining firmware MPU
+   regions;
+3. release the boot vector and receive CCCI HS1;
+4. replace temporary EMI region 13 with the firmware check-header permission;
+5. return runtime data and complete HS2 before enabling service queues.
+
+MT6797 secure firmware exposes the EMI MPU SET call ``0x82000209`` but the
+recovered platform contract has no corresponding GET or rollback operation.  A
+failed SET can therefore have partially changed irreversible state, and LK may
+already have locked the regions it established.  Linux cannot safely implement
+an in-boot cold-start/unwind transaction until secure world supplies a way to
+attest the existing region values and either reject before the first write or
+restore every previous value.
+
+Consequently HS1/HS2 parsing alone is not enough to activate this driver.  A
+future active owner must first close that MPU authorization/rollback gap, then
+implement the exact reset-held power/remap sequence and only start CLDMA after
+the region-13 transition succeeds.  DPMAIF, QMI and guessed AT channel mappings
+are not part of the MT6797 evidence and must not be substituted for CCCI.

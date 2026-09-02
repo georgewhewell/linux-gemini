@@ -102,6 +102,28 @@ config MTK_MT6797_A72_POWER
 	  ready, CPU9 requires a separate Device Tree opt-in, and CPU_OFF is
 	  deliberately unavailable.
 
+config MTK_MT6797_MD1_HANDOFF
+	tristate "MediaTek MT6797 MD1 passive LK handoff owner"
+	depends on OF && HAS_IOMEM
+	help
+	  Validate the aggregate MT6797 MD1 register and interrupt topology and
+	  the firmware/shared-memory carveouts rewritten into the FDT by LK.
+
+	  This driver is deliberately passive. It maps no registers, requests no
+	  interrupt, enables no power resource, performs no secure call, and cannot
+	  start a modem or radio. It also provides hardware-neutral construction of
+	  one queue-0 CLDMA descriptor pair with hardware ownership kept clear.
+
+config MTK_MT6797_MD1_HANDOFF_KUNIT_TEST
+	bool "KUnit tests for the MT6797 MD1 passive handoff"
+	depends on KUNIT=y
+	depends on MTK_MT6797_MD1_HANDOFF=y
+	help
+	  Exercise exact resource validation, safe LK carveout bounds, and passive
+	  queue-0 descriptor geometry without MMIO, firmware or hardware.
+	  The tests also cover the two vendor remap address modes while performing
+	  no register writes or secure calls.
+
 config MTK_STP
 	tristate "MediaTek STP codec and WMT/GNSS multiplexer"
 	depends on ARCH_MEDIATEK || COMPILE_TEST

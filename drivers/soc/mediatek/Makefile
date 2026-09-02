@@ -10,6 +10,11 @@ obj-$(CONFIG_MTK_MMSYS) += mtk-mutex.o
 obj-$(CONFIG_MTK_SVS) += mtk-svs.o
 obj-$(CONFIG_MTK_SOCINFO) += mtk-socinfo.o
 obj-$(CONFIG_MTK_MT6797_A72_POWER) += mt6797-a72-power.o
+mt6797-md1-handoff-y := mt6797-md1-handoff-core.o \
+	mt6797-md1-handoff-driver.o
+obj-$(CONFIG_MTK_MT6797_MD1_HANDOFF) += mt6797-md1-handoff.o
+obj-$(CONFIG_MTK_MT6797_MD1_HANDOFF_KUNIT_TEST) += \
+	mt6797-md1-handoff-kunit-test.o
 obj-$(CONFIG_MTK_STP) += mtk-stp.o
 obj-$(CONFIG_MTK_STP_KUNIT_TEST) += mtk-stp-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_STP_SESSION) += mt6797-consys-stp-session.o

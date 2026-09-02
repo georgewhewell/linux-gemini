@@ -312,7 +312,7 @@
 	};
 
 	scpsys: power-controller@10006000 {
-		compatible = "mediatek,mt6797-scpsys";
+		compatible = "mediatek,mt6797-scpsys", "syscon";
 		#power-domain-cells = <1>;
 		reg = <0 0x10006000 0 0x1000>;
 		clocks = <&topckgen CLK_TOP_MUX_MFG>,
@@ -518,6 +518,18 @@
 		mediatek,pad-select = <0>;
 		#address-cells = <1>;
 		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	/* PIO transport only; CONSYS owns the surrounding power/reset contract. */
+	btif: serial@1100c000 {
+		compatible = "mediatek,mt6797-btif",
+			     "mediatek,mtk-btif";
+		reg = <0 0x1100c000 0 0x1000>;
+		interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infrasys CLK_INFRA_BTIF>;
+		reg-shift = <2>;
+		reg-io-width = <4>;
 		status = "disabled";
 	};
 

@@ -23,6 +23,7 @@ struct mt6797_venc_h264_inst {
 	void *rcpu_va;
 	dma_addr_t rcpu_dma;
 	struct mtk_vcodec_mem work_bufs[MT6797_VENC_H264_WORK_BUF_MAX];
+	u32 work_buf_regs[MT6797_VENC_H264_WORK_BUF_MAX];
 	struct venc_enc_param config;
 	struct mt6797_venc_h264_seq_regs seq_regs;
 	bool work_bufs_allocated;
@@ -111,6 +112,7 @@ mt6797_venc_h264_prepare_seq_regs(const struct venc_enc_param *config,
 		.buf_width = config->buf_width,
 		.buf_height = config->buf_height,
 		.intra_period = config->intra_period,
+		.gop_size = config->gop_size,
 		.bitrate = config->bitrate,
 		.framerate = config->frm_rate,
 	};
@@ -191,6 +193,7 @@ mt6797_venc_h264_alloc_work_bufs(struct mt6797_venc_h264_inst *inst,
 				     i, &inst->work_bufs[i].dma_addr);
 			goto err_free;
 		}
+		inst->work_buf_regs[i] = reg;
 	}
 
 	inst->work_bufs_allocated = true;
@@ -343,8 +346,9 @@ static int mt6797_venc_h264_set_param(void *handle,
 	case VENC_SET_PARAM_GOP_SIZE:
 		if (!inst->configured)
 			return -EINVAL;
-		inst->config.gop_size = in->gop_size;
-		return 0;
+		config = inst->config;
+		config.gop_size = in->gop_size;
+		return mt6797_venc_h264_update_config(inst, &config);
 	case VENC_SET_PARAM_INTRA_PERIOD:
 		if (!inst->configured)
 			return -EINVAL;

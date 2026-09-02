@@ -438,9 +438,10 @@ config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER
 	  mandatory-to-full STP bootstrap controller, patch download and post-patch
 	  calibration before publishing a session.
 
-	  The coordinator creates no GNSS, Bluetooth, Wi-Fi, or FM function; it
-	  releases no CONMCU reset, accesses no AFE/shared EMI, or enables a radio
-	  function, and has no userspace ABI.
+	  The coordinator creates no wireless client. It releases no CONMCU reset
+	  and accesses no AFE or shared EMI. Retained channel owners may issue only
+	  their explicitly bounded function-control operation; there is no general
+	  WMT or userspace ABI.
 
 config MTK_MT6797_CONSYS_RUNTIME_CONTROLLER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 CONSYS STP-bootstrap coordinator"

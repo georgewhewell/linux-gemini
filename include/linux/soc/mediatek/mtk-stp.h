@@ -18,8 +18,9 @@
 #define MTK_STP_MANDATORY_MAX_PAYLOAD	1999
 #define MTK_STP_MAX_CHANNEL	7
 
-/* The only clients exposed by this initial mux. */
+/* Full-STP task identifiers used by the in-kernel clients. */
 enum mtk_stp_channel {
+	MTK_STP_BT	= 0,
 	MTK_STP_GNSS	= 2,
 	MTK_STP_WMT	= 4,
 };

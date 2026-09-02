@@ -71,6 +71,8 @@ struct mt6797_btif_stp_bootstrap_full_wmt_lease {
 
 struct mt6797_btif_stp_bootstrap {
 	struct mutex lifecycle_lock;
+	/* Serialize WMT request matching and the shared STP retry timer. */
+	struct mutex wmt_transaction_lock;
 	/* destroy() waits for the sole runner before it frees this object. */
 	struct completion run_complete;
 	const struct mt6797_btif_pio_lease *pio_lease;
@@ -310,9 +312,12 @@ static int mt6797_btif_stp_bootstrap_full_wmt_transaction_unchecked(
 
 	if (!bootstrap || !expected || (!data && data_len) || !timeout)
 		return -EINVAL;
+	mutex_lock(&bootstrap->wmt_transaction_lock);
 	if (READ_ONCE(bootstrap->state) != MT6797_BTIF_STP_BOOTSTRAP_FULL_VERIFY &&
-	    READ_ONCE(bootstrap->state) != MT6797_BTIF_STP_BOOTSTRAP_ACTIVE)
-		return -ESHUTDOWN;
+	    READ_ONCE(bootstrap->state) != MT6797_BTIF_STP_BOOTSTRAP_ACTIVE) {
+		ret = -ESHUTDOWN;
+		goto unlock;
+	}
 
 	/*
 	 * Vendor stp_core.c:632-754 retries retained full-STP frames every
@@ -325,6 +330,9 @@ static int mt6797_btif_stp_bootstrap_full_wmt_transaction_unchecked(
 			  expected, timeout);
 	WRITE_ONCE(bootstrap->full_retry_armed, false);
 	cancel_delayed_work_sync(&bootstrap->full_retry_work);
+
+unlock:
+	mutex_unlock(&bootstrap->wmt_transaction_lock);
 	return ret;
 }
 
@@ -395,12 +403,14 @@ static int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_common(
 	if (!valid)
 		return -ESHUTDOWN;
 
+	mutex_lock(&bootstrap->wmt_transaction_lock);
 	WRITE_ONCE(bootstrap->full_retry_armed, true);
 	ret = mtk_wmt_transaction_capture_range(&bootstrap->full_wmt, opcode, data,
 			data_len, expected_opcode, min_data_len, max_data_len, reply,
 			reply_len, actual_data_len, timeout);
 	WRITE_ONCE(bootstrap->full_retry_armed, false);
 	cancel_delayed_work_sync(&bootstrap->full_retry_work);
+	mutex_unlock(&bootstrap->wmt_transaction_lock);
 	return ret;
 }
 
@@ -467,6 +477,7 @@ mt6797_btif_stp_bootstrap_create(
 	if (!bootstrap)
 		return ERR_PTR(-ENOMEM);
 	mutex_init(&bootstrap->lifecycle_lock);
+	mutex_init(&bootstrap->wmt_transaction_lock);
 	init_completion(&bootstrap->run_complete);
 	init_completion(&bootstrap->raw_response);
 	spin_lock_init(&bootstrap->raw_lock);

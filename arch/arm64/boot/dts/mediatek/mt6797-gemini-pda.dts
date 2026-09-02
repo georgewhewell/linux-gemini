@@ -634,11 +634,10 @@
 };
 
 /*
- * Stock runtime state identifies the logical sub camera as SP5509 SLS.  The
- * vendor source maps it to I2C3, MCLK2, reset GPIO33, power-down GPIO29 and a
- * two-lane NCSI2 route.  Its probe table contains both 7-bit addresses 0x20
- * and 0x28, however, and the successful address was not recorded.  Describe
- * no camera client or media links until the populated address is established.
+ * A retained stock boot identifies the sole populated camera as the logical
+ * sub/front SP5509 SLS and records a successful chip-ID read at I2C3 address
+ * 0x20.  Keep the complete, source-locked graph in the opt-in camera overlay
+ * until its mainline raw-stream and frame-integrity qualification.
  */
 
 &i2c4 {

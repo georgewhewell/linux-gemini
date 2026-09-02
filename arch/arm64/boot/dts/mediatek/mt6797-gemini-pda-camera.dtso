@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Opt-in front-camera composition for the Planet Gemini PDA.
+ *
+ * A retained stock boot identifies the populated logical sub camera as an
+ * SP5509 SLS at I2C3 address 0x20.  The vendor board source and camera HAL
+ * establish MCLK2, reset GPIO33, power-down GPIO29, the three MT6351 camera
+ * rails and the two-lane NCSI2/SENINF1 route.  The HAL describes this slot as
+ * front-facing with 180-degree sensor rotation.
+ *
+ * The base board deliberately remains dormant.  This complete composition is
+ * for an attended chip-ID, CSI calibration, raw stream and frame-integrity
+ * qualification; do not enable only part of the route.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/mt6797-pinfunc.h>
+
+&pio {
+	front_camera_pins: front-camera-pins {
+		pins-mclk {
+			pinmux = <MT6797_GPIO31__FUNC_CMMCLK1>;
+		};
+
+		pins-control {
+			pinmux = <MT6797_GPIO33__FUNC_GPIO33>,
+				 <MT6797_GPIO29__FUNC_GPIO29>;
+		};
+	};
+};
+
+&i2c3 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	clock-frequency = <300000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c3_pins_a>;
+	status = "okay";
+
+	front_camera: camera@20 {
+		compatible = "siliconfile,sp5509";
+		reg = <0x20>;
+		clocks = <&seninf>;
+		clock-names = "clk";
+		pinctrl-names = "default";
+		pinctrl-0 = <&front_camera_pins>;
+		dovdd-supply = <&mt6351_vcamio_reg>;
+		avdd-supply = <&mt6351_vcama_reg>;
+		dvdd-supply = <&mt6351_vcamd_reg>;
+		reset-gpios = <&pio 33 GPIO_ACTIVE_LOW>;
+		powerdown-gpios = <&pio 29 GPIO_ACTIVE_LOW>;
+		orientation = <0>;
+		rotation = <180>;
+
+		port {
+			sp5509_out: endpoint {
+				remote-endpoint = <&seninf_front_in>;
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <440000000
+							       220000000
+							       110000000>;
+			};
+		};
+	};
+};
+
+&larb2 {
+	status = "okay";
+};
+
+&seninf {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+
+			seninf_front_in: endpoint {
+				remote-endpoint = <&sp5509_out>;
+				bus-type = <4>;
+				data-lanes = <1 2>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+
+			seninf_front_out: endpoint {
+				remote-endpoint = <&camsv0_in>;
+			};
+		};
+	};
+};
+
+&camsv0 {
+	status = "okay";
+};
+
+&camsv0_in {
+	remote-endpoint = <&seninf_front_out>;
+};

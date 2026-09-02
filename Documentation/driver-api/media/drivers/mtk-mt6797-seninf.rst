@@ -13,10 +13,18 @@ has been performed.
 
 The stock runtime reports ``AEON_CAMERA0=non_sensor`` and
 ``AEON_CAMERA1=sp5509mipirawsls``. The vendor sensor-list code assigns
-``AEON_CAMERA1`` only after a successful logical sub-camera probe. This is
-direct evidence that the populated logical sub camera selects the SiliconFile
-SP5509 SLS driver. Other sensor names compiled into the stock libraries are
-alternatives, not evidence for additional populated sensors.
+``AEON_CAMERA1`` only after a successful logical sub-camera probe. A retained
+Gemian boot log resolves the remaining identity ambiguity: the main SP5509
+variant failed at vendor write IDs ``0x50`` and ``0x40``, then the SLS variant
+twice read chip ID ``0x0556`` at write ID ``0x40``. The populated Linux I2C
+address is therefore ``0x20``; ``0x28`` was only the unneeded second entry in
+the SLS probe table.
+
+The stock ``libcameracustom.so`` maps logical sub device 1 to the front-facing
+slot and records a 180-degree sensor rotation. Together with camera 0's
+``non_sensor`` result, this establishes one populated front camera and no
+populated rear camera. Other sensor names compiled into the stock libraries
+are alternatives, not evidence for additional populated sensors.
 
 The logical sub-camera mapping in the vendor source gives these board design
 facts:
@@ -27,13 +35,12 @@ facts:
 * PMIC DOVDD 1.8 V, AVDD 2.8 V and DVDD 1.2 V supplies; and
 * a two-data-lane NCSI2 connection through SENINF instance 1.
 
-It does not establish the populated sensor's I2C address. The SLS probe table
-tries vendor 8-bit write IDs ``0x40`` and ``0x50``, which correspond to Linux
-7-bit addresses ``0x20`` and ``0x28``. The surviving runtime record does not
-say which address responded. Consequently the Gemini base Device Tree does
-not describe a sensor client, camera pinctrl state or media links. A disabled
-node with a guessed address would still assert incorrect hardware topology and
-would be copied into future activation overlays.
+The exact graph is kept in ``mt6797-gemini-pda-camera.dtso`` rather than the
+base board. It composes I2C3 address ``0x20``, the front-camera pin state, all
+three supplies, sensor orientation, the reciprocal sensor/SENINF/CAMSV links,
+LARB2 and the CAMSV0 DMA consumer. This keeps normal boots dormant while
+giving qualification builds one complete topology instead of a partially
+enabled pipeline.
 
 Recovered SoC contracts
 -----------------------
@@ -71,11 +78,13 @@ Raw sensor capture
 ~~~~~~~~~~~~~~~~~~
 
 The SP5509 sensor variant, SENINF receiver and CAMSV0 capture driver form a
-standard V4L2 media-controller design. They implement one source-recovered
-2592x1944 packed RAW10 GRBG plan. CAMSV uses a DMA-contiguous videobuf2 queue
-and advertises MMAP and DMABUF I/O. Endpoint, format, resource, register-plan
-and rollback helpers have KUnit coverage. This is a code-complete dormant raw
-path; it is not hardware-validated capture support.
+standard V4L2 media-controller design. SENINF asynchronously binds the sensor
+sub-device; CAMSV0 asynchronously binds SENINF and owns the V4L2/media device
+and video node. They implement one source-recovered 2592x1944 packed RAW10
+GRBG plan. CAMSV uses a DMA-contiguous videobuf2 queue and advertises MMAP and
+DMABUF I/O. Endpoint, format, resource, register-plan and rollback helpers
+have KUnit coverage. This is a code-complete dormant raw path; it is not
+hardware-validated capture support.
 
 Image signal processing
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -105,9 +114,9 @@ frame capture and integrity have been demonstrated.
 Activation gate
 ---------------
 
-The SoC SENINF and CAMSV inventory remains disabled. Before adding a Gemini
-sensor node or activation overlay, establish the populated 7-bit I2C address
-from a schematic, module documentation or an authorised non-destructive probe.
-Then validate chip ID ``0x0556``, power sequencing, CSI calibration, streaming
-and frame integrity. Only after that evidence exists should I2C3, the sensor,
-LARB2, SENINF and CAMSV0 be enabled as one complete graph.
+The SoC SENINF and CAMSV inventory remains disabled in the base board. The
+opt-in composition now carries the source- and runtime-established topology.
+Its remaining acceptance gate is one attended mainline run: validate chip ID
+``0x0556``, power sequencing and full rollback without streaming, then CSI
+calibration, one RAW10 test-pattern stream, DMA completion, frame geometry and
+frame integrity. Promote the overlay only after those results are retained.

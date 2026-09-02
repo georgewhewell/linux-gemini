@@ -9,6 +9,11 @@ title: Novatek NT36772 touchscreen controller
 maintainers:
   - Julien Etienne <julien.etienne@gmail.com>
 
+description: |
+  The NT36772 legacy protocol uses I2C address 0x62 for hardware commands and
+  address 0x01 as an alternate target for firmware and xdata accesses. The
+  driver validates the controller trim identifier before using the event map.
+
 allOf:
   - $ref: touchscreen.yaml#
 
@@ -22,25 +27,20 @@ properties:
   interrupts:
     maxItems: 1
 
-  reset-gpios:
-    maxItems: 1
-
-  vcc-supply: true
-  iovcc-supply: true
+  touchscreen-inverted-x: true
+  touchscreen-swapped-x-y: true
 
 required:
   - compatible
   - reg
   - interrupts
-  - vcc-supply
-  - iovcc-supply
 
 unevaluatedProperties: false
 
 examples:
   - |
-    #include <dt-bindings/gpio/gpio.h>
     #include <dt-bindings/interrupt-controller/irq.h>
+
     i2c {
         #address-cells = <1>;
         #size-cells = <0>;
@@ -48,10 +48,8 @@ examples:
         touchscreen@62 {
             compatible = "novatek,nt36772-ts";
             reg = <0x62>;
-            interrupts-extended = <&gpio 85 IRQ_TYPE_EDGE_RISING>;
-            reset-gpios = <&gpio 68 GPIO_ACTIVE_HIGH>;
-            vcc-supply = <&touch_vcc>;
-            iovcc-supply = <&touch_iovcc>;
+            interrupt-parent = <&gpio>;
+            interrupts = <8 IRQ_TYPE_EDGE_RISING>;
         };
     };
 ...

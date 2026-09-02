@@ -3,6 +3,28 @@
 menu "Bluetooth device drivers"
 	depends on BT
 
+config BT_MTK6797_STP
+	bool "MT6797 full-STP Bluetooth HCI endpoint"
+	depends on ARCH_MEDIATEK && OF
+	depends on MTK_MT6797_CONSYS_RUNTIME_CONTROLLER=y
+	depends on MTK_MT6797_CONSYS_STP_SESSION=y
+	depends on REGULATOR
+	help
+	  Register one standard HCI device over the MT6797 controller-owned
+	  full-STP channel-zero lease. It enables BT PALDO and issues only vendor
+	  FUNC_CTRL(BT,on); closing reverses FUNC_CTRL then PALDO. The board node
+	  remains disabled until the complete transport has been qualified.
+
+config BT_MTK6797_STP_KUNIT_TEST
+	bool "KUnit tests for MT6797 full-STP Bluetooth HCI endpoint"
+	depends on KUNIT=y
+	depends on BT_MTK6797_STP=y
+	help
+	  Exercise the MT6797 H4 packet-type filter and fragmented/coalesced
+	  receive parser with in-memory frames. The tests do not bind a platform
+	  device or acquire a regulator. They send no full-STP traffic and access
+	  no hardware.
+
 config BT_INTEL
 	tristate
 	select REGMAP

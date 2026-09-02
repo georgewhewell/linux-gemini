@@ -105,7 +105,8 @@ int mt6797_md1_layout_validate(const struct mt6797_md1_layout *layout)
 		return -EINVAL;
 	if (check_add_overflow(layout->firmware_base,
 			       MT6797_MD1_REMAP_WINDOW_SIZE - 1,
-			       &bank0_window_end) || bank0_window_end > U32_MAX)
+			       &bank0_window_end) || bank0_window_end > U32_MAX ||
+	    firmware_end > bank0_window_end)
 		return -ERANGE;
 
 	bank4_base = round_down(layout->shared_base,

@@ -699,6 +699,16 @@ config TOUCHSCREEN_NOVATEK_NT36XXX
 	  The driver has no firmware-update interface.  To compile it as a
 	  module, choose M here: the module will be called novatek-nt36xxx.
 
+config TOUCHSCREEN_NOVATEK_NT36XXX_KUNIT_TEST
+	tristate "KUnit tests for the Novatek NT36xxx touchscreen" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Build tests for NT36772 trim matching and touch packet decoding.
+	  These tests exercise the protocol helpers without requiring physical
+	  touchscreen hardware. They are intended for driver development and
+	  continuous integration. If unsure, say N.
+
 config TOUCHSCREEN_IMAGIS
 	tristate "Imagis touchscreen support"
 	depends on I2C

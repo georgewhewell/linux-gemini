@@ -776,6 +776,11 @@
 			MATRIX_KEY(1, 3, KEY_T)
 			MATRIX_KEY(2, 3, KEY_F)
 			MATRIX_KEY(3, 3, KEY_X)
+			/*
+			 * The key labelled Fn emits KEY_LEFTMETA in the shipped
+			 * kernel.  Userspace maps it to ISO_Level3_Shift; symbols
+			 * printed on the keycaps do not belong in this evdev map.
+			 */
 			MATRIX_KEY(4, 3, KEY_LEFTMETA)
 			MATRIX_KEY(5, 3, KEY_RIGHTSHIFT)
 			MATRIX_KEY(6, 3, KEY_P)

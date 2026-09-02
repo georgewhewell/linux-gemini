@@ -6,6 +6,7 @@
 // Author: KaiChieh Chuang <kaichieh.chuang@mediatek.com>
 
 #include <linux/dma-mapping.h>
+#include <linux/mfd/mt6397/core.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/mod_devicetable.h>
@@ -1450,6 +1451,7 @@ static const struct snd_soc_component_driver mt6351_soc_component_driver = {
 
 static int mt6351_codec_driver_probe(struct platform_device *pdev)
 {
+	struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
 	struct mt6351_priv *priv;
 
 	priv = devm_kzalloc(&pdev->dev,
@@ -1462,9 +1464,11 @@ static int mt6351_codec_driver_probe(struct platform_device *pdev)
 
 	priv->dev = &pdev->dev;
 
-	priv->regmap = dev_get_regmap(pdev->dev.parent, NULL);
-	if (!priv->regmap)
-		return -ENODEV;
+	if (!mt6397 || !mt6397->regmap)
+		return dev_err_probe(&pdev->dev, -EPROBE_DEFER,
+				     "parent regmap not ready\n");
+
+	priv->regmap = mt6397->regmap;
 
 	dev_dbg(priv->dev, "%s(), dev name %s\n",
 		__func__, dev_name(&pdev->dev));

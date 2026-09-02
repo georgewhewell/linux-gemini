@@ -27,6 +27,7 @@ Video4Linux (V4L) drivers
 	zoran
 	ccs/ccs
 	ipu6
+	mtk-mt6797-seninf
 
 
 Digital TV drivers

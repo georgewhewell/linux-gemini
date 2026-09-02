@@ -565,11 +565,40 @@
 	};
 };
 
+&i2c4 {
+	/*
+	 * The NT36772 identity and event geometry are hardware-proven, but no
+	 * physical touch event or suspend cycle has been observed on mainline.
+	 * Keep the bus and client dormant for an explicit activation test.
+	 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c4_pins_a>;
+	status = "disabled";
+
+	touchscreen: touchscreen@62 {
+		compatible = "novatek,nt36772-ts";
+		reg = <0x62>;
+		interrupt-parent = <&pio>;
+		interrupts = <8 IRQ_TYPE_EDGE_RISING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touchscreen_irq_pins>;
+		touchscreen-inverted-x;
+		touchscreen-swapped-x-y;
+		status = "disabled";
+	};
+};
+
 &watchdog {
 	interrupts = <GIC_SPI 137 IRQ_TYPE_EDGE_FALLING>;
 };
 
 &pio {
+	touchscreen_irq_pins: touchscreen-irq-pins {
+		pins-irq {
+			pinmux = <MT6797_GPIO85__FUNC_EINT8>;
+		};
+	};
+
 	keyboard_soc_pins: keyboard-soc-pins {
 		pins-reset {
 			pinmux = <MT6797_GPIO58__FUNC_GPIO58>;

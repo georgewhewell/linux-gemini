@@ -406,7 +406,8 @@ config REGULATOR_DA9211
 	  /DA9213/DA9214/DA9215.
 	  The DA9211/DA9212/DA9213/DA9214/DA9215 is a multi-phase synchronous
 	  step down converter 12A or 16A DC-DC Buck controlled through an I2C
-	  interface.
+	  interface. The legacy direct-address DA9214 register model is also
+	  supported when selected by its distinct firmware compatible.
 
 config REGULATOR_DBX500_PRCMU
 	bool

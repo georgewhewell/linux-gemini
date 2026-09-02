@@ -128,17 +128,16 @@ static int mt6797_a72_prepare_first(struct mt6797_a72_power *power)
 {
 	u32 isolation, poweron, value;
 	bool reset_asserted = false;
-	bool vproc_was_enabled;
 	int cleanup_ret = 0;
 	int enabled;
+	int err;
 	int uv;
 	int ret;
 
-	/* Capture the inherited provider state before the first hardware write. */
+	/* Validate the inherited provider state before the first hardware write. */
 	enabled = regulator_is_enabled(power->vproc);
 	if (enabled < 0)
 		return enabled;
-	vproc_was_enabled = enabled;
 	uv = regulator_get_voltage(power->vproc);
 	if (uv <= 0)
 		return uv ?: -ERANGE;
@@ -154,7 +153,7 @@ static int mt6797_a72_prepare_first(struct mt6797_a72_power *power)
 	ret = regmap_update_bits(power->spm, SPM_POWERON_CONFIG_EN, BIT(0),
 				 BIT(0));
 	if (ret)
-		return ret;
+		goto restore_poweron;
 	ret = regmap_read(power->spm, SPM_POWERON_CONFIG_EN, &value);
 	if (ret || value != SPM_POWERON_PROOF_ON) {
 		ret = ret ?: -EIO;
@@ -234,40 +233,48 @@ faulted:
 
 rollback_preisolation:
 	if (reset_asserted) {
-		cleanup_ret = reset_control_deassert(power->pwrap_reset);
+		err = reset_control_deassert(power->pwrap_reset);
+		if (err) {
+			dev_err(power->dev,
+				"failed to release PWRAP reset during rollback: %d\n",
+				err);
+			cleanup_ret = err;
+		}
 		reset_asserted = false;
 	}
-	if (!cleanup_ret && power->rail_vote) {
-		if (vproc_was_enabled) {
-			/* Dropping the vote could disable an inherited live rail. */
-			cleanup_ret = -EBUSY;
-		} else {
-			enabled = regulator_is_enabled(power->vproc);
-			uv = regulator_get_voltage(power->vproc);
-			if (enabled <= 0 || uv != power->vproc_uv)
-				cleanup_ret = -EBUSY;
-			else
-				cleanup_ret = regulator_disable(power->vproc);
+	if (power->rail_vote) {
+		/* Drop exactly the vote acquired by regulator_enable() above. */
+		err = regulator_disable(power->vproc);
+		if (err) {
+			dev_err(power->dev,
+				"failed to release VPROC vote during rollback: %d\n",
+				err);
 			if (!cleanup_ret)
-				power->rail_vote = false;
+				cleanup_ret = err;
+		} else {
+			power->rail_vote = false;
 		}
+	}
+
+restore_poweron:
+	err = regmap_update_bits(power->spm, SPM_POWERON_CONFIG_EN, BIT(0),
+				 poweron & BIT(0));
+	if (!err)
+		err = regmap_read(power->spm, SPM_POWERON_CONFIG_EN, &value);
+	if (!err && value != poweron)
+		err = -EIO;
+	if (err) {
+		dev_err(power->dev,
+			"failed to restore SPM power-on claim during rollback: %d\n",
+			err);
+		if (!cleanup_ret)
+			cleanup_ret = err;
 	}
 	if (cleanup_ret) {
 		mt6797_a72_set_state(power, MT6797_A72_FAULT);
 		dev_err(power->dev,
-			"pre-isolation cleanup retained power: %d\n", cleanup_ret);
-		return ret;
-	}
-
-restore_poweron:
-	cleanup_ret = regmap_update_bits(power->spm, SPM_POWERON_CONFIG_EN,
-					 BIT(0), poweron & BIT(0));
-	if (!cleanup_ret)
-		cleanup_ret = regmap_read(power->spm, SPM_POWERON_CONFIG_EN,
-					  &value);
-	if (cleanup_ret || value != poweron) {
-		mt6797_a72_set_state(power, MT6797_A72_FAULT);
-		return cleanup_ret ?: -EIO;
+			"power sequence failed before isolation: %d; rollback failed: %d\n",
+			ret, cleanup_ret);
 	}
 	return ret;
 }

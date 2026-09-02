@@ -963,7 +963,8 @@ const struct mtk_vcodec_dec_pdata mtk_vdec_6797_pdata = {
 	.default_cap_fmt = &default_cap_format,
 	.uses_stateless_api = true,
 	.uses_fw = false,
-	.dec_capability = MTK_VDEC_FORMAT_H264_SLICE | MTK_VDEC_FORMAT_MS21,
+	.dec_capability = VCODEC_CAPABILITY_4K_DISABLED |
+			  MTK_VDEC_FORMAT_H264_SLICE | MTK_VDEC_FORMAT_MS21,
 	.h264_slice_if = &mtk_vdec_6797_h264_slice_if,
 	.worker = mtk_vdec_worker,
 	.flush_decoder = mtk_vdec_flush_decoder,

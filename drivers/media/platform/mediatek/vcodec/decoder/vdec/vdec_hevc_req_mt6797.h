@@ -22,6 +22,8 @@
 #define MT6797_HEVC_MV_ALIGN		0x1000U
 #define MT6797_HEVC_Y_ALIGN		0x200U
 #define MT6797_HEVC_C_ALIGN		0x100U
+#define MT6797_HEVC_MAIN_FRAME_ALIGN	0x200U
+#define MT6797_HEVC_MAIN10_FRAME_ALIGN	0x400U
 #define MT6797_HEVC_REF_LIST_LEN	16U
 #define MT6797_HEVC_TILE_WORDS		17U
 #define MT6797_HEVC_MAX_SPS_RPS		65U
@@ -32,11 +34,15 @@ struct mt6797_hevc_sps_regs {
 	u32 top_070;
 	u32 top_094;
 	u32 top_100;
+	u32 mc_0cec;
+	u32 pp_0b8c;
+	u32 pp_0b90;
 	u32 vld_0a0;
 	u32 vld_0a4;
 	u32 vld_0a8;
 	u16 ctb_width;
 	u16 ctb_height;
+	u8 bit_depth;
 };
 
 struct mt6797_hevc_pps_regs {
@@ -65,6 +71,8 @@ struct mt6797_hevc_buffer_layout {
 	u32 chroma_size;
 	u32 frame_size;
 	u32 mv_size;
+	u32 fourcc;
+	u8 num_planes;
 };
 
 struct mt6797_hevc_barrel_plan {
@@ -679,7 +687,9 @@ static inline int mt6797_hevc_sps_regs(const struct v4l2_ctrl_hevc_sps *sps,
 	u64 flags;
 
 	if (!sps || !pps || !regs || sps->chroma_format_idc != 1 ||
-	    sps->bit_depth_luma_minus8 || sps->bit_depth_chroma_minus8 ||
+	    sps->bit_depth_luma_minus8 != sps->bit_depth_chroma_minus8 ||
+	    (sps->bit_depth_luma_minus8 &&
+	     sps->bit_depth_luma_minus8 != 2) ||
 	    sps->pic_width_in_luma_samples < MT6797_HEVC_MIN_WIDTH ||
 	    sps->pic_height_in_luma_samples < MT6797_HEVC_MIN_HEIGHT ||
 	    sps->pic_width_in_luma_samples > MT6797_HEVC_MAX_WIDTH ||
@@ -718,6 +728,9 @@ static inline int mt6797_hevc_sps_regs(const struct v4l2_ctrl_hevc_sps *sps,
 	regs->top_094 = regs->top_068;
 	regs->top_100 = sps->bit_depth_luma_minus8 |
 			(sps->bit_depth_chroma_minus8 << 4);
+	regs->mc_0cec = !!sps->bit_depth_luma_minus8;
+	regs->pp_0b8c = !!sps->bit_depth_luma_minus8;
+	regs->pp_0b90 = !!sps->bit_depth_luma_minus8;
 	regs->vld_0a0 = (u32)sps->chroma_format_idc |
 			!!(flags & V4L2_HEVC_SPS_FLAG_PCM_ENABLED) << 2 |
 			!!(pps->flags & V4L2_HEVC_PPS_FLAG_LISTS_MODIFICATION_PRESENT) << 3 |
@@ -742,6 +755,7 @@ static inline int mt6797_hevc_sps_regs(const struct v4l2_ctrl_hevc_sps *sps,
 			(sps->max_transform_hierarchy_depth_intra & 7) << 28;
 	regs->ctb_width = ctb_width;
 	regs->ctb_height = ctb_height;
+	regs->bit_depth = sps->bit_depth_luma_minus8 + 8;
 
 	return 0;
 }
@@ -969,16 +983,18 @@ mt6797_hevc_output_plan(u64 y_addr, u64 c_addr,
 			const struct mt6797_hevc_buffer_layout *layout,
 			struct mt6797_hevc_output_plan *plan)
 {
-	u64 expected_c, end;
+	u64 y_end, c_end;
 
 	if (!layout || !plan || !layout->luma_size || !layout->chroma_size ||
+	    (layout->num_planes != 1 && layout->num_planes != 2) ||
 	    y_addr & (MT6797_HEVC_Y_ALIGN - 1) ||
 	    c_addr & (MT6797_HEVC_C_ALIGN - 1) ||
-	    check_add_overflow(y_addr, (u64)layout->luma_size, &expected_c) ||
-	    expected_c != c_addr ||
-	    check_add_overflow(c_addr, (u64)layout->chroma_size, &end))
+	    check_add_overflow(y_addr, (u64)layout->luma_size, &y_end) ||
+	    check_add_overflow(c_addr, (u64)layout->chroma_size, &c_end))
 		return -EINVAL;
-	if (end > U32_MAX)
+	if (layout->num_planes == 1 && y_end != c_addr)
+		return -EINVAL;
+	if (y_end > U32_MAX || c_end > U32_MAX)
 		return -ERANGE;
 
 	plan->y_addr = y_addr;
@@ -1141,26 +1157,43 @@ mt6797_hevc_mv_slot_commit(struct mt6797_hevc_mv_slot *slots, u8 slot,
 }
 
 static inline int
-mt6797_hevc_buffer_layout(u32 width, u32 height,
+mt6797_hevc_buffer_layout(u32 width, u32 height, u8 bit_depth,
 			  struct mt6797_hevc_buffer_layout *layout)
 {
-	u32 mb_count, pixels;
+	u32 mb_count, packed, pixels;
 
 	if (!layout || width < MT6797_HEVC_MIN_WIDTH ||
 	    height < MT6797_HEVC_MIN_HEIGHT ||
 	    width > MT6797_HEVC_MAX_WIDTH ||
 	    height > MT6797_HEVC_MAX_HEIGHT)
 		return -ERANGE;
+	if (bit_depth != 8 && bit_depth != 10)
+		return -EOPNOTSUPP;
 
 	layout->width = ALIGN(width, MT6797_HEVC_FRAME_ALIGN);
 	layout->height = ALIGN(height, MT6797_HEVC_FRAME_ALIGN);
 	if (check_mul_overflow(layout->width, layout->height, &pixels))
 		return -EOVERFLOW;
-	layout->luma_size = pixels;
-	layout->chroma_size = pixels / 2;
+	if (bit_depth == 10) {
+		if (check_mul_overflow(pixels, 5U, &packed))
+			return -EOVERFLOW;
+		layout->luma_size = packed / 4;
+		layout->chroma_size = packed / 8;
+		layout->fourcc = V4L2_PIX_FMT_MT2110T;
+		layout->num_planes = 2;
+	} else {
+		layout->luma_size = pixels;
+		layout->chroma_size = pixels / 2;
+		layout->fourcc = V4L2_PIX_FMT_MS21;
+		layout->num_planes = 1;
+	}
 	if (check_add_overflow(layout->luma_size, layout->chroma_size,
 			       &layout->frame_size))
 		return -EOVERFLOW;
+	layout->frame_size = ALIGN(layout->frame_size,
+				   bit_depth == 10 ?
+				   MT6797_HEVC_MAIN10_FRAME_ALIGN :
+				   MT6797_HEVC_MAIN_FRAME_ALIGN);
 
 	if (check_mul_overflow(layout->width / 16, layout->height / 16,
 			       &mb_count) ||

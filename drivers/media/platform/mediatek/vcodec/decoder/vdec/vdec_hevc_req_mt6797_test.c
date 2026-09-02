@@ -66,11 +66,40 @@ static void mt6797_hevc_sps_regs_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, regs.top_070, 0x04380780U);
 	KUNIT_EXPECT_EQ(test, regs.top_094, 0x0011001eU);
 	KUNIT_EXPECT_EQ(test, regs.top_100, 0U);
+	KUNIT_EXPECT_EQ(test, regs.mc_0cec, 0U);
+	KUNIT_EXPECT_EQ(test, regs.pp_0b8c, 0U);
+	KUNIT_EXPECT_EQ(test, regs.pp_0b90, 0U);
 	KUNIT_EXPECT_EQ(test, regs.vld_0a0, 0x054377fdU);
 	KUNIT_EXPECT_EQ(test, regs.vld_0a4, 0x00012308U);
 	KUNIT_EXPECT_EQ(test, regs.vld_0a8, 0x34635263U);
 	KUNIT_EXPECT_EQ(test, regs.ctb_width, (u16)30);
 	KUNIT_EXPECT_EQ(test, regs.ctb_height, (u16)17);
+	KUNIT_EXPECT_EQ(test, regs.bit_depth, (u8)8);
+}
+
+static void mt6797_hevc_main10_sps_regs_test(struct kunit *test)
+{
+	struct v4l2_ctrl_hevc_sps sps = {
+		.pic_width_in_luma_samples = 1920,
+		.pic_height_in_luma_samples = 1080,
+		.bit_depth_luma_minus8 = 2,
+		.bit_depth_chroma_minus8 = 2,
+		.chroma_format_idc = 1,
+	};
+	struct v4l2_ctrl_hevc_pps pps = {};
+	struct mt6797_hevc_sps_regs regs;
+
+	KUNIT_ASSERT_EQ(test, mt6797_hevc_sps_regs(&sps, &pps, &regs), 0);
+	KUNIT_EXPECT_EQ(test, regs.top_100, 0x22U);
+	KUNIT_EXPECT_EQ(test, regs.mc_0cec, 1U);
+	KUNIT_EXPECT_EQ(test, regs.pp_0b8c, 1U);
+	KUNIT_EXPECT_EQ(test, regs.pp_0b90, 1U);
+	KUNIT_EXPECT_EQ(test, regs.bit_depth, (u8)10);
+
+	sps.bit_depth_luma_minus8 = 1;
+	sps.bit_depth_chroma_minus8 = 1;
+	KUNIT_EXPECT_EQ(test, mt6797_hevc_sps_regs(&sps, &pps, &regs),
+			-EOPNOTSUPP);
 }
 
 static void mt6797_hevc_pps_regs_test(struct kunit *test)
@@ -247,7 +276,8 @@ static void mt6797_hevc_output_plan_test(struct kunit *test)
 	struct mt6797_hevc_output_plan plan;
 	int ret;
 
-	KUNIT_ASSERT_EQ(test, mt6797_hevc_buffer_layout(1920, 1080, &layout), 0);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_buffer_layout(1920, 1080, 8, &layout), 0);
 	ret = mt6797_hevc_output_plan(0x10000000, 0x101fe000, &layout, &plan);
 	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_EXPECT_EQ(test, plan.y_addr, 0x10000000U);
@@ -353,7 +383,8 @@ static void mt6797_hevc_reject_plans_test(struct kunit *test)
 	struct v4l2_ctrl_hevc_slice_params slice = {};
 	int ret;
 
-	KUNIT_ASSERT_EQ(test, mt6797_hevc_buffer_layout(1920, 1080, &layout), 0);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_buffer_layout(1920, 1080, 8, &layout), 0);
 	ret = mt6797_hevc_output_plan(0x10000000, 0x10200000, &layout,
 				      &output);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
@@ -368,40 +399,79 @@ static void mt6797_hevc_1080p_layout_test(struct kunit *test)
 {
 	struct mt6797_hevc_buffer_layout layout;
 
-	KUNIT_ASSERT_EQ(test, mt6797_hevc_buffer_layout(1920, 1080, &layout), 0);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_buffer_layout(1920, 1080, 8, &layout), 0);
 	KUNIT_EXPECT_EQ(test, layout.width, 1920U);
 	KUNIT_EXPECT_EQ(test, layout.height, 1088U);
 	KUNIT_EXPECT_EQ(test, layout.luma_size, 2088960U);
 	KUNIT_EXPECT_EQ(test, layout.chroma_size, 1044480U);
 	KUNIT_EXPECT_EQ(test, layout.frame_size, 3133440U);
 	KUNIT_EXPECT_EQ(test, layout.mv_size, 522752U);
+	KUNIT_EXPECT_EQ(test, layout.fourcc, V4L2_PIX_FMT_MS21);
+	KUNIT_EXPECT_EQ(test, layout.num_planes, (u8)1);
+}
+
+static void mt6797_hevc_main10_layout_test(struct kunit *test)
+{
+	struct mt6797_hevc_buffer_layout layout;
+	struct mt6797_hevc_output_plan output;
+	int ret;
+
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_buffer_layout(1920, 1080, 10, &layout), 0);
+	KUNIT_EXPECT_EQ(test, layout.width, 1920U);
+	KUNIT_EXPECT_EQ(test, layout.height, 1088U);
+	KUNIT_EXPECT_EQ(test, layout.luma_size, 2611200U);
+	KUNIT_EXPECT_EQ(test, layout.chroma_size, 1305600U);
+	KUNIT_EXPECT_EQ(test, layout.frame_size, 3916800U);
+	KUNIT_EXPECT_EQ(test, layout.mv_size, 522752U);
+	KUNIT_EXPECT_EQ(test, layout.fourcc, V4L2_PIX_FMT_MT2110T);
+	KUNIT_EXPECT_EQ(test, layout.num_planes, (u8)2);
+
+	ret = mt6797_hevc_output_plan(0x10000000, 0x20000000, &layout, &output);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, output.y_addr_512, 0x00080000U);
+	KUNIT_EXPECT_EQ(test, output.c_addr_256, 0x00200000U);
+	KUNIT_EXPECT_EQ(test, output.c_offset, 2611200U);
+
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_buffer_layout(64, 64, 10, &layout), 0);
+	KUNIT_EXPECT_EQ(test, layout.luma_size, 5120U);
+	KUNIT_EXPECT_EQ(test, layout.chroma_size, 2560U);
+	KUNIT_EXPECT_EQ(test, layout.frame_size, 8192U);
 }
 
 static void mt6797_hevc_min_layout_test(struct kunit *test)
 {
 	struct mt6797_hevc_buffer_layout layout;
 
-	KUNIT_ASSERT_EQ(test, mt6797_hevc_buffer_layout(64, 64, &layout), 0);
+	KUNIT_ASSERT_EQ(test,
+			mt6797_hevc_buffer_layout(64, 64, 8, &layout), 0);
 	KUNIT_EXPECT_EQ(test, layout.width, 64U);
 	KUNIT_EXPECT_EQ(test, layout.height, 64U);
 	KUNIT_EXPECT_EQ(test, layout.luma_size, 4096U);
 	KUNIT_EXPECT_EQ(test, layout.chroma_size, 2048U);
 	KUNIT_EXPECT_EQ(test, layout.frame_size, 6144U);
 	KUNIT_EXPECT_EQ(test, layout.mv_size, 1536U);
+	KUNIT_EXPECT_EQ(test, layout.fourcc, V4L2_PIX_FMT_MS21);
+	KUNIT_EXPECT_EQ(test, layout.num_planes, (u8)1);
 }
 
 static void mt6797_hevc_reject_layout_test(struct kunit *test)
 {
 	struct mt6797_hevc_buffer_layout layout;
 
-	KUNIT_EXPECT_EQ(test, mt6797_hevc_buffer_layout(0, 1080, &layout),
+	KUNIT_EXPECT_EQ(test, mt6797_hevc_buffer_layout(0, 1080, 8, &layout),
 			-ERANGE);
-	KUNIT_EXPECT_EQ(test, mt6797_hevc_buffer_layout(1921, 1080, &layout),
+	KUNIT_EXPECT_EQ(test, mt6797_hevc_buffer_layout(1921, 1080, 8, &layout),
 			-ERANGE);
-	KUNIT_EXPECT_EQ(test, mt6797_hevc_buffer_layout(1920, 1089, &layout),
+	KUNIT_EXPECT_EQ(test, mt6797_hevc_buffer_layout(1920, 1089, 8, &layout),
 			-ERANGE);
-	KUNIT_EXPECT_EQ(test, mt6797_hevc_buffer_layout(1920, 1080, NULL),
+	KUNIT_EXPECT_EQ(test, mt6797_hevc_buffer_layout(1920, 1080, 8, NULL),
 			-ERANGE);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_hevc_buffer_layout(1920, 1080, 9, &layout),
+			-EOPNOTSUPP);
 }
 
 static void mt6797_hevc_staging_size_test(struct kunit *test)
@@ -617,6 +687,7 @@ static void mt6797_hevc_slice_rps_regs_test(struct kunit *test)
 
 static struct kunit_case mt6797_hevc_test_cases[] = {
 	KUNIT_CASE(mt6797_hevc_sps_regs_test),
+	KUNIT_CASE(mt6797_hevc_main10_sps_regs_test),
 	KUNIT_CASE(mt6797_hevc_pps_regs_test),
 	KUNIT_CASE(mt6797_hevc_slice_regs_test),
 	KUNIT_CASE(mt6797_hevc_tile_regs_test),
@@ -628,6 +699,7 @@ static struct kunit_case mt6797_hevc_test_cases[] = {
 	KUNIT_CASE(mt6797_hevc_mv_slot_plan_test),
 	KUNIT_CASE(mt6797_hevc_reject_plans_test),
 	KUNIT_CASE(mt6797_hevc_1080p_layout_test),
+	KUNIT_CASE(mt6797_hevc_main10_layout_test),
 	KUNIT_CASE(mt6797_hevc_min_layout_test),
 	KUNIT_CASE(mt6797_hevc_reject_layout_test),
 	KUNIT_CASE(mt6797_hevc_staging_size_test),

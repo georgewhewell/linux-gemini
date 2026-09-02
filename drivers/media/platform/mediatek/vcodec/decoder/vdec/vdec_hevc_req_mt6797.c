@@ -158,16 +158,14 @@ mt6797_hevc_fill_ref_buffers(struct mt6797_hevc_inst *inst,
 {
 	struct vb2_queue *vq;
 	unsigned int i;
-	u32 frame_size;
 
-	frame_size = layout->luma_size + layout->chroma_size;
 	vq = v4l2_m2m_get_vq(inst->ctx->m2m_ctx,
 			     V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
 	for (i = 0; i < dec->num_active_dpb_entries; i++) {
 		const struct v4l2_hevc_dpb_entry *dpb = &dec->dpb[i];
 		struct mt6797_hevc_output_plan output;
 		struct vb2_buffer *vb;
-		u64 c_addr;
+		u64 c_addr, y_addr;
 		u8 slot = slots->dpb_slots[i];
 		int ret;
 
@@ -180,19 +178,28 @@ mt6797_hevc_fill_ref_buffers(struct mt6797_hevc_inst *inst,
 					  i, dpb->timestamp);
 			return -ENOENT;
 		}
-		if (vb2_plane_size(vb, 0) < frame_size)
-			return -ENOSPC;
-
-		buffers[i].y_addr = vb2_dma_contig_plane_dma_addr(vb, 0);
-		if (check_add_overflow(buffers[i].y_addr,
-				       (u64)layout->luma_size, &c_addr))
-			return -ERANGE;
-		ret = mt6797_hevc_output_plan(buffers[i].y_addr, c_addr, layout,
+		if (vb->num_planes != layout->num_planes)
+			return -EINVAL;
+		y_addr = vb2_dma_contig_plane_dma_addr(vb, 0);
+		if (layout->num_planes == 2) {
+			if (vb2_plane_size(vb, 0) < layout->luma_size ||
+			    vb2_plane_size(vb, 1) < layout->chroma_size)
+				return -ENOSPC;
+			c_addr = vb2_dma_contig_plane_dma_addr(vb, 1);
+		} else {
+			if (vb2_plane_size(vb, 0) < layout->frame_size)
+				return -ENOSPC;
+			if (check_add_overflow(y_addr, (u64)layout->luma_size,
+					       &c_addr))
+				return -ERANGE;
+		}
+		ret = mt6797_hevc_output_plan(y_addr, c_addr, layout,
 					      &output);
 		if (ret)
 			return ret;
 
 		buffers[i].reference_ts = dpb->timestamp;
+		buffers[i].y_addr = y_addr;
 		buffers[i].c_addr = c_addr;
 		buffers[i].mv_addr = inst->mv[slot].dma_addr;
 		buffers[i].mv_slot = slot;
@@ -307,6 +314,7 @@ static int mt6797_hevc_init_barrel(struct mt6797_hevc_inst *inst,
 static void
 mt6797_hevc_program_output(struct mt6797_hevc_inst *inst,
 			   const struct v4l2_ctrl_hevc_sps *sps,
+			   const struct mt6797_hevc_sps_regs *sps_regs,
 			   const struct mt6797_hevc_output_plan *output,
 			   u32 current_mv)
 {
@@ -325,6 +333,11 @@ mt6797_hevc_program_output(struct mt6797_hevc_inst *inst,
 	writel(1, regs->mc + 0x250);
 	writel(output->mb_width - 1, regs->mc + 0x260);
 	writel(output->mb_height - 1, regs->mc + 0x264);
+	if (sps_regs->bit_depth == 10) {
+		writel(sps_regs->mc_0cec, regs->mc + 0xcec);
+		writel(sps_regs->pp_0b8c, regs->pp + 0xb8c);
+		writel(sps_regs->pp_0b90, regs->pp + 0xb90);
+	}
 	writel(current_mv >> 4, regs->mv + 0x20c);
 	writel(1, regs->mc + 0xb5c);
 }
@@ -624,6 +637,7 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 		return ret;
 	ret = mt6797_hevc_buffer_layout(sps->pic_width_in_luma_samples,
 					sps->pic_height_in_luma_samples,
+					sps_regs.bit_depth,
 					&layout);
 	if (ret)
 		return ret;
@@ -641,6 +655,10 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	fb = inst->ctx->dev->vdec_pdata->get_cap_buffer(inst->ctx);
 	if (!fb)
 		return -EBUSY;
+	if (!inst->ctx->q_data[MTK_Q_DATA_DST].fmt ||
+	    inst->ctx->q_data[MTK_Q_DATA_DST].fmt->fourcc != layout.fourcc ||
+	    inst->ctx->q_data[MTK_Q_DATA_DST].fmt->num_planes != layout.num_planes)
+		return -EINVAL;
 	if (fb->base_y.size < layout.luma_size ||
 	    fb->base_c.size < layout.chroma_size)
 		return -ENOSPC;
@@ -675,7 +693,7 @@ static int mt6797_hevc_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	if (ret)
 		return ret;
 	mt6797_hevc_program_refs(inst, &refs);
-	mt6797_hevc_program_output(inst, sps, &output,
+	mt6797_hevc_program_output(inst, sps, &sps_regs, &output,
 				   inst->mv[mv_slots.current_slot].dma_addr);
 	mt6797_hevc_program_scaling(inst, scaling);
 	mt6797_hevc_program_syntax(inst, &sps_regs, &pps_regs, &rps_regs,
@@ -705,6 +723,7 @@ static int mt6797_hevc_get_param(void *h_vdec, enum vdec_get_param_type type,
 		pic->pic_w = ctx->picinfo.pic_w;
 		pic->pic_h = ctx->picinfo.pic_h;
 		ret = mt6797_hevc_buffer_layout(pic->pic_w, pic->pic_h,
+						ctx->is_10bit_bitstream ? 10 : 8,
 						&layout);
 		if (ret)
 			return ret;
@@ -712,7 +731,7 @@ static int mt6797_hevc_get_param(void *h_vdec, enum vdec_get_param_type type,
 		pic->buf_h = layout.height;
 		pic->fb_sz[0] = layout.luma_size;
 		pic->fb_sz[1] = layout.chroma_size;
-		pic->cap_fourcc = V4L2_PIX_FMT_MS21;
+		pic->cap_fourcc = layout.fourcc;
 		break;
 	case GET_PARAM_DPB_SIZE:
 		*(unsigned int *)out = V4L2_HEVC_DPB_ENTRIES_NUM_MAX;

@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/mediatek,mt6797-seninf.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 sensor interface and CSI-2 receiver
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  SENINF is the CSI-2 receiver and sensor-interface crossbar in the MT6797
+  camera subsystem. The block contains a shared top-level window, eight 4 KiB
+  sensor-interface windows, and two MIPI receiver analog windows. It has no
+  independently described interrupt in the MT6797 platform source.
+
+  The binding describes the complete resource owner. A board must not enable
+  the node or add endpoints until its physical CSI route and D-PHY sequence
+  have been established.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-seninf
+
+  reg:
+    items:
+      - description: Shared SENINF top level and eight 4 KiB receiver windows
+      - description: MIPI receiver CSI0 analog window
+      - description: MIPI receiver CSI1 analog window
+
+  reg-names:
+    items:
+      - const: seninf
+      - const: csi0-ana
+      - const: csi1-ana
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: seninf
+
+  power-domains:
+    maxItems: 1
+
+  ports:
+    $ref: /schemas/graph.yaml#/properties/ports
+
+    properties:
+      port@0:
+        $ref: /schemas/graph.yaml#/$defs/port-base
+        unevaluatedProperties: false
+        description: CSI-2 input from a camera sensor
+
+        properties:
+          endpoint:
+            $ref: video-interfaces.yaml#
+            unevaluatedProperties: false
+
+            properties:
+              bus-type:
+                const: 4
+
+              data-lanes:
+                minItems: 1
+                maxItems: 4
+
+            required:
+              - data-lanes
+
+      port@1:
+        $ref: /schemas/graph.yaml#/properties/port
+        description: Pixel output to the camera capture engine
+
+    required:
+      - port@0
+      - port@1
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - clocks
+  - clock-names
+  - power-domains
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+    #include <dt-bindings/power/mt6797-power.h>
+
+    csi@1a040000 {
+        compatible = "mediatek,mt6797-seninf";
+        reg = <0x1a040000 0x8000>,
+              <0x10217000 0x1000>,
+              <0x10218000 0x1000>;
+        reg-names = "seninf", "csi0-ana", "csi1-ana";
+        clocks = <&camsys CLK_CAM_SENINF>;
+        clock-names = "seninf";
+        power-domains = <&scpsys MT6797_POWER_DOMAIN_ISP>;
+        status = "disabled";
+    };

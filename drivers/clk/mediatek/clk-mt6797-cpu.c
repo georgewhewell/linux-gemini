@@ -17,6 +17,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/soc/mediatek/mt6797-dvfsp-handoff.h>
 #include <linux/string.h>
 
 #include <linux/arm-smccc.h>
@@ -48,8 +49,8 @@ struct mt6797_cpuclk;
 
 struct mt6797_cpuclk_observer {
 	void __iomem *mcumixed;
-	void __iomem *cspm;
 	void __iomem *mcucfg;
+	struct mt6797_dvfsp_handoff *handoff;
 	struct clk *i2c_clk;
 	/* Serializes snapshots and complete reconfiguration transactions. */
 	struct mutex lock;
@@ -110,7 +111,8 @@ static int mt6797_cpuclk_secure_read(unsigned long fid, u32 address, u32 *value)
 }
 
 static int
-mt6797_cpuclk_lease_acquire(struct mt6797_cpuclk_observer *observer)
+mt6797_cpuclk_lease_acquire(struct mt6797_cpuclk_observer *observer,
+			    void __iomem *cspm)
 {
 	unsigned int i;
 	int ret;
@@ -120,13 +122,13 @@ mt6797_cpuclk_lease_acquire(struct mt6797_cpuclk_observer *observer)
 		return ret;
 
 	writel(MT6797_CPUCLK_CSPM_POWERON_VALUE,
-	       observer->cspm + MT6797_CPUCLK_CSPM_POWERON);
-	readl(observer->cspm + MT6797_CPUCLK_CSPM_POWERON);
+	       cspm + MT6797_CPUCLK_CSPM_POWERON);
+	readl(cspm + MT6797_CPUCLK_CSPM_POWERON);
 
 	for (i = 0; i < MT6797_CPUCLK_CSPM_RETRIES; i++) {
 		writel(MT6797_CPUCLK_CSPM_SEMAPHORE_REQUEST,
-		       observer->cspm + MT6797_CPUCLK_CSPM_SEMAPHORE);
-		if (readl(observer->cspm + MT6797_CPUCLK_CSPM_SEMAPHORE) &
+		       cspm + MT6797_CPUCLK_CSPM_SEMAPHORE);
+		if (readl(cspm + MT6797_CPUCLK_CSPM_SEMAPHORE) &
 		    MT6797_CPUCLK_CSPM_SEMAPHORE_HELD)
 			return 0;
 		udelay(MT6797_CPUCLK_CSPM_POLL_US);
@@ -137,15 +139,16 @@ mt6797_cpuclk_lease_acquire(struct mt6797_cpuclk_observer *observer)
 }
 
 static int
-mt6797_cpuclk_lease_release(struct mt6797_cpuclk_observer *observer)
+mt6797_cpuclk_lease_release(struct mt6797_cpuclk_observer *observer,
+			    void __iomem *cspm)
 {
 	unsigned int i;
 	int ret = -ETIMEDOUT;
 
 	writel(MT6797_CPUCLK_CSPM_SEMAPHORE_REQUEST,
-	       observer->cspm + MT6797_CPUCLK_CSPM_SEMAPHORE);
+	       cspm + MT6797_CPUCLK_CSPM_SEMAPHORE);
 	for (i = 0; i < MT6797_CPUCLK_CSPM_RETRIES; i++) {
-		if (!(readl(observer->cspm + MT6797_CPUCLK_CSPM_SEMAPHORE) &
+		if (!(readl(cspm + MT6797_CPUCLK_CSPM_SEMAPHORE) &
 		      MT6797_CPUCLK_CSPM_SEMAPHORE_HELD)) {
 			ret = 0;
 			break;
@@ -219,28 +222,47 @@ static int mt6797_cpuclk_read_stable(struct mt6797_cpuclk_observer *observer,
 	return mt6797_cpuclk_snapshots_equal(snapshot, &second) ? 0 : -EAGAIN;
 }
 
-static int
-mt6797_cpuclk_snapshot_locked(struct mt6797_cpuclk_observer *observer,
-			      struct mt6797_cpuclk_snapshot *snapshot)
+struct mt6797_cpuclk_snapshot_transaction {
+	struct mt6797_cpuclk_observer *observer;
+	struct mt6797_cpuclk_snapshot *snapshot;
+};
+
+static int mt6797_cpuclk_snapshot_transaction(void __iomem *cspm, void *context)
 {
+	struct mt6797_cpuclk_snapshot_transaction *transaction = context;
+	struct mt6797_cpuclk_observer *observer = transaction->observer;
 	int release_ret;
 	int ret;
 
-	if (observer->faulted)
-		return -EUCLEAN;
-
-	ret = mt6797_cpuclk_lease_acquire(observer);
+	ret = mt6797_cpuclk_lease_acquire(observer, cspm);
 	if (ret)
 		return ret;
 
-	ret = mt6797_cpuclk_read_stable(observer, snapshot);
-	release_ret = mt6797_cpuclk_lease_release(observer);
+	ret = mt6797_cpuclk_read_stable(observer, transaction->snapshot);
+	release_ret = mt6797_cpuclk_lease_release(observer, cspm);
 	if (release_ret) {
 		observer->faulted = true;
 		return -EUCLEAN;
 	}
 
 	return ret;
+}
+
+static int
+mt6797_cpuclk_snapshot_locked(struct mt6797_cpuclk_observer *observer,
+			      struct mt6797_cpuclk_snapshot *snapshot)
+{
+	struct mt6797_cpuclk_snapshot_transaction transaction = {
+		.observer = observer,
+		.snapshot = snapshot,
+	};
+
+	if (observer->faulted)
+		return -EUCLEAN;
+
+	return mt6797_dvfsp_cspm_transaction(observer->handoff,
+					     mt6797_cpuclk_snapshot_transaction,
+					     &transaction);
 }
 
 static int
@@ -335,11 +357,16 @@ mt6797_cpuclk_rollback_locked(struct mt6797_cpuclk_observer *observer,
 	return mt6797_cpuclk_write_pll(observer, plan->domain, con1);
 }
 
-static int
-mt6797_cpuclk_observer_apply(void *context,
-			     const struct mt6797_cpuclk_rate_plan *plan)
+struct mt6797_cpuclk_apply_transaction {
+	struct mt6797_cpuclk_observer *observer;
+	const struct mt6797_cpuclk_rate_plan *plan;
+};
+
+static int mt6797_cpuclk_apply_transaction(void __iomem *cspm, void *context)
 {
-	struct mt6797_cpuclk_observer *observer = context;
+	struct mt6797_cpuclk_apply_transaction *transaction = context;
+	struct mt6797_cpuclk_observer *observer = transaction->observer;
+	const struct mt6797_cpuclk_rate_plan *plan = transaction->plan;
 	struct mt6797_cpuclk_snapshot snapshot;
 	struct mt6797_cpuclk_state state;
 	unsigned long actual_rate;
@@ -348,18 +375,9 @@ mt6797_cpuclk_observer_apply(void *context,
 	int release_ret;
 	int ret;
 
-	if (!observer || !plan)
-		return -EINVAL;
-
-	mutex_lock(&observer->lock);
-	if (observer->faulted) {
-		ret = -EUCLEAN;
-		goto out_unlock;
-	}
-
-	ret = mt6797_cpuclk_lease_acquire(observer);
+	ret = mt6797_cpuclk_lease_acquire(observer, cspm);
 	if (ret)
-		goto out_unlock;
+		return ret;
 	leased = true;
 
 	ret = mt6797_cpuclk_read_stable(observer, &snapshot);
@@ -372,10 +390,8 @@ mt6797_cpuclk_observer_apply(void *context,
 	}
 
 	ret = mt6797_cpuclk_plan_pll_rate(plan->domain,
-					  plan->target.armpll_rate,
-					  plan->clk26m_rate,
-					  snapshot.armpll_con1[plan->domain],
-					  &target_con1, &actual_rate);
+		plan->target.armpll_rate, plan->clk26m_rate,
+		snapshot.armpll_con1[plan->domain], &target_con1, &actual_rate);
 	if (ret)
 		goto out_release;
 
@@ -409,14 +425,38 @@ rollback:
 
 out_release:
 	if (leased) {
-		release_ret = mt6797_cpuclk_lease_release(observer);
+		release_ret = mt6797_cpuclk_lease_release(observer, cspm);
 		if (release_ret) {
 			observer->faulted = true;
 			ret = -EUCLEAN;
 		}
 	}
-out_unlock:
+	return ret;
+}
+
+static int
+mt6797_cpuclk_observer_apply(void *context,
+			     const struct mt6797_cpuclk_rate_plan *plan)
+{
+	struct mt6797_cpuclk_observer *observer = context;
+	struct mt6797_cpuclk_apply_transaction transaction = {
+		.observer = observer,
+		.plan = plan,
+	};
+	int ret;
+
+	if (!observer || !plan)
+		return -EINVAL;
+
+	mutex_lock(&observer->lock);
+	if (observer->faulted)
+		ret = -EUCLEAN;
+	else
+		ret = mt6797_dvfsp_cspm_transaction(observer->handoff,
+						    mt6797_cpuclk_apply_transaction,
+						    &transaction);
 	mutex_unlock(&observer->lock);
+
 	return ret;
 }
 
@@ -586,14 +626,22 @@ mt6797_cpuclk_write_mux(struct mt6797_cpuclk_observer *observer, u32 value,
 	ndelay(200);
 
 	return ((readl(observer->mcumixed + MT6797_CPUCLK_MUXSEL) ^ value) &
-		mask) ? -EIO : 0;
+		mask) ?
+		       -EIO :
+		       0;
 }
 
-static int mt6797_cpuclk_path_set_parent(struct clk_hw *hw, u8 index)
+struct mt6797_cpuclk_parent_transaction {
+	struct mt6797_cpuclk_path_hw *path;
+	u8 index;
+};
+
+static int mt6797_cpuclk_parent_transaction(void __iomem *cspm, void *context)
 {
-	struct mt6797_cpuclk_path_hw *path =
-		container_of(hw, struct mt6797_cpuclk_path_hw, hw);
+	struct mt6797_cpuclk_parent_transaction *transaction = context;
+	struct mt6797_cpuclk_path_hw *path = transaction->path;
 	struct mt6797_cpuclk_observer *observer = &path->provider->observer;
+	struct clk_hw *hw = &path->hw;
 	struct mt6797_cpuclk_snapshot snapshot;
 	struct mt6797_cpuclk_state state;
 	struct mt6797_cpuclk_dcm_plan dcm;
@@ -606,27 +654,16 @@ static int mt6797_cpuclk_path_set_parent(struct clk_hw *hw, u8 index)
 	u32 initial_mux;
 	u32 target_mux;
 	u32 mux_mask;
+	u8 index = transaction->index;
 	bool mutated = false;
 	bool leased = false;
 	int release_ret;
 	int rollback_ret;
 	int ret;
 
-	if ((path->domain != MT6797_CPUCLK_MP0 &&
-	     path->domain != MT6797_CPUCLK_MP1) ||
-	    (index != MT6797_CPUCLK_ARMPLL &&
-	     index != MT6797_CPUCLK_MAINPLL))
-		return -EOPNOTSUPP;
-
-	mutex_lock(&observer->lock);
-	if (observer->faulted) {
-		ret = -EUCLEAN;
-		goto out_unlock;
-	}
-
-	ret = mt6797_cpuclk_lease_acquire(observer);
+	ret = mt6797_cpuclk_lease_acquire(observer, cspm);
 	if (ret)
-		goto out_unlock;
+		return ret;
 	leased = true;
 
 	ret = mt6797_cpuclk_read_stable(observer, &snapshot);
@@ -676,10 +713,10 @@ static int mt6797_cpuclk_path_set_parent(struct clk_hw *hw, u8 index)
 	if (ret)
 		goto out_release;
 	final_dcm = target_rate == current_rate ? snapshot.sync_dcm :
-		dcm.value[2];
+						  dcm.value[2];
 
 	mux_mask = path->domain == MT6797_CPUCLK_MP0 ? GENMASK(3, 2) :
-		GENMASK(5, 4);
+						       GENMASK(5, 4);
 	if (target_rate < current_rate) {
 		mutated = true;
 		ret = mt6797_cpuclk_write_dcm(observer, &dcm);
@@ -721,14 +758,40 @@ rollback:
 
 out_release:
 	if (leased) {
-		release_ret = mt6797_cpuclk_lease_release(observer);
+		release_ret = mt6797_cpuclk_lease_release(observer, cspm);
 		if (release_ret) {
 			observer->faulted = true;
 			ret = -EUCLEAN;
 		}
 	}
-out_unlock:
+	return ret;
+}
+
+static int mt6797_cpuclk_path_set_parent(struct clk_hw *hw, u8 index)
+{
+	struct mt6797_cpuclk_path_hw *path =
+		container_of(hw, struct mt6797_cpuclk_path_hw, hw);
+	struct mt6797_cpuclk_observer *observer = &path->provider->observer;
+	struct mt6797_cpuclk_parent_transaction transaction = {
+		.path = path,
+		.index = index,
+	};
+	int ret;
+
+	if ((path->domain != MT6797_CPUCLK_MP0 &&
+	     path->domain != MT6797_CPUCLK_MP1) ||
+	    (index != MT6797_CPUCLK_ARMPLL && index != MT6797_CPUCLK_MAINPLL))
+		return -EOPNOTSUPP;
+
+	mutex_lock(&observer->lock);
+	if (observer->faulted)
+		ret = -EUCLEAN;
+	else
+		ret = mt6797_dvfsp_cspm_transaction(observer->handoff,
+						    mt6797_cpuclk_parent_transaction,
+						    &transaction);
 	mutex_unlock(&observer->lock);
+
 	return ret;
 }
 
@@ -828,28 +891,22 @@ static int mt6797_cpuclk_backend_init(struct platform_device *pdev,
 				      struct mt6797_cpuclk *provider)
 {
 	struct mt6797_cpuclk_observer *observer = &provider->observer;
-	struct resource *cspm;
 	int ret;
+
+	observer->handoff = mt6797_dvfsp_handoff_get(&pdev->dev);
+	if (IS_ERR(observer->handoff))
+		return dev_err_probe(&pdev->dev, PTR_ERR(observer->handoff),
+				     "cannot acquire CSPM owner\n");
+
+	ret = mt6797_dvfsp_handoff_require_ready(observer->handoff);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "CSPM owner denied CPU clock access\n");
 
 	observer->mcumixed =
 		devm_platform_ioremap_resource_byname(pdev, "mcumixed");
 	if (IS_ERR(observer->mcumixed))
 		return PTR_ERR(observer->mcumixed);
-	/*
-	 * The DVFSP handoff provider owns the same CSPM window so it can
-	 * validate the stopped firmware before admitting I2C6.  CPU clock
-	 * transactions use only the CSPM power-on and hardware-semaphore
-	 * registers in that shared window.  Map it without claiming a second
-	 * exclusive iomem resource; devm_platform_ioremap_resource_byname()
-	 * would make whichever provider probes second fail with -EBUSY.
-	 */
-	cspm = platform_get_resource_byname(pdev, IORESOURCE_MEM, "cspm");
-	if (!cspm)
-		return -EINVAL;
-	observer->cspm = devm_ioremap(&pdev->dev, cspm->start,
-				      resource_size(cspm));
-	if (!observer->cspm)
-		return -ENOMEM;
 	observer->mcucfg =
 		devm_platform_ioremap_resource_byname(pdev, "mcucfg");
 	if (IS_ERR(observer->mcucfg))

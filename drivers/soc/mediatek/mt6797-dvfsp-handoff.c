@@ -28,6 +28,8 @@
 #include <linux/string.h>
 #include <linux/workqueue.h>
 
+#include "mt6797-dvfsp-cspm-access.h"
+
 #define CSPM_PCM_CON0			0x018
 #define CSPM_PCM_CON1			0x01c
 #define CSPM_PCM_PWR_IO_EN		0x02c
@@ -86,12 +88,6 @@ enum mt6797_dvfsp_handoff_state {
 	MT6797_DVFSP_FAULTED,
 };
 
-enum mt6797_dvfsp_permission {
-	MT6797_DVFSP_PERMISSION_FAULTED = -1,
-	MT6797_DVFSP_PERMISSION_BLOCKED,
-	MT6797_DVFSP_PERMISSION_READY,
-};
-
 enum mt6797_dvfsp_pm_fault {
 	MT6797_DVFSP_PM_OK,
 	MT6797_DVFSP_PM_SUSPEND_INVALID,
@@ -137,8 +133,11 @@ struct mt6797_dvfsp_handoff {
 	struct clk *i2c_clk;
 	/* Protects state, samples, non-atomic counters, and late work. */
 	struct mutex lock;
-	/* Held from I2C6 transfer admission through clock cleanup. */
-	struct mutex transfer_lock;
+	/*
+	 * Sole transaction gate for the owned CSPM mapping. It is held across
+	 * validation, PM revalidation, I2C6 admission, and CPU-clock callbacks.
+	 */
+	struct mt6797_dvfsp_cspm_access cspm_access;
 	u64 transfer_generation;
 	u64 transfer_cookie;
 	int last_transfer_result;
@@ -177,7 +176,6 @@ struct mt6797_dvfsp_handoff {
 	unsigned int consumer_post_selected;
 	bool consumer_post_passed;
 	atomic_t terminal_grant;
-	atomic_t permission;
 	atomic_t pm_fault;
 	enum mt6797_dvfsp_handoff_state state;
 	enum mt6797_dvfsp_late_state late_state;
@@ -210,7 +208,7 @@ static const char * const mt6797_dvfsp_sample_names[] = {
 	[MT6797_DVFSP_RESUME] = "resume",
 };
 
-static const char * const mt6797_dvfsp_state_names[] = {
+static const char *const mt6797_dvfsp_state_names[] = {
 	[MT6797_DVFSP_UNCLAIMED] = "unclaimed",
 	[MT6797_DVFSP_VALIDATING] = "validating",
 	[MT6797_DVFSP_NORMALIZING] = "normalizing",
@@ -220,23 +218,40 @@ static const char * const mt6797_dvfsp_state_names[] = {
 	[MT6797_DVFSP_FAULTED] = "faulted",
 };
 
-static const char * const mt6797_dvfsp_late_names[] = {
+static const char *const mt6797_dvfsp_late_names[] = {
 	[MT6797_DVFSP_LATE_NOT_SCHEDULED] = "not-scheduled",
 	[MT6797_DVFSP_LATE_PENDING] = "pending",
 	[MT6797_DVFSP_LATE_PASSED] = "passed",
 	[MT6797_DVFSP_LATE_FAILED] = "failed",
 };
 
-static const char * const mt6797_dvfsp_gate_names[] = {
+static const char *const mt6797_dvfsp_gate_names[] = {
 	[MT6797_DVFSP_GATE_UNKNOWN] = "unknown",
 	[MT6797_DVFSP_GATE_UNGATED] = "ungated",
 	[MT6797_DVFSP_GATE_GATED] = "gated",
 };
 
+static int mt6797_dvfsp_permission(struct mt6797_dvfsp_handoff *handoff)
+{
+	return mt6797_dvfsp_cspm_access_read(&handoff->cspm_access);
+}
+
+static int mt6797_dvfsp_set_permission(struct mt6797_dvfsp_handoff *handoff,
+				       int permission)
+{
+	return mt6797_dvfsp_cspm_access_set(&handoff->cspm_access, permission);
+}
+
+static int mt6797_dvfsp_change_permission(struct mt6797_dvfsp_handoff *handoff,
+					  int old, int new)
+{
+	return mt6797_dvfsp_cspm_access_cmpxchg(&handoff->cspm_access, old,
+						new);
+}
+
 static const char *mt6797_dvfsp_access_grant_name(int permission)
 {
-	return permission == MT6797_DVFSP_PERMISSION_READY ?
-		"ready" : "denied";
+	return permission == MT6797_DVFSP_PERMISSION_READY ? "ready" : "denied";
 }
 
 static const char *mt6797_dvfsp_pm_fault_name(int fault)
@@ -265,6 +280,8 @@ mt6797_dvfsp_read_snapshot(struct mt6797_dvfsp_handoff *handoff,
 {
 	unsigned int value;
 	int i;
+
+	mt6797_dvfsp_cspm_access_assert_held(&handoff->cspm_access);
 
 	*snapshot = (struct mt6797_dvfsp_snapshot) { };
 	snapshot->timer_before =
@@ -515,9 +532,11 @@ mt6797_dvfsp_sample_consumer_post(struct mt6797_dvfsp_handoff *handoff)
 		!handoff->consumer_post_dma_invalid &&
 		handoff->consumer_post_dma_unchanged ==
 			MT6797_DVFSP_CONSUMER_POST_COUNT;
-	handoff->consumer_post_selected = handoff->consumer_post_passed ?
-		(first_dma_gated >= 0 ? first_dma_gated : first_dma_unchanged) :
-		MT6797_DVFSP_CONSUMER_POST_COUNT - 1;
+	handoff->consumer_post_selected =
+		handoff->consumer_post_passed ?
+			(first_dma_gated >= 0 ? first_dma_gated :
+						first_dma_unchanged) :
+			MT6797_DVFSP_CONSUMER_POST_COUNT - 1;
 	handoff->samples[MT6797_DVFSP_CONSUMER_POST] =
 		handoff->consumer_post[handoff->consumer_post_selected];
 	handoff->sample_valid[MT6797_DVFSP_CONSUMER_POST] = true;
@@ -526,8 +545,7 @@ mt6797_dvfsp_sample_consumer_post(struct mt6797_dvfsp_handoff *handoff)
 }
 
 static const char *
-mt6797_dvfsp_consumer_cleanup_result(
-	const struct mt6797_dvfsp_handoff *handoff)
+mt6797_dvfsp_consumer_cleanup_result(const struct mt6797_dvfsp_handoff *handoff)
 {
 	if (!handoff->consumer_post_sequences)
 		return "not-run";
@@ -535,9 +553,8 @@ mt6797_dvfsp_consumer_cleanup_result(
 	return handoff->consumer_post_passed ? "passed" : "failed";
 }
 
-static void
-__mt6797_dvfsp_fault_locked(struct mt6797_dvfsp_handoff *handoff,
-			    const char *reason, bool report)
+static void __mt6797_dvfsp_fault_locked(struct mt6797_dvfsp_handoff *handoff,
+					const char *reason, bool report)
 {
 	if (handoff->state == MT6797_DVFSP_FAULTED)
 		return;
@@ -545,7 +562,7 @@ __mt6797_dvfsp_fault_locked(struct mt6797_dvfsp_handoff *handoff,
 	handoff->state = MT6797_DVFSP_FAULTED;
 	handoff->reason = reason;
 	handoff->fault_count++;
-	atomic_set(&handoff->permission, MT6797_DVFSP_PERMISSION_FAULTED);
+	mt6797_dvfsp_set_permission(handoff, MT6797_DVFSP_PERMISSION_FAULTED);
 	complete_all(&handoff->terminal);
 	if (report)
 		dev_err(handoff->dev,
@@ -553,9 +570,8 @@ __mt6797_dvfsp_fault_locked(struct mt6797_dvfsp_handoff *handoff,
 			reason);
 }
 
-static void
-mt6797_dvfsp_fault_locked(struct mt6797_dvfsp_handoff *handoff,
-			  const char *reason)
+static void mt6797_dvfsp_fault_locked(struct mt6797_dvfsp_handoff *handoff,
+				      const char *reason)
 {
 	__mt6797_dvfsp_fault_locked(handoff, reason, true);
 }
@@ -569,7 +585,9 @@ static void mt6797_dvfsp_late_work(struct work_struct *work)
 		&handoff->samples[MT6797_DVFSP_PRE0];
 	const struct mt6797_dvfsp_snapshot *late =
 		&handoff->samples[MT6797_DVFSP_LATE];
+	int ret;
 
+	mt6797_dvfsp_cspm_access_lock(&handoff->cspm_access);
 	mutex_lock(&handoff->lock);
 	if (handoff->state != MT6797_DVFSP_PROVISIONAL ||
 	    handoff->late_state != MT6797_DVFSP_LATE_PENDING)
@@ -585,11 +603,19 @@ static void mt6797_dvfsp_late_work(struct work_struct *work)
 		goto unlock;
 	}
 
+	ret = mt6797_dvfsp_set_permission(handoff,
+					 MT6797_DVFSP_PERMISSION_READY);
+	if (ret) {
+		handoff->late_state = MT6797_DVFSP_LATE_FAILED;
+		mt6797_dvfsp_fault_locked(handoff,
+					  "cspm-access-permission-faulted");
+		goto unlock;
+	}
+
 	handoff->state = MT6797_DVFSP_READY;
 	handoff->late_state = MT6797_DVFSP_LATE_PASSED;
 	handoff->reason = "late-validation-passed";
 	atomic_set(&handoff->terminal_grant, 1);
-	atomic_set(&handoff->permission, MT6797_DVFSP_PERMISSION_READY);
 	complete_all(&handoff->terminal);
 	dev_info(handoff->dev,
 		 "state=ready normalization=ungated-to-gated "
@@ -597,6 +623,7 @@ static void mt6797_dvfsp_late_work(struct work_struct *work)
 
 unlock:
 	mutex_unlock(&handoff->lock);
+	mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 }
 
 static void mt6797_dvfsp_run_handoff(struct mt6797_dvfsp_handoff *handoff)
@@ -610,6 +637,7 @@ static void mt6797_dvfsp_run_handoff(struct mt6797_dvfsp_handoff *handoff)
 	const char *failure = NULL;
 	int ret;
 
+	mt6797_dvfsp_cspm_access_lock(&handoff->cspm_access);
 	mutex_lock(&handoff->lock);
 	handoff->state = MT6797_DVFSP_VALIDATING;
 	handoff->reason = "initial-validation";
@@ -685,9 +713,10 @@ static void mt6797_dvfsp_run_handoff(struct mt6797_dvfsp_handoff *handoff)
 	handoff->late_state = MT6797_DVFSP_LATE_PENDING;
 	handoff->reason = "normalization-complete-late-pending";
 	if (!schedule_delayed_work(&handoff->late_work,
-				   msecs_to_jiffies(MT6797_DVFSP_LATE_DELAY_MS))) {
+		    msecs_to_jiffies(MT6797_DVFSP_LATE_DELAY_MS))) {
 		handoff->late_state = MT6797_DVFSP_LATE_NOT_SCHEDULED;
-		mt6797_dvfsp_fault_locked(handoff, "late-validation-not-scheduled");
+		mt6797_dvfsp_fault_locked(handoff,
+					  "late-validation-not-scheduled");
 		goto unlock;
 	}
 
@@ -700,6 +729,7 @@ static void mt6797_dvfsp_run_handoff(struct mt6797_dvfsp_handoff *handoff)
 
 unlock:
 	mutex_unlock(&handoff->lock);
+	mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 }
 
 static int mt6797_dvfsp_handoff_suspend_late(struct device *dev)
@@ -713,17 +743,16 @@ static int mt6797_dvfsp_handoff_suspend_late(struct device *dev)
 	if (!atomic_read(&handoff->terminal_grant))
 		return 0;
 
-	mutex_lock(&handoff->transfer_lock);
-	if (atomic_cmpxchg(&handoff->permission,
-			   MT6797_DVFSP_PERMISSION_READY,
-			   MT6797_DVFSP_PERMISSION_BLOCKED) !=
+	mt6797_dvfsp_cspm_access_lock(&handoff->cspm_access);
+	if (mt6797_dvfsp_change_permission(handoff,
+					   MT6797_DVFSP_PERMISSION_READY,
+					   MT6797_DVFSP_PERMISSION_BLOCKED) !=
 	    MT6797_DVFSP_PERMISSION_READY) {
 		atomic_inc(&handoff->suspend_failures);
-		atomic_set(&handoff->pm_fault,
-			   MT6797_DVFSP_PM_SUSPEND_INVALID);
-		atomic_set(&handoff->permission,
-			   MT6797_DVFSP_PERMISSION_FAULTED);
-		mutex_unlock(&handoff->transfer_lock);
+		atomic_set(&handoff->pm_fault, MT6797_DVFSP_PM_SUSPEND_INVALID);
+		mt6797_dvfsp_set_permission(handoff,
+					    MT6797_DVFSP_PERMISSION_FAULTED);
+		mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 		return -EHOSTDOWN;
 	}
 
@@ -736,13 +765,13 @@ static int mt6797_dvfsp_handoff_suspend_late(struct device *dev)
 		atomic_inc(&handoff->suspend_failures);
 		atomic_set(&handoff->pm_fault,
 			   MT6797_DVFSP_PM_SUSPEND_REVALIDATION);
-		atomic_set(&handoff->permission,
-			   MT6797_DVFSP_PERMISSION_FAULTED);
-		mutex_unlock(&handoff->transfer_lock);
+		mt6797_dvfsp_set_permission(handoff,
+					    MT6797_DVFSP_PERMISSION_FAULTED);
+		mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 		return -EIO;
 	}
 
-	mutex_unlock(&handoff->transfer_lock);
+	mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 	return 0;
 }
 
@@ -757,15 +786,14 @@ static int mt6797_dvfsp_handoff_resume_early(struct device *dev)
 	if (!atomic_read(&handoff->terminal_grant))
 		return 0;
 
-	mutex_lock(&handoff->transfer_lock);
-	if (atomic_read(&handoff->permission) !=
+	mt6797_dvfsp_cspm_access_lock(&handoff->cspm_access);
+	if (mt6797_dvfsp_permission(handoff) !=
 	    MT6797_DVFSP_PERMISSION_BLOCKED) {
 		atomic_inc(&handoff->resume_failures);
-		atomic_set(&handoff->pm_fault,
-			   MT6797_DVFSP_PM_RESUME_INVALID);
-		atomic_set(&handoff->permission,
-			   MT6797_DVFSP_PERMISSION_FAULTED);
-		mutex_unlock(&handoff->transfer_lock);
+		atomic_set(&handoff->pm_fault, MT6797_DVFSP_PM_RESUME_INVALID);
+		mt6797_dvfsp_set_permission(handoff,
+					    MT6797_DVFSP_PERMISSION_FAULTED);
+		mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 		return -EHOSTDOWN;
 	}
 
@@ -778,26 +806,25 @@ static int mt6797_dvfsp_handoff_resume_early(struct device *dev)
 		atomic_inc(&handoff->resume_failures);
 		atomic_set(&handoff->pm_fault,
 			   MT6797_DVFSP_PM_RESUME_REVALIDATION);
-		atomic_set(&handoff->permission,
-			   MT6797_DVFSP_PERMISSION_FAULTED);
-		mutex_unlock(&handoff->transfer_lock);
+		mt6797_dvfsp_set_permission(handoff,
+					    MT6797_DVFSP_PERMISSION_FAULTED);
+		mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 		return -EIO;
 	}
 
-	if (atomic_cmpxchg(&handoff->permission,
-			   MT6797_DVFSP_PERMISSION_BLOCKED,
-			   MT6797_DVFSP_PERMISSION_READY) !=
+	if (mt6797_dvfsp_change_permission(handoff,
+					   MT6797_DVFSP_PERMISSION_BLOCKED,
+					   MT6797_DVFSP_PERMISSION_READY) !=
 	    MT6797_DVFSP_PERMISSION_BLOCKED) {
 		atomic_inc(&handoff->resume_failures);
-		atomic_set(&handoff->pm_fault,
-			   MT6797_DVFSP_PM_RESUME_INVALID);
-		atomic_set(&handoff->permission,
-			   MT6797_DVFSP_PERMISSION_FAULTED);
-		mutex_unlock(&handoff->transfer_lock);
+		atomic_set(&handoff->pm_fault, MT6797_DVFSP_PM_RESUME_INVALID);
+		mt6797_dvfsp_set_permission(handoff,
+					    MT6797_DVFSP_PERMISSION_FAULTED);
+		mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 		return -EHOSTDOWN;
 	}
 
-	mutex_unlock(&handoff->transfer_lock);
+	mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 	return 0;
 }
 
@@ -848,7 +875,7 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 			    handoff->reason,
 			    mt6797_dvfsp_gate_names[handoff->initial_gate],
 			    mt6797_dvfsp_access_grant_name(
-				    atomic_read(&handoff->permission)),
+				    mt6797_dvfsp_permission(handoff)),
 			    handoff->transition_attempts,
 			    handoff->enable_successes, handoff->disable_count,
 			    mt6797_dvfsp_late_names[handoff->late_state],
@@ -982,10 +1009,10 @@ mt6797_dvfsp_handoff_begin_i2c6_transfer(
 	if (!handoff || !lease)
 		return -EINVAL;
 
-	mutex_lock(&handoff->transfer_lock);
+	mt6797_dvfsp_cspm_access_lock(&handoff->cspm_access);
 	mutex_lock(&handoff->lock);
 	if (handoff->state != MT6797_DVFSP_READY ||
-	    atomic_read(&handoff->permission) !=
+	    mt6797_dvfsp_permission(handoff) !=
 		    MT6797_DVFSP_PERMISSION_READY) {
 		ret = -EHOSTDOWN;
 		goto out_unlock;
@@ -1011,7 +1038,7 @@ mt6797_dvfsp_handoff_begin_i2c6_transfer(
 out_unlock:
 	mutex_unlock(&handoff->lock);
 	if (ret)
-		mutex_unlock(&handoff->transfer_lock);
+		mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_begin_i2c6_transfer);
@@ -1040,7 +1067,7 @@ mt6797_dvfsp_handoff_end_i2c6_transfer(
 		handoff->transfer_cookie = 0;
 	}
 	mutex_unlock(&handoff->lock);
-	mutex_unlock(&handoff->transfer_lock);
+	mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_end_i2c6_transfer);
@@ -1191,7 +1218,7 @@ int mt6797_dvfsp_handoff_i2c6_fw_acquire(
 	if (!handoff || !lease || !fw_lease || !response)
 		return -EINVAL;
 
-	lockdep_assert_held(&handoff->transfer_lock);
+	mt6797_dvfsp_cspm_access_assert_held(&handoff->cspm_access);
 	memset(fw_lease, 0, sizeof(*fw_lease));
 
 	mutex_lock(&handoff->fw_owner_lock);
@@ -1278,7 +1305,7 @@ int mt6797_dvfsp_handoff_i2c6_fw_release(
 	if (!handoff || !lease || !fw_lease || !response)
 		return -EINVAL;
 
-	lockdep_assert_held(&handoff->transfer_lock);
+	mt6797_dvfsp_cspm_access_assert_held(&handoff->cspm_access);
 
 	mutex_lock(&handoff->fw_owner_lock);
 	mutex_lock(&handoff->lock);
@@ -1317,8 +1344,7 @@ int mt6797_dvfsp_handoff_i2c6_fw_release(
 	}
 
 	mutex_lock(&handoff->lock);
-	ret = mt6797_dvfsp_i2c6_fw_response_validate(
-		&request, response, true);
+	ret = mt6797_dvfsp_i2c6_fw_response_validate(&request, response, true);
 	if (ret) {
 		fault_reason = "i2c6-fw-release-response-invalid";
 	} else {
@@ -1335,8 +1361,7 @@ release_out_callback:
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_i2c6_fw_release);
 
-int
-mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff)
+int mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff)
 {
 	int ret = 0;
 
@@ -1345,8 +1370,7 @@ mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff)
 
 	mutex_lock(&handoff->lock);
 	if (handoff->state != MT6797_DVFSP_READY ||
-	    atomic_read(&handoff->permission) !=
-		    MT6797_DVFSP_PERMISSION_READY)
+	    mt6797_dvfsp_permission(handoff) != MT6797_DVFSP_PERMISSION_READY)
 		ret = -EHOSTDOWN;
 	mutex_unlock(&handoff->lock);
 
@@ -1354,11 +1378,22 @@ mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff)
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_require_ready);
 
-bool
-mt6797_dvfsp_handoff_is_ready_atomic(struct mt6797_dvfsp_handoff *handoff)
+int mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
+				  mt6797_dvfsp_cspm_transaction_fn operation,
+				  void *context)
+{
+	if (!handoff || !operation)
+		return -EINVAL;
+
+	return mt6797_dvfsp_cspm_access_transaction(&handoff->cspm_access,
+						handoff->cspm, operation, context);
+}
+EXPORT_SYMBOL_GPL(mt6797_dvfsp_cspm_transaction);
+
+bool mt6797_dvfsp_handoff_is_ready_atomic(struct mt6797_dvfsp_handoff *handoff)
 {
 	return handoff &&
-	       atomic_read(&handoff->permission) ==
+	       mt6797_dvfsp_permission(handoff) ==
 		       MT6797_DVFSP_PERMISSION_READY;
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_is_ready_atomic);
@@ -1374,6 +1409,7 @@ mt6797_dvfsp_handoff_validate_clock(
 		return -EINVAL;
 
 	snapshot = &handoff->samples[MT6797_DVFSP_CONSUMER_HELD];
+	mt6797_dvfsp_cspm_access_lock(&handoff->cspm_access);
 	mutex_lock(&handoff->lock);
 	/*
 	 * An ungated observation authorizes initialization and therefore
@@ -1383,7 +1419,7 @@ mt6797_dvfsp_handoff_validate_clock(
 	 */
 	if (!gated &&
 	    (handoff->state != MT6797_DVFSP_READY ||
-	     atomic_read(&handoff->permission) !=
+	     mt6797_dvfsp_permission(handoff) !=
 		     MT6797_DVFSP_PERMISSION_READY)) {
 		ret = -EHOSTDOWN;
 		goto unlock;
@@ -1455,13 +1491,13 @@ mt6797_dvfsp_handoff_validate_clock(
 
 unlock:
 	mutex_unlock(&handoff->lock);
+	mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_validate_clock);
 
-int
-mt6797_dvfsp_handoff_validate_clock_pm(
-	struct mt6797_dvfsp_handoff *handoff, bool gated)
+int mt6797_dvfsp_handoff_validate_clock_pm(struct mt6797_dvfsp_handoff *handoff,
+					   bool gated)
 {
 	struct mt6797_dvfsp_snapshot *snapshot;
 	int ret = 0;
@@ -1469,12 +1505,13 @@ mt6797_dvfsp_handoff_validate_clock_pm(
 	if (!handoff)
 		return -EINVAL;
 
+	mt6797_dvfsp_cspm_access_lock(&handoff->cspm_access);
 	mutex_lock(&handoff->lock);
 	if (!gated && !mt6797_dvfsp_handoff_is_ready_atomic(handoff)) {
 		atomic_set(&handoff->pm_fault,
 			   MT6797_DVFSP_PM_CONSUMER_NOT_READY);
-		atomic_set(&handoff->permission,
-			   MT6797_DVFSP_PERMISSION_FAULTED);
+		mt6797_dvfsp_set_permission(handoff,
+					    MT6797_DVFSP_PERMISSION_FAULTED);
 		ret = -EHOSTDOWN;
 		goto unlock_pm;
 	}
@@ -1507,6 +1544,7 @@ mt6797_dvfsp_handoff_validate_clock_pm(
 
 unlock_pm:
 	mutex_unlock(&handoff->lock);
+	mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_validate_clock_pm);
@@ -2978,13 +3016,12 @@ static int mt6797_dvfsp_handoff_probe(struct platform_device *pdev)
 	handoff->reason = "resources-not-ready";
 	mutex_init(&handoff->lock);
 	mutex_init(&handoff->state_owner_lock);
-	mutex_init(&handoff->transfer_lock);
+	mt6797_dvfsp_cspm_access_init(&handoff->cspm_access);
 	mutex_init(&handoff->fw_owner_lock);
 	mutex_init(&handoff->pcm_adapter_lock);
 	handoff->pcm_adapter_phase = MT6797_DVFSP_PCM_PHASE_UNAVAILABLE;
 	init_completion(&handoff->terminal);
 	atomic_set(&handoff->terminal_grant, 0);
-	atomic_set(&handoff->permission, MT6797_DVFSP_PERMISSION_BLOCKED);
 	atomic_set(&handoff->pm_fault, MT6797_DVFSP_PM_OK);
 	atomic_set(&handoff->suspend_checks, 0);
 	atomic_set(&handoff->suspend_failures, 0);

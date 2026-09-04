@@ -4,6 +4,10 @@
 
 #include <linux/types.h>
 
+#define MT6797_CPUCLK_SMC_REG_READ 0xc200035fUL
+#define MT6797_CPUCLK_MP2_PLL_CON0 0x102224a0U
+#define MT6797_CPUCLK_MP2_PLL_CON1 0x102224a4U
+
 enum mt6797_cpuclk_domain {
 	MT6797_CPUCLK_MP0,
 	MT6797_CPUCLK_MP1,
@@ -58,6 +62,9 @@ int mt6797_cpuclk_decode_state(enum mt6797_cpuclk_domain domain,
 			       const struct mt6797_cpuclk_snapshot *snapshot,
 			       unsigned long clk26m_rate,
 			       struct mt6797_cpuclk_state *state);
+bool mt6797_cpuclk_secure_read_allowed(unsigned long fid, u32 address);
+bool mt6797_cpuclk_snapshots_equal(const struct mt6797_cpuclk_snapshot *first,
+				   const struct mt6797_cpuclk_snapshot *second);
 unsigned long mt6797_cpuclk_apply_divider(unsigned long parent_rate,
 					  u8 divider);
 int mt6797_cpuclk_build_rate_plan(enum mt6797_cpuclk_domain domain,

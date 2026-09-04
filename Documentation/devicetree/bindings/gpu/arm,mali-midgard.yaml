@@ -98,6 +98,18 @@ properties:
       Phandle to the MediaTek MFG configuration syscon containing the GPU
       power-management controls.
 
+  nvmem-cell-names:
+    items:
+      - enum:
+          - gpu-efuse
+          - speed-bin
+
+  nvmem-cells:
+    maxItems: 1
+    description:
+      GPU speed-selection data. For MT6797 this is the ABI-tagged function and
+      PTP-version identity tuple exported by the bootloader devinfo provider.
+
   opp-table:
     type: object
 
@@ -190,11 +202,17 @@ allOf:
             - const: core1
             - const: core2
             - const: core3
+
+        nvmem-cell-names:
+          items:
+            - const: gpu-efuse
       required:
         - clock-names
         - assigned-clocks
         - assigned-clock-parents
         - mediatek,mfgcfg
+        - nvmem-cell-names
+        - nvmem-cells
         - power-domains
         - power-domain-names
         - resets

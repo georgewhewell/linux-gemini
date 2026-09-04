@@ -51,13 +51,25 @@ static const struct of_device_id mtk_mdp_of_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, mtk_mdp_of_ids);
 
-static void mtk_mdp_clock_on(struct mtk_mdp_dev *mdp)
+static int mtk_mdp_clock_on(struct mtk_mdp_dev *mdp)
 {
 	struct device *dev = &mdp->pdev->dev;
 	struct mtk_mdp_comp *comp_node;
+	int ret;
 
-	list_for_each_entry(comp_node, &mdp->comp_list, node)
-		mtk_mdp_comp_clock_on(dev, comp_node);
+	list_for_each_entry(comp_node, &mdp->comp_list, node) {
+		ret = mtk_mdp_comp_clock_on(dev, comp_node);
+		if (ret)
+			goto err_clock_off;
+	}
+
+	return 0;
+
+err_clock_off:
+	list_for_each_entry_continue_reverse(comp_node, &mdp->comp_list, node)
+		mtk_mdp_comp_clock_off(dev, comp_node);
+
+	return ret;
 }
 
 static void mtk_mdp_clock_off(struct mtk_mdp_dev *mdp)
@@ -283,9 +295,7 @@ static int __maybe_unused mtk_mdp_pm_resume(struct device *dev)
 {
 	struct mtk_mdp_dev *mdp = dev_get_drvdata(dev);
 
-	mtk_mdp_clock_on(mdp);
-
-	return 0;
+	return mtk_mdp_clock_on(mdp);
 }
 
 static int __maybe_unused mtk_mdp_suspend(struct device *dev)

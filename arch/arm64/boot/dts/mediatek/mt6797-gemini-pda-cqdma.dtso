@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA CQDMA qualification overlay.
+ *
+ * This overlay enables only the standalone memcpy DMA controller.  Keep it
+ * opt-in until both physical channels pass a bounded dmatest run; booting the
+ * base DT without the overlay leaves CQDMA disabled.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&cqdma {
+	status = "okay";
+};

@@ -535,6 +535,28 @@ static int mt6797_wifi_hif_runtime_pump_packet(void *context,
 	return 0;
 }
 
+int mt6797_wifi_hif_runtime_route_event(
+	struct mt6797_wifi_scan_transaction *transaction,
+	const struct mt6797_wifi_event_view *event)
+{
+	enum mt6797_wifi_scan_event_result result;
+
+	if (!transaction || !event)
+		return -EINVAL;
+	if (event->id != MT6797_WIFI_SCAN_DONE_EVENT_ID)
+		return 0;
+	return mt6797_wifi_scan_event(transaction, event, &result);
+}
+
+static int mt6797_wifi_hif_runtime_pump_event(
+	void *context, const struct mt6797_wifi_event_view *event)
+{
+	struct mt6797_wifi_hif_irq *irq = context;
+
+	return mt6797_wifi_hif_runtime_route_event(&irq->scan_transaction,
+						 event);
+}
+
 static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
 {
 	struct mt6797_wifi_hif_irq *irq = data;
@@ -561,6 +583,7 @@ static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
 			.read_tx_released = mt6797_wifi_hif_runtime_pump_tx,
 			.read_lengths = mt6797_wifi_hif_runtime_pump_lengths,
 			.read_packet = mt6797_wifi_hif_runtime_pump_packet,
+			.deliver_event = mt6797_wifi_hif_runtime_pump_event,
 			.expired = mt6797_wifi_hif_runtime_pump_expired,
 			.context = irq,
 		};

@@ -254,6 +254,60 @@ static void mt6797_wifi_hif_terminal_transition_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mode, (int)MT6797_WIFI_HIF_IRQ_CAPABILITY);
 }
 
+static void mt6797_wifi_hif_scan_event_routing_test(struct kunit *test)
+{
+	u8 payload[4] = { 7 };
+	struct mt6797_wifi_event_view event = {
+		.payload = payload,
+		.payload_length = sizeof(payload),
+		.id = MT6797_WIFI_SCAN_DONE_EVENT_ID,
+		.sequence = 99,
+	};
+	struct mt6797_wifi_scan_transaction transaction = {};
+
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_runtime_route_event(&transaction, &event), 0);
+	KUNIT_EXPECT_EQ(test, transaction.state,
+			(enum mt6797_wifi_scan_state)MT6797_WIFI_SCAN_IDLE);
+	transaction.state = MT6797_WIFI_SCAN_WAIT_DONE;
+	transaction.scan_sequence = 7;
+	event.id = 0x27;
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_runtime_route_event(&transaction, &event), 0);
+	KUNIT_EXPECT_EQ(test, transaction.state,
+			(enum mt6797_wifi_scan_state)MT6797_WIFI_SCAN_WAIT_DONE);
+	event.id = MT6797_WIFI_SCAN_DONE_EVENT_ID;
+	payload[0] = 6;
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_runtime_route_event(&transaction, &event), 0);
+	KUNIT_EXPECT_EQ(test, transaction.state,
+			(enum mt6797_wifi_scan_state)MT6797_WIFI_SCAN_WAIT_DONE);
+	payload[0] = 7;
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_runtime_route_event(&transaction, &event), 0);
+	KUNIT_EXPECT_EQ(test, transaction.state,
+			(enum mt6797_wifi_scan_state)MT6797_WIFI_SCAN_DONE);
+}
+
+static void mt6797_wifi_hif_scan_event_error_test(struct kunit *test)
+{
+	u8 payload[3] = { 7 };
+	struct mt6797_wifi_event_view event = {
+		.payload = payload,
+		.payload_length = sizeof(payload),
+		.id = MT6797_WIFI_SCAN_DONE_EVENT_ID,
+	};
+	struct mt6797_wifi_scan_transaction transaction = {
+		.state = MT6797_WIFI_SCAN_WAIT_DONE,
+		.scan_sequence = 7,
+	};
+
+	KUNIT_EXPECT_EQ(test,
+		mt6797_wifi_hif_runtime_route_event(&transaction, &event), -EPROTO);
+	KUNIT_EXPECT_EQ(test, transaction.state,
+			(enum mt6797_wifi_scan_state)MT6797_WIFI_SCAN_TERMINAL);
+}
+
 static void mt6797_wifi_hif_remove_after_fault_test(struct kunit *test)
 {
 	static const enum mt6797_wifi_hif_test_event expected[] = {
@@ -291,6 +345,8 @@ static struct kunit_case mt6797_wifi_hif_runtime_cases[] = {
 	KUNIT_CASE(mt6797_wifi_hif_device_enable_failure_test),
 	KUNIT_CASE(mt6797_wifi_hif_restore_failure_test),
 	KUNIT_CASE(mt6797_wifi_hif_terminal_transition_test),
+	KUNIT_CASE(mt6797_wifi_hif_scan_event_routing_test),
+	KUNIT_CASE(mt6797_wifi_hif_scan_event_error_test),
 	KUNIT_CASE(mt6797_wifi_hif_remove_after_fault_test),
 	{}
 };

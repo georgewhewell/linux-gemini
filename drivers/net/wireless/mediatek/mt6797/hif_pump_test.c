@@ -9,12 +9,17 @@
 #include "hif_regs.h"
 
 struct mt6797_wifi_hif_pump_test_context {
-	u8 event[MT6797_WIFI_EVENT_HEADER_LENGTH];
+	u8 event[MT6797_WIFI_EVENT_HEADER_LENGTH + 4];
 	u16 lengths[2][2];
 	u32 status;
 	unsigned int lengths_index;
 	unsigned int expired_calls;
 	unsigned int expire_at;
+	unsigned int delivered_events;
+	int event_result;
+	u8 delivered_id;
+	u8 delivered_sequence;
+	u8 delivered_payload;
 	bool endless_rx;
 	bool packet_fault;
 };
@@ -27,6 +32,7 @@ static void mt6797_wifi_hif_pump_test_event(
 	put_unaligned_le16(0xe000, context->event + 2);
 	context->event[4] = 0x0d;
 	context->event[5] = 3;
+	context->event[MT6797_WIFI_EVENT_HEADER_LENGTH] = 0x5a;
 }
 
 static int mt6797_wifi_hif_pump_test_status(void *data, u32 *status)
@@ -85,6 +91,19 @@ static bool mt6797_wifi_hif_pump_test_expired(void *data)
 	return ++context->expired_calls >= context->expire_at;
 }
 
+static int mt6797_wifi_hif_pump_test_deliver(
+	void *data, const struct mt6797_wifi_event_view *event)
+{
+	struct mt6797_wifi_hif_pump_test_context *context = data;
+
+	context->delivered_events++;
+	context->delivered_id = event->id;
+	context->delivered_sequence = event->sequence;
+	if (event->payload_length)
+		context->delivered_payload = event->payload[0];
+	return context->event_result;
+}
+
 static void mt6797_wifi_hif_pump_test_ops(
 	struct mt6797_wifi_hif_pump_test_context *context,
 	struct mt6797_wifi_hif_pump_ops *ops)
@@ -94,6 +113,7 @@ static void mt6797_wifi_hif_pump_test_ops(
 		.read_tx_released = mt6797_wifi_hif_pump_test_tx,
 		.read_lengths = mt6797_wifi_hif_pump_test_lengths,
 		.read_packet = mt6797_wifi_hif_pump_test_packet,
+		.deliver_event = mt6797_wifi_hif_pump_test_deliver,
 		.expired = mt6797_wifi_hif_pump_test_expired,
 		.context = context,
 	};
@@ -122,6 +142,12 @@ static void mt6797_wifi_hif_pump_success_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, stats.events, 1ULL);
 	KUNIT_EXPECT_EQ(test, stats.last_event_id, 0x0d);
 	KUNIT_EXPECT_EQ(test, stats.last_event_sequence, 3);
+	KUNIT_EXPECT_EQ(test, context.delivered_events, 1U);
+	KUNIT_EXPECT_EQ(test, context.delivered_id, (u8)0x0d);
+	KUNIT_EXPECT_EQ(test, context.delivered_sequence, (u8)3);
+	KUNIT_EXPECT_EQ(test, context.delivered_payload, (u8)0x5a);
+	context.event[MT6797_WIFI_EVENT_HEADER_LENGTH] = 0xa5;
+	KUNIT_EXPECT_EQ(test, context.delivered_payload, (u8)0x5a);
 }
 
 static void mt6797_wifi_hif_pump_malformed_test(struct kunit *test)
@@ -230,15 +256,68 @@ static void mt6797_wifi_hif_pump_typed_dispatch_test(struct kunit *test)
 		.kind = MT6797_WIFI_RX_IEEE80211,
 	};
 
-	KUNIT_ASSERT_EQ(test, mt6797_wifi_hif_pump_dispatch(&stats, &frame), 0);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_pump_dispatch(NULL, &stats, &frame), 0);
 	frame.kind = MT6797_WIFI_RX_ETHERNET;
-	KUNIT_ASSERT_EQ(test, mt6797_wifi_hif_pump_dispatch(&stats, &frame), 0);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_pump_dispatch(NULL, &stats, &frame), 0);
 	KUNIT_EXPECT_EQ(test, stats.rx_packets, 2ULL);
 	KUNIT_EXPECT_EQ(test, stats.ieee80211_frames, 1ULL);
 	KUNIT_EXPECT_EQ(test, stats.ethernet_frames, 1ULL);
 	frame.kind = 99;
-	KUNIT_EXPECT_EQ(test, mt6797_wifi_hif_pump_dispatch(&stats, &frame),
-			-EPROTO);
+	KUNIT_EXPECT_EQ(test,
+		mt6797_wifi_hif_pump_dispatch(NULL, &stats, &frame), -EPROTO);
+}
+
+static void mt6797_wifi_hif_pump_event_error_test(struct kunit *test)
+{
+	struct mt6797_wifi_hif_pump_test_context context = {
+		.status = MT6797_WIFI_WHISR_RX0_DONE,
+		.lengths = { { sizeof(context.event), 0 }, { 0, 0 } },
+		.event_result = -EPROTO,
+	};
+	struct mt6797_wifi_hif_pump_stats stats = {};
+	struct mt6797_wifi_hif_pump_ops ops;
+	u32 status;
+
+	mt6797_wifi_hif_pump_test_event(&context);
+	mt6797_wifi_hif_pump_test_ops(&context, &ops);
+	KUNIT_EXPECT_EQ(test,
+		mt6797_wifi_hif_pump_run(&ops, &stats, &status), -EPROTO);
+	KUNIT_EXPECT_EQ(test, context.delivered_events, 1U);
+	KUNIT_EXPECT_EQ(test, stats.rx_packets, 1ULL);
+	KUNIT_EXPECT_EQ(test, stats.events, 1ULL);
+}
+
+static void mt6797_wifi_hif_pump_event_selection_test(struct kunit *test)
+{
+	struct mt6797_wifi_hif_pump_test_context context = {};
+	struct mt6797_wifi_hif_pump_stats stats = {};
+	struct mt6797_wifi_hif_pump_ops ops = {
+		.deliver_event = mt6797_wifi_hif_pump_test_deliver,
+		.context = &context,
+	};
+	struct mt6797_wifi_rx_view frame = {
+		.kind = MT6797_WIFI_RX_IEEE80211,
+	};
+	u8 payload = 0x5a;
+
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_pump_dispatch(&ops, &stats, &frame), 0);
+	KUNIT_EXPECT_EQ(test, context.delivered_events, 0U);
+	frame = (struct mt6797_wifi_rx_view) {
+		.kind = MT6797_WIFI_RX_EVENT,
+		.payload = &payload,
+		.payload_length = sizeof(payload),
+		.packet_length = MT6797_WIFI_EVENT_HEADER_LENGTH + sizeof(payload),
+		.event_id = 0x27,
+		.sequence = 4,
+	};
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_pump_dispatch(&ops, &stats, &frame), 0);
+	KUNIT_EXPECT_EQ(test, context.delivered_events, 1U);
+	KUNIT_EXPECT_EQ(test, context.delivered_id, (u8)0x27);
+	KUNIT_EXPECT_EQ(test, context.delivered_payload, payload);
 }
 
 static struct kunit_case mt6797_wifi_hif_pump_cases[] = {
@@ -250,6 +329,8 @@ static struct kunit_case mt6797_wifi_hif_pump_cases[] = {
 	KUNIT_CASE(mt6797_wifi_hif_pump_status_fault_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_tx_overflow_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_typed_dispatch_test),
+	KUNIT_CASE(mt6797_wifi_hif_pump_event_error_test),
+	KUNIT_CASE(mt6797_wifi_hif_pump_event_selection_test),
 	{}
 };
 

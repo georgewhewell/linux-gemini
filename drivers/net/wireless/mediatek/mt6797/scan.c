@@ -10,8 +10,6 @@
 
 #define MT6797_WIFI_COMMAND_SCAN_V2		0x03U
 #define MT6797_WIFI_COMMAND_SCAN_CANCEL		0x1bU
-#define MT6797_WIFI_EVENT_SCAN_DONE		0x0dU
-
 #define MT6797_WIFI_SCAN_BODY_LENGTH		226U
 #define MT6797_WIFI_SCAN_SEQUENCE_OFFSET		8U
 #define MT6797_WIFI_SCAN_TYPE_OFFSET		10U
@@ -112,7 +110,7 @@ int mt6797_wifi_scan_event(struct mt6797_wifi_scan_transaction *transaction,
 	if (!transaction || !event || !result)
 		return -EINVAL;
 	*result = MT6797_WIFI_SCAN_EVENT_IGNORED;
-	if (event->id != MT6797_WIFI_EVENT_SCAN_DONE)
+	if (event->id != MT6797_WIFI_SCAN_DONE_EVENT_ID)
 		return 0;
 	if (transaction->state != MT6797_WIFI_SCAN_WAIT_DONE)
 		return 0;

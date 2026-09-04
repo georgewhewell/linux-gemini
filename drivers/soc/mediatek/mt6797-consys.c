@@ -2,12 +2,15 @@
 /*
  * MediaTek MT6797 connectivity subsystem ownership foundation.
  *
- * This driver is deliberately fail-closed: it only retains and validates
- * Device Tree resource metadata and verified firmware. It never maps or
- * accesses MMIO; enables or disables a regulator, clock, reset, interrupt,
- * or power domain; transmits firmware; or maps the shared reserved memory.
+ * This driver is deliberately fail-closed: it retains and validates Device
+ * Tree resource metadata and verified firmware, then aggregates the dormant
+ * BTIF supplier and allocates the single full-STP session owner. Component
+ * binding never maps or accesses CONSYS MMIO; enables or disables a regulator,
+ * clock, reset, interrupt, or power domain; transmits firmware or a frame; or
+ * maps the shared reserved memory.
  */
 
+#include <linux/component.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
@@ -20,6 +23,10 @@
 #include <linux/remoteproc/mtk_mt6797_consys.h>
 #include <linux/reset.h>
 #include <linux/sizes.h>
+
+#include <linux/soc/mediatek/mt6797-consys-stp-session.h>
+
+#include "mt6797-consys-internal.h"
 
 #define MT6797_CONSYS_SHARED_MEM_SIZE	0x200000ULL
 #define MT6797_CONSYS_SHARED_MEM_MIN	0x40000000ULL
@@ -46,11 +53,169 @@ struct mt6797_consys {
 	struct regulator *vcn28;
 	struct reset_control *conn_mcu_reset;
 	struct mt6797_consys_fw_bundle *firmware;
+	struct device *btif_supplier;
+	const struct mt6797_consys_btif_ops *btif_ops;
+	void *btif_context;
+	struct mt6797_consys_stp_session *stp_session;
 	struct mutex lifecycle_lock;
 	enum mt6797_consys_owner_state state;
 	int bgf_irq;
 	int wdt_irq;
 };
+
+static int mt6797_consys_component_bind(struct device *dev)
+{
+	struct mt6797_consys *consys = dev_get_drvdata(dev);
+	int ret;
+
+	ret = component_bind_all(dev, consys);
+	if (ret)
+		return ret;
+
+	mutex_lock(&consys->lifecycle_lock);
+	ret = consys->btif_supplier && consys->stp_session ? 0 : -ENODEV;
+	mutex_unlock(&consys->lifecycle_lock);
+	if (ret) {
+		component_unbind_all(dev, consys);
+		return ret;
+	}
+
+	dev_info(dev, "dormant BTIF/STP owner assembled; hardware remains untouched\n");
+	return 0;
+}
+
+static void mt6797_consys_component_unbind(struct device *dev)
+{
+	const struct mt6797_consys_btif_ops *ops = NULL;
+	struct mt6797_consys_stp_session *session = NULL;
+	struct mt6797_consys *consys = dev_get_drvdata(dev);
+	void *context = NULL;
+
+	component_unbind_all(dev, consys);
+
+	/* A component must detach, but keep aggregate teardown fail-safe. */
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->stp_session) {
+		session = consys->stp_session;
+		ops = consys->btif_ops;
+		context = consys->btif_context;
+		consys->stp_session = NULL;
+		consys->btif_supplier = NULL;
+		consys->btif_ops = NULL;
+		consys->btif_context = NULL;
+	}
+	mutex_unlock(&consys->lifecycle_lock);
+	if (ops)
+		ops->unbind_session(context, session);
+	mt6797_consys_stp_session_destroy(session);
+}
+
+static const struct component_master_ops mt6797_consys_component_ops = {
+	.bind = mt6797_consys_component_bind,
+	.unbind = mt6797_consys_component_unbind,
+};
+
+static void mt6797_consys_component_del(void *data)
+{
+	component_master_del(data, &mt6797_consys_component_ops);
+}
+
+static int mt6797_consys_stp_receive(void *context,
+				     enum mtk_stp_channel channel,
+				     const u8 *payload, size_t payload_length)
+{
+	(void)context;
+	(void)channel;
+	(void)payload;
+	(void)payload_length;
+
+	/*
+	 * Full-STP delivery is deliberately closed until the WMT/GNSS endpoint
+	 * registrations have their own reviewed lifetimes. Returning an error
+	 * prevents the session from acknowledging data which nobody consumed.
+	 */
+	return -ENOTCONN;
+}
+
+int mt6797_consys_btif_attach(struct device *master, struct device *supplier,
+			      const struct mt6797_consys_btif_ops *ops,
+			      void *context)
+{
+	struct mt6797_consys_stp_session_ops session_ops;
+	struct mt6797_consys_stp_session *session;
+	struct mt6797_consys *consys;
+	int ret = 0;
+
+	if (!master || !supplier || !ops || !ops->transmit ||
+	    !ops->bind_session || !ops->unbind_session)
+		return -EINVAL;
+
+	consys = dev_get_drvdata(master);
+	if (!consys)
+		return -ENODEV;
+
+	session_ops = (struct mt6797_consys_stp_session_ops) {
+		.transmit = ops->transmit,
+		.receive = mt6797_consys_stp_receive,
+		.transmit_context = context,
+		.receive_context = consys,
+	};
+	session = mt6797_consys_stp_session_create(&session_ops);
+	if (IS_ERR(session))
+		return PTR_ERR(session);
+
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->state != MT6797_CONSYS_OWNER_FIRMWARE_READY) {
+		ret = -EAGAIN;
+	} else if (consys->btif_supplier) {
+		ret = -EBUSY;
+	} else {
+		ret = ops->bind_session(context, session);
+		if (!ret) {
+			consys->btif_supplier = supplier;
+			consys->btif_ops = ops;
+			consys->btif_context = context;
+			consys->stp_session = session;
+		}
+	}
+	mutex_unlock(&consys->lifecycle_lock);
+
+	if (ret)
+		mt6797_consys_stp_session_destroy(session);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_btif_attach);
+
+void mt6797_consys_btif_detach(struct device *master, struct device *supplier)
+{
+	const struct mt6797_consys_btif_ops *ops = NULL;
+	struct mt6797_consys_stp_session *session = NULL;
+	struct mt6797_consys *consys;
+	void *context = NULL;
+
+	if (!master || !supplier)
+		return;
+	consys = dev_get_drvdata(master);
+	if (!consys)
+		return;
+
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->btif_supplier == supplier) {
+		session = consys->stp_session;
+		ops = consys->btif_ops;
+		context = consys->btif_context;
+		consys->stp_session = NULL;
+		consys->btif_supplier = NULL;
+		consys->btif_ops = NULL;
+		consys->btif_context = NULL;
+	}
+	mutex_unlock(&consys->lifecycle_lock);
+
+	if (ops)
+		ops->unbind_session(context, session);
+	mt6797_consys_stp_session_destroy(session);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_btif_detach);
 
 static const struct mt6797_consys_resource mt6797_consys_resources[] = {
 	{
@@ -162,7 +327,9 @@ static void mt6797_consys_release_firmware(void *data)
 static int mt6797_consys_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct component_match *match = NULL;
 	struct mt6797_consys *consys;
+	struct device_node *btif;
 	int ret;
 
 	consys = devm_kzalloc(dev, sizeof(*consys), GFP_KERNEL);
@@ -230,8 +397,26 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	btif = of_parse_phandle(dev->of_node, "mediatek,btif", 0);
+	if (!btif)
+		return dev_err_probe(dev, -EINVAL, "missing BTIF supplier\n");
+	component_match_add_release(dev, &match, component_release_of,
+				    component_compare_of, btif);
 	platform_set_drvdata(pdev, consys);
-	dev_info(dev, "verified firmware ready; hardware remains untouched\n");
+	ret = component_master_add_with_match(dev, &mt6797_consys_component_ops,
+					      match);
+	if (ret) {
+		platform_set_drvdata(pdev, NULL);
+		return dev_err_probe(dev, ret,
+				     "failed to register BTIF aggregate\n");
+	}
+	ret = devm_add_action_or_reset(dev, mt6797_consys_component_del, dev);
+	if (ret) {
+		platform_set_drvdata(pdev, NULL);
+		return ret;
+	}
+
+	dev_info(dev, "verified firmware ready; waiting for dormant BTIF supplier\n");
 
 	return 0;
 }

@@ -114,6 +114,14 @@ bool mt6797_consys_stp_session_lease_active(
 			const struct mt6797_consys_stp_session_lease *lease);
 
 /*
+ * Verify that a capability belongs to the specified session owner. The caller
+ * must serialize this check with session teardown. This does not make an
+ * inactive or provisional capability active.
+ */
+bool mt6797_consys_stp_session_owns_lease(struct mt6797_consys_stp_session *session,
+					  const struct mt6797_consys_stp_session_lease *lease);
+
+/*
  * Bind one GNSS endpoint to an already-active full-STP owner. The GNSS client
  * never receives a raw transport or generic STP codec: only this opaque lease
  * can submit its channel-2 payloads and receive channel-2 frames. Unbind

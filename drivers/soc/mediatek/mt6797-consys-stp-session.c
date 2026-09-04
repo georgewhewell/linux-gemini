@@ -519,6 +519,13 @@ bool mt6797_consys_stp_session_lease_active(
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_lease_active);
 
+bool mt6797_consys_stp_session_owns_lease(struct mt6797_consys_stp_session *session,
+					  const struct mt6797_consys_stp_session_lease *lease)
+{
+	return session && lease && lease->session == session;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_owns_lease);
+
 int mt6797_consys_stp_session_bind_gnss(
 		const struct mt6797_consys_stp_session_lease *lease,
 		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context)
@@ -1300,6 +1307,8 @@ static void mt6797_consys_stp_test_bootstrap_promotes_without_reset(
 	lease = mt6797_consys_stp_session_bootstrap_promote(bootstrap);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(lease));
 	KUNIT_EXPECT_TRUE(test, mt6797_consys_stp_session_lease_active(lease));
+	KUNIT_EXPECT_TRUE(test, mt6797_consys_stp_session_owns_lease(session, lease));
+	KUNIT_EXPECT_FALSE(test, mt6797_consys_stp_session_owns_lease(NULL, lease));
 	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_transmit(lease,
 							 MTK_STP_WMT,
 							 &payload, sizeof(payload)), 0);

@@ -127,20 +127,23 @@ config MTK_MT6797_BTIF_PIO_KUNIT_TEST
 config MTK_MT6797_BTIF_PIO_PLATFORM
 	tristate "MediaTek MT6797 dormant BTIF PIO platform adapter"
 	depends on OF && MTK_MT6797_BTIF_PIO
+	depends on MTK_MT6797_CONSYS_INVENTORY
 	help
 	  Build the default-disabled platform acquisition adapter for the MT6797
 	  BTIF PIO transport owner. It validates and maps only the vendor-evidenced
 	  4 KiB BTIF core window, obtains its named btifc core clock and one
 	  DT-described IRQ, and installs a threaded handler with IRQF_NO_AUTOEN.
 	  It enables btifc only while its exclusive PIO lease is held, and disables
-	  it after synchronous IRQ quiesce and PIO fencing. It neither obtains nor
-	  votes APDMA; CONSYS power/reset/wake ownership is not yet proven.
+	  it after synchronous IRQ quiesce and PIO fencing. It registers as the
+	  component supplier for the canonical CONSYS owner, providing whole-frame
+	  TX and single-session RX routing without activating either path. It neither
+	  obtains nor votes APDMA; CONSYS power/reset/wake ownership is not yet proven.
 
-	  No Gemini Device Tree node matches this driver. A future separately
-	  reviewed node must remain disabled by default, and attachment still needs
-	  enable_experimental_platform_adapter=1. The module parameter is a further
-	  explicit experiment gate; it does not establish any missing power, pad,
-	  firmware, WMT, or radio contract.
+	  The canonical Gemini Device Tree node remains disabled by default.
+	  Component binding is inert; the later hardware lease and attachment still
+	  need enable_experimental_platform_adapter=1. The module parameter is a
+	  further explicit experiment gate; it does not establish any missing power,
+	  pad, firmware, WMT, or radio contract.
 
 config MTK_MT6797_BTIF_PIO_PLATFORM_KUNIT_TEST
 	bool "KUnit tests for the MT6797 BTIF PIO platform adapter"
@@ -254,17 +257,23 @@ config MTK_MT6797_CONSYS_INVENTORY
 	bool "MediaTek MT6797 CONSYS ownership foundation"
 	depends on ARM64 && ARCH_MEDIATEK && OF
 	depends on RESET_CONTROLLER
+	select COMPONENT
 	select MTK_MT6797_CONSYS_FW_HANDOFF
+	select MTK_MT6797_CONSYS_STP_SESSION
 	help
 	  Build the inert shared-resource owner for the MT6797 connectivity
 	  subsystem. It validates and retains the common MMIO, interrupt, reset,
 	  regulator, power-domain, and reserved-memory descriptions, then acquires
-	  and verifies the immutable WMT firmware bundle. Firmware references are
-	  released with the owner on every failed probe and unbind.
+	  and verifies the immutable WMT firmware bundle. It is the component master
+	  for one explicitly referenced BTIF supplier and allocates the sole dormant
+	  full-STP sequence/window owner when that supplier binds. Firmware and STP
+	  references are released in transport-first order on every failed bind and
+	  unbind.
 
-	  The owner does not map MMIO, operate a hardware resource, transmit a frame,
-	  or register client interfaces. Keep the Device Tree node disabled until
-	  reset release and the remote-processor boot protocol have been reviewed.
+	  Component assembly does not map MMIO, operate a hardware resource, start
+	  STP negotiation, transmit a frame, or register client interfaces. Keep the
+	  Device Tree node disabled until reset release and the remote-processor boot
+	  protocol have been reviewed.
 
 config MTK_MT6797_CONSYS_CORE
 	bool "MediaTek MT6797 CONSYS identity transaction core"

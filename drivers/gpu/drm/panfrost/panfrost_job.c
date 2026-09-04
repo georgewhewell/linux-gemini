@@ -730,7 +730,9 @@ panfrost_reset(struct panfrost_device *pfdev,
 	spin_unlock(&pfdev->js->job_lock);
 
 	/* Proceed with reset now. */
-	panfrost_device_reset(pfdev, false);
+	ret = panfrost_device_reset(pfdev, false);
+	if (ret)
+		dev_err(pfdev->base.dev, "GPU reset failed: %d\n", ret);
 
 	/* GPU has been reset, we can clear the reset pending bit. */
 	atomic_set(&pfdev->reset.pending, 0);

@@ -429,16 +429,29 @@ bool panfrost_exception_needs_reset(const struct panfrost_device *pfdev,
 	return false;
 }
 
-void panfrost_device_reset(struct panfrost_device *pfdev, bool enable_job_int)
+int panfrost_device_reset(struct panfrost_device *pfdev, bool enable_job_int)
 {
-	panfrost_gpu_soft_reset(pfdev);
+	int ret;
 
-	panfrost_gpu_power_on(pfdev);
+	ret = panfrost_gpu_prepare_power_on(pfdev);
+	if (ret)
+		return ret;
+
+	ret = panfrost_gpu_soft_reset(pfdev);
+	if (ret)
+		return ret;
+
+	ret = panfrost_gpu_power_on(pfdev);
+	if (ret)
+		return ret;
+
 	panfrost_mmu_reset(pfdev);
 
 	panfrost_jm_reset_interrupts(pfdev);
 	if (enable_job_int)
 		panfrost_jm_enable_interrupts(pfdev);
+
+	return 0;
 }
 
 static int panfrost_device_runtime_resume(struct device *dev)
@@ -462,11 +475,17 @@ static int panfrost_device_runtime_resume(struct device *dev)
 		}
 	}
 
-	panfrost_device_reset(pfdev, true);
+	ret = panfrost_device_reset(pfdev, true);
+	if (ret)
+		goto err_reset;
+
 	panfrost_devfreq_resume(pfdev);
 
 	return 0;
 
+err_reset:
+	if (pfdev->comp->pm_features & BIT(GPU_PM_RT) && pfdev->bus_clock)
+		clk_disable(pfdev->bus_clock);
 err_bus_clk:
 	if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
 		clk_disable(pfdev->clock);

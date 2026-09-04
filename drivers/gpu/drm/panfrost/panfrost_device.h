@@ -110,6 +110,8 @@ struct panfrost_compatible {
 
 	/* Vendor implementation callbacks */
 	int (*vendor_init)(struct panfrost_device *pfdev);
+	/* Restore platform state before the first GPU register access. */
+	int (*vendor_power_on)(struct panfrost_device *pfdev);
 	void (*vendor_quirk)(struct panfrost_device *pfdev);
 	/* Assert reset for one microsecond before the initial deassert. */
 	bool pulse_reset_on_init;
@@ -255,7 +257,7 @@ int panfrost_unstable_ioctl_check(void);
 
 int panfrost_device_init(struct panfrost_device *pfdev);
 void panfrost_device_fini(struct panfrost_device *pfdev);
-void panfrost_device_reset(struct panfrost_device *pfdev, bool enable_job_int);
+int panfrost_device_reset(struct panfrost_device *pfdev, bool enable_job_int);
 
 extern const struct dev_pm_ops panfrost_pm_ops;
 

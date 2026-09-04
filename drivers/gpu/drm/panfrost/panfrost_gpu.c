@@ -269,7 +269,7 @@ int panfrost_gpu_mt6797_init(struct panfrost_device *pfdev)
 	return panfrost_mt6797_set_supported_hw(pfdev);
 }
 
-void panfrost_gpu_mt6797_quirk(struct panfrost_device *pfdev)
+int panfrost_gpu_mt6797_power_on(struct panfrost_device *pfdev)
 {
 	u32 async_timing;
 	unsigned int reg;
@@ -282,22 +282,20 @@ void panfrost_gpu_mt6797_quirk(struct panfrost_device *pfdev)
 
 	ret = regmap_set_bits(pfdev->mfgcfg, MT6797_MFG_ASYNC_TIMING,
 			      async_timing);
-	if (ret) {
-		dev_err(pfdev->base.dev,
-			"failed to configure MFG asynchronous timing: %d\n", ret);
-		return;
-	}
+	if (ret)
+		return dev_err_probe(pfdev->base.dev, ret,
+				     "failed to configure MFG asynchronous timing\n");
 
 	for (reg = MT6797_MFG_PMU_ENABLE_FIRST;
 	     reg <= MT6797_MFG_PMU_ENABLE_LAST; reg += sizeof(u32)) {
 		ret = regmap_write(pfdev->mfgcfg, reg, U32_MAX);
-		if (ret) {
-			dev_err(pfdev->base.dev,
-				"failed to enable MFG PMU register %#x: %d\n",
-				reg, ret);
-			break;
-		}
+		if (ret)
+			return dev_err_probe(pfdev->base.dev, ret,
+					     "failed to enable MFG PMU register %#x\n",
+					     reg);
 	}
+
+	return 0;
 }
 
 static void panfrost_gpu_init_quirks(struct panfrost_device *pfdev)
@@ -635,35 +633,57 @@ static u64 panfrost_get_core_mask(struct panfrost_device *pfdev)
 	return core_mask;
 }
 
-void panfrost_gpu_power_on(struct panfrost_device *pfdev)
+int panfrost_gpu_prepare_power_on(struct panfrost_device *pfdev)
+{
+	if (pfdev->comp->vendor_power_on)
+		return pfdev->comp->vendor_power_on(pfdev);
+
+	return 0;
+}
+
+int panfrost_gpu_power_on(struct panfrost_device *pfdev)
 {
 	int ret;
-	u32 val;
+	u32 expected, val;
 	u64 core_mask;
 
 	panfrost_gpu_init_quirks(pfdev);
 	core_mask = panfrost_get_core_mask(pfdev);
 
-	gpu_write(pfdev, L2_PWRON_LO, pfdev->features.l2_present & core_mask);
+	expected = lower_32_bits(pfdev->features.l2_present & core_mask);
+	gpu_write(pfdev, L2_PWRON_LO, expected);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + L2_READY_LO,
-		val, val == (pfdev->features.l2_present & core_mask),
-		10, 20000);
-	if (ret)
-		dev_err(pfdev->base.dev, "error powering up gpu L2");
+		val, val == expected, 10, 20000);
+	if (ret) {
+		dev_err(pfdev->base.dev,
+			"L2 power-on timeout: ready=%#x transition=%#x expected=%#x\n",
+			val, gpu_read(pfdev, L2_PWRTRANS_LO), expected);
+		return ret;
+	}
 
-	gpu_write(pfdev, SHADER_PWRON_LO,
-		  pfdev->features.shader_present & core_mask);
+	expected = lower_32_bits(pfdev->features.shader_present & core_mask);
+	gpu_write(pfdev, SHADER_PWRON_LO, expected);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + SHADER_READY_LO,
-		val, val == (pfdev->features.shader_present & core_mask),
-		10, 20000);
-	if (ret)
-		dev_err(pfdev->base.dev, "error powering up gpu shader");
+		val, val == expected, 10, 20000);
+	if (ret) {
+		dev_err(pfdev->base.dev,
+			"shader power-on timeout: ready=%#x transition=%#x expected=%#x\n",
+			val, gpu_read(pfdev, SHADER_PWRTRANS_LO), expected);
+		return ret;
+	}
 
-	gpu_write(pfdev, TILER_PWRON_LO, pfdev->features.tiler_present);
+	expected = lower_32_bits(pfdev->features.tiler_present);
+	gpu_write(pfdev, TILER_PWRON_LO, expected);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + TILER_READY_LO,
-		val, val == pfdev->features.tiler_present, 10, 1000);
-	if (ret)
-		dev_err(pfdev->base.dev, "error powering up gpu tiler");
+		val, val == expected, 10, 1000);
+	if (ret) {
+		dev_err(pfdev->base.dev,
+			"tiler power-on timeout: ready=%#x transition=%#x expected=%#x\n",
+			val, gpu_read(pfdev, TILER_PWRTRANS_LO), expected);
+		return ret;
+	}
+
+	return 0;
 }
 
 void panfrost_gpu_power_off(struct panfrost_device *pfdev)
@@ -702,6 +722,10 @@ int panfrost_gpu_init(struct panfrost_device *pfdev)
 {
 	int err;
 
+	err = panfrost_gpu_prepare_power_on(pfdev);
+	if (err)
+		return err;
+
 	err = panfrost_gpu_soft_reset(pfdev);
 	if (err)
 		return err;
@@ -729,9 +753,7 @@ int panfrost_gpu_init(struct panfrost_device *pfdev)
 		return err;
 	}
 
-	panfrost_gpu_power_on(pfdev);
-
-	return 0;
+	return panfrost_gpu_power_on(pfdev);
 }
 
 void panfrost_gpu_fini(struct panfrost_device *pfdev)

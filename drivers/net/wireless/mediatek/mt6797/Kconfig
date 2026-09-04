@@ -60,6 +60,9 @@ config MTK_MT6797_WIFI_KUNIT_TEST
 	  plus strict RX group-3 and beacon/probe metadata parsing using memory-only
 	  fixtures. No firmware is requested and no MMIO,
 	  interrupt, regulator, CONSYS, or Wi-Fi hardware is accessed.
+	  It also checks copied, generation-scoped selection of an explicitly named
+	  BSSID and SSID from validated beacon/probe metadata, including refresh and
+	  expiry behavior.
 	  The suite also covers the pure caller-serialized AIS station and
 	  WLAN-table resource ledger, including atomic allocation rollback and
 	  stale-handle rejection, plus caller-driven AIS transaction ordering,

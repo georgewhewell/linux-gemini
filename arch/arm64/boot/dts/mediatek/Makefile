@@ -16,6 +16,12 @@ mt6797-gemini-pda-a53-dvfs-preflight-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-a53-dvfs-preflight.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-a53-dvfs-preflight.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-a53-dvfs-thermal-preflight.dtbo
+mt6797-gemini-pda-a53-dvfs-thermal-preflight-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-a53-dvfs-preflight.dtbo \
+	mt6797-gemini-a53-dvfs-thermal-preflight.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-a53-dvfs-thermal-preflight.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-a53-dvfs-activation.dtbo
 mt6797-gemini-pda-a53-dvfs-activation-dtbs := \
 	mt6797-gemini-pda.dtb \

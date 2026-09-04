@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA A53 DVFS thermal preflight.
+ *
+ * Compose this after mt6797-gemini-a53-dvfs-preflight.dtbo in a volatile FIT.
+ * That prerequisite exposes only the two captured boot OPPs, so cpufreq can
+ * bind and create standard cooling devices but neither policy can request a
+ * frequency transition.  This overlay then qualifies the calibrated MT6797
+ * aggregate sensor, trips, and cooling-map attachment without widening the
+ * clock or regulator mutation surface.
+ *
+ * The full A53 activation remains a separate later boot candidate.  CPU8/9,
+ * A72 power, BUCKB, and secure SRAM stay disabled by the prerequisite.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/thermal/thermal.h>
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&{/} {
+	thermal-zones {
+		soc-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <40>;
+			critical-action = "shutdown";
+			thermal-sensors = <&thermal>;
+
+			trips {
+				cpu_passive_preflight: cpu-passive {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				cpu_emergency_preflight: cpu-emergency {
+					temperature = <95000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				cpu_critical_preflight: cpu-critical {
+					temperature = <117000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map-a53-preflight-passive {
+					trip = <&cpu_passive_preflight>;
+					cooling-device = <&cpu0 0 0>, <&cpu4 0 0>;
+				};
+
+				map-a53-preflight-emergency {
+					trip = <&cpu_emergency_preflight>;
+					cooling-device = <&cpu0 0 0>, <&cpu4 0 0>;
+				};
+			};
+		};
+	};
+};
+
+&auxadc {
+	status = "okay";
+};
+
+&thermal {
+	status = "okay";
+};

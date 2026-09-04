@@ -288,8 +288,9 @@
 		reg = <0 0x18070000 0 0x200>,
 		      <0 0x10007000 0 0x100>,
 		      <0 0x10000000 0 0x2000>,
-		      <0 0x10006000 0 0x1000>;
-		reg-names = "mcu", "ap-rgu", "topckgen", "spm";
+		      <0 0x10006000 0 0x1000>,
+		      <0 0x180b6000 0 0x100>;
+		reg-names = "mcu", "ap-rgu", "topckgen", "spm", "afe";
 		interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>,
 			     <GIC_SPI 285 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-names = "bgf", "wdt";
@@ -301,6 +302,9 @@
 		vcn28-supply = <&mt6351_vcn28_reg>;
 		memory-region = <&consys_reserved_memory>;
 		memory-region-names = "shared";
+		mediatek,emi-mpu = <&consys_emi_mpu>;
+		mediatek,infracfg = <&infrasys>;
+		mediatek,spm = <&scpsys>;
 		mediatek,btif = <&btif>;
 		status = "disabled";
 	};

@@ -254,9 +254,11 @@ config MTK_MT6797_A72_POWER
 	help
 	  Verify that the external processor regulator, TOPRGU reset, SPM
 	  syscon, and standard MP2 clock resources can all be observed before
-	  any A72 power sequence is enabled.
+	  any A72 power sequence is enabled. When CPU8/9 use standard PSCI,
+	  also install a CPU hotplug preparation gate and verify their firmware
+	  affinity state before userspace can request CPU_ON.
 
-	  This preflight has no sysfs ABI, never changes hardware state, and never
+	  This driver has no sysfs ABI, never changes hardware state, and never
 	  authorizes CPU_ON. CPU core power remains owned by PSCI firmware.
 
 config MTK_MT6797_CONSYS_FW_HANDOFF

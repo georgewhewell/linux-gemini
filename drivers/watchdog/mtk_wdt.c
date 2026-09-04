@@ -595,7 +595,24 @@ static struct platform_driver mtk_wdt_driver = {
 	},
 };
 
-module_platform_driver(mtk_wdt_driver);
+static int __init mtk_wdt_driver_init(void)
+{
+	return platform_driver_register(&mtk_wdt_driver);
+}
+
+static void __exit mtk_wdt_driver_exit(void)
+{
+	platform_driver_unregister(&mtk_wdt_driver);
+}
+
+/*
+ * MT6797 enables thermal and CPU DVFS as built-in drivers.  Register the
+ * watchdog after OF platform population but before device_initcall drivers so
+ * start_at_boot covers their active probe sequences, including thermal MMIO
+ * programming and CPU rail vote seeding.
+ */
+subsys_initcall(mtk_wdt_driver_init);
+module_exit(mtk_wdt_driver_exit);
 
 module_param(timeout, uint, 0);
 MODULE_PARM_DESC(timeout, "Watchdog heartbeat in seconds");

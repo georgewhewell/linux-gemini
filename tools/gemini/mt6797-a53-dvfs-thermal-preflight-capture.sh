@@ -10,6 +10,7 @@ cpu_root=${CPU_ROOT:-/sys/devices/system/cpu}
 cpufreq_root=${CPUFREQ_ROOT:-$cpu_root/cpufreq}
 thermal_root=${THERMAL_ROOT:-/sys/class/thermal}
 kernel_log=${KERNEL_LOG:-}
+source_identity=${SOURCE_IDENTITY:-}
 
 fail()
 {
@@ -37,6 +38,15 @@ require_unsigned()
 	case "$unsigned_value" in
 	''|*[!0-9]*) fail "$unsigned_name is not unsigned: $unsigned_value" ;;
 	esac
+}
+
+require_source_identity()
+{
+	case "$source_identity" in
+	''|*[!0-9a-f]*) fail "source identity is not lowercase hexadecimal" ;;
+	esac
+	[ "${#source_identity}" -eq 40 ] ||
+		fail "source identity is not 40 hexadecimal characters"
 }
 
 require_rate_close()
@@ -139,6 +149,11 @@ check_cooling_device()
 }
 
 [ -d "$cpufreq_root" ] || fail "cpufreq class is absent"
+require_source_identity
+kernel_release=$(uname -r)
+case "$kernel_release" in
+''|*[!A-Za-z0-9._+-]*) fail "kernel release is unsafe: $kernel_release" ;;
+esac
 [ ! -d "$cpufreq_root/policy8" ] || fail "A72 cpufreq policy is present"
 check_policy policy0 "0 1 2 3" 1391000
 check_policy policy4 "4 5 6 7" 1950000
@@ -202,7 +217,9 @@ errors=$(printf '%s\n' "$log_text" | grep -Ei "$error_pattern" || true)
 	fail "CPU DVFS or thermal error found in kernel log"
 }
 
-echo "schema=gemini-mt6797-a53-dvfs-thermal-preflight-v1"
+echo "schema=gemini-mt6797-a53-dvfs-thermal-preflight-v2"
+echo "source_identity=$source_identity"
+echo "kernel_release=$kernel_release"
 echo "collector_mode=read_only"
 echo "frequency_transition_available=no"
 echo "frequency_transition_evidence=not_exercised"

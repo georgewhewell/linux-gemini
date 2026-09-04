@@ -12,6 +12,7 @@
 
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
+#include "boot.h"
 #include "firmware.h"
 #include "hif.h"
 
@@ -21,6 +22,7 @@
 struct mt6797_wifi {
 	struct mt6797_wifi_ahb_hif hif;
 	struct mt6797_wifi_firmware firmware;
+	struct mt6797_wifi_boot boot;
 	int irq;
 };
 
@@ -88,10 +90,27 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	ret = devm_add_action_or_reset(dev, mt6797_wifi_release_firmware, wifi);
 	if (ret)
 		return ret;
+	ret = mt6797_wifi_boot_start(&wifi->boot, dev, &wifi->hif,
+				     &wifi->firmware);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to start verified WLAN firmware\n");
 
 	platform_set_drvdata(pdev, wifi);
-	dev_info(dev, "verified WLAN firmware and HIF acquired; radio remains off\n");
+	dev_info(dev,
+		 "verified WLAN firmware started; IRQ and network interfaces remain disabled\n");
 	return 0;
+}
+
+static void mt6797_wifi_remove(struct platform_device *pdev)
+{
+	struct mt6797_wifi *wifi = platform_get_drvdata(pdev);
+	int ret;
+
+	ret = mt6797_wifi_boot_stop(&wifi->boot);
+	if (ret)
+		dev_err(&pdev->dev,
+			"failed to shut down WLAN firmware cleanly: %d\n", ret);
 }
 
 static const struct of_device_id mt6797_wifi_of_match[] = {
@@ -102,6 +121,7 @@ MODULE_DEVICE_TABLE(of, mt6797_wifi_of_match);
 
 static struct platform_driver mt6797_wifi_driver = {
 	.probe = mt6797_wifi_probe,
+	.remove = mt6797_wifi_remove,
 	.driver = {
 		.name = "mt6797-wifi",
 		.of_match_table = mt6797_wifi_of_match,

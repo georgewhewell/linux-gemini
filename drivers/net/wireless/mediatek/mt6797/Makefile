@@ -4,5 +4,5 @@ mt6797-wifi-ahb-hif-y := hif.o
 mt6797-wifi-ahb-hif-$(CONFIG_MT6797_WIFI_AHB_HIF_KUNIT_TEST) += hif_test.o
 
 obj-$(CONFIG_MTK_MT6797_WIFI) += mt6797-wifi.o
-mt6797-wifi-y := core.o firmware.o
-mt6797-wifi-$(CONFIG_MTK_MT6797_WIFI_KUNIT_TEST) += firmware_test.o
+mt6797-wifi-y := core.o firmware.o boot.o
+mt6797-wifi-$(CONFIG_MTK_MT6797_WIFI_KUNIT_TEST) += firmware_test.o boot_test.o

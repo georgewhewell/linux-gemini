@@ -35,6 +35,7 @@
 
 #include <linux/soc/mediatek/mt6797-consys-emi-mpu.h>
 #include <linux/soc/mediatek/mt6797-consys-bt.h>
+#include <linux/soc/mediatek/mt6797-consys-wifi.h>
 #include <linux/soc/mediatek/mt6797-consys-postid.h>
 #include <linux/soc/mediatek/mt6797-consys-postpatch.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
@@ -121,6 +122,7 @@ struct mt6797_consys {
 	struct mt6797_consys_stp_session *stp_session;
 	const struct mt6797_consys_stp_session_lease *stp_lease;
 	struct mt6797_consys_bt_lease *bt_lease;
+	struct mt6797_consys_wifi_lease *wifi_lease;
 	struct mt6797_consys_lifecycle lifecycle;
 	struct mt6797_consys_runtime_lease runtime_lease;
 	struct mt6797_consys_postid_owner postid;
@@ -140,6 +142,11 @@ struct mt6797_consys_bt_lease {
 	struct mt6797_consys *consys;
 	mt6797_consys_bt_rx_cb_t receive;
 	void *receive_context;
+	bool active;
+};
+
+struct mt6797_consys_wifi_lease {
+	struct mt6797_consys *consys;
 	bool active;
 };
 
@@ -491,7 +498,7 @@ static int mt6797_consys_bt_wmt(struct mt6797_consys *consys, bool enable)
 		msecs_to_jiffies(MT6797_CONSYS_WMT_TIMEOUT_MS));
 }
 
-static void mt6797_consys_bt_fence(struct mt6797_consys *consys)
+static void mt6797_consys_radio_fence(struct mt6797_consys *consys)
 {
 	consys->state = MT6797_CONSYS_OWNER_ERROR;
 	mt6797_consys_stp_session_quiesce(consys->stp_session);
@@ -578,7 +585,7 @@ unbind:
 			terminal = true;
 	}
 	if (terminal)
-		mt6797_consys_bt_fence(consys);
+		mt6797_consys_radio_fence(consys);
 unlock_free:
 	mutex_unlock(&consys->lifecycle_lock);
 	if (terminal)
@@ -610,7 +617,7 @@ int mt6797_consys_bt_transmit(const struct mt6797_consys_bt_lease *lease,
 			ret = consys->btif_ops->arm_session_timeout(
 				consys->btif_context, consys->stp_lease);
 		if (ret && ret != -EAGAIN) {
-			mt6797_consys_bt_fence(consys);
+			mt6797_consys_radio_fence(consys);
 			terminal = true;
 		}
 	}
@@ -656,7 +663,7 @@ int mt6797_consys_bt_release(const struct mt6797_consys_bt_lease *lease_arg)
 		terminal = true;
 	consys->bt_lease = NULL;
 	if (terminal)
-		mt6797_consys_bt_fence(consys);
+		mt6797_consys_radio_fence(consys);
 unlock:
 	mutex_unlock(&consys->lifecycle_lock);
 	if (terminal)
@@ -666,6 +673,108 @@ unlock:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_bt_release);
+
+const struct mt6797_consys_wifi_lease *
+mt6797_consys_wifi_acquire(struct device *consumer)
+{
+	struct mt6797_consys_wifi_lease *lease;
+	struct mt6797_consys *consys;
+	bool rail_dirty = false;
+	bool terminal = false;
+	int cleanup_ret = 0;
+	int ret;
+
+	if (!consumer || !consumer->parent)
+		return ERR_PTR(-EINVAL);
+	consys = dev_get_drvdata(consumer->parent);
+	if (!consys)
+		return ERR_PTR(-EPROBE_DEFER);
+	lease = kzalloc_obj(*lease, GFP_KERNEL);
+	if (!lease)
+		return ERR_PTR(-ENOMEM);
+	lease->consys = consys;
+
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->state != MT6797_CONSYS_OWNER_ACTIVE || !consys->stp_lease) {
+		ret = -ESHUTDOWN;
+		goto unlock_free;
+	}
+	if (consys->wifi_lease) {
+		ret = -EBUSY;
+		goto unlock_free;
+	}
+	ret = regulator_set_voltage(consys->vcn33_wifi,
+				    MT6797_CONSYS_VCN33_UV,
+				    MT6797_CONSYS_VCN33_UV);
+	if (ret)
+		goto unlock_free;
+	rail_dirty = true;
+	ret = regulator_enable(consys->vcn33_wifi);
+	if (ret) {
+		int enabled = regulator_is_enabled(consys->vcn33_wifi);
+
+		if (!enabled)
+			rail_dirty = false;
+		else if (enabled < 0) {
+			rail_dirty = false;
+			cleanup_ret = enabled;
+			terminal = true;
+		}
+		goto disable_rail;
+	}
+	lease->active = true;
+	consys->wifi_lease = lease;
+	mutex_unlock(&consys->lifecycle_lock);
+	return lease;
+
+disable_rail:
+	if (rail_dirty)
+		cleanup_ret = regulator_disable(consys->vcn33_wifi);
+	if (cleanup_ret) {
+		mt6797_consys_radio_fence(consys);
+		terminal = true;
+	}
+unlock_free:
+	mutex_unlock(&consys->lifecycle_lock);
+	if (terminal)
+		consys->btif_ops->stop(consys->btif_context);
+	kfree(lease);
+	return ERR_PTR(ret ?: cleanup_ret);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_wifi_acquire);
+
+int mt6797_consys_wifi_release(const struct mt6797_consys_wifi_lease *lease_arg)
+{
+	struct mt6797_consys_wifi_lease *lease =
+		(struct mt6797_consys_wifi_lease *)lease_arg;
+	struct mt6797_consys *consys;
+	bool terminal = false;
+	int ret;
+
+	if (!lease || !lease->consys)
+		return -EINVAL;
+	consys = lease->consys;
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->wifi_lease != lease) {
+		ret = -ENOENT;
+		goto unlock;
+	}
+	WRITE_ONCE(lease->active, false);
+	ret = regulator_disable(consys->vcn33_wifi);
+	consys->wifi_lease = NULL;
+	if (ret) {
+		mt6797_consys_radio_fence(consys);
+		terminal = true;
+	}
+unlock:
+	mutex_unlock(&consys->lifecycle_lock);
+	if (terminal)
+		consys->btif_ops->stop(consys->btif_context);
+	if (ret != -ENOENT)
+		kfree(lease);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_wifi_release);
 
 static int mt6797_consys_start(struct mt6797_consys *consys)
 {

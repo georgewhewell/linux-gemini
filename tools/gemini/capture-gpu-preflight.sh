@@ -120,6 +120,20 @@ assert_no_drm_open()
 	done
 }
 
+irq_hardware_matches()
+{
+	# Linux IRQ allocation is dynamic. Match the GIC INTID, not that index.
+	linux_irq=$1
+	expected_hwirq=$2
+	case $linux_irq in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	irq_sysfs=$SYSFS_ROOT/kernel/irq/$linux_irq
+	hwirq=$(cat "$irq_sysfs/hwirq" 2>/dev/null) || return 1
+	chip=$(cat "$irq_sysfs/chip_name" 2>/dev/null) || return 1
+	[ "$chip" = GICv3 ] && [ "$hwirq" = "$expected_hwirq" ]
+}
+
 echo "[g3-policy]"
 cmdline=$(cat "$PROC_ROOT/cmdline") || {
 	echo "cannot read the kernel command line" >&2
@@ -248,13 +262,13 @@ if [ ! -r "$PROC_ROOT/interrupts" ]; then
 else
 	for irq_spec in panfrost-job:296 panfrost-mmu:295 panfrost-gpu:294; do
 		irq_name=${irq_spec%%:*}
-		expected_irq=${irq_spec#*:}
+		expected_hwirq=${irq_spec#*:}
 		if snapshot=$(irq_snapshot "$irq_name"); then
 			printf '%s=%s\n' "$irq_name" "$snapshot"
 			irq=${snapshot%%:*}
 			count=${snapshot#*:}
-			[ "$irq" = "$expected_irq" ] ||
-				reject "$irq_name is IRQ $irq, expected $expected_irq"
+			irq_hardware_matches "$irq" "$expected_hwirq" ||
+				reject "$irq_name Linux IRQ $irq does not map to GICv3 INTID $expected_hwirq"
 			[ "$count" -eq 0 ] ||
 				reject "$irq_name count is $count before the no-job observation"
 			case $irq_name in

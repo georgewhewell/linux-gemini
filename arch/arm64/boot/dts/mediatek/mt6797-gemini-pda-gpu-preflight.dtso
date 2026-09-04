@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Planet Computers Gemini PDA GPU probe-only preflight overlay.
+ * Planet Computers Gemini PDA active GPU no-job preflight overlay.
  *
  * Apply this overlay only to a recoverable RAM boot and run
- * tools/gemini/capture-gpu-preflight.sh without opening a render node. The
- * base DT keeps every node below disabled, so omitting the overlay is the
- * complete rollback.
+ * tools/gemini/capture-gpu-preflight.sh from a dedicated initramfs which never
+ * opens a DRM node.  Panfrost probe actively changes the GPU rail, clocks,
+ * reset and power domains even when no userspace job is submitted.  The base
+ * DT keeps every node below disabled, so omitting the overlay is the complete
+ * rollback.
  */
 
 /dts-v1/;

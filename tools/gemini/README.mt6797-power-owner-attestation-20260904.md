@@ -54,7 +54,7 @@ offline review must not be represented as a hardware pass or production
 readiness.  Exact failure and Stage-A recovery evidence is recorded in the
 managed queue ledger.  It has no further p22 authorization or schedule.
 
-The current offline-qualified G3 package is
+The independently reviewed G3 package is
 `f51d661e823d9ece2011c5688141ddaa7e3c44b6`, with bundle
 `/nix/store/ygwllkhz39xv4a07m5ys9a479qfmv481-gemini-g3-low-opp-nojob-p22-bundle`
 and candidate SHA-256
@@ -63,7 +63,11 @@ It carries the same exact owner-attested policy token and has an independent
 offline PASS.  Its distinct review/authorization, post-watchdog activation,
 durable-scanner, possible-physical-reset, observe-always-rollback, and
 no-retry conditions remain in force.  Hardware was not run, and the package
-has no specific p22 authorization or schedule.
+has no specific p22 authorization or schedule.  A subsequent readiness audit
+found that its exact-model validation rejects the retained runtime model
+`MT6797X` and that its pstore helper invokes absent `/bin/busybox`.  Candidate
+`d1d188f0...` is consequently not hardware-ready and is closed/no-retry
+pending a newly hashed and independently reviewed package.
 
 The final cellular candidate bundle is
 `/nix/store/b1kgbvpa2rlkp7w8d0kzh618m6j173kd-gemini-md1-cldma-readonly-observer-postaudit-p22-bundle`,

@@ -254,15 +254,17 @@ config MTK_MT6797_CONSYS_INVENTORY
 	bool "MediaTek MT6797 CONSYS ownership foundation"
 	depends on ARM64 && ARCH_MEDIATEK && OF
 	depends on RESET_CONTROLLER
+	select MTK_MT6797_CONSYS_FW_HANDOFF
 	help
 	  Build the inert shared-resource owner for the MT6797 connectivity
 	  subsystem. It validates and retains the common MMIO, interrupt, reset,
-	  regulator, power-domain, and reserved-memory descriptions without mapping
-	  MMIO or operating any resource.
+	  regulator, power-domain, and reserved-memory descriptions, then acquires
+	  and verifies the immutable WMT firmware bundle. Firmware references are
+	  released with the owner on every failed probe and unbind.
 
-	  The owner does not request firmware or register client interfaces. Keep
-	  the Device Tree node disabled until the firmware format, reset release,
-	  and remote-processor boot protocol have been reviewed.
+	  The owner does not map MMIO, operate a hardware resource, transmit a frame,
+	  or register client interfaces. Keep the Device Tree node disabled until
+	  reset release and the remote-processor boot protocol have been reviewed.
 
 config MTK_MT6797_CONSYS_CORE
 	bool "MediaTek MT6797 CONSYS identity transaction core"

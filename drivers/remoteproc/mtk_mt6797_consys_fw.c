@@ -193,5 +193,58 @@ void mt6797_consys_fw_release(struct mt6797_consys_fw_bundle *bundle)
 	kfree(bundle);
 }
 
+int mt6797_consys_fw_build_patch_packet(const struct mt6797_consys_fw_bundle *bundle,
+					unsigned int patch_index, size_t offset,
+					u8 *packet, size_t packet_size,
+					size_t *packet_len, size_t *consumed,
+					bool *last)
+{
+	const struct mt6797_consys_wmt_metadata *metadata;
+	size_t fragment_size;
+	u8 fragment_tag;
+	int ret;
+
+	if (!bundle || patch_index >= ARRAY_SIZE(bundle->patch) || !packet ||
+	    !packet_len || !consumed || !last)
+		return -EINVAL;
+
+	metadata = &bundle->patch[patch_index].metadata;
+	if (!bundle->patch[patch_index].firmware || !metadata->payload ||
+	    !metadata->payload_size ||
+	    bundle->patch[patch_index].firmware->size <=
+					MT6797_CONSYS_WMT_HEADER_SIZE ||
+	    metadata->payload != bundle->patch[patch_index].firmware->data +
+				 MT6797_CONSYS_WMT_HEADER_SIZE ||
+	    metadata->payload_size != bundle->patch[patch_index].firmware->size -
+				      MT6797_CONSYS_WMT_HEADER_SIZE ||
+	    offset >= metadata->payload_size)
+		return -EINVAL;
+
+	fragment_size = min_t(size_t, MT6797_CONSYS_WMT_FRAGMENT_SIZE,
+			      metadata->payload_size - offset);
+	if (fragment_size == metadata->payload_size - offset)
+		fragment_tag = 3;
+	else if (!offset)
+		fragment_tag = 1;
+	else
+		fragment_tag = 2;
+
+	if (packet_size < MTK_WMT_HEADER_SIZE + 1 + fragment_size)
+		return -ENOSPC;
+
+	packet[MTK_WMT_HEADER_SIZE] = fragment_tag;
+	memcpy(packet + MTK_WMT_HEADER_SIZE + 1, metadata->payload + offset,
+	       fragment_size);
+	ret = mtk_wmt_encode_command(1, packet + MTK_WMT_HEADER_SIZE,
+				     fragment_size + 1, packet, packet_size,
+				     packet_len);
+	if (ret)
+		return ret;
+
+	*consumed = fragment_size;
+	*last = fragment_tag == 3;
+	return 0;
+}
+
 MODULE_DESCRIPTION("MT6797 CONSYS firmware handoff");
 MODULE_LICENSE("GPL");

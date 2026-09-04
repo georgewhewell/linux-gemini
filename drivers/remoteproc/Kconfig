@@ -4,20 +4,21 @@ menu "Remoteproc drivers"
 config MTK_MT6797_CONSYS_FW_HANDOFF
 	bool "MediaTek MT6797 CONSYS firmware handoff"
 	depends on ARM64 && ARCH_MEDIATEK
-	depends on REMOTEPROC
-	depends on FW_LOADER
+	select FW_LOADER
 	select CRYPTO_SHA256
+	select MTK_STP
+	select MTK_WMT
 	help
 	  Build the inert firmware-class handoff for the MT6797 connectivity
 	  processor. It requests and identifies the preserved WMT configuration
 	  and two ROM-patch images, parses their vendor headers, and derives the
 	  launcher-proven patch sequence and opaque address bytes.
 
-	  This is a private building block for a future remoteproc owner. It does
-	  not register a remote processor, match Device Tree, map memory, access
-	  registers, change power/reset/clock state, send a WMT packet, or enable a
-	  radio. The option is disabled by default and has no autonomous entry
-	  point.
+	  This is a private building block for the MT6797 CONSYS lifecycle owner. It
+	  also composes one verified patch fragment into the existing WMT codec, but
+	  does not transmit it or fabricate full-STP sequence state. It does not
+	  register a remote processor, match Device Tree, map memory, access
+	  registers, change power/reset/clock state, send a packet, or enable a radio.
 
 config MTK_MT6797_CONSYS_FW_HANDOFF_KUNIT_TEST
 	bool "KUnit tests for the MT6797 CONSYS firmware handoff"
@@ -25,9 +26,9 @@ config MTK_MT6797_CONSYS_FW_HANDOFF_KUNIT_TEST
 	depends on MTK_MT6797_CONSYS_FW_HANDOFF=y
 	help
 	  Exercise full-blob identity verification, exact WMT patch-header parsing,
-	  launcher sequence/address derivation, size limits, and malformed input
-	  rejection with in-memory data. No firmware request or hardware access is
-	  performed by the tests.
+	  launcher sequence/address derivation, bounded WMT fragment construction,
+	  size limits, and malformed input rejection with in-memory data. No
+	  firmware request or hardware access is performed by the tests.
 
 config REMOTEPROC
 	bool "Support for Remote Processor subsystem"

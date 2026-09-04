@@ -3,9 +3,9 @@
  * MediaTek MT6797 connectivity subsystem ownership foundation.
  *
  * This driver is deliberately fail-closed: it only retains and validates
- * Device Tree resource metadata for a later CONSYS owner. It never maps or
+ * Device Tree resource metadata and verified firmware. It never maps or
  * accesses MMIO; enables or disables a regulator, clock, reset, interrupt,
- * or power domain; loads firmware; or maps the shared reserved memory.
+ * or power domain; transmits firmware; or maps the shared reserved memory.
  */
 
 #include <linux/errno.h>
@@ -17,6 +17,7 @@
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
+#include <linux/remoteproc/mtk_mt6797_consys.h>
 #include <linux/reset.h>
 #include <linux/sizes.h>
 
@@ -26,7 +27,7 @@
 
 enum mt6797_consys_owner_state {
 	MT6797_CONSYS_OWNER_OFF,
-	MT6797_CONSYS_OWNER_ERROR,
+	MT6797_CONSYS_OWNER_FIRMWARE_READY,
 };
 
 struct mt6797_consys_resource {
@@ -44,7 +45,7 @@ struct mt6797_consys {
 	struct regulator *vcn18;
 	struct regulator *vcn28;
 	struct reset_control *conn_mcu_reset;
-	/* Reserved for the eventual single remoteproc lifetime owner. */
+	struct mt6797_consys_fw_bundle *firmware;
 	struct mutex lifecycle_lock;
 	enum mt6797_consys_owner_state state;
 	int bgf_irq;
@@ -144,6 +145,20 @@ mt6797_consys_validate_shared_mem(struct device *dev,
 	return 0;
 }
 
+static void mt6797_consys_release_firmware(void *data)
+{
+	struct mt6797_consys *consys = data;
+	struct mt6797_consys_fw_bundle *firmware;
+
+	mutex_lock(&consys->lifecycle_lock);
+	firmware = consys->firmware;
+	consys->firmware = NULL;
+	consys->state = MT6797_CONSYS_OWNER_OFF;
+	mutex_unlock(&consys->lifecycle_lock);
+
+	mt6797_consys_fw_release(firmware);
+}
+
 static int mt6797_consys_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -204,8 +219,19 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 
 	mutex_init(&consys->lifecycle_lock);
 	consys->state = MT6797_CONSYS_OWNER_OFF;
+	ret = mt6797_consys_fw_request(dev, &consys->firmware);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to acquire verified firmware\n");
+	consys->state = MT6797_CONSYS_OWNER_FIRMWARE_READY;
+
+	ret = devm_add_action_or_reset(dev, mt6797_consys_release_firmware,
+				       consys);
+	if (ret)
+		return ret;
+
 	platform_set_drvdata(pdev, consys);
-	dev_info(dev, "shared owner initialized; hardware remains untouched\n");
+	dev_info(dev, "verified firmware ready; hardware remains untouched\n");
 
 	return 0;
 }

@@ -122,7 +122,8 @@ assert_no_drm_open()
 
 irq_hardware_matches()
 {
-	# Linux IRQ allocation is dynamic. Match the GIC INTID, not that index.
+	# GPU SPIs pass through MT_SYSIRQ; its hwirq is the SPI number, not
+	# the parent GIC INTID (SPI + 32), nor the dynamic Linux IRQ index.
 	linux_irq=$1
 	expected_hwirq=$2
 	case $linux_irq in
@@ -131,7 +132,17 @@ irq_hardware_matches()
 	irq_sysfs=$SYSFS_ROOT/kernel/irq/$linux_irq
 	hwirq=$(cat "$irq_sysfs/hwirq" 2>/dev/null) || return 1
 	chip=$(cat "$irq_sysfs/chip_name" 2>/dev/null) || return 1
-	[ "$chip" = GICv3 ] && [ "$hwirq" = "$expected_hwirq" ]
+	printf 'irq_identity linux=%s chip=%s hwirq=%s expected=%s\n' \
+		"$linux_irq" "$chip" "$hwirq" "$expected_hwirq"
+	[ "$chip" = MT_SYSIRQ ] && [ "$hwirq" = "$expected_hwirq" ]
+}
+
+gpu_log_failures()
+{
+	# Apply the same device scope at both ends of the observation. USB's
+	# unrelated dummy-regulator warning is not evidence of a VGPU failure.
+	grep -Ei '13040000\.gpu|rt5735|mfg|panfrost' |
+		grep -Ei "$reject_pattern"
 }
 
 echo "[g3-policy]"
@@ -208,7 +219,7 @@ fi
 if ! printf '%s\n' "$gpu_log" | grep -Eq "$topology_pattern"; then
 	reject "Panfrost did not report the qualified shader=0xf L2=0x1 topology"
 fi
-if printf '%s\n' "$gpu_log" | grep -Eq "$reject_pattern"; then
+if printf '%s\n' "$gpu_log" | gpu_log_failures; then
 	reject "kernel log contains a GPU, VGPU, MFG, reset, or devfreq failure"
 fi
 if [ ! -L "$gpu_device/driver" ] ||
@@ -261,7 +272,7 @@ echo "[gpu-irqs]"
 if [ ! -r "$PROC_ROOT/interrupts" ]; then
 	reject "interrupt registration state is unavailable"
 else
-	for irq_spec in panfrost-job:296 panfrost-mmu:295 panfrost-gpu:294; do
+	for irq_spec in panfrost-job:264 panfrost-mmu:263 panfrost-gpu:262; do
 		irq_name=${irq_spec%%:*}
 		expected_hwirq=${irq_spec#*:}
 		if snapshot=$(irq_snapshot "$irq_name"); then
@@ -269,7 +280,7 @@ else
 			irq=${snapshot%%:*}
 			count=${snapshot#*:}
 			irq_hardware_matches "$irq" "$expected_hwirq" ||
-				reject "$irq_name Linux IRQ $irq does not map to GICv3 INTID $expected_hwirq"
+				reject "$irq_name Linux IRQ $irq does not map to MT_SYSIRQ SPI $expected_hwirq"
 			[ "$count" -eq 0 ] ||
 				reject "$irq_name count is $count before the no-job observation"
 			case $irq_name in
@@ -584,7 +595,7 @@ final_log=$($DMESG) || {
 	echo "cannot reread the kernel log" >&2
 	exit 2
 }
-if printf '%s\n' "$final_log" | grep -Eiq "$reject_pattern"; then
+if printf '%s\n' "$final_log" | gpu_log_failures; then
 	reject "kernel log contains a GPU fault after the no-job observation"
 fi
 

@@ -10,9 +10,15 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
+#include <linux/pm_opp.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
+#include <linux/unaligned.h>
+
+#include <linux/soc/mediatek/mt6797-dvfsp-ptp.h>
 
 #include <drm/drm_print.h>
 
@@ -118,6 +124,134 @@ void panfrost_gpu_amlogic_quirk(struct panfrost_device *pfdev)
 
 #define MT6797_MFG_PMU_ENABLE_FIRST	0x3e0
 #define MT6797_MFG_PMU_ENABLE_LAST	0x3f0
+#define MT6797_GPU_FUNCTION_CODE_MASK	GENMASK(3, 0)
+#define MT6797_GPU_PTP_VERSION_MASK	GENMASK(7, 4)
+#define MT6797_GPU_OPP_UNKNOWN		BIT(31)
+
+static unsigned int panfrost_mt6797_gpu_table_type(u32 function_word,
+						   u32 date_word)
+{
+	unsigned int function_code;
+	unsigned int ptp_version;
+	unsigned int type;
+
+	function_code = FIELD_GET(MT6797_GPU_FUNCTION_CODE_MASK,
+				  function_word);
+	ptp_version = FIELD_GET(MT6797_GPU_PTP_VERSION_MASK, date_word);
+
+	switch (function_code) {
+	case 0:
+	case 3:
+		type = 0;
+		break;
+	case 1:
+	case 6:
+		type = 1;
+		break;
+	case 2:
+	case 7:
+		type = 2;
+		break;
+	default:
+		type = 0;
+		break;
+	}
+
+	if (ptp_version <= 5)
+		type += 4;
+	else if (ptp_version > 6)
+		type += 8;
+
+	if (function_code == 0xf)
+		type = 11;
+	else if (function_code == 4)
+		type = 12;
+
+	return type;
+}
+
+static bool panfrost_mt6797_gpu_table_type_valid(unsigned int type)
+{
+	switch (type) {
+	case 0:
+	case 1:
+	case 2:
+	case 4:
+	case 5:
+	case 6:
+	case 8:
+	case 9:
+	case 10:
+	case 11:
+	case 12:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static int panfrost_mt6797_set_supported_hw(struct panfrost_device *pfdev)
+{
+	struct device *dev = pfdev->base.dev;
+	struct nvmem_cell *cell;
+	unsigned int table_type = 0;
+	u32 supported_hw = MT6797_GPU_OPP_UNKNOWN;
+	u32 function_word;
+	u32 date_word;
+	bool table_valid = false;
+	size_t len;
+	void *buf;
+	int ret;
+
+	cell = devm_nvmem_cell_get(dev, "gpu-efuse");
+	if (IS_ERR(cell)) {
+		ret = PTR_ERR(cell);
+		if (ret == -EPROBE_DEFER)
+			return ret;
+
+		dev_warn(dev, "GPU efuse unavailable, using safe OPP profile: %d\n",
+			 ret);
+		goto set_supported_hw;
+	}
+
+	buf = nvmem_cell_read(cell, &len);
+	if (IS_ERR(buf)) {
+		dev_warn(dev, "failed to read GPU efuse, using safe OPP profile: %ld\n",
+			 PTR_ERR(buf));
+		goto set_supported_hw;
+	}
+
+	if (len != sizeof(struct mt6797_dvfsp_efuse_identity) ||
+	    get_unaligned_le32(buf) != MT6797_DVFSP_EFUSE_IDENTITY_ABI) {
+		dev_warn(dev, "invalid GPU efuse identity, using safe OPP profile\n");
+	} else {
+		function_word = get_unaligned_le32(buf + sizeof(u32));
+		date_word = get_unaligned_le32(buf + 2 * sizeof(u32));
+		table_type = panfrost_mt6797_gpu_table_type(function_word,
+							    date_word);
+		if (panfrost_mt6797_gpu_table_type_valid(table_type)) {
+			supported_hw = BIT(table_type);
+			table_valid = true;
+		}
+	}
+
+	kfree(buf);
+
+set_supported_hw:
+	if (table_valid)
+		dev_info(dev, "GPU DVFS table type %u, supported-hw %#x\n",
+			 table_type, supported_hw);
+	else
+		dev_info(dev, "GPU DVFS table unknown, supported-hw %#x\n",
+			 supported_hw);
+
+	ret = devm_pm_opp_set_supported_hw(dev, &supported_hw, 1);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to select GPU OPP profile\n");
+
+	return 0;
+}
 
 int panfrost_gpu_mt6797_init(struct panfrost_device *pfdev)
 {
@@ -127,7 +261,7 @@ int panfrost_gpu_mt6797_init(struct panfrost_device *pfdev)
 		return dev_err_probe(pfdev->base.dev, PTR_ERR(pfdev->mfgcfg),
 				     "failed to get MFG configuration\n");
 
-	return 0;
+	return panfrost_mt6797_set_supported_hw(pfdev);
 }
 
 void panfrost_gpu_mt6797_quirk(struct panfrost_device *pfdev)

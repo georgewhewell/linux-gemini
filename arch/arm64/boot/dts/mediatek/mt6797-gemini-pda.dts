@@ -105,7 +105,7 @@
 			no-map;
 		};
 
-		reserve-memory-ccci_md1 {
+		md1_reserved_memory: reserve-memory-ccci_md1 {
 			compatible = "mediatek,reserve-memory-ccci_md1";
 			no-map;
 			size = <0 0xa100000>;
@@ -113,7 +113,7 @@
 			alloc-ranges = <0 0x40000000 0 0x80000000>;
 		};
 
-		reserve-memory-ccci_share {
+		md1_shared_memory: reserve-memory-ccci_share {
 			compatible = "mediatek,reserve-memory-ccci_share";
 			no-map;
 			size = <0 0x600000>;
@@ -145,6 +145,12 @@
 			alloc-ranges = <0 0x40000000 0 0x50000000>;
 		};
 	};
+};
+
+&md1 {
+	memory-region = <&md1_reserved_memory>, <&md1_shared_memory>;
+	memory-region-names = "md1", "shared";
+	status = "disabled";
 };
 
 &cpu0 {

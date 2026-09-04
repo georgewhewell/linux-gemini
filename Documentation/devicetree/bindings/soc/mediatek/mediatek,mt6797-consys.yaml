@@ -57,6 +57,15 @@ description: |
   recovery.
 
 properties:
+
+  '#address-cells':
+    const: 2
+
+  '#size-cells':
+    const: 2
+
+  ranges: true
+
   compatible:
     enum:
       - mediatek,mt6797-consys
@@ -171,6 +180,10 @@ properties:
   bluetooth:
     $ref: /schemas/net/bluetooth/mediatek,mt6797-bluetooth.yaml#
 
+patternProperties:
+  '^wifi@[0-9a-f]+$':
+    $ref: /schemas/net/wireless/mediatek,mt6797-wifi.yaml#
+
 required:
   - compatible
   - reg
@@ -193,6 +206,9 @@ allOf:
           contains:
             const: afe
       required:
+        - '#address-cells'
+        - '#size-cells'
+        - ranges
         - mediatek,btif
         - mediatek,emi-mpu
         - mediatek,infracfg
@@ -280,6 +296,9 @@ examples:
         };
 
         consys@18070000 {
+            #address-cells = <2>;
+            #size-cells = <2>;
+            ranges;
             compatible = "mediatek,mt6797-consys";
             reg = <0 0x18070000 0 0x200>,
                   <0 0x10007000 0 0x100>,

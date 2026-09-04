@@ -546,13 +546,11 @@
 	};
 };
 
-&wifi {
-	vcn33-supply = <&mt6351_vcn33_wifi_reg>;
-	status = "disabled";
-};
-
 / {
 	consys: consys@18070000 {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
 		compatible = "mediatek,mt6797-consys";
 		reg = <0 0x18070000 0 0x200>,
 		      <0 0x10007000 0 0x100>,
@@ -581,6 +579,14 @@
 
 		bluetooth: bluetooth {
 			compatible = "mediatek,mt6797-bluetooth";
+			status = "disabled";
+		};
+
+		wifi: wifi@180f0000 {
+			compatible = "mediatek,mt6797-wifi";
+			reg = <0 0x180f0000 0 0x1100>;
+			interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
+			interrupt-names = "hif";
 			status = "disabled";
 		};
 	};

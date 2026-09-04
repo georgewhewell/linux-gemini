@@ -4,17 +4,21 @@
 $id: http://devicetree.org/schemas/net/wireless/mediatek,mt6797-wifi.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: MediaTek MT6797 Wi-Fi host interface
+title: MediaTek MT6797 integrated Wi-Fi host interface
 
 maintainers:
-  - Julien Etienne <julien.etienne@gmail.com>
+  - George Whewell <georgerw@gmail.com>
 
-description:
-  The MT6797 contains an AHB-attached SDIO-like host interface for the Wi-Fi
-  function in the connectivity subsystem.  This node describes only the host
-  interface aperture, its interrupt, and the Wi-Fi-specific VCN33 rail.  The
-  shared connectivity processor, firmware, clocks, resets, and common rails
-  belong to a separate subsystem owner.
+description: |
+  MT6797 contains an AHB-attached SDIO-like PIO portal for its integrated
+  GEN3 WLAN function. The Wi-Fi endpoint owns that portal, the WLAN interrupt,
+  and the divided WLAN firmware image. Its parent connectivity subsystem owns
+  the shared firmware, reset, clocks, power domain, STP session, shared EMI,
+  and the Wi-Fi VCN33 regulator vote.
+
+  The endpoint is instantiated only after the parent has completed its common
+  patch sequence. Describing the node does not enable WLAN: it remains disabled
+  unless a board overlay explicitly selects it.
 
 properties:
   compatible:
@@ -29,15 +33,11 @@ properties:
   interrupt-names:
     const: hif
 
-  vcn33-supply:
-    description: Wi-Fi enable input of the shared VCN33 regulator output.
-
 required:
   - compatible
   - reg
   - interrupts
   - interrupt-names
-  - vcn33-supply
 
 additionalProperties: false
 
@@ -46,12 +46,17 @@ examples:
     #include <dt-bindings/interrupt-controller/arm-gic.h>
     #include <dt-bindings/interrupt-controller/irq.h>
 
-    wifi@180f0000 {
-        compatible = "mediatek,mt6797-wifi";
-        reg = <0x180f0000 0x1100>;
-        interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
-        interrupt-names = "hif";
-        vcn33-supply = <&wifi_vcn33>;
-        status = "disabled";
+    consys {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        wifi@180f0000 {
+            compatible = "mediatek,mt6797-wifi";
+            reg = <0 0x180f0000 0 0x1100>;
+            interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
+            interrupt-names = "hif";
+            status = "disabled";
+        };
     };
 ...

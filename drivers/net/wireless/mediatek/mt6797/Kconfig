@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config MT6797_WIFI_AHB_HIF
+	tristate "MediaTek MT6797 Wi-Fi AHB transport library"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on HAS_IOMEM
+	help
+	  Build the low-level, PIO-only transport library for the SDIO-like
+	  Wi-Fi host interface found in the MT6797 connectivity subsystem.
+
+	  This library has no bus driver and no device registration.  Enabling
+	  it alone does not bind a device or access hardware.
+
+	  If unsure, say N.
+
+config MT6797_WIFI_AHB_HIF_KUNIT_TEST
+	bool "KUnit tests for the MT6797 Wi-Fi AHB transport" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	depends on MT6797_WIFI_AHB_HIF
+	default KUNIT_ALL_TESTS
+	help
+	  Run tests for command encoding and bounded transfer planning in the
+	  MT6797 Wi-Fi AHB transport library.  The tests do not require MT6797
+	  hardware and do not perform MMIO accesses.
+
+	  If unsure, say N.

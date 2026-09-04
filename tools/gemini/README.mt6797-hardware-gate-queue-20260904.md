@@ -48,6 +48,7 @@ These entries are immutable identities, not a run order or schedule.
 | G3 fixed-low Panfrost no-job R3 | `f3f6dbb4ec9b4f95854c2a3df5a2c842559116b4` | `baa7487a0b63c4425889b34d99520683a2d93f45` | `669a5f22982763f8a917cbcfcf3100e2a41659f73eacc8110343fc4884c8b6bb` | Hardware FAIL; exact Stage-A rollback/readback/pstore complete; retired/no-retry; type-12 `opp-supported-hw` encoding remediation required |
 | A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Offline contract review: PASS; source/package are not hardware-ready |
 | A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Blocked with provider; no provider-success predecessor exists |
+| A72 provider/resource observation R2 | `ca094ed4bebf9c03d6df3fae035cca4ee4c8d805` | `d067da086f28f441b2012d297aea94a659f0586a` | `668857a4d06698b8449f9cb5ca1a44b3d3e37cb6354bdb2d08d3468dc1e06094` | Full offline rebuild and independent audit PASS; hardware not run; authorization/scheduling remain absent |
 
 All current packages carry
 `power_preflight_policy=owner-attested-20260904`.  They retain no specific
@@ -384,6 +385,30 @@ passed once and exact Stage A has been restored.
 The old provider candidate `6ddc55bf...` and old admission candidate
 `cc8b3ab8...` remain closed in the no-retry registry below; remediation does
 not reopen those identities.
+
+The R2 provider source `ca094ed4...` replays the audited terminal CSPM/I2C
+fencing onto the complete A72 provider lineage. Both replay commits have the
+same stable patch IDs and byte-identical patches as `b15c8537...` and
+`07041519...`; all seven resulting CSPM/I2C/test files are byte-identical to
+the audited source. The corresponding package `d067da08...` produced
+`/nix/store/rsrnjkgqrlp9nd2ffg1yvf4ff94ajs0v-gemini-a72-provider-resource-preflight-p22-bundle`
+and candidate `668857a4...`. Bundle NAR is
+`sha256-UL6ChtCNB7Y9DeoIf95YijVI5N72rLJB+lKkuNmWB+I=`.
+
+Independent review validated all 17 embedded checksums and reproduced the
+kernel, DT, initramfs, raw image, padded candidate, and bundle under a forced
+offline rebuild with empty builders and substituters. The exact four-entry
+A72 retired guard is complete and the new hash aliases none of it. The
+effective DT keeps CPU8 and CPU9 disabled with no A72 OPP phandle, the forced
+command line retains `maxcpus=8`, and CPU frequency support is disabled. Thus
+this provider observation cannot issue CPU8 `CPU_ON` or exercise an A72 OPP.
+Parser, 21-sample/60-second ordering, and 51-case recovery fixtures pass.
+
+This is an offline qualification only: `hardware_run=not-run`,
+`authorization=none`, and `scheduling=none` remain binding. Candidate
+`668857a4...` has not been written. The distinct CPU8-admission lane remains
+ineligible until this provider identity passes once and exact Stage A is
+restored; R2 does not authorize either transaction.
 
 ## Wi-Fi open-auth lane is closed before assembly
 

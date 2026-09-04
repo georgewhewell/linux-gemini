@@ -14,9 +14,11 @@
 #include <linux/cpumask.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/psci.h>
@@ -55,6 +57,7 @@ struct mt6797_a72_preflight {
 	cpumask_t cpu_mask;
 	struct hlist_node cpuhp_node;
 	struct hlist_node online_node;
+	struct notifier_block overlay_nb;
 	int cpuhp_state;
 	int online_state;
 	int admission_ret;
@@ -66,10 +69,26 @@ struct mt6797_a72_preflight {
 	bool guarded;
 	bool faulted;
 	bool cpu8_armed;
+	bool overlay_nb_registered;
 };
 
 static DEFINE_MUTEX(mt6797_a72_owner_lock);
 static struct mt6797_a72_preflight *mt6797_a72_owner;
+
+static int mt6797_a72_overlay_notify(struct notifier_block *nb,
+				     unsigned long action, void *data)
+{
+	struct mt6797_a72_preflight *preflight =
+		container_of(nb, struct mt6797_a72_preflight, overlay_nb);
+	const struct of_overlay_notify_data *nd = data;
+
+	if (action != OF_OVERLAY_PRE_REMOVE || nd->target != preflight->dev->of_node)
+		return NOTIFY_DONE;
+
+	dev_err(preflight->dev,
+		"refusing removal of the active A72 ownership overlay\n");
+	return notifier_from_errno(-EBUSY);
+}
 
 int mt6797_a72_power_cpu_boot_admit(unsigned int cpu)
 {
@@ -733,6 +752,19 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	preflight->overlay_nb.notifier_call = mt6797_a72_overlay_notify;
+	ret = of_overlay_notifier_register(&preflight->overlay_nb);
+	if (ret) {
+		mutex_lock(&mt6797_a72_owner_lock);
+		if (mt6797_a72_owner == preflight)
+			mt6797_a72_owner = NULL;
+		mutex_unlock(&mt6797_a72_owner_lock);
+		mt6797_a72_remove_cpu_on_gate(preflight);
+		return dev_err_probe(dev, ret,
+				     "failed to protect A72 owner overlay\n");
+	}
+	preflight->overlay_nb_registered = true;
+
 	platform_set_drvdata(pdev, preflight);
 	dev_info(dev,
 		 "CPU%u/%u resource-preflight-v2: offline=1 vproc=%duV vproc-enabled=%d sram=%duV sram-selector=%u sram-contract=voltage-only mp2=%luHz pwrap-reset=%d spm-mp2=0x%08x spm-buck-iso=0x%08x plan-steps=%u transaction=ready\n",
@@ -753,13 +785,52 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 static void mt6797_a72_preflight_remove(struct platform_device *pdev)
 {
 	struct mt6797_a72_preflight *preflight = platform_get_drvdata(pdev);
+	bool transaction_active;
+	bool cpu8_online;
+	bool faulted;
+	bool guarded;
+	bool armed;
+	int ret;
+
+	if (preflight->overlay_nb_registered) {
+		ret = of_overlay_notifier_unregister(&preflight->overlay_nb);
+		if (ret)
+			panic("MT6797 A72 owner overlay notifier is still live");
+		preflight->overlay_nb_registered = false;
+	}
+
+	/* Serialize removal against every CPUHP prepare, boot, and unwind path. */
+	cpus_write_lock();
+
+	mutex_lock(&mt6797_a72_owner_lock);
+	preflight->cpu8_armed = false;
+	mutex_unlock(&mt6797_a72_owner_lock);
+
+	if (preflight->transaction.active) {
+		ret = mt6797_a72_transaction_abort(&preflight->transaction);
+		if (ret)
+			preflight->faulted = true;
+	}
+
+	cpu8_online = cpu_online(MT6797_A72_FIRST_CPU);
+	transaction_active = preflight->transaction.active;
+	armed = preflight->cpu8_armed;
+	guarded = preflight->guarded;
+	faulted = preflight->faulted;
+	ret = mt6797_a72_validate_removal(cpu8_online, transaction_active, armed, guarded, faulted);
+	if (ret) {
+		dev_crit(preflight->dev,
+			 "unsafe owner removal after serialization: %d\n", ret);
+		panic("MT6797 A72 ownership removal would release live resources");
+	}
 
 	mutex_lock(&mt6797_a72_owner_lock);
 	if (mt6797_a72_owner == preflight)
 		mt6797_a72_owner = NULL;
-	preflight->cpu8_armed = false;
 	mutex_unlock(&mt6797_a72_owner_lock);
+	cpus_write_unlock();
 
+	/* New prepares now fail owner matching and self-abort before CPU_ON. */
 	mt6797_a72_remove_cpu_on_gate(preflight);
 }
 

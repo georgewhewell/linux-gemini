@@ -134,6 +134,16 @@ int mt6797_a72_validate_cpu8_identity(u32 midr)
 	return midr == MT6797_A72_R0P1_MIDR ? 0 : -ENODEV;
 }
 
+int mt6797_a72_validate_removal(bool online, bool active, bool armed, bool guarded, bool faulted)
+{
+	if (faulted)
+		return -EUCLEAN;
+	if (online || active || armed || guarded)
+		return -EBUSY;
+
+	return 0;
+}
+
 static bool mt6797_a72_states_equal(const struct mt6797_a72_state *first,
 				     const struct mt6797_a72_state *second)
 {

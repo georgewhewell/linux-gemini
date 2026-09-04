@@ -287,6 +287,24 @@ static void mt6797_a72_cpu8_identity_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -ENODEV);
 }
 
+static void mt6797_a72_removal_requires_quiescent_owner_test(struct kunit *test)
+{
+	int ret;
+
+	ret = mt6797_a72_validate_removal(false, false, false, false, false);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	ret = mt6797_a72_validate_removal(true, false, false, false, false);
+	KUNIT_EXPECT_EQ(test, ret, -EBUSY);
+	ret = mt6797_a72_validate_removal(false, true, false, false, false);
+	KUNIT_EXPECT_EQ(test, ret, -EBUSY);
+	ret = mt6797_a72_validate_removal(false, false, true, false, false);
+	KUNIT_EXPECT_EQ(test, ret, -EBUSY);
+	ret = mt6797_a72_validate_removal(false, false, false, true, false);
+	KUNIT_EXPECT_EQ(test, ret, -EBUSY);
+	ret = mt6797_a72_validate_removal(false, false, false, false, true);
+	KUNIT_EXPECT_EQ(test, ret, -EUCLEAN);
+}
+
 static void mt6797_a72_transaction_orders_and_aborts_test(struct kunit *test)
 {
 	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
@@ -415,6 +433,7 @@ static struct kunit_case mt6797_a72_power_test_cases[] = {
 	KUNIT_CASE(mt6797_a72_admission_rejects_unrestorable_selector_test),
 	KUNIT_CASE(mt6797_a72_cpu8_boot_admission_test),
 	KUNIT_CASE(mt6797_a72_cpu8_identity_test),
+	KUNIT_CASE(mt6797_a72_removal_requires_quiescent_owner_test),
 	KUNIT_CASE(mt6797_a72_transaction_orders_and_aborts_test),
 	KUNIT_CASE(mt6797_a72_failure_rolls_back_attempted_step_test),
 	KUNIT_CASE(mt6797_a72_verify_failure_rolls_back_test),

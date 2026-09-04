@@ -257,7 +257,9 @@ config MTK_MT6797_A72_POWER
 	  TOPRGU reset, SPM isolation, standard MP2 clock and secure SRAM voltage
 	  selector before PSCI CPU_ON. The DT-disabled gate permits only CPU8,
 	  requires CPU4 online, verifies every reversible step, and rolls back a
-	  failed bring-up. CPU core power remains owned by PSCI firmware.
+	  failed bring-up. The built-in owner cannot be unbound, and it rejects
+	  removal of an activation overlay. CPU core power remains owned by PSCI
+	  firmware.
 
 config MTK_MT6797_CONSYS_FW_HANDOFF
 	bool "MediaTek MT6797 CONSYS firmware handoff"

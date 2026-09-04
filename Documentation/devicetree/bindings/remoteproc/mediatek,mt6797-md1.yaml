@@ -80,6 +80,13 @@ properties:
       two read-only power-status registers; this property does not make MD1 a
       generic power-domain consumer or authorize a power-state transition.
 
+  mediatek,infracfg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the MT6797 infrastructure syscon. The ownership core checks
+      the read-only clock-gate status before observing CCIF registers and does
+      not change any gate.
+
   memory-region:
     description:
       Reserved memory for the modem and for application-processor/modem
@@ -104,6 +111,7 @@ required:
   - resets
   - reset-names
   - mediatek,spm
+  - mediatek,infracfg
 
 dependencies:
   memory-region: [memory-region-names]
@@ -138,6 +146,7 @@ examples:
                  <&infracfg MT6797_INFRA_CLDMA_AO_RST>;
         reset-names = "cldma-pdn", "cldma-ao";
         mediatek,spm = <&scpsys>;
+        mediatek,infracfg = <&infracfg>;
         status = "disabled";
     };
 

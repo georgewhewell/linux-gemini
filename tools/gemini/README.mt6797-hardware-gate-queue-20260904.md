@@ -347,6 +347,54 @@ Evidence:
 - `/nix/store/ygwllkhz39xv4a07m5ys9a479qfmv481-gemini-g3-low-opp-nojob-p22-bundle/MANIFEST`
 - `/nix/store/ygwllkhz39xv4a07m5ys9a479qfmv481-gemini-g3-low-opp-nojob-p22-bundle/p22-one-shot.manifest`
 
+### G3 R4: binding and sole OPP work; internal power-off remains broken
+
+R4 source `5883f8e56c58711d3633dbad035ced0196afb153` supplies the missing
+type-12 `opp-supported-hw` cell. Package
+`d69bdd8718ba68a71df05b843af7ac68896c19d7` corrected registry provenance
+metadata without changing candidate bytes. Metadata-only corrections to an
+unflashed image do not require retiring/reminting it; actual or ambiguous
+writes remain consumed. Historical retired entries above remain retained.
+
+Candidate `31d58094947153ea17c589081dfab869ba7a42d2a4a9b21ab87bc46da7315551`
+was written exactly once on 2026-09-05 at 00:24:44 Europe/Zurich. Panfrost
+bound, identified Mali-T880 0x880, shader mask 0xf and L2 mask 0x1, and
+registered DRM minor 0. The sole available OPP was 238000000 Hz; the clock
+measured 237999817 Hz and VGPU reported 850000 uV. No jobs were submitted.
+
+Overall observation is FAIL, not a GPU completion claim. Shader, tiler and
+L2 internal power-off transition polls timed out before DRM registration;
+the void shutdown callback logs errors but lets runtime suspend succeed.
+The later state was suspended with auto control and 50 ms autosuspend.
+The collector also incorrectly compared dynamic Linux IRQs 215/214/213 to
+GIC INTIDs 296/295/294 and required unavailable /dev/mem reads. These are
+measurement defects, separate from the real power-off errors. The IRQ
+check now resolves Linux IRQs through sysfs hwirq/chip_name, with behavioral
+tests for dynamic indices, all three INTIDs, mismatches and absent data.
+The devmem mismatch still needs resolution; do not weaken the hardware
+power-off evidence requirement merely to pass the collector.
+
+The durable supervisor restored the exact rescue once at 00:26:34 and
+verified it at 00:26:35; no physical reset or candidate retry occurred.
+Resume closed with `observation_failed_recovered_stage_a_pstore_captured`.
+Final boot ID was `ac52500f-54da-4d47-a276-054b8db8abd7`, zero failed units,
+and exact p22/p30/p31 readbacks. RJ45 192.168.23.70 and USB SSH both returned.
+The candidate is consumed/no-retry; no new hardware transaction is active.
+
+Evidence directory:
+`/mnt/Home/src/nixos-gemini/repo-g3-remediation/artifacts/p22-recovery-20260905-002430-2344882`.
+Handoff/result:
+`/mnt/Home/src/nixos-gemini/handoff/g3-binding-31d58094-Mz1QvSyo`.
+Pstore archive SHA-256:
+`ecb48beb93d5beb4a0589dbc858af864d71f18330487126d6fa402094d22805c`.
+Console SHA-256:
+`ce8eb1a0d21c2c2603c4c825337cf3787faa769ed7fec67206df94b90eac7b86`.
+
+Next: resolve MT6797 internal power-off sequencing/PMU behavior using
+driver-side transition telemetry and vendor evidence, retaining the
+no-job boundary until probe/autosuspend works. Integration already has
+ready/transition/present timeout telemetry which R4 did not include.
+
 ## A72 provider and CPU8-admission observations blocked
 
 The remediated, independently reviewed provider bundle is:
@@ -465,6 +513,7 @@ surfaces and are not an alternative to the read-only observer.
 
 ### GPU/G2/G3 historical candidates
 
+- `31d58094947153ea17c589081dfab869ba7a42d2a4a9b21ab87bc46da7315551`
 - `669a5f22982763f8a917cbcfcf3100e2a41659f73eacc8110343fc4884c8b6bb`
 - `ed85f692394ebd4924ec582feb2f354d7a156eeb5cd6c6145c20be14b85a72a3`
 - `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b`

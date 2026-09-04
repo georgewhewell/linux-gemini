@@ -37,52 +37,60 @@ retry of that hash.
 
 ## Current package-policy audit
 
-The A53 and A72 manifests use `power_preflight_policy=none`.  In their shared
-harness that value means no machine-generated power preflight is claimed; it
-does not itself reject `--execute`.  The current owner attestation therefore
-removes their documentation-level power blocker without changing their
-candidate bytes.
-
-The remediated G3 package is
-`/nix/store/nb30c4aa8n38ws1h7qm7098kdihj6q6h-gemini-g3-low-opp-nojob-p22-bundle`,
-candidate SHA-256
-`d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985`.
-Its p22 manifest also uses `power_preflight_policy=none`; that is not a
-mechanical execution block.  Its `MANIFEST` says only that the package cannot
-make a power-preflight claim.  All of its distinct review/authorization,
-post-watchdog activation, durable-scanner, possible-physical-reset,
-observe-always-rollback, and no-retry conditions remain in force.
-
-The remediated cellular observer package is
-`/nix/store/mz2l76bb1wclq1vs5g1sn2lpmw0x36i8-gemini-md1-cldma-readonly-observer-remediated-p22-bundle`,
-candidate SHA-256
-`edb4876686c6c18d534b3966948490280299d02fbd141f08e4f8fa4457f0f6cf`.
-Unlike G3, its manifest has the deliberate mechanical barrier
-`hardware_eligibility=blocked-power-proof-required`; the bundled harness
-rejects `--execute` before preflight, SSH, its supervisor, or either scanner.
-The owner statement does not silently alter that immutable bundle.  It remains
-non-executable until a separately reviewed policy-only package is produced.
-
-## Smallest future manifest update
-
-Use one explicit policy token in both future reviewed packages:
+The current offline-qualified A53 package is
+`b1fa9539561dee6674fa6a839d7f2f4851f623f2`, with bundle
+`/nix/store/x5m20gna2w7mzalywikvk92bs16g26hg-gemini-a53-thermal-preflight-p22-bundle`
+and candidate SHA-256
+`baf0f1fdcb581f19f6dc55bf21f6f86b5ac11ba5a54e5b8ff7a35c645d2a90c0`.
+Its exact power policy is:
 
 ```
 power_preflight_policy=owner-attested-20260904
 ```
 
-The harness schema should accept that exact value and treat it as an explicit
-owner authority with no machine power probe; it must not alias it to a BQ or
-USB-derived result.  The value should be exact rather than a generic
-`owner-attested` token so a later physical-state change requires a new review.
+It has an independent offline PASS.  Hardware was not run, and the package
+has no specific p22 authorization or schedule.
 
-For G3, that manifest value plus the corresponding two parser branches is the
-entire power-policy change; it does not relax any other gate.  For cellular,
-the same value is accompanied by the one mechanical change
-`hardware_eligibility=eligible`.  The cellular parser already accepts
-`eligible`; all strict transcript, watchdog-before-first-lifecycle-write,
-supervisor-before-candidate-scanner, always-rollback, and exact p22/p30/p31
-checks remain unchanged.  Both regenerated packages must have new bundle
-identities and must still state `hardware-proof=none` or `not-run`.
+The current offline-qualified G3 package is
+`f51d661e823d9ece2011c5688141ddaa7e3c44b6`, with bundle
+`/nix/store/ygwllkhz39xv4a07m5ys9a479qfmv481-gemini-g3-low-opp-nojob-p22-bundle`
+and candidate SHA-256
+`d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985`.
+It carries the same exact owner-attested policy token and has an independent
+offline PASS.  Its distinct review/authorization, post-watchdog activation,
+durable-scanner, possible-physical-reset, observe-always-rollback, and
+no-retry conditions remain in force.  Hardware was not run, and the package
+has no specific p22 authorization or schedule.
 
-No package worktree was changed by this audit.
+The final cellular candidate bundle is
+`/nix/store/b1kgbvpa2rlkp7w8d0kzh618m6j173kd-gemini-md1-cldma-readonly-observer-postaudit-p22-bundle`,
+candidate SHA-256
+`777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213`.
+Its unchanged source is
+`8faeb854c00524a2a39450f9c72aaa3601e1c2a5`; package lineage is
+`c56ea7a569a8ce7a29f602fdb1c8ca1f0fb4690f` ->
+`718b9d1849d632b2135a2da23d43a337a1efab59` ->
+`5b45870571e2dfbf0dd06731001ce9a624ad085e` ->
+`7194ebaec4b36cf5d46075cc4d1836254c2b196d`.
+
+That final cellular manifest uses the same exact owner-attested token, and
+retains `scheduling=none`, `specific-p22-authorization=none`, and
+`hardware-proof=none-offline-build-only`.  The package was built and tested
+offline, but this ledger treats it as pending root review.  It becomes
+offline-qualified only after root confirms the final predicate, policy,
+bundle identity, and tests.  It is not hardware-authorized or scheduled.
+
+The exact token means explicit owner authority with no machine power probe.
+Near misses or generic `owner-attested` values are not equivalent, and the
+token must never be treated as a BQ- or USB-derived result.  It changes no
+watchdog, rollback, transcript, hash, supervisor-ownership, mutual-exclusion,
+or no-retry rule.
+
+The old A72 packages still use an obsolete package policy and are closed
+pending a fresh reviewed remediation.  The owner statement does not make
+those immutable bundles eligible.  All superseded hashes, including the old
+A72 provider and admission candidates, are explicitly closed/no-retry in the
+managed queue ledger.
+
+This update changes documentation only.  No package, source, hardware, USB,
+radio, or remote-host action was performed.

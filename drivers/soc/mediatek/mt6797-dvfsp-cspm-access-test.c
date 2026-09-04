@@ -81,9 +81,7 @@ mt6797_dvfsp_cspm_blocking_operation(void __iomem *base, void *context)
 		return 0;
 
 	complete(&ctx->first_entered);
-	if (!wait_for_completion_timeout(&ctx->release_first,
-					 msecs_to_jiffies(1000)))
-		return -ETIMEDOUT;
+	wait_for_completion(&ctx->release_first);
 
 	return -EUCLEAN;
 }
@@ -277,28 +275,32 @@ mt6797_dvfsp_cspm_serializes_concurrent_transactions(struct kunit *test)
 					 MT6797_DVFSP_PERMISSION_READY);
 	KUNIT_ASSERT_EQ(test, ret, 0);
 
-	first_task = kthread_run(mt6797_dvfsp_cspm_transaction_thread, &first,
-				 "mt6797-cspm-transaction-1");
+	first_task = kthread_create(mt6797_dvfsp_cspm_transaction_thread, &first,
+				    "mt6797-cspm-transaction-1");
 	if (IS_ERR(first_task)) {
 		KUNIT_FAIL(test, "failed to start first transaction thread: %ld",
 			   PTR_ERR(first_task));
 		first_task = NULL;
 		goto out;
 	}
+	get_task_struct(first_task);
+	wake_up_process(first_task);
 	waited = wait_for_completion_timeout(&shared.first_entered,
 					     msecs_to_jiffies(1000));
 	if (!waited) {
 		KUNIT_FAIL(test, "first transaction did not enter callback");
 		goto out;
 	}
-	second_task = kthread_run(mt6797_dvfsp_cspm_transaction_thread, &second,
-				  "mt6797-cspm-transaction-2");
+	second_task = kthread_create(mt6797_dvfsp_cspm_transaction_thread, &second,
+				     "mt6797-cspm-transaction-2");
 	if (IS_ERR(second_task)) {
 		KUNIT_FAIL(test, "failed to start second transaction thread: %ld",
 			   PTR_ERR(second_task));
 		second_task = NULL;
 		goto out;
 	}
+	get_task_struct(second_task);
+	wake_up_process(second_task);
 	waited = wait_for_completion_timeout(&second.started,
 					     msecs_to_jiffies(1000));
 	if (!waited) {
@@ -334,9 +336,9 @@ out:
 	/* Join every worker before its stack-backed context leaves scope. */
 	complete_all(&shared.release_first);
 	if (first_task)
-		KUNIT_EXPECT_EQ(test, kthread_stop(first_task), 0);
+		KUNIT_EXPECT_EQ(test, kthread_stop_put(first_task), 0);
 	if (second_task)
-		KUNIT_EXPECT_EQ(test, kthread_stop(second_task), 0);
+		KUNIT_EXPECT_EQ(test, kthread_stop_put(second_task), 0);
 }
 
 static void mt6797_dvfsp_i2c6_transfer_result_merge(struct kunit *test)

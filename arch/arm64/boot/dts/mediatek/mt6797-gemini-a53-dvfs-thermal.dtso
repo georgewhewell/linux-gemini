@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA A53 DVFS thermal-cooling candidate.
+ *
+ * Apply this overlay only after the separate A53 DVFS preflight has passed,
+ * and together with mt6797-gemini-a53-dvfs-activation.dtbo in a volatile FIT.
+ * It uses the standard thermal zone and cpufreq cooling bindings; it adds no
+ * private ABI and does not enable an A72, GPU, modem, or firmware interface.
+ *
+ * The pinned MT6797 vendor policy uses CPU protection points at 85 C and
+ * 95 C and system reset at 117 C.  The proprietary power-budget coolers do
+ * not map one-to-one to Linux cooling states.  Let step_wise progressively
+ * cap both A53 policies from 85 C, then force their lowest enabled OPP at
+ * 95 C.  Five-degree hysteresis is an explicit conservative board policy.
+ * The 40 ms passive poll matches the vendor protection polling interval;
+ * retain the already-tested 1 s observation interval below the first trip.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/thermal/thermal.h>
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&{/} {
+	thermal-zones {
+		soc-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <40>;
+			critical-action = "shutdown";
+			thermal-sensors = <&thermal>;
+
+			trips {
+				cpu_passive: cpu-passive {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				cpu_emergency: cpu-emergency {
+					temperature = <95000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				cpu_critical: cpu-critical {
+					temperature = <117000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map-a53-passive {
+					trip = <&cpu_passive>;
+					cooling-device =
+						<&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						<&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				/*
+				 * The activation overlay exposes 10 MP0 OPPs and
+				 * 13 MP1 OPPs. Cooling states 9 and 12 are their
+				 * respective lowest enabled frequencies.
+				 */
+				map-a53-emergency {
+					trip = <&cpu_emergency>;
+					cooling-device = <&cpu0 9 9>, <&cpu4 12 12>;
+				};
+			};
+		};
+	};
+};
+
+&auxadc {
+	status = "okay";
+};
+
+&thermal {
+	status = "okay";
+};

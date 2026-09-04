@@ -11,6 +11,22 @@ config MTK_MT6797_MODEM_PROTOCOL
 
 	  If unsure, say N.
 
+config MTK_MT6797_MD1
+	tristate "MediaTek MT6797 MD1 ownership core"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on COMMON_CLK && OF && RESET_CONTROLLER
+	select MTK_MT6797_MODEM_PROTOCOL
+	help
+	  Claim the standard clock, reset, interrupt, MMIO, and reserved-memory
+	  resources of the integrated MT6797 MD1 modem.  The driver preserves
+	  firmware and power state inherited from the bootloader and does not
+	  expose WWAN ports until a future CLDMA owner completes the CCCI boot
+	  handshake.
+
+	  This driver does not load or start modem firmware, change power state,
+	  toggle reset lines, enable clocks or interrupts, or access radio
+	  hardware.  If unsure, say N.
+
 config MTK_MT6797_MODEM_PROTOCOL_KUNIT_TEST
 	bool "KUnit tests for MT6797 modem protocol helpers" if !KUNIT_ALL_TESTS
 	depends on KUNIT

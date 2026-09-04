@@ -16513,6 +16513,12 @@ L:	netdev@vger.kernel.org
 S:	Supported
 F:	drivers/net/wwan/t7xx/
 
+MEDIATEK MT6797 MODEM DRIVER
+M:	George Whewell <georgerw@gmail.com>
+S:	Maintained
+F:	Documentation/devicetree/bindings/remoteproc/mediatek,mt6797-md1.yaml
+F:	drivers/net/wwan/mediatek/mt6797/
+
 MEDIATEK USB3 DRD IP DRIVER
 M:	Chunfeng Yun <chunfeng.yun@mediatek.com>
 L:	linux-usb@vger.kernel.org

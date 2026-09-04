@@ -762,22 +762,35 @@ int mt6797_wifi_hif_runtime_sink_attach(
 	const struct mt6797_wifi_hif_runtime_sink *sink)
 {
 	unsigned long flags;
+	int mode;
 	int ret = 0;
 
 	if (!irq || !sink || !sink->event || !sink->frame || !sink->abort ||
 	    !sink->context)
 		return -EINVAL;
 	lockdep_assert_held(&irq->lifecycle_lock);
-	ret = mt6797_wifi_hif_runtime_status(irq);
-	if (ret)
-		return ret;
-	ret = 0;
-	spin_lock_irqsave(&irq->sink_lock, flags);
+	/*
+	 * Hold terminal_lock through installation. A terminal publisher either
+	 * follows this section and aborts the installed sink, or precedes it and
+	 * makes attachment fail; it can never abort an empty slot then lose a
+	 * newly installed sink.
+	 */
+	spin_lock_irqsave(&irq->terminal_lock, flags);
+	mode = READ_ONCE(irq->mode);
+	if (mode != MT6797_WIFI_HIF_IRQ_RUNTIME) {
+		ret = mode == MT6797_WIFI_HIF_IRQ_TERMINAL &&
+		      READ_ONCE(irq->terminal_reason) < 0 ?
+			READ_ONCE(irq->terminal_reason) : -EPIPE;
+		goto out;
+	}
+	spin_lock(&irq->sink_lock);
 	if (irq->sink.context)
 		ret = -EBUSY;
 	else
 		irq->sink = *sink;
-	spin_unlock_irqrestore(&irq->sink_lock, flags);
+	spin_unlock(&irq->sink_lock);
+out:
+	spin_unlock_irqrestore(&irq->terminal_lock, flags);
 	return ret;
 }
 

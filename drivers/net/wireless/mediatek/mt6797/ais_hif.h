@@ -60,6 +60,7 @@ struct mt6797_wifi_ais_hif_auth {
 	struct mt6797_wifi_ais_mgmt_tx_status tx;
 	struct mt6797_wifi_ais_auth_response response;
 	int terminal_reason;
+	/* Reset is allowed only before dirty; otherwise a new HIF lifetime is required. */
 	bool attempted;
 	bool armed;
 	bool dirty;

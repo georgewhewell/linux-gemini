@@ -339,6 +339,47 @@ static void mt6797_wifi_hif_terminal_reason_race_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_wifi_hif_runtime_status(&irq), -EUCLEAN);
 }
 
+static int
+mt6797_wifi_hif_test_sink_event(void *context,
+				const struct mt6797_wifi_event_view *event)
+{
+	return 0;
+}
+
+static int
+mt6797_wifi_hif_test_sink_frame(void *context,
+				const struct mt6797_wifi_rx_view *frame)
+{
+	return 0;
+}
+
+static void mt6797_wifi_hif_test_sink_abort(void *context, int reason)
+{
+}
+
+static void mt6797_wifi_hif_sink_terminal_gate_test(struct kunit *test)
+{
+	struct mt6797_wifi_hif_irq irq = {
+		.mode = MT6797_WIFI_HIF_IRQ_TERMINAL,
+		.terminal_reason = -EUCLEAN,
+	};
+	struct mt6797_wifi_hif_runtime_sink sink = {
+		.event = mt6797_wifi_hif_test_sink_event,
+		.frame = mt6797_wifi_hif_test_sink_frame,
+		.abort = mt6797_wifi_hif_test_sink_abort,
+		.context = test,
+	};
+
+	mutex_init(&irq.lifecycle_lock);
+	spin_lock_init(&irq.terminal_lock);
+	spin_lock_init(&irq.sink_lock);
+	mutex_lock(&irq.lifecycle_lock);
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_hif_runtime_sink_attach(&irq, &sink),
+			-EUCLEAN);
+	mutex_unlock(&irq.lifecycle_lock);
+	KUNIT_EXPECT_PTR_EQ(test, irq.sink.context, NULL);
+}
+
 static void mt6797_wifi_hif_scan_event_routing_test(struct kunit *test)
 {
 	u8 payload[4] = { 7 };
@@ -431,6 +472,7 @@ static struct kunit_case mt6797_wifi_hif_runtime_cases[] = {
 	KUNIT_CASE(mt6797_wifi_hif_restore_failure_test),
 	KUNIT_CASE(mt6797_wifi_hif_terminal_transition_test),
 	KUNIT_CASE(mt6797_wifi_hif_terminal_reason_race_test),
+	KUNIT_CASE(mt6797_wifi_hif_sink_terminal_gate_test),
 	KUNIT_CASE(mt6797_wifi_hif_scan_event_routing_test),
 	KUNIT_CASE(mt6797_wifi_hif_scan_event_error_test),
 	KUNIT_CASE(mt6797_wifi_hif_remove_after_fault_test),

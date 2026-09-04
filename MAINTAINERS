@@ -16262,6 +16262,7 @@ M:	Julien Etienne <julien.etienne@gmail.com>
 L:	linux-mediatek@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
 F:	Documentation/devicetree/bindings/regulator/mediatek,mt6797-bigidvfs-sram.yaml
+F:	drivers/regulator/mt6797-bigidvfs-sram*
 
 MEDIATEK BLUETOOTH DRIVER
 M:	Sean Wang <sean.wang@mediatek.com>

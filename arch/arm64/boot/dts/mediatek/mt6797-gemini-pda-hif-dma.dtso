@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/dts-v1/;
+/plugin/;
+
+/*
+ * Probe-only gate for the MT6797 connectivity HIF DMA provider.
+ *
+ * No consumer is connected here. The driver consequently leaves the APDMA
+ * clock gated and does not access controller registers.
+ */
+&hif_dma {
+	status = "okay";
+};

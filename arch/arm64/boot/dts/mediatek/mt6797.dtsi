@@ -528,6 +528,17 @@
 		status = "disabled";
 	};
 
+	hif_dma: dma-controller@11000080 {
+		compatible = "mediatek,mt6797-hif-dma";
+		reg = <0 0x11000080 0 0x80>;
+		interrupts = <GIC_SPI 97 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infrasys CLK_INFRA_AP_DMA>;
+		clock-names = "apdma";
+		dma-channels = <1>;
+		#dma-cells = <1>;
+		status = "disabled";
+	};
+
 	uart_apdma: dma-controller@11000600 {
 		compatible = "mediatek,mt6797-uart-dma",
 			     "mediatek,mt6577-uart-dma";

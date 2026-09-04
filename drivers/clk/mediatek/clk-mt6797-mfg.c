@@ -15,6 +15,7 @@ static const struct mtk_gate_regs mfg_cg_regs = {
 };
 
 static const struct mtk_gate mfg_clks[] = {
+	GATE_DUMMY(CLK_DUMMY, "mfg_dummy"),
 	GATE_MTK(CLK_MFG_BG3D, "mfg_bg3d", "mfg_sel", &mfg_cg_regs, 0,
 		 &mtk_clk_gate_ops_setclr),
 };

@@ -182,8 +182,7 @@ reject_pattern="$reject_pattern|failed to select GPU OPP profile|devfreq init fa
 reject_pattern="$reject_pattern|(L2|shader|tiler) power-(on|off) timeout"
 reject_pattern="$reject_pattern|GPU fault|Unhandled Page fault"
 identity_pattern='13040000\.gpu: mali-t880 id 0x880 major 0x1 minor 0x0 status 0x8$'
-topology_pattern='shader_present=0x[1-9a-fA-F][0-9a-fA-F]*'
-topology_pattern="$topology_pattern l2_present=0x[1-9a-fA-F][0-9a-fA-F]*"
+topology_pattern='shader_present=0xf l2_present=0x1$'
 
 identity_lines=$(printf '%s\n' "$gpu_log" | grep -E "$identity_pattern" || true)
 identity_count=$(printf '%s\n' "$identity_lines" |
@@ -192,7 +191,7 @@ if [ "$identity_count" -ne 1 ]; then
 	reject "Panfrost did not report exactly one MT6797 T880 r1p0 status-8 identity"
 fi
 if ! printf '%s\n' "$gpu_log" | grep -Eq "$topology_pattern"; then
-	reject "Panfrost did not report nonzero shader and L2 topology"
+	reject "Panfrost did not report the qualified shader=0xf L2=0x1 topology"
 fi
 if printf '%s\n' "$gpu_log" | grep -Eq "$reject_pattern"; then
 	reject "kernel log contains a GPU, VGPU, MFG, reset, or devfreq failure"
@@ -295,9 +294,11 @@ for attribute in control autosuspend_delay_ms runtime_active_time runtime_suspen
 		reject "GPU runtime-PM attribute $attribute is unavailable"
 	fi
 done
-[ "$(cat "$gpu_device/power/control" 2>/dev/null || true)" = auto ] ||
+power_control_before=$(cat "$gpu_device/power/control" 2>/dev/null || true)
+autosuspend_before=$(cat "$gpu_device/power/autosuspend_delay_ms" 2>/dev/null || true)
+[ "$power_control_before" = auto ] ||
 	reject "GPU runtime-PM control is not auto"
-[ "$(cat "$gpu_device/power/autosuspend_delay_ms" 2>/dev/null || true)" = 50 ] ||
+[ "$autosuspend_before" = 50 ] ||
 	reject "GPU autosuspend delay is not 50ms"
 
 echo "[mfg-power-domains]"
@@ -415,23 +416,14 @@ else
 		fi
 	done
 	actual_frequencies=$(cat "$devfreq_device/available_frequencies")
+	min_freq=$(cat "$devfreq_device/min_freq")
+	max_freq=$(cat "$devfreq_device/max_freq")
+	governor=$(cat "$devfreq_device/governor")
 	if printf '%s\n' "$gpu_log" | grep -q 'GPU DVFS table type 12,'; then
-		opp_profile=type12
-		expected_frequencies='238000000 365000000 442500000 520000000'
-		expected_frequencies="$expected_frequencies 610000000 780000000 900000000"
-	elif printf '%s\n' "$gpu_log" |
-		grep -Eq 'GPU DVFS table type (6|11),'; then
-		opp_profile=safe204
-		expected_frequencies=204000000
-	elif printf '%s\n' "$gpu_log" |
-		grep -Eq 'GPU DVFS table type (0|1|2|4|5|8|9|10),'; then
-		opp_profile=safe238
+		opp_profile=type12-fixed-low
 		expected_frequencies=238000000
-	elif printf '%s\n' "$gpu_log" | grep -q 'GPU DVFS table unknown,'; then
-		opp_profile=safe204
-		expected_frequencies=204000000
 	else
-		reject "kernel log does not identify the selected MT6797 OPP profile"
+		reject "kernel log does not identify the qualified type-12 speed bin"
 		opp_profile=unknown
 		expected_frequencies=
 	fi
@@ -440,24 +432,19 @@ else
 		reject "devfreq OPP list does not match the selected MT6797 speed bin"
 	fi
 	cur_freq=$(cat "$devfreq_device/cur_freq")
-	case " $actual_frequencies " in
-	*" $cur_freq "*) ;;
-	*) reject "current GPU frequency is outside the selected OPP list" ;;
-	esac
-	[ "$(cat "$devfreq_device/governor")" = simple_ondemand ] ||
+	[ "$cur_freq" = 238000000 ] ||
+		reject "current GPU frequency is not fixed at 238000000 Hz"
+	[ "$min_freq" = 238000000 ] ||
+		reject "minimum GPU frequency is not fixed at 238000000 Hz"
+	[ "$max_freq" = 238000000 ] ||
+		reject "maximum GPU frequency is not fixed at 238000000 Hz"
+	[ "$governor" = simple_ondemand ] ||
 		reject "GPU devfreq governor is not simple_ondemand"
 fi
 
 expected_microvolts=
 case ${opp_profile:-unknown}:$cur_freq in
-	type12:238000000) expected_microvolts=850000 ;;
-	type12:365000000) expected_microvolts=912500 ;;
-	type12:442500000) expected_microvolts=937500 ;;
-	type12:520000000) expected_microvolts=975000 ;;
-	type12:610000000) expected_microvolts=1018750 ;;
-	type12:780000000) expected_microvolts=1106250 ;;
-	type12:900000000) expected_microvolts=1156250 ;;
-	safe204:204000000|safe238:238000000) expected_microvolts=862500 ;;
+	type12-fixed-low:238000000) expected_microvolts=850000 ;;
 	*) reject "no evidenced RT5735 voltage for ${opp_profile:-unknown}:$cur_freq" ;;
 esac
 
@@ -489,6 +476,13 @@ assert_no_drm_open
 runtime_status_after=$(cat "$gpu_device/power/runtime_status" 2>/dev/null || true)
 [ "$runtime_status_after" = suspended ] ||
 	reject "GPU left runtime suspend during the no-job observation"
+power_control_after=$(cat "$gpu_device/power/control" 2>/dev/null || true)
+autosuspend_after=$(cat "$gpu_device/power/autosuspend_delay_ms" 2>/dev/null || true)
+printf 'runtime_status_after=%s control_after=%s autosuspend_delay_ms_after=%s\n' \
+	"$runtime_status_after" "$power_control_after" "$autosuspend_after"
+[ "$power_control_after:$autosuspend_after" = \
+	"$power_control_before:$autosuspend_before" ] ||
+	reject "GPU runtime-PM policy changed during the no-job observation"
 
 if [ -r "$PROC_ROOT/interrupts" ]; then
 	for irq_name in panfrost-job panfrost-mmu panfrost-gpu; do
@@ -535,9 +529,16 @@ printf 'vgpu_after=%s\n' "$rail_after"
 [ "$rail_after" = "$rail_before" ] ||
 	reject "VGPU state changed during the no-job observation"
 cur_freq_after=$(cat "$devfreq_device/cur_freq" 2>/dev/null || true)
-printf 'cur_freq_after=%s\n' "$cur_freq_after"
-[ "$cur_freq_after" = "$cur_freq" ] ||
-	reject "GPU frequency changed during the no-job observation"
+available_after=$(cat "$devfreq_device/available_frequencies" 2>/dev/null || true)
+min_freq_after=$(cat "$devfreq_device/min_freq" 2>/dev/null || true)
+max_freq_after=$(cat "$devfreq_device/max_freq" 2>/dev/null || true)
+governor_after=$(cat "$devfreq_device/governor" 2>/dev/null || true)
+printf 'devfreq_after available=%s current=%s min=%s max=%s governor=%s\n' \
+	"$available_after" "$cur_freq_after" "$min_freq_after" "$max_freq_after" \
+	"$governor_after"
+[ "$available_after:$cur_freq_after:$min_freq_after:$max_freq_after:$governor_after" = \
+	"$actual_frequencies:$cur_freq:$min_freq:$max_freq:$governor" ] ||
+	reject "GPU devfreq policy changed during the no-job observation"
 
 spm_status_after=$($DEVMEM 0x10006180 32 2>/dev/null || true)
 spm_status_2nd_after=$($DEVMEM 0x10006184 32 2>/dev/null || true)

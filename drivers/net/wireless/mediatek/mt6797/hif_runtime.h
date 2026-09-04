@@ -66,6 +66,20 @@ struct mt6797_wifi_hif_runtime_transaction {
 	bool terminal;
 };
 
+/*
+ * One driver-private synchronous RX sink. Callbacks run under sink_lock in
+ * threaded-IRQ or terminal context, must not sleep, and must not retain input
+ * pointers. The lifecycle owner attaches and detaches while holding
+ * lifecycle_lock; the sink context must outlive that interval.
+ */
+struct mt6797_wifi_hif_runtime_sink {
+	int (*event)(void *context,
+		     const struct mt6797_wifi_event_view *event);
+	int (*frame)(void *context, const struct mt6797_wifi_rx_view *frame);
+	void (*abort)(void *context, int reason);
+	void *context;
+};
+
 struct mt6797_wifi_hif_runtime_ops {
 	int (*precheck)(void *context);
 	void (*mask_wrapper)(void *context);
@@ -90,6 +104,7 @@ struct mt6797_wifi_hif_irq {
 	struct mt6797_wifi_ahb_hif *hif;
 	struct mt6797_wifi_boot *boot;
 	struct mutex lifecycle_lock; /* Serializes runtime start/stop/worker. */
+	spinlock_t sink_lock;
 	/* Publishes terminal mode and its reason as one observable state. */
 	spinlock_t terminal_lock;
 	struct work_struct terminal_work;
@@ -99,6 +114,7 @@ struct mt6797_wifi_hif_irq {
 	struct mt6797_wifi_hif_pump_stats pump_stats;
 	struct mt6797_wifi_scan_transaction scan_transaction;
 	struct mt6797_wifi_hif_wait_event wait_event;
+	struct mt6797_wifi_hif_runtime_sink sink;
 	u8 *rx_buffer[2];
 	ktime_t pump_deadline;
 	u32 whcr_before;
@@ -125,6 +141,19 @@ void mt6797_wifi_hif_runtime_fail(struct mt6797_wifi_hif_irq *irq,
 int mt6797_wifi_hif_runtime_route_event(
 	struct mt6797_wifi_scan_transaction *transaction,
 	const struct mt6797_wifi_event_view *event);
+int mt6797_wifi_hif_runtime_sink_attach(
+	struct mt6797_wifi_hif_irq *irq,
+	const struct mt6797_wifi_hif_runtime_sink *sink);
+int mt6797_wifi_hif_runtime_sink_detach(
+	struct mt6797_wifi_hif_irq *irq, void *context);
+int mt6797_wifi_hif_runtime_sink_event(
+	struct mt6797_wifi_hif_irq *irq,
+	const struct mt6797_wifi_event_view *event);
+int mt6797_wifi_hif_runtime_sink_frame(
+	struct mt6797_wifi_hif_irq *irq,
+	const struct mt6797_wifi_rx_view *frame);
+void mt6797_wifi_hif_runtime_sink_abort(
+	struct mt6797_wifi_hif_irq *irq, int reason);
 void mt6797_wifi_hif_wait_event_init(
 	struct mt6797_wifi_hif_wait_event *wait_event);
 int mt6797_wifi_hif_wait_event_arm(

@@ -3,6 +3,7 @@
 #include <kunit/test.h>
 #include <linux/errno.h>
 #include <linux/etherdevice.h>
+#include <linux/ieee80211.h>
 #include <linux/jiffies.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
@@ -19,6 +20,7 @@
 #define MT6797_WIFI_AIS_HIF_TEST_NOW_MS		100U
 #define MT6797_WIFI_AIS_HIF_TEST_TIMEOUT_MS	1000U
 #define MT6797_WIFI_AIS_HIF_TEST_MAX_SENDS	8U
+#define MT6797_WIFI_AIS_HIF_TEST_PACKET_MAX	160U
 
 enum mt6797_wifi_ais_hif_test_wait_mode {
 	MT6797_WIFI_AIS_HIF_TEST_GRANT,
@@ -31,12 +33,27 @@ enum mt6797_wifi_ais_hif_test_wait_mode {
 	MT6797_WIFI_AIS_HIF_TEST_DUPLICATE,
 };
 
+enum mt6797_wifi_ais_hif_test_auth_mode {
+	MT6797_WIFI_AIS_HIF_TEST_AUTH_TX_THEN_RX,
+	MT6797_WIFI_AIS_HIF_TEST_AUTH_RX_THEN_TX,
+	MT6797_WIFI_AIS_HIF_TEST_AUTH_FOREIGN_THEN_OWNED,
+	MT6797_WIFI_AIS_HIF_TEST_AUTH_TX_FAILED,
+	MT6797_WIFI_AIS_HIF_TEST_AUTH_REJECTED,
+	MT6797_WIFI_AIS_HIF_TEST_AUTH_TIMEOUT,
+	MT6797_WIFI_AIS_HIF_TEST_AUTH_MALFORMED_EVENT,
+	MT6797_WIFI_AIS_HIF_TEST_AUTH_MALFORMED_FRAME,
+	MT6797_WIFI_AIS_HIF_TEST_AUTH_DUPLICATE,
+	MT6797_WIFI_AIS_HIF_TEST_AUTH_HIF_ABORT,
+};
+
 struct mt6797_wifi_ais_hif_test_context {
 	struct kunit *test;
 	struct mt6797_wifi_ais_hif *ais;
 	ktime_t now;
 	u32 address[MT6797_WIFI_AIS_HIF_TEST_MAX_SENDS];
 	size_t length[MT6797_WIFI_AIS_HIF_TEST_MAX_SENDS];
+	u8 packet[MT6797_WIFI_AIS_HIF_TEST_MAX_SENDS]
+		 [MT6797_WIFI_AIS_HIF_TEST_PACKET_MAX];
 	unsigned long wait_timeout[2];
 	unsigned int sends;
 	unsigned int waits;
@@ -45,6 +62,7 @@ struct mt6797_wifi_ais_hif_test_context {
 	int terminal_reason;
 	int offer_error;
 	u8 wait_mode;
+	u8 auth_mode;
 	bool foreign_signalled;
 };
 
@@ -76,10 +94,13 @@ static int mt6797_wifi_ais_hif_test_send(void *data, u32 address,
 	struct mt6797_wifi_ais_hif_test_context *context = data;
 	unsigned int send = context->sends;
 
-	if (!packet || !length || send >= MT6797_WIFI_AIS_HIF_TEST_MAX_SENDS)
+	if (!packet || !length ||
+	    length > MT6797_WIFI_AIS_HIF_TEST_PACKET_MAX ||
+	    send >= MT6797_WIFI_AIS_HIF_TEST_MAX_SENDS)
 		return -EINVAL;
 	context->address[send] = address;
 	context->length[send] = length;
+	memcpy(context->packet[send], packet, length);
 	context->sends++;
 	return send == context->fail_send ? -EIO : 0;
 }
@@ -123,6 +144,128 @@ static int mt6797_wifi_ais_hif_test_offer(
 		MT6797_WIFI_HIF_WAIT_EVENT_PAYLOAD_MAX);
 }
 
+static int mt6797_wifi_ais_hif_test_auth_event(
+	struct mt6797_wifi_ais_hif_test_context *context, bool foreign,
+	bool malformed, u8 status)
+{
+	struct mt6797_wifi_ais_hif_auth *auth = &context->ais->auth;
+	u8 payload[16] = {};
+	struct mt6797_wifi_event_view event = {
+		.payload = payload,
+		.payload_length = malformed ? sizeof(payload) - 1 : sizeof(payload),
+		.packet_length = malformed ? 23 :
+			MT6797_WIFI_AIS_MGMT_TX_EVENT_LENGTH,
+		.id = 0x0f,
+	};
+
+	payload[0] = auth->pid_lease.pid + foreign;
+	payload[1] = status;
+	put_unaligned_le16(7, payload + 2);
+	payload[4] = auth->pid_lease.wlan_index;
+	payload[5] = 1;
+	payload[8] = BIT(0);
+	return mt6797_wifi_hif_runtime_sink_event(context->ais->irq, &event);
+}
+
+static int mt6797_wifi_ais_hif_test_auth_frame(
+	struct mt6797_wifi_ais_hif_test_context *context, bool foreign,
+	bool malformed, u16 status)
+{
+	struct mt6797_wifi_ais_hif_auth *auth = &context->ais->auth;
+	u8 frame_data[MT6797_WIFI_AIS_AUTH_FRAME_LENGTH] = {};
+	struct mt6797_wifi_rx_view frame = {
+		.payload = frame_data,
+		.payload_length = sizeof(frame_data),
+		.packet_length = MT6797_WIFI_RX_DESCRIPTOR_LENGTH +
+			sizeof(frame_data),
+		.kind = MT6797_WIFI_RX_IEEE80211,
+		.header_length = 24,
+		.wlan_index = auth->pid_lease.wlan_index,
+	};
+
+	put_unaligned_le16(IEEE80211_STYPE_AUTH, frame_data);
+	memcpy(frame_data + 4, auth->pending.own_addr, ETH_ALEN);
+	memcpy(frame_data + 10, auth->pending.peer_addr, ETH_ALEN);
+	memcpy(frame_data + 16, auth->pending.peer_addr, ETH_ALEN);
+	if (foreign)
+		frame_data[10] ^= 1;
+	put_unaligned_le16(malformed ? 3 : 2, frame_data + 26);
+	put_unaligned_le16(status, frame_data + 28);
+	return mt6797_wifi_hif_runtime_sink_frame(context->ais->irq, &frame);
+}
+
+static unsigned long mt6797_wifi_ais_hif_test_auth_wait(
+	struct mt6797_wifi_ais_hif_test_context *context,
+	struct completion *completion)
+{
+	switch (context->auth_mode) {
+	case MT6797_WIFI_AIS_HIF_TEST_AUTH_TX_THEN_RX:
+		context->offer_error = mt6797_wifi_ais_hif_test_auth_event(
+			context, false, false, 0);
+		if (!context->offer_error)
+			context->offer_error = mt6797_wifi_ais_hif_test_auth_frame(
+				context, false, false, 0);
+		break;
+	case MT6797_WIFI_AIS_HIF_TEST_AUTH_RX_THEN_TX:
+		context->offer_error = mt6797_wifi_ais_hif_test_auth_frame(
+			context, false, false, 0);
+		if (!context->offer_error)
+			context->offer_error = mt6797_wifi_ais_hif_test_auth_event(
+				context, false, false, 0);
+		break;
+	case MT6797_WIFI_AIS_HIF_TEST_AUTH_FOREIGN_THEN_OWNED:
+		context->offer_error = mt6797_wifi_ais_hif_test_auth_event(
+			context, true, false, 0);
+		if (!context->offer_error)
+			context->offer_error = mt6797_wifi_ais_hif_test_auth_frame(
+				context, true, false, 0);
+		context->foreign_signalled = completion_done(completion);
+		if (!context->offer_error)
+			context->offer_error = mt6797_wifi_ais_hif_test_auth_frame(
+				context, false, false, 0);
+		if (!context->offer_error)
+			context->offer_error = mt6797_wifi_ais_hif_test_auth_event(
+				context, false, false, 0);
+		break;
+	case MT6797_WIFI_AIS_HIF_TEST_AUTH_TX_FAILED:
+		context->offer_error = mt6797_wifi_ais_hif_test_auth_event(
+			context, false, false, 7);
+		break;
+	case MT6797_WIFI_AIS_HIF_TEST_AUTH_REJECTED:
+		context->offer_error = mt6797_wifi_ais_hif_test_auth_frame(
+			context, false, false, 13);
+		if (!context->offer_error)
+			context->offer_error = mt6797_wifi_ais_hif_test_auth_event(
+				context, false, false, 0);
+		break;
+	case MT6797_WIFI_AIS_HIF_TEST_AUTH_TIMEOUT:
+		context->now = ktime_add_ms(context->now,
+			MT6797_WIFI_AIS_HIF_TEST_TIMEOUT_MS);
+		return 0;
+	case MT6797_WIFI_AIS_HIF_TEST_AUTH_MALFORMED_EVENT:
+		context->offer_error = mt6797_wifi_ais_hif_test_auth_event(
+			context, false, true, 0);
+		break;
+	case MT6797_WIFI_AIS_HIF_TEST_AUTH_MALFORMED_FRAME:
+		context->offer_error = mt6797_wifi_ais_hif_test_auth_frame(
+			context, false, true, 0);
+		break;
+	case MT6797_WIFI_AIS_HIF_TEST_AUTH_DUPLICATE:
+		context->offer_error = mt6797_wifi_ais_hif_test_auth_event(
+			context, false, false, 0);
+		if (!context->offer_error)
+			context->offer_error = mt6797_wifi_ais_hif_test_auth_event(
+				context, false, false, 0);
+		break;
+	case MT6797_WIFI_AIS_HIF_TEST_AUTH_HIF_ABORT:
+		mt6797_wifi_hif_runtime_sink_abort(context->ais->irq, -EIO);
+		break;
+	default:
+		return 0;
+	}
+	return try_wait_for_completion(completion) ? 1 : 0;
+}
+
 static unsigned long mt6797_wifi_ais_hif_test_wait(
 	void *data, struct completion *completion, unsigned long timeout)
 {
@@ -130,6 +273,8 @@ static unsigned long mt6797_wifi_ais_hif_test_wait(
 	unsigned int wait = context->waits++;
 	struct mt6797_wifi_hif_irq *irq = context->ais->irq;
 
+	if (context->ais->auth.armed)
+		return mt6797_wifi_ais_hif_test_auth_wait(context, completion);
 	if (wait < ARRAY_SIZE(context->wait_timeout))
 		context->wait_timeout[wait] = timeout;
 	switch (context->wait_mode) {
@@ -218,6 +363,7 @@ static void mt6797_wifi_ais_hif_test_init(
 	context->wait_mode = MT6797_WIFI_AIS_HIF_TEST_GRANT;
 	mutex_init(&fixture->irq.lifecycle_lock);
 	spin_lock_init(&fixture->irq.terminal_lock);
+	spin_lock_init(&fixture->irq.sink_lock);
 	mt6797_wifi_hif_wait_event_init(&fixture->irq.wait_event);
 	fixture->irq.hif = &fixture->hif;
 	fixture->irq.boot = &fixture->boot;
@@ -500,6 +646,176 @@ static void mt6797_wifi_hif_event_copy_lifetime_test(struct kunit *test)
 	mt6797_wifi_hif_wait_event_disarm(&wait_event);
 }
 
+static void mt6797_wifi_ais_hif_auth_success_test(struct kunit *test)
+{
+	struct mt6797_wifi_ais_hif_auth_request request = {
+		.response_timeout_ms = MT6797_WIFI_AIS_HIF_TEST_TIMEOUT_MS,
+		.sequence_number = 0x123,
+		.fixed_rate = 0,
+	};
+	struct mt6797_wifi_ais_hif_auth_result result;
+	struct mt6797_wifi_ais_hif_test_fixture *fixture =
+		mt6797_wifi_ais_hif_test_fixture(test);
+	const u8 *packet;
+
+	KUNIT_ASSERT_NOT_NULL(test, fixture);
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_start(&fixture->ais,
+		&fixture->request), 0);
+	fixture->context.auth_mode =
+		MT6797_WIFI_AIS_HIF_TEST_AUTH_TX_THEN_RX;
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_open_auth(&fixture->ais,
+		&request, &result), 0);
+	KUNIT_EXPECT_TRUE(test, result.tx_done);
+	KUNIT_EXPECT_TRUE(test, result.response_received);
+	KUNIT_EXPECT_EQ(test, result.tx.status, (u8)0);
+	KUNIT_EXPECT_EQ(test, result.response.status_code, (u16)0);
+	KUNIT_EXPECT_EQ(test, fixture->context.sends, 4U);
+	KUNIT_EXPECT_EQ(test, fixture->context.address[3],
+		MT6797_WIFI_MCR_WTDR1);
+	KUNIT_EXPECT_EQ(test, fixture->context.length[3], (size_t)60);
+	packet = fixture->context.packet[3];
+	KUNIT_EXPECT_EQ(test, packet[3], (u8)0x88);
+	KUNIT_EXPECT_EQ(test, packet[20], (u8)1);
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(packet + 14), (u16)0x8123);
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(packet + 26), (u16)0);
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(packet + 28),
+		(u16)IEEE80211_STYPE_AUTH);
+	KUNIT_EXPECT_EQ(test, fixture->context.terminals, 0U);
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ais_hif_open_auth(&fixture->ais,
+		&request, &result), -EALREADY);
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_stop(&fixture->ais), 0);
+}
+
+static void mt6797_wifi_ais_hif_auth_reverse_race_test(struct kunit *test)
+{
+	struct mt6797_wifi_ais_hif_auth_request request = {
+		.response_timeout_ms = MT6797_WIFI_AIS_HIF_TEST_TIMEOUT_MS,
+		.sequence_number = 1,
+		.fixed_rate = 0x4b,
+	};
+	struct mt6797_wifi_ais_hif_auth_result result;
+	struct mt6797_wifi_ais_hif_test_fixture *fixture =
+		mt6797_wifi_ais_hif_test_fixture(test);
+
+	KUNIT_ASSERT_NOT_NULL(test, fixture);
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_start(&fixture->ais,
+		&fixture->request), 0);
+	fixture->context.auth_mode =
+		MT6797_WIFI_AIS_HIF_TEST_AUTH_RX_THEN_TX;
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_open_auth(&fixture->ais,
+		&request, &result), 0);
+	KUNIT_EXPECT_TRUE(test, result.tx_done);
+	KUNIT_EXPECT_TRUE(test, result.response_received);
+	KUNIT_EXPECT_EQ(test, fixture->context.offer_error, 0);
+}
+
+static void mt6797_wifi_ais_hif_auth_foreign_reject_test(struct kunit *test)
+{
+	struct mt6797_wifi_ais_hif_auth_request request = {
+		.response_timeout_ms = MT6797_WIFI_AIS_HIF_TEST_TIMEOUT_MS,
+		.sequence_number = 1,
+		.fixed_rate = 0x4b,
+	};
+	struct mt6797_wifi_ais_hif_auth_result result;
+	struct mt6797_wifi_ais_hif_test_fixture *fixture =
+		mt6797_wifi_ais_hif_test_fixture(test);
+
+	KUNIT_ASSERT_NOT_NULL(test, fixture);
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_start(&fixture->ais,
+		&fixture->request), 0);
+	fixture->context.auth_mode =
+		MT6797_WIFI_AIS_HIF_TEST_AUTH_FOREIGN_THEN_OWNED;
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_open_auth(&fixture->ais,
+		&request, &result), 0);
+	KUNIT_EXPECT_FALSE(test, fixture->context.foreign_signalled);
+
+	fixture = mt6797_wifi_ais_hif_test_fixture(test);
+	KUNIT_ASSERT_NOT_NULL(test, fixture);
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_start(&fixture->ais,
+		&fixture->request), 0);
+	fixture->context.auth_mode = MT6797_WIFI_AIS_HIF_TEST_AUTH_REJECTED;
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ais_hif_open_auth(&fixture->ais,
+		&request, &result), -EACCES);
+	KUNIT_EXPECT_TRUE(test, result.tx_done);
+	KUNIT_EXPECT_TRUE(test, result.response_received);
+	KUNIT_EXPECT_EQ(test, result.response.status_code, (u16)13);
+	KUNIT_EXPECT_EQ(test, fixture->context.terminals, 0U);
+}
+
+static void mt6797_wifi_ais_hif_auth_tx_failure_test(struct kunit *test)
+{
+	struct mt6797_wifi_ais_hif_auth_request request = {
+		.response_timeout_ms = MT6797_WIFI_AIS_HIF_TEST_TIMEOUT_MS,
+		.sequence_number = 1,
+		.fixed_rate = 0x4b,
+	};
+	struct mt6797_wifi_ais_hif_auth_result result;
+	struct mt6797_wifi_ais_hif_test_fixture *fixture =
+		mt6797_wifi_ais_hif_test_fixture(test);
+
+	KUNIT_ASSERT_NOT_NULL(test, fixture);
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_start(&fixture->ais,
+		&fixture->request), 0);
+	fixture->context.auth_mode = MT6797_WIFI_AIS_HIF_TEST_AUTH_TX_FAILED;
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ais_hif_open_auth(&fixture->ais,
+		&request, &result), -EREMOTEIO);
+	KUNIT_EXPECT_TRUE(test, result.tx_done);
+	KUNIT_EXPECT_FALSE(test, result.response_received);
+	KUNIT_EXPECT_EQ(test, result.tx.status, (u8)7);
+	KUNIT_EXPECT_EQ(test, fixture->context.terminals, 0U);
+
+	fixture = mt6797_wifi_ais_hif_test_fixture(test);
+	KUNIT_ASSERT_NOT_NULL(test, fixture);
+	KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_start(&fixture->ais,
+		&fixture->request), 0);
+	fixture->context.fail_send = 3;
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_ais_hif_open_auth(&fixture->ais,
+		&request, &result), -EIO);
+	KUNIT_EXPECT_TRUE(test, fixture->ais.auth.dirty);
+	KUNIT_EXPECT_FALSE(test, fixture->ais.auth.sent);
+	KUNIT_EXPECT_EQ(test, fixture->context.terminals, 1U);
+}
+
+static void mt6797_wifi_ais_hif_auth_terminal_paths_test(struct kunit *test)
+{
+	static const struct {
+		u8 mode;
+		int error;
+	} cases[] = {
+		{ MT6797_WIFI_AIS_HIF_TEST_AUTH_TIMEOUT, -ETIMEDOUT },
+		{ MT6797_WIFI_AIS_HIF_TEST_AUTH_MALFORMED_EVENT, -EPROTO },
+		{ MT6797_WIFI_AIS_HIF_TEST_AUTH_MALFORMED_FRAME, -EPROTO },
+		{ MT6797_WIFI_AIS_HIF_TEST_AUTH_DUPLICATE, -EOVERFLOW },
+		{ MT6797_WIFI_AIS_HIF_TEST_AUTH_HIF_ABORT, -EIO },
+	};
+	struct mt6797_wifi_ais_hif_auth_request request = {
+		.response_timeout_ms = MT6797_WIFI_AIS_HIF_TEST_TIMEOUT_MS,
+		.sequence_number = 1,
+		.fixed_rate = 0x4b,
+	};
+	struct mt6797_wifi_ais_hif_auth_result result;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(cases); i++) {
+		struct mt6797_wifi_ais_hif_test_fixture *fixture =
+			mt6797_wifi_ais_hif_test_fixture(test);
+
+		KUNIT_ASSERT_NOT_NULL(test, fixture);
+		KUNIT_ASSERT_EQ(test, mt6797_wifi_ais_hif_start(&fixture->ais,
+			&fixture->request), 0);
+		fixture->context.auth_mode = cases[i].mode;
+		KUNIT_EXPECT_EQ(test,
+			mt6797_wifi_ais_hif_open_auth(&fixture->ais, &request,
+				&result), cases[i].error);
+		KUNIT_EXPECT_EQ(test, fixture->ais.auth.terminal_reason,
+			cases[i].error);
+		KUNIT_EXPECT_EQ(test, fixture->ais.auth.pid_owner.state,
+			(u8)MT6797_WIFI_AIS_MGMT_PID_TERMINAL);
+		KUNIT_EXPECT_EQ(test, fixture->context.terminals, 1U);
+		KUNIT_EXPECT_PTR_EQ(test, fixture->irq.sink.context, NULL);
+	}
+}
+
 static struct kunit_case mt6797_wifi_ais_hif_test_cases[] = {
 	KUNIT_CASE(mt6797_wifi_ais_hif_start_stop_test),
 	KUNIT_CASE(mt6797_wifi_ais_hif_ready_target_gate_test),
@@ -513,6 +829,11 @@ static struct kunit_case mt6797_wifi_ais_hif_test_cases[] = {
 	KUNIT_CASE(mt6797_wifi_ais_hif_duplicate_event_test),
 	KUNIT_CASE(mt6797_wifi_ais_hif_stop_fault_race_test),
 	KUNIT_CASE(mt6797_wifi_hif_event_copy_lifetime_test),
+	KUNIT_CASE(mt6797_wifi_ais_hif_auth_success_test),
+	KUNIT_CASE(mt6797_wifi_ais_hif_auth_reverse_race_test),
+	KUNIT_CASE(mt6797_wifi_ais_hif_auth_foreign_reject_test),
+	KUNIT_CASE(mt6797_wifi_ais_hif_auth_tx_failure_test),
+	KUNIT_CASE(mt6797_wifi_ais_hif_auth_terminal_paths_test),
 	{}
 };
 

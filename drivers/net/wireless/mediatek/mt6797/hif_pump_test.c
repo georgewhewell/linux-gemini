@@ -16,7 +16,9 @@ struct mt6797_wifi_hif_pump_test_context {
 	unsigned int expired_calls;
 	unsigned int expire_at;
 	unsigned int delivered_events;
+	unsigned int delivered_frames;
 	int event_result;
+	int frame_result;
 	u8 delivered_id;
 	u8 delivered_sequence;
 	u8 delivered_payload;
@@ -104,6 +106,17 @@ static int mt6797_wifi_hif_pump_test_deliver(
 	return context->event_result;
 }
 
+static int mt6797_wifi_hif_pump_test_deliver_frame(
+	void *data, const struct mt6797_wifi_rx_view *frame)
+{
+	struct mt6797_wifi_hif_pump_test_context *context = data;
+
+	if (frame->kind != MT6797_WIFI_RX_IEEE80211)
+		return -EINVAL;
+	context->delivered_frames++;
+	return context->frame_result;
+}
+
 static void mt6797_wifi_hif_pump_test_ops(
 	struct mt6797_wifi_hif_pump_test_context *context,
 	struct mt6797_wifi_hif_pump_ops *ops)
@@ -114,6 +127,7 @@ static void mt6797_wifi_hif_pump_test_ops(
 		.read_lengths = mt6797_wifi_hif_pump_test_lengths,
 		.read_packet = mt6797_wifi_hif_pump_test_packet,
 		.deliver_event = mt6797_wifi_hif_pump_test_deliver,
+		.deliver_frame = mt6797_wifi_hif_pump_test_deliver_frame,
 		.expired = mt6797_wifi_hif_pump_test_expired,
 		.context = context,
 	};
@@ -295,6 +309,7 @@ static void mt6797_wifi_hif_pump_event_selection_test(struct kunit *test)
 	struct mt6797_wifi_hif_pump_stats stats = {};
 	struct mt6797_wifi_hif_pump_ops ops = {
 		.deliver_event = mt6797_wifi_hif_pump_test_deliver,
+		.deliver_frame = mt6797_wifi_hif_pump_test_deliver_frame,
 		.context = &context,
 	};
 	struct mt6797_wifi_rx_view frame = {
@@ -305,6 +320,7 @@ static void mt6797_wifi_hif_pump_event_selection_test(struct kunit *test)
 	KUNIT_ASSERT_EQ(test,
 		mt6797_wifi_hif_pump_dispatch(&ops, &stats, &frame), 0);
 	KUNIT_EXPECT_EQ(test, context.delivered_events, 0U);
+	KUNIT_EXPECT_EQ(test, context.delivered_frames, 1U);
 	frame = (struct mt6797_wifi_rx_view) {
 		.kind = MT6797_WIFI_RX_EVENT,
 		.payload = &payload,
@@ -316,6 +332,7 @@ static void mt6797_wifi_hif_pump_event_selection_test(struct kunit *test)
 	KUNIT_ASSERT_EQ(test,
 		mt6797_wifi_hif_pump_dispatch(&ops, &stats, &frame), 0);
 	KUNIT_EXPECT_EQ(test, context.delivered_events, 1U);
+	KUNIT_EXPECT_EQ(test, context.delivered_frames, 1U);
 	KUNIT_EXPECT_EQ(test, context.delivered_id, (u8)0x27);
 	KUNIT_EXPECT_EQ(test, context.delivered_payload, payload);
 }

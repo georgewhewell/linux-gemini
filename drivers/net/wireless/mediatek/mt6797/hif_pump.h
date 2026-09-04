@@ -30,6 +30,9 @@ struct mt6797_wifi_hif_pump_ops {
 	/* Called synchronously; event and its payload must not be retained. */
 	int (*deliver_event)(void *context,
 			     const struct mt6797_wifi_event_view *event);
+	/* Called synchronously; frame and its payload must not be retained. */
+	int (*deliver_frame)(void *context,
+			     const struct mt6797_wifi_rx_view *frame);
 	bool (*expired)(void *context);
 	void *context;
 };

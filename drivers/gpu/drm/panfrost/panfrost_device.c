@@ -479,10 +479,19 @@ static int panfrost_device_runtime_resume(struct device *dev)
 	if (ret)
 		goto err_reset;
 
-	panfrost_devfreq_resume(pfdev);
+	ret = panfrost_devfreq_resume(pfdev);
+	if (ret) {
+		dev_err(dev, "failed to resume devfreq: %d\n", ret);
+		goto err_devfreq;
+	}
 
 	return 0;
 
+err_devfreq:
+	panfrost_jm_suspend_irq(pfdev);
+	panfrost_mmu_suspend_irq(pfdev);
+	panfrost_gpu_suspend_irq(pfdev);
+	panfrost_gpu_power_off(pfdev);
 err_reset:
 	if (pfdev->comp->pm_features & BIT(GPU_PM_RT) && pfdev->bus_clock)
 		clk_disable(pfdev->bus_clock);
@@ -498,11 +507,17 @@ err_clk:
 static int panfrost_device_runtime_suspend(struct device *dev)
 {
 	struct panfrost_device *pfdev = dev_get_drvdata(dev);
+	int ret;
 
 	if (!panfrost_jm_is_idle(pfdev))
 		return -EBUSY;
 
-	panfrost_devfreq_suspend(pfdev);
+	ret = panfrost_devfreq_suspend(pfdev);
+	if (ret) {
+		dev_err(dev, "failed to suspend devfreq: %d\n", ret);
+		return ret;
+	}
+
 	panfrost_jm_suspend_irq(pfdev);
 	panfrost_mmu_suspend_irq(pfdev);
 	panfrost_gpu_suspend_irq(pfdev);

@@ -8,6 +8,14 @@
 #define MT6797_CCCI_SEQUENCE_MAX		0x7fff
 #define MT6797_CLDMA_ADDRESS_MAX		GENMASK_ULL(35, 0)
 
+#define MT6797_CCCI_CONTROL_RX		0
+#define MT6797_CCCI_MD_INIT_START_BOOT	0
+#define MT6797_CCCI_MD_EXCEPTION		4
+#define MT6797_CCCI_DRIVER_VERSION_ERROR	5
+#define MT6797_CCCI_MD_EXCEPTION_OK	6
+#define MT6797_CCCI_MD_EXCEPTION_PASS	8
+#define MT6797_CCCI_MD_INIT_CHECK_ID	0x5555ffff
+
 struct mt6797_ccci_header {
 	__le32 data[2];
 	__le16 channel;
@@ -49,6 +57,29 @@ enum mt6797_cldma_pointer {
 	MT6797_CLDMA_POINTER_NEXT,
 };
 
+/**
+ * enum mt6797_ccci_boot_state - AP view of the MD1 control handshake
+ * @MT6797_CCCI_BOOT_OFFLINE: no handshake is in progress
+ * @MT6797_CCCI_BOOT_WAIT_HS1: waiting for the modem's initial boot message
+ * @MT6797_CCCI_BOOT_SEND_RUNTIME: HS1 passed; AP runtime data must be sent
+ * @MT6797_CCCI_BOOT_WAIT_HS2: runtime data was sent; waiting for boot-ready
+ * @MT6797_CCCI_BOOT_READY: the modem completed the control handshake
+ * @MT6797_CCCI_BOOT_FAILED: an exception or protocol violation occurred
+ */
+enum mt6797_ccci_boot_state {
+	MT6797_CCCI_BOOT_OFFLINE,
+	MT6797_CCCI_BOOT_WAIT_HS1,
+	MT6797_CCCI_BOOT_SEND_RUNTIME,
+	MT6797_CCCI_BOOT_WAIT_HS2,
+	MT6797_CCCI_BOOT_READY,
+	MT6797_CCCI_BOOT_FAILED,
+};
+
+enum mt6797_ccci_boot_event {
+	MT6797_CCCI_BOOT_EVENT_HS1 = 1,
+	MT6797_CCCI_BOOT_EVENT_READY,
+};
+
 int mt6797_ccci_header_encode(struct mt6797_ccci_header *header,
 			      const struct mt6797_ccci_header_fields *fields);
 int mt6797_ccci_header_decode(const struct mt6797_ccci_header *header,
@@ -58,5 +89,11 @@ int mt6797_cldma_address_encode(u64 address, enum mt6797_cldma_pointer pointer,
 				__le32 *low, __le16 *debug_id);
 int mt6797_cldma_address_decode(__le32 low, __le16 debug_id,
 				enum mt6797_cldma_pointer pointer, u64 *address);
+
+void mt6797_ccci_boot_begin(enum mt6797_ccci_boot_state *state);
+int mt6797_ccci_boot_runtime_sent(enum mt6797_ccci_boot_state *state);
+int mt6797_ccci_boot_receive(enum mt6797_ccci_boot_state *state,
+			     const struct mt6797_ccci_header_fields *fields);
+void mt6797_ccci_boot_abort(enum mt6797_ccci_boot_state *state);
 
 #endif /* __MT6797_MD1_PROTOCOL_H */

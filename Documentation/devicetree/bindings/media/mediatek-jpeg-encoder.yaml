@@ -17,6 +17,7 @@ properties:
     items:
       - enum:
           - mediatek,mt2701-jpgenc
+          - mediatek,mt6797-jpgenc
           - mediatek,mt8183-jpgenc
           - mediatek,mt8186-jpgenc
           - mediatek,mt8188-jpgenc

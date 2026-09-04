@@ -17,6 +17,7 @@ properties:
     oneOf:
       - items:
           - enum:
+              - mediatek,mt6797-jpgdec
               - mediatek,mt8173-jpgdec
               - mediatek,mt2701-jpgdec
       - items:

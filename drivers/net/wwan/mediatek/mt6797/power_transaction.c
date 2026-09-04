@@ -57,6 +57,7 @@ mt6797_md1_control_forward_value(enum mt6797_md1_power_control control)
 
 static int mt6797_md1_apply_step(const struct mt6797_md1_power_ops *ops,
 				 void *context,
+				 const struct mt6797_md1_power_req *req,
 				 const struct mt6797_md1_inherited_power *state,
 				 enum mt6797_md1_power_step step,
 				 bool forward)
@@ -96,8 +97,11 @@ set_enable_hw:
 	case MT6797_MD1_STEP_VOLTAGE_VMODEM:
 		rail = MT6797_MD1_RAIL_VMODEM;
 set_voltage:
-		voltage_uv = forward ? MT6797_MD1_REQUIRED_UV :
-			state->voltage_uv[rail];
+		if (forward)
+			voltage_uv = rail == MT6797_MD1_RAIL_VSRAM_MD ?
+				req->vsram_md_uv : req->vmodem_uv;
+		else
+			voltage_uv = state->voltage_uv[rail];
 		return ops->set_rail_voltage(context, rail, voltage_uv);
 	case MT6797_MD1_STEP_VOLTAGE_HW_VSRAM_MD:
 		rail = MT6797_MD1_RAIL_VSRAM_MD;
@@ -253,7 +257,8 @@ mt6797_md1_snapshot_inherited(const struct mt6797_md1_power_ops *ops,
 
 static int
 mt6797_md1_verify_rail_contract(const struct mt6797_md1_power_ops *ops,
-				void *context)
+				void *context,
+				const struct mt6797_md1_power_req *req)
 {
 	bool enabled;
 	unsigned int control;
@@ -282,13 +287,13 @@ mt6797_md1_verify_rail_contract(const struct mt6797_md1_power_ops *ops,
 				     &voltage_uv);
 	if (ret)
 		return ret;
-	if (voltage_uv != MT6797_MD1_REQUIRED_UV)
+	if (voltage_uv != req->vsram_md_uv)
 		return -ERANGE;
 	ret = ops->read_rail_voltage(context, MT6797_MD1_RAIL_VMODEM,
 				     &voltage_uv);
 	if (ret)
 		return ret;
-	if (voltage_uv != MT6797_MD1_REQUIRED_UV)
+	if (voltage_uv != req->vmodem_uv)
 		return -ERANGE;
 
 	return 0;
@@ -339,6 +344,7 @@ mt6797_md1_verify_restored(const struct mt6797_md1_power_ops *ops,
 
 static int mt6797_md1_unwind(const struct mt6797_md1_power_ops *ops,
 			     void *context,
+			     const struct mt6797_md1_power_req *req,
 			     const struct mt6797_md1_inherited_power *state,
 			     unsigned long attempted,
 			     unsigned int ack_attempts)
@@ -351,7 +357,8 @@ static int mt6797_md1_unwind(const struct mt6797_md1_power_ops *ops,
 		if (!(attempted & BIT(step)))
 			continue;
 
-		ret = mt6797_md1_apply_step(ops, context, state, step, false);
+		ret = mt6797_md1_apply_step(ops, context, req, state,
+					    step, false);
 		if (ret && !first_ret)
 			first_ret = ret;
 
@@ -370,7 +377,8 @@ static int mt6797_md1_unwind(const struct mt6797_md1_power_ops *ops,
 	return ret ?: first_ret;
 }
 
-int mt6797_md1_power_transaction(const struct mt6797_md1_power_ops *ops,
+int mt6797_md1_power_transaction(const struct mt6797_md1_power_req *req,
+				 const struct mt6797_md1_power_ops *ops,
 				 void *context, unsigned int ack_attempts)
 {
 	struct mt6797_md1_inherited_power state = {};
@@ -379,7 +387,9 @@ int mt6797_md1_power_transaction(const struct mt6797_md1_power_ops *ops,
 	int unwind_ret;
 	int ret;
 
-	if (!ops || !context || !ack_attempts || !ops->set_rail ||
+	if (!req || req->vsram_md_uv <= 0 || req->vmodem_uv <= 0 || !ops ||
+	    !context || !ack_attempts ||
+	    !ops->set_rail ||
 	    !ops->set_rail_voltage || !ops->set_rail_hw_control ||
 	    !ops->set_control || !ops->read_rail || !ops->read_rail_voltage ||
 	    !ops->read_rail_hw_control || !ops->read_control ||
@@ -394,7 +404,8 @@ int mt6797_md1_power_transaction(const struct mt6797_md1_power_ops *ops,
 	for (step = 0; step < MT6797_MD1_POWER_STEP_COUNT; step++) {
 		/* A failing callback may have changed hardware: unwind it too. */
 		attempted |= BIT(step);
-		ret = mt6797_md1_apply_step(ops, context, &state, step, true);
+		ret = mt6797_md1_apply_step(ops, context, req, &state,
+					    step, true);
 		if (ret)
 			break;
 
@@ -404,7 +415,7 @@ int mt6797_md1_power_transaction(const struct mt6797_md1_power_ops *ops,
 			if (ret)
 				break;
 		} else if (step == MT6797_MD1_STEP_VOLTAGE_HW_VMODEM) {
-			ret = mt6797_md1_verify_rail_contract(ops, context);
+			ret = mt6797_md1_verify_rail_contract(ops, context, req);
 			if (ret)
 				break;
 		} else if (step == MT6797_MD1_STEP_PWR_ON_2ND) {
@@ -418,7 +429,7 @@ int mt6797_md1_power_transaction(const struct mt6797_md1_power_ops *ops,
 		}
 	}
 
-	unwind_ret = mt6797_md1_unwind(ops, context, &state, attempted,
+	unwind_ret = mt6797_md1_unwind(ops, context, req, &state, attempted,
 				       ack_attempts);
 	return unwind_ret ?: ret;
 }

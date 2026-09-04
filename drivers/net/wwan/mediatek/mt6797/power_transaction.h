@@ -33,8 +33,13 @@ enum mt6797_md1_power_control {
 #define MT6797_MD1_POWER_MUTATION_COUNT \
 	(MT6797_MD1_POWER_RAIL_COUNT * 3 + 2 + \
 	 MT6797_MD1_POWER_CONTROL_COUNT)
-#define MT6797_MD1_REQUIRED_UV		1000000
 #define MT6797_MD1_RAIL_SETTLE_US	300
+
+struct mt6797_md1_power_req {
+	/* Provider-validated semantic voltages; zero is never accepted. */
+	int vsram_md_uv;
+	int vmodem_uv;
+};
 
 struct mt6797_md1_power_ops {
 	int (*set_rail)(void *context, enum mt6797_md1_power_rail rail,
@@ -71,7 +76,8 @@ struct mt6797_md1_power_ops {
  * rail contract and verified-off domain state. Hardware register, regulator
  * and delay operations are deliberately supplied by a future adapter.
  */
-int mt6797_md1_power_transaction(const struct mt6797_md1_power_ops *ops,
+int mt6797_md1_power_transaction(const struct mt6797_md1_power_req *req,
+				 const struct mt6797_md1_power_ops *ops,
 				 void *context, unsigned int ack_attempts);
 
 #endif /* __MT6797_MD1_POWER_TRANSACTION_H */

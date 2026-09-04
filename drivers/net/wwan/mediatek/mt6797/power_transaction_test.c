@@ -8,6 +8,8 @@
 
 #define MT6797_MD1_TEST_ACK_ATTEMPTS	3
 #define MT6797_MD1_TEST_INITIAL_UV	900000
+#define MT6797_MD1_TEST_VSRAM_MD_UV	987500
+#define MT6797_MD1_TEST_VMODEM_UV	1000000
 
 enum mt6797_md1_test_step {
 	TEST_ENABLE_VSRAM_MD,
@@ -37,6 +39,7 @@ struct mt6797_md1_power_test_context {
 			    [MT6797_MD1_RAIL_HW_CONTROL_COUNT];
 	bool controls[MT6797_MD1_POWER_CONTROL_COUNT];
 	int voltage_uv[MT6797_MD1_POWER_RAIL_COUNT];
+	int target_voltage_uv[MT6797_MD1_POWER_RAIL_COUNT];
 	unsigned int event_count;
 	unsigned int delay_calls;
 	unsigned int settle_calls;
@@ -69,6 +72,10 @@ mt6797_md1_power_test_init(struct mt6797_md1_power_test_context *context)
 	memset(context, 0, sizeof(*context));
 	for (i = 0; i < MT6797_MD1_POWER_RAIL_COUNT; i++)
 		context->voltage_uv[i] = MT6797_MD1_TEST_INITIAL_UV;
+	context->target_voltage_uv[MT6797_MD1_RAIL_VSRAM_MD] =
+		MT6797_MD1_TEST_VSRAM_MD_UV;
+	context->target_voltage_uv[MT6797_MD1_RAIL_VMODEM] =
+		MT6797_MD1_TEST_VMODEM_UV;
 	context->controls[MT6797_MD1_CTRL_EXT_BUCK_ISO] = true;
 	context->controls[MT6797_MD1_CTRL_PWR_CLK_DIS] = true;
 	context->controls[MT6797_MD1_CTRL_PWR_ISO] = true;
@@ -139,7 +146,7 @@ mt6797_md1_power_test_set_voltage(void *data,
 
 	step = rail == MT6797_MD1_RAIL_VSRAM_MD ?
 		TEST_VOLTAGE_VSRAM_MD : TEST_VOLTAGE_VMODEM;
-	forward = voltage_uv == MT6797_MD1_REQUIRED_UV;
+	forward = voltage_uv == context->target_voltage_uv[rail];
 	ret = mt6797_md1_power_test_event(context, step, forward, &change);
 	if (change)
 		context->voltage_uv[rail] = voltage_uv;
@@ -296,7 +303,13 @@ static const struct mt6797_md1_power_ops mt6797_md1_power_test_ops = {
 static int
 mt6797_md1_power_test_run(struct mt6797_md1_power_test_context *context)
 {
-	return mt6797_md1_power_transaction(&mt6797_md1_power_test_ops, context,
+	const struct mt6797_md1_power_req requirements = {
+		.vsram_md_uv = MT6797_MD1_TEST_VSRAM_MD_UV,
+		.vmodem_uv = MT6797_MD1_TEST_VMODEM_UV,
+	};
+
+	return mt6797_md1_power_transaction(&requirements,
+					    &mt6797_md1_power_test_ops, context,
 					    MT6797_MD1_TEST_ACK_ATTEMPTS);
 }
 
@@ -348,22 +361,40 @@ mt6797_md1_power_expect_order(struct kunit *test,
 static void mt6797_md1_power_invalid_arguments_test(struct kunit *test)
 {
 	struct mt6797_md1_power_test_context context;
+	struct mt6797_md1_power_req requirements = {
+		.vsram_md_uv = MT6797_MD1_TEST_VSRAM_MD_UV,
+		.vmodem_uv = MT6797_MD1_TEST_VMODEM_UV,
+	};
 	struct mt6797_md1_power_ops ops;
 	int ret;
 
 	mt6797_md1_power_test_init(&context);
-	ret = mt6797_md1_power_transaction(NULL, &context, 1);
+	ret = mt6797_md1_power_transaction(&requirements, NULL, &context, 1);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
-	ret = mt6797_md1_power_transaction(&mt6797_md1_power_test_ops, NULL, 1);
+	ret = mt6797_md1_power_transaction(&requirements,
+					   &mt6797_md1_power_test_ops, NULL, 1);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
-	ret = mt6797_md1_power_transaction(&mt6797_md1_power_test_ops,
-					   &context, 0);
+	ret = mt6797_md1_power_transaction(&requirements,
+					   &mt6797_md1_power_test_ops, &context, 0);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	ret = mt6797_md1_power_transaction(NULL, &mt6797_md1_power_test_ops,
+					   &context, 1);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	requirements.vsram_md_uv = 0;
+	ret = mt6797_md1_power_transaction(&requirements,
+					   &mt6797_md1_power_test_ops, &context, 1);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	requirements.vsram_md_uv = MT6797_MD1_TEST_VSRAM_MD_UV;
+	requirements.vmodem_uv = -1;
+	ret = mt6797_md1_power_transaction(&requirements,
+					   &mt6797_md1_power_test_ops, &context, 1);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	requirements.vmodem_uv = MT6797_MD1_TEST_VMODEM_UV;
 
 #define EXPECT_NULL_OP_REJECTED(member) do { \
 	ops = mt6797_md1_power_test_ops; \
 	ops.member = NULL; \
-	ret = mt6797_md1_power_transaction(&ops, &context, 1); \
+	ret = mt6797_md1_power_transaction(&requirements, &ops, &context, 1); \
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL); \
 } while (0)
 	EXPECT_NULL_OP_REJECTED(set_rail);

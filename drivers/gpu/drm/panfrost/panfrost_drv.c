@@ -1101,6 +1101,7 @@ static const struct panfrost_compatible mediatek_mt6797_data = {
 	.pm_domain_names = mediatek_mt6797_pm_domains,
 	.vendor_init = panfrost_gpu_mt6797_init,
 	.vendor_quirk = panfrost_gpu_mt6797_quirk,
+	.pulse_reset_on_init = true,
 };
 
 static const char * const mediatek_pm_domains[] = { "core0", "core1", "core2",

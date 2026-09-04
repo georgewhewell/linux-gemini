@@ -3,6 +3,7 @@
 /* Copyright 2019 Linaro, Ltd, Rob Herring <robh@kernel.org> */
 
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/reset.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
@@ -21,13 +22,33 @@
 
 static int panfrost_reset_init(struct panfrost_device *pfdev)
 {
+	int ret;
+
 	pfdev->rstc = devm_reset_control_array_get_optional_exclusive(pfdev->base.dev);
 	if (IS_ERR(pfdev->rstc)) {
 		dev_err(pfdev->base.dev, "get reset failed %ld\n", PTR_ERR(pfdev->rstc));
 		return PTR_ERR(pfdev->rstc);
 	}
 
-	return reset_control_deassert(pfdev->rstc);
+	if (pfdev->comp->pulse_reset_on_init) {
+		if (!pfdev->rstc)
+			return dev_err_probe(pfdev->base.dev, -EINVAL,
+					     "reset is required\n");
+
+		ret = reset_control_assert(pfdev->rstc);
+		if (ret)
+			return dev_err_probe(pfdev->base.dev, ret,
+					     "failed to assert reset\n");
+
+		udelay(1);
+	}
+
+	ret = reset_control_deassert(pfdev->rstc);
+	if (ret)
+		return dev_err_probe(pfdev->base.dev, ret,
+				     "failed to deassert reset\n");
+
+	return 0;
 }
 
 static void panfrost_reset_fini(struct panfrost_device *pfdev)

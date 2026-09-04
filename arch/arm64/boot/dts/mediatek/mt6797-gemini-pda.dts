@@ -392,6 +392,10 @@
 	status = "disabled";
 };
 
+&gce {
+	status = "disabled";
+};
+
 &cpu0 {
 	clock-frequency = <1391000000>;
 	clocks = <&cpuclk CLK_MCU_MP0>,

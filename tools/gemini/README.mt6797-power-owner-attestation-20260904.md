@@ -37,7 +37,7 @@ retry of that hash.
 
 ## Current package-policy audit
 
-The current offline-qualified A53 package is
+The previously offline-qualified A53 package is
 `b1fa9539561dee6674fa6a839d7f2f4851f623f2`, with bundle
 `/nix/store/x5m20gna2w7mzalywikvk92bs16g26hg-gemini-a53-thermal-preflight-p22-bundle`
 and candidate SHA-256
@@ -48,8 +48,10 @@ Its exact power policy is:
 power_preflight_policy=owner-attested-20260904
 ```
 
-It has an independent offline PASS.  Hardware was not run, and the package
-has no specific p22 authorization or schedule.
+It had an independent offline PASS, but its subsequent hardware collector
+failed.  Candidate `baf0f1fd...` is therefore retired and closed/no-retry; the
+offline review must not be represented as a hardware pass or production
+readiness.  It has no further p22 authorization or schedule.
 
 The current offline-qualified G3 package is
 `f51d661e823d9ece2011c5688141ddaa7e3c44b6`, with bundle

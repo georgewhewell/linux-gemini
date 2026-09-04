@@ -7,6 +7,7 @@ mt6797-md1-protocol-y := protocol.o
 mt6797-md1-protocol-$(CONFIG_MTK_MT6797_MODEM_PROTOCOL_KUNIT_TEST) += \
 	protocol_test.o
 
-mt6797-md1-y := md1.o observer.o power.o
+mt6797-md1-y := cldma.o md1.o observer.o power.o
+mt6797-md1-$(CONFIG_MTK_MT6797_MD1_KUNIT_TEST) += cldma_test.o
 mt6797-md1-$(CONFIG_MTK_MT6797_MD1_KUNIT_TEST) += power_test.o
 mt6797-md1-$(CONFIG_MTK_MT6797_MD1_KUNIT_TEST) += observer_test.o

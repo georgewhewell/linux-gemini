@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA MFG clock-provider-only preflight.
+ *
+ * This deliberately leaves the GPU, its regulator and I2C controller
+ * disabled.  Omitting this overlay is the complete rollback.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&mfgsys {
+	status = "okay";
+};

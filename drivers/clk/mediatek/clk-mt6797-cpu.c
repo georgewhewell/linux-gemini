@@ -733,6 +733,7 @@ out_unlock:
 }
 
 static const struct clk_ops mt6797_cpuclk_path_ops = {
+	.determine_rate = clk_hw_determine_rate_no_reparent,
 	.get_parent = mt6797_cpuclk_path_get_parent,
 	.recalc_rate = mt6797_cpuclk_path_recalc_rate,
 	.set_parent = mt6797_cpuclk_path_set_parent,

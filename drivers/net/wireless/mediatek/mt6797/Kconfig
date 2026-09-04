@@ -57,5 +57,6 @@ config MTK_MT6797_WIFI_KUNIT_TEST
 	  Exercise exact divided-header parsing, boot and NIC-capability transaction
 	  ordering, bounded runtime command/event and RX/TX descriptor codecs, basic
 	  configuration and persistent HIF lifecycle, rollback, and terminal fencing
-	  using memory-only fixtures. No firmware is requested and no MMIO,
+	  plus strict RX group-3 and beacon/probe metadata parsing using memory-only
+	  fixtures. No firmware is requested and no MMIO,
 	  interrupt, regulator, CONSYS, or Wi-Fi hardware is accessed.

@@ -54,6 +54,12 @@ properties:
   '#clock-cells':
     const: 1
 
+  mediatek,boot-watchdog:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the MT6797 watchdog which must already be hardware-running
+      before the provider performs its first register observation.
+
 required:
   - compatible
   - reg
@@ -61,6 +67,7 @@ required:
   - clocks
   - clock-names
   - '#clock-cells'
+  - mediatek,boot-watchdog
 
 additionalProperties: false
 
@@ -79,4 +86,5 @@ examples:
                  <&infrasys CLK_INFRA_I2C_APPM>;
         clock-names = "clk26m", "mainpll", "univpll", "i2c";
         #clock-cells = <1>;
+        mediatek,boot-watchdog = <&watchdog>;
     };

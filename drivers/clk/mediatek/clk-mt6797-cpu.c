@@ -11,6 +11,7 @@
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/io.h>
+#include <linux/mediatek-wdt.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -883,6 +884,10 @@ static int mt6797_cpuclk_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	provider->dev = &pdev->dev;
+	ret = mtk_wdt_require_boot_running(&pdev->dev);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "boot watchdog is not running before clock observation\n");
 	ret = mt6797_cpuclk_backend_init(pdev, provider);
 	if (ret)
 		return ret;

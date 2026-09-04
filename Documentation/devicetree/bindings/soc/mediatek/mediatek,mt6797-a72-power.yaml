@@ -50,6 +50,12 @@ properties:
   reset-names:
     const: pwrap
 
+  mediatek,boot-watchdog:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the MT6797 watchdog which must already be hardware-running
+      before resource admission performs any live observation.
+
 required:
   - compatible
   - mediatek,spm
@@ -60,6 +66,7 @@ required:
   - clock-names
   - resets
   - reset-names
+  - mediatek,boot-watchdog
 
 additionalProperties: false
 
@@ -78,6 +85,7 @@ examples:
         clock-names = "mp2";
         resets = <&watchdog MT6797_TOPRGU_PWRAP_SPI_CTL_RST>;
         reset-names = "pwrap";
+        mediatek,boot-watchdog = <&watchdog>;
         status = "disabled";
     };
 ...

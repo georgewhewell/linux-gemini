@@ -15,6 +15,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
+#include <linux/mediatek-wdt.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -628,6 +629,11 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	ret = mt6797_a72_preflight_parse_cpus(dev, preflight);
 	if (ret)
 		return ret;
+
+	ret = mtk_wdt_require_boot_running(dev);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "boot watchdog is not running before A72 admission\n");
 
 	ret = 0;
 	cpus_read_lock();

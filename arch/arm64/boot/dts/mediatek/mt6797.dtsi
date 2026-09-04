@@ -336,6 +336,7 @@
 		cpus = <&cpu8>, <&cpu9>;
 		resets = <&watchdog MT6797_TOPRGU_PWRAP_SPI_CTL_RST>;
 		reset-names = "pwrap";
+		mediatek,boot-watchdog = <&watchdog>;
 		status = "disabled";
 	};
 
@@ -810,6 +811,7 @@
 			 <&infrasys CLK_INFRA_I2C_APPM>;
 		clock-names = "clk26m", "mainpll", "univpll", "i2c";
 		#clock-cells = <1>;
+		mediatek,boot-watchdog = <&watchdog>;
 		status = "disabled";
 	};
 

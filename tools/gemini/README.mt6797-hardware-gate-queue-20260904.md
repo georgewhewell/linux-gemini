@@ -42,8 +42,8 @@ These entries are immutable identities, not a run order or schedule.
 | --- | --- | --- | --- | --- |
 | MD1 post-vector observer | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `c56ea7a569a8ce7a29f602fdb1c8ca1f0fb4690f` -> `718b9d1849d632b2135a2da23d43a337a1efab59` -> `5b45870571e2dfbf0dd06731001ce9a624ad085e` -> `7194ebaec4b36cf5d46075cc4d1836254c2b196d` | `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213` | Offline source/predicate review: PASS; package is not hardware-ready and requires repackaging |
 | G3 fixed-low Panfrost no-job | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` | `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985` | Offline source/contract review: PASS; package is not hardware-ready and requires repackaging |
-| A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Independently reviewed: PASS |
-| A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Independently reviewed: PASS; provider pass plus exact rollback required first |
+| A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Offline contract review: PASS; source/package are not hardware-ready |
+| A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Blocked with provider; no provider-success predecessor exists |
 
 All current packages carry
 `power_preflight_policy=owner-attested-20260904`.  They retain no specific
@@ -180,7 +180,7 @@ Evidence:
 - `/nix/store/ygwllkhz39xv4a07m5ys9a479qfmv481-gemini-g3-low-opp-nojob-p22-bundle/MANIFEST`
 - `/nix/store/ygwllkhz39xv4a07m5ys9a479qfmv481-gemini-g3-low-opp-nojob-p22-bundle/p22-one-shot.manifest`
 
-## A72 provider and CPU8-admission observations
+## A72 provider and CPU8-admission observations blocked
 
 The remediated, independently reviewed provider bundle is:
 
@@ -198,10 +198,22 @@ requires successful provider evidence bound to candidate `da66b64a...`,
 source `301a9556...`, package contract `fe16911c...`, and the exact completed
 Stage-A rollback before it is even eligible for separate consideration.
 
+A subsequent live-readiness audit found four shared deterministic defects.
+Both kernels enable a CPU clock provider whose path ops implement
+`.set_parent` without the required `.determine_rate`, so clk core rejects
+`mt6797_mp2` registration with `-EINVAL` before either observation can pass.
+Both packages also validate model `Gemini` instead of the live `MT6797X`,
+require an obsolete Dropbear `/run/probe-status` even though accepted Stage A
+is switched-root NixOS with sshd, and cannot resume the required outer
+post-rollback Stage-A/pstore proof after a harness interruption.
+
 The provider and admission observations remain separate, mutually exclusive
 boots.  Neither requests CPU_ON, enables CPU9, changes an OPP, or exercises
 cpufreq.  Both remain `hardware_run=not-run`, `authorization=none`, and
-`scheduling=none`.
+`scheduling=none`.  Candidates `da66b64a...` and `fd2c457a...` were not run,
+are not hardware-ready, and are closed pending new source/package identities.
+The CPU8 lane additionally remains ineligible until a remediated provider has
+passed once and exact Stage A has been restored.
 
 The old provider candidate `6ddc55bf...` and old admission candidate
 `cc8b3ab8...` remain closed in the no-retry registry below; remediation does
@@ -239,6 +251,8 @@ for a current identity.
 
 ### A72 old packages
 
+- `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5`
+- `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3`
 - `6ddc55bfb8d79e8442644812582dc58643d87eb8223007982a821f1d67e0a803`
 - `cc8b3ab8864766138a9697ffae79b2c86204cef086eabdeabfca6179b2ca57e0`
 

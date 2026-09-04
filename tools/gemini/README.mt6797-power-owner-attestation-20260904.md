@@ -115,7 +115,12 @@ supervisor-owned recovery, strict 21-sample/at-least-60-second parsers, and
 exact Stage-A p22/p30/p31 rollback contract.  The CPU8 gate mechanically
 requires a successful provider result bound to the exact provider candidate,
 source, package contract, and rollback identity.  Neither bundle has been run
-on hardware, specifically authorized, or scheduled.
+on hardware, specifically authorized, or scheduled.  A later live-readiness
+audit found a deterministic CPU-clock registration `-EINVAL`, wrong model
+contract, obsolete Dropbear Stage-A proof, and non-resumable outer recovery
+evidence in both packages.  Candidates `da66b64a...` and `fd2c457a...` are
+therefore closed pending new source/package identities; CPU8 still requires a
+successful remediated provider predecessor.
 
 The superseded A72 provider and admission candidates remain closed/no-retry
 in the managed queue ledger.  The owner statement does not make those old

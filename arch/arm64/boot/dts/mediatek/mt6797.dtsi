@@ -339,6 +339,14 @@
 		status = "disabled";
 	};
 
+	vsram_big: regulator-sram-big {
+		compatible = "mediatek,mt6797-bigidvfs-sram";
+		regulator-name = "vsram-big";
+		regulator-min-microvolt = <600000>;
+		regulator-max-microvolt = <1200000>;
+		status = "disabled";
+	};
+
 	mfgsys: syscon@13000000 {
 		compatible = "mediatek,mt6797-mfgsys", "syscon";
 		reg = <0 0x13000000 0 0x1000>;

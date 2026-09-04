@@ -18,10 +18,6 @@ properties:
   compatible:
     const: mediatek,mt6797-a72-power
 
-  reg:
-    maxItems: 1
-    description: MCUCFG2 and big-cluster DCM registers.
-
   mediatek,spm:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: Phandle to the MT6797 SCPSYS/SPM syscon.
@@ -34,6 +30,13 @@ properties:
   vproc-big-supply:
     description: External processor supply for the Cortex-A72 cluster.
 
+  clocks:
+    maxItems: 1
+    description: Read-only MP2 clock exposed by the CPU clock provider.
+
+  clock-names:
+    const: mp2
+
   resets:
     maxItems: 1
 
@@ -42,10 +45,11 @@ properties:
 
 required:
   - compatible
-  - reg
   - mediatek,spm
   - cpus
   - vproc-big-supply
+  - clocks
+  - clock-names
   - resets
   - reset-names
 
@@ -53,15 +57,18 @@ additionalProperties: false
 
 examples:
   - |
+    #include <dt-bindings/clock/mt6797-clk.h>
     #include <dt-bindings/reset/mt6797-resets.h>
 
-    a72-power@10222000 {
+    a72-power {
         compatible = "mediatek,mt6797-a72-power";
-        reg = <0x10222000 0x1000>;
         mediatek,spm = <&scpsys>;
         cpus = <&cpu8>, <&cpu9>;
         vproc-big-supply = <&da9214_buckb>;
+        clocks = <&cpuclk CLK_MCU_MP2>;
+        clock-names = "mp2";
         resets = <&watchdog MT6797_TOPRGU_PWRAP_SPI_CTL_RST>;
         reset-names = "pwrap";
+        status = "disabled";
     };
 ...

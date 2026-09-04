@@ -17,6 +17,7 @@
 struct mt6797_btif_pio_lease;
 struct mt6797_consys_runtime_lease;
 struct mt6797_btif_stp_bootstrap;
+struct mt6797_consys_stp_session;
 struct mt6797_consys_stp_session_lease;
 struct mt6797_btif_stp_bootstrap_full_wmt_lease;
 struct mtk_wmt_match;
@@ -46,6 +47,17 @@ mt6797_btif_stp_bootstrap_create(
 		const struct mt6797_btif_pio_lease *pio_lease,
 		const struct mt6797_consys_runtime_lease *runtime_lease,
 		const struct mt6797_btif_stp_bootstrap_ops *ops);
+
+/*
+ * Construct the same handover around the aggregate owner's dormant session.
+ * The bootstrap promotes that exact object and never frees it. The owner must
+ * keep it alive until bootstrap_destroy() has synchronously detached WMT.
+ */
+struct mt6797_btif_stp_bootstrap *
+mt6797_btif_stp_bootstrap_create_owned(const struct mt6797_btif_pio_lease *pio_lease,
+				       const struct mt6797_consys_runtime_lease *runtime_lease,
+				       const struct mt6797_btif_stp_bootstrap_ops *ops,
+				       struct mt6797_consys_stp_session *session);
 
 /*
  * Run exactly raw HCR/HVR/FVR identity reads, query-default, set-full, host

@@ -63,3 +63,30 @@ telemetry; R4 omitted it. Use it in any diagnostic candidate. R4's embedded
 config also proves CONFIG_DEVMEM is disabled, whereas CONFIG_SPARSE_IRQ and
 CONFIG_DEBUG_FS are enabled. The collector's MMIO observation interface
 must be made available deliberately, without treating absent reads as PASS.
+
+## Implementation status
+
+Source `9822218ed0e06a58f852645d5c93e705014bb810` implements an MT6797-only
+whole-GPU shutdown-readiness callback. It saves the debug selector, performs
+the bounded vendor idle poll, and restores the selector on success and
+failure. Runtime suspend calls it before devfreq/IRQ changes and returns
+any failure to runtime PM, blocking supplier shutdown. After success the
+individual shader/tiler/L2 PWROFF sequence is skipped; IRQ synchronization
+and genpd shutdown remain in place. Other compatibles retain their path.
+
+Removal and failed-resume cleanup retain the existing best-effort teardown
+convention: idle errors are logged but cannot veto device removal. They do
+not claim a successful runtime suspend. The normal teardown still asserts
+the platform reset before detaching domains. This does not prove recovery
+from a wedged active workload; no-job admission remains the next boundary.
+
+Nine host fault-injected cases compile the actual idle/runtime-suspend
+function bodies: success, busy jobs, selector read failure, selection write
+failure, idle timeout, poll read error, selector restoration failure,
+devfreq suspension failure, and the generic-compatible path. They prove
+control flow, not actual MMIO timing or electrical power behavior. All pass.
+The complete Panfrost composite object cross-compiles with AArch64 GCC 12.2;
+kernel patch style check reports zero errors/warnings. Initial local build
+setup needed the full GNU Make and an olddefconfig refresh; the subsequent
+configured build completed successfully. No boot image has been built or
+flashed for this source, and hardware validation remains outstanding.

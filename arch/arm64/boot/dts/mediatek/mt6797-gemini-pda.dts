@@ -686,6 +686,7 @@
 		compatible = "dlg,da9214-legacy";
 		reg = <0x68>, <0x69>;
 		reg-names = "primary", "page2";
+		mediatek,boot-watchdog = <&watchdog>;
 		status = "disabled";
 
 		regulators {

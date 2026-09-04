@@ -8,6 +8,7 @@
  */
 
 #include <linux/i2c.h>
+#include <linux/mediatek-wdt.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -414,6 +415,11 @@ static int da9213_legacy_probe(struct i2c_client *client)
 	if (ret)
 		return dev_err_probe(&client->dev, ret,
 				     "invalid direct-address description\n");
+
+	ret = mtk_wdt_require_boot_running(&client->dev);
+	if (ret)
+		return dev_err_probe(&client->dev, ret,
+				     "boot watchdog is not running before regulator I/O\n");
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		return dev_err_probe(&client->dev, -EOPNOTSUPP,

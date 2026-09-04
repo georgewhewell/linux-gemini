@@ -27,11 +27,13 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/reset-controller.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
 #include <linux/interrupt.h>
+#include <linux/mediatek-wdt.h>
 
 #define WDT_MAX_TIMEOUT		31
 #define WDT_MIN_TIMEOUT		2
@@ -93,6 +95,52 @@ struct mtk_wdt_data {
 	bool report_handoff_state;
 	unsigned int restart_priority;
 };
+
+int mtk_wdt_require_boot_running(struct device *consumer)
+{
+	struct platform_device *pdev;
+	struct mtk_wdt_dev *mtk_wdt;
+	struct device_node *np;
+	int ret = 0;
+
+	if (!consumer || !consumer->of_node)
+		return -EINVAL;
+
+	np = of_parse_phandle(consumer->of_node, "mediatek,boot-watchdog", 0);
+	if (!np)
+		return -EINVAL;
+	if (!of_device_is_compatible(np, "mediatek,mt6797-wdt")) {
+		ret = -EINVAL;
+		goto out_put_node;
+	}
+
+	pdev = of_find_device_by_node(np);
+	if (!pdev) {
+		ret = -EPROBE_DEFER;
+		goto out_put_node;
+	}
+	device_lock(&pdev->dev);
+	if (!device_is_bound(&pdev->dev)) {
+		ret = -EPROBE_DEFER;
+		goto out_unlock_device;
+	}
+
+	mtk_wdt = platform_get_drvdata(pdev);
+	if (!mtk_wdt) {
+		ret = -EPROBE_DEFER;
+		goto out_unlock_device;
+	}
+	if (!watchdog_hw_running(&mtk_wdt->wdt_dev))
+		ret = -EACCES;
+
+out_unlock_device:
+	device_unlock(&pdev->dev);
+	put_device(&pdev->dev);
+out_put_node:
+	of_node_put(np);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mtk_wdt_require_boot_running);
 
 static const struct mtk_wdt_data mt2712_data = {
 	.toprgu_sw_rst_num = MT2712_TOPRGU_SW_RST_NUM,

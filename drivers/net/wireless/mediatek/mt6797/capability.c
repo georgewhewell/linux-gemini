@@ -17,6 +17,7 @@
 #include "boot.h"
 #include "capability.h"
 #include "hif.h"
+#include "protocol.h"
 
 #define MT6797_WIFI_MCR_WHLPCR		0x0004
 #define MT6797_WIFI_MCR_WHCR		0x000c
@@ -41,10 +42,7 @@
 					 MT6797_WIFI_WHISR_ABNORMAL)
 #define MT6797_WIFI_WHIER_DEFAULT	0xffffff47U
 
-#define MT6797_WIFI_CMD_PQ		0x8000U
-#define MT6797_WIFI_CMD_PACKET_TYPE	0xa0U
 #define MT6797_WIFI_CMD_CAPABILITY	0x80U
-#define MT6797_WIFI_EVENT_PACKET_TYPE	0xe000U
 #define MT6797_WIFI_EVENT_CAPABILITY	0x01U
 #define MT6797_WIFI_CAPABILITY_SEQUENCE	1U
 #define MT6797_WIFI_CAPABILITY_TIMEOUT_MS 1000U
@@ -130,45 +128,52 @@ int mt6797_wifi_capability_command_build(u8 *command, size_t length,
 		return -EINVAL;
 	if (length != MT6797_WIFI_CAPABILITY_LENGTH)
 		return -EMSGSIZE;
-	memset(command, 0, length);
-	put_unaligned_le16(length, command);
-	put_unaligned_le16(MT6797_WIFI_CMD_PQ, command + 2);
-	command[4] = MT6797_WIFI_CMD_CAPABILITY;
-	command[5] = MT6797_WIFI_CMD_PACKET_TYPE;
-	command[7] = sequence;
-	return 0;
+
+	return mt6797_wifi_command_init(command, length,
+					MT6797_WIFI_CAPABILITY_LENGTH -
+					MT6797_WIFI_COMMAND_HEADER_LENGTH,
+					MT6797_WIFI_CMD_CAPABILITY, false,
+					sequence);
 }
 
 int mt6797_wifi_capability_event_parse(const u8 *event, size_t length,
 				       u8 sequence,
 				       struct mt6797_wifi_capability *capability)
 {
+	struct mt6797_wifi_event_view view;
+	const u8 *payload;
+	int ret;
+
 	if (!event || !capability)
 		return -EINVAL;
 	if (length != MT6797_WIFI_CAPABILITY_LENGTH)
 		return -EMSGSIZE;
-	if (get_unaligned_le16(event) != length ||
-	    get_unaligned_le16(event + 2) != MT6797_WIFI_EVENT_PACKET_TYPE ||
-	    event[4] != MT6797_WIFI_EVENT_CAPABILITY || event[5] != sequence ||
-	    event[6] || event[7])
+	ret = mt6797_wifi_event_parse(event, length, &view);
+	if (ret)
+		return ret;
+	if (view.packet_length != MT6797_WIFI_CAPABILITY_LENGTH)
+		return -EMSGSIZE;
+	if (view.id != MT6797_WIFI_EVENT_CAPABILITY ||
+	    view.sequence != sequence)
 		return -EPROTO;
+	payload = view.payload;
 
 	memset(capability, 0, sizeof(*capability));
-	capability->product_id = get_unaligned_le16(event + 8);
-	capability->firmware_version = get_unaligned_le16(event + 10);
-	capability->driver_version = get_unaligned_le16(event + 12);
-	capability->hw_5ghz_disabled = event[14];
-	capability->eeprom_used = event[15];
-	memcpy(capability->mac_address, event + 16,
+	capability->product_id = get_unaligned_le16(payload);
+	capability->firmware_version = get_unaligned_le16(payload + 2);
+	capability->driver_version = get_unaligned_le16(payload + 4);
+	capability->hw_5ghz_disabled = payload[6];
+	capability->eeprom_used = payload[7];
+	memcpy(capability->mac_address, payload + 8,
 	       sizeof(capability->mac_address));
-	capability->rf_version = event[24];
-	capability->phy_version = event[25];
-	capability->rf_cal_failed = event[26];
-	capability->bb_cal_failed = event[27];
-	capability->feature_flag0 = get_unaligned_le32(event + 44);
-	capability->feature_flag1 = get_unaligned_le32(event + 48);
-	capability->compile_flag0 = get_unaligned_le32(event + 52);
-	capability->compile_flag1 = get_unaligned_le32(event + 56);
+	capability->rf_version = payload[16];
+	capability->phy_version = payload[17];
+	capability->rf_cal_failed = payload[18];
+	capability->bb_cal_failed = payload[19];
+	capability->feature_flag0 = get_unaligned_le32(payload + 36);
+	capability->feature_flag1 = get_unaligned_le32(payload + 40);
+	capability->compile_flag0 = get_unaligned_le32(payload + 44);
+	capability->compile_flag1 = get_unaligned_le32(payload + 48);
 	return 0;
 }
 

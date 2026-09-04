@@ -19,15 +19,21 @@
 #define RT5735_REG_PRODUCT_ID		0x03
 #define RT5735_REG_VSEL0		0x11
 #define RT5735_REG_PGOOD		0x12
+#define RT5735_REG_TIME			0x13
 
 #define RT5735_PRODUCT_ID		0x10
 #define RT5735_VSEL_MASK		GENMASK(6, 0)
 #define RT5735_ENABLE_MASK		BIT(7)
 #define RT5735_ACTIVE_DISCHARGE_MASK	BIT(4)
+#define RT5735_DVS_UP_MASK		GENMASK(4, 2)
 
 #define RT5735_MIN_UV			600000
 #define RT5735_STEP_UV			6250
 #define RT5735_N_VOLTAGES		128
+
+static const unsigned int rt5735_ramp_delay_table[] = {
+	64000, 16000, 32000, 8000, 4000, 4000, 32000, 8000,
+};
 
 static const struct regulator_ops rt5735_regulator_ops = {
 	.list_voltage = regulator_list_voltage_linear,
@@ -37,6 +43,7 @@ static const struct regulator_ops rt5735_regulator_ops = {
 	.disable = regulator_disable_regmap,
 	.is_enabled = regulator_is_enabled_regmap,
 	.set_active_discharge = regulator_set_active_discharge_regmap,
+	.set_ramp_delay = regulator_set_ramp_delay_regmap,
 };
 
 static const struct regulator_desc rt5735_regulator_desc = {
@@ -54,6 +61,10 @@ static const struct regulator_desc rt5735_regulator_desc = {
 	.active_discharge_reg = RT5735_REG_PGOOD,
 	.active_discharge_mask = RT5735_ACTIVE_DISCHARGE_MASK,
 	.active_discharge_on = RT5735_ACTIVE_DISCHARGE_MASK,
+	.ramp_reg = RT5735_REG_TIME,
+	.ramp_mask = RT5735_DVS_UP_MASK,
+	.ramp_delay_table = rt5735_ramp_delay_table,
+	.n_ramp_values = ARRAY_SIZE(rt5735_ramp_delay_table),
 };
 
 static const struct regmap_config rt5735_regmap_config = {

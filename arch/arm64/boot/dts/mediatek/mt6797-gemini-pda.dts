@@ -23,6 +23,45 @@
 		stdout-path = "serial0:921600n8";
 	};
 
+	gpu_opp_table: opp-table-gpu {
+		compatible = "operating-points-v2";
+
+		opp-238000000 {
+			opp-hz = /bits/ 64 <238000000>;
+			opp-microvolt = <846700 846700 850000>;
+		};
+
+		opp-365000000 {
+			opp-hz = /bits/ 64 <365000000>;
+			opp-microvolt = <910800 910800 912500>;
+		};
+
+		opp-442500000 {
+			opp-hz = /bits/ 64 <442500000>;
+			opp-microvolt = <936500 936500 937500>;
+		};
+
+		opp-520000000 {
+			opp-hz = /bits/ 64 <520000000>;
+			opp-microvolt = <975000 975000 975000>;
+		};
+
+		opp-610000000 {
+			opp-hz = /bits/ 64 <610000000>;
+			opp-microvolt = <1013400 1013400 1018750>;
+		};
+
+		opp-780000000 {
+			opp-hz = /bits/ 64 <780000000>;
+			opp-microvolt = <1103200 1103200 1106250>;
+		};
+
+		opp-900000000 {
+			opp-hz = /bits/ 64 <900000000>;
+			opp-microvolt = <1154500 1154500 1156250>;
+		};
+	};
+
 	firmware {
 		mt6797_atag_devinfo: atag-devinfo {
 			compatible = "mediatek,mt6797-atag-devinfo";
@@ -650,9 +689,10 @@
 	};
 };
 
-/* The RT5735 VGPU rail remains disabled until a fixed OPP is validated. */
+/* The RT5735 VGPU rail and its consumer remain disabled pending validation. */
 &gpu {
 	mali-supply = <&rt5735_vgpu>;
+	operating-points-v2 = <&gpu_opp_table>;
 };
 
 &{/} {

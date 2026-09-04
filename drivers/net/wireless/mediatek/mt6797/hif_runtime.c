@@ -5,14 +5,21 @@
 #include <linux/errno.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
+#include <linux/overflow.h>
+#include <linux/slab.h>
 #include <linux/smp.h>
 
 #include <linux/soc/mediatek/mt6797-consys-wifi.h>
 
 #include "boot.h"
 #include "hif.h"
+#include "hif_pump.h"
 #include "hif_regs.h"
 #include "hif_runtime.h"
+
+#define MT6797_WIFI_HIF_RX_APPEND_LENGTH	4U
+#define MT6797_WIFI_HIF_PUMP_TIMEOUT_NS		(100ULL * NSEC_PER_MSEC)
 
 static bool mt6797_wifi_hif_runtime_ops_valid(
 	const struct mt6797_wifi_hif_runtime_ops *ops)
@@ -416,8 +423,18 @@ static void mt6797_wifi_hif_terminal_work(struct work_struct *work)
 	ret = __mt6797_wifi_hif_runtime_stop(irq, true);
 	mutex_unlock(&irq->lifecycle_lock);
 	dev_err(irq->dev,
-		"unexpected runtime HIF interrupt; WLAN fenced and stopped%s\n",
+		"runtime HIF fault %d; WLAN fenced and stopped%s\n",
+		READ_ONCE(irq->terminal_reason),
 		ret ? " with cleanup failure" : "");
+}
+
+static void mt6797_wifi_hif_runtime_terminal(
+	struct mt6797_wifi_hif_irq *irq, int reason)
+{
+	if (!mt6797_wifi_hif_runtime_mark_terminal(&irq->mode))
+		return;
+	WRITE_ONCE(irq->terminal_reason, reason);
+	schedule_work(&irq->terminal_work);
 }
 
 static irqreturn_t mt6797_wifi_hif_irq_handler(int linux_irq, void *data)
@@ -431,28 +448,138 @@ static irqreturn_t mt6797_wifi_hif_irq_handler(int linux_irq, void *data)
 	mode = smp_load_acquire(&irq->mode);
 	if (mode == MT6797_WIFI_HIF_IRQ_CAPABILITY)
 		return IRQ_WAKE_THREAD;
-	if (mode == MT6797_WIFI_HIF_IRQ_RUNTIME &&
-	    mt6797_wifi_hif_runtime_irq_terminal(&irq->mode))
-		schedule_work(&irq->terminal_work);
+	if (mode == MT6797_WIFI_HIF_IRQ_RUNTIME)
+		return IRQ_WAKE_THREAD;
 	return IRQ_HANDLED;
 }
 
-bool mt6797_wifi_hif_runtime_irq_terminal(int *mode)
+bool mt6797_wifi_hif_runtime_mark_terminal(int *mode)
 {
 	return mode && cmpxchg(mode, MT6797_WIFI_HIF_IRQ_RUNTIME,
 			       MT6797_WIFI_HIF_IRQ_TERMINAL) ==
 		       MT6797_WIFI_HIF_IRQ_RUNTIME;
 }
 
+static bool mt6797_wifi_hif_runtime_pump_expired(void *context)
+{
+	struct mt6797_wifi_hif_irq *irq = context;
+
+	return ktime_after(ktime_get(), irq->pump_deadline);
+}
+
+static int mt6797_wifi_hif_runtime_pump_status(void *context, u32 *status)
+{
+	struct mt6797_wifi_hif_irq *irq = context;
+
+	return mt6797_wifi_hif_reg_read(irq, MT6797_WIFI_MCR_WHISR, status);
+}
+
+static int mt6797_wifi_hif_runtime_pump_tx(
+	void *context, u16 released[MT6797_WIFI_HIF_TX_QUEUES])
+{
+	struct mt6797_wifi_hif_irq *irq = context;
+	unsigned int register_index;
+	u32 value;
+	int ret;
+
+	for (register_index = 0; register_index < 8; register_index++) {
+		if (mt6797_wifi_hif_runtime_pump_expired(irq))
+			return -ETIMEDOUT;
+		ret = mt6797_wifi_hif_reg_read(
+			irq, MT6797_WIFI_MCR_WTQCR0 +
+			register_index * sizeof(u32), &value);
+		if (ret)
+			return ret;
+		released[register_index * 2] = value;
+		released[register_index * 2 + 1] = value >> 16;
+	}
+	return 0;
+}
+
+static int mt6797_wifi_hif_runtime_pump_lengths(void *context,
+						u16 lengths[2])
+{
+	struct mt6797_wifi_hif_irq *irq = context;
+	u32 value;
+	int ret;
+
+	ret = mt6797_wifi_hif_reg_read(irq, MT6797_WIFI_MCR_WRPLR, &value);
+	if (ret)
+		return ret;
+	lengths[0] = value;
+	lengths[1] = value >> 16;
+	return 0;
+}
+
+static int mt6797_wifi_hif_runtime_pump_packet(void *context,
+					       unsigned int port, u16 length,
+					       const u8 **packet)
+{
+	struct mt6797_wifi_hif_irq *irq = context;
+	size_t wire_length;
+	u32 address;
+	int ret;
+
+	if (port >= ARRAY_SIZE(irq->rx_buffer) || !packet)
+		return -EINVAL;
+	wire_length = ALIGN((size_t)length + MT6797_WIFI_HIF_RX_APPEND_LENGTH,
+			    sizeof(u32));
+	if (wire_length > MT6797_WIFI_AHB_MAX_TRANSFER_SIZE)
+		return -EMSGSIZE;
+	address = port ? MT6797_WIFI_MCR_WRDR1 : MT6797_WIFI_MCR_WRDR0;
+	ret = mt6797_wifi_ahb_cmd53_read(irq->hif, address,
+					irq->rx_buffer[port], wire_length);
+	if (ret)
+		return ret;
+	*packet = irq->rx_buffer[port];
+	return 0;
+}
+
 static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
 {
 	struct mt6797_wifi_hif_irq *irq = data;
 	irqreturn_t (*thread)(void *context);
+	struct mt6797_wifi_hif_pump_ops ops;
+	u64 interrupts;
 	void *context;
+	int ret;
 
 	(void)linux_irq;
-	/* Acquire makes the capability callback and its context visible. */
-	if (smp_load_acquire(&irq->mode) != MT6797_WIFI_HIF_IRQ_CAPABILITY)
+	/* Pairs with release publication before either IRQ gate is opened. */
+	ret = smp_load_acquire(&irq->mode);
+	if (ret == MT6797_WIFI_HIF_IRQ_RUNTIME) {
+		if (check_add_overflow(irq->pump_stats.interrupts, 1ULL,
+				       &interrupts)) {
+			mt6797_wifi_hif_runtime_terminal(irq, -EOVERFLOW);
+			return IRQ_HANDLED;
+		}
+		irq->pump_stats.interrupts = interrupts;
+		irq->pump_deadline = ktime_add_ns(ktime_get(),
+			MT6797_WIFI_HIF_PUMP_TIMEOUT_NS);
+		ops = (struct mt6797_wifi_hif_pump_ops) {
+			.read_status = mt6797_wifi_hif_runtime_pump_status,
+			.read_tx_released = mt6797_wifi_hif_runtime_pump_tx,
+			.read_lengths = mt6797_wifi_hif_runtime_pump_lengths,
+			.read_packet = mt6797_wifi_hif_runtime_pump_packet,
+			.expired = mt6797_wifi_hif_runtime_pump_expired,
+			.context = irq,
+		};
+		ret = mt6797_wifi_hif_pump_run(&ops, &irq->pump_stats,
+						&irq->acknowledged_status);
+		if (ret) {
+			mt6797_wifi_hif_runtime_terminal(irq, ret);
+			return IRQ_HANDLED;
+		}
+		dev_dbg(irq->dev,
+			"HIF irq status=%#x total=%llu rx=%llu events=%llu\n",
+			irq->acknowledged_status, irq->pump_stats.interrupts,
+			irq->pump_stats.rx_packets, irq->pump_stats.events);
+		if (mt6797_wifi_hif_irq_mode(irq) ==
+		    MT6797_WIFI_HIF_IRQ_RUNTIME)
+			mt6797_wifi_ahb_irq_unmask(irq->hif);
+		return IRQ_HANDLED;
+	}
+	if (ret != MT6797_WIFI_HIF_IRQ_CAPABILITY)
 		return IRQ_HANDLED;
 	thread = READ_ONCE(irq->capability_thread);
 	context = READ_ONCE(irq->capability_context);
@@ -470,6 +597,16 @@ int mt6797_wifi_hif_irq_init(struct mt6797_wifi_hif_irq *irq,
 	irq->dev = dev;
 	irq->hif = hif;
 	irq->irq = linux_irq;
+	irq->rx_buffer[0] = devm_kmalloc(dev,
+					 MT6797_WIFI_AHB_MAX_TRANSFER_SIZE,
+					 GFP_KERNEL);
+	if (!irq->rx_buffer[0])
+		return -ENOMEM;
+	irq->rx_buffer[1] = devm_kmalloc(dev,
+					 MT6797_WIFI_AHB_MAX_TRANSFER_SIZE,
+					 GFP_KERNEL);
+	if (!irq->rx_buffer[1])
+		return -ENOMEM;
 	mutex_init(&irq->lifecycle_lock);
 	INIT_WORK(&irq->terminal_work, mt6797_wifi_hif_terminal_work);
 	irq->mode = MT6797_WIFI_HIF_IRQ_QUIESCENT;

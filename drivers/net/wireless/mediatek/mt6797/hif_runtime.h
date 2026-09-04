@@ -3,9 +3,12 @@
 #define __MT6797_WIFI_HIF_RUNTIME_H
 
 #include <linux/interrupt.h>
+#include <linux/ktime.h>
 #include <linux/mutex.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
+
+#include "hif_pump.h"
 
 struct device;
 struct mt6797_wifi_ahb_hif;
@@ -56,10 +59,15 @@ struct mt6797_wifi_hif_irq {
 	irqreturn_t (*capability_thread)(void *context);
 	void *capability_context;
 	struct mt6797_wifi_hif_runtime_transaction transaction;
+	struct mt6797_wifi_hif_pump_stats pump_stats;
+	u8 *rx_buffer[2];
+	ktime_t pump_deadline;
 	u32 whcr_before;
 	u32 whier_before;
+	u32 acknowledged_status;
 	int irq;
 	int mode;
+	int terminal_reason;
 };
 
 int mt6797_wifi_hif_runtime_transaction_start(
@@ -69,7 +77,7 @@ int mt6797_wifi_hif_runtime_transaction_stop(
 	const struct mt6797_wifi_hif_runtime_ops *ops,
 	struct mt6797_wifi_hif_runtime_transaction *transaction,
 	bool terminal);
-bool mt6797_wifi_hif_runtime_irq_terminal(int *mode);
+bool mt6797_wifi_hif_runtime_mark_terminal(int *mode);
 
 int mt6797_wifi_hif_irq_init(struct mt6797_wifi_hif_irq *irq,
 			     struct device *dev,

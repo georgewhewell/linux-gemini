@@ -131,8 +131,9 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, wifi);
 	dev_info(dev,
-		 "WLAN %#06x fw %#06x BASIC_CONFIG_SENT seq=2; persistent HIF armed without event consumer\n",
-		 wifi->capability.product_id, wifi->capability.firmware_version);
+		 "WLAN %#06x fw %#06x HIF_EVENT_PUMP_READY irq=%d budget=%u timeout_ms=100\n",
+		 wifi->capability.product_id, wifi->capability.firmware_version,
+		 wifi->irq, MT6797_WIFI_HIF_RX_BUDGET);
 	return 0;
 }
 

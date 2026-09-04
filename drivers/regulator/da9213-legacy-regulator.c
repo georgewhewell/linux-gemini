@@ -299,6 +299,7 @@ static int da9213_legacy_register_regulators(struct da9213_legacy *chip)
 		.driver_data = chip,
 	};
 	struct device_node *regulators;
+	unsigned int registered = 0;
 	unsigned int i;
 
 	regulators = of_get_child_by_name(chip->dev->of_node, "regulators");
@@ -314,6 +315,10 @@ static int da9213_legacy_register_regulators(struct da9213_legacy *chip)
 			of_node_put(regulators);
 			return -EINVAL;
 		}
+		if (!of_device_is_available(config.of_node)) {
+			of_node_put(config.of_node);
+			continue;
+		}
 
 		rdev = devm_regulator_register(chip->dev,
 					       &da9213_legacy_regulators[i],
@@ -323,10 +328,11 @@ static int da9213_legacy_register_regulators(struct da9213_legacy *chip)
 			of_node_put(regulators);
 			return PTR_ERR(rdev);
 		}
+		registered++;
 	}
 
 	of_node_put(regulators);
-	return 0;
+	return registered ? 0 : -ENODEV;
 }
 
 static int da9213_legacy_validate_node(struct i2c_client *client)

@@ -13,6 +13,7 @@
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
 #include "boot.h"
+#include "capability.h"
 #include "firmware.h"
 #include "hif.h"
 
@@ -23,6 +24,8 @@ struct mt6797_wifi {
 	struct mt6797_wifi_ahb_hif hif;
 	struct mt6797_wifi_firmware firmware;
 	struct mt6797_wifi_boot boot;
+	struct mt6797_wifi_capability_irq capability_irq;
+	struct mt6797_wifi_capability capability;
 	int irq;
 };
 
@@ -82,6 +85,10 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	    IRQ_TYPE_LEVEL_LOW)
 		return dev_err_probe(dev, -EINVAL,
 				     "HIF interrupt must be level-low\n");
+	ret = mt6797_wifi_capability_irq_init(&wifi->capability_irq, dev,
+					      &wifi->hif, wifi->irq);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to reserve HIF interrupt\n");
 
 	ret = mt6797_wifi_firmware_request(dev, &wifi->firmware);
 	if (ret)
@@ -95,10 +102,21 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to start verified WLAN firmware\n");
+	ret = mt6797_wifi_capability_query(&wifi->capability_irq, &wifi->boot,
+					   &wifi->capability);
+	if (ret) {
+		int stop_ret = mt6797_wifi_boot_stop(&wifi->boot);
+
+		if (stop_ret)
+			dev_err(dev, "WLAN rollback failed: %d\n", stop_ret);
+		return dev_err_probe(dev, ret,
+				     "failed WLAN NIC capability exchange\n");
+	}
 
 	platform_set_drvdata(pdev, wifi);
 	dev_info(dev,
-		 "verified WLAN firmware started; IRQ and network interfaces remain disabled\n");
+		 "WLAN %#06x firmware %#06x ready; IRQ and network interfaces remain disabled\n",
+		 wifi->capability.product_id, wifi->capability.firmware_version);
 	return 0;
 }
 

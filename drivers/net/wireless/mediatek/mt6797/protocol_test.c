@@ -2,6 +2,7 @@
 
 #include <kunit/test.h>
 #include <linux/errno.h>
+#include <linux/if_ether.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 
@@ -104,12 +105,184 @@ static void mt6797_wifi_event_bounds_test(struct kunit *test)
 						      &event), -EPROTO);
 }
 
+static void mt6797_wifi_rx_event_test(struct kunit *test)
+{
+	u8 packet[12] = {
+		0x0c, 0x00, 0x00, 0xe0, 0x0d, 0x03, 0x00, 0x00,
+		0x03, 0x00, 0x00, 0x00,
+	};
+	struct mt6797_wifi_rx_view frame;
+	int ret;
+
+	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, frame.kind, MT6797_WIFI_RX_EVENT);
+	KUNIT_EXPECT_EQ(test, frame.event_id, (u8)0x0d);
+	KUNIT_EXPECT_EQ(test, frame.sequence, (u8)3);
+	KUNIT_EXPECT_EQ(test, frame.payload_length, (size_t)4);
+}
+
+static void mt6797_wifi_rx_descriptor_test(struct kunit *test)
+{
+	u8 packet[96] = {};
+	struct mt6797_wifi_rx_view frame;
+	int ret;
+
+	put_unaligned_le16(sizeof(packet), packet);
+	put_unaligned_le16(0xf << 9, packet + 2);
+	packet[5] = 6;
+	packet[6] = BIT(7) | ETH_HLEN;
+	packet[8] = 31;
+	packet[80] = 0x02;
+	put_unaligned_be16(ETH_P_IP, packet + 80 + 12);
+
+	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, frame.kind, MT6797_WIFI_RX_ETHERNET);
+	KUNIT_EXPECT_PTR_EQ(test, frame.payload, packet + 80);
+	KUNIT_EXPECT_EQ(test, frame.payload_length, (size_t)16);
+	KUNIT_EXPECT_EQ(test, frame.channel, (u8)6);
+	KUNIT_EXPECT_EQ(test, frame.header_length, (u8)ETH_HLEN);
+	KUNIT_EXPECT_EQ(test, frame.wlan_index, (u8)31);
+	KUNIT_EXPECT_TRUE(test, frame.header_translated);
+
+	memset(packet, 0, sizeof(packet));
+	put_unaligned_le16(42, packet);
+	put_unaligned_le16(0xe001, packet + 2);
+	packet[6] = 24;
+	ret = mt6797_wifi_rx_parse(packet, 44, &frame);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, frame.kind, MT6797_WIFI_RX_IEEE80211);
+	KUNIT_EXPECT_PTR_EQ(test, frame.payload, packet + 16);
+	KUNIT_EXPECT_EQ(test, frame.payload_length, (size_t)26);
+}
+
+static void mt6797_wifi_rx_bounds_test(struct kunit *test)
+{
+	u8 packet[64] = {};
+	struct mt6797_wifi_rx_view frame;
+	int ret;
+
+	ret = mt6797_wifi_rx_parse(packet, 3, &frame);
+	KUNIT_EXPECT_EQ(test, ret, -EMSGSIZE);
+
+	put_unaligned_le16(32, packet);
+	packet[6] = BIT(7) | ETH_HLEN;
+	put_unaligned_le16(BIT(1), packet + 10);
+	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
+	KUNIT_EXPECT_EQ(test, ret, -EBADMSG);
+
+	put_unaligned_le16(16, packet);
+	put_unaligned_le16(BIT(12), packet + 2);
+	put_unaligned_le16(0, packet + 10);
+	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
+	KUNIT_EXPECT_EQ(test, ret, -EPROTO);
+
+	put_unaligned_le16(32, packet);
+	put_unaligned_le16(0, packet + 2);
+	packet[6] = 17;
+	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
+	KUNIT_EXPECT_EQ(test, ret, -EPROTO);
+
+	packet[6] = 14;
+	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
+	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
+}
+
+static void mt6797_wifi_tx_data_test(struct kunit *test)
+{
+	u8 payload[ETH_HLEN + 2] = {};
+	u8 packet[48];
+	struct mt6797_wifi_tx_params params = {
+		.traffic = MT6797_WIFI_TX_DATA,
+		.wlan_index = 31,
+		.protected = true,
+	};
+	size_t transfer_length;
+	int ret;
+
+	put_unaligned_be16(ETH_P_IP, payload + 12);
+	ret = mt6797_wifi_tx_build(packet, sizeof(packet), payload,
+				   sizeof(payload), &params, &transfer_length);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, transfer_length, (size_t)44);
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(packet), (u16)44);
+	KUNIT_EXPECT_EQ(test, packet[2], (u8)20);
+	KUNIT_EXPECT_EQ(test, packet[3], (u8)0x20);
+	KUNIT_EXPECT_EQ(test, packet[4], (u8)31);
+	KUNIT_EXPECT_EQ(test, packet[5], (u8)0x90);
+	KUNIT_EXPECT_EQ(test, packet[6], (u8)BIT(7));
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(packet + 12), (u16)0xf000);
+	KUNIT_EXPECT_MEMEQ(test, packet + MT6797_WIFI_TX_DESCRIPTOR_LENGTH,
+			   payload, sizeof(payload));
+}
+
+static void mt6797_wifi_tx_eapol_test(struct kunit *test)
+{
+	u8 payload[ETH_HLEN + 1] = {};
+	u8 packet[44];
+	struct mt6797_wifi_tx_params params = {
+		.traffic = MT6797_WIFI_TX_EAPOL,
+		.fixed_rate = 0x4b,
+		.wlan_index = 1,
+	};
+	size_t transfer_length;
+	int ret;
+
+	memset(packet, 0xa5, sizeof(packet));
+	put_unaligned_be16(ETH_P_PAE, payload + 12);
+	ret = mt6797_wifi_tx_build(packet, sizeof(packet), payload,
+				   sizeof(payload), &params, &transfer_length);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, transfer_length, sizeof(packet));
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(packet), (u16)43);
+	KUNIT_EXPECT_EQ(test, packet[3], (u8)0x88);
+	KUNIT_EXPECT_EQ(test, packet[11], (u8)BIT(7));
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(packet + 26), (u16)(0x4b << 2));
+	KUNIT_EXPECT_EQ(test, packet[43], (u8)0);
+}
+
+static void mt6797_wifi_tx_bounds_test(struct kunit *test)
+{
+	u8 payload[ETH_HLEN] = {};
+	u8 packet[MT6797_WIFI_TX_DESCRIPTOR_LENGTH + ETH_HLEN];
+	struct mt6797_wifi_tx_params params = {
+		.traffic = MT6797_WIFI_TX_EAPOL,
+		.fixed_rate = 0x4b,
+	};
+	size_t transfer_length;
+	int ret;
+
+	put_unaligned_be16(ETH_P_IP, payload + 12);
+	ret = mt6797_wifi_tx_build(packet, sizeof(packet), payload,
+				   sizeof(payload), &params, &transfer_length);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	put_unaligned_be16(ETH_P_PAE, payload + 12);
+	params.fixed_rate = 0;
+	ret = mt6797_wifi_tx_build(packet, sizeof(packet), payload,
+				   sizeof(payload), &params, &transfer_length);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	params.fixed_rate = 0x4b;
+	ret = mt6797_wifi_tx_build(packet, sizeof(packet) - 1, payload,
+				   sizeof(payload), &params, &transfer_length);
+	KUNIT_EXPECT_EQ(test, ret, -EMSGSIZE);
+	ret = mt6797_wifi_tx_build(packet, SIZE_MAX, payload, SIZE_MAX, &params,
+				   &transfer_length);
+	KUNIT_EXPECT_EQ(test, ret, -EOVERFLOW);
+}
+
 static struct kunit_case mt6797_wifi_protocol_cases[] = {
 	KUNIT_CASE(mt6797_wifi_command_test),
 	KUNIT_CASE(mt6797_wifi_basic_config_test),
 	KUNIT_CASE(mt6797_wifi_command_bounds_test),
 	KUNIT_CASE(mt6797_wifi_event_test),
 	KUNIT_CASE(mt6797_wifi_event_bounds_test),
+	KUNIT_CASE(mt6797_wifi_rx_event_test),
+	KUNIT_CASE(mt6797_wifi_rx_descriptor_test),
+	KUNIT_CASE(mt6797_wifi_rx_bounds_test),
+	KUNIT_CASE(mt6797_wifi_tx_data_test),
+	KUNIT_CASE(mt6797_wifi_tx_eapol_test),
+	KUNIT_CASE(mt6797_wifi_tx_bounds_test),
 	{}
 };
 

@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-btif-pio.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: MediaTek MT6797 dormant BTIF PIO platform adapter
+title: MediaTek MT6797 BTIF PIO component supplier
 
 maintainers:
   - George Whewell <georgerw@gmail.com>
@@ -22,10 +22,12 @@ description: |
   only the PIO core path. It does not establish CONSYS power, reset release,
   pads, AFE, firmware, WMT, or radio-function ownership.
 
-  No shipped Gemini DT node uses this compatible. Any future hand-authored
-  provider node must remain disabled by default, and the adapter's independent
-  default-false module parameter still gates hardware activation. This binding
-  alone cannot start a BTIF, STP, firmware, or radio operation.
+  The disabled MT6797 SoC node uses this compatible. Its platform driver maps
+  the resource, obtains but does not enable the clock, installs the core IRQ
+  with IRQF_NO_AUTOEN, and registers a component supplier for the shared CONSYS
+  owner. Component binding allocates an inert STP session but cannot start
+  BTIF, STP negotiation, firmware transfer, or a radio operation. The adapter's
+  independent default-false module parameter still gates hardware activation.
 
   A separately gated one-shot PIO qualification may initialise the BTIF core
   and briefly set/read/clear its documented internal loopback bit. It does not

@@ -11,11 +11,12 @@ maintainers:
 
 description: |
   The MT6797 connectivity subsystem contains the shared control resources for
-  Bluetooth, Wi-Fi, GNSS, and FM. This binding initially describes an
-  inventory-only platform device. Its driver acquires and validates resource
-  metadata, but does not map or access registers; enable or disable a clock,
-  regulator, reset, interrupt, or power domain; access firmware; or map the
-  shared reserved memory.
+  Bluetooth, Wi-Fi, GNSS, and FM. Its driver acquires and validates resource
+  metadata and authenticated firmware, then aggregates the explicitly
+  referenced, disabled BTIF PIO supplier and allocates one dormant full-STP
+  session owner. Component assembly does not map or access registers; enable
+  or disable a clock, regulator, reset, interrupt, or power domain; transmit
+  firmware or a frame; or map the shared reserved memory.
 
   A separately named, explicitly opt-in shared-memory preflight obtains the
   boot-time reserved-memory record for the existing no-map CONSYS reservation
@@ -139,6 +140,13 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: SPM syscon containing power-control and status registers.
 
+  mediatek,btif:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      Phandle to the single MT6797 BTIF PIO component which carries shared
+      CONSYS STP traffic. The component remains disabled by default and binding
+      it does not enable its clock or interrupt or perform register accesses.
+
   vcn18-supply:
     description: Shared 1.8 V connectivity supply.
 
@@ -177,6 +185,7 @@ allOf:
           const: mediatek,mt6797-consys
     then:
       required:
+        - mediatek,btif
         - power-domains
         - power-domain-names
         - vcn18-supply
@@ -276,6 +285,7 @@ examples:
             vcn28-supply = <&vcn28>;
             memory-region = <&consys_reserved_memory>;
             memory-region-names = "shared";
+            mediatek,btif = <&btif>;
             status = "disabled";
         };
     };

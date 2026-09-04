@@ -46,6 +46,11 @@ properties:
       - const: mm
       - const: vdec
 
+  mfg-supply:
+    description:
+      External supply required by the main MFG power domain. The legacy
+      SCPSYS driver enables it before the domain clocks and PWR_ON controls.
+
 required:
   - compatible
   - reg

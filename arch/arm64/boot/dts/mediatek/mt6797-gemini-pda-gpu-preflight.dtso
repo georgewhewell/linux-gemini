@@ -39,11 +39,24 @@
 	status = "okay";
 };
 
+/*
+ * Panfrost attaches the four MFG core domains before its OPP setup takes a
+ * regulator vote.  Make the parent MFG transition own the VGPU prerequisite
+ * so the rail is enabled before PWR_ON is asserted and remains ordered for
+ * every later runtime transition.
+ */
+&scpsys {
+	mfg-supply = <&rt5735_vgpu>;
+};
+
 &mfgsys {
 	status = "okay";
 };
 
 &gpu {
+	mali-supply = <&rt5735_vgpu>;
+	nvmem-cells = <&mt6797_cpu_efuse_identity>;
+	nvmem-cell-names = "gpu-efuse";
 	operating-points-v2 = <&g3_gpu_opp_table>;
 	status = "okay";
 };

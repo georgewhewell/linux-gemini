@@ -55,7 +55,7 @@ need "$capture" "identity_pattern='13040000\\.gpu: mali-t880 id 0x880 major 0x1 
 need "$capture" "topology_pattern='shader_present=0xf l2_present=0x1$'"
 need "$capture" 'expected_frequencies=238000000'
 need "$capture" 'type12-fixed-low:238000000) expected_microvolts=850000 ;;'
-need "$capture" 'for irq_spec in panfrost-job:296 panfrost-mmu:295 panfrost-gpu:294; do'
+need "$capture" 'for irq_spec in panfrost-job:264 panfrost-mmu:263 panfrost-gpu:262; do'
 need "$capture" 'reject_pattern="$reject_pattern|(L2|shader|tiler) power-(on|off) timeout"'
 need "$capture" 'reject_pattern="$reject_pattern|MFG idle check failed"'
 need "$capture" 'assert_no_drm_open'

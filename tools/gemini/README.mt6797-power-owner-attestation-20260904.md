@@ -51,7 +51,8 @@ power_preflight_policy=owner-attested-20260904
 It had an independent offline PASS, but its subsequent hardware collector
 failed.  Candidate `baf0f1fd...` is therefore retired and closed/no-retry; the
 offline review must not be represented as a hardware pass or production
-readiness.  It has no further p22 authorization or schedule.
+readiness.  Exact failure and Stage-A recovery evidence is recorded in the
+managed queue ledger.  It has no further p22 authorization or schedule.
 
 The current offline-qualified G3 package is
 `f51d661e823d9ece2011c5688141ddaa7e3c44b6`, with bundle

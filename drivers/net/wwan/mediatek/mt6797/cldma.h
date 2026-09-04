@@ -16,8 +16,12 @@
 int mt6797_cldma_rx_ring_build(struct mt6797_cldma_rgpd *ring,
 			       unsigned int count, u64 ring_dma,
 			       u64 data_dma, size_t data_stride);
-int mt6797_cldma_rx_descriptor_read(const struct mt6797_cldma_rgpd *gpd,
-				    const void *data, size_t data_capacity,
-				    struct mt6797_ccci_header_fields *fields);
+int mt6797_cldma_rx_read(const struct mt6797_cldma_rgpd *gpd,
+			 const void *data, size_t data_capacity,
+			 u64 expected_next_dma, u64 expected_data_dma,
+			 size_t *packet_len,
+			 struct mt6797_ccci_header_fields *fields);
+int mt6797_cldma_rx_rearm(struct mt6797_cldma_rgpd *gpd,
+			  size_t data_capacity);
 
 #endif /* __MT6797_MD1_CLDMA_H */

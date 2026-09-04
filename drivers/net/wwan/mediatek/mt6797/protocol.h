@@ -9,6 +9,10 @@
 #define MT6797_CLDMA_ADDRESS_MAX		GENMASK_ULL(35, 0)
 
 #define MT6797_CCCI_CONTROL_RX		0
+#define MT6797_CCCI_CONTROL_TX		1
+#define MT6797_CCCI_UART2_RX		10
+#define MT6797_CCCI_UART2_TX		12
+#define MT6797_CCCI_UART2_QUEUE		1
 #define MT6797_CCCI_MD_INIT_START_BOOT	0
 #define MT6797_CCCI_MD_EXCEPTION		4
 #define MT6797_CCCI_DRIVER_VERSION_ERROR	5
@@ -29,6 +33,11 @@ struct mt6797_ccci_header_fields {
 	u16 sequence;
 	bool assert;
 	u32 reserved;
+};
+
+struct mt6797_ccci_rx_sequence {
+	u16 last;
+	bool valid;
 };
 
 struct mt6797_cldma_tgpd {
@@ -94,6 +103,14 @@ void mt6797_ccci_boot_begin(enum mt6797_ccci_boot_state *state);
 int mt6797_ccci_boot_runtime_sent(enum mt6797_ccci_boot_state *state);
 int mt6797_ccci_boot_receive(enum mt6797_ccci_boot_state *state,
 			     const struct mt6797_ccci_header_fields *fields);
+int mt6797_ccci_boot_rx(enum mt6797_ccci_boot_state *state,
+			struct mt6797_ccci_rx_sequence *sequence,
+			const struct mt6797_ccci_header_fields *fields);
 void mt6797_ccci_boot_abort(enum mt6797_ccci_boot_state *state);
+
+int mt6797_ccci_uart2_gate(enum mt6797_ccci_boot_state state,
+			   u16 rx_channel, u16 tx_channel,
+			   unsigned int rx_queue, unsigned int tx_queue,
+			   bool rx_queue_owned, bool tx_queue_owned);
 
 #endif /* __MT6797_MD1_PROTOCOL_H */

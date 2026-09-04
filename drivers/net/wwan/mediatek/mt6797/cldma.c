@@ -2,6 +2,7 @@
 /* Hardware-independent MT6797 CLDMA receive-ring construction. */
 
 #include <linux/errno.h>
+#include <linux/dma-mapping.h>
 #include <linux/kernel.h>
 #include <linux/byteorder/generic.h>
 #include <linux/overflow.h>
@@ -56,17 +57,41 @@ int mt6797_cldma_rx_ring_build(struct mt6797_cldma_rgpd *ring,
 	return 0;
 }
 
-int mt6797_cldma_rx_descriptor_read(const struct mt6797_cldma_rgpd *gpd,
-				    const void *data, size_t data_capacity,
-				    struct mt6797_ccci_header_fields *fields)
+int mt6797_cldma_rx_read(const struct mt6797_cldma_rgpd *gpd,
+			 const void *data, size_t data_capacity,
+			 u64 expected_next_dma, u64 expected_data_dma,
+			 size_t *packet_len,
+			 struct mt6797_ccci_header_fields *fields)
 {
+	u64 data_dma;
+	u64 next_dma;
 	size_t length;
+	int ret;
 
-	if (!gpd || !data || !fields)
+	if (!gpd || !data || !packet_len || !fields)
 		return -EINVAL;
 	if (READ_ONCE(gpd->flags) & MT6797_CLDMA_GPD_HWO)
 		return -EAGAIN;
 	if (READ_ONCE(gpd->flags) != MT6797_CLDMA_GPD_IOC)
+		return -EPROTO;
+	if (data_capacity < sizeof(struct mt6797_ccci_header) ||
+	    data_capacity > U16_MAX ||
+	    le16_to_cpu(READ_ONCE(gpd->data_allow_len)) != data_capacity)
+		return -EPROTO;
+
+	ret = mt6797_cldma_address_decode(READ_ONCE(gpd->next),
+					  READ_ONCE(gpd->debug_id),
+					  MT6797_CLDMA_POINTER_NEXT,
+					  &next_dma);
+	if (ret)
+		return ret;
+	ret = mt6797_cldma_address_decode(READ_ONCE(gpd->data),
+					  READ_ONCE(gpd->debug_id),
+					  MT6797_CLDMA_POINTER_DATA,
+					  &data_dma);
+	if (ret)
+		return ret;
+	if (next_dma != expected_next_dma || data_dma != expected_data_dma)
 		return -EPROTO;
 
 	length = le16_to_cpu(READ_ONCE(gpd->data_len));
@@ -75,5 +100,28 @@ int mt6797_cldma_rx_descriptor_read(const struct mt6797_cldma_rgpd *gpd,
 	    length > le16_to_cpu(READ_ONCE(gpd->data_allow_len)))
 		return -EMSGSIZE;
 
-	return mt6797_ccci_header_decode(data, fields);
+	ret = mt6797_ccci_header_decode(data, fields);
+	if (ret)
+		return ret;
+
+	*packet_len = length;
+	return 0;
+}
+
+int mt6797_cldma_rx_rearm(struct mt6797_cldma_rgpd *gpd,
+			  size_t data_capacity)
+{
+	if (!gpd || data_capacity < sizeof(struct mt6797_ccci_header) ||
+	    data_capacity > U16_MAX)
+		return -EINVAL;
+	if (READ_ONCE(gpd->flags) != MT6797_CLDMA_GPD_IOC ||
+	    le16_to_cpu(READ_ONCE(gpd->data_allow_len)) != data_capacity)
+		return -EPROTO;
+
+	WRITE_ONCE(gpd->data_len, cpu_to_le16(0));
+	/* Publish all descriptor fields before returning ownership to CLDMA. */
+	dma_wmb();
+	WRITE_ONCE(gpd->flags, MT6797_CLDMA_GPD_IOC | MT6797_CLDMA_GPD_HWO);
+
+	return 0;
 }

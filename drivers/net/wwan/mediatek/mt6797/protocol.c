@@ -178,10 +178,71 @@ int mt6797_ccci_boot_receive(enum mt6797_ccci_boot_state *state,
 	return -EPROTO;
 }
 
+static int
+mt6797_ccci_rx_sequence_accept(struct mt6797_ccci_rx_sequence *sequence,
+			       const struct mt6797_ccci_header_fields *fields)
+{
+	u16 expected;
+
+	if (!sequence || !fields)
+		return -EINVAL;
+
+	if (fields->assert) {
+		expected = sequence->valid ?
+			(sequence->last + 1) & MT6797_CCCI_SEQUENCE_MAX : 0;
+		if (fields->sequence != expected)
+			return -EILSEQ;
+	}
+
+	sequence->last = fields->sequence;
+	sequence->valid = true;
+	return 0;
+}
+
+int mt6797_ccci_boot_rx(enum mt6797_ccci_boot_state *state,
+			struct mt6797_ccci_rx_sequence *sequence,
+			const struct mt6797_ccci_header_fields *fields)
+{
+	int ret;
+
+	if (!state || !sequence || !fields)
+		return -EINVAL;
+	if (fields->channel != MT6797_CCCI_CONTROL_RX) {
+		mt6797_ccci_boot_abort(state);
+		return -ENOMSG;
+	}
+
+	ret = mt6797_ccci_rx_sequence_accept(sequence, fields);
+	if (ret) {
+		mt6797_ccci_boot_abort(state);
+		return ret;
+	}
+
+	return mt6797_ccci_boot_receive(state, fields);
+}
+
 void mt6797_ccci_boot_abort(enum mt6797_ccci_boot_state *state)
 {
 	if (state)
 		*state = MT6797_CCCI_BOOT_FAILED;
+}
+
+int mt6797_ccci_uart2_gate(enum mt6797_ccci_boot_state state,
+			   u16 rx_channel, u16 tx_channel,
+			   unsigned int rx_queue, unsigned int tx_queue,
+			   bool rx_queue_owned, bool tx_queue_owned)
+{
+	if (rx_channel != MT6797_CCCI_UART2_RX ||
+	    tx_channel != MT6797_CCCI_UART2_TX ||
+	    rx_queue != MT6797_CCCI_UART2_QUEUE ||
+	    tx_queue != MT6797_CCCI_UART2_QUEUE)
+		return -EINVAL;
+	if (state != MT6797_CCCI_BOOT_READY)
+		return -EHOSTDOWN;
+	if (!rx_queue_owned || !tx_queue_owned)
+		return -ENODEV;
+
+	return 0;
 }
 
 MODULE_DESCRIPTION("MediaTek MT6797 modem protocol helpers");

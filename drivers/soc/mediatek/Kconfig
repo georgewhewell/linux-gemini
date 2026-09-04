@@ -238,19 +238,17 @@ config MTK_MT6797_CONSYS_WMT_INITIAL_KUNIT_TEST
 	  device or access Gemini hardware.
 
 config MTK_MT6797_A72_POWER
-	bool "MediaTek MT6797 Cortex-A72 power resource observer"
+	bool "MediaTek MT6797 Cortex-A72 resource preflight"
 	depends on ARM64 && ARCH_MEDIATEK && OF
 	depends on REGULATOR && RESET_CONTROLLER
 	select MFD_SYSCON
 	help
-	  Build the resource observer for the MT6797 Cortex-A72 cluster power
-	  path.  It verifies that the external processor regulator, TOPRGU
-	  reset, SPM syscon, and MCUCFG resources are available and publishes
-	  a read-only snapshot in sysfs.
+	  Verify that the external processor regulator, TOPRGU reset, SPM
+	  syscon, and standard MP2 clock resources can all be observed before
+	  any A72 power sequence is enabled.
 
-	  This initial implementation never changes power state and never
-	  authorizes CPU_ON.  It is groundwork for a later provider that can
-	  reproduce the hardware power sequence.
+	  This preflight has no sysfs ABI, never changes hardware state, and never
+	  authorizes CPU_ON. CPU core power remains owned by PSCI firmware.
 
 config MTK_MT6797_CONSYS_INVENTORY
 	bool "MediaTek MT6797 CONSYS resource inventory"

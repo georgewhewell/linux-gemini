@@ -16257,6 +16257,12 @@ F:	include/uapi/linux/uvcvideo.h
 F:	include/uapi/linux/v4l2-*
 F:	include/uapi/linux/videodev2.h
 
+MEDIATEK BIGIDVFS SRAM REGULATOR DRIVER
+M:	Julien Etienne <julien.etienne@gmail.com>
+L:	linux-mediatek@lists.infradead.org (moderated for non-subscribers)
+S:	Maintained
+F:	Documentation/devicetree/bindings/regulator/mediatek,mt6797-bigidvfs-sram.yaml
+
 MEDIATEK BLUETOOTH DRIVER
 M:	Sean Wang <sean.wang@mediatek.com>
 L:	linux-bluetooth@vger.kernel.org

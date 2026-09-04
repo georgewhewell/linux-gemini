@@ -1005,12 +1005,12 @@ static void mtk_jpeg_dec_device_run(void *priv)
 		return;
 	}
 
-	ret = pm_runtime_resume_and_get(jpeg->dev);
-	if (ret < 0)
-		goto dec_end;
-
 	mtk_jpeg_set_dec_src(ctx, &src_buf->vb2_buf, &bs);
 	if (mtk_jpeg_set_dec_dst(ctx, &jpeg_src_buf->dec_param, &dst_buf->vb2_buf, &fb))
+		goto dec_end;
+
+	ret = pm_runtime_resume_and_get(jpeg->dev);
+	if (ret < 0)
 		goto dec_end;
 
 	schedule_delayed_work(&jpeg->job_timeout_work,

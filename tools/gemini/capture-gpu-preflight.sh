@@ -13,10 +13,13 @@ fi
 : "${DEVMEM:=devmem}"
 : "${DMESG:=dmesg}"
 : "${PROC_ROOT:=/proc}"
+: "${SLEEP:=sleep}"
 : "${SYSFS_ROOT:=/sys}"
+: "${G3_OBSERVE_SECONDS:=2}"
 
 gpu_device=$SYSFS_ROOT/bus/platform/devices/13040000.gpu
-rt5735_driver=$SYSFS_ROOT/bus/i2c/drivers/rt5735-regulator
+gpu_dt=$SYSFS_ROOT/firmware/devicetree/base/gpu@13040000
+rt5735_dt=$SYSFS_ROOT/firmware/devicetree/base/i2c@11010000/regulator@1c
 genpd_summary=$DEBUGFS_ROOT/pm_genpd/pm_genpd_summary
 clk_summary=$DEBUGFS_ROOT/clk/clk_summary
 regulator_summary=$DEBUGFS_ROOT/regulator/regulator_summary
@@ -30,6 +33,35 @@ reject()
 	failed=1
 }
 
+case $G3_OBSERVE_SECONDS in
+''|*[!0-9]*)
+	echo "G3_OBSERVE_SECONDS must be an integer from 1 through 60" >&2
+	exit 2
+	;;
+esac
+if [ "$G3_OBSERVE_SECONDS" -lt 1 ] || [ "$G3_OBSERVE_SECONDS" -gt 60 ]; then
+	echo "G3_OBSERVE_SECONDS must be an integer from 1 through 60" >&2
+	exit 2
+fi
+
+read_dt_string()
+{
+	tr -d '\000' < "$1"
+}
+
+read_dt_cell()
+{
+	od -An -tx1 -N4 "$1" | tr -d ' \n'
+}
+
+driver_name()
+{
+	device=$1
+
+	[ -L "$device/driver" ] || return 1
+	basename "$(readlink "$device/driver")"
+}
+
 find_summary_line()
 {
 	name=$1
@@ -40,6 +72,94 @@ find_summary_line()
 		END { if (!found) exit 1 }
 	' "$file"
 }
+
+read_rail()
+{
+	regulator=$1
+	state=$(cat "$regulator/state") || return 1
+	microvolts=$(cat "$regulator/microvolts") || return 1
+	users=$(cat "$regulator/num_users") || return 1
+
+	[ "$state" = enabled ] || return 1
+	case $microvolts:$users in
+		*[!0-9:]*) return 1 ;;
+	esac
+	[ -n "$microvolts" ] && [ -n "$users" ] || return 1
+	printf '%s:%s:%s\n' "$state" "$microvolts" "$users"
+}
+
+irq_snapshot()
+{
+	name=$1
+	line=$(grep -E "[[:space:]]$name$" "$PROC_ROOT/interrupts" || true)
+	lines=$(printf '%s\n' "$line" | awk 'NF { count++ } END { print count + 0 }')
+
+	[ "$lines" -eq 1 ] || return 1
+	irq=$(printf '%s\n' "$line" | awk -F: '{ gsub(/[[:space:]]/, "", $1); print $1 }')
+	count=$(printf '%s\n' "${line#*:}" | awk '
+		{
+			total = 0
+			for (i = 1; i <= NF && $i ~ /^[0-9]+$/; i++)
+				total += $i
+			print total
+		}')
+	printf '%s:%s\n' "$irq" "$count"
+}
+
+assert_no_drm_open()
+{
+	for drm_device in "$gpu_device"/drm/card* "$gpu_device"/drm/renderD*; do
+		[ -e "$drm_device" ] || continue
+		name=$(basename "$drm_device")
+		for fd in "$PROC_ROOT"/[0-9]*/fd/*; do
+			[ -L "$fd" ] || continue
+			pid=$(basename "$(dirname "$(dirname "$fd")")")
+			[ "$(readlink "$fd" 2>/dev/null || true)" != "/dev/dri/$name" ] ||
+				reject "$pid has /dev/dri/$name open"
+		done
+	done
+}
+
+echo "[g3-policy]"
+cmdline=$(cat "$PROC_ROOT/cmdline") || {
+	echo "cannot read the kernel command line" >&2
+	exit 2
+}
+printf 'cmdline=%s\n' "$cmdline"
+case " $cmdline " in
+	*' regulator_ignore_unused '*) ;;
+	*) reject "regulator_ignore_unused G1 safety fence is absent" ;;
+esac
+case " $cmdline " in
+	*' pd_ignore_unused '*)
+		reject "pd_ignore_unused would weaken the inherited G0 lifecycle gate"
+		;;
+esac
+
+echo "[g3-devicetree]"
+for status_spec in \
+	"$SYSFS_ROOT/firmware/devicetree/base/i2c@11010000/status:I2C7" \
+	"$rt5735_dt/status:RT5735" \
+	"$SYSFS_ROOT/firmware/devicetree/base/syscon@13000000/status:MFGSYS" \
+	"$gpu_dt/status:GPU"; do
+	status_file=${status_spec%%:*}
+	label=${status_spec#*:}
+	if [ -r "$status_file" ]; then
+		status=$(read_dt_string "$status_file")
+		printf '%s_dt_status=%s\n' "$label" "$status"
+		[ "$status" = okay ] || reject "$label DT status is $status, expected okay"
+	else
+		reject "$label DT status is unavailable"
+	fi
+done
+if [ -r "$rt5735_dt/regulator-ramp-delay" ]; then
+	ramp_delay=$(read_dt_cell "$rt5735_dt/regulator-ramp-delay")
+	printf 'regulator_ramp_delay=%s\n' "$ramp_delay"
+	[ "$ramp_delay" = 00007d00 ] ||
+		reject "RT5735 ramp delay is 0x$ramp_delay, expected 0x00007d00"
+else
+	reject "RT5735 ramp delay is unavailable"
+fi
 
 boot_log=$($DMESG) || {
 	echo "cannot read the kernel log" >&2
@@ -59,12 +179,17 @@ reject_pattern="$reject_pattern|failed to (get|enable) regulators|using dummy re
 reject_pattern="$reject_pattern|Couldn't set (OPP regulators|recommended OPP)"
 reject_pattern="$reject_pattern|Couldn't initialize GPU devfreq"
 reject_pattern="$reject_pattern|failed to select GPU OPP profile|devfreq init failed"
+reject_pattern="$reject_pattern|(L2|shader|tiler) power-(on|off) timeout"
+reject_pattern="$reject_pattern|GPU fault|Unhandled Page fault"
+identity_pattern='13040000\.gpu: mali-t880 id 0x880 major 0x1 minor 0x0 status 0x8$'
 topology_pattern='shader_present=0x[1-9a-fA-F][0-9a-fA-F]*'
 topology_pattern="$topology_pattern l2_present=0x[1-9a-fA-F][0-9a-fA-F]*"
 
-if ! printf '%s\n' "$gpu_log" |
-	grep -q '13040000\.gpu.*mali-t880 id '; then
-	reject "Panfrost did not identify the Mali-T880 after reset deassertion"
+identity_lines=$(printf '%s\n' "$gpu_log" | grep -E "$identity_pattern" || true)
+identity_count=$(printf '%s\n' "$identity_lines" |
+	awk 'NF { count++ } END { print count + 0 }')
+if [ "$identity_count" -ne 1 ]; then
+	reject "Panfrost did not report exactly one MT6797 T880 r1p0 status-8 identity"
 fi
 if ! printf '%s\n' "$gpu_log" | grep -Eq "$topology_pattern"; then
 	reject "Panfrost did not report nonzero shader and L2 topology"
@@ -73,32 +198,77 @@ if printf '%s\n' "$gpu_log" | grep -Eq "$reject_pattern"; then
 	reject "kernel log contains a GPU, VGPU, MFG, reset, or devfreq failure"
 fi
 if [ ! -L "$gpu_device/driver" ] ||
-	[ "$(basename "$(readlink "$gpu_device/driver")")" != panfrost ]; then
+	[ "$(driver_name "$gpu_device" 2>/dev/null || true)" != panfrost ]; then
 	reject "13040000.gpu is not bound to Panfrost"
 fi
 rt5735_device=
-for candidate in "$rt5735_driver"/*-001c; do
-	[ -e "$candidate" ] || continue
+for candidate in "$SYSFS_ROOT"/bus/i2c/devices/*-001c; do
+	[ -d "$candidate" ] || continue
+	[ -L "$candidate/of_node" ] || continue
+	[ "$(readlink -f "$candidate/of_node")" = "$(readlink -f "$rt5735_dt")" ] ||
+		continue
+	if [ -n "$rt5735_device" ]; then
+		reject "more than one I2C device maps to RT5735 regulator@1c"
+		continue
+	fi
 	rt5735_device=$candidate
-	break
 done
 if [ -z "$rt5735_device" ]; then
-	reject "no RT5735 VGPU provider at I2C address 0x1c is bound"
+	reject "no I2C device has RT5735 regulator@1c OF ancestry"
+elif [ "$(driver_name "$rt5735_device" 2>/dev/null || true)" != \
+	rt5735-regulator ]; then
+	reject "RT5735 regulator@1c is not bound to rt5735-regulator"
+fi
+regulator_device=
+if [ -n "$rt5735_device" ]; then
+	for candidate in "$rt5735_device"/regulator/regulator.*; do
+		[ -d "$candidate" ] || continue
+		if [ -n "$regulator_device" ]; then
+			reject "RT5735 exposes more than one regulator class device"
+			continue
+		fi
+		regulator_device=$candidate
+	done
+fi
+[ -n "$regulator_device" ] || reject "RT5735 regulator class device is absent"
+if [ -n "$regulator_device" ]; then
+	regulator_class=$SYSFS_ROOT/class/regulator/$(basename "$regulator_device")
+	if [ ! -e "$regulator_class" ] ||
+		[ "$(readlink -f "$regulator_class")" != \
+		"$(readlink -f "$regulator_device")" ]; then
+		reject "regulator class ancestry does not resolve to RT5735"
+	fi
+	regulator_name=$(cat "$regulator_device/name" 2>/dev/null || true)
+	[ "$regulator_name" = vgpu ] ||
+		reject "RT5735 regulator is named $regulator_name, expected vgpu"
 fi
 
 echo "[gpu-irqs]"
 if [ ! -r "$PROC_ROOT/interrupts" ]; then
 	reject "interrupt registration state is unavailable"
 else
-	for irq_name in panfrost-job panfrost-mmu panfrost-gpu; do
-		if line=$(grep -E "[[:space:]]$irq_name([[:space:]]|$)" \
-			"$PROC_ROOT/interrupts" | head -n 1); then
-			printf '%s\n' "$line"
+	for irq_spec in panfrost-job:296 panfrost-mmu:295 panfrost-gpu:294; do
+		irq_name=${irq_spec%%:*}
+		expected_irq=${irq_spec#*:}
+		if snapshot=$(irq_snapshot "$irq_name"); then
+			printf '%s=%s\n' "$irq_name" "$snapshot"
+			irq=${snapshot%%:*}
+			count=${snapshot#*:}
+			[ "$irq" = "$expected_irq" ] ||
+				reject "$irq_name is IRQ $irq, expected $expected_irq"
+			[ "$count" -eq 0 ] ||
+				reject "$irq_name count is $count before the no-job observation"
+			case $irq_name in
+				panfrost-job) job_irq_before=$snapshot ;;
+				panfrost-mmu) mmu_irq_before=$snapshot ;;
+				panfrost-gpu) gpu_irq_before=$snapshot ;;
+			esac
 		else
-			reject "$irq_name is not registered"
+			reject "$irq_name is absent or does not own a dedicated IRQ line"
 		fi
 	done
 fi
+assert_no_drm_open
 
 echo "[gpu-runtime-pm]"
 runtime_status=missing
@@ -125,6 +295,10 @@ for attribute in control autosuspend_delay_ms runtime_active_time runtime_suspen
 		reject "GPU runtime-PM attribute $attribute is unavailable"
 	fi
 done
+[ "$(cat "$gpu_device/power/control" 2>/dev/null || true)" = auto ] ||
+	reject "GPU runtime-PM control is not auto"
+[ "$(cat "$gpu_device/power/autosuspend_delay_ms" 2>/dev/null || true)" = 50 ] ||
+	reject "GPU autosuspend delay is not 50ms"
 
 echo "[mfg-power-domains]"
 if [ ! -r "$genpd_summary" ]; then
@@ -135,7 +309,7 @@ else
 			printf '%s\n' "$line"
 			state=$(printf '%s\n' "$line" | awk '{ print $2 }')
 			case $state in
-			off-*) ;;
+			off*) ;;
 			*) reject "$domain is not off after GPU autosuspend" ;;
 			esac
 		else
@@ -198,10 +372,10 @@ else
 			printf '%s\n' "$line"
 			enable_count=$(printf '%s\n' "$line" | awk '{ print $2 }')
 			prepare_count=$(printf '%s\n' "$line" | awk '{ print $3 }')
-			if [ "$enable_count" -eq 0 ] ||
-				[ "$prepare_count" -eq 0 ]; then
-				reject "$clock lost Panfrost's runtime clock vote"
-			fi
+			case $enable_count:$prepare_count in
+				1:1) ;;
+				*) reject "$clock does not have exactly one Panfrost clock vote" ;;
+			esac
 		else
 			reject "$clock is absent from clk_summary"
 		fi
@@ -214,15 +388,16 @@ if [ ! -r "$regulator_summary" ]; then
 elif line=$(find_summary_line vgpu "$regulator_summary"); then
 	printf '%s\n' "$line"
 	use_count=$(printf '%s\n' "$line" | awk '{ print $2 }')
-	if [ "$use_count" -eq 0 ]; then
-		reject "VGPU lost Panfrost's OPP regulator vote"
-	fi
+	[ "$use_count" = 1 ] ||
+		reject "VGPU does not have exactly one Panfrost OPP regulator vote"
 else
 	reject "VGPU is absent from regulator_summary"
 fi
 
 echo "[gpu-devfreq]"
 devfreq_device=
+opp_profile=unknown
+cur_freq=unknown
 for candidate in "$gpu_device"/devfreq/*; do
 	[ -d "$candidate" ] || continue
 	devfreq_device=$candidate
@@ -241,18 +416,23 @@ else
 	done
 	actual_frequencies=$(cat "$devfreq_device/available_frequencies")
 	if printf '%s\n' "$gpu_log" | grep -q 'GPU DVFS table type 12,'; then
+		opp_profile=type12
 		expected_frequencies='238000000 365000000 442500000 520000000'
 		expected_frequencies="$expected_frequencies 610000000 780000000 900000000"
 	elif printf '%s\n' "$gpu_log" |
 		grep -Eq 'GPU DVFS table type (6|11),'; then
+		opp_profile=safe204
 		expected_frequencies=204000000
 	elif printf '%s\n' "$gpu_log" |
 		grep -Eq 'GPU DVFS table type (0|1|2|4|5|8|9|10),'; then
+		opp_profile=safe238
 		expected_frequencies=238000000
 	elif printf '%s\n' "$gpu_log" | grep -q 'GPU DVFS table unknown,'; then
+		opp_profile=safe204
 		expected_frequencies=204000000
 	else
 		reject "kernel log does not identify the selected MT6797 OPP profile"
+		opp_profile=unknown
 		expected_frequencies=
 	fi
 	if [ -n "$expected_frequencies" ] &&
@@ -264,6 +444,132 @@ else
 	*" $cur_freq "*) ;;
 	*) reject "current GPU frequency is outside the selected OPP list" ;;
 	esac
+	[ "$(cat "$devfreq_device/governor")" = simple_ondemand ] ||
+		reject "GPU devfreq governor is not simple_ondemand"
+fi
+
+expected_microvolts=
+case ${opp_profile:-unknown}:$cur_freq in
+	type12:238000000) expected_microvolts=850000 ;;
+	type12:365000000) expected_microvolts=912500 ;;
+	type12:442500000) expected_microvolts=937500 ;;
+	type12:520000000) expected_microvolts=975000 ;;
+	type12:610000000) expected_microvolts=1018750 ;;
+	type12:780000000) expected_microvolts=1106250 ;;
+	type12:900000000) expected_microvolts=1156250 ;;
+	safe204:204000000|safe238:238000000) expected_microvolts=862500 ;;
+	*) reject "no evidenced RT5735 voltage for ${opp_profile:-unknown}:$cur_freq" ;;
+esac
+
+echo "[g3-stability-window]"
+rail_before=unavailable
+if [ -n "$regulator_device" ]; then
+	rail_before=$(read_rail "$regulator_device" 2>/dev/null || true)
+fi
+printf 'vgpu_before=%s expected_microvolts=%s\n' \
+	"$rail_before" "${expected_microvolts:-unknown}"
+[ -n "$expected_microvolts" ] &&
+	[ "$rail_before" = "enabled:$expected_microvolts:1" ] ||
+	reject "VGPU does not exactly match the selected idle OPP with one consumer"
+
+for clock in mfg_bg3d infra_mfg_vcg mfg_52m_sel mfg_sel; do
+	line=$(find_summary_line "$clock" "$clk_summary" 2>/dev/null || true)
+	case $clock in
+		mfg_bg3d) mfg_bg3d_before=$line ;;
+		infra_mfg_vcg) infra_mfg_vcg_before=$line ;;
+		mfg_52m_sel) mfg_52m_sel_before=$line ;;
+		mfg_sel) mfg_sel_before=$line ;;
+	esac
+done
+
+printf 'seconds=%s\n' "$G3_OBSERVE_SECONDS"
+"$SLEEP" "$G3_OBSERVE_SECONDS"
+assert_no_drm_open
+
+runtime_status_after=$(cat "$gpu_device/power/runtime_status" 2>/dev/null || true)
+[ "$runtime_status_after" = suspended ] ||
+	reject "GPU left runtime suspend during the no-job observation"
+
+if [ -r "$PROC_ROOT/interrupts" ]; then
+	for irq_name in panfrost-job panfrost-mmu panfrost-gpu; do
+		after=$(irq_snapshot "$irq_name" 2>/dev/null || true)
+		case $irq_name in
+			panfrost-job) before=${job_irq_before:-missing} ;;
+			panfrost-mmu) before=${mmu_irq_before:-missing} ;;
+			panfrost-gpu) before=${gpu_irq_before:-missing} ;;
+		esac
+		printf '%s_after=%s\n' "$irq_name" "${after:-missing}"
+		[ "$after" = "$before" ] ||
+			reject "$irq_name changed during the no-job observation"
+	done
+fi
+
+if [ -r "$genpd_summary" ]; then
+	for domain in mfg_async mfg mfg_core0 mfg_core1 mfg_core2 mfg_core3; do
+		line=$(find_summary_line "$domain" "$genpd_summary" 2>/dev/null || true)
+		state=$(printf '%s\n' "$line" | awk '{ print $2 }')
+		case $state in
+			off*) ;;
+			*) reject "$domain left the off state during observation" ;;
+		esac
+	done
+fi
+
+for clock in mfg_bg3d infra_mfg_vcg mfg_52m_sel mfg_sel; do
+	after=$(find_summary_line "$clock" "$clk_summary" 2>/dev/null || true)
+	case $clock in
+		mfg_bg3d) before=$mfg_bg3d_before ;;
+		infra_mfg_vcg) before=$infra_mfg_vcg_before ;;
+		mfg_52m_sel) before=$mfg_52m_sel_before ;;
+		mfg_sel) before=$mfg_sel_before ;;
+	esac
+	[ "$after" = "$before" ] ||
+		reject "$clock summary changed during the no-job observation"
+done
+
+rail_after=unavailable
+if [ -n "$regulator_device" ]; then
+	rail_after=$(read_rail "$regulator_device" 2>/dev/null || true)
+fi
+printf 'vgpu_after=%s\n' "$rail_after"
+[ "$rail_after" = "$rail_before" ] ||
+	reject "VGPU state changed during the no-job observation"
+cur_freq_after=$(cat "$devfreq_device/cur_freq" 2>/dev/null || true)
+printf 'cur_freq_after=%s\n' "$cur_freq_after"
+[ "$cur_freq_after" = "$cur_freq" ] ||
+	reject "GPU frequency changed during the no-job observation"
+
+spm_status_after=$($DEVMEM 0x10006180 32 2>/dev/null || true)
+spm_status_2nd_after=$($DEVMEM 0x10006184 32 2>/dev/null || true)
+protecten_after=$($DEVMEM 0x10001220 32 2>/dev/null || true)
+protectsta_after=$($DEVMEM 0x10001228 32 2>/dev/null || true)
+swsysrst_after=$($DEVMEM 0x10007018 32 2>/dev/null || true)
+printf 'registers_after spm=%s spm_2nd=%s protecten=%s protectsta=%s reset=%s\n' \
+	"${spm_status_after:-unreadable}" "${spm_status_2nd_after:-unreadable}" \
+	"${protecten_after:-unreadable}" "${protectsta_after:-unreadable}" \
+	"${swsysrst_after:-unreadable}"
+if [ -z "$spm_status_after" ] || [ -z "$spm_status_2nd_after" ] ||
+	[ -z "$protecten_after" ] || [ -z "$protectsta_after" ] ||
+	[ -z "$swsysrst_after" ]; then
+		reject "MFG register readback became unavailable during observation"
+else
+		[ $((spm_status_after & mfg_domain_mask)) -eq 0 ] &&
+			[ $((spm_status_2nd_after & mfg_domain_mask)) -eq 0 ] ||
+			reject "MFG power status left paired off state during observation"
+		[ $((protecten_after & mfg_protection_mask)) -eq $((mfg_protection_mask)) ] &&
+			[ $((protectsta_after & mfg_protection_mask)) -eq \
+			$((mfg_protection_mask)) ] ||
+			reject "MFG bus protection changed during observation"
+		[ $((swsysrst_after & 0x4)) -eq 0 ] ||
+			reject "MFG reset asserted during observation"
+fi
+
+final_log=$($DMESG) || {
+	echo "cannot reread the kernel log" >&2
+	exit 2
+}
+if printf '%s\n' "$final_log" | grep -Eiq "$reject_pattern"; then
+	reject "kernel log contains a GPU fault after the no-job observation"
 fi
 
 if [ "$failed" -ne 0 ]; then

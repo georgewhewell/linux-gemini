@@ -11,7 +11,7 @@ cpu_root=${CPU_ROOT:-/sys/devices/system/cpu}
 dt_root=${DT_ROOT:-/sys/firmware/devicetree/base}
 cmdline_path=${CMDLINE_PATH:-/proc/cmdline}
 kernel_log=${KERNEL_LOG:-}
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 preflight_helper=${PREFLIGHT_HELPER:-$script_dir/mt6797-a72-resource-preflight.sh}
 
 fail()
@@ -50,7 +50,7 @@ cpulist_contains()
 }
 
 [ -x "$preflight_helper" ] || fail "resource preflight helper is unavailable"
-if ! preflight_output=$($preflight_helper); then
+if ! preflight_output=$(EXPECTED_CPU8_STATUS=okay "$preflight_helper"); then
 	printf '%s\n' "$preflight_output" >&2
 	fail "resource preflight did not pass"
 fi
@@ -69,6 +69,9 @@ for argument in $cmdline; do
 done
 [ "$maxcpus_count" -eq 1 ] || fail "expected exactly one maxcpus=8 fence"
 
+cpulist_contains 4 "$cpu_root/online" ||
+	fail "CPU4 prerequisite is not online"
+
 for cpu in 8 9; do
 	case "$cpu" in
 	8) unit=200 ;;
@@ -79,11 +82,15 @@ for cpu in 8 9; do
 	if ! method=$(read_trimmed "$cpu_path/enable-method"); then
 		fail "missing CPU$cpu enable-method"
 	fi
-	[ "$method" = "psci" ] || fail "CPU$cpu enable-method is $method"
+	[ "$method" = "mediatek,mt6797-psci" ] ||
+		fail "CPU$cpu enable-method is $method"
 	if ! status=$(read_trimmed "$cpu_path/status"); then
 		fail "missing CPU$cpu DT status"
 	fi
-	[ "$status" = "disabled" ] || fail "CPU$cpu DT status is $status"
+	case "$cpu:$status" in
+	8:okay|9:disabled) ;;
+	*) fail "CPU$cpu DT status is $status" ;;
+	esac
 	[ ! -e "$cpu_path/capacity-dmips-mhz" ] ||
 		fail "CPU$cpu has an unqualified static capacity"
 	[ ! -e "$cpu_path/operating-points-v2" ] ||
@@ -104,36 +111,43 @@ else
 fi
 
 gate_count=$(printf '%s\n' "$log_text" |
-	grep -Fc 'cpu-on-gate-v1:' || true)
+	grep -Fc 'cpu-on-gate-v3:' || true)
 [ "$gate_count" -eq 1 ] ||
 	fail "expected one CPU_ON gate transcript, found $gate_count"
-gate_line=$(printf '%s\n' "$log_text" | grep -F 'cpu-on-gate-v1:')
+gate_line=$(printf '%s\n' "$log_text" | grep -F 'cpu-on-gate-v3:')
 case "$gate_line" in
+*"method=mediatek,mt6797-psci"*\
 *"CPU8-mpidr=0x200 CPU9-mpidr=0x201"*\
 *"affinity8=off affinity9=off"*\
-*"admission=-EOPNOTSUPP CPU_ON=blocked"*) ;;
+*"CPU4-prerequisite=required CPU8-r0p1=required"*\
+*"CPU8-admission=ready CPU9=blocked"*) ;;
 *) fail "CPU_ON gate transcript is incomplete" ;;
 esac
 printf '%s\n' "$gate_line" | grep -Eq 'PSCI=[0-9]+\.[0-9]+' ||
 	fail "CPU_ON gate has no PSCI version"
-printf '%s\n' "$gate_line" | grep -Eq 'hp-state=[0-9]+' ||
-	fail "CPU_ON gate has no hotplug state"
+printf '%s\n' "$gate_line" |
+	grep -Eq 'prepare-state=[0-9]+ commit-state=[0-9]+' ||
+	fail "CPU_ON gate has incomplete hotplug states"
 
+bringup_pattern='CPU(8|9):.*(failed|stuck)|CPU(8|9).*failed to come online'
+bringup_pattern="$bringup_pattern|CPU(8|9) boot rejected"
 bringup_errors=$(printf '%s\n' "$log_text" |
-	grep -E 'CPU(8|9):.*(failed|stuck)|CPU(8|9).*failed to come online' || true)
+	grep -E "$bringup_pattern" || true)
 [ -z "$bringup_errors" ] || {
 	printf '%s\n' "$bringup_errors" >&2
 	fail "an A72 bring-up attempt reached an error path"
 }
 
-echo "schema=gemini-mt6797-a72-cpu-on-gate-v1"
+echo "schema=gemini-mt6797-a72-cpu-on-gate-v3"
 echo "collector_mode=read_only"
 echo "boot_cpu_limit=8"
 echo "cpu8_mpidr=0x200"
 echo "cpu9_mpidr=0x201"
 echo "psci_affinity=off"
-echo "resource_admission=EOPNOTSUPP"
+echo "cpu4_prerequisite=online"
+echo "resource_admission=ready"
 echo "cpu_on_requested=no"
-echo "cpu_on_gate=blocked"
+echo "cpu8_gate=ready"
+echo "cpu9_gate=blocked"
 echo "persistent_writes=no"
 echo "result=pass"

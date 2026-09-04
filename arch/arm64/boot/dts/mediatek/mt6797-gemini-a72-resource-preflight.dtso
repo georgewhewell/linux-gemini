@@ -2,16 +2,18 @@
 /*
  * Planet Computers Gemini PDA Cortex-A72 resource preflight.
  *
- * This is a volatile FIT-only observation candidate.  It makes only the
- * providers needed to read the dormant MP2 resource state available.  CPU8
- * and CPU9 remain disabled, no OPP is exposed, and the preflight driver has
- * no CPU_ON or hardware-mutation operation.
+ * This is the provider-only half of a volatile CPU8 admission candidate.  It
+ * makes only the resources needed to read and transactionally prepare the
+ * dormant MP2 path available.  CPU8 and CPU9 remain closed here, no OPP is
+ * exposed, and the custom CPU operation rejects CPU_ON without publishing an
+ * admission owner.  Userspace must pass the read-only helper before booting a
+ * separate CPU8 candidate.
  *
  * regulator_ignore_unused is part of the safety contract: it prevents the
- * regulator core from changing an already-enabled, otherwise-unused BUCKB
- * after its read-only identity and state capture.  The BUCKB voltage bounds
- * are removed from this overlay so provider registration cannot normalize
- * an out-of-range firmware setting; the preflight rejects it instead.
+ * regulator core from changing either otherwise-unused output after the
+ * read-only identity and state capture.  DA9214 needs both physical children
+ * present and available; a partial child description is not a valid provider
+ * graph for this two-output device.
  */
 
 /dts-v1/;
@@ -42,12 +44,10 @@
 };
 
 &da9214_bucka {
-	status = "disabled";
+	status = "okay";
 };
 
 &da9214_buckb {
-	/delete-property/ regulator-min-microvolt;
-	/delete-property/ regulator-max-microvolt;
 	status = "okay";
 };
 

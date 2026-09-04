@@ -68,6 +68,7 @@ struct mt6797_a72_preflight {
 	u32 fence_value;
 	bool guarded;
 	bool faulted;
+	bool cpu8_available;
 	bool cpu8_armed;
 	bool overlay_nb_registered;
 };
@@ -354,6 +355,11 @@ static int mt6797_a72_preflight_parse_cpus(struct device *dev,
 			goto invalid_cpu;
 		if (strcmp(enable_method, "mediatek,mt6797-psci"))
 			goto invalid_cpu;
+		if (i && of_device_is_available(cpu_node))
+			goto invalid_cpu;
+		if (!i)
+			preflight->cpu8_available =
+				of_device_is_available(cpu_node);
 
 		of_node_put(cpu_node);
 		if (!i && cpu < nr_cpu_ids &&
@@ -734,22 +740,25 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	preflight->plan = plan;
 	preflight->admission_ret = transaction_ret;
 
-	mutex_lock(&mt6797_a72_owner_lock);
-	if (mt6797_a72_owner) {
-		mutex_unlock(&mt6797_a72_owner_lock);
-		return dev_err_probe(dev, -EBUSY,
-				     "A72 admission owner already exists\n");
-	}
-	mt6797_a72_owner = preflight;
-	mutex_unlock(&mt6797_a72_owner_lock);
-
-	ret = mt6797_a72_install_cpu_on_gate(dev, preflight, affinity, &psci_version);
-	if (ret) {
+	if (preflight->cpu8_available) {
 		mutex_lock(&mt6797_a72_owner_lock);
-		if (mt6797_a72_owner == preflight)
-			mt6797_a72_owner = NULL;
+		if (mt6797_a72_owner) {
+			mutex_unlock(&mt6797_a72_owner_lock);
+			return dev_err_probe(dev, -EBUSY,
+					     "A72 admission owner already exists\n");
+		}
+		mt6797_a72_owner = preflight;
 		mutex_unlock(&mt6797_a72_owner_lock);
-		return ret;
+
+		ret = mt6797_a72_install_cpu_on_gate(dev, preflight, affinity,
+						     &psci_version);
+		if (ret) {
+			mutex_lock(&mt6797_a72_owner_lock);
+			if (mt6797_a72_owner == preflight)
+				mt6797_a72_owner = NULL;
+			mutex_unlock(&mt6797_a72_owner_lock);
+			return ret;
+		}
 	}
 
 	preflight->overlay_nb.notifier_call = mt6797_a72_overlay_notify;
@@ -767,17 +776,19 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, preflight);
 	dev_info(dev,
-		 "CPU%u/%u resource-preflight-v2: offline=1 vproc=%duV vproc-enabled=%d sram=%duV sram-selector=%u sram-contract=voltage-only mp2=%luHz pwrap-reset=%d spm-mp2=0x%08x spm-buck-iso=0x%08x plan-steps=%u transaction=ready\n",
-		 preflight->cpus[0], preflight->cpus[1], vproc_uv,
-		 vproc_enabled, sram_uv, sram_selector, mp2_rate,
+		 "CPU%u/%u resource-preflight-v2: offline=1 mode=%s vproc=%duV vproc-enabled=%d sram=%duV sram-selector=%u sram-contract=voltage-only mp2=%luHz pwrap-reset=%d spm-mp2=0x%08x spm-buck-iso=0x%08x plan-steps=%u transaction=ready\n",
+		 preflight->cpus[0], preflight->cpus[1],
+		 preflight->cpu8_available ? "cpu8-admission" : "provider-only",
+		 vproc_uv, vproc_enabled, sram_uv, sram_selector, mp2_rate,
 		 pwrap_reset_asserted, mp2_power, buck_iso, plan.count);
-	dev_info(dev,
-		 "cpu-on-gate-v3: method=mediatek,mt6797-psci CPU8-mpidr=0x%llx CPU9-mpidr=0x%llx PSCI=%u.%u affinity8=off affinity9=off prepare-state=%d commit-state=%d CPU4-prerequisite=required CPU8-r0p1=required CPU8-admission=ready CPU9=blocked\n",
-		 (unsigned long long)preflight->mpidrs[0],
-		 (unsigned long long)preflight->mpidrs[1],
-		 PSCI_VERSION_MAJOR(psci_version),
-		 PSCI_VERSION_MINOR(psci_version), preflight->cpuhp_state,
-		 preflight->online_state);
+	if (preflight->cpu8_available)
+		dev_info(dev,
+			 "cpu-on-gate-v3: method=mediatek,mt6797-psci CPU8-mpidr=0x%llx CPU9-mpidr=0x%llx PSCI=%u.%u affinity8=off affinity9=off prepare-state=%d commit-state=%d CPU4-prerequisite=required CPU8-r0p1=required CPU8-admission=ready CPU9=blocked\n",
+			 (unsigned long long)preflight->mpidrs[0],
+			 (unsigned long long)preflight->mpidrs[1],
+			 PSCI_VERSION_MAJOR(psci_version),
+			 PSCI_VERSION_MINOR(psci_version), preflight->cpuhp_state,
+			 preflight->online_state);
 
 	return 0;
 }

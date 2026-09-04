@@ -189,6 +189,77 @@ static void mt6797_ccci_boot_fences_exception_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, state, MT6797_CCCI_BOOT_FAILED);
 }
 
+static void mt6797_ccci_boot_control_sequence_test(struct kunit *test)
+{
+	struct mt6797_ccci_rx_sequence sequence = {};
+	struct mt6797_ccci_header_fields hs1 = mt6797_ccci_hs1();
+	enum mt6797_ccci_boot_state state = MT6797_CCCI_BOOT_OFFLINE;
+	int ret;
+
+	hs1.assert = true;
+	mt6797_ccci_boot_begin(&state);
+	ret = mt6797_ccci_boot_rx(&state, &sequence, &hs1);
+	KUNIT_EXPECT_EQ(test, ret, MT6797_CCCI_BOOT_EVENT_HS1);
+	KUNIT_EXPECT_TRUE(test, sequence.valid);
+	KUNIT_EXPECT_EQ(test, sequence.last, (u16)0);
+
+	mt6797_ccci_boot_begin(&state);
+	sequence = (struct mt6797_ccci_rx_sequence) {
+		.last = 0,
+		.valid = true,
+	};
+	hs1.sequence = 2;
+	ret = mt6797_ccci_boot_rx(&state, &sequence, &hs1);
+	KUNIT_EXPECT_EQ(test, ret, -EILSEQ);
+	KUNIT_EXPECT_EQ(test, state, MT6797_CCCI_BOOT_FAILED);
+}
+
+static void mt6797_ccci_boot_control_rejects_channel_test(struct kunit *test)
+{
+	struct mt6797_ccci_rx_sequence sequence = {};
+	struct mt6797_ccci_header_fields hs1 = mt6797_ccci_hs1();
+	enum mt6797_ccci_boot_state state = MT6797_CCCI_BOOT_OFFLINE;
+	int ret;
+
+	hs1.channel = MT6797_CCCI_UART2_RX;
+	mt6797_ccci_boot_begin(&state);
+	ret = mt6797_ccci_boot_rx(&state, &sequence, &hs1);
+	KUNIT_EXPECT_EQ(test, ret, -ENOMSG);
+	KUNIT_EXPECT_EQ(test, state, MT6797_CCCI_BOOT_FAILED);
+	KUNIT_EXPECT_FALSE(test, sequence.valid);
+}
+
+static int mt6797_ccci_uart2_test_gate(enum mt6797_ccci_boot_state state,
+				       bool rx_owned, bool tx_owned)
+{
+	return mt6797_ccci_uart2_gate(state, MT6797_CCCI_UART2_RX,
+					MT6797_CCCI_UART2_TX,
+					MT6797_CCCI_UART2_QUEUE,
+					MT6797_CCCI_UART2_QUEUE,
+					rx_owned, tx_owned);
+}
+
+static void mt6797_ccci_uart2_port_gate_test(struct kunit *test)
+{
+	int ret;
+
+	ret = mt6797_ccci_uart2_test_gate(MT6797_CCCI_BOOT_WAIT_HS2,
+					  true, true);
+	KUNIT_EXPECT_EQ(test, ret, -EHOSTDOWN);
+	ret = mt6797_ccci_uart2_test_gate(MT6797_CCCI_BOOT_READY,
+					  false, true);
+	KUNIT_EXPECT_EQ(test, ret, -ENODEV);
+	ret = mt6797_ccci_uart2_test_gate(MT6797_CCCI_BOOT_READY,
+					  true, false);
+	KUNIT_EXPECT_EQ(test, ret, -ENODEV);
+	ret = mt6797_ccci_uart2_test_gate(MT6797_CCCI_BOOT_READY, true, true);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	ret = mt6797_ccci_uart2_gate(MT6797_CCCI_BOOT_READY,
+				     MT6797_CCCI_CONTROL_RX,
+				     MT6797_CCCI_CONTROL_TX, 0, 0, true, true);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+}
+
 static struct kunit_case mt6797_md1_protocol_test_cases[] = {
 	KUNIT_CASE(mt6797_ccci_round_trip_test),
 	KUNIT_CASE(mt6797_ccci_rejects_invalid_sequence_test),
@@ -199,6 +270,9 @@ static struct kunit_case mt6797_md1_protocol_test_cases[] = {
 	KUNIT_CASE(mt6797_ccci_boot_rejects_out_of_order_test),
 	KUNIT_CASE(mt6797_ccci_boot_ignores_other_channels_test),
 	KUNIT_CASE(mt6797_ccci_boot_fences_exception_test),
+	KUNIT_CASE(mt6797_ccci_boot_control_sequence_test),
+	KUNIT_CASE(mt6797_ccci_boot_control_rejects_channel_test),
+	KUNIT_CASE(mt6797_ccci_uart2_port_gate_test),
 	{}
 };
 

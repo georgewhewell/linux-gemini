@@ -14,6 +14,7 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
+#include <linux/workqueue.h>
 
 #include "cldma.h"
 #include "observer.h"
@@ -66,6 +67,7 @@
 					 MT6797_MD1_CLDMA_RX_ERROR)
 #define MT6797_MD1_CLDMA_RX_L3_QUEUE0	(BIT(0) | BIT(8) | BIT(16) | BIT(24))
 #define MT6797_MD1_CLDMA_STOP_TIMEOUT_US	10000
+#define MT6797_MD1_HS1_TIMEOUT_MS	10000
 
 enum mt6797_md1_reg {
 	MT6797_MD1_AP_AO,
@@ -79,17 +81,19 @@ enum mt6797_md1_reg {
 struct mt6797_md1 {
 	struct device *dev;
 	void __iomem *regs[6];
-	struct clk_bulk_data clocks[2];
+	struct clk_bulk_data clocks[3];
 	struct reset_control_bulk_data resets[2];
 	struct regmap *spm;
 	struct regmap *infracfg;
 	enum mt6797_md1_power_state power_state;
 	enum mt6797_md1_inherited_state inherited_state;
 	enum mt6797_ccci_boot_state boot_state;
+	struct mt6797_ccci_rx_sequence control_rx_sequence;
 	struct mt6797_md1_snapshot inherited_snapshot;
 	u32 power_status;
 	u32 power_status_2nd;
 	int irqs[3];
+	struct delayed_work hs1_timeout_work;
 	/* Serializes the IRQ thread against teardown and fatal fencing. */
 	struct mutex lifecycle_lock;
 	struct mt6797_cldma_rgpd *rx_ring;
@@ -332,6 +336,20 @@ static void mt6797_md1_cldma_fence_locked(struct device *dev,
 		dev_err(dev, "CLDMA fatal fence: %s\n", reason);
 }
 
+static void mt6797_md1_hs1_timeout_work(struct work_struct *work)
+{
+	struct mt6797_md1 *md1 =
+		container_of(to_delayed_work(work), struct mt6797_md1,
+			     hs1_timeout_work);
+	const char *reason = "CCCI HS1 timed out";
+
+	mutex_lock(&md1->lifecycle_lock);
+	if (md1->rx_started && !md1->fatal &&
+	    md1->boot_state == MT6797_CCCI_BOOT_WAIT_HS1)
+		mt6797_md1_cldma_fence_locked(md1->dev, md1, reason);
+	mutex_unlock(&md1->lifecycle_lock);
+}
+
 static irqreturn_t mt6797_md1_cldma_irq_thread(int irq, void *data)
 {
 	struct mt6797_md1 *md1 = data;
@@ -344,6 +362,9 @@ static irqreturn_t mt6797_md1_cldma_irq_thread(int irq, void *data)
 	u32 l2_status_1;
 	u32 l3_status;
 	u32 l3_status_1;
+	u64 expected_data_dma;
+	u64 expected_next_dma;
+	size_t packet_len;
 	unsigned int next;
 	int event;
 
@@ -396,31 +417,45 @@ static irqreturn_t mt6797_md1_cldma_irq_thread(int irq, void *data)
 	gpd = &md1->rx_ring[md1->rx_consumer];
 	buffer = md1->rx_data +
 		 md1->rx_consumer * MT6797_CLDMA_RX_BUFFER_SIZE;
-	event = mt6797_cldma_rx_descriptor_read(gpd, buffer,
-						MT6797_CLDMA_RX_BUFFER_SIZE, &fields);
+	next = (md1->rx_consumer + 1) % MT6797_CLDMA_RX_RING_COUNT;
+	expected_next_dma = md1->rx_ring_dma + next * sizeof(*md1->rx_ring);
+	expected_data_dma = md1->rx_data_dma +
+		md1->rx_consumer * MT6797_CLDMA_RX_BUFFER_SIZE;
+	event = mt6797_cldma_rx_read(gpd, buffer, MT6797_CLDMA_RX_BUFFER_SIZE,
+				     expected_next_dma, expected_data_dma,
+				     &packet_len, &fields);
 	if (event) {
 		reason = "invalid queue-0 descriptor";
 		goto fence;
 	}
 
-	next = (md1->rx_consumer + 1) % MT6797_CLDMA_RX_RING_COUNT;
-	if (!(READ_ONCE(md1->rx_ring[next].flags) & MT6797_CLDMA_GPD_HWO)) {
-		reason = "multiple packets before HS1 fence";
+	if (READ_ONCE(md1->rx_ring[next].flags) !=
+	    (MT6797_CLDMA_GPD_IOC | MT6797_CLDMA_GPD_HWO)) {
+		reason = "next queue-0 descriptor was not exclusively device-owned";
 		goto fence;
 	}
-	event = mt6797_ccci_boot_receive(&md1->boot_state, &fields);
+	event = mt6797_ccci_boot_rx(&md1->boot_state,
+				    &md1->control_rx_sequence, &fields);
 	if (event != MT6797_CCCI_BOOT_EVENT_HS1) {
 		reason = "first control packet was not HS1";
 		goto fence;
 	}
 
-	md1->rx_consumer = next;
 	event = mt6797_md1_cldma_stop_locked(md1);
 	if (event) {
 		reason = "HS1 queue stop timed out";
 		goto fence;
 	}
-	dev_info(dev, "received CCCI HS1; fenced before runtime-data TX\n");
+	cancel_delayed_work(&md1->hs1_timeout_work);
+	event = mt6797_cldma_rx_rearm(gpd, MT6797_CLDMA_RX_BUFFER_SIZE);
+	if (event) {
+		reason = "failed to refill completed queue-0 descriptor";
+		goto fence;
+	}
+	md1->rx_consumer = next;
+	dev_info(dev,
+		 "received %zu-byte CCCI HS1; queue refilled and quiesced before runtime-data TX\n",
+		 packet_len);
 out:
 	mutex_unlock(&md1->lifecycle_lock);
 	return IRQ_HANDLED;
@@ -532,6 +567,7 @@ static int mt6797_md1_cldma_start(struct mt6797_md1 *md1)
 	       md1->regs[MT6797_MD1_AP_AO] + MT6797_MD1_CLDMA_DL_START);
 
 	mt6797_ccci_boot_begin(&md1->boot_state);
+	md1->control_rx_sequence = (struct mt6797_ccci_rx_sequence) {};
 	dma_wmb();
 	writel(MT6797_MD1_CLDMA_RX_QUEUE,
 	       md1->regs[MT6797_MD1_AP_PDN] + MT6797_MD1_CLDMA_SO_START);
@@ -573,6 +609,7 @@ static void mt6797_md1_cldma_release(struct mt6797_md1 *md1)
 		disable_irq(md1->irqs[0]);
 		md1->cldma_irq_enabled = false;
 	}
+	cancel_delayed_work_sync(&md1->hs1_timeout_work);
 
 	mutex_lock(&md1->lifecycle_lock);
 	if (md1->clocks_enabled && md1->resets_deasserted) {
@@ -620,6 +657,8 @@ static int mt6797_md1_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	md1->dev = dev;
 	mutex_init(&md1->lifecycle_lock);
+	INIT_DELAYED_WORK(&md1->hs1_timeout_work,
+			  mt6797_md1_hs1_timeout_work);
 
 	md1->spm = syscon_regmap_lookup_by_phandle(dev->of_node,
 						   "mediatek,spm");
@@ -642,6 +681,7 @@ static int mt6797_md1_probe(struct platform_device *pdev)
 
 	md1->clocks[0].id = "ccif-ap";
 	md1->clocks[1].id = "ccif-md";
+	md1->clocks[2].id = "cldma";
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(md1->clocks), md1->clocks);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to acquire clocks\n");
@@ -710,6 +750,8 @@ static int mt6797_md1_probe(struct platform_device *pdev)
 	ret = mt6797_md1_cldma_start(md1);
 	if (ret)
 		goto release_cldma;
+	schedule_delayed_work(&md1->hs1_timeout_work,
+			      msecs_to_jiffies(MT6797_MD1_HS1_TIMEOUT_MS));
 
 	platform_set_drvdata(pdev, md1);
 	dev_info(dev, "owner-created CLDMA control RX ring waiting for CCCI HS1\n");

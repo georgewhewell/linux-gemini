@@ -192,7 +192,7 @@ else
 fi
 error_pattern='(mtk.*thermal|soc-thermal|cpufreq-cpu[04]).*'
 error_pattern="${error_pattern}(fail|error|invalid|timeout|uncalibrated)"
-error_pattern="${error_pattern}|Device not calibrated"
+error_pattern="${error_pattern}|Device not calibrated|required calibration"
 thermal_errors=$(printf '%s\n' "$log_text" | grep -Ei "$error_pattern" || true)
 [ -z "$thermal_errors" ] || {
 	printf '%s\n' "$thermal_errors" >&2

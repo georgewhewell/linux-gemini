@@ -2,8 +2,9 @@
 /*
  * Planet Computers Gemini PDA A53 DVFS thermal-cooling candidate.
  *
- * Apply this overlay only after the separate A53 DVFS preflight has passed,
- * and together with mt6797-gemini-a53-dvfs-activation.dtbo in a volatile FIT.
+ * Apply this overlay only after the composed A53 DVFS thermal preflight has
+ * passed, and together with mt6797-gemini-a53-dvfs-activation.dtbo in a
+ * volatile FIT.
  * It uses the standard thermal zone and cpufreq cooling bindings; it adds no
  * private ABI and does not enable an A72, GPU, modem, or firmware interface.
  *

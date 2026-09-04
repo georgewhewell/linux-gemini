@@ -445,6 +445,9 @@
 		clocks = <&infrasys CLK_INFRA_CCIF_AP>,
 			 <&infrasys CLK_INFRA_CCIF_MD>;
 		clock-names = "ccif-ap", "ccif-md";
+		resets = <&infrasys MT6797_INFRA_CLDMA_RST>,
+			 <&infrasys MT6797_INFRA_CLDMA_AO_RST>;
+		reset-names = "cldma-pdn", "cldma-ao";
 		status = "disabled";
 	};
 

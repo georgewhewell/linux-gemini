@@ -13,7 +13,8 @@ void panfrost_gpu_fini(struct panfrost_device *pfdev);
 u32 panfrost_gpu_get_latest_flush_id(struct panfrost_device *pfdev);
 
 int panfrost_gpu_soft_reset(struct panfrost_device *pfdev);
-void panfrost_gpu_power_on(struct panfrost_device *pfdev);
+int panfrost_gpu_prepare_power_on(struct panfrost_device *pfdev);
+int panfrost_gpu_power_on(struct panfrost_device *pfdev);
 void panfrost_gpu_power_off(struct panfrost_device *pfdev);
 void panfrost_gpu_suspend_irq(struct panfrost_device *pfdev);
 
@@ -24,6 +25,6 @@ unsigned long long panfrost_timestamp_read(struct panfrost_device *pfdev);
 
 void panfrost_gpu_amlogic_quirk(struct panfrost_device *pfdev);
 int panfrost_gpu_mt6797_init(struct panfrost_device *pfdev);
-void panfrost_gpu_mt6797_quirk(struct panfrost_device *pfdev);
+int panfrost_gpu_mt6797_power_on(struct panfrost_device *pfdev);
 
 #endif

@@ -89,6 +89,11 @@ mt6797-gemini-pda-cqdma-test-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-cqdma.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-cqdma-test.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-uart-apdma.dtbo
+mt6797-gemini-pda-uart-apdma-test-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-uart-apdma.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-uart-apdma-test.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-power-observe.dtbo
 mt6797-gemini-pda-power-observe-dtbs := \
 	mt6797-gemini-pda.dtb \

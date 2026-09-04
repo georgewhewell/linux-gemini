@@ -35,7 +35,8 @@ config MTK_MT6797_WIFI
 	  interface. The driver acquires the aggregate's exclusive Wi-Fi lease,
 	  downloads the exact SHA-256-pinned divided firmware over the bounded
 	  AHB PIO and temporary shared-EMI paths, waits for firmware READY, then
-	  performs one bounded NIC capability command/event exchange.
+	  performs one bounded NIC capability command/event exchange and sends the
+	  post-capability basic configuration with all checksum offload disabled.
 
 	  IRQ283 is requested with IRQF_NO_AUTOEN and is enabled only around that
 	  post-READY exchange. Both the device-global gate and MT6797 AHB-wrapper
@@ -50,7 +51,7 @@ config MTK_MT6797_WIFI_KUNIT_TEST
 	default KUNIT_ALL_TESTS
 	help
 	  Exercise exact divided-header parsing, boot and NIC-capability transaction
-	  ordering, bounded runtime command/event and RX/TX descriptor codecs,
-	  rollback, and terminal fencing using memory-only fixtures. No firmware is
-	  requested and no MMIO, interrupt, regulator, CONSYS, or Wi-Fi hardware is
-	  accessed.
+	  ordering, bounded runtime command/event and RX/TX descriptor codecs, basic
+	  configuration lifecycle, rollback, and terminal fencing using memory-only
+	  fixtures. No firmware is requested and no MMIO, interrupt, regulator,
+	  CONSYS, or Wi-Fi hardware is accessed.

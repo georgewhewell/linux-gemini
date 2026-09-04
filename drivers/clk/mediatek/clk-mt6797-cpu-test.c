@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include <kunit/test.h>
+#include <linux/bitfield.h>
 
 #include "clk-mt6797-cpu.h"
 
@@ -210,6 +211,66 @@ static void mt6797_cpuclk_rate_plan_rejects_invalid_test(struct kunit *test)
 			-EINVAL);
 }
 
+static void mt6797_cpuclk_pll_rate_plan_test(struct kunit *test)
+{
+	unsigned long actual_rate;
+	u32 con1;
+	int ret;
+
+	ret = mt6797_cpuclk_plan_pll_rate(MT6797_CPUCLK_MP0, 1014000000,
+					  MT6797_TEST_CLK26M_RATE, BIT(29),
+					  &con1, &actual_rate);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, FIELD_GET(GENMASK(26, 24), con1), 1U);
+	KUNIT_EXPECT_TRUE(test, con1 & BIT(31));
+	KUNIT_EXPECT_TRUE(test, con1 & BIT(29));
+	KUNIT_EXPECT_LE(test, actual_rate, 1014000000UL);
+
+	ret = mt6797_cpuclk_plan_pll_rate(MT6797_CPUCLK_MP1, 1950000000,
+					  MT6797_TEST_CLK26M_RATE, 0,
+					  &con1, &actual_rate);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, FIELD_GET(GENMASK(26, 24), con1), 0U);
+	KUNIT_EXPECT_LE(test, actual_rate, 1950000000UL);
+
+	KUNIT_EXPECT_EQ(test,
+		mt6797_cpuclk_plan_pll_rate(MT6797_CPUCLK_MP0, 481000000,
+					       MT6797_TEST_CLK26M_RATE, 0,
+					       &con1, &actual_rate),
+		-EINVAL);
+	KUNIT_EXPECT_EQ(test,
+		mt6797_cpuclk_plan_pll_rate(MT6797_CPUCLK_MP2, 1950000000,
+					       MT6797_TEST_CLK26M_RATE, 0,
+					       &con1, &actual_rate),
+		-EINVAL);
+}
+
+static void mt6797_cpuclk_mux_dcm_plan_test(struct kunit *test)
+{
+	struct mt6797_cpuclk_dcm_plan dcm;
+	u32 value;
+
+	KUNIT_ASSERT_EQ(test,
+		mt6797_cpuclk_plan_mux(MT6797_CPUCLK_MP0,
+				       MT6797_CPUCLK_MAINPLL, ~0U, &value),
+		0);
+	KUNIT_EXPECT_EQ(test, FIELD_GET(GENMASK(3, 2), value),
+			(u32)MT6797_CPUCLK_MAINPLL);
+
+	KUNIT_ASSERT_EQ(test,
+		mt6797_cpuclk_plan_dcm(MT6797_CPUCLK_MP1, 1950000000,
+				       BIT(14), &dcm),
+		0);
+	KUNIT_EXPECT_EQ(test, FIELD_GET(GENMASK(21, 17), dcm.value[0]), 27U);
+	KUNIT_EXPECT_FALSE(test, dcm.value[1] & BIT(22));
+	KUNIT_EXPECT_TRUE(test, dcm.value[2] & BIT(22));
+	KUNIT_EXPECT_TRUE(test, dcm.value[2] & BIT(14));
+	KUNIT_EXPECT_EQ(test,
+		mt6797_cpuclk_plan_dcm(MT6797_CPUCLK_CCI, 988000000, 0,
+				       &dcm),
+		-EOPNOTSUPP);
+}
+
 static struct kunit_case mt6797_cpuclk_test_cases[] = {
 	KUNIT_CASE(mt6797_cpuclk_read_fence_test),
 	KUNIT_CASE(mt6797_cpuclk_snapshot_equality_test),
@@ -219,6 +280,8 @@ static struct kunit_case mt6797_cpuclk_test_cases[] = {
 	KUNIT_CASE(mt6797_cpuclk_decode_rejects_invalid_test),
 	KUNIT_CASE(mt6797_cpuclk_rate_plan_test),
 	KUNIT_CASE(mt6797_cpuclk_rate_plan_rejects_invalid_test),
+	KUNIT_CASE(mt6797_cpuclk_pll_rate_plan_test),
+	KUNIT_CASE(mt6797_cpuclk_mux_dcm_plan_test),
 	{}
 };
 

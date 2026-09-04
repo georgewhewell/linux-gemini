@@ -3,6 +3,7 @@
 #include <linux/bitfield.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
+#include <linux/math64.h>
 #include <linux/string.h>
 
 #include "clk-mt6797-cpu.h"
@@ -17,11 +18,46 @@ struct mt6797_cpuclk_domain_data {
 	u8 divider_shift;
 };
 
+struct mt6797_cpuclk_rate_data {
+	unsigned long rate;
+	u8 postdiv;
+};
+
 static const struct mt6797_cpuclk_domain_data mt6797_cpuclk_domains[] = {
 	[MT6797_CPUCLK_MP0] = { .mux_shift = 2, .divider_shift = 5 },
 	[MT6797_CPUCLK_MP1] = { .mux_shift = 4, .divider_shift = 10 },
 	[MT6797_CPUCLK_MP2] = { .mux_shift = 0, .divider_shift = 0 },
 	[MT6797_CPUCLK_CCI] = { .mux_shift = 6, .divider_shift = 15 },
+};
+
+/* Vendor CPU_LEVEL_1 rates whose path divider remains one. */
+static const struct mt6797_cpuclk_rate_data mt6797_mp0_rates[] = {
+	{ 624000000, 1 },
+	{ 715000000, 1 },
+	{ 806000000, 1 },
+	{ 897000000, 1 },
+	{ 1014000000, 1 },
+	{ 1118000000, 0 },
+	{ 1222000000, 0 },
+	{ 1274000000, 0 },
+	{ 1339000000, 0 },
+	{ 1391000000, 0 },
+};
+
+static const struct mt6797_cpuclk_rate_data mt6797_mp1_rates[] = {
+	{ 650000000, 1 },
+	{ 832000000, 1 },
+	{ 962000000, 1 },
+	{ 1092000000, 0 },
+	{ 1209000000, 0 },
+	{ 1352000000, 0 },
+	{ 1495000000, 0 },
+	{ 1625000000, 0 },
+	{ 1703000000, 0 },
+	{ 1755000000, 0 },
+	{ 1820000000, 0 },
+	{ 1885000000, 0 },
+	{ 1950000000, 0 },
 };
 
 static bool mt6797_cpuclk_domain_valid(enum mt6797_cpuclk_domain domain)
@@ -170,6 +206,111 @@ unsigned long mt6797_cpuclk_apply_divider(unsigned long parent_rate, u8 divider)
 	}
 
 	return mult_frac(parent_rate, numerator, denominator);
+}
+
+static const struct mt6797_cpuclk_rate_data *
+mt6797_cpuclk_find_rate(enum mt6797_cpuclk_domain domain, unsigned long rate)
+{
+	const struct mt6797_cpuclk_rate_data *rates;
+	unsigned int count, i;
+
+	switch (domain) {
+	case MT6797_CPUCLK_MP0:
+		rates = mt6797_mp0_rates;
+		count = ARRAY_SIZE(mt6797_mp0_rates);
+		break;
+	case MT6797_CPUCLK_MP1:
+		rates = mt6797_mp1_rates;
+		count = ARRAY_SIZE(mt6797_mp1_rates);
+		break;
+	default:
+		return NULL;
+	}
+
+	for (i = 0; i < count; i++)
+		if (rates[i].rate == rate)
+			return &rates[i];
+
+	return NULL;
+}
+
+int mt6797_cpuclk_plan_pll_rate(enum mt6797_cpuclk_domain domain,
+				unsigned long rate,
+				unsigned long parent_rate, u32 initial_con1,
+				u32 *target_con1, unsigned long *actual_rate)
+{
+	const struct mt6797_cpuclk_rate_data *rate_data;
+	u64 pcw;
+
+	if (!parent_rate || !target_con1 || !actual_rate)
+		return -EINVAL;
+
+	rate_data = mt6797_cpuclk_find_rate(domain, rate);
+	if (!rate_data)
+		return -EINVAL;
+
+	pcw = (u64)rate << (14 + rate_data->postdiv);
+	pcw = div_u64(pcw, parent_rate);
+	if (!pcw || pcw > MT6797_ARMPLL_PCW_MASK)
+		return -ERANGE;
+
+	*target_con1 = initial_con1 &
+		~(MT6797_ARMPLL_PCW_MASK | MT6797_ARMPLL_POSDIV_MASK);
+	*target_con1 |= FIELD_PREP(MT6797_ARMPLL_POSDIV_MASK,
+				  rate_data->postdiv) | (u32)pcw | BIT(31);
+	*actual_rate = (u64)parent_rate * pcw >> 14;
+	*actual_rate >>= rate_data->postdiv;
+
+	return 0;
+}
+
+int mt6797_cpuclk_plan_mux(enum mt6797_cpuclk_domain domain, u8 source,
+			   u32 initial_mux, u32 *target_mux)
+{
+	const struct mt6797_cpuclk_domain_data *data;
+	u32 mask;
+
+	if (!mt6797_cpuclk_domain_valid(domain) ||
+	    source >= MT6797_CPUCLK_NR_SOURCES || !target_mux)
+		return -EINVAL;
+
+	data = &mt6797_cpuclk_domains[domain];
+	mask = GENMASK(data->mux_shift + 1, data->mux_shift);
+	*target_mux = (initial_mux & ~mask) | (source << data->mux_shift);
+
+	return 0;
+}
+
+int mt6797_cpuclk_plan_dcm(enum mt6797_cpuclk_domain domain,
+			   unsigned long rate, u32 initial_dcm,
+			   struct mt6797_cpuclk_dcm_plan *plan)
+{
+	u32 divider, mask, toggle, shift;
+
+	if (!rate || !plan)
+		return -EINVAL;
+
+	switch (domain) {
+	case MT6797_CPUCLK_MP0:
+		shift = 9;
+		toggle = BIT(14);
+		break;
+	case MT6797_CPUCLK_MP1:
+		shift = 17;
+		toggle = BIT(22);
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	divider = rate / 70000000;
+	divider = min(divider, 31U);
+	mask = GENMASK(shift + 4, shift);
+	plan->value[0] = (initial_dcm & ~mask) | (divider << shift);
+	plan->value[1] = plan->value[0] & ~toggle;
+	plan->value[2] = plan->value[1] | toggle;
+
+	return 0;
 }
 
 int mt6797_cpuclk_build_rate_plan(enum mt6797_cpuclk_domain domain,

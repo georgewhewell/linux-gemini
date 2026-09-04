@@ -48,6 +48,10 @@ struct mt6797_cpuclk_rate_plan {
 	u8 intermediate_source;
 };
 
+struct mt6797_cpuclk_dcm_plan {
+	u32 value[3];
+};
+
 struct mt6797_cpuclk_backend_ops {
 	int (*snapshot)(void *context, struct mt6797_cpuclk_snapshot *snapshot);
 	int (*apply)(void *context, const struct mt6797_cpuclk_rate_plan *plan);
@@ -67,6 +71,15 @@ bool mt6797_cpuclk_snapshots_equal(const struct mt6797_cpuclk_snapshot *first,
 				   const struct mt6797_cpuclk_snapshot *second);
 unsigned long mt6797_cpuclk_apply_divider(unsigned long parent_rate,
 					  u8 divider);
+int mt6797_cpuclk_plan_pll_rate(enum mt6797_cpuclk_domain domain,
+				unsigned long rate,
+				unsigned long parent_rate, u32 initial_con1,
+				u32 *target_con1, unsigned long *actual_rate);
+int mt6797_cpuclk_plan_mux(enum mt6797_cpuclk_domain domain, u8 source,
+			   u32 initial_mux, u32 *target_mux);
+int mt6797_cpuclk_plan_dcm(enum mt6797_cpuclk_domain domain,
+			   unsigned long rate, u32 initial_dcm,
+			   struct mt6797_cpuclk_dcm_plan *plan);
 int mt6797_cpuclk_build_rate_plan(enum mt6797_cpuclk_domain domain,
 				  const struct mt6797_cpuclk_snapshot *snapshot,
 				  unsigned long clk26m_rate,

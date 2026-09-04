@@ -744,8 +744,9 @@
 	cpuclk: clock-controller@1001a000 {
 		compatible = "mediatek,mt6797-mcumixedsys";
 		reg = <0 0x1001a000 0 0x1000>,
-		      <0 0x11015000 0 0x1000>;
-		reg-names = "mcumixed", "cspm";
+		      <0 0x11015000 0 0x1000>,
+		      <0 0x10220000 0 0x1000>;
+		reg-names = "mcumixed", "cspm", "mcucfg";
 		clocks = <&clk26m>,
 			 <&apmixedsys CLK_APMIXED_MAINPLL>,
 			 <&apmixedsys CLK_APMIXED_UNIVPLL>,

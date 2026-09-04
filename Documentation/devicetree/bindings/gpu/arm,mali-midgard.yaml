@@ -91,6 +91,13 @@ properties:
   assigned-clock-parents: true
 
   mali-supply: true
+
+  mediatek,mfgcfg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the MediaTek MFG configuration syscon containing the GPU
+      power-management controls.
+
   opp-table:
     type: object
 
@@ -187,6 +194,7 @@ allOf:
         - clock-names
         - assigned-clocks
         - assigned-clock-parents
+        - mediatek,mfgcfg
         - power-domains
         - power-domain-names
 

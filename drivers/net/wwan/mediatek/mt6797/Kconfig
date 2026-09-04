@@ -15,6 +15,7 @@ config MTK_MT6797_MD1
 	tristate "MediaTek MT6797 MD1 ownership core"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
 	depends on COMMON_CLK && OF && RESET_CONTROLLER
+	select MFD_SYSCON
 	select MTK_MT6797_MODEM_PROTOCOL
 	help
 	  Claim the standard clock, reset, interrupt, MMIO, and reserved-memory
@@ -26,6 +27,17 @@ config MTK_MT6797_MD1
 	  This driver does not load or start modem firmware, change power state,
 	  toggle reset lines, enable clocks or interrupts, or access radio
 	  hardware.  If unsure, say N.
+
+config MTK_MT6797_MD1_KUNIT_TEST
+	bool "KUnit tests for MT6797 MD1 power observation" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	depends on MTK_MT6797_MD1=y
+	default KUNIT_ALL_TESTS
+	help
+	  Validate the fail-closed classification of the two read-only SPM
+	  power-status bits, including disagreement between the primary and
+	  secondary status registers.  These tests are hardware independent;
+	  no modem resources are acquired or accessed.
 
 config MTK_MT6797_MODEM_PROTOCOL_KUNIT_TEST
 	bool "KUnit tests for MT6797 modem protocol helpers" if !KUNIT_ALL_TESTS

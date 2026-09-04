@@ -100,7 +100,8 @@ int mt6797_sram_set_transaction(const struct mt6797_sram_io *io,
 	int ret;
 
 	if (!io || !io->read_selector || !io->set_voltage || !voltages ||
-	    count != MT6797_BIGIDVFS_SRAM_SELECTOR_COUNT || selector >= count)
+	    count != MT6797_BIGIDVFS_SRAM_SELECTOR_COUNT || !selector ||
+	    selector >= count)
 		return -EINVAL;
 
 	ret = io->read_selector(context, &before);
@@ -108,6 +109,9 @@ int mt6797_sram_set_transaction(const struct mt6797_sram_io *io,
 		return ret;
 	if (before >= count)
 		return -ERANGE;
+	/* The voltage-only firmware service cannot recreate selector zero. */
+	if (!before)
+		return -EOPNOTSUPP;
 	if (before == selector)
 		return 0;
 

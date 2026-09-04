@@ -22,6 +22,11 @@
 #define SPM_MP2_CPUSYS_PWR_CON		0x218
 #define SPM_EXT_BUCK_ISO		0x290
 
+#define MT6797_A72_VPROC_MIN_UV		800000
+#define MT6797_A72_VPROC_MAX_UV		1200000
+#define MT6797_A72_SRAM_MIN_UV		600000
+#define MT6797_A72_SRAM_MAX_UV		1200000
+
 struct mt6797_a72_preflight {
 	struct regulator *vproc_big;
 	struct regulator *sram_big;
@@ -78,6 +83,7 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	int vproc_uv;
 	int sram_enabled;
 	int sram_uv;
+	int pwrap_reset_asserted;
 	int ret;
 
 	preflight = devm_kzalloc(dev, sizeof(*preflight), GFP_KERNEL);
@@ -87,6 +93,15 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	ret = mt6797_a72_preflight_parse_cpus(dev, preflight);
 	if (ret)
 		return ret;
+
+	cpus_read_lock();
+	if (cpu_online(preflight->cpus[0]) ||
+	    cpu_online(preflight->cpus[1]))
+		ret = -EBUSY;
+	cpus_read_unlock();
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "A72 CPU is already online; refusing preflight\n");
 
 	preflight->vproc_big = devm_regulator_get(dev, "vproc-big");
 	if (IS_ERR(preflight->vproc_big))
@@ -124,16 +139,24 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, vproc_uv,
 				     "failed to read big-cluster voltage\n");
 
+	if (vproc_enabled > 1 || vproc_uv < MT6797_A72_VPROC_MIN_UV ||
+	    vproc_uv > MT6797_A72_VPROC_MAX_UV)
+		return dev_err_probe(dev, -ERANGE,
+				     "big-cluster rail observation is out of range\n");
+
 	sram_uv = regulator_get_voltage(preflight->sram_big);
 	if (sram_uv < 0)
 		return dev_err_probe(dev, sram_uv,
 				     "failed to read big-cluster SRAM voltage\n");
 
 	sram_enabled = regulator_is_enabled(preflight->sram_big);
-	if (sram_enabled < 0)
+	if (sram_enabled < 0 && sram_enabled != -EOPNOTSUPP)
 		return dev_err_probe(dev, sram_enabled,
-				     "SRAM status/disable unavailable at %duV; CPU_ON remains blocked\n",
-				     sram_uv);
+				     "failed to read big-cluster SRAM status\n");
+	if (sram_enabled > 1 || sram_uv < MT6797_A72_SRAM_MIN_UV ||
+	    sram_uv > MT6797_A72_SRAM_MAX_UV)
+		return dev_err_probe(dev, -ERANGE,
+				     "big-cluster SRAM observation is out of range\n");
 
 	mp2_rate = clk_get_rate(preflight->mp2_clk);
 	if (!mp2_rate)
@@ -150,12 +173,17 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret,
 				     "failed to read external buck isolation\n");
 
+	pwrap_reset_asserted = reset_control_status(preflight->pwrap_reset);
+	if (pwrap_reset_asserted < 0)
+		return dev_err_probe(dev, pwrap_reset_asserted,
+				     "failed to read PWRAP reset state\n");
+
 	platform_set_drvdata(pdev, preflight);
 	dev_info(dev,
-		 "CPU%u/%u preflight: vproc=%duV enabled=%d sram=%duV enabled=%d mp2=%luHz pwr=0x%08x iso=0x%08x; CPU_ON remains denied\n",
+		 "CPU%u/%u resource-preflight-v1: offline=1 vproc=%duV vproc-enabled=%d sram=%duV sram-status=%d mp2=%luHz pwrap-reset=%d spm-mp2=0x%08x spm-buck-iso=0x%08x CPU_ON=denied\n",
 		 preflight->cpus[0], preflight->cpus[1], vproc_uv,
-		 vproc_enabled, sram_uv, sram_enabled, mp2_rate, mp2_power,
-		 buck_iso);
+		 vproc_enabled, sram_uv, sram_enabled, mp2_rate,
+		 pwrap_reset_asserted, mp2_power, buck_iso);
 
 	return 0;
 }

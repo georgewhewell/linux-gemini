@@ -73,6 +73,13 @@ properties:
       - const: cldma-pdn
       - const: cldma-ao
 
+  mediatek,spm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the MT6797 SPM syscon. The ownership core only observes the
+      two read-only power-status registers; this property does not make MD1 a
+      generic power-domain consumer or authorize a power-state transition.
+
   memory-region:
     description:
       Reserved memory for the modem and for application-processor/modem
@@ -96,6 +103,7 @@ required:
   - clock-names
   - resets
   - reset-names
+  - mediatek,spm
 
 dependencies:
   memory-region: [memory-region-names]
@@ -129,6 +137,7 @@ examples:
         resets = <&infracfg MT6797_INFRA_CLDMA_RST>,
                  <&infracfg MT6797_INFRA_CLDMA_AO_RST>;
         reset-names = "cldma-pdn", "cldma-ao";
+        mediatek,spm = <&scpsys>;
         status = "disabled";
     };
 

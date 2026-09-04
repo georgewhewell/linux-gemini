@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Explicit activation gate for the canonical CONSYS Bluetooth HCI endpoint. */
+/dts-v1/;
+/plugin/;
+
+&consys_emi_mpu {
+	status = "okay";
+};
+
+&btif {
+	status = "okay";
+};
+
+&consys {
+	status = "okay";
+};
+
+&bluetooth {
+	status = "okay";
+};

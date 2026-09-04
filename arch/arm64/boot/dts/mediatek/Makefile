@@ -21,6 +21,11 @@ mt6797-gemini-pda-a53-dvfs-activation-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-a53-dvfs-activation.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-a53-dvfs-activation.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-bluetooth.dtbo
+mt6797-gemini-pda-bluetooth-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-bluetooth.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-bluetooth.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-identity.dtbo
 mt6797-gemini-pda-consys-identity-dtbs := \
 	mt6797-gemini-pda.dtb \

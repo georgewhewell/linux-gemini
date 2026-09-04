@@ -577,8 +577,32 @@ The full cellular transport source/package tips remain outside this gate and
 closed: they add firmware, transport, IRQ/NAPI, SIM/raw-IP, and optional eUICC
 surfaces and are not an alternative to the read-only observer.
 
+### GPU single-boot rendering: real workload fault, 2026-09-05
+
+User requested replacing sequential collector-only boots with useful live
+sessions. Package `repo-gpu-oneboot@11bb6f2` retains exact R5 kernel/modules/DT
+and R6 preflight, fixes candidate SSH key selection, adds a hard 600-second
+watchdog petter and delays the finish marker until workload evidence is saved.
+Candidate `57c57001542702d0c9a9802e22ed32d4dcafdba4c192a95fe4b20295e304753b`
+was written once at 01:31:56 Europe/Zurich. Initial GPU preflight passed and
+SSH worked. Mesa 26.2.1 AArch64 userspace was uploaded into RAM, without a
+persistent rootfs mount or write.
+
+The first real GLES draw blocked with `GPU_SHAREABILITY_FAULT` (0x00ff0388)
+and `AS_ACTIVE bit stuck`; timeout ended the process. There is no verified
+pixel result, second-render PASS, or post-workload autosuspend PASS. Source
+comparison suggests legacy GPU MMU cache/shareability attributes differ
+from vendor noncoherent policy; this is a hypothesis, not hardware proof.
+
+Root saved live evidence, ended the watchdog lease early, and the independent
+supervisor restored exact rescue at 01:37:58. Boot ID
+`a7badcfc-abb6-4e32-8bc1-dad5cc3ca7e7`, zero failed units, exact p22/p30/p31
+readbacks. The candidate is consumed/no-retry. Evidence and result:
+`/mnt/Home/src/nixos-gemini/handoff/gpu-oneboot-OnQnGXTf`.
+
 ### GPU/G2/G3 historical candidates
 
+- `57c57001542702d0c9a9802e22ed32d4dcafdba4c192a95fe4b20295e304753b`
 - `61c0213eea891171e5034a343ed600580b4805413dc494b3afb25b14f1d0d41e`
 - `369a20c970f68cce95dd3c3dbac34daa386ecac1d695fd78dd4aea2397673077`
 - `31d58094947153ea17c589081dfab869ba7a42d2a4a9b21ab87bc46da7315551`
@@ -615,8 +639,12 @@ independent rollback owner before the write, perform exactly one candidate
 write, and restore Stage A after every result.  Exact restored p22 and
 unchanged p30/p31 readbacks are prerequisites for considering another gate.
 
-Do not batch candidates, combine overlays, carry a candidate into a second
-test, or interpret a timeout/reset as permission to retry.  Any missing
+The user's 2026-09-05 simplification instruction supersedes the earlier
+one-read-only-rung-per-boot scheduling: a reviewed candidate may combine
+prerequisite checks and a useful workload in the same bounded live boot.
+CPU8 admission and execution can likewise share one boot; overlapping
+hardware owners and unchecked overlay combinations remain forbidden.
+Do not batch candidate writes or interpret a timeout/reset as permission to retry. Any missing
 marker, permission-owner loss, wrong hash, unexpected write, watchdog or
 rollback failure, hard hang, or need for manual recovery closes that exact
 hash.  Re-rank only from newly retained evidence; never advance

@@ -42,6 +42,7 @@ These entries are immutable identities, not a run order or schedule.
 | --- | --- | --- | --- | --- |
 | A53 registration/calibration observation R2 | `f2fc2447a7465b96b9816487d6c36074cf2ca4fb` | `5dca07f1fd7a83dcbf8b905353725fb85619da3f` -> `8a62fff69574a8555baca600baf898fa2d02bd4c` | `e123c1984d46ee7609a98ac087232dfb13ac9e8d55f6540c94c1ee2e037c0a56` | Hardware FAIL; exact Stage-A rollback/readback complete; retired/no-retry; CSPM ownership remediation required |
 | MD1 post-vector observer R1 | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `7027acfa7ad57242a0bf930559088bfc11a8f285` | `76387822474c35d55fb4804b670166e5279c239d965418481733f6998c2c1c16` | Reminted offline package and rendered BusyBox-ash recovery checks: PASS; hardware not run; independent live-readiness audit required |
+| MD1 post-vector observer R2 | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `2af050b21a6382297a765d23f4e255cc261d036d` -> `5bcf4dfa63299d7686a111447f155b27043d1265` | `296d5731271e3511624568056b7d7e6f78d910332a19b0e187adffa35dbb57c4` | R1 parser regression remediated; full offline build/fixtures PASS; hardware not run; independent audit required |
 | G3 fixed-low Panfrost no-job R1 | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` -> `a81879abb63a7ad7c40bc946b3c95bf1657edef7` -> `02b36ca602774b032e633bbfec103ea6a1c4baec` | `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b` | Hardware FAIL; exact Stage-A rollback/readback/pstore complete; retired/no-retry; efuse/OPP and MFG-domain remediation required |
 | G3 fixed-low Panfrost no-job R2 | `f3f6dbb4ec9b4f95854c2a3df5a2c842559116b4` | `16e9ee2378f53803ea9dd32eb0eaf8036edb5bdb` | `ed85f692394ebd4924ec582feb2f354d7a156eeb5cd6c6145c20be14b85a72a3` | Efuse linkage and SCPSYS VGPU ordering remediated; full offline build/fixtures PASS; hardware not run; independent audit required |
 | A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Offline contract review: PASS; source/package are not hardware-ready |
@@ -207,7 +208,20 @@ remote bodies parse under BusyBox `ash`. Interrupt cleanup distinguishes a
 retained scanner, confirmed rollback awaiting pstore, and terminal unconfirmed
 rollback. Full generic and MD1 acceptance fixtures, shell checks, Nix parsing,
 offline local build, and all bundle checksums pass. It remains hardware-not-run
-and requires independent live-readiness audit before any exact authorization.
+but independent review rejected it before execution: the branched post-run
+package omitted the already-reviewed `5b458705...` lexical hardening and would
+accept bare affirmative CCCI driver/stack/service and modem/cellular-radio
+phrasing. Candidate `76387822...` is retired/no-retry.
+
+R2 replays that exact lexical hardening, expands both safety-executable and
+complete-helper fixtures, and changes the inert package identity. Package
+`5bcf4dfa...` produced
+`/nix/store/vwrjb8ncyvxwv5lyr779y0csbyj9v5pl-gemini-md1-cldma-readonly-observer-postrun-safety-remediated-p22-bundle`
+with candidate `296d5731...` and bundle NAR
+`sha256-RyFqUSGrtSo8cWhz3yqKgmYUlxOZGRxKihsMnjgqd5A=`. The local-only offline
+build and all bundled checksum, parser, recovery, rendered-ash, and acceptance
+fixtures pass. R2 retains no scheduling or authorization and requires a fresh
+independent audit.
 
 ### G3 fixed-low Panfrost no-job old bundle blocked; R1 hardware result
 
@@ -361,6 +375,7 @@ for a current identity.
 
 ### Cellular predecessors
 
+- `76387822474c35d55fb4804b670166e5279c239d965418481733f6998c2c1c16`
 - `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213`
 - `34689b1814e2a3ce12eb248d7e6594c57e9c661d8a9e1e3b38f9942bf30d184c`
 - `edb4876686c6c18d534b3966948490280299d02fbd141f08e4f8fa4457f0f6cf`

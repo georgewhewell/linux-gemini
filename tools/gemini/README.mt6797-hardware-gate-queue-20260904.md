@@ -6,44 +6,42 @@ Status: offline scheduling decision only.  This note does not authorize or
 schedule a flash, boot, reset, USB operation, remote-host operation, or
 hardware attempt.
 
-## Decision: no gate is eligible now
+## Decision: owner resolved the common power blocker; A53 remains first
 
-Every reviewed package sets `power_preflight_policy=none`.  Accepted Stage A
-proves the p22 recovery bytes, CPUs 0--7, the serviceability path, and the
-watchdog, but it does not expose a qualified battery or charger reading.  The
-current root-owned, read-only Stage-A sysfs check found no device under
-`/sys/class/power_supply`; it obtained only the accepted command line and
-produced no authoritative capacity, voltage, charge-state, or external-power
-datum.  It is therefore not qualifying power evidence.
+The owner has now explicitly stated **"power is fine, there is no power
+blocker"**.  That current owner attestation resolves the common power blocker
+for scheduling purposes and supersedes this note's earlier "no gate is
+eligible" conclusion.  The retained absence of accepted-Stage-A power-supply
+telemetry remains true, but it is no longer the authority for holding every
+lane closed.  The exact scope and package-policy audit are in
+`tools/gemini/README.mt6797-power-owner-attestation-20260904.md`.
 
-The full cellular candidate records the earlier broken-connector state, but
-the owner later reported reconnecting it and historical battery telemetry
-corroborated that reconnection.  Its current state is unknown, not proved
-unrepaired.  The read-only BQ observer explicitly forbids treating its
-identity/status fields as battery-capacity or external-power proof.  The
-reconciled power decision is in
-`tools/gemini/README.mt6797-power-sufficiency-20260904.md`.  Relevant retained
-evidence is:
+This is not a hardware measurement and does not infer capacity, voltage,
+charge state, connector condition, or external-power state from BQ identity,
+USB enumeration, or SSH.  It also does not choose or authorize any p22 write.
+Each candidate below still requires a separate exact-candidate review and
+explicit owner authorization.  Relevant retained historical evidence is:
 
 - `/mnt/Home/src/nixos-gemini/handoff/restore-stagea-20260904/device-feature-baseline.txt`
 - `/mnt/Home/src/nixos-gemini/handoff/restore-stagea-20260904/device-baseline-and-pstore.txt`
 - `/mnt/Home/src/nixos-gemini/repo-g3-p22/research/mt6797-bq25896-routing-evidence/README.md`
 - `/mnt/Home/src/nixos-gemini/repo-cellular-reconstruction/campaign/06-cellular-modem.md`
 
-Keep every gate closed until the battery connector/power condition is freshly
-qualified (and physically repaired if that check fails) and a separate,
-independently trustworthy check establishes sufficient battery and stable
-external power for the entire candidate, timeout/reset, and Stage-A
-rollback/readback interval.  Reconfirm exact accepted Stage-A p22 SHA-256
+Reconfirm exact accepted Stage-A p22 SHA-256
 `1b5f808e494f8c91ec5feedcbce89bf018271b30b87ce3910082cd298d8817dc`
-immediately before any later transaction.  Absence or ambiguity is a stop, not
-permission to infer power from USB enumeration.
+immediately before any later transaction.  Contrary new power evidence or a
+later owner report that the condition changed closes the queue again; it is
+not permission to infer power from USB enumeration.
 
-## Conditional queue after the common power prerequisite
+## Current technical queue after the owner attestation
 
-This ranking compares only already-built, unscheduled, isolated packages.  It
-is not a schedule.  Each entry still needs a separate review and explicit
-authorization at that later time.
+This is a risk/sequence ranking of isolated gates, not a schedule.  "Technical
+queue" means the shared power objection has been resolved; it does not mean a
+write is authorized.  The currently executable order is A53, then the A72
+provider, then G3.  The remediated cellular observer has the lower-risk slot
+before G3, but it cannot enter that slot until the small policy-only repackage
+described below makes its immutable harness executable.  Every entry still
+needs a separate review and explicit authorization.
 
 ### 1. A53 registration/calibration observation
 
@@ -98,45 +96,67 @@ observe-always-rollback.  Evidence:
 - `/nix/store/74svv37859pfvsy033rhv2srkvhy7z0b-gemini-a72-provider-resource-preflight-p22-bundle/p22-one-shot.manifest`
 - `/nix/store/rs5vnqrs12qm5gab164j3flf0a47mhlk-gemini-a72-cpu8-gate-preflight-p22-bundle/p22-one-shot.manifest`
 
-### 3. MD1 post-vector CCIF/CLDMA read-only observation
+### Pending insertion at 3: MD1 post-vector CCIF/CLDMA read-only observation
 
 Candidate SHA-256
+`edb4876686c6c18d534b3966948490280299d02fbd141f08e4f8fa4457f0f6cf`
+is third by risk and dependency.  Source
+`8faeb854c00524a2a39450f9c72aaa3601e1c2a5`, a direct child of observer
+source `5a7cc6e2e962e25dcde3a8fba42332cd11b78523`, adds the mandatory in-kernel
+proof that the 31-second reset-mode watchdog is already running before the
+first EMI/lifecycle write.  Package
+`44f6496588ecab4425b31ad09e995689502e1145` adds strict ordered transcript
+parsing, unique timestamps, at least five seconds and exactly 5,000 polls,
+kernel-fault rejection, supervisor permission before the candidate scanner,
+and unconditional exact rollback/readback.
+
+The post-vector CCIF/AP-side CLDMA observer is register-read-only, but the
+inherited lifecycle still writes EMI-MPU, CCIF SRAM/ACK, PMIC, power, clock,
+reset, modem-watchdog, and the sole boot vector.  Linux installs no CCCI,
+modem IRQ/DMA/GPD/HWO, firmware-loading, SIM, RF, or eUICC control path; it
+does inspect LK metadata and executes firmware already loaded by LK.
+
+Acceptance is one complete strict 5,000-poll transcript, a 30-second window,
+90-second watchdog lease, observe-always-rollback, and exact restored Stage-A
+p22 plus unchanged p30/p31 readback.  The immutable bundle is still
+mechanically non-executable because it records
+`hardware_eligibility=blocked-power-proof-required`.  The owner attestation
+resolves the underlying reason but cannot rewrite those bytes.  A separately
+reviewed policy-only repackage using
+`power_preflight_policy=owner-attested-20260904` and
+`hardware_eligibility=eligible` is required before this entry can be selected.
+Evidence:
+
+- `/mnt/Home/src/nixos-gemini/repo-md1-cldma-remediation/research/MT6797_MD1_CLDMA_READONLY_PACKAGE_20260904.md`
+- `/nix/store/mz2l76bb1wclq1vs5g1sn2lpmw0x36i8-gemini-md1-cldma-readonly-observer-remediated-p22-bundle/PROVENANCE`
+- `/nix/store/mz2l76bb1wclq1vs5g1sn2lpmw0x36i8-gemini-md1-cldma-readonly-observer-remediated-p22-bundle/ACCEPTANCE`
+- `/nix/store/mz2l76bb1wclq1vs5g1sn2lpmw0x36i8-gemini-md1-cldma-readonly-observer-remediated-p22-bundle/recovery/p22-one-shot.manifest`
+
+The earlier candidate
 `34689b1814e2a3ce12eb248d7e6594c57e9c661d8a9e1e3b38f9942bf30d184c`
-is conditionally third.  Source
-`5a7cc6e2e962e25dcde3a8fba42332cd11b78523` adds CCIF and AP-side CLDMA
-status reads after hardware-proven lifecycle
-`18d8b4adb111540ef4a880f4880ee258bcf59ea0`.  The incremental observer is
-read-only, but the inherited lifecycle still performs the already-reviewed
-MD1 power/reset and sole boot-vector GO sequence; that makes it a larger power
-exposure than the CPU registration/provider observations above.
-
-Acceptance is one complete 5,000-poll transcript, a 30-second window,
-90-second watchdog lease, and unconditional Stage-A rollback/readback.  CCCI,
-IRQ ownership, DMA preparation, shared memory, firmware load, SIM, RF and
-eUICC remain absent and closed.  Evidence:
-
-- `/mnt/Home/src/nixos-gemini/repo-md1-cldma-readonly/research/MT6797_MD1_CLDMA_READONLY_PACKAGE_20260904.md`
-- `/mnt/Home/src/nixos-gemini/repo-md1-cldma-readonly/result/PROVENANCE`
-- `/mnt/Home/src/nixos-gemini/repo-md1-cldma-readonly/result/ACCEPTANCE`
-- `/mnt/Home/src/nixos-gemini/repo-md1-cldma-readonly/result/recovery/p22-one-shot.manifest`
+and package `45344769d98639709bc0de11388aa9a84382bffe` are superseded by the
+watchdog/parser/supervisor remediation and must not be scheduled or reused.
 
 The later full cellular source/package tips
 `9b501ccd5347019e056f7b3153ba95957bbcd6c0` /
 `d2c9a6adafbf2eebe54671b588b475d21714da40` are not an alternative gate.
-Firmware identities are unset, hardware is untested, current power sufficiency
-is unqualified, and the candidate adds transport, IRQ/NAPI, firmware,
-SIM/raw-IP and optional eUICC surfaces.  Keep it closed.
+Firmware identities are unset, hardware is untested, and the candidate adds
+transport, IRQ/NAPI, firmware, SIM/raw-IP and optional eUICC surfaces.  The
+owner power attestation changes none of those blockers.  Keep it closed.
 
-### 4. G3 fixed-low Panfrost no-job gate
+### 3 now, 4 after cellular remediation: G3 fixed-low Panfrost no-job gate
 
 Candidate SHA-256
-`af5f45a155317ab829e73d96711403c61d4a23a5cd2e34e597e357132b203bde`
-is conditionally fourth.  Source
+`d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985`
+is currently third and moves to fourth only after the cellular policy-only
+repackage is reviewed.  Source
 `ec191faadb50d01a709fcb7786c4ea530839b7d8` is the direct child of passed G2
 `2bfbf91f1cfc74003c23564c4e5741bb487225eb`.  It performs one post-watchdog
 `Panfrost=m` bind at the single 238 MHz, 846700/850000 uV OPP and submits no
-job.  It rejects the shader/tiler/L2 transition timeouts seen in earlier
-Panfrost binds.
+job.  Package `30933885e9530dc181dbc9e6a8f6f653559355f3` hardens exact
+module provenance, helper execution, supervisor permission, transaction
+ownership, timeout handling, and post-rollback pstore capture.  It rejects the
+shader/tiler/L2 transition timeouts seen in earlier Panfrost binds.
 
 This remains last because active MFG-domain/Panfrost entry has the strongest
 specific hard-hang history.  Its kernel nowayout watchdog is armed before the
@@ -147,9 +167,15 @@ explicitly makes no recovery claim before successful watchdog probe/arm.  The
 needed to expose preloader for rollback.  Evidence:
 
 - `/mnt/Home/src/nixos-gemini/linux-gemini-g3-audit-decision/tools/gemini/README.mt6797-gpu-g3-audit.md`
-- `/nix/store/9znd9qx40zjx23fhd2bm1jg6b6awmf1w-gemini-g3-low-opp-nojob-p22-bundle/MANIFEST`
-- `/nix/store/9znd9qx40zjx23fhd2bm1jg6b6awmf1w-gemini-g3-low-opp-nojob-p22-bundle/p22-one-shot.manifest`
-- `/nix/store/9znd9qx40zjx23fhd2bm1jg6b6awmf1w-gemini-g3-low-opp-nojob-p22-bundle/REVIEW-NOTICE`
+- `/nix/store/nb30c4aa8n38ws1h7qm7098kdihj6q6h-gemini-g3-low-opp-nojob-p22-bundle/MANIFEST`
+- `/nix/store/nb30c4aa8n38ws1h7qm7098kdihj6q6h-gemini-g3-low-opp-nojob-p22-bundle/p22-one-shot.manifest`
+- `/nix/store/nb30c4aa8n38ws1h7qm7098kdihj6q6h-gemini-g3-low-opp-nojob-p22-bundle/REVIEW-NOTICE`
+
+Its `power_preflight_policy=none` is not an execution block, but a future
+reviewed package should replace it with the exact owner-attestation token for
+truthful provenance.  The superseded package candidate
+`af5f45a155317ab829e73d96711403c61d4a23a5cd2e34e597e357132b203bde`
+is retired and must not be substituted for `d1d188...`.
 
 No GPU job, other OPP, DVFS, thermal, suspend, or render-node experiment is
 eligible before this exact no-job rung passes and Stage A is restored.

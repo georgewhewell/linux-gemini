@@ -395,6 +395,40 @@ driver-side transition telemetry and vendor evidence, retaining the
 no-job boundary until probe/autosuspend works. Integration already has
 ready/transition/present timeout telemetry which R4 did not include.
 
+### G3 R5: whole-MFG shutdown evidenced; collector still rejected
+
+Source `8805de28f813493494c946c7a90ae4ece33e8158`, package
+`5c22a09e35108952715be89c615d7255d9db82ae`, candidate
+`369a20c970f68cce95dd3c3dbac34daa386ecac1d695fd78dd4aea2397673077`.
+Written once at 2026-09-05T00:54:37+02:00; consumed/no-retry.
+
+Panfrost bound and autosuspended without the prior shader/tiler/L2 transition
+timeouts or MFG idle errors. All six MFG domains were off, the two SPM status
+words had mask 0x3f00 clear, and TOPAXI enable/status had mask 0xa00000 set.
+The sole 238MHz OPP, 237999817Hz measured clock, 850000uV rail, and zero IRQ
+counts were stable across two seconds. No jobs or resume test were run.
+This is hardware evidence for initial whole-MFG idle shutdown, not full GPU
+completion or a passed overall gate.
+
+Collector FAIL had two causes: the new IRQ test assumed the parent GICv3
+domain instead of the actual MT_SYSIRQ SPI namespace, and the final full-log
+scan matched USB's unrelated dummy-regulator warning. Source
+`3cc9db596251fdb53c4034243178faf78df1357a` now expects MT_SYSIRQ SPIs
+264/263/262, prints chip/hwirq evidence, and applies the same GPU/rail/domain
+scope to both log scans. Seven collector and nine shutdown tests pass.
+These corrections are not yet hardware-verified and do not change R5's FAIL.
+
+The durable supervisor restored exact rescue at 00:56:31 and verified at
+00:56:32 without manual reset. Final state at 00:57:55 was
+`observation_failed_recovered_stage_a_pstore_captured`, exact p22/p30/p31
+readbacks, boot ID `91887fe8-6117-4e9f-8e05-980defc91849`, zero failed units,
+USB/RJ45 reachable. Remaining run holder/watcher stopped; no active writer.
+
+Handoff `/mnt/Home/src/nixos-gemini/handoff/g3-idle-r5-3T34F0ip/RESULT.md`.
+Evidence `/mnt/Home/src/nixos-gemini/repo-g3-remediation/artifacts/p22-recovery-20260905-005425-2451286`.
+Pstore SHA-256 `d726a86eabadc7eb24c624c15b254334cf16f12ae26f91385190a239d69f3193`.
+Console SHA-256 `05509d52c5b41f63febc2f302d31bc683b66ccda52e2421a65cae5061fa46197`.
+
 ## A72 provider and CPU8-admission observations blocked
 
 The remediated, independently reviewed provider bundle is:
@@ -513,6 +547,7 @@ surfaces and are not an alternative to the read-only observer.
 
 ### GPU/G2/G3 historical candidates
 
+- `369a20c970f68cce95dd3c3dbac34daa386ecac1d695fd78dd4aea2397673077`
 - `31d58094947153ea17c589081dfab869ba7a42d2a4a9b21ab87bc46da7315551`
 - `669a5f22982763f8a917cbcfcf3100e2a41659f73eacc8110343fc4884c8b6bb`
 - `ed85f692394ebd4924ec582feb2f354d7a156eeb5cd6c6145c20be14b85a72a3`

@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+/*
+ * Opt in to the clock-bounded observer instead of the production MD1 owner.
+ * No modem power, reset, interrupt, DMA, firmware, SIM or RF resource is
+ * activated by this overlay.
+ */
+&md1 {
+	compatible = "mediatek,mt6797-md1-clocked-observer";
+	status = "okay";
+};

@@ -16,25 +16,25 @@
 #define MT6797_A72_BIG_BUCK_ISO		BIT(1)
 
 #define MT6797_A72_SRAM_BOOT_UV		1100000
+#define MT6797_A72_VPROC_MIN_UV		800000
+#define MT6797_A72_VPROC_MAX_UV		1200000
+#define MT6797_A72_SRAM_MIN_UV		600000
+#define MT6797_A72_SRAM_MAX_UV		1200000
 
-#define MT6797_A72_CAP_SRAM_STATUS	BIT(0)
-#define MT6797_A72_CAP_SRAM_DISABLE	BIT(1)
-#define MT6797_A72_CAP_OCP_GUARD		BIT(2)
-#define MT6797_A72_CAP_IDVFS_FENCE	BIT(3)
-#define MT6797_A72_REQUIRED_CAPS		(MT6797_A72_CAP_SRAM_STATUS | \
-					 MT6797_A72_CAP_SRAM_DISABLE | \
-					 MT6797_A72_CAP_OCP_GUARD | \
+#define MT6797_A72_CAP_EXCLUSIVE_GUARD	BIT(0)
+#define MT6797_A72_CAP_IDVFS_FENCE	BIT(1)
+#define MT6797_A72_REQUIRED_CAPS		(MT6797_A72_CAP_EXCLUSIVE_GUARD | \
 					 MT6797_A72_CAP_IDVFS_FENCE)
 
 enum mt6797_a72_action {
-	MT6797_A72_OCP_GUARD_ENTER,
+	MT6797_A72_TRANSACTION_GUARD_ENTER,
 	MT6797_A72_SPM_UPDATE,
 	MT6797_A72_IDVFS_READ_FENCE,
 	MT6797_A72_PWRAP_RESET_ASSERT,
 	MT6797_A72_VPROC_ENABLE,
 	MT6797_A72_DELAY_US,
 	MT6797_A72_PWRAP_RESET_DEASSERT,
-	MT6797_A72_OCP_GUARD_EXIT,
+	MT6797_A72_TRANSACTION_GUARD_EXIT,
 	MT6797_A72_VSRAM_SET_UV,
 	MT6797_A72_NR_ACTIONS,
 };
@@ -57,11 +57,11 @@ struct mt6797_a72_state {
 	u32 mp2_pwr_con;
 	u32 ext_buck_iso;
 	int vproc_enabled;
-	int vsram_enabled;
 	int pwrap_reset_asserted;
 	int vproc_uv;
 	int vsram_uv;
-	bool ocp_guarded;
+	u32 vsram_selector;
+	bool transaction_guarded;
 	bool a72_online;
 };
 
@@ -87,16 +87,13 @@ struct mt6797_a72_transaction {
 int mt6797_a72_build_plan(struct mt6797_a72_plan *plan);
 int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
 				  unsigned long capabilities);
-/*
- * A successful begin leaves a reversible preparation transaction active.
- * This slice deliberately exposes only abort: CPU_ON/commit needs a separate
- * firmware-handoff implementation and review.
- */
+/* A successful begin remains reversible until CPU_ON is verified and committed. */
 int mt6797_a72_transaction_begin(struct mt6797_a72_transaction *transaction,
 				  const struct mt6797_a72_plan *plan,
 				  const struct mt6797_a72_backend_ops *ops,
 				  void *context,
 				  unsigned long capabilities);
 int mt6797_a72_transaction_abort(struct mt6797_a72_transaction *transaction);
+int mt6797_a72_transaction_commit(struct mt6797_a72_transaction *transaction);
 
 #endif /* __SOC_MEDIATEK_MT6797_A72_POWER_H */

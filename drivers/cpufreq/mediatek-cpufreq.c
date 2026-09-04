@@ -24,6 +24,7 @@ struct mtk_cpufreq_platform_data {
 	int sram_max_volt;
 	bool ccifreq_supported;
 	bool shared_regulators;
+	bool verify_transitions;
 	const char *cpu_compatible;
 };
 
@@ -74,6 +75,7 @@ static LIST_HEAD(dvfs_info_list);
 
 /* Serialize complete transitions when policies share Vproc and Vsram. */
 static DEFINE_MUTEX(mtk_cpufreq_shared_reg_lock);
+static bool mtk_cpufreq_shared_faulted;
 
 static struct mtk_cpu_dvfs_info *mtk_cpu_dvfs_info_lookup(int cpu)
 {
@@ -209,6 +211,88 @@ static bool is_ccifreq_ready(struct mtk_cpu_dvfs_info *info)
 	return true;
 }
 
+static bool mtk_cpufreq_rate_matches(unsigned long rate,
+				     unsigned long expected)
+{
+	unsigned long tolerance = max(expected / 1000, 1UL);
+
+	return rate >= expected - min(expected, tolerance) &&
+	       rate <= expected + tolerance;
+}
+
+static int
+mtk_cpufreq_verify_transition(struct mtk_cpu_dvfs_info *info,
+			      struct clk *cpu_clk, struct clk *armpll,
+			      unsigned long expected_rate, int required_vproc)
+{
+	int required_vsram;
+	int vproc, vsram;
+
+	if (clk_get_parent(cpu_clk) != armpll ||
+	    !mtk_cpufreq_rate_matches(clk_get_rate(cpu_clk), expected_rate))
+		return -EIO;
+
+	vproc = regulator_get_voltage(info->proc_reg);
+	if (vproc < 0)
+		return vproc;
+	if (vproc < required_vproc || vproc > info->soc_data->proc_max_volt)
+		return -ERANGE;
+
+	if (!info->sram_reg)
+		return 0;
+
+	vsram = regulator_get_voltage(info->sram_reg);
+	if (vsram < 0)
+		return vsram;
+	required_vsram = clamp(vproc + info->soc_data->min_volt_shift,
+			       info->soc_data->sram_min_volt,
+			       info->soc_data->sram_max_volt);
+	if (vsram < required_vsram || vsram > info->soc_data->sram_max_volt)
+		return -ERANGE;
+
+	return 0;
+}
+
+static int
+mtk_cpufreq_restore_transition(struct mtk_cpu_dvfs_info *info,
+			       struct clk *cpu_clk, struct clk *armpll,
+			       unsigned long rate, int vproc,
+			       int transition_vproc)
+{
+	int safe_vproc = max3(vproc, transition_vproc,
+			      info->intermediate_voltage);
+	int ret;
+
+	/* Establish a safe rail before changing a clock whose state is suspect. */
+	ret = mtk_cpufreq_set_voltage(info, safe_vproc);
+	if (ret)
+		goto fault;
+
+	ret = clk_set_parent(cpu_clk, info->inter_clk);
+	if (ret)
+		goto fault;
+	ret = clk_set_rate(armpll, rate);
+	if (ret)
+		goto fault;
+	ret = clk_set_parent(cpu_clk, armpll);
+	if (ret)
+		goto fault;
+	ret = mtk_cpufreq_set_voltage(info, vproc);
+	if (ret)
+		goto fault;
+	ret = mtk_cpufreq_verify_transition(info, cpu_clk, armpll, rate,
+					    vproc);
+	if (!ret)
+		return 0;
+
+fault:
+	mtk_cpufreq_shared_faulted = true;
+	dev_crit(info->cpu_dev,
+		 "cpu%d: DVFS rollback is unverifiable; fencing shared rail\n",
+		 info->opp_cpu);
+	return -EUCLEAN;
+}
+
 static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 				  unsigned int index)
 {
@@ -228,6 +312,11 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 	if (info->soc_data->shared_regulators)
 		mutex_lock(&mtk_cpufreq_shared_reg_lock);
 	mutex_lock(&info->reg_lock);
+	if (info->soc_data->verify_transitions &&
+	    mtk_cpufreq_shared_faulted) {
+		ret = -EUCLEAN;
+		goto out;
+	}
 
 	if (unlikely(info->pre_vproc <= 0))
 		pre_vproc = regulator_get_voltage(info->proc_reg);
@@ -238,6 +327,20 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 		dev_err(cpu_dev, "invalid Vproc value: %d\n", pre_vproc);
 		ret = pre_vproc;
 		goto out;
+	}
+	if (info->soc_data->verify_transitions) {
+		if (!armpll || armpll == info->inter_clk) {
+			mtk_cpufreq_shared_faulted = true;
+			ret = -EUCLEAN;
+			goto out;
+		}
+		ret = mtk_cpufreq_verify_transition(info, cpu_clk, armpll,
+						    pre_freq_hz, pre_vproc);
+		if (ret) {
+			mtk_cpufreq_shared_faulted = true;
+			ret = -EUCLEAN;
+			goto out;
+		}
 	}
 
 	freq_hz = freq_table[index].frequency * 1000;
@@ -270,6 +373,8 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 		if (ret) {
 			dev_err(cpu_dev,
 				"cpu%d: failed to scale up voltage!\n", policy->cpu);
+			if (info->soc_data->verify_transitions)
+				goto rollback;
 			mtk_cpufreq_set_voltage(info, pre_vproc);
 			goto out;
 		}
@@ -280,6 +385,8 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 	if (ret) {
 		dev_err(cpu_dev,
 			"cpu%d: failed to re-parent cpu clock!\n", policy->cpu);
+		if (info->soc_data->verify_transitions)
+			goto rollback;
 		mtk_cpufreq_set_voltage(info, pre_vproc);
 		goto out;
 	}
@@ -289,6 +396,8 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 	if (ret) {
 		dev_err(cpu_dev,
 			"cpu%d: failed to scale cpu clock rate!\n", policy->cpu);
+		if (info->soc_data->verify_transitions)
+			goto rollback;
 		clk_set_parent(cpu_clk, armpll);
 		mtk_cpufreq_set_voltage(info, pre_vproc);
 		goto out;
@@ -299,6 +408,8 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 	if (ret) {
 		dev_err(cpu_dev,
 			"cpu%d: failed to re-parent cpu clock!\n", policy->cpu);
+		if (info->soc_data->verify_transitions)
+			goto rollback;
 		mtk_cpufreq_set_voltage(info, inter_vproc);
 		goto out;
 	}
@@ -312,14 +423,29 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 		if (ret) {
 			dev_err(cpu_dev,
 				"cpu%d: failed to scale down voltage!\n", policy->cpu);
+			if (info->soc_data->verify_transitions)
+				goto rollback;
 			clk_set_parent(cpu_clk, info->inter_clk);
 			clk_set_rate(armpll, pre_freq_hz);
 			clk_set_parent(cpu_clk, armpll);
 			goto out;
 		}
 	}
+	if (info->soc_data->verify_transitions) {
+		ret = mtk_cpufreq_verify_transition(info, cpu_clk, armpll,
+						    freq_hz, vproc);
+		if (ret)
+			goto rollback;
+	}
 
 	info->current_freq = freq_hz;
+	goto out;
+
+rollback:
+	if (mtk_cpufreq_restore_transition(info, cpu_clk, armpll,
+					   pre_freq_hz, pre_vproc,
+					   target_vproc))
+		ret = -EUCLEAN;
 
 out:
 	mutex_unlock(&info->reg_lock);
@@ -1059,6 +1185,7 @@ static const struct mtk_cpufreq_platform_data mt6797_platform_data = {
 	.sram_max_volt = 1200000,
 	.ccifreq_supported = false,
 	.shared_regulators = true,
+	.verify_transitions = true,
 	.cpu_compatible = "arm,cortex-a53",
 };
 

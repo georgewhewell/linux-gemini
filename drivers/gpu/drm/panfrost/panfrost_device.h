@@ -111,6 +111,8 @@ struct panfrost_compatible {
 	/* Vendor implementation callbacks */
 	int (*vendor_init)(struct panfrost_device *pfdev);
 	void (*vendor_quirk)(struct panfrost_device *pfdev);
+	/* Assert reset for one microsecond before the initial deassert. */
+	bool pulse_reset_on_init;
 
 	/* Allowed PM features */
 	u8 pm_features;

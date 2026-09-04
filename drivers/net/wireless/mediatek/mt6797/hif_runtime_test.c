@@ -242,19 +242,19 @@ static void mt6797_wifi_hif_restore_failure_test(struct kunit *test)
 				      ARRAY_SIZE(expected));
 }
 
-static void mt6797_wifi_hif_unexpected_irq_test(struct kunit *test)
+static void mt6797_wifi_hif_terminal_transition_test(struct kunit *test)
 {
 	int mode = MT6797_WIFI_HIF_IRQ_RUNTIME;
 
-	KUNIT_EXPECT_TRUE(test, mt6797_wifi_hif_runtime_irq_terminal(&mode));
+	KUNIT_EXPECT_TRUE(test, mt6797_wifi_hif_runtime_mark_terminal(&mode));
 	KUNIT_EXPECT_EQ(test, mode, (int)MT6797_WIFI_HIF_IRQ_TERMINAL);
-	KUNIT_EXPECT_FALSE(test, mt6797_wifi_hif_runtime_irq_terminal(&mode));
+	KUNIT_EXPECT_FALSE(test, mt6797_wifi_hif_runtime_mark_terminal(&mode));
 	mode = MT6797_WIFI_HIF_IRQ_CAPABILITY;
-	KUNIT_EXPECT_FALSE(test, mt6797_wifi_hif_runtime_irq_terminal(&mode));
+	KUNIT_EXPECT_FALSE(test, mt6797_wifi_hif_runtime_mark_terminal(&mode));
 	KUNIT_EXPECT_EQ(test, mode, (int)MT6797_WIFI_HIF_IRQ_CAPABILITY);
 }
 
-static void mt6797_wifi_hif_remove_after_irq_test(struct kunit *test)
+static void mt6797_wifi_hif_remove_after_fault_test(struct kunit *test)
 {
 	static const enum mt6797_wifi_hif_test_event expected[] = {
 		TEST_TERMINAL, TEST_MASK, TEST_DEVICE_DISABLE,
@@ -275,7 +275,7 @@ static void mt6797_wifi_hif_remove_after_irq_test(struct kunit *test)
 		mt6797_wifi_hif_runtime_transaction_start(&ops, &transaction), 0);
 	context.event_count = 0;
 	KUNIT_ASSERT_TRUE(test,
-			  mt6797_wifi_hif_runtime_irq_terminal(&context.mode));
+			  mt6797_wifi_hif_runtime_mark_terminal(&context.mode));
 	ret = mt6797_wifi_hif_runtime_transaction_stop(
 		&ops, &transaction,
 		context.mode == MT6797_WIFI_HIF_IRQ_TERMINAL);
@@ -290,8 +290,8 @@ static struct kunit_case mt6797_wifi_hif_runtime_cases[] = {
 	KUNIT_CASE(mt6797_wifi_hif_program_failure_test),
 	KUNIT_CASE(mt6797_wifi_hif_device_enable_failure_test),
 	KUNIT_CASE(mt6797_wifi_hif_restore_failure_test),
-	KUNIT_CASE(mt6797_wifi_hif_unexpected_irq_test),
-	KUNIT_CASE(mt6797_wifi_hif_remove_after_irq_test),
+	KUNIT_CASE(mt6797_wifi_hif_terminal_transition_test),
+	KUNIT_CASE(mt6797_wifi_hif_remove_after_fault_test),
 	{}
 };
 

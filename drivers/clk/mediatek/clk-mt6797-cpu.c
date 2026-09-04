@@ -828,16 +828,28 @@ static int mt6797_cpuclk_backend_init(struct platform_device *pdev,
 				      struct mt6797_cpuclk *provider)
 {
 	struct mt6797_cpuclk_observer *observer = &provider->observer;
+	struct resource *cspm;
 	int ret;
 
 	observer->mcumixed =
 		devm_platform_ioremap_resource_byname(pdev, "mcumixed");
 	if (IS_ERR(observer->mcumixed))
 		return PTR_ERR(observer->mcumixed);
-	observer->cspm =
-		devm_platform_ioremap_resource_byname(pdev, "cspm");
-	if (IS_ERR(observer->cspm))
-		return PTR_ERR(observer->cspm);
+	/*
+	 * The DVFSP handoff provider owns the same CSPM window so it can
+	 * validate the stopped firmware before admitting I2C6.  CPU clock
+	 * transactions use only the CSPM power-on and hardware-semaphore
+	 * registers in that shared window.  Map it without claiming a second
+	 * exclusive iomem resource; devm_platform_ioremap_resource_byname()
+	 * would make whichever provider probes second fail with -EBUSY.
+	 */
+	cspm = platform_get_resource_byname(pdev, IORESOURCE_MEM, "cspm");
+	if (!cspm)
+		return -EINVAL;
+	observer->cspm = devm_ioremap(&pdev->dev, cspm->start,
+				      resource_size(cspm));
+	if (!observer->cspm)
+		return -ENOMEM;
 	observer->mcucfg =
 		devm_platform_ioremap_resource_byname(pdev, "mcucfg");
 	if (IS_ERR(observer->mcucfg))

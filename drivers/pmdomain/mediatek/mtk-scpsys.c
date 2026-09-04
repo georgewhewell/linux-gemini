@@ -785,6 +785,7 @@ static const struct scp_subdomain scp_subdomain_mt2712[] = {
  */
 
 #define SPM_MFG_SRAM_CON_MT6797		0x033c
+#define MT6797_MFG_BUS_PROT_MASK	(BIT(21) | BIT(23))
 
 /*
  * The GPU and its MFGSYS clock provider are disabled in the Gemini DT.  Do
@@ -855,6 +856,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_bits = GENMASK(1, 0),
 		.sram_pdn_ack_bits = GENMASK(17, 16),
 		.clk_id = {CLK_MFG_52M},
+		.bus_prot_mask = MT6797_MFG_BUS_PROT_MASK,
 		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE0] = {

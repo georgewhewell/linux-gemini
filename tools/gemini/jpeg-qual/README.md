@@ -26,14 +26,25 @@ and video-node binding, IOMMU attachment, stable registered IRQs, suspended
 runtime-PM state, disabled clocks, and powered-off MM/VENC domains.  It also
 rejects accidental GCE activation, probe errors, and IOMMU faults.
 
-For the subsequent one-job gate, identify the encoder and decoder paths from
-`v4l2-ctl --list-devices`, then run exactly once:
+Save the passing preflight output.  For the subsequent one-job gate, identify
+the encoder and decoder paths it reported, then run exactly once:
 
     gemini-jpeg-qual --encoder /dev/video0 --decoder /dev/video1 --timeout 3000
 
 The device paths are mandatory to avoid accidentally testing unrelated video
-nodes.  The timeout is per wait and must be between 100 and 30000 ms.  A pass
-prints the encoded byte count and a checksum for every decoded plane.  Any
-format mismatch, timeout, buffer error, malformed JPEG, or short decode is a
-failure.  On every exit after queue setup, the tool stream-offs active queues,
-unmaps buffers, releases MMAP buffers, and closes both devices.
+nodes.  The tool also resolves each character device through sysfs and requires
+the exact MT6797 encoder or decoder platform ancestor.  The timeout is per wait
+and must be between 100 and 30000 ms.  A pass prints the encoded byte count and
+an active-pixel checksum for every decoded plane.  Any format mismatch,
+timeout, buffer error, malformed JPEG, constant/short decode plane, or cleanup
+error is a failure.  On every exit after queue setup, the tool attempts to
+stream-off active queues, unmap every mapped plane, release MMAP buffers, and
+close both devices.
+
+After the command exits, run `capture-jpeg-preflight.sh` again.  Accept J1 only
+if both captures and the qualification command pass, the encoder and decoder
+IRQ totals each increased by exactly one between captures, the M4U IRQ total
+did not change, and the second capture shows every device suspended with the
+MM/VENC domains off and all target clock counts zero.  Stop on the first failed
+command, unexpected IRQ delta, timeout, IOMMU fault, or failure to return to the
+preflight idle state; the next RAM boot must omit the JPEG overlay.

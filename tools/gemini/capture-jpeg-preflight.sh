@@ -146,8 +146,10 @@ reject_pattern="$reject_pattern|mtk_jpeg_single_core_init failed"
 reject_pattern="$reject_pattern|Failed @ IRQ|mm dts parse fail|Unable to link"
 reject_pattern="$reject_pattern|Failed to get the smi_common device"
 reject_pattern="$reject_pattern|translation fault|iommu fault|TLB.*fault"
+reject_pattern="$reject_pattern|Header invalid|decode failed|Context is NULL"
+reject_pattern="$reject_pattern|Jpg (Enc|Dec) occurs unknown Err"
 if printf '%s\n' "$jpeg_log" | grep -Eiq "$reject_pattern"; then
-	reject "kernel log contains a JPEG, SMI, or IOMMU probe failure"
+	reject "kernel log contains a JPEG, SMI, or IOMMU failure"
 fi
 
 echo "[jpeg-bindings]"

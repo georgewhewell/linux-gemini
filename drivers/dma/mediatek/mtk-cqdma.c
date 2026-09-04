@@ -59,9 +59,15 @@
 #define MTK_CQDMA_WARM_RST_BIT		BIT(0)
 #define MTK_CQDMA_HARD_RST_BIT		BIT(1)
 
-#define MTK_CQDMA_MAX_LEN		GENMASK(27, 0)
 #define MTK_CQDMA_ADDR_LIMIT		GENMASK(31, 0)
 #define MTK_CQDMA_ADDR2_SHFIT		(32)
+
+struct mtk_cqdma_data {
+	u32 max_len;
+	u32 src_addr2;
+	u32 dst_addr2;
+	u64 dma_mask;
+};
 
 /**
  * struct mtk_cqdma_vdesc - The struct holding info describing virtual
@@ -130,6 +136,7 @@ struct mtk_cqdma_vchan {
  *                          device
  * @ddev:                   An instance for struct dma_device
  * @clk:                    The clock that device internal is using
+ * @data:                   SoC-specific register and transfer limits
  * @dma_requests:           The number of VCs the device supports to
  * @dma_channels:           The number of PCs the device supports to
  * @vc:                     The pointer to all available VCs
@@ -138,6 +145,7 @@ struct mtk_cqdma_vchan {
 struct mtk_cqdma_device {
 	struct dma_device ddev;
 	struct clk *clk;
+	const struct mtk_cqdma_data *data;
 
 	u32 dma_requests;
 	u32 dma_channels;
@@ -230,6 +238,8 @@ static int mtk_cqdma_hard_reset(struct mtk_cqdma_pchan *pc)
 static void mtk_cqdma_start(struct mtk_cqdma_pchan *pc,
 			    struct mtk_cqdma_vdesc *cvd)
 {
+	struct mtk_cqdma_device *cqdma = to_cqdma_dev(cvd->ch);
+
 	/* wait for the previous transaction done */
 	if (mtk_cqdma_poll_engine_done(pc, true) < 0)
 		dev_err(cqdma2dev(to_cqdma_dev(cvd->ch)), "cqdma wait transaction timeout\n");
@@ -242,17 +252,19 @@ static void mtk_cqdma_start(struct mtk_cqdma_pchan *pc,
 	/* setup the source */
 	mtk_dma_set(pc, MTK_CQDMA_SRC, cvd->src & MTK_CQDMA_ADDR_LIMIT);
 #ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
-	mtk_dma_set(pc, MTK_CQDMA_SRC2, cvd->src >> MTK_CQDMA_ADDR2_SHFIT);
+	mtk_dma_set(pc, cqdma->data->src_addr2,
+		    cvd->src >> MTK_CQDMA_ADDR2_SHFIT);
 #else
-	mtk_dma_set(pc, MTK_CQDMA_SRC2, 0);
+	mtk_dma_set(pc, cqdma->data->src_addr2, 0);
 #endif
 
 	/* setup the destination */
 	mtk_dma_set(pc, MTK_CQDMA_DST, cvd->dest & MTK_CQDMA_ADDR_LIMIT);
 #ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
-	mtk_dma_set(pc, MTK_CQDMA_DST2, cvd->dest >> MTK_CQDMA_ADDR2_SHFIT);
+	mtk_dma_set(pc, cqdma->data->dst_addr2,
+		    cvd->dest >> MTK_CQDMA_ADDR2_SHFIT);
 #else
-	mtk_dma_set(pc, MTK_CQDMA_DST2, 0);
+	mtk_dma_set(pc, cqdma->data->dst_addr2, 0);
 #endif
 
 	/* setup the length */
@@ -485,6 +497,7 @@ static struct dma_async_tx_descriptor *
 mtk_cqdma_prep_dma_memcpy(struct dma_chan *c, dma_addr_t dest,
 			  dma_addr_t src, size_t len, unsigned long flags)
 {
+	struct mtk_cqdma_device *cqdma = to_cqdma_dev(c);
 	struct mtk_cqdma_vdesc **cvd;
 	struct dma_async_tx_descriptor *tx = NULL, *prev_tx = NULL;
 	size_t i, tlen, nr_vd;
@@ -500,7 +513,7 @@ mtk_cqdma_prep_dma_memcpy(struct dma_chan *c, dma_addr_t dest,
 	 * returned to the DMA user, and it should not be completed
 	 * until all the child CVDs completed.
 	 */
-	nr_vd = DIV_ROUND_UP(len, MTK_CQDMA_MAX_LEN);
+	nr_vd = DIV_ROUND_UP(len, cqdma->data->max_len);
 	cvd = kzalloc_objs(*cvd, nr_vd, GFP_NOWAIT);
 	if (!cvd)
 		return NULL;
@@ -517,7 +530,7 @@ mtk_cqdma_prep_dma_memcpy(struct dma_chan *c, dma_addr_t dest,
 		cvd[i]->ch = c;
 
 		/* setup source, destination, and length */
-		tlen = (len > MTK_CQDMA_MAX_LEN) ? MTK_CQDMA_MAX_LEN : len;
+		tlen = min_t(size_t, len, cqdma->data->max_len);
 		cvd[i]->len = tlen;
 		cvd[i]->src = src;
 		cvd[i]->dest = dest;
@@ -737,8 +750,22 @@ static void mtk_cqdma_hw_deinit(struct mtk_cqdma_device *cqdma)
 	pm_runtime_disable(cqdma2dev(cqdma));
 }
 
+static const struct mtk_cqdma_data mt6765_cqdma_data = {
+	.max_len = GENMASK(27, 0),
+	.src_addr2 = MTK_CQDMA_SRC2,
+	.dst_addr2 = MTK_CQDMA_DST2,
+};
+
+static const struct mtk_cqdma_data mt6797_cqdma_data = {
+	.max_len = GENMASK(19, 0),
+	.src_addr2 = 0x40,
+	.dst_addr2 = 0x44,
+	.dma_mask = DMA_BIT_MASK(33),
+};
+
 static const struct of_device_id mtk_cqdma_match[] = {
-	{ .compatible = "mediatek,mt6765-cqdma" },
+	{ .compatible = "mediatek,mt6765-cqdma", .data = &mt6765_cqdma_data },
+	{ .compatible = "mediatek,mt6797-cqdma", .data = &mt6797_cqdma_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, mtk_cqdma_match);
@@ -754,6 +781,17 @@ static int mtk_cqdma_probe(struct platform_device *pdev)
 	cqdma = devm_kzalloc(&pdev->dev, sizeof(*cqdma), GFP_KERNEL);
 	if (!cqdma)
 		return -ENOMEM;
+	cqdma->data = device_get_match_data(&pdev->dev);
+	if (!cqdma->data)
+		return -EINVAL;
+
+	if (cqdma->data->dma_mask) {
+		err = dma_set_mask_and_coherent(&pdev->dev,
+						cqdma->data->dma_mask);
+		if (err)
+			return dev_err_probe(&pdev->dev, err,
+					     "failed to set DMA mask\n");
+	}
 
 	dd = &cqdma->ddev;
 

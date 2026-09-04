@@ -432,6 +432,9 @@
 			     <GIC_SPI 147 IRQ_TYPE_LEVEL_LOW>,
 			     <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
 		interrupt-names = "cldma", "ccif", "wdt";
+		clocks = <&infrasys CLK_INFRA_CCIF_AP>,
+			 <&infrasys CLK_INFRA_CCIF_MD>;
+		clock-names = "ccif-ap", "ccif-md";
 		status = "disabled";
 	};
 

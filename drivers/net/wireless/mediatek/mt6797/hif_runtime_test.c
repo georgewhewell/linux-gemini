@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include <kunit/test.h>
+#include <linux/completion.h>
 #include <linux/errno.h>
+#include <linux/err.h>
+#include <linux/kthread.h>
 
 #include "hif_runtime.h"
 
@@ -254,6 +257,88 @@ static void mt6797_wifi_hif_terminal_transition_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mode, (int)MT6797_WIFI_HIF_IRQ_CAPABILITY);
 }
 
+struct mt6797_wifi_hif_terminal_race {
+	struct mt6797_wifi_hif_irq *irq;
+	struct completion start;
+	struct completion publisher_done;
+	struct completion sender_done;
+	int sender_status;
+	bool published;
+};
+
+static int mt6797_wifi_hif_terminal_publisher(void *data)
+{
+	struct mt6797_wifi_hif_terminal_race *race = data;
+
+	wait_for_completion(&race->start);
+	race->published = mt6797_wifi_hif_runtime_publish_terminal(race->irq,
+								 -EUCLEAN);
+	complete(&race->publisher_done);
+	return 0;
+}
+
+static int mt6797_wifi_hif_terminal_sender(void *data)
+{
+	struct mt6797_wifi_hif_terminal_race *race = data;
+
+	wait_for_completion(&race->start);
+	race->sender_status = mt6797_wifi_hif_runtime_status(race->irq);
+	complete(&race->sender_done);
+	return 0;
+}
+
+static void mt6797_wifi_hif_terminal_reason_race_test(struct kunit *test)
+{
+	struct mt6797_wifi_hif_irq irq = {
+		.mode = MT6797_WIFI_HIF_IRQ_RUNTIME,
+	};
+	struct mt6797_wifi_hif_terminal_race race = {
+		.irq = &irq,
+	};
+	struct task_struct *publisher;
+	struct task_struct *sender;
+	unsigned long flags;
+
+	spin_lock_init(&irq.terminal_lock);
+	init_completion(&race.start);
+	init_completion(&race.publisher_done);
+	init_completion(&race.sender_done);
+	publisher = kthread_run(mt6797_wifi_hif_terminal_publisher, &race,
+				"mt6797-hif-terminal-publisher");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(publisher));
+	sender = kthread_run(mt6797_wifi_hif_terminal_sender, &race,
+			     "mt6797-hif-terminal-sender");
+	if (IS_ERR(sender)) {
+		complete_all(&race.start);
+		kthread_stop(publisher);
+		KUNIT_FAIL(test, "failed to start terminal sender");
+		return;
+	}
+
+	/* Release both contenders while the observable pair is locked. */
+	spin_lock_irqsave(&irq.terminal_lock, flags);
+	complete_all(&race.start);
+	spin_unlock_irqrestore(&irq.terminal_lock, flags);
+	if (!wait_for_completion_timeout(&race.publisher_done, HZ) ||
+	    !wait_for_completion_timeout(&race.sender_done, HZ)) {
+		KUNIT_FAIL(test, "terminal publication race timed out");
+		kthread_stop(publisher);
+		kthread_stop(sender);
+		return;
+	}
+	kthread_stop(publisher);
+	kthread_stop(sender);
+	KUNIT_EXPECT_TRUE(test, race.published);
+	/* The sender may win first, but must never observe a reasonless terminal. */
+	KUNIT_EXPECT_TRUE(test, race.sender_status == 0 ||
+				 race.sender_status == -EUCLEAN);
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_hif_runtime_status(&irq), -EUCLEAN);
+	KUNIT_EXPECT_EQ(test, READ_ONCE(irq.terminal_reason), -EUCLEAN);
+	KUNIT_EXPECT_FALSE(test,
+		mt6797_wifi_hif_runtime_publish_terminal(&irq, -EIO));
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_hif_runtime_status(&irq), -EUCLEAN);
+}
+
 static void mt6797_wifi_hif_scan_event_routing_test(struct kunit *test)
 {
 	u8 payload[4] = { 7 };
@@ -345,6 +430,7 @@ static struct kunit_case mt6797_wifi_hif_runtime_cases[] = {
 	KUNIT_CASE(mt6797_wifi_hif_device_enable_failure_test),
 	KUNIT_CASE(mt6797_wifi_hif_restore_failure_test),
 	KUNIT_CASE(mt6797_wifi_hif_terminal_transition_test),
+	KUNIT_CASE(mt6797_wifi_hif_terminal_reason_race_test),
 	KUNIT_CASE(mt6797_wifi_hif_scan_event_routing_test),
 	KUNIT_CASE(mt6797_wifi_hif_scan_event_error_test),
 	KUNIT_CASE(mt6797_wifi_hif_remove_after_fault_test),

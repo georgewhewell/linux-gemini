@@ -47,6 +47,7 @@ mt6797-consys-fw-handoff-$(CONFIG_MTK_MT6797_CONSYS_FW_HANDOFF_KUNIT_TEST) += \
 obj-$(CONFIG_MTK_MT6797_CONSYS_WMT_INITIAL) += mt6797-consys-wmt-initial.o
 obj-$(CONFIG_MTK_MT6797_A72_POWER) += mt6797-a72-power.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_INVENTORY) += mt6797-consys.o
+obj-$(CONFIG_MTK_MT6797_CONSYS_INVENTORY) += mt6797-consys-postpatch.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_CORE) += mt6797-consys-core.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_CORE_KUNIT_TEST) += mt6797-consys-core-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_POSTID) += mt6797-consys-postid.o

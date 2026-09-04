@@ -20,6 +20,7 @@
 
 /* The only clients exposed by this initial mux. */
 enum mtk_stp_channel {
+	MTK_STP_BT	= 0,
 	MTK_STP_GNSS	= 2,
 	MTK_STP_WMT	= 4,
 };

@@ -54,12 +54,13 @@ retains `scheduling=none`, `specific-p22-authorization=none`, and
 ### Cumulative-tree replay boundary
 
 The package rows above intentionally retain the exact reviewed lane source
-identities.  The managed cumulative tree replays the same defensive A53 source
-delta as `97b0e7e5dee9` plus `fe0dbda655ad`, the A72 series ending at
-`55a2b88548aa`, and the G3 lineage's unique retained-entry token plus final
-source delta as `5d5b3c3f3bd7` and `d2ae9dc37cdc`.  These replay commits
+identities.  The managed cumulative tree replays the same defensive A53
+source delta, complete A72 transaction series, and G3 lineage's unique
+retained-entry token plus final source delta.  Those integration commits
 compose the independently developed changes without pretending to be the
-source revisions embedded in the immutable bundles.
+source revisions embedded in the immutable bundles; their replay hashes may
+differ from the immutable lane hashes and are recorded by integration
+history, not as package inputs here.
 
 The cellular source remains in its separate post-audit source lineage.  Its
 final watchdog-gate commit depends on the earlier cold-owner and CCIF/CLDMA

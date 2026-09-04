@@ -23,11 +23,11 @@ Contrary physical evidence, loss of the recovery power path, or a later owner
 report that the condition changed closes the queue until the owner reassesses
 it.
 
-No candidate below has specific execution authorization or a scheduled
-hardware window.  Offline qualification is not permission to write p22.  A
-future transaction still requires separate owner authorization naming one
-exact candidate SHA-256 and must reconfirm the accepted Stage-A rollback
-SHA-256 immediately before the write:
+This note never grants specific execution authorization or schedules a
+hardware window. Offline qualification is not permission to write p22. Each
+transaction recorded here required separate owner authorization naming one
+exact candidate SHA-256 and immediate reconfirmation of the accepted Stage-A
+rollback SHA-256 before the write:
 
 `1b5f808e494f8c91ec5feedcbce89bf018271b30b87ce3910082cd298d8817dc`
 
@@ -38,11 +38,11 @@ The detailed authority record and package-policy audit are in
 
 These entries are immutable identities, not a run order or schedule.
 
-| Lane | Source commit | Package commit | Candidate SHA-256 | Offline status |
+| Lane | Source commit | Package commit | Candidate SHA-256 | Disposition |
 | --- | --- | --- | --- | --- |
-| A53 registration/calibration observation R2 | `f2fc2447a7465b96b9816487d6c36074cf2ca4fb` | `5dca07f1fd7a83dcbf8b905353725fb85619da3f` -> `8a62fff69574a8555baca600baf898fa2d02bd4c` | `e123c1984d46ee7609a98ac087232dfb13ac9e8d55f6540c94c1ee2e037c0a56` | Offline build and local contract checks: PASS; independent live-readiness re-audit in progress; hardware not run |
-| MD1 post-vector observer | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `c56ea7a569a8ce7a29f602fdb1c8ca1f0fb4690f` -> `718b9d1849d632b2135a2da23d43a337a1efab59` -> `5b45870571e2dfbf0dd06731001ce9a624ad085e` -> `7194ebaec4b36cf5d46075cc4d1836254c2b196d` | `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213` | Offline source/predicate review: PASS; package is not hardware-ready and requires repackaging |
-| G3 fixed-low Panfrost no-job R1 | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` -> `a81879abb63a7ad7c40bc946b3c95bf1657edef7` -> `02b36ca602774b032e633bbfec103ea6a1c4baec` | `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b` | Offline build and local contract checks: PASS; independent live-readiness audit pending; hardware not run |
+| A53 registration/calibration observation R2 | `f2fc2447a7465b96b9816487d6c36074cf2ca4fb` | `5dca07f1fd7a83dcbf8b905353725fb85619da3f` -> `8a62fff69574a8555baca600baf898fa2d02bd4c` | `e123c1984d46ee7609a98ac087232dfb13ac9e8d55f6540c94c1ee2e037c0a56` | Hardware FAIL; exact Stage-A rollback/readback complete; retired/no-retry; CSPM ownership remediation required |
+| MD1 post-vector observer R1 | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `7027acfa7ad57242a0bf930559088bfc11a8f285` | `76387822474c35d55fb4804b670166e5279c239d965418481733f6998c2c1c16` | Reminted offline package and rendered BusyBox-ash recovery checks: PASS; hardware not run; independent live-readiness audit required |
+| G3 fixed-low Panfrost no-job R1 | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` -> `a81879abb63a7ad7c40bc946b3c95bf1657edef7` -> `02b36ca602774b032e633bbfec103ea6a1c4baec` | `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b` | Hardware FAIL; exact Stage-A rollback/readback/pstore complete; retired/no-retry; efuse/OPP and MFG-domain remediation required |
 | A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Offline contract review: PASS; source/package are not hardware-ready |
 | A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Blocked with provider; no provider-success predecessor exists |
 
@@ -113,18 +113,45 @@ clock, NVMEM, and board-identity defects, but its post-rollback selector
 accepted only a resolved path ending in `/bin/tar`; accepted Stage A resolves
 that applet to its BusyBox executable.  The rendered A53 collector also still
 contained the obsolete `d772bb04...` source predicate.  Candidate `5529a03b...`
-was never written and is closed.  R2 uses a new cmdline identity and candidate
-hash, pins the corrected `f2fc2447...` collector identity, accepts only the
+was never written and is closed. R2 used a new cmdline identity and candidate
+hash, pinned the corrected `f2fc2447...` collector identity, accepted only the
 exact SHA-256-pinned Stage-A BusyBox alternative (or a root-owned non-writable
-Nix-store tar), carries that BusyBox in the bundle closure, and is undergoing
-a fresh independent live-readiness audit.  This ledger does not authorize it.
+Nix-store tar), and carried that BusyBox in the bundle closure.
+
+Independent audit admitted R2 for one exact attempt. Candidate `e123c198...`
+was written once and booted the expected R2 kernel, exact board identity, and
+CPUs 0--7, but the mandatory `a53_thermal_preflight=pass` marker never appeared.
+The watchdog expired as designed. The rollback scanner's first BROM attempt
+timed out and its second succeeded, for exactly two p22 writes total: one
+candidate and one rescue. There were zero p30/p31 writes. Final Stage A booted
+healthy with exact p22/p30/p31 readback.
+
+The live pstore root cause is deterministic: the CPU clock provider reserved
+the CSPM resource at `0x11015000` first, so the DVFSP handoff's exclusive
+mapping failed with `-EBUSY`; the CPU0 processor-regulator lookup then returned
+`-ENODEV`, `cpufreq-dt` deferred, and the collector failed. Candidate
+`e123c198...` is retired/no-retry. Its immutable capture is
+`/mnt/Home/src/nixos-gemini/handoff/a53-thermal-p22-f2fc2447-e123c198-one-shot-20260904T221000+0200`.
+The recovered raw pstore console has SHA-256
+`6e383949474b07679f113dc89a5312b8da3814adf003396e59c46d02f1d6914a`;
+the focused excerpt has SHA-256
+`70cc70446f1899da153b68af00ddc9f1e91a1656ecdcf1935d6ec8fab6f94ad7`.
+
+Post-rollback collection also revealed that R2's single-quoted SSH body lost
+its nested empty-string case pattern during local-shell rendering, producing
+invalid BusyBox `ash` syntax. A provenance-bound resume performed no writes
+and reproduced that packaging failure. The raw live pstore above was therefore
+recovered separately and remains failure evidence, not a trusted R2 pass.
+The next A53 package must use one explicit CSPM owner/provider, synchronize CPU
+clock access with DVFSP lifecycle validation, mint a fresh source/package/hash,
+and test the exact post-local-shell command under BusyBox `ash` before audit.
 
 Evidence:
 
 - `/mnt/Home/src/nixos-gemini/repo-a53-thermal-remediation/research/A53_DVFS_THERMAL_SOFTWARE_PREFLIGHT_20260904.md`
 - `/nix/store/x5m20gna2w7mzalywikvk92bs16g26hg-gemini-a53-thermal-preflight-p22-bundle/p22-one-shot.manifest`
 
-### MD1 post-vector observer blocked for repackaging
+### MD1 post-vector observer predecessor and reminted R1
 
 The final candidate bundle is:
 
@@ -166,7 +193,22 @@ do not override the recovery defect.  Its owner token is exact, while
 `scheduling=none`, `specific-p22-authorization=none`, and
 `hardware-proof=none-offline-build-only` remain explicit.
 
-### G3 fixed-low Panfrost no-job old bundle blocked; R1 pending review
+The reminted R1 package commit is
+`7027acfa7ad57242a0bf930559088bfc11a8f285`; its bundle is
+`/nix/store/8y8zkniqbr0mdm56lr04qi8vlwizfzx9-gemini-md1-cldma-readonly-observer-postrun-remediated-p22-bundle`
+and its fresh candidate SHA-256 is
+`76387822474c35d55fb4804b670166e5279c239d965418481733f6998c2c1c16`.
+It replaces model matching with exact NUL-delimited compatible tokens, adds
+run-bound p22/p30/p31 plus pstore archive/inventory/status proof, and provides
+an immutable package/manifest/candidate/rollback-bound resume path. Its
+SHA-pinned BusyBox selectors have no PATH fallback and the fully rendered
+remote bodies parse under BusyBox `ash`. Interrupt cleanup distinguishes a
+retained scanner, confirmed rollback awaiting pstore, and terminal unconfirmed
+rollback. Full generic and MD1 acceptance fixtures, shell checks, Nix parsing,
+offline local build, and all bundle checksums pass. It remains hardware-not-run
+and requires independent live-readiness audit before any exact authorization.
+
+### G3 fixed-low Panfrost no-job old bundle blocked; R1 hardware result
 
 The exact independently reviewed owner-policy bundle is:
 
@@ -195,8 +237,30 @@ the exact SHA-256-pinned Stage-A BusyBox closure for normal and resumed pstore
 collection, without a model predicate or PATH fallback.  Its new candidate
 `78342f98...` differs only by a root-owned mode-0444 inert initramfs provenance
 file; kernel, DTBs, cmdline, `/init`, and boot-header semantics remain
-byte-identical.  Local offline checks pass, but independent live-readiness
-review has not yet completed and this ledger does not authorize a run.
+byte-identical. Local offline checks and independent live-readiness review
+passed, admitting exactly one separately authorized transaction.
+
+Candidate `78342f98...` was written exactly once. It never reached SSH
+acceptance; the retained scanner caught a later natural BROM/reset window and
+wrote the exact rescue once. No manual reset was performed. The
+provenance-bound resume completed final proof with state
+`observation_failed_recovered_stage_a_pstore_captured`. Final Stage A boot ID
+is `a12002d9-e264-44b2-876a-49ce9252945b`; the system is running with zero
+failed units, exact p22/p30/p31 hashes, and zero p30/p31 writes.
+
+Pstore proves that the watchdog and no-job boundary held, then records GPU
+efuse unavailable, unknown safe OPP, MFG power-domain acknowledge timeout
+`-110`, and fatal Panfrost initialization failure. The collector correctly
+rejected absent T880 identity/bind/IRQ/runtime evidence. No DRM node was opened,
+no job was submitted, and there is no panic, Oops, BUG, or lockup marker. The
+candidate is retired/no-retry. The immutable capture is
+`/mnt/Home/src/nixos-gemini/handoff/g3-low-opp-nojob-p22-ec191faa-78342f98-one-shot-20260904T223000+0200`;
+post-rollback archive SHA-256 is
+`b39d691f1ffcaa101cf604a752b690122b866b7ae861bd0a725372e4309f2f0f`
+and console SHA-256 is
+`20ed96737c33dd7c3839d5f4997881eb35db3952b1d3d762f47977f8ea69f08c`.
+The next rung must remediate efuse/safe-OPP identity and the MFG-domain timeout,
+mint a fresh source/package/hash, and receive a new independent audit.
 
 Evidence:
 
@@ -270,6 +334,7 @@ for a current identity.
 
 - `baf0f1fdcb581f19f6dc55bf21f6f86b5ac11ba5a54e5b8ff7a35c645d2a90c0`
 - `5529a03b7c15ea8ed4f6bd6c1baafac3d244db08d5dc78e3d93f011018f6e08c`
+- `e123c1984d46ee7609a98ac087232dfb13ac9e8d55f6540c94c1ee2e037c0a56`
 - `50f3cca869b43cadd32e5dd97b1d848004080ff93234da8962817093db5fd5b0`
 - `e0566d596d4b0be3e92b77215b0269251734da8da62cfadadf1a7eed5991362c`
 - `8f65e46a94e288b2fed585647822cab6b356493b19c4b7de9edc4612deee1139`
@@ -295,6 +360,7 @@ surfaces and are not an alternative to the read-only observer.
 
 ### GPU/G2/G3 historical candidates
 
+- `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b`
 - `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985`
 - `9a667439e951297d931583a6629486b2c3fc292cdc885b249fdd07fb5f7fefbb`
 - `002d312d2be67054f6a399b1ec3a715182c909819f05b22f6dd1f9a41e364f0f`

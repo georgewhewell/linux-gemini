@@ -30,6 +30,33 @@ config MTK_MT6797_MD1
 	  state, send runtime data, or access radio hardware.  The DT node is
 	  disabled by default.  If unsure, say N.
 
+config MTK_MT6797_MD1_CLOCKED_OBSERVER
+	tristate "MediaTek MT6797 MD1 clocked ownership observer"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on COMMON_CLK && OF
+	select MFD_SYSCON
+	help
+	  Build a standalone, opt-in observer which enables only the three
+	  MT6797 MD1 interface clocks long enough to take two CLDMA and CCIF
+	  ownership snapshots.  Every path disables the clocks in reverse order
+	  and verifies their hardware gate status.  The observer never acquires
+	  interrupts or resets, allocates DMA, creates a ring, or accesses modem
+	  firmware, partitions, SIM or RF state.
+
+	  This driver uses a separate compatible and cannot fall through to the
+	  MD1 ownership core.  The DT node is disabled by default.  If unsure,
+	  say N.
+
+config MTK_MT6797_MD1_CLOCKED_OBSERVER_KUNIT_TEST
+	bool "KUnit tests for MT6797 MD1 clocked observation" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Exercise failure at each clock enable, each of the two snapshot
+	  callbacks, and hardware unwind verification.  Also validate stable
+	  quiescent, pending and foreign-ring classification.  These tests are
+	  hardware independent and can run without the platform observer driver.
+
 config MTK_MT6797_MD1_KUNIT_TEST
 	bool "KUnit tests for MT6797 MD1 observation" if !KUNIT_ALL_TESTS
 	depends on KUNIT

@@ -507,7 +507,6 @@
 		clocks = <&infrasys CLK_INFRA_GCE>;
 		clock-names = "gce";
 		#mbox-cells = <2>;
-		status = "disabled";
 	};
 
 	cqdma: dma-controller@10212c00 {

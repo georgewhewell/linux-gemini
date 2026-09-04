@@ -512,8 +512,10 @@ static int panfrost_device_resume(struct device *dev)
 		opp = dev_pm_opp_find_freq_ceil(dev, &freq);
 		if (IS_ERR(opp))
 			return PTR_ERR(opp);
-		dev_pm_opp_set_opp(dev, opp);
+		ret = dev_pm_opp_set_opp(dev, opp);
 		dev_pm_opp_put(opp);
+		if (ret)
+			goto err_clk;
 	}
 
 	if (pfdev->comp->pm_features & BIT(GPU_PM_CLK_DIS)) {

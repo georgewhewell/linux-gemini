@@ -16515,6 +16515,7 @@ F:	drivers/net/wwan/t7xx/
 
 MEDIATEK MT6797 MODEM DRIVER
 M:	George Whewell <georgerw@gmail.com>
+L:	netdev@vger.kernel.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/remoteproc/mediatek,mt6797-md1.yaml
 F:	drivers/net/wwan/mediatek/mt6797/

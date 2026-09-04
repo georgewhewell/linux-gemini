@@ -129,6 +129,9 @@ void panfrost_gpu_amlogic_quirk(struct panfrost_device *pfdev)
 #define MT6797_MFG_ASYNC_TIMING_THRESHOLD	780000000UL
 #define MT6797_MFG_PMU_ENABLE_FIRST	0x3e0
 #define MT6797_MFG_PMU_ENABLE_LAST	0x3f0
+#define MT6797_MFG_DEBUG_SEL		0x180
+#define MT6797_MFG_DEBUG_A		0x184
+#define MT6797_MFG_DEBUG_IDLE		BIT(2)
 #define MT6797_GPU_FUNCTION_CODE_MASK	GENMASK(3, 0)
 #define MT6797_GPU_PTP_VERSION_MASK	GENMASK(7, 4)
 #define MT6797_GPU_OPP_UNKNOWN		BIT(31)
@@ -296,6 +299,37 @@ int panfrost_gpu_mt6797_power_on(struct panfrost_device *pfdev)
 	}
 
 	return 0;
+}
+
+int panfrost_gpu_mt6797_power_off(struct panfrost_device *pfdev)
+{
+	unsigned int saved_sel, val;
+	int ret, restore_ret;
+
+	/*
+	 * MT6797's vendor driver keeps shaders and their L2/tiler dependencies
+	 * powered until whole-MFG shutdown. Individual PWROFF requests can
+	 * stall. Establish whole-MFG idle before genpd removes power instead.
+	 * Preserve the debug selector, including on a failed idle poll.
+	 */
+	ret = regmap_read(pfdev->mfgcfg, MT6797_MFG_DEBUG_SEL, &saved_sel);
+	if (ret)
+		goto out;
+
+	ret = regmap_write(pfdev->mfgcfg, MT6797_MFG_DEBUG_SEL, 3);
+	if (!ret)
+		ret = regmap_read_poll_timeout(pfdev->mfgcfg, MT6797_MFG_DEBUG_A,
+					      val, val & MT6797_MFG_DEBUG_IDLE,
+					      1, 100000);
+
+	restore_ret = regmap_write(pfdev->mfgcfg, MT6797_MFG_DEBUG_SEL, saved_sel);
+	if (!ret)
+		ret = restore_ret;
+out:
+	if (ret)
+		dev_err(pfdev->base.dev, "MFG idle check failed: %d\n", ret);
+
+	return ret;
 }
 
 static void panfrost_gpu_init_quirks(struct panfrost_device *pfdev)
@@ -690,6 +724,12 @@ void panfrost_gpu_power_off(struct panfrost_device *pfdev)
 {
 	int ret;
 	u32 val;
+
+	/* Teardown cannot veto removal; the callback still reports failures. */
+	if (pfdev->comp->vendor_power_off) {
+		pfdev->comp->vendor_power_off(pfdev);
+		return;
+	}
 
 	gpu_write(pfdev, SHADER_PWROFF_LO, pfdev->features.shader_present);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + SHADER_PWRTRANS_LO,

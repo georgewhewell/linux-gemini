@@ -512,6 +512,17 @@ static int panfrost_device_runtime_suspend(struct device *dev)
 	if (!panfrost_jm_is_idle(pfdev))
 		return -EBUSY;
 
+	/*
+	 * Whole-GPU shutdown must be safe before changing devfreq or IRQ state.
+	 * On failure the device remains fully active and genpd cannot power off.
+	 * Runtime-PM users keep new jobs out while this callback runs.
+	 */
+	if (pfdev->comp->vendor_power_off) {
+		ret = pfdev->comp->vendor_power_off(pfdev);
+		if (ret)
+			return ret;
+	}
+
 	ret = panfrost_devfreq_suspend(pfdev);
 	if (ret) {
 		dev_err(dev, "failed to suspend devfreq: %d\n", ret);
@@ -521,7 +532,8 @@ static int panfrost_device_runtime_suspend(struct device *dev)
 	panfrost_jm_suspend_irq(pfdev);
 	panfrost_mmu_suspend_irq(pfdev);
 	panfrost_gpu_suspend_irq(pfdev);
-	panfrost_gpu_power_off(pfdev);
+	if (!pfdev->comp->vendor_power_off)
+		panfrost_gpu_power_off(pfdev);
 
 	if (pfdev->comp->pm_features & BIT(GPU_PM_RT)) {
 		if (pfdev->bus_clock)

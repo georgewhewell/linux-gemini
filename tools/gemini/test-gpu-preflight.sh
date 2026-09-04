@@ -64,4 +64,5 @@ need "$capture" 'GPU_PREFLIGHT=PASS'
 
 sh -n "$capture"
 python3 "$root/tools/gemini/test-gpu-irq-identity.py"
+python3 "$root/tools/gemini/test-gpu-mt6797-poweroff.py"
 echo "Gemini G3 no-job source contract: PASS"

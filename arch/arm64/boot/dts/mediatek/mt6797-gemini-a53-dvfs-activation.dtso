@@ -1,0 +1,181 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA A53 DVFS activation candidate.
+ *
+ * This separate, volatile FIT candidate must not be deployed until the
+ * one-OPP mt6797-gemini-a53-dvfs-preflight overlay has passed.  It exposes
+ * only the vendor CPU_LEVEL_1 rates which the protected CPU clock provider
+ * can synthesize with CLKDIV1 and which fit the shared Vproc/Vsram limits.
+ * Both firmware boot OPPs remain present for deterministic recovery.
+ *
+ * A72 power, CPU8/9, secure SRAM, DA9214 BUCKB, divider-dependent rates and
+ * rates above the accepted boot ceilings remain disabled.  Rebooting the
+ * unchanged base FIT removes this candidate without persistent state.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&cpuclk {
+	status = "okay";
+};
+
+&da9214 {
+	status = "okay";
+};
+
+&da9214_buckb {
+	status = "disabled";
+};
+
+&cluster0_opp {
+	opp-221000000 {
+		status = "disabled";
+	};
+
+	opp-338000000 {
+		status = "disabled";
+	};
+
+	opp-481000000 {
+		status = "disabled";
+	};
+
+	opp-624000000 {
+		status = "okay";
+	};
+
+	opp-715000000 {
+		status = "okay";
+	};
+
+	opp-806000000 {
+		status = "okay";
+	};
+
+	opp-897000000 {
+		status = "okay";
+	};
+
+	opp-1014000000 {
+		status = "okay";
+	};
+
+	opp-1118000000 {
+		status = "okay";
+	};
+
+	opp-1222000000 {
+		status = "okay";
+	};
+
+	opp-1274000000 {
+		status = "okay";
+	};
+
+	opp-1339000000 {
+		status = "okay";
+	};
+
+	opp-1391000000 {
+		status = "okay";
+	};
+
+	opp-1443000000 {
+		status = "disabled";
+	};
+
+	opp-1495000000 {
+		status = "disabled";
+	};
+
+	opp-1547000000 {
+		status = "disabled";
+	};
+};
+
+&cluster1_opp {
+	opp-325000000 {
+		status = "disabled";
+	};
+
+	opp-468000000 {
+		status = "disabled";
+	};
+
+	opp-650000000 {
+		status = "okay";
+	};
+
+	opp-832000000 {
+		status = "okay";
+	};
+
+	opp-962000000 {
+		status = "okay";
+	};
+
+	opp-1092000000 {
+		status = "okay";
+	};
+
+	opp-1209000000 {
+		status = "okay";
+	};
+
+	opp-1352000000 {
+		status = "okay";
+	};
+
+	opp-1495000000 {
+		status = "okay";
+	};
+
+	opp-1625000000 {
+		status = "okay";
+	};
+
+	opp-1703000000 {
+		status = "okay";
+	};
+
+	opp-1755000000 {
+		status = "okay";
+	};
+
+	opp-1820000000 {
+		status = "okay";
+	};
+
+	opp-1885000000 {
+		status = "okay";
+	};
+
+	opp-1950000000 {
+		status = "okay";
+	};
+
+	opp-2002000000 {
+		status = "disabled";
+	};
+};
+
+&cpu8 {
+	status = "disabled";
+};
+
+&cpu9 {
+	status = "disabled";
+};
+
+&a72_power {
+	status = "disabled";
+};
+
+&vsram_big {
+	status = "disabled";
+};

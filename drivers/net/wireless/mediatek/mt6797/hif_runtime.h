@@ -2,9 +2,11 @@
 #ifndef __MT6797_WIFI_HIF_RUNTIME_H
 #define __MT6797_WIFI_HIF_RUNTIME_H
 
+#include <linux/completion.h>
 #include <linux/interrupt.h>
 #include <linux/ktime.h>
 #include <linux/mutex.h>
+#include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
@@ -21,6 +23,38 @@ enum mt6797_wifi_hif_irq_mode {
 	MT6797_WIFI_HIF_IRQ_RUNTIME,
 	MT6797_WIFI_HIF_IRQ_QUIESCING,
 	MT6797_WIFI_HIF_IRQ_TERMINAL,
+};
+
+#define MT6797_WIFI_HIF_WAIT_EVENT_PAYLOAD_MAX	16U
+
+/*
+ * One bounded event slot shared by the threaded IRQ and a lifecycle-locked
+ * sleeping owner. The IRQ copies payload bytes under lock; it never publishes
+ * a pointer into the HIF RX buffer.
+ */
+struct mt6797_wifi_hif_wait_event {
+	/* Serializes IRQ offer against owner take, abort, and disarm. */
+	spinlock_t lock;
+	struct completion completion;
+	u8 payload[MT6797_WIFI_HIF_WAIT_EVENT_PAYLOAD_MAX];
+	size_t payload_length;
+	size_t packet_length;
+	int error;
+	u8 id;
+	u8 sequence;
+	u8 match[2];
+	u8 match_length;
+	bool armed;
+	bool ready;
+};
+
+struct mt6797_wifi_hif_event_copy {
+	u8 payload[MT6797_WIFI_HIF_WAIT_EVENT_PAYLOAD_MAX];
+	size_t payload_length;
+	size_t packet_length;
+	int error;
+	u8 id;
+	u8 sequence;
 };
 
 struct mt6797_wifi_hif_runtime_transaction {
@@ -56,12 +90,15 @@ struct mt6797_wifi_hif_irq {
 	struct mt6797_wifi_ahb_hif *hif;
 	struct mt6797_wifi_boot *boot;
 	struct mutex lifecycle_lock; /* Serializes runtime start/stop/worker. */
+	/* Publishes terminal mode and its reason as one observable state. */
+	spinlock_t terminal_lock;
 	struct work_struct terminal_work;
 	irqreturn_t (*capability_thread)(void *context);
 	void *capability_context;
 	struct mt6797_wifi_hif_runtime_transaction transaction;
 	struct mt6797_wifi_hif_pump_stats pump_stats;
 	struct mt6797_wifi_scan_transaction scan_transaction;
+	struct mt6797_wifi_hif_wait_event wait_event;
 	u8 *rx_buffer[2];
 	ktime_t pump_deadline;
 	u32 whcr_before;
@@ -80,9 +117,29 @@ int mt6797_wifi_hif_runtime_transaction_stop(
 	struct mt6797_wifi_hif_runtime_transaction *transaction,
 	bool terminal);
 bool mt6797_wifi_hif_runtime_mark_terminal(int *mode);
+bool mt6797_wifi_hif_runtime_publish_terminal(
+	struct mt6797_wifi_hif_irq *irq, int reason);
+int mt6797_wifi_hif_runtime_status(struct mt6797_wifi_hif_irq *irq);
+void mt6797_wifi_hif_runtime_fail(struct mt6797_wifi_hif_irq *irq,
+				   int reason);
 int mt6797_wifi_hif_runtime_route_event(
 	struct mt6797_wifi_scan_transaction *transaction,
 	const struct mt6797_wifi_event_view *event);
+void mt6797_wifi_hif_wait_event_init(
+	struct mt6797_wifi_hif_wait_event *wait_event);
+int mt6797_wifi_hif_wait_event_arm(
+	struct mt6797_wifi_hif_wait_event *wait_event, u8 id,
+	const u8 *match, size_t match_length);
+int mt6797_wifi_hif_wait_event_offer(
+	struct mt6797_wifi_hif_wait_event *wait_event,
+	const struct mt6797_wifi_event_view *event);
+int mt6797_wifi_hif_wait_event_take(
+	struct mt6797_wifi_hif_wait_event *wait_event,
+	struct mt6797_wifi_hif_event_copy *copy);
+void mt6797_wifi_hif_wait_event_abort(
+	struct mt6797_wifi_hif_wait_event *wait_event, int reason);
+void mt6797_wifi_hif_wait_event_disarm(
+	struct mt6797_wifi_hif_wait_event *wait_event);
 
 int mt6797_wifi_hif_irq_init(struct mt6797_wifi_hif_irq *irq,
 			     struct device *dev,

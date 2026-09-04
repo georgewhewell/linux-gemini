@@ -285,8 +285,18 @@ static void mt6797_wifi_hif_runtime_publish(
 	void *context, enum mt6797_wifi_hif_irq_mode mode)
 {
 	struct mt6797_wifi_hif_irq *irq = context;
+	unsigned long flags;
 
 	/* Release publishes all prepared session state before opening a gate. */
+	if (mode == MT6797_WIFI_HIF_IRQ_TERMINAL) {
+		spin_lock_irqsave(&irq->terminal_lock, flags);
+		if (READ_ONCE(irq->terminal_reason) >= 0)
+			WRITE_ONCE(irq->terminal_reason, -ESHUTDOWN);
+		/* Status readers acquire the reason with this terminal mode. */
+		smp_store_release(&irq->mode, mode);
+		spin_unlock_irqrestore(&irq->terminal_lock, flags);
+		return;
+	}
 	smp_store_release(&irq->mode, mode);
 }
 
@@ -431,9 +441,9 @@ static void mt6797_wifi_hif_terminal_work(struct work_struct *work)
 static void mt6797_wifi_hif_runtime_terminal(
 	struct mt6797_wifi_hif_irq *irq, int reason)
 {
-	if (!mt6797_wifi_hif_runtime_mark_terminal(&irq->mode))
+	if (!mt6797_wifi_hif_runtime_publish_terminal(irq, reason))
 		return;
-	WRITE_ONCE(irq->terminal_reason, reason);
+	mt6797_wifi_hif_wait_event_abort(&irq->wait_event, reason);
 	schedule_work(&irq->terminal_work);
 }
 
@@ -458,6 +468,204 @@ bool mt6797_wifi_hif_runtime_mark_terminal(int *mode)
 	return mode && cmpxchg(mode, MT6797_WIFI_HIF_IRQ_RUNTIME,
 			       MT6797_WIFI_HIF_IRQ_TERMINAL) ==
 		       MT6797_WIFI_HIF_IRQ_RUNTIME;
+}
+
+bool mt6797_wifi_hif_runtime_publish_terminal(
+	struct mt6797_wifi_hif_irq *irq, int reason)
+{
+	unsigned long flags;
+	int previous;
+	bool published;
+
+	if (!irq)
+		return false;
+	reason = reason < 0 ? reason : -EIO;
+	spin_lock_irqsave(&irq->terminal_lock, flags);
+	previous = READ_ONCE(irq->terminal_reason);
+	/* cmpxchg is a full barrier: reason precedes observable TERMINAL mode. */
+	WRITE_ONCE(irq->terminal_reason, reason);
+	published = mt6797_wifi_hif_runtime_mark_terminal(&irq->mode);
+	if (!published)
+		WRITE_ONCE(irq->terminal_reason, previous);
+	spin_unlock_irqrestore(&irq->terminal_lock, flags);
+	return published;
+}
+
+int mt6797_wifi_hif_runtime_status(struct mt6797_wifi_hif_irq *irq)
+{
+	unsigned long flags;
+	int reason;
+	int mode;
+
+	if (!irq)
+		return -EINVAL;
+	spin_lock_irqsave(&irq->terminal_lock, flags);
+	/* Pairs with runtime or terminal release publication. */
+	mode = smp_load_acquire(&irq->mode);
+	reason = READ_ONCE(irq->terminal_reason);
+	spin_unlock_irqrestore(&irq->terminal_lock, flags);
+	if (mode == MT6797_WIFI_HIF_IRQ_RUNTIME)
+		return 0;
+	if (mode != MT6797_WIFI_HIF_IRQ_TERMINAL)
+		return -EPIPE;
+	return reason < 0 ? reason : -ESHUTDOWN;
+}
+
+void mt6797_wifi_hif_runtime_fail(struct mt6797_wifi_hif_irq *irq,
+				   int reason)
+{
+	if (irq)
+		mt6797_wifi_hif_runtime_terminal(irq, reason);
+}
+
+void mt6797_wifi_hif_wait_event_init(
+	struct mt6797_wifi_hif_wait_event *wait_event)
+{
+	if (!wait_event)
+		return;
+	memset(wait_event, 0, sizeof(*wait_event));
+	spin_lock_init(&wait_event->lock);
+	init_completion(&wait_event->completion);
+}
+
+int mt6797_wifi_hif_wait_event_arm(
+	struct mt6797_wifi_hif_wait_event *wait_event, u8 id,
+	const u8 *match, size_t match_length)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	if (!wait_event || !id || match_length > sizeof(wait_event->match) ||
+	    (match_length && !match))
+		return -EINVAL;
+	spin_lock_irqsave(&wait_event->lock, flags);
+	if (wait_event->armed || wait_event->ready) {
+		ret = -EBUSY;
+		goto out;
+	}
+	reinit_completion(&wait_event->completion);
+	wait_event->id = id;
+	wait_event->match_length = match_length;
+	if (match_length)
+		memcpy(wait_event->match, match, match_length);
+	wait_event->armed = true;
+out:
+	spin_unlock_irqrestore(&wait_event->lock, flags);
+	return ret;
+}
+
+int mt6797_wifi_hif_wait_event_offer(
+	struct mt6797_wifi_hif_wait_event *wait_event,
+	const struct mt6797_wifi_event_view *event)
+{
+	unsigned long flags;
+	size_t copied;
+	int ret = 0;
+
+	if (!wait_event || !event)
+		return -EINVAL;
+	spin_lock_irqsave(&wait_event->lock, flags);
+	if (!wait_event->armed || event->id != wait_event->id)
+		goto out;
+	/* A short matching-ID event cannot safely be classified as foreign. */
+	if (event->payload &&
+	    event->payload_length >= wait_event->match_length &&
+	    wait_event->match_length &&
+	    memcmp(event->payload, wait_event->match,
+		   wait_event->match_length))
+		goto out;
+	if (wait_event->ready) {
+		ret = -EOVERFLOW;
+		goto out;
+	}
+
+	wait_event->id = event->id;
+	wait_event->sequence = event->sequence;
+	wait_event->payload_length = event->payload_length;
+	wait_event->packet_length = event->packet_length;
+	wait_event->error = event->payload_length > sizeof(wait_event->payload) ?
+		-EMSGSIZE : 0;
+	copied = min(event->payload_length, sizeof(wait_event->payload));
+	if (copied) {
+		if (!event->payload) {
+			wait_event->error = -EPROTO;
+			copied = 0;
+		} else {
+			memcpy(wait_event->payload, event->payload, copied);
+		}
+	}
+	wait_event->ready = true;
+	/* Complete while locked so disarm cannot race a stale completion. */
+	complete(&wait_event->completion);
+out:
+	spin_unlock_irqrestore(&wait_event->lock, flags);
+	return ret;
+}
+
+int mt6797_wifi_hif_wait_event_take(
+	struct mt6797_wifi_hif_wait_event *wait_event,
+	struct mt6797_wifi_hif_event_copy *copy)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	if (!wait_event || !copy)
+		return -EINVAL;
+	spin_lock_irqsave(&wait_event->lock, flags);
+	if (!wait_event->armed) {
+		ret = -ENOTCONN;
+		goto out;
+	}
+	if (!wait_event->ready) {
+		ret = -EAGAIN;
+		goto out;
+	}
+	memset(copy, 0, sizeof(*copy));
+	copy->id = wait_event->id;
+	copy->sequence = wait_event->sequence;
+	copy->payload_length = wait_event->payload_length;
+	copy->packet_length = wait_event->packet_length;
+	copy->error = wait_event->error;
+	memcpy(copy->payload, wait_event->payload, sizeof(copy->payload));
+	wait_event->ready = false;
+	wait_event->armed = false;
+out:
+	spin_unlock_irqrestore(&wait_event->lock, flags);
+	return ret;
+}
+
+void mt6797_wifi_hif_wait_event_abort(
+	struct mt6797_wifi_hif_wait_event *wait_event, int reason)
+{
+	unsigned long flags;
+
+	if (!wait_event)
+		return;
+	spin_lock_irqsave(&wait_event->lock, flags);
+	if (wait_event->armed && !wait_event->ready) {
+		wait_event->error = reason < 0 ? reason : -EIO;
+		wait_event->ready = true;
+		complete(&wait_event->completion);
+	}
+	spin_unlock_irqrestore(&wait_event->lock, flags);
+}
+
+void mt6797_wifi_hif_wait_event_disarm(
+	struct mt6797_wifi_hif_wait_event *wait_event)
+{
+	unsigned long flags;
+
+	if (!wait_event)
+		return;
+	spin_lock_irqsave(&wait_event->lock, flags);
+	wait_event->armed = false;
+	wait_event->ready = false;
+	wait_event->error = 0;
+	wait_event->match_length = 0;
+	wait_event->payload_length = 0;
+	wait_event->packet_length = 0;
+	reinit_completion(&wait_event->completion);
+	spin_unlock_irqrestore(&wait_event->lock, flags);
 }
 
 static bool mt6797_wifi_hif_runtime_pump_expired(void *context)
@@ -552,9 +760,13 @@ static int mt6797_wifi_hif_runtime_pump_event(
 	void *context, const struct mt6797_wifi_event_view *event)
 {
 	struct mt6797_wifi_hif_irq *irq = context;
+	int ret;
 
-	return mt6797_wifi_hif_runtime_route_event(&irq->scan_transaction,
+	ret = mt6797_wifi_hif_runtime_route_event(&irq->scan_transaction,
 						 event);
+	if (ret)
+		return ret;
+	return mt6797_wifi_hif_wait_event_offer(&irq->wait_event, event);
 }
 
 static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
@@ -631,7 +843,9 @@ int mt6797_wifi_hif_irq_init(struct mt6797_wifi_hif_irq *irq,
 	if (!irq->rx_buffer[1])
 		return -ENOMEM;
 	mutex_init(&irq->lifecycle_lock);
+	spin_lock_init(&irq->terminal_lock);
 	INIT_WORK(&irq->terminal_work, mt6797_wifi_hif_terminal_work);
+	mt6797_wifi_hif_wait_event_init(&irq->wait_event);
 	irq->mode = MT6797_WIFI_HIF_IRQ_QUIESCENT;
 	return devm_request_threaded_irq(dev, linux_irq,
 					  mt6797_wifi_hif_irq_handler,

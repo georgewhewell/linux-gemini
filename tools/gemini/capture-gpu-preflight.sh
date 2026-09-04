@@ -12,6 +12,7 @@ fi
 : "${DEBUGFS_ROOT:=/sys/kernel/debug}"
 : "${DEVMEM:=devmem}"
 : "${DMESG:=dmesg}"
+: "${PROC_ROOT:=/proc}"
 : "${SYSFS_ROOT:=/sys}"
 
 gpu_device=$SYSFS_ROOT/bus/platform/devices/13040000.gpu
@@ -58,10 +59,15 @@ reject_pattern="$reject_pattern|failed to (get|enable) regulators|using dummy re
 reject_pattern="$reject_pattern|Couldn't set (OPP regulators|recommended OPP)"
 reject_pattern="$reject_pattern|Couldn't initialize GPU devfreq"
 reject_pattern="$reject_pattern|failed to select GPU OPP profile|devfreq init failed"
+topology_pattern='shader_present=0x[1-9a-fA-F][0-9a-fA-F]*'
+topology_pattern="$topology_pattern l2_present=0x[1-9a-fA-F][0-9a-fA-F]*"
 
 if ! printf '%s\n' "$gpu_log" |
 	grep -q '13040000\.gpu.*mali-t880 id '; then
 	reject "Panfrost did not identify the Mali-T880 after reset deassertion"
+fi
+if ! printf '%s\n' "$gpu_log" | grep -Eq "$topology_pattern"; then
+	reject "Panfrost did not report nonzero shader and L2 topology"
 fi
 if printf '%s\n' "$gpu_log" | grep -Eq "$reject_pattern"; then
 	reject "kernel log contains a GPU, VGPU, MFG, reset, or devfreq failure"
@@ -78,6 +84,20 @@ for candidate in "$rt5735_driver"/*-001c; do
 done
 if [ -z "$rt5735_device" ]; then
 	reject "no RT5735 VGPU provider at I2C address 0x1c is bound"
+fi
+
+echo "[gpu-irqs]"
+if [ ! -r "$PROC_ROOT/interrupts" ]; then
+	reject "interrupt registration state is unavailable"
+else
+	for irq_name in panfrost-job panfrost-mmu panfrost-gpu; do
+		if line=$(grep -E "[[:space:]]$irq_name([[:space:]]|$)" \
+			"$PROC_ROOT/interrupts" | head -n 1); then
+			printf '%s\n' "$line"
+		else
+			reject "$irq_name is not registered"
+		fi
+	done
 fi
 
 echo "[gpu-runtime-pm]"

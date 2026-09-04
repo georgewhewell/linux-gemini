@@ -30,7 +30,7 @@ static const struct mtk_gate cam_clks[] = {
 
 static const struct mtk_clk_desc cam_desc = {
 	.clks = cam_clks,
-	.num_clks = ARRAY_SIZE(cam_clks),
+	.num_clks = CLK_CAM_NR,
 };
 
 static const struct of_device_id of_match_clk_mt6797_cam[] = {

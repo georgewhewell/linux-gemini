@@ -41,10 +41,12 @@ These entries are immutable identities, not a run order or schedule.
 | Lane | Source commit | Package commit | Candidate SHA-256 | Offline status |
 | --- | --- | --- | --- | --- |
 | A53 registration/calibration | `d772bb04b727101ae089012c253753ce70d6221a` | `b1fa9539561dee6674fa6a839d7f2f4851f623f2` | `baf0f1fdcb581f19f6dc55bf21f6f86b5ac11ba5a54e5b8ff7a35c645d2a90c0` | Independently reviewed: PASS |
-| MD1 post-vector observer | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `c56ea7a569a8ce7a29f602fdb1c8ca1f0fb4690f` -> `718b9d1849d632b2135a2da23d43a337a1efab59` -> `5b45870571e2dfbf0dd06731001ce9a624ad085e` -> `7194ebaec4b36cf5d46075cc4d1836254c2b196d` | `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213` | Pending root review; treat as offline-qualified only after that review passes |
+| MD1 post-vector observer | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `c56ea7a569a8ce7a29f602fdb1c8ca1f0fb4690f` -> `718b9d1849d632b2135a2da23d43a337a1efab59` -> `5b45870571e2dfbf0dd06731001ce9a624ad085e` -> `7194ebaec4b36cf5d46075cc4d1836254c2b196d` | `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213` | Independently reviewed: PASS |
 | G3 fixed-low Panfrost no-job | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` | `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985` | Independently reviewed: PASS |
+| A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Independently reviewed: PASS |
+| A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Independently reviewed: PASS; provider pass plus exact rollback required first |
 
-All three current packages carry
+All current packages carry
 `power_preflight_policy=owner-attested-20260904`.  They retain no specific
 p22 authorization and no schedule.  The cellular manifest additionally
 retains `scheduling=none`, `specific-p22-authorization=none`, and
@@ -91,10 +93,11 @@ launch, under-lock rehash, watchdog-before-first MD1/EMI write, strict ordered
 5,000-poll/at-least-five-second grammar, fatal-kernel rejection, and exact
 p22/p30/p31 rollback contract.
 
-The final predicate/policy package must nevertheless remain **pending root
-review** in this ledger.  It becomes offline-qualified only after root review
-confirms the final identity and tests.  Even then it remains unscheduled and
-unauthorized for hardware.  Its owner token is exact, while
+Independent review reproduced the exact bundle with local offline builders,
+verified all 15 bundle checksums, passed the package's full acceptance and
+recovery harnesses, and passed an additional adversarial predicate matrix.
+It remains unscheduled and unauthorized for hardware.  Its owner token is
+exact, while
 `scheduling=none`, `specific-p22-authorization=none`, and
 `hardware-proof=none-offline-build-only` remain explicit.
 
@@ -117,23 +120,49 @@ Evidence:
 - `/nix/store/ygwllkhz39xv4a07m5ys9a479qfmv481-gemini-g3-low-opp-nojob-p22-bundle/MANIFEST`
 - `/nix/store/ygwllkhz39xv4a07m5ys9a479qfmv481-gemini-g3-low-opp-nojob-p22-bundle/p22-one-shot.manifest`
 
-## A72 is closed pending remediation
+## A72 provider and CPU8-admission observations
 
-The old A72 provider/resource bundle and the distinct CPU8-admission bundle
-remain closed.  Neither is queued, authorized, or retryable:
+The remediated, independently reviewed provider bundle is:
 
-- provider candidate
-  `6ddc55bfb8d79e8442644812582dc58643d87eb8223007982a821f1d67e0a803`,
-  bundle
-  `/nix/store/74svv37859pfvsy033rhv2srkvhy7z0b-gemini-a72-provider-resource-preflight-p22-bundle`
-- admission candidate
-  `cc8b3ab8864766138a9697ffae79b2c86204cef086eabdeabfca6179b2ca57e0`,
-  bundle
-  `/nix/store/rs5vnqrs12qm5gab164j3flf0a47mhlk-gemini-a72-cpu8-gate-preflight-p22-bundle`
+`/nix/store/r7wnz7m86739dj5l8wjlwinhj3z0d8z5-gemini-a72-provider-resource-preflight-p22-bundle`
 
-They require a fresh reviewed remediation package before reconsideration.
+The distinct CPU8-admission bundle is:
+
+`/nix/store/iqb6k8mvra3gsjj47kmhzlv1x0n3xan4-gemini-a72-cpu8-gate-preflight-p22-bundle`
+
+Independent review verified both exact NARs, every embedded checksum, strict
+21-sample/at-least-60-second parsers, watchdog-before-access enforcement, the
+46-case recovery harness, immutable supervisor ownership, and exact Stage-A
+p22/p30/p31 plus service/watchdog/pstore proof.  The CPU8 gate mechanically
+requires successful provider evidence bound to candidate `da66b64a...`,
+source `301a9556...`, package contract `fe16911c...`, and the exact completed
+Stage-A rollback before it is even eligible for separate consideration.
+
 The provider and admission observations remain separate, mutually exclusive
-boots; no result from either authorizes a CPU_ON request.
+boots.  Neither requests CPU_ON, enables CPU9, changes an OPP, or exercises
+cpufreq.  Both remain `hardware_run=not-run`, `authorization=none`, and
+`scheduling=none`.
+
+The old provider candidate `6ddc55bf...` and old admission candidate
+`cc8b3ab8...` remain closed in the no-retry registry below; remediation does
+not reopen those identities.
+
+## Wi-Fi open-auth lane is closed before assembly
+
+The current clean software pins are source
+`e908db73076dbe95bd72da9ee85512241a809f77` and package
+`dbbb2f88fa60a382d7ad8af5847daac99798c1f1`.  Their object-level qualifier,
+scan-HIF path, single open-auth caller, timeout arbitration, and recovery
+packaging are retained offline.
+
+No independently reviewed AP identity or manifest, matching full candidate
+bundle, or retained qualification-result directory was found in the recovered
+session, local worktrees, known build directories, or Nix store.  The only AP
+file is `qualification/mt6797-wifi-ais-auth-hif/AP-MANIFEST.schema`, which is a
+schema and explicitly forbids guessed values.  The assembler fails closed
+unless an external reviewed manifest and matching candidate provenance are
+provided.  Therefore this lane has no candidate SHA-256, authorization, or
+schedule; assembling one now would require inventing identity.
 
 ## Closed/no-retry candidate registry
 

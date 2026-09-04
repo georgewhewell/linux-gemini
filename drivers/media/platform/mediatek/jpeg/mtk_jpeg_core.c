@@ -1797,15 +1797,15 @@ static irqreturn_t mtk_jpeg_enc_irq(int irq, void *priv)
 	u32 irq_status;
 	irqreturn_t ret = IRQ_NONE;
 
-	cancel_delayed_work(&jpeg->job_timeout_work);
-
 	irq_status = readl(jpeg->reg_base + JPEG_ENC_INT_STS) &
 		     JPEG_ENC_INT_STATUS_MASK_ALLIRQ;
 	if (irq_status)
 		writel(0, jpeg->reg_base + JPEG_ENC_INT_STS);
 
 	if (!(irq_status & JPEG_ENC_INT_STATUS_DONE))
-		return ret;
+		return irq_status ? IRQ_HANDLED : ret;
+
+	cancel_delayed_work(&jpeg->job_timeout_work);
 
 	ret = mtk_jpeg_enc_done(jpeg);
 	return ret;

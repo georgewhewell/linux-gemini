@@ -11,12 +11,12 @@ maintainers:
 
 description: |
   The MT6797 connectivity subsystem contains the shared control resources for
-  Bluetooth, Wi-Fi, GNSS, and FM. Its driver acquires and validates resource
-  metadata and authenticated firmware, then aggregates the explicitly
-  referenced, disabled BTIF PIO supplier and allocates one dormant full-STP
-  session owner. Component assembly does not map or access registers; enable
-  or disable a clock, regulator, reset, interrupt, or power domain; transmit
-  firmware or a frame; or map the shared reserved memory.
+  Bluetooth, Wi-Fi, GNSS, and FM. Its canonical driver owns the authenticated
+  firmware, persistent shared-EMI setup, reset-held power/identity sequence,
+  post-identity reset release, and the explicitly referenced BTIF PIO
+  component's mandatory-to-full STP handoff. Shared EMI has no inverse, so a
+  failed canonical transaction cannot be retried before reboot. The canonical
+  board node remains disabled by default.
 
   A separately named, explicitly opt-in shared-memory preflight obtains the
   boot-time reserved-memory record for the existing no-map CONSYS reservation
@@ -130,7 +130,8 @@ properties:
   mediatek,emi-mpu:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: |
-      Persistent MT6797 shared-EMI MPU owner for the EMI identity experiment.
+      Persistent MT6797 shared-EMI MPU owner. The canonical lifecycle claims
+      it before powering CONSYS and never attempts to release it.
 
   mediatek,infracfg:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -184,8 +185,15 @@ allOf:
         compatible:
           const: mediatek,mt6797-consys
     then:
+      properties:
+        reg-names:
+          contains:
+            const: afe
       required:
         - mediatek,btif
+        - mediatek,emi-mpu
+        - mediatek,infracfg
+        - mediatek,spm
         - power-domains
         - power-domain-names
         - vcn18-supply
@@ -271,8 +279,9 @@ examples:
             reg = <0 0x18070000 0 0x200>,
                   <0 0x10007000 0 0x100>,
                   <0 0x10000000 0 0x2000>,
-                  <0 0x10006000 0 0x1000>;
-            reg-names = "mcu", "ap-rgu", "topckgen", "spm";
+                  <0 0x10006000 0 0x1000>,
+                  <0 0x180b6000 0 0x100>;
+            reg-names = "mcu", "ap-rgu", "topckgen", "spm", "afe";
             interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>,
                          <GIC_SPI 285 IRQ_TYPE_LEVEL_LOW>;
             interrupt-names = "bgf", "wdt";

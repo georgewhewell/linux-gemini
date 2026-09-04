@@ -37,6 +37,12 @@ mt6797-gemini-pda-a53-cpuidle-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-a53-cpuidle.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-a53-cpuidle.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-a53-scheduler.dtbo
+mt6797-gemini-pda-a53-scheduler-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-a53-dvfs-activation.dtbo \
+	mt6797-gemini-a53-scheduler.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-a53-scheduler.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-a72-resource-preflight.dtbo
 mt6797-gemini-pda-a72-resource-preflight-dtbs := \
 	mt6797-gemini-pda.dtb \

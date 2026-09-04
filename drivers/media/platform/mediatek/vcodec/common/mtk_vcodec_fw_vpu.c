@@ -40,6 +40,7 @@ static int mtk_vcodec_vpu_ipi_send(struct mtk_vcodec_fw *fw, int id, void *buf,
 
 static void mtk_vcodec_vpu_release(struct mtk_vcodec_fw *fw)
 {
+	vpu_wdt_unreg_handler(fw->pdev, fw->rst_id);
 	put_device(&fw->pdev->dev);
 }
 
@@ -91,6 +92,7 @@ struct mtk_vcodec_fw *mtk_vcodec_fw_vpu_init(void *priv, enum mtk_vcodec_fw_use 
 	struct platform_device *plat_dev;
 	struct mtk_vcodec_fw *fw;
 	enum rst_id rst_id;
+	int ret;
 
 	if (fw_use == ENCODER) {
 		struct mtk_vcodec_enc_dev *enc_dev = priv;
@@ -113,20 +115,30 @@ struct mtk_vcodec_fw *mtk_vcodec_fw_vpu_init(void *priv, enum mtk_vcodec_fw_use 
 		return ERR_PTR(-EINVAL);
 	}
 
-	if (fw_use == DECODER)
-		vpu_wdt_reg_handler(fw_pdev, mtk_vcodec_vpu_reset_dec_handler, priv, rst_id);
-	else
-		vpu_wdt_reg_handler(fw_pdev, mtk_vcodec_vpu_reset_enc_handler, priv, rst_id);
-
 	fw = devm_kzalloc(&plat_dev->dev, sizeof(*fw), GFP_KERNEL);
 	if (!fw) {
 		put_device(&fw_pdev->dev);
 		return ERR_PTR(-ENOMEM);
 	}
+
+	if (fw_use == DECODER)
+		ret = vpu_wdt_reg_handler(fw_pdev,
+					  mtk_vcodec_vpu_reset_dec_handler,
+					  priv, rst_id);
+	else
+		ret = vpu_wdt_reg_handler(fw_pdev,
+					  mtk_vcodec_vpu_reset_enc_handler,
+					  priv, rst_id);
+	if (ret) {
+		put_device(&fw_pdev->dev);
+		return ERR_PTR(ret);
+	}
+
 	fw->type = VPU;
 	fw->ops = &mtk_vcodec_vpu_msg;
 	fw->pdev = fw_pdev;
 	fw->fw_use = fw_use;
+	fw->rst_id = rst_id;
 
 	return fw;
 }

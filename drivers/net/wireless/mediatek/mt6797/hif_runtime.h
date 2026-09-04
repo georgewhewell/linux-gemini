@@ -9,6 +9,7 @@
 #include <linux/workqueue.h>
 
 #include "hif_pump.h"
+#include "scan.h"
 
 struct device;
 struct mt6797_wifi_ahb_hif;
@@ -60,6 +61,7 @@ struct mt6797_wifi_hif_irq {
 	void *capability_context;
 	struct mt6797_wifi_hif_runtime_transaction transaction;
 	struct mt6797_wifi_hif_pump_stats pump_stats;
+	struct mt6797_wifi_scan_transaction scan_transaction;
 	u8 *rx_buffer[2];
 	ktime_t pump_deadline;
 	u32 whcr_before;
@@ -78,6 +80,9 @@ int mt6797_wifi_hif_runtime_transaction_stop(
 	struct mt6797_wifi_hif_runtime_transaction *transaction,
 	bool terminal);
 bool mt6797_wifi_hif_runtime_mark_terminal(int *mode);
+int mt6797_wifi_hif_runtime_route_event(
+	struct mt6797_wifi_scan_transaction *transaction,
+	const struct mt6797_wifi_event_view *event);
 
 int mt6797_wifi_hif_irq_init(struct mt6797_wifi_hif_irq *irq,
 			     struct device *dev,

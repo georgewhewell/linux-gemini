@@ -27,6 +27,9 @@ struct mt6797_wifi_hif_pump_ops {
 	int (*read_lengths)(void *context, u16 lengths[2]);
 	int (*read_packet)(void *context, unsigned int port, u16 length,
 			   const u8 **packet);
+	/* Called synchronously; event and its payload must not be retained. */
+	int (*deliver_event)(void *context,
+			     const struct mt6797_wifi_event_view *event);
 	bool (*expired)(void *context);
 	void *context;
 };
@@ -35,6 +38,7 @@ int mt6797_wifi_hif_pump_account_tx(
 	struct mt6797_wifi_hif_pump_stats *stats,
 	const u16 released[MT6797_WIFI_HIF_TX_QUEUES]);
 int mt6797_wifi_hif_pump_dispatch(
+	const struct mt6797_wifi_hif_pump_ops *ops,
 	struct mt6797_wifi_hif_pump_stats *stats,
 	const struct mt6797_wifi_rx_view *frame);
 int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,

@@ -34,11 +34,14 @@ int mt6797_wifi_hif_pump_account_tx(
 }
 
 int mt6797_wifi_hif_pump_dispatch(
+	const struct mt6797_wifi_hif_pump_ops *ops,
 	struct mt6797_wifi_hif_pump_stats *stats,
 	const struct mt6797_wifi_rx_view *frame)
 {
+	struct mt6797_wifi_event_view event;
 	u64 packets;
 	u64 typed;
+	bool deliver = false;
 
 	if (!stats || !frame)
 		return -EINVAL;
@@ -52,6 +55,14 @@ int mt6797_wifi_hif_pump_dispatch(
 		stats->events = typed;
 		stats->last_event_id = frame->event_id;
 		stats->last_event_sequence = frame->sequence;
+		event = (struct mt6797_wifi_event_view) {
+			.payload = frame->payload,
+			.payload_length = frame->payload_length,
+			.packet_length = frame->packet_length,
+			.id = frame->event_id,
+			.sequence = frame->sequence,
+		};
+		deliver = true;
 		break;
 	case MT6797_WIFI_RX_IEEE80211:
 		if (check_add_overflow(stats->ieee80211_frames, 1ULL, &typed))
@@ -67,6 +78,8 @@ int mt6797_wifi_hif_pump_dispatch(
 		return -EPROTO;
 	}
 	stats->rx_packets = packets;
+	if (deliver && ops && ops->deliver_event)
+		return ops->deliver_event(ops->context, &event);
 	return 0;
 }
 
@@ -149,9 +162,11 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 			ret = mt6797_wifi_rx_parse(packet, lengths[port], &frame);
 			if (ret)
 				return ret;
-			ret = mt6797_wifi_hif_pump_dispatch(stats, &frame);
+			ret = mt6797_wifi_hif_pump_dispatch(ops, stats, &frame);
 			if (ret)
 				return ret;
+			if (ops->expired(ops->context))
+				return -ETIMEDOUT;
 			packets++;
 		}
 	}

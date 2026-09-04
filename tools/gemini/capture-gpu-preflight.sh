@@ -194,6 +194,7 @@ reject_pattern="$reject_pattern|Couldn't set (OPP regulators|recommended OPP)"
 reject_pattern="$reject_pattern|Couldn't initialize GPU devfreq"
 reject_pattern="$reject_pattern|failed to select GPU OPP profile|devfreq init failed"
 reject_pattern="$reject_pattern|(L2|shader|tiler) power-(on|off) timeout"
+reject_pattern="$reject_pattern|MFG idle check failed"
 reject_pattern="$reject_pattern|GPU fault|Unhandled Page fault"
 identity_pattern='13040000\.gpu: mali-t880 id 0x880 major 0x1 minor 0x0 status 0x8$'
 topology_pattern='shader_present=0xf l2_present=0x1$'

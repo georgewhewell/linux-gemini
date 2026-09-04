@@ -796,20 +796,21 @@
 		clocks = <&infrasys CLK_INFRA_I2C_APPM>;
 		clock-names = "i2c";
 		mediatek,infracfg = <&infrasys>;
+		#access-controller-cells = <0>;
 		status = "disabled";
 	};
 
 	cpuclk: clock-controller@1001a000 {
 		compatible = "mediatek,mt6797-mcumixedsys";
 		reg = <0 0x1001a000 0 0x1000>,
-		      <0 0x11015000 0 0x1000>,
 		      <0 0x10220000 0 0x1000>;
-		reg-names = "mcumixed", "cspm", "mcucfg";
+		reg-names = "mcumixed", "mcucfg";
 		clocks = <&clk26m>,
 			 <&apmixedsys CLK_APMIXED_MAINPLL>,
 			 <&apmixedsys CLK_APMIXED_UNIVPLL>,
 			 <&infrasys CLK_INFRA_I2C_APPM>;
 		clock-names = "clk26m", "mainpll", "univpll", "i2c";
+		access-controllers = <&dvfsp_handoff>;
 		#clock-cells = <1>;
 		mediatek,boot-watchdog = <&watchdog>;
 		status = "disabled";

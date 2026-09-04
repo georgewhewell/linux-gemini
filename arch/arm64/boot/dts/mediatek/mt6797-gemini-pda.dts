@@ -715,7 +715,6 @@
 };
 
 &dvfsp_handoff {
-	#access-controller-cells = <0>;
 	status = "okay";
 };
 

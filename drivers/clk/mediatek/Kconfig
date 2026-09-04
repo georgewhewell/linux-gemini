@@ -353,11 +353,12 @@ config COMMON_CLK_MT6797_CPU
 	bool "Clock provider for MediaTek MT6797 CPUs"
 	depends on ARM64
 	depends on COMMON_CLK_MT6797
+	depends on MTK_MT6797_DVFSP_HANDOFF
 	help
 	  Build the CCF topology for the MT6797 CPU and CCI clocks. A53 clock
-	  changes are serialized with firmware, use exact validated rate
-	  points, and are verified and rolled back on errors. A72 and CCI
-	  mutations remain unsupported.
+	  changes use the DVFSP handoff's sole CSPM mapping and transaction
+	  gate, use exact validated rate points, and are verified and rolled
+	  back on errors. A72 and CCI mutations remain unsupported.
 
 config COMMON_CLK_MT6797_CPU_KUNIT_TEST
 	bool "KUnit tests for MediaTek MT6797 CPU clocks" if !KUNIT_ALL_TESTS

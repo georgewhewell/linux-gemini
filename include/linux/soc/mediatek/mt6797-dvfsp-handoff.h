@@ -11,6 +11,14 @@
 struct device;
 struct mt6797_dvfsp_handoff;
 
+/*
+ * The CSPM base is valid only for the duration of this callback. Consumers
+ * must not retain it. The handoff owner serializes the callback with its
+ * validation, PM lifecycle, and every other admitted CSPM transaction.
+ */
+typedef int (*mt6797_dvfsp_cspm_transaction_fn)(void __iomem *cspm,
+						void *context);
+
 struct mt6797_dvfsp_i2c6_lease {
 	u64 generation;
 	u64 cookie;
@@ -413,21 +421,22 @@ struct mt6797_dvfsp_i2c6_fw_ops {
 			      const struct mt6797_dvfsp_i2c6_fw_request *request,
 			      struct mt6797_dvfsp_i2c6_fw_response *response);
 	int (*release)(void *context,
-			      const struct mt6797_dvfsp_i2c6_fw_request *request,
-			      struct mt6797_dvfsp_i2c6_fw_response *response);
+		       const struct mt6797_dvfsp_i2c6_fw_request *request,
+		       struct mt6797_dvfsp_i2c6_fw_response *response);
 };
 
 #if IS_REACHABLE(CONFIG_MTK_MT6797_DVFSP_HANDOFF)
-struct mt6797_dvfsp_handoff *
-mt6797_dvfsp_handoff_get(struct device *consumer);
+struct mt6797_dvfsp_handoff *mt6797_dvfsp_handoff_get(struct device *consumer);
 int mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff);
+int mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
+				  mt6797_dvfsp_cspm_transaction_fn operation,
+				  void *context);
 int mt6797_dvfsp_handoff_begin_i2c6_transfer(
 	struct mt6797_dvfsp_handoff *handoff,
 	struct mt6797_dvfsp_i2c6_lease *lease);
 int mt6797_dvfsp_handoff_end_i2c6_transfer(
 	struct mt6797_dvfsp_handoff *handoff,
-	const struct mt6797_dvfsp_i2c6_lease *lease,
-	int transfer_result);
+	const struct mt6797_dvfsp_i2c6_lease *lease, int transfer_result);
 int mt6797_dvfsp_handoff_i2c6_fw_register(
 	struct mt6797_dvfsp_handoff *handoff,
 	const struct mt6797_dvfsp_i2c6_fw_ops *ops, void *context);
@@ -513,9 +522,16 @@ mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff)
 }
 
 static inline int
-mt6797_dvfsp_handoff_begin_i2c6_transfer(
-	struct mt6797_dvfsp_handoff *handoff,
-	struct mt6797_dvfsp_i2c6_lease *lease)
+mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
+			      mt6797_dvfsp_cspm_transaction_fn operation,
+			      void *context)
+{
+	return -ENODEV;
+}
+
+static inline int
+mt6797_dvfsp_handoff_begin_i2c6_transfer(struct mt6797_dvfsp_handoff *handoff,
+					 struct mt6797_dvfsp_i2c6_lease *lease)
 {
 	return -ENODEV;
 }

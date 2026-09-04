@@ -679,11 +679,23 @@ config MTK_MT6797_DVFSP_HANDOFF
 	  resets, pauses, or loads firmware, touches an I2C controller or
 	  regulator, or exposes a writable userspace control.
 
-	  This option does not implement per-transfer DVFSP coordination and
-	  does not authorize I2C6 by itself. Keep every dependent consumer
-	  disabled until a separate experiment establishes the handoff.
+	  The handoff device is the sole owner of its CSPM mapping. Once the
+	  validation reaches READY, it serializes I2C6 admission and CPU-clock
+	  CSPM transactions with its validation and PM lifecycle. It does not
+	  authorize either consumer until the handoff is established.
 
 	  This option is for bounded Gemini PDA bring-up experiments only.
+
+config MTK_MT6797_DVFSP_CSPM_ACCESS_KUNIT_TEST
+	bool "KUnit tests for MT6797 DVFSP CSPM access arbitration" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y
+	depends on MTK_MT6797_DVFSP_HANDOFF
+	default KUNIT_ALL_TESTS
+	help
+	  Exercise the hardware-free readiness, sticky-fault, callback-error,
+	  and mutual-exclusion contract of the single-owner CSPM access gate.
+	  The tests use ordinary memory as an identity token and perform no
+	  MMIO, firmware, clock, regulator, or CPU operation.
 
 config MTK_MT6797_DVFSP_RESOURCE_OWNER
 	bool "MediaTek MT6797 DVFSP resource-only owner"

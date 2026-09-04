@@ -48,6 +48,30 @@ config MTK_MT6797_WIFI
 	  registered. The Device Tree node is disabled by default, so enabling this
 	  option alone performs no hardware access.
 
+config MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION
+	bool "MT6797 one-shot open-auth qualification trigger"
+	depends on MTK_MT6797_WIFI=y
+	default n
+	help
+	  Add the candidate-only, write-once open-auth qualification attributes to
+	  the otherwise dormant MT6797 WLAN endpoint. Probe never invokes the gate.
+	  One explicit write consumes the gate for the boot even when parsing or
+	  transport fails. The operation performs one passive scan and at most one
+	  open-auth request; it cannot associate, install keys, open a controlled
+	  port, or register a network interface.
+
+	  This option is only for an independently supervised recovery candidate.
+	  If unsure, say N.
+
+config MTK_MT6797_WIFI_OPEN_AUTH_SOURCE_REVISION
+	string "Qualification candidate source revision"
+	depends on MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION
+	default ""
+	help
+	  Set this to the exact 40-character lowercase hexadecimal source commit
+	  embedded by the candidate build. An empty, malformed, or all-zero value
+	  makes probe fail before the trigger attribute is registered.
+
 config MTK_MT6797_WIFI_KUNIT_TEST
 	bool "KUnit tests for the MT6797 WLAN firmware boundary" if !KUNIT_ALL_TESTS
 	depends on KUNIT
@@ -68,3 +92,6 @@ config MTK_MT6797_WIFI_KUNIT_TEST
 	  WLAN-table resource ledger, including atomic allocation rollback and
 	  stale-handle rejection, plus caller-driven AIS transaction ordering,
 	  timeout arbitration, reverse teardown, and terminal fencing.
+	  When the candidate-only qualification option is enabled, it also checks
+	  strict manifest-command parsing, write-once consumption, scan/auth/stop
+	  ordering, and immutable transcript-result formatting.

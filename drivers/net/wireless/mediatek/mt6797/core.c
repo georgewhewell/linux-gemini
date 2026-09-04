@@ -19,6 +19,10 @@
 #include "hif_runtime.h"
 #include "runtime_config.h"
 
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
+#include "open_auth_qualification.h"
+#endif
+
 #define MT6797_WIFI_HIF_BASE	0x180f0000
 #define MT6797_WIFI_HIF_SPI	283
 
@@ -30,8 +34,46 @@ struct mt6797_wifi {
 	struct mt6797_wifi_capability_session capability_session;
 	struct mt6797_wifi_capability capability;
 	struct mt6797_wifi_runtime_config runtime_config;
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
+	struct mt6797_wifi_open_auth_qualification qualification;
+#endif
 	int irq;
 };
+
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
+static ssize_t open_auth_qualification_store(
+	struct device *dev, struct device_attribute *attribute,
+	const char *buffer, size_t count)
+{
+	struct mt6797_wifi *wifi = dev_get_drvdata(dev);
+
+	(void)attribute;
+	return mt6797_wifi_open_auth_qualification_trigger(&wifi->qualification,
+		buffer, count);
+}
+static DEVICE_ATTR_WO(open_auth_qualification);
+
+static ssize_t open_auth_qualification_result_show(
+	struct device *dev, struct device_attribute *attribute, char *buffer)
+{
+	struct mt6797_wifi *wifi = dev_get_drvdata(dev);
+
+	(void)attribute;
+	return mt6797_wifi_open_auth_qualification_result_show(
+		&wifi->qualification, buffer);
+}
+static DEVICE_ATTR_RO(open_auth_qualification_result);
+
+static struct attribute *mt6797_wifi_open_auth_qualification_attrs[] = {
+	&dev_attr_open_auth_qualification.attr,
+	&dev_attr_open_auth_qualification_result.attr,
+	NULL,
+};
+
+static const struct attribute_group mt6797_wifi_open_auth_qualification_group = {
+	.attrs = mt6797_wifi_open_auth_qualification_attrs,
+};
+#endif
 
 static void mt6797_wifi_release_firmware(void *data)
 {
@@ -68,6 +110,12 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	wifi = devm_kzalloc(dev, sizeof(*wifi), GFP_KERNEL);
 	if (!wifi)
 		return -ENOMEM;
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
+	if (!mt6797_wifi_open_auth_source_revision_valid(
+		CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_SOURCE_REVISION))
+		return dev_err_probe(dev, -EINVAL,
+			"invalid qualification source revision\n");
+#endif
 	resource = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!resource || resource->start != MT6797_WIFI_HIF_BASE ||
 	    resource_size(resource) != MT6797_WIFI_AHB_HIF_SIZE)
@@ -130,11 +178,29 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 				     "failed to establish persistent WLAN HIF\n");
 
 	platform_set_drvdata(pdev, wifi);
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
+	ret = mt6797_wifi_open_auth_qualification_init(&wifi->qualification,
+		&wifi->hif_irq, &wifi->runtime_config, &wifi->capability,
+		CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_SOURCE_REVISION, NULL);
+	if (ret)
+		goto stop_runtime;
+	ret = device_add_group(dev,
+		&mt6797_wifi_open_auth_qualification_group);
+	if (ret)
+		goto stop_runtime;
+#endif
 	dev_info(dev,
 		 "WLAN %#06x fw %#06x HIF_EVENT_PUMP_READY irq=%d budget=%u timeout_ms=100\n",
 		 wifi->capability.product_id, wifi->capability.firmware_version,
 		 wifi->irq, MT6797_WIFI_HIF_RX_BUDGET);
 	return 0;
+
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
+stop_runtime:
+	mt6797_wifi_hif_runtime_stop(&wifi->hif_irq);
+	return dev_err_probe(dev, ret,
+		"failed to register open-auth qualification gate\n");
+#endif
 }
 
 static void mt6797_wifi_remove(struct platform_device *pdev)
@@ -142,6 +208,10 @@ static void mt6797_wifi_remove(struct platform_device *pdev)
 	struct mt6797_wifi *wifi = platform_get_drvdata(pdev);
 	int ret;
 
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
+	device_remove_group(&pdev->dev,
+		&mt6797_wifi_open_auth_qualification_group);
+#endif
 	ret = mt6797_wifi_hif_runtime_stop(&wifi->hif_irq);
 	if (ret)
 		dev_err(&pdev->dev,

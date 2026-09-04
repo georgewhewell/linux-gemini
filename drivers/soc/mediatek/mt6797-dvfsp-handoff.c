@@ -1378,6 +1378,16 @@ int mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff)
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_require_ready);
 
+static void mt6797_dvfsp_cspm_transaction_terminal(void *context)
+{
+	struct mt6797_dvfsp_handoff *handoff = context;
+
+	mt6797_dvfsp_cspm_access_assert_held(&handoff->cspm_access);
+	mutex_lock(&handoff->lock);
+	mt6797_dvfsp_fault_locked(handoff, "cspm-transaction-terminal-failure");
+	mutex_unlock(&handoff->lock);
+}
+
 int mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
 				  mt6797_dvfsp_cspm_transaction_fn operation,
 				  void *context)
@@ -1386,7 +1396,9 @@ int mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
 		return -EINVAL;
 
 	return mt6797_dvfsp_cspm_access_transaction(&handoff->cspm_access,
-						handoff->cspm, operation, context);
+						handoff->cspm, operation, context,
+						mt6797_dvfsp_cspm_transaction_terminal,
+						handoff);
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_cspm_transaction);
 

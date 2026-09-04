@@ -9,6 +9,8 @@ cpuclk="$root/drivers/clk/mediatek/clk-mt6797-cpu.c"
 handoff="$root/drivers/soc/mediatek/mt6797-dvfsp-handoff.c"
 access="$root/drivers/soc/mediatek/mt6797-dvfsp-cspm-access.c"
 access_test="$root/drivers/soc/mediatek/mt6797-dvfsp-cspm-access-test.c"
+i2c="$root/drivers/i2c/busses/i2c-mt65xx.c"
+handoff_header="$root/include/linux/soc/mediatek/mt6797-dvfsp-handoff.h"
 dtsi="$root/arch/arm64/boot/dts/mediatek/mt6797.dtsi"
 binding="$root/Documentation/devicetree/bindings/clock/mediatek,mt6797-mcumixedsys.yaml"
 
@@ -83,7 +85,15 @@ if [ "$(grep -F -c -- \
 	exit 1
 fi
 require_fixed 'mutex_lock(&access->lock);' "$access"
+require_fixed 'if (ret == -EUCLEAN)' "$access"
+require_fixed 'MT6797_DVFSP_PERMISSION_FAULTED);' "$access"
+require_fixed 'mt6797_dvfsp_cspm_transaction_terminal' "$handoff"
+require_fixed 'cspm-transaction-terminal-failure' "$handoff"
 require_fixed 'MT6797_DVFSP_PERMISSION_FAULTED' "$access_test"
 require_fixed 'mutex_trylock(&ctx->access->lock)' "$access_test"
+require_fixed 'mt6797_dvfsp_cspm_serializes_concurrent_transactions' "$access_test"
+require_fixed 'mt6797_dvfsp_i2c6_merge_transfer_result' "$handoff_header"
+require_fixed 'mt6797_dvfsp_i2c6_merge_transfer_result(ret, lease_ret)' "$i2c"
+reject_fixed 'if (!ret && lease_ret)' "$i2c"
 
 echo 'test-mt6797-cpuclk-shared-cspm: PASS'

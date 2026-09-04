@@ -16,6 +16,7 @@
 #include "capability.h"
 #include "firmware.h"
 #include "hif.h"
+#include "hif_runtime.h"
 #include "runtime_config.h"
 
 #define MT6797_WIFI_HIF_BASE	0x180f0000
@@ -25,7 +26,8 @@ struct mt6797_wifi {
 	struct mt6797_wifi_ahb_hif hif;
 	struct mt6797_wifi_firmware firmware;
 	struct mt6797_wifi_boot boot;
-	struct mt6797_wifi_capability_irq capability_irq;
+	struct mt6797_wifi_hif_irq hif_irq;
+	struct mt6797_wifi_capability_session capability_session;
 	struct mt6797_wifi_capability capability;
 	struct mt6797_wifi_runtime_config runtime_config;
 	int irq;
@@ -87,10 +89,14 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	    IRQ_TYPE_LEVEL_LOW)
 		return dev_err_probe(dev, -EINVAL,
 				     "HIF interrupt must be level-low\n");
-	ret = mt6797_wifi_capability_irq_init(&wifi->capability_irq, dev,
-					      &wifi->hif, wifi->irq);
+	ret = mt6797_wifi_hif_irq_init(&wifi->hif_irq, dev, &wifi->hif,
+				       wifi->irq);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to reserve HIF interrupt\n");
+	ret = mt6797_wifi_capability_session_init(&wifi->capability_session,
+						  &wifi->hif_irq);
+	if (ret)
+		return ret;
 
 	ret = mt6797_wifi_firmware_request(dev, &wifi->firmware);
 	if (ret)
@@ -104,8 +110,8 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to start verified WLAN firmware\n");
-	ret = mt6797_wifi_capability_query(&wifi->capability_irq, &wifi->boot,
-					   &wifi->capability);
+	ret = mt6797_wifi_capability_query(&wifi->capability_session,
+					   &wifi->boot, &wifi->capability);
 	if (ret) {
 		int stop_ret = mt6797_wifi_boot_stop(&wifi->boot);
 
@@ -118,10 +124,14 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed WLAN post-capability basic config\n");
+	ret = mt6797_wifi_hif_runtime_start(&wifi->hif_irq, &wifi->boot);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to establish persistent WLAN HIF\n");
 
 	platform_set_drvdata(pdev, wifi);
 	dev_info(dev,
-		 "WLAN %#06x fw %#06x BASIC_CONFIG_SENT seq=2 native80211=0 csum=0; IRQ/net disabled\n",
+		 "WLAN %#06x fw %#06x BASIC_CONFIG_SENT seq=2; persistent HIF armed without event consumer\n",
 		 wifi->capability.product_id, wifi->capability.firmware_version);
 	return 0;
 }
@@ -131,7 +141,7 @@ static void mt6797_wifi_remove(struct platform_device *pdev)
 	struct mt6797_wifi *wifi = platform_get_drvdata(pdev);
 	int ret;
 
-	ret = mt6797_wifi_boot_stop(&wifi->boot);
+	ret = mt6797_wifi_hif_runtime_stop(&wifi->hif_irq);
 	if (ret)
 		dev_err(&pdev->dev,
 			"failed to shut down WLAN firmware cleanly: %d\n", ret);

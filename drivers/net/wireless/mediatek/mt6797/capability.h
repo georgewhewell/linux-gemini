@@ -10,6 +10,7 @@
 struct device;
 struct mt6797_wifi_ahb_hif;
 struct mt6797_wifi_boot;
+struct mt6797_wifi_hif_irq;
 
 struct mt6797_wifi_capability {
 	u16 product_id;
@@ -28,8 +29,8 @@ struct mt6797_wifi_capability {
 	u32 compile_flag1;
 };
 
-struct mt6797_wifi_capability_irq {
-	struct mt6797_wifi_ahb_hif *hif;
+struct mt6797_wifi_capability_session {
+	struct mt6797_wifi_hif_irq *owner;
 	struct mt6797_wifi_boot *boot;
 	struct completion completion;
 	struct mt6797_wifi_capability capability;
@@ -38,7 +39,6 @@ struct mt6797_wifi_capability_irq {
 	u32 whcr_before;
 	u32 whisr;
 	u32 wrplr;
-	int irq;
 	int result;
 	unsigned int irq_count;
 	u8 sequence;
@@ -49,7 +49,7 @@ struct mt6797_wifi_capability_irq {
 
 struct mt6797_wifi_capability_ops {
 	int (*precheck)(void *context);
-	void (*arm)(void *context);
+	int (*arm)(void *context);
 	void (*enable_linux_irq)(void *context);
 	int (*enable_device_irq)(void *context);
 	void (*unmask_hif_irq)(void *context);
@@ -71,11 +71,10 @@ int mt6797_wifi_capability_event_parse(const u8 *event, size_t length,
 int
 mt6797_wifi_capability_transaction(const struct mt6797_wifi_capability_ops *ops);
 
-int mt6797_wifi_capability_irq_init(struct mt6797_wifi_capability_irq *irq,
-				    struct device *dev,
-				    struct mt6797_wifi_ahb_hif *hif,
-				    int linux_irq);
-int mt6797_wifi_capability_query(struct mt6797_wifi_capability_irq *irq,
+int mt6797_wifi_capability_session_init(
+	struct mt6797_wifi_capability_session *session,
+	struct mt6797_wifi_hif_irq *owner);
+int mt6797_wifi_capability_query(struct mt6797_wifi_capability_session *session,
 				 struct mt6797_wifi_boot *boot,
 				 struct mt6797_wifi_capability *capability);
 

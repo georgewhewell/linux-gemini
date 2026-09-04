@@ -82,6 +82,27 @@ hardware collector failed, so this exact candidate is retired and
 closed/no-retry.  The earlier offline PASS is not a hardware pass or evidence
 of production readiness.
 
+The retained capture is
+`/mnt/Home/src/nixos-gemini/handoff/a53-thermal-p22-d772bb04-baf0f1fd-one-shot-20260904T211500+0200`.
+Its local recovery record is
+`/mnt/Home/src/nixos-gemini/repo-a53-thermal-remediation/artifacts/p22-recovery-20260904-210458-1216393`,
+mirrored at
+`/mnt/Home/src/nixos-gemini-flash-p22-20260829/p22-recovery-20260904-210458-1216393`.
+All 15 primary validations stopped at the exact `grep 'Gemini'` model check;
+`dmesg-pre` records `Machine model: MT6797X`.  The retained pstore console at
+lines 216--218 records the `mt6797_mp0` clock-provider `-EINVAL`/`-22`, lines
+269--274 record deferred DVFSP, thermal, and cpufreq probes, and line 276
+records `capture=fail`.  It contains no panic, Oops, or BUG marker.
+
+Recovery completed with Stage A running.  `pstore-post.status` is `complete`,
+and `recovered-partition-hashes` records exact p22
+`1b5f808e494f8c91ec5feedcbce89bf018271b30b87ce3910082cd298d8817dc`,
+p30 `122c0f461e94d3439016e80339c7ee96f865e3591a3e2fbd163a7769dc0ac159`,
+and p31 `1fa78de9f8744a6818bcef2f6773737939f84364de982413910d4958d6d21513`.
+The bundle's pstore helper incorrectly addressed `/bin/busybox`; recovery
+therefore required a resume-only in-memory path substitution.  This is a
+recorded package defect, not permission to reuse or retry the candidate.
+
 Evidence:
 
 - `/mnt/Home/src/nixos-gemini/repo-a53-thermal-remediation/research/A53_DVFS_THERMAL_SOFTWARE_PREFLIGHT_20260904.md`

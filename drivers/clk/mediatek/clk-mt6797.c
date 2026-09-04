@@ -542,12 +542,12 @@ static const struct mtk_fixed_factor infra_fixed_divs[] = {
 
 static u16 infra_rst_ofs[] = {
 	0x120,
-	0x124,
-	0x128,
+	0x130,
+	0x140,
 };
 
 static const struct mtk_clk_rst_desc infra_rst_desc = {
-	.version = MTK_RST_SIMPLE,
+	.version = MTK_RST_SET_CLR,
 	.rst_bank_ofs = infra_rst_ofs,
 	.rst_bank_nr = ARRAY_SIZE(infra_rst_ofs),
 };

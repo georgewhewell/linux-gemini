@@ -66,6 +66,8 @@ struct mt6797_consys_stp_tx_slot {
 struct mt6797_consys_stp_session {
 	struct mutex lock;
 	struct mt6797_consys_stp_session_ops ops;
+	mt6797_consys_stp_rx_cb_t wmt_receive;
+	void *wmt_receive_context;
 	mt6797_consys_stp_gnss_rx_cb_t gnss_receive;
 	void *gnss_receive_context;
 	struct mt6797_consys_stp_session_lease *lease;
@@ -254,7 +256,11 @@ static int mt6797_consys_stp_finish_frame_locked(
 	ack = session->header[0] & 0x7;
 
 	if (sequence == session->expected_rxseq) {
-		if (session->channel == MTK_STP_GNSS && session->gnss_receive)
+		if (session->channel == MTK_STP_WMT && session->wmt_receive)
+			ret = session->wmt_receive(session->wmt_receive_context,
+						   session->channel, session->payload,
+						   session->payload_length);
+		else if (session->channel == MTK_STP_GNSS && session->gnss_receive)
 			ret = session->gnss_receive(session->gnss_receive_context,
 						    session->payload,
 						    session->payload_length);
@@ -574,6 +580,51 @@ int mt6797_consys_stp_session_unbind_gnss(
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_unbind_gnss);
+
+int mt6797_consys_stp_session_bind_wmt(struct mt6797_consys_stp_session *session,
+				       mt6797_consys_stp_rx_cb_t receive,
+				       void *receive_context)
+{
+	int ret = 0;
+
+	if (!session || !receive)
+		return -EINVAL;
+
+	mutex_lock(&session->lock);
+	if (session->state != MT6797_CONSYS_STP_NEW) {
+		ret = -EBUSY;
+	} else if (session->wmt_receive) {
+		ret = -EEXIST;
+	} else {
+		session->wmt_receive = receive;
+		session->wmt_receive_context = receive_context;
+	}
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bind_wmt);
+
+int mt6797_consys_stp_session_unbind_wmt(struct mt6797_consys_stp_session *session,
+					 mt6797_consys_stp_rx_cb_t receive,
+					 void *receive_context)
+{
+	int ret = 0;
+
+	if (!session || !receive)
+		return -EINVAL;
+
+	mutex_lock(&session->lock);
+	if (session->wmt_receive != receive ||
+	    session->wmt_receive_context != receive_context) {
+		ret = -ENOENT;
+	} else {
+		session->wmt_receive = NULL;
+		session->wmt_receive_context = NULL;
+	}
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_unbind_wmt);
 
 static int mt6797_consys_stp_session_transmit_locked(
 		struct mt6797_consys_stp_session *session,

@@ -96,6 +96,7 @@ struct mt6797_btif_stp_bootstrap {
 	bool raw_pending;
 	struct mtk_wmt full_wmt;
 	struct mt6797_consys_stp_session *session;
+	bool owns_session;
 	const struct mt6797_consys_stp_session_bootstrap_lease *full_bootstrap;
 	const struct mt6797_consys_stp_session_lease *full_session;
 	struct delayed_work full_retry_work;
@@ -352,13 +353,14 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction(
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_full_wmt_transaction);
 
-struct mt6797_btif_stp_bootstrap *
-mt6797_btif_stp_bootstrap_create(
-		const struct mt6797_btif_pio_lease *pio_lease,
-		const struct mt6797_consys_runtime_lease *runtime_lease,
-		const struct mt6797_btif_stp_bootstrap_ops *ops)
+static struct mt6797_btif_stp_bootstrap *
+mt6797_btif_stp_bootstrap_create_common(const struct mt6797_btif_pio_lease *pio_lease,
+					const struct mt6797_consys_runtime_lease *runtime_lease,
+					const struct mt6797_btif_stp_bootstrap_ops *ops,
+					struct mt6797_consys_stp_session *session)
 {
 	struct mt6797_btif_stp_bootstrap *bootstrap;
+	mt6797_consys_stp_rx_cb_t receive;
 
 	if (!pio_lease || !runtime_lease || !ops || !ops->enable_irq || !ops->close)
 		return ERR_PTR(-EINVAL);
@@ -375,10 +377,44 @@ mt6797_btif_stp_bootstrap_create(
 	bootstrap->pio_lease = pio_lease;
 	bootstrap->runtime_lease = runtime_lease;
 	bootstrap->ops = *ops;
+	bootstrap->session = session;
 	bootstrap->full_wmt_lease.bootstrap = bootstrap;
+	if (session) {
+		int ret;
+
+		receive = mt6797_btif_stp_bootstrap_full_wmt_receive;
+		ret = mt6797_consys_stp_session_bind_wmt(session, receive,
+							 bootstrap);
+		if (ret) {
+			kfree(bootstrap);
+			return ERR_PTR(ret);
+		}
+	}
 	return bootstrap;
 }
+
+struct mt6797_btif_stp_bootstrap *
+mt6797_btif_stp_bootstrap_create(const struct mt6797_btif_pio_lease *pio_lease,
+				 const struct mt6797_consys_runtime_lease *runtime_lease,
+				 const struct mt6797_btif_stp_bootstrap_ops *ops)
+{
+	return mt6797_btif_stp_bootstrap_create_common(pio_lease, runtime_lease,
+						       ops, NULL);
+}
 EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_create);
+
+struct mt6797_btif_stp_bootstrap *
+mt6797_btif_stp_bootstrap_create_owned(const struct mt6797_btif_pio_lease *pio_lease,
+				       const struct mt6797_consys_runtime_lease *runtime_lease,
+				       const struct mt6797_btif_stp_bootstrap_ops *ops,
+				       struct mt6797_consys_stp_session *session)
+{
+	if (!session)
+		return ERR_PTR(-EINVAL);
+	return mt6797_btif_stp_bootstrap_create_common(pio_lease, runtime_lease,
+						       ops, session);
+}
+EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_create_owned);
 
 static const struct mt6797_consys_stp_session_lease *
 mt6797_btif_stp_bootstrap_run_unchecked(
@@ -458,11 +494,14 @@ mt6797_btif_stp_bootstrap_run_unchecked(
 		.transmit_context = (void *)bootstrap->pio_lease,
 		.receive_context = bootstrap,
 	};
-	bootstrap->session = mt6797_consys_stp_session_create(&session_ops);
-	if (IS_ERR(bootstrap->session)) {
-		ret = PTR_ERR(bootstrap->session);
-		bootstrap->session = NULL;
-		goto fail;
+	if (!bootstrap->session) {
+		bootstrap->session = mt6797_consys_stp_session_create(&session_ops);
+		if (IS_ERR(bootstrap->session)) {
+			ret = PTR_ERR(bootstrap->session);
+			bootstrap->session = NULL;
+			goto fail;
+		}
+		bootstrap->owns_session = true;
 	}
 	bootstrap->full_bootstrap =
 		mt6797_consys_stp_session_begin_full_bootstrap(bootstrap->session);
@@ -601,7 +640,15 @@ void mt6797_btif_stp_bootstrap_destroy(
 		wait_for_completion(&bootstrap->run_complete);
 	mt6797_btif_stp_bootstrap_fence(bootstrap, false);
 	mt6797_consys_wmt_initial_destroy(bootstrap->initial);
-	mt6797_consys_stp_session_destroy(bootstrap->session);
+	if (bootstrap->owns_session) {
+		mt6797_consys_stp_session_destroy(bootstrap->session);
+	} else {
+		mt6797_consys_stp_rx_cb_t receive;
+
+		receive = mt6797_btif_stp_bootstrap_full_wmt_receive;
+		mt6797_consys_stp_session_unbind_wmt(bootstrap->session, receive,
+						     bootstrap);
+	}
 	kfree(bootstrap);
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_destroy);

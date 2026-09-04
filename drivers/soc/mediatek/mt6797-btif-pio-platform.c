@@ -494,6 +494,19 @@ static void mt6797_btif_pio_platform_bootstrap_close(void *context)
 	mt6797_btif_pio_platform_close(&adapter->lease);
 }
 
+static struct mt6797_btif_stp_bootstrap *
+mt6797_btif_component_bootstrap_create(struct mt6797_btif_pio_platform *adapter,
+				       const struct mt6797_consys_runtime_lease *runtime_lease,
+				       const struct mt6797_btif_stp_bootstrap_ops *ops)
+{
+	if (adapter->session)
+		return mt6797_btif_stp_bootstrap_create_owned(adapter->pio_lease,
+					runtime_lease, ops, adapter->session);
+
+	return mt6797_btif_stp_bootstrap_create(adapter->pio_lease,
+						 runtime_lease, ops);
+}
+
 struct mt6797_btif_stp_bootstrap *
 mt6797_btif_pio_platform_bootstrap_create(
 		const struct mt6797_btif_pio_platform_lease *platform_lease,
@@ -517,11 +530,6 @@ mt6797_btif_pio_platform_bootstrap_create(
 		mutex_unlock(&adapter->state_lock);
 		return ERR_PTR(-ESHUTDOWN);
 	}
-	/* The legacy bootstrap creates a private, non-component session. */
-	if (adapter->session) {
-		mutex_unlock(&adapter->state_lock);
-		return ERR_PTR(-EOPNOTSUPP);
-	}
 	if (adapter->state != MT6797_BTIF_PIO_PLATFORM_LEASED) {
 		mutex_unlock(&adapter->state_lock);
 		return ERR_PTR(-EBUSY);
@@ -535,8 +543,8 @@ mt6797_btif_pio_platform_bootstrap_create(
 		.close = mt6797_btif_pio_platform_bootstrap_close,
 		.context = adapter,
 	};
-	bootstrap = mt6797_btif_stp_bootstrap_create(adapter->pio_lease,
-						     runtime_lease, &ops);
+	bootstrap = mt6797_btif_component_bootstrap_create(adapter,
+							   runtime_lease, &ops);
 	if (!IS_ERR(bootstrap))
 		return bootstrap;
 

@@ -134,6 +134,18 @@ int mt6797_consys_stp_session_unbind_gnss(
 		const struct mt6797_consys_stp_session_lease *lease,
 		mt6797_consys_stp_gnss_rx_cb_t receive, void *receive_context);
 
+/*
+ * Bind the one WMT receiver before bootstrap starts. This lets a lifecycle
+ * owner retain the session while the BTIF bootstrap temporarily owns WMT
+ * reply matching. Unbind requires the exact callback/context pair.
+ */
+int mt6797_consys_stp_session_bind_wmt(struct mt6797_consys_stp_session *session,
+				       mt6797_consys_stp_rx_cb_t receive,
+				       void *receive_context);
+int mt6797_consys_stp_session_unbind_wmt(struct mt6797_consys_stp_session *session,
+					 mt6797_consys_stp_rx_cb_t receive,
+					 void *receive_context);
+
 /* Send one WMT or GNSS payload through an active full-STP capability. */
 int mt6797_consys_stp_session_transmit(
 		const struct mt6797_consys_stp_session_lease *lease,

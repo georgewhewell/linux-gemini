@@ -114,3 +114,49 @@ if ownership/configuration was not restored. Verify no writes outside the
 small register/bit allowlist, including OTP programming and battery blocks.
 Read die temperature alongside the already planned workload/SoC inventory;
 do not schedule another collector-only thermal boot.
+
+## Implementation audit: unresolved transaction semantics
+
+The follow-up source audit did **not** establish a complete safe timeout and
+restoration contract. No die driver or opt-in activation has been added merely
+to conceal that gap. In particular:
+
+- `pmic_auxadc.c:295` writes CH4's SET request. Line 298 reads STA0 into an
+  unused variable; line 299 waits 50 us; lines 358–367 test RDY=1 and consume
+  data. It never verifies a new RDY=0-to-1 transition or request completion.
+  Repeated SET writes suggest automatic hardware behavior, but do not prove
+  whether the request bit self-clears or SET itself has an edge side effect.
+- The MT6351 RQST0_CLR symbol appears only in register definitions and the
+  generated `upmu_common.c` access table, not an operational caller. Its name
+  is evidence that a request bit can be cleared, **not** that clearing it
+  cancels an already-running conversion or makes the mux safe to restore.
+- `upmu_hw.h:9996–10061` defines busy-input status across STA0 (0x0e90), STA1
+  (0x0e92), and STA2 (0x0e94, NAG bit15). STA1 includes modem, GPS, thermal,
+  impedance and FGADC consumers. Checking CH4 alone would miss shared users.
+  The definitions do not say whether cleared busy-input bits prove the
+  physical conversion engine is quiescent after an interrupted transaction.
+- Both `pmic_Read_Efuse_HPOffset` and `pmic_read_VMC_efuse` wait indefinitely
+  for OTP busy to clear before gating its clocks. Neither establishes an
+  abort or safe mode/address/clock restoration while OTP busy remains set.
+
+An observed fresh RDY transition can prevent accepting stale data, at the
+cost of refusing a sample if the low pulse was missed. It does not solve
+post-timeout cleanup. Similarly, marking a software instance poisoned stops
+later calls, but does not make changing an active engine's mux or clocks safe.
+A Linux mutex also cannot establish exclusion against firmware transactions.
+No whole-AUXADC reset, modem/GPS reconfiguration, or OTP programming control is
+an acceptable guessed cleanup operation for this die-only child.
+
+The concrete missing evidence is a CH4 completion/quiescence or abort contract
+(including request/RDY behavior), an OTP busy-timeout disposition, and the
+applicable firmware/engine ownership guarantee. A documented MT6351 register
+specification or retained vendor/preloader implementation of those operations
+can supply this. Read-only boot inventory of averaging/VBUF, request, busy and
+clock fields can establish initialization prerequisites, but cannot by itself
+prove cancellation semantics. If the agreed timeout policy instead permits
+leaving owned settings unchanged and declaring the device unusable until a
+PMIC reset, that is a different explicit contract, not successful restoration.
+
+The independent thermal source audit reached the same request/RDY/CLR result.
+No PMIC hardware access, driver stub, fabricated temperature, compile claim,
+or fault-test success is asserted by this documentation update.

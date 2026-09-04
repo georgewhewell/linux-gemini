@@ -122,11 +122,13 @@ struct vpu_wdt_handler {
  * struct vpu_wdt - VPU watchdog workqueue
  *
  * @handler:	VPU watchdog reset handler
+ * @handler_lock: protects watchdog handler registration and invocation
  * @ws:		workstruct for VPU watchdog
  * @wq:		workqueue for VPU watchdog
  */
 struct vpu_wdt {
 	struct vpu_wdt_handler handler[VPU_RST_MAX];
+	struct mutex handler_lock; /* protect watchdog handler lifetime */
 	struct work_struct ws;
 	struct workqueue_struct *wq;
 };
@@ -401,12 +403,14 @@ static void vpu_wdt_reset_func(struct work_struct *ws)
 	mutex_unlock(&vpu->vpu_mutex);
 	vpu_clock_disable(vpu);
 
+	mutex_lock(&wdt->handler_lock);
 	for (index = 0; index < VPU_RST_MAX; index++) {
 		if (handler[index].reset_func) {
 			handler[index].reset_func(handler[index].priv);
 			dev_dbg(vpu->dev, "wdt handler func %d\n", index);
 		}
 	}
+	mutex_unlock(&wdt->handler_lock);
 }
 
 int vpu_wdt_reg_handler(struct platform_device *pdev,
@@ -415,6 +419,7 @@ int vpu_wdt_reg_handler(struct platform_device *pdev,
 {
 	struct mtk_vpu *vpu = platform_get_drvdata(pdev);
 	struct vpu_wdt_handler *handler;
+	int ret = 0;
 
 	if (!vpu) {
 		dev_err(&pdev->dev, "vpu device in not ready\n");
@@ -425,17 +430,38 @@ int vpu_wdt_reg_handler(struct platform_device *pdev,
 
 	if (id < VPU_RST_MAX && wdt_reset) {
 		dev_dbg(vpu->dev, "wdt register id %d\n", id);
-		mutex_lock(&vpu->vpu_mutex);
-		handler[id].reset_func = wdt_reset;
-		handler[id].priv = priv;
-		mutex_unlock(&vpu->vpu_mutex);
-		return 0;
+		mutex_lock(&vpu->wdt.handler_lock);
+		if (handler[id].reset_func) {
+			ret = -EBUSY;
+		} else {
+			handler[id].reset_func = wdt_reset;
+			handler[id].priv = priv;
+		}
+		mutex_unlock(&vpu->wdt.handler_lock);
+		return ret;
 	}
 
 	dev_err(vpu->dev, "register vpu wdt handler failed\n");
 	return -EINVAL;
 }
 EXPORT_SYMBOL_GPL(vpu_wdt_reg_handler);
+
+void vpu_wdt_unreg_handler(struct platform_device *pdev, enum rst_id id)
+{
+	struct mtk_vpu *vpu = platform_get_drvdata(pdev);
+	struct vpu_wdt_handler *handler;
+
+	if (!vpu || id >= VPU_RST_MAX)
+		return;
+
+	handler = vpu->wdt.handler;
+
+	mutex_lock(&vpu->wdt.handler_lock);
+	handler[id].reset_func = NULL;
+	handler[id].priv = NULL;
+	mutex_unlock(&vpu->wdt.handler_lock);
+}
+EXPORT_SYMBOL_GPL(vpu_wdt_unreg_handler);
 
 unsigned int vpu_get_vdec_hw_capa(struct platform_device *pdev)
 {
@@ -488,6 +514,12 @@ struct platform_device *vpu_get_plat_device(struct platform_device *pdev)
 	of_node_put(vpu_node);
 	if (WARN_ON(!vpu_pdev)) {
 		dev_err(dev, "vpu pdev failed\n");
+		return NULL;
+	}
+	if (!device_link_add(dev, &vpu_pdev->dev,
+			     DL_FLAG_AUTOREMOVE_CONSUMER)) {
+		dev_err(dev, "failed to link to vpu device\n");
+		put_device(&vpu_pdev->dev);
 		return NULL;
 	}
 
@@ -853,12 +885,13 @@ static int mtk_vpu_probe(struct platform_device *pdev)
 		goto clk_unprepare;
 	}
 	INIT_WORK(&vpu->wdt.ws, vpu_wdt_reset_func);
+	mutex_init(&vpu->wdt.handler_lock);
 	mutex_init(&vpu->vpu_mutex);
 
 	ret = vpu_clock_enable(vpu);
 	if (ret) {
 		dev_err(dev, "enable vpu clock failed\n");
-		goto workqueue_destroy;
+		goto mutex_destroy;
 	}
 
 	dev_dbg(dev, "vpu ipi init\n");
@@ -873,7 +906,7 @@ static int mtk_vpu_probe(struct platform_device *pdev)
 			       "vpu_init", vpu);
 	if (ret) {
 		dev_err(dev, "Failed to register IPI_VPU_INIT\n");
-		goto vpu_mutex_destroy;
+		goto disable_vpu_clk;
 	}
 
 #ifdef CONFIG_DEBUG_FS
@@ -935,11 +968,11 @@ remove_debugfs:
 	debugfs_remove(vpu_debugfs);
 #endif
 	memset(vpu->ipi_desc, 0, sizeof(struct vpu_ipi_desc) * IPI_MAX);
-vpu_mutex_destroy:
-	mutex_destroy(&vpu->vpu_mutex);
 disable_vpu_clk:
 	vpu_clock_disable(vpu);
-workqueue_destroy:
+mutex_destroy:
+	mutex_destroy(&vpu->vpu_mutex);
+	mutex_destroy(&vpu->wdt.handler_lock);
 	destroy_workqueue(vpu->wdt.wq);
 clk_unprepare:
 	clk_unprepare(vpu->clk);
@@ -967,6 +1000,7 @@ static void mtk_vpu_remove(struct platform_device *pdev)
 	vpu_free_ext_mem(vpu, P_FW);
 	vpu_free_ext_mem(vpu, D_FW);
 	mutex_destroy(&vpu->vpu_mutex);
+	mutex_destroy(&vpu->wdt.handler_lock);
 	clk_unprepare(vpu->clk);
 }
 

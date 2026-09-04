@@ -128,7 +128,6 @@ struct platform_device *vpu_get_plat_device(struct platform_device *pdev);
  *
  * @pdev:               VPU platform device
  * @vpu_wdt_reset_func():	the callback reset function
- *	@priv: the private data for reset function
  * @priv:		the private data for reset function
  * @id:			reset id
  *
@@ -140,6 +139,16 @@ struct platform_device *vpu_get_plat_device(struct platform_device *pdev);
 int vpu_wdt_reg_handler(struct platform_device *pdev,
 			void vpu_wdt_reset_func(void *priv),
 			void *priv, enum rst_id id);
+
+/**
+ * vpu_wdt_unreg_handler - unregister a VPU watchdog handler
+ *
+ * @pdev:	VPU platform device
+ * @id:		reset id
+ *
+ * Remove a watchdog reset handler and wait for any running callback to finish.
+ **/
+void vpu_wdt_unreg_handler(struct platform_device *pdev, enum rst_id id);
 
 /**
  * vpu_get_vdec_hw_capa - get video decoder hardware capability

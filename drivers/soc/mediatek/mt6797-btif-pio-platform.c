@@ -53,6 +53,7 @@
 #if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
 #include <linux/soc/mediatek/mt6797-btif-stp-bootstrap.h>
 #endif
+#include <linux/soc/mediatek/mt6797-consys-wmt-patch.h>
 #include <linux/soc/mediatek/mt6797-consys.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
 #include <linux/soc/mediatek/mtk-stp.h>
@@ -218,8 +219,16 @@ static int mt6797_btif_component_transmit(void *context, const u8 *frame,
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
 static int
+mt6797_btif_patch(void *context,
+		  const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
+{
+	return mt6797_consys_wmt_patch_download(context, lease);
+}
+
+static int
 mt6797_btif_component_start(void *context,
 			    const struct mt6797_consys_runtime_lease *runtime_lease,
+			    const struct mt6797_consys_fw_bundle *firmware,
 			    const struct mt6797_consys_stp_session_lease **session_lease)
 {
 	struct mt6797_btif_pio_platform *adapter = context;
@@ -228,7 +237,7 @@ mt6797_btif_component_start(void *context,
 	const struct mt6797_consys_stp_session_lease *lease;
 	int ret;
 
-	if (!adapter || !runtime_lease || !session_lease)
+	if (!adapter || !runtime_lease || !firmware || !session_lease)
 		return -EINVAL;
 
 	mutex_lock(&adapter->state_lock);
@@ -253,7 +262,9 @@ mt6797_btif_component_start(void *context,
 		goto close_platform;
 	}
 
-	lease = mt6797_btif_stp_bootstrap_run_owned(bootstrap);
+	lease = mt6797_btif_stp_bootstrap_run_owned_stage(bootstrap,
+							  mt6797_btif_patch,
+							  (void *)firmware);
 	if (IS_ERR(lease)) {
 		ret = PTR_ERR(lease);
 		goto destroy_bootstrap;
@@ -305,6 +316,7 @@ static void mt6797_btif_component_stop(void *context)
 static int
 mt6797_btif_component_start(void *context,
 			    const struct mt6797_consys_runtime_lease *runtime_lease,
+			    const struct mt6797_consys_fw_bundle *firmware,
 			    const struct mt6797_consys_stp_session_lease **session_lease)
 {
 	return -EOPNOTSUPP;

@@ -72,12 +72,15 @@ const struct mt6797_consys_stp_session_lease *
 mt6797_btif_stp_bootstrap_run(struct mt6797_btif_stp_bootstrap *bootstrap);
 
 /*
- * Run the same bounded handoff for an aggregate-owned session.  This entry is
- * valid only for an object returned by create_owned(); ownership of the
- * session and its promoted lease remains with the aggregate.
+ * Aggregate-owned form of run_with_full_wmt_stage().  This is accepted only
+ * for create_owned() objects, so the stage and promoted lease remain inside
+ * the canonical CONSYS lifecycle rather than the experimental standalone
+ * bootstrap gate.
  */
 const struct mt6797_consys_stp_session_lease *
-mt6797_btif_stp_bootstrap_run_owned(struct mt6797_btif_stp_bootstrap *bootstrap);
+mt6797_btif_stp_bootstrap_run_owned_stage(struct mt6797_btif_stp_bootstrap *bootstrap,
+					  mt6797_btif_stp_bootstrap_full_wmt_stage_t stage,
+					  void *stage_context);
 
 /*
  * As mt6797_btif_stp_bootstrap_run(), but runs @stage after the exact

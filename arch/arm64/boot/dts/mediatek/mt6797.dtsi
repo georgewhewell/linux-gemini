@@ -1141,6 +1141,27 @@
 		status = "disabled";
 	};
 
+	vcodec_encoder: video-codec@17002000 {
+		compatible = "mediatek,mt6797-vcodec-enc";
+		reg = <0 0x17002000 0 0x1000>;
+		interrupts = <GIC_SPI 235 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&topckgen CLK_TOP_MUX_VENC>;
+		clock-names = "venc_sel";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+		iommus = <&m4u M4U_PORT_VENC_RCPU>,
+			 <&m4u M4U_PORT_VENC_REC>,
+			 <&m4u M4U_PORT_VENC_BSDMA>,
+			 <&m4u M4U_PORT_VENC_SV_COMV>,
+			 <&m4u M4U_PORT_VENC_RD_COMV>,
+			 <&m4u M4U_PORT_VENC_CUR_LUMA>,
+			 <&m4u M4U_PORT_VENC_CUR_CHROMA>,
+			 <&m4u M4U_PORT_VENC_REF_LUMA>,
+			 <&m4u M4U_PORT_VENC_REF_CHROMA>,
+			 <&m4u M4U_PORT_VENC_NBM_RDMA>,
+			 <&m4u M4U_PORT_VENC_NBM_WDMA>;
+		status = "disabled";
+	};
+
 	jpeg_encoder: jpeg-encoder@17003000 {
 		compatible = "mediatek,mt6797-jpgenc",
 			     "mediatek,mtk-jpgenc";

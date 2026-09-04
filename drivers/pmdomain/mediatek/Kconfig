@@ -14,6 +14,17 @@ config MTK_SCPSYS
 	  Say yes here to add support for the MediaTek SCPSYS power domain
 	  driver.
 
+config MTK_SCPSYS_KUNIT_TEST
+	bool "KUnit tests for MediaTek SCPSYS helpers"
+	depends on KUNIT=y
+	depends on MTK_SCPSYS=y
+	default KUNIT_ALL_TESTS
+	help
+	  Test hardware-independent MediaTek SCPSYS sequencing helpers. The
+	  tests validate shared bus-protection release admission from synthetic
+	  primary and secondary power-status values. No registers are accessed
+	  and no power-domain state is changed by these tests.
+
 config MTK_SCPSYS_PM_DOMAINS
 	bool "MediaTek SCPSYS generic power domain"
 	default ARCH_MEDIATEK

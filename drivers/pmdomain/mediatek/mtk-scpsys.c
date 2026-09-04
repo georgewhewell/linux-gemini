@@ -7,6 +7,7 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
@@ -19,6 +20,8 @@
 #include <dt-bindings/power/mt7622-power.h>
 #include <dt-bindings/power/mt7623a-power.h>
 #include <dt-bindings/power/mt8173-power.h>
+
+#include "mtk-scpsys-internal.h"
 
 #define MTK_POLL_DELAY_US   10
 #define MTK_POLL_TIMEOUT    USEC_PER_SEC
@@ -121,6 +124,7 @@ static const char * const clk_names[] = {
  * @sram_pdn_bits: The mask for sram power control bits.
  * @sram_pdn_ack_bits: The mask for sram power control acked bits.
  * @bus_prot_mask: The mask for single step bus protection.
+ * @bus_prot_group_mask: The power status mask for domains sharing protection.
  * @clk_id: The basic clocks required by this power domain.
  * @caps: The flag for active wake-up action.
  */
@@ -133,6 +137,7 @@ struct scp_domain_data {
 	u32 sram_pdn_bits;
 	u32 sram_pdn_ack_bits;
 	u32 bus_prot_mask;
+	u32 bus_prot_group_mask;
 	enum clk_id clk_id[MAX_CLKS];
 	u8 caps;
 };
@@ -158,6 +163,8 @@ struct scp {
 	struct device *dev;
 	void __iomem *base;
 	struct regmap *infracfg;
+	/* Serialize transitions of domains sharing one protection mask. */
+	struct mutex bus_prot_lock;
 	struct scp_ctrl_reg ctrl_reg;
 	bool bus_prot_reg_update;
 };
@@ -300,9 +307,18 @@ static int scpsys_bus_protect_enable(struct scp_domain *scpd)
 static int scpsys_bus_protect_disable(struct scp_domain *scpd)
 {
 	struct scp *scp = scpd->scp;
+	u32 group_mask = scpd->data->bus_prot_group_mask;
+	u32 status, status2;
 
 	if (!scpd->data->bus_prot_mask)
 		return 0;
+
+	if (group_mask) {
+		status = readl(scp->base + scp->ctrl_reg.pwr_sta_offs);
+		status2 = readl(scp->base + scp->ctrl_reg.pwr_sta2nd_offs);
+		if (!mtk_scpsys_bus_prot_group_is_on(status, status2, group_mask))
+			return 0;
+	}
 
 	return mtk_infracfg_clear_bus_protection(scp->infracfg,
 			scpd->data->bus_prot_mask,
@@ -313,15 +329,25 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 {
 	struct scp_domain *scpd = container_of(genpd, struct scp_domain, genpd);
 	struct scp *scp = scpd->scp;
-	const char *stage = "regulator enable";
+	const char *stage;
 	void __iomem *ctl_addr = scp->base + scpd->data->ctl_offs;
 	void __iomem *sram_pdn_addr = scp->base + (scpd->data->sram_pdn_ctl_offs ?
 		scpd->data->sram_pdn_ctl_offs : scpd->data->ctl_offs);
 	void __iomem *sram_ack_addr = scp->base + (scpd->data->sram_pdn_ack_offs ?
 		scpd->data->sram_pdn_ack_offs : scpd->data->ctl_offs);
+	bool shared_bus_protection = scpd->data->bus_prot_group_mask;
 	u32 val;
 	int ret, tmp;
 
+	if (shared_bus_protection) {
+		stage = "bus protection engage";
+		mutex_lock(&scp->bus_prot_lock);
+		ret = scpsys_bus_protect_enable(scpd);
+		if (ret < 0)
+			goto err_regulator;
+	}
+
+	stage = "regulator enable";
 	ret = scpsys_regulator_enable(scpd);
 	if (ret < 0)
 		goto err_regulator;
@@ -361,8 +387,17 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 
 	stage = "bus protection release";
 	ret = scpsys_bus_protect_disable(scpd);
-	if (ret < 0)
+	if (ret < 0) {
+		tmp = scpsys_bus_protect_enable(scpd);
+		if (tmp < 0)
+			dev_err(scp->dev,
+				"Failed to restore bus protection for domain %s: %d\n",
+				genpd->name, tmp);
 		goto err_pwr_ack;
+	}
+
+	if (shared_bus_protection)
+		mutex_unlock(&scp->bus_prot_lock);
 
 	return 0;
 
@@ -374,6 +409,8 @@ err_regulator:
 
 	dev_err(scp->dev, "Failed to power on domain %s at %s: %d\n",
 		genpd->name, stage, ret);
+	if (shared_bus_protection)
+		mutex_unlock(&scp->bus_prot_lock);
 
 	return ret;
 }
@@ -388,8 +425,12 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 		scpd->data->sram_pdn_ctl_offs : scpd->data->ctl_offs);
 	void __iomem *sram_ack_addr = scp->base + (scpd->data->sram_pdn_ack_offs ?
 		scpd->data->sram_pdn_ack_offs : scpd->data->ctl_offs);
+	bool shared_bus_protection = scpd->data->bus_prot_group_mask;
 	u32 val;
 	int ret, tmp;
+
+	if (shared_bus_protection)
+		mutex_lock(&scp->bus_prot_lock);
 
 	ret = scpsys_bus_protect_enable(scpd);
 	if (ret < 0)
@@ -431,11 +472,16 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 	if (ret < 0)
 		goto out;
 
+	if (shared_bus_protection)
+		mutex_unlock(&scp->bus_prot_lock);
+
 	return 0;
 
 out:
 	dev_err(scp->dev, "Failed to power off domain %s at %s: %d\n",
 		genpd->name, stage, ret);
+	if (shared_bus_protection)
+		mutex_unlock(&scp->bus_prot_lock);
 
 	return ret;
 }
@@ -466,6 +512,7 @@ static struct scp *init_scp(struct platform_device *pdev,
 	scp->ctrl_reg.pwr_sta2nd_offs = scp_ctrl_reg->pwr_sta2nd_offs;
 
 	scp->bus_prot_reg_update = bus_prot_reg_update;
+	mutex_init(&scp->bus_prot_lock);
 
 	scp->dev = &pdev->dev;
 

@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA GPU activation overlay.
+ *
+ * This overlay is deliberately excluded from the base DT.  It enables only
+ * the I2C controller for VGPU, the RT5735 regulator, the MFG clock provider,
+ * and the Panfrost consumer.  Use it only in a recoverable RAM boot; booting
+ * the base DT without this overlay restores all four nodes to disabled.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&i2c7 {
+	status = "okay";
+};
+
+&rt5735_vgpu {
+	status = "okay";
+};
+
+&mfgsys {
+	status = "okay";
+};
+
+&gpu {
+	status = "okay";
+};

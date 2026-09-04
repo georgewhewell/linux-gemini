@@ -869,10 +869,10 @@ static int raw_to_mcelsius_v4(struct mtk_thermal *mt, int sensno, s32 raw)
 {
 	s64 gain, x_roomt, measured, delta, slope_denominator;
 
-	if (raw == 0)
-		return 0;
-
 	raw &= 0xfff;
+	if (!raw)
+		return THERMAL_TEMP_INVALID;
+
 	gain = 10000 + ((s64)(mt->adc_ge - 512) * 10000) / 4096;
 	if (gain <= 0)
 		return THERMAL_TEMP_INVALID;
@@ -1409,6 +1409,10 @@ static int mtk_read_temp(struct thermal_zone_device *tz, int *temperature)
 
 		mtk_thermal_put_bank(bank);
 	}
+
+	if (mt->conf == &mt6797_thermal_data &&
+	    !mtk_thermal_temp_is_valid(tempmax))
+		return -EAGAIN;
 
 	*temperature = tempmax;
 

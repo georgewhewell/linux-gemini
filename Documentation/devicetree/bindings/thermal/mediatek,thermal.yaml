@@ -17,6 +17,17 @@ description:
 
 allOf:
   - $ref: thermal-sensor.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - mediatek,mt6797-thermal
+              - mediatek,mt6797-therm_ctrl
+    then:
+      required:
+        - nvmem-cells
+        - nvmem-cell-names
 
 properties:
   compatible:
@@ -71,7 +82,8 @@ properties:
     items:
       - description:
           NVMEM cell with EEPROMA phandle to the calibration data provided by an
-          NVMEM device. If unspecified default values shall be used.
+          NVMEM device. This is required on MT6797. On other SoCs, default
+          values shall be used if it is unspecified.
 
   nvmem-cell-names:
     items:

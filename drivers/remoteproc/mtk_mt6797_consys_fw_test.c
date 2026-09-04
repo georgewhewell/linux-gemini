@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include <linux/errno.h>
+#include <linux/firmware.h>
 #include <linux/module.h>
 #include <linux/string.h>
 #include <kunit/test.h>
@@ -79,10 +80,72 @@ static void mt6797_consys_wmt_reject_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EPROTO);
 }
 
+static void mt6797_consys_patch_packet_test(struct kunit *test)
+{
+	static const u8 first_prefix[] = { 0x01, 0x01, 0xe9, 0x03, 0x01 };
+	static const u8 last_packet[] = {
+		0x01, 0x01, 0x02, 0x00, 0x03, 0xa5,
+	};
+	const size_t payload_size = 2001;
+	const size_t image_size = MT6797_CONSYS_WMT_HEADER_SIZE + payload_size;
+	struct mt6797_consys_fw_bundle bundle = { };
+	struct firmware firmware = { };
+	u8 *image;
+	u8 *packet;
+	size_t packet_len;
+	size_t consumed;
+	bool last;
+	int ret;
+
+	image = kunit_kzalloc(test, image_size, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, image);
+	packet = kunit_kzalloc(test, MT6797_CONSYS_WMT_PATCH_PACKET_MAX,
+			       GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, packet);
+	memset(image + MT6797_CONSYS_WMT_HEADER_SIZE, 0xa5, payload_size);
+	firmware.data = image;
+	firmware.size = image_size;
+	bundle.patch[0].firmware = &firmware;
+	bundle.patch[0].metadata.payload =
+		image + MT6797_CONSYS_WMT_HEADER_SIZE;
+	bundle.patch[0].metadata.payload_size = payload_size;
+
+	ret = mt6797_consys_fw_build_patch_packet(&bundle, 0, 0, packet, 4,
+						  &packet_len, &consumed, &last);
+	KUNIT_EXPECT_EQ(test, ret, -ENOSPC);
+
+	ret = mt6797_consys_fw_build_patch_packet(&bundle, 0, 0, packet,
+						  MT6797_CONSYS_WMT_PATCH_PACKET_MAX,
+						  &packet_len, &consumed, &last);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, consumed, (size_t)1000);
+	KUNIT_EXPECT_FALSE(test, last);
+	KUNIT_EXPECT_EQ(test, packet_len, (size_t)1005);
+	KUNIT_EXPECT_MEMEQ(test, packet, first_prefix, 5);
+
+	ret = mt6797_consys_fw_build_patch_packet(&bundle, 0, 1000, packet,
+						  MT6797_CONSYS_WMT_PATCH_PACKET_MAX,
+						  &packet_len, &consumed, &last);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, consumed, (size_t)1000);
+	KUNIT_EXPECT_FALSE(test, last);
+	KUNIT_EXPECT_EQ(test, packet[MTK_WMT_HEADER_SIZE], (u8)2);
+
+	ret = mt6797_consys_fw_build_patch_packet(&bundle, 0, 2000, packet,
+						  MT6797_CONSYS_WMT_PATCH_PACKET_MAX,
+						  &packet_len, &consumed, &last);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, consumed, (size_t)1);
+	KUNIT_EXPECT_TRUE(test, last);
+	KUNIT_EXPECT_EQ(test, packet_len, (size_t)6);
+	KUNIT_EXPECT_MEMEQ(test, packet, last_packet, 6);
+}
+
 static struct kunit_case mt6797_consys_fw_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_fw_verify_test),
 	KUNIT_CASE(mt6797_consys_wmt_parse_test),
 	KUNIT_CASE(mt6797_consys_wmt_reject_test),
+	KUNIT_CASE(mt6797_consys_patch_packet_test),
 	{ }
 };
 

@@ -4,6 +4,9 @@
 
 #include <linux/types.h>
 
+#include <linux/remoteproc/mtk_mt6797_consys.h>
+#include <linux/soc/mediatek/mtk-wmt.h>
+
 struct device;
 struct firmware;
 
@@ -11,6 +14,9 @@ struct firmware;
 #define MT6797_CONSYS_WMT_HEADER_SIZE		28
 #define MT6797_CONSYS_WMT_ADDRESS_SIZE		4
 #define MT6797_CONSYS_FW_SHA256_SIZE		32
+#define MT6797_CONSYS_WMT_FRAGMENT_SIZE		1000
+#define MT6797_CONSYS_WMT_PATCH_PACKET_MAX	\
+	(MTK_WMT_HEADER_SIZE + 1 + MT6797_CONSYS_WMT_FRAGMENT_SIZE)
 
 struct mt6797_consys_wmt_metadata {
 	u8 build_time[16];
@@ -40,9 +46,10 @@ int mt6797_consys_fw_verify(const u8 *data, size_t size,
 int mt6797_consys_wmt_parse(const u8 *data, size_t size, u8 expected_sequence,
 			    struct mt6797_consys_wmt_metadata *metadata);
 
-/* Private handoff for the eventual remoteproc owner; never a client ABI. */
-int mt6797_consys_fw_request(struct device *dev,
-			     struct mt6797_consys_fw_bundle **bundle);
-void mt6797_consys_fw_release(struct mt6797_consys_fw_bundle *bundle);
+int mt6797_consys_fw_build_patch_packet(const struct mt6797_consys_fw_bundle *bundle,
+					unsigned int patch_index, size_t offset,
+					u8 *packet, size_t packet_size,
+					size_t *packet_len, size_t *consumed,
+					bool *last);
 
 #endif

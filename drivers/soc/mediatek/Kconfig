@@ -247,19 +247,16 @@ config MTK_MT6797_CONSYS_WMT_INITIAL_KUNIT_TEST
 	  device or access Gemini hardware.
 
 config MTK_MT6797_A72_POWER
-	bool "MediaTek MT6797 Cortex-A72 resource preflight"
+	bool "MediaTek MT6797 Cortex-A72 CPU_ON preparation"
 	depends on ARM64 && ARCH_MEDIATEK && OF
 	depends on REGULATOR && RESET_CONTROLLER
 	select MFD_SYSCON
 	help
-	  Verify that the external processor regulator, TOPRGU reset, SPM
-	  syscon, and standard MP2 clock resources can all be observed before
-	  any A72 power sequence is enabled. When CPU8/9 use standard PSCI,
-	  also install a CPU hotplug preparation gate and verify their firmware
-	  affinity state before userspace can request CPU_ON.
-
-	  This driver has no sysfs ABI, never changes hardware state, and never
-	  authorizes CPU_ON. CPU core power remains owned by PSCI firmware.
+	  Verify and transactionally prepare the external processor regulator,
+	  TOPRGU reset, SPM isolation, standard MP2 clock and secure SRAM voltage
+	  selector before PSCI CPU_ON. The DT-disabled gate permits only CPU8,
+	  requires CPU4 online, verifies every reversible step, and rolls back a
+	  failed bring-up. CPU core power remains owned by PSCI firmware.
 
 config MTK_MT6797_CONSYS_FW_HANDOFF
 	bool "MediaTek MT6797 CONSYS firmware handoff"

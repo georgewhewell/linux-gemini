@@ -40,8 +40,9 @@ These entries are immutable identities, not a run order or schedule.
 
 | Lane | Source commit | Package commit | Candidate SHA-256 | Offline status |
 | --- | --- | --- | --- | --- |
+| A53 registration/calibration observation R2 | `f2fc2447a7465b96b9816487d6c36074cf2ca4fb` | `5dca07f1fd7a83dcbf8b905353725fb85619da3f` -> `8a62fff69574a8555baca600baf898fa2d02bd4c` | `e123c1984d46ee7609a98ac087232dfb13ac9e8d55f6540c94c1ee2e037c0a56` | Offline build and local contract checks: PASS; independent live-readiness re-audit in progress; hardware not run |
 | MD1 post-vector observer | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `c56ea7a569a8ce7a29f602fdb1c8ca1f0fb4690f` -> `718b9d1849d632b2135a2da23d43a337a1efab59` -> `5b45870571e2dfbf0dd06731001ce9a624ad085e` -> `7194ebaec4b36cf5d46075cc4d1836254c2b196d` | `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213` | Offline source/predicate review: PASS; package is not hardware-ready and requires repackaging |
-| G3 fixed-low Panfrost no-job | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` | `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985` | Offline source/contract review: PASS; package is not hardware-ready and requires repackaging |
+| G3 fixed-low Panfrost no-job R1 | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` -> `a81879abb63a7ad7c40bc946b3c95bf1657edef7` -> `02b36ca602774b032e633bbfec103ea6a1c4baec` | `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b` | Offline build and local contract checks: PASS; independent live-readiness audit pending; hardware not run |
 | A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Offline contract review: PASS; source/package are not hardware-ready |
 | A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Blocked with provider; no provider-success predecessor exists |
 
@@ -105,6 +106,19 @@ The bundle's pstore helper incorrectly addressed `/bin/busybox`; recovery
 therefore required a resume-only in-memory path substitution.  This is a
 recorded package defect, not permission to reuse or retry the candidate.
 
+The first unrun replacement bundle
+`/nix/store/fp5pi0i1yxmfpbhnh6qmdlxyz9q8c2xl-gemini-a53-thermal-preflight-p22-bundle`
+was also rejected before scheduling.  Its candidate `5529a03b...` fixed the
+clock, NVMEM, and board-identity defects, but its post-rollback selector
+accepted only a resolved path ending in `/bin/tar`; accepted Stage A resolves
+that applet to its BusyBox executable.  The rendered A53 collector also still
+contained the obsolete `d772bb04...` source predicate.  Candidate `5529a03b...`
+was never written and is closed.  R2 uses a new cmdline identity and candidate
+hash, pins the corrected `f2fc2447...` collector identity, accepts only the
+exact SHA-256-pinned Stage-A BusyBox alternative (or a root-owned non-writable
+Nix-store tar), carries that BusyBox in the bundle closure, and is undergoing
+a fresh independent live-readiness audit.  This ledger does not authorize it.
+
 Evidence:
 
 - `/mnt/Home/src/nixos-gemini/repo-a53-thermal-remediation/research/A53_DVFS_THERMAL_SOFTWARE_PREFLIGHT_20260904.md`
@@ -152,7 +166,7 @@ do not override the recovery defect.  Its owner token is exact, while
 `scheduling=none`, `specific-p22-authorization=none`, and
 `hardware-proof=none-offline-build-only` remain explicit.
 
-### G3 fixed-low Panfrost no-job gate blocked for repackaging
+### G3 fixed-low Panfrost no-job old bundle blocked; R1 pending review
 
 The exact independently reviewed owner-policy bundle is:
 
@@ -173,6 +187,16 @@ that environment.  The source/contract review remains useful offline, but
 candidate `d1d188f0...` is not hardware-ready, must not be scheduled, and is
 closed/no-retry.  Repackaging must produce and independently review a new
 immutable candidate identity before this lane can re-enter the queue.
+
+The replacement package is
+`/nix/store/xakzwxiz0jsvpxhjy4nqfvfnxx60mbi0-gemini-g3-low-opp-nojob-p22-bundle`.
+It uses exact `planet,gemini-pda` plus `mediatek,mt6797` compatible tokens and
+the exact SHA-256-pinned Stage-A BusyBox closure for normal and resumed pstore
+collection, without a model predicate or PATH fallback.  Its new candidate
+`78342f98...` differs only by a root-owned mode-0444 inert initramfs provenance
+file; kernel, DTBs, cmdline, `/init`, and boot-header semantics remain
+byte-identical.  Local offline checks pass, but independent live-readiness
+review has not yet completed and this ledger does not authorize a run.
 
 Evidence:
 
@@ -245,6 +269,7 @@ for a current identity.
 ### A53 retired candidates
 
 - `baf0f1fdcb581f19f6dc55bf21f6f86b5ac11ba5a54e5b8ff7a35c645d2a90c0`
+- `5529a03b7c15ea8ed4f6bd6c1baafac3d244db08d5dc78e3d93f011018f6e08c`
 - `50f3cca869b43cadd32e5dd97b1d848004080ff93234da8962817093db5fd5b0`
 - `e0566d596d4b0be3e92b77215b0269251734da8da62cfadadf1a7eed5991362c`
 - `8f65e46a94e288b2fed585647822cab6b356493b19c4b7de9edc4612deee1139`

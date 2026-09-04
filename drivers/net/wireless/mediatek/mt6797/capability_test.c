@@ -6,6 +6,7 @@
 #include <linux/unaligned.h>
 
 #include "capability.h"
+#include "protocol.h"
 
 enum mt6797_wifi_capability_test_event {
 	TEST_PRECHECK,
@@ -147,6 +148,11 @@ static void mt6797_wifi_capability_codec_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test,
 			mt6797_wifi_capability_event_parse(packet, sizeof(packet), 1,
 							   &capability), -EPROTO);
+	packet[4] = 1;
+	put_unaligned_le16(MT6797_WIFI_EVENT_HEADER_LENGTH, packet);
+	ret = mt6797_wifi_capability_event_parse(packet, sizeof(packet), 1,
+						 &capability);
+	KUNIT_EXPECT_EQ(test, ret, -EMSGSIZE);
 }
 
 static void mt6797_wifi_capability_success_test(struct kunit *test)

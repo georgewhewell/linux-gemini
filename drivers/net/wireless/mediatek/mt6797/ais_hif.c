@@ -19,6 +19,8 @@
 #include "scan_target.h"
 
 #define MT6797_WIFI_AIS_CHANNEL_EVENT_ID	0x10U
+#define MT6797_WIFI_AIS_AUTH_PACKET_LENGTH	60U
+#define MT6797_WIFI_AIS_AUTH_HEADER_LENGTH	24U
 
 static bool mt6797_wifi_ais_hif_backend_valid(
 	const struct mt6797_wifi_ais_hif_backend *backend)
@@ -217,6 +219,194 @@ static void mt6797_wifi_ais_hif_fence(void *context, int reason)
 	ais->backend.terminal(ais->backend.context, reason);
 }
 
+static int mt6797_wifi_ais_hif_auth_claim_terminal(
+	struct mt6797_wifi_ais_hif_auth *auth, int reason)
+{
+	reason = reason < 0 ? reason : -EIO;
+	if (!auth->terminal_reason) {
+		auth->terminal_reason = reason;
+		mt6797_wifi_ais_mgmt_pid_mark_terminal(&auth->pid_owner);
+	}
+	complete(&auth->completion);
+	return auth->terminal_reason;
+}
+
+static bool mt6797_wifi_ais_hif_auth_finished(
+	const struct mt6797_wifi_ais_hif_auth *auth)
+{
+	return auth->tx_done && (auth->tx.status || auth->response_received);
+}
+
+static int mt6797_wifi_ais_hif_auth_event(
+	void *context, const struct mt6797_wifi_event_view *event)
+{
+	struct mt6797_wifi_ais_hif *ais = context;
+	struct mt6797_wifi_ais_hif_auth *auth = &ais->auth;
+	struct mt6797_wifi_ais_mgmt_tx_status status;
+	enum mt6797_wifi_ais_event_disposition disposition;
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&auth->lock, flags);
+	if (!auth->armed || !auth->dirty) {
+		ret = 0;
+		goto out;
+	}
+	ret = mt6797_wifi_ais_mgmt_tx_event_match(&auth->pid_owner,
+		&auth->pid_lease, event, &disposition, &status);
+	if (ret) {
+		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, ret);
+		goto out;
+	}
+	if (disposition == MT6797_WIFI_AIS_EVENT_IGNORED)
+		goto out;
+	if (disposition == MT6797_WIFI_AIS_EVENT_TERMINAL) {
+		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, -EPROTO);
+		goto out;
+	}
+	if (auth->tx_done) {
+		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, -EOVERFLOW);
+		goto out;
+	}
+	auth->tx = status;
+	auth->tx_done = true;
+	if (mt6797_wifi_ais_hif_auth_finished(auth))
+		complete(&auth->completion);
+out:
+	spin_unlock_irqrestore(&auth->lock, flags);
+	return ret;
+}
+
+static int mt6797_wifi_ais_hif_auth_frame(
+	void *context, const struct mt6797_wifi_rx_view *frame)
+{
+	struct mt6797_wifi_ais_hif *ais = context;
+	struct mt6797_wifi_ais_hif_auth *auth = &ais->auth;
+	struct mt6797_wifi_ais_auth_response response;
+	enum mt6797_wifi_ais_event_disposition disposition;
+	unsigned long flags;
+	int ret;
+
+	if (frame->kind != MT6797_WIFI_RX_IEEE80211)
+		return 0;
+	spin_lock_irqsave(&auth->lock, flags);
+	if (!auth->armed || !auth->dirty) {
+		ret = 0;
+		goto out;
+	}
+	ret = mt6797_wifi_ais_open_auth_response_match(&auth->pending,
+		frame->payload, frame->payload_length, &disposition, &response);
+	if (ret) {
+		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, ret);
+		goto out;
+	}
+	if (disposition == MT6797_WIFI_AIS_EVENT_IGNORED)
+		goto out;
+	if (frame->header_translated ||
+	    frame->header_length != MT6797_WIFI_AIS_AUTH_HEADER_LENGTH ||
+	    frame->wlan_index != auth->pid_lease.wlan_index) {
+		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, -EPROTO);
+		goto out;
+	}
+	if (auth->response_received) {
+		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, -EOVERFLOW);
+		goto out;
+	}
+	auth->response = response;
+	auth->response_received = true;
+	if (mt6797_wifi_ais_hif_auth_finished(auth))
+		complete(&auth->completion);
+out:
+	spin_unlock_irqrestore(&auth->lock, flags);
+	return ret;
+}
+
+static void mt6797_wifi_ais_hif_auth_abort(void *context, int reason)
+{
+	struct mt6797_wifi_ais_hif *ais = context;
+	struct mt6797_wifi_ais_hif_auth *auth = &ais->auth;
+	unsigned long flags;
+
+	spin_lock_irqsave(&auth->lock, flags);
+	if (auth->armed)
+		mt6797_wifi_ais_hif_auth_claim_terminal(auth, reason);
+	spin_unlock_irqrestore(&auth->lock, flags);
+}
+
+static int mt6797_wifi_ais_hif_auth_prepare(
+	struct mt6797_wifi_ais_hif *ais,
+	const struct mt6797_wifi_ais_hif_auth_request *request,
+	u8 packet[MT6797_WIFI_AIS_AUTH_PACKET_LENGTH], size_t *packet_length)
+{
+	struct mt6797_wifi_ais_hif_auth *auth = &ais->auth;
+	struct mt6797_wifi_ais_mgmt_tx_params tx = {
+		.sequence_number = request->sequence_number,
+		.fixed_rate = request->fixed_rate,
+	};
+	u8 frame[MT6797_WIFI_AIS_AUTH_FRAME_LENGTH];
+	int ret;
+
+	ret = mt6797_wifi_ais_mgmt_pid_open(&auth->pid_owner,
+		&ais->runtime.bss, &ais->runtime.sta);
+	if (ret)
+		return ret;
+	ret = mt6797_wifi_ais_open_auth_request_build(&ais->runtime.bss,
+		&ais->runtime.sta, frame, sizeof(frame), &auth->pending);
+	if (ret)
+		goto close;
+	ret = mt6797_wifi_ais_mgmt_pid_acquire(&auth->pid_owner,
+		&auth->pid_lease);
+	if (ret)
+		goto close;
+	ret = mt6797_wifi_ais_mgmt_tx_build(&auth->pid_owner,
+		&auth->pid_lease, &ais->runtime.bss, &ais->runtime.sta, &tx,
+		frame, sizeof(frame), packet, MT6797_WIFI_AIS_AUTH_PACKET_LENGTH,
+		packet_length);
+	if (!ret)
+		return 0;
+	mt6797_wifi_ais_mgmt_pid_release(&auth->pid_owner,
+		&auth->pid_lease);
+close:
+	mt6797_wifi_ais_mgmt_pid_close(&auth->pid_owner);
+	memset(&auth->pid_lease, 0, sizeof(auth->pid_lease));
+	memset(&auth->pending, 0, sizeof(auth->pending));
+	return ret;
+}
+
+static int mt6797_wifi_ais_hif_auth_wait(
+	struct mt6797_wifi_ais_hif *ais, unsigned int timeout_ms)
+{
+	struct mt6797_wifi_ais_hif_auth *auth = &ais->auth;
+	ktime_t deadline = ktime_add_ms(
+		ais->backend.now(ais->backend.context), timeout_ms);
+	unsigned long flags;
+	unsigned long remaining;
+	int status;
+
+	for (;;) {
+		remaining = mt6797_wifi_ais_hif_remaining(ais, deadline);
+		if (remaining)
+			ais->backend.wait(ais->backend.context,
+				&auth->completion, remaining);
+		spin_lock_irqsave(&auth->lock, flags);
+		if (auth->terminal_reason) {
+			status = auth->terminal_reason;
+			spin_unlock_irqrestore(&auth->lock, flags);
+			return status;
+		}
+		if (mt6797_wifi_ais_hif_auth_finished(auth)) {
+			spin_unlock_irqrestore(&auth->lock, flags);
+			return 0;
+		}
+		spin_unlock_irqrestore(&auth->lock, flags);
+		status = mt6797_wifi_ais_hif_status(ais);
+		if (status)
+			return status;
+		if (!mt6797_wifi_ais_hif_remaining(ais, deadline))
+			return -ETIMEDOUT;
+	}
+}
+
 int mt6797_wifi_ais_hif_init(
 	struct mt6797_wifi_ais_hif *ais, struct mt6797_wifi_hif_irq *irq,
 	struct mt6797_wifi_runtime_config *config,
@@ -246,6 +436,9 @@ int mt6797_wifi_ais_hif_init(
 	}
 	mt6797_wifi_ais_runtime_init(&ais->runtime, first_command_sequence,
 				     first_channel_token);
+	spin_lock_init(&ais->auth.lock);
+	init_completion(&ais->auth.completion);
+	mt6797_wifi_ais_mgmt_pid_init(&ais->auth.pid_owner);
 	ais->initialized = true;
 	return 0;
 }
@@ -305,6 +498,129 @@ int mt6797_wifi_ais_hif_stop(struct mt6797_wifi_ais_hif *ais)
 	mt6797_wifi_ais_hif_init_runtime_ops(ais, &ops);
 	ret = mt6797_wifi_ais_runtime_stop(&ais->runtime, &ops);
 	mt6797_wifi_hif_wait_event_disarm(&ais->irq->wait_event);
+	mutex_unlock(&ais->irq->lifecycle_lock);
+	return ret;
+}
+
+int mt6797_wifi_ais_hif_open_auth(
+	struct mt6797_wifi_ais_hif *ais,
+	const struct mt6797_wifi_ais_hif_auth_request *request,
+	struct mt6797_wifi_ais_hif_auth_result *result)
+{
+	struct mt6797_wifi_hif_runtime_sink sink = {
+		.event = mt6797_wifi_ais_hif_auth_event,
+		.frame = mt6797_wifi_ais_hif_auth_frame,
+		.abort = mt6797_wifi_ais_hif_auth_abort,
+		.context = ais,
+	};
+	struct mt6797_wifi_ais_hif_auth *auth;
+	u8 packet[MT6797_WIFI_AIS_AUTH_PACKET_LENGTH];
+	unsigned long flags;
+	size_t packet_length;
+	int detach;
+	int ret;
+
+	if (result)
+		memset(result, 0, sizeof(*result));
+	if (!ais || !ais->initialized || !request || !result ||
+	    !request->response_timeout_ms ||
+	    request->response_timeout_ms > MT6797_WIFI_AIS_JOIN_MAX_INTERVAL_MS)
+		return -EINVAL;
+	auth = &ais->auth;
+	mutex_lock(&ais->irq->lifecycle_lock);
+	ret = mt6797_wifi_ais_hif_status(ais);
+	if (ret)
+		goto out;
+	if (ais->runtime.state != MT6797_WIFI_AIS_RUNTIME_STA_STATE1) {
+		ret = -ENOTCONN;
+		goto out;
+	}
+	if (auth->attempted) {
+		ret = -EALREADY;
+		goto out;
+	}
+	ret = mt6797_wifi_ais_hif_auth_prepare(ais, request, packet,
+		&packet_length);
+	if (ret)
+		goto out;
+
+	reinit_completion(&auth->completion);
+	auth->terminal_reason = 0;
+	auth->attempted = true;
+	auth->armed = true;
+	auth->dirty = false;
+	auth->sent = false;
+	auth->tx_done = false;
+	auth->response_received = false;
+	memset(&auth->tx, 0, sizeof(auth->tx));
+	memset(&auth->response, 0, sizeof(auth->response));
+	ret = mt6797_wifi_hif_runtime_sink_attach(ais->irq, &sink);
+	if (ret) {
+		auth->attempted = false;
+		auth->armed = false;
+		mt6797_wifi_ais_mgmt_pid_release(&auth->pid_owner,
+			&auth->pid_lease);
+		mt6797_wifi_ais_mgmt_pid_close(&auth->pid_owner);
+		memset(&auth->pid_lease, 0, sizeof(auth->pid_lease));
+		memset(&auth->pending, 0, sizeof(auth->pending));
+		goto out;
+	}
+
+	/* Publish ambiguity before CMD53 can expose the management frame. */
+	spin_lock_irqsave(&auth->lock, flags);
+	auth->dirty = true;
+	spin_unlock_irqrestore(&auth->lock, flags);
+	ret = ais->backend.send(ais->backend.context, MT6797_WIFI_MCR_WTDR1,
+		packet, packet_length);
+	spin_lock_irqsave(&auth->lock, flags);
+	if (ret)
+		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, ret);
+	else
+		auth->sent = true;
+	spin_unlock_irqrestore(&auth->lock, flags);
+	if (!ret)
+		ret = mt6797_wifi_ais_hif_auth_wait(ais,
+			request->response_timeout_ms);
+	if (ret) {
+		spin_lock_irqsave(&auth->lock, flags);
+		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, ret);
+		spin_unlock_irqrestore(&auth->lock, flags);
+	}
+
+	detach = mt6797_wifi_hif_runtime_sink_detach(ais->irq, ais);
+	if (detach && !ret) {
+		spin_lock_irqsave(&auth->lock, flags);
+		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, detach);
+		spin_unlock_irqrestore(&auth->lock, flags);
+	}
+	spin_lock_irqsave(&auth->lock, flags);
+	auth->armed = false;
+	result->tx = auth->tx;
+	result->response = auth->response;
+	result->tx_done = auth->tx_done;
+	result->response_received = auth->response_received;
+	spin_unlock_irqrestore(&auth->lock, flags);
+	if (ret) {
+		ais->backend.terminal(ais->backend.context, ret);
+		goto out;
+	}
+
+	ret = mt6797_wifi_ais_mgmt_pid_release(&auth->pid_owner,
+		&auth->pid_lease);
+	if (!ret)
+		ret = mt6797_wifi_ais_mgmt_pid_close(&auth->pid_owner);
+	if (ret) {
+		spin_lock_irqsave(&auth->lock, flags);
+		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, ret);
+		spin_unlock_irqrestore(&auth->lock, flags);
+		ais->backend.terminal(ais->backend.context, ret);
+		goto out;
+	}
+	if (result->tx.status)
+		ret = -EREMOTEIO;
+	else if (result->response.status_code)
+		ret = -EACCES;
+out:
 	mutex_unlock(&ais->irq->lifecycle_lock);
 	return ret;
 }

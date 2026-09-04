@@ -444,6 +444,7 @@ static void mt6797_wifi_hif_runtime_terminal(
 	if (!mt6797_wifi_hif_runtime_publish_terminal(irq, reason))
 		return;
 	mt6797_wifi_hif_wait_event_abort(&irq->wait_event, reason);
+	mt6797_wifi_hif_runtime_sink_abort(irq, reason);
 	schedule_work(&irq->terminal_work);
 }
 
@@ -756,6 +757,93 @@ int mt6797_wifi_hif_runtime_route_event(
 	return mt6797_wifi_scan_event(transaction, event, &result);
 }
 
+int mt6797_wifi_hif_runtime_sink_attach(
+	struct mt6797_wifi_hif_irq *irq,
+	const struct mt6797_wifi_hif_runtime_sink *sink)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	if (!irq || !sink || !sink->event || !sink->frame || !sink->abort ||
+	    !sink->context)
+		return -EINVAL;
+	lockdep_assert_held(&irq->lifecycle_lock);
+	ret = mt6797_wifi_hif_runtime_status(irq);
+	if (ret)
+		return ret;
+	ret = 0;
+	spin_lock_irqsave(&irq->sink_lock, flags);
+	if (irq->sink.context)
+		ret = -EBUSY;
+	else
+		irq->sink = *sink;
+	spin_unlock_irqrestore(&irq->sink_lock, flags);
+	return ret;
+}
+
+int mt6797_wifi_hif_runtime_sink_detach(
+	struct mt6797_wifi_hif_irq *irq, void *context)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	if (!irq || !context)
+		return -EINVAL;
+	lockdep_assert_held(&irq->lifecycle_lock);
+	spin_lock_irqsave(&irq->sink_lock, flags);
+	if (irq->sink.context != context)
+		ret = -ESTALE;
+	else
+		memset(&irq->sink, 0, sizeof(irq->sink));
+	spin_unlock_irqrestore(&irq->sink_lock, flags);
+	return ret;
+}
+
+int mt6797_wifi_hif_runtime_sink_event(
+	struct mt6797_wifi_hif_irq *irq,
+	const struct mt6797_wifi_event_view *event)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	if (!irq || !event)
+		return -EINVAL;
+	spin_lock_irqsave(&irq->sink_lock, flags);
+	if (irq->sink.context)
+		ret = irq->sink.event(irq->sink.context, event);
+	spin_unlock_irqrestore(&irq->sink_lock, flags);
+	return ret;
+}
+
+int mt6797_wifi_hif_runtime_sink_frame(
+	struct mt6797_wifi_hif_irq *irq,
+	const struct mt6797_wifi_rx_view *frame)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	if (!irq || !frame)
+		return -EINVAL;
+	spin_lock_irqsave(&irq->sink_lock, flags);
+	if (irq->sink.context)
+		ret = irq->sink.frame(irq->sink.context, frame);
+	spin_unlock_irqrestore(&irq->sink_lock, flags);
+	return ret;
+}
+
+void mt6797_wifi_hif_runtime_sink_abort(
+	struct mt6797_wifi_hif_irq *irq, int reason)
+{
+	unsigned long flags;
+
+	if (!irq)
+		return;
+	spin_lock_irqsave(&irq->sink_lock, flags);
+	if (irq->sink.context)
+		irq->sink.abort(irq->sink.context, reason);
+	spin_unlock_irqrestore(&irq->sink_lock, flags);
+}
+
 static int mt6797_wifi_hif_runtime_pump_event(
 	void *context, const struct mt6797_wifi_event_view *event)
 {
@@ -766,7 +854,16 @@ static int mt6797_wifi_hif_runtime_pump_event(
 						 event);
 	if (ret)
 		return ret;
-	return mt6797_wifi_hif_wait_event_offer(&irq->wait_event, event);
+	ret = mt6797_wifi_hif_wait_event_offer(&irq->wait_event, event);
+	if (ret)
+		return ret;
+	return mt6797_wifi_hif_runtime_sink_event(irq, event);
+}
+
+static int mt6797_wifi_hif_runtime_pump_frame(
+	void *context, const struct mt6797_wifi_rx_view *frame)
+{
+	return mt6797_wifi_hif_runtime_sink_frame(context, frame);
 }
 
 static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
@@ -796,6 +893,7 @@ static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
 			.read_lengths = mt6797_wifi_hif_runtime_pump_lengths,
 			.read_packet = mt6797_wifi_hif_runtime_pump_packet,
 			.deliver_event = mt6797_wifi_hif_runtime_pump_event,
+			.deliver_frame = mt6797_wifi_hif_runtime_pump_frame,
 			.expired = mt6797_wifi_hif_runtime_pump_expired,
 			.context = irq,
 		};
@@ -843,6 +941,7 @@ int mt6797_wifi_hif_irq_init(struct mt6797_wifi_hif_irq *irq,
 	if (!irq->rx_buffer[1])
 		return -ENOMEM;
 	mutex_init(&irq->lifecycle_lock);
+	spin_lock_init(&irq->sink_lock);
 	spin_lock_init(&irq->terminal_lock);
 	INIT_WORK(&irq->terminal_work, mt6797_wifi_hif_terminal_work);
 	mt6797_wifi_hif_wait_event_init(&irq->wait_event);

@@ -42,6 +42,7 @@ int mt6797_wifi_hif_pump_dispatch(
 	u64 packets;
 	u64 typed;
 	bool deliver = false;
+	int ret = 0;
 
 	if (!stats || !frame)
 		return -EINVAL;
@@ -68,6 +69,8 @@ int mt6797_wifi_hif_pump_dispatch(
 		if (check_add_overflow(stats->ieee80211_frames, 1ULL, &typed))
 			return -EOVERFLOW;
 		stats->ieee80211_frames = typed;
+		if (ops && ops->deliver_frame)
+			ret = ops->deliver_frame(ops->context, frame);
 		break;
 	case MT6797_WIFI_RX_ETHERNET:
 		if (check_add_overflow(stats->ethernet_frames, 1ULL, &typed))
@@ -78,6 +81,8 @@ int mt6797_wifi_hif_pump_dispatch(
 		return -EPROTO;
 	}
 	stats->rx_packets = packets;
+	if (ret)
+		return ret;
 	if (deliver && ops && ops->deliver_event)
 		return ops->deliver_event(ops->context, &event);
 	return 0;

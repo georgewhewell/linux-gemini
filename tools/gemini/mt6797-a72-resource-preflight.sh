@@ -15,7 +15,10 @@ regulator_summary=${REGULATOR_SUMMARY:-/sys/kernel/debug/regulator/regulator_sum
 clock_summary=${CLOCK_SUMMARY:-/sys/kernel/debug/clk/clk_summary}
 cmdline_path=${CMDLINE_PATH:-/proc/cmdline}
 kernel_log=${KERNEL_LOG:-}
-sram_voltages=" 600000 700000 900000 925000 950000 975000 1000000 1025000 1050000 1075000 1100000 1125000 1150000 1175000 1200000 "
+expected_cpu8_status=${EXPECTED_CPU8_STATUS:-disabled}
+sram_voltages=" 600000 700000 900000 925000 950000 975000 1000000"
+sram_voltages="$sram_voltages 1025000 1050000 1075000 1100000 1125000"
+sram_voltages="$sram_voltages 1150000 1175000 1200000 "
 
 fail()
 {
@@ -23,6 +26,12 @@ fail()
 	echo "reason=$*" >&2
 	exit 1
 }
+
+case "$expected_cpu8_status" in
+disabled) expected_mode=provider-only ;;
+okay) expected_mode=cpu8-admission ;;
+*) fail "unsupported expected CPU8 status: $expected_cpu8_status" ;;
+esac
 
 read_trimmed()
 {
@@ -135,7 +144,8 @@ fi
 if ! cpu9_status=$(read_trimmed "$dt_root/cpus/cpu@201/status"); then
 	fail "missing CPU9 DT status"
 fi
-[ "$cpu8_status" = "disabled" ] || fail "CPU8 DT status is $cpu8_status"
+[ "$cpu8_status" = "$expected_cpu8_status" ] ||
+	fail "CPU8 DT status is $cpu8_status, expected $expected_cpu8_status"
 [ "$cpu9_status" = "disabled" ] || fail "CPU9 DT status is $cpu9_status"
 
 if ! cmdline=$(read_trimmed "$cmdline_path"); then
@@ -172,18 +182,21 @@ sram_provider_count=$(printf '%s\n' "$log_text" |
 	fail "secure SRAM provider did not report its fail-closed lifecycle"
 
 preflight_count=$(printf '%s\n' "$log_text" |
-	grep -Fc 'resource-preflight-v1:' || true)
+	grep -Fc 'resource-preflight-v2:' || true)
 [ "$preflight_count" = "1" ] ||
 	fail "expected one complete A72 resource snapshot, found $preflight_count"
 preflight_line=$(printf '%s\n' "$log_text" |
-	grep -F 'resource-preflight-v1:')
+	grep -F 'resource-preflight-v2:')
 case "$preflight_line" in
-*"CPU8/9 resource-preflight-v1:"*) ;;
+*"CPU8/9 resource-preflight-v2:"*) ;;
 *) fail "preflight did not resolve CPU8/9" ;;
 esac
 
 if ! offline=$(extract_field "$preflight_line" offline); then
 	fail "missing or duplicate preflight field: offline"
+fi
+if ! preflight_mode=$(extract_field "$preflight_line" mode); then
+	fail "missing or duplicate preflight field: mode"
 fi
 if ! vproc_field=$(extract_field "$preflight_line" vproc); then
 	fail "missing or duplicate preflight field: vproc"
@@ -194,8 +207,11 @@ fi
 if ! sram_field=$(extract_field "$preflight_line" sram); then
 	fail "missing or duplicate preflight field: sram"
 fi
-if ! sram_status=$(extract_field "$preflight_line" sram-status); then
-	fail "missing or duplicate preflight field: sram-status"
+if ! sram_contract=$(extract_field "$preflight_line" sram-contract); then
+	fail "missing or duplicate preflight field: sram-contract"
+fi
+if ! sram_selector=$(extract_field "$preflight_line" sram-selector); then
+	fail "missing or duplicate preflight field: sram-selector"
 fi
 if ! mp2_field=$(extract_field "$preflight_line" mp2); then
 	fail "missing or duplicate preflight field: mp2"
@@ -209,12 +225,18 @@ fi
 if ! spm_buck_iso=$(extract_field "$preflight_line" spm-buck-iso); then
 	fail "missing or duplicate preflight field: spm-buck-iso"
 fi
-if ! cpu_on=$(extract_field "$preflight_line" CPU_ON); then
-	fail "missing or duplicate preflight field: CPU_ON"
+if ! transaction=$(extract_field "$preflight_line" transaction); then
+	fail "missing or duplicate preflight field: transaction"
 fi
 
 [ "$offline" = "1" ] || fail "driver did not fence online A72 CPUs"
-[ "$cpu_on" = "denied" ] || fail "CPU_ON is not denied"
+[ "$preflight_mode" = "$expected_mode" ] ||
+	fail "preflight mode is $preflight_mode, expected $expected_mode"
+[ "$transaction" = "ready" ] || fail "transaction backend is not ready"
+[ "$sram_contract" = "voltage-only" ] || fail "unexpected SRAM contract"
+require_unsigned "SRAM selector" "$sram_selector"
+[ "$sram_selector" -ge 1 ] && [ "$sram_selector" -le 15 ] ||
+	fail "secure SRAM selector cannot be restored: $sram_selector"
 
 vproc_uv=${vproc_field%uV}
 sram_uv=${sram_field%uV}
@@ -232,10 +254,6 @@ case "$sram_voltages" in
 *" $sram_uv "*) ;;
 *) fail "secure SRAM voltage is not a supported selector value: $sram_uv" ;;
 esac
-case "$sram_status" in
--95|0|1) ;;
-*) fail "secure SRAM status result is invalid: $sram_status" ;;
-esac
 [ "$mp2_hz" -ge 2000000000 ] && [ "$mp2_hz" -le 2500000000 ] ||
 	fail "MP2 clock is outside the observed 2.0-2.5GHz window: $mp2_hz"
 [ "$pwrap_reset" = "0" ] || fail "PWRAP reset is asserted"
@@ -244,14 +262,21 @@ printf '%s\n' "$spm_mp2" | grep -Eq '^0x[0-9a-fA-F]{8}$' ||
 printf '%s\n' "$spm_buck_iso" | grep -Eq '^0x[0-9a-fA-F]{8}$' ||
 	fail "SPM buck-isolation snapshot is malformed"
 
+if ! little_mv=$(regulator_voltage_mv vproc-little); then
+	fail "DA9214 BUCKA is absent from regulator summary"
+fi
 if ! vproc_mv=$(regulator_voltage_mv vproc-big); then
 	fail "BUCKB is absent from regulator summary"
 fi
 if ! sram_mv=$(regulator_voltage_mv vsram-big); then
 	fail "secure SRAM is absent from regulator summary"
 fi
+require_unsigned "BUCKA summary voltage" "$little_mv"
 require_unsigned "BUCKB summary voltage" "$vproc_mv"
 require_unsigned "SRAM summary voltage" "$sram_mv"
+[ $((little_mv * 1000)) -ge 770000 ] &&
+	[ $((little_mv * 1000)) -le 1200000 ] ||
+	fail "BUCKA summary voltage is out of range"
 [ $((vproc_mv * 1000)) -eq "$vproc_uv" ] ||
 	fail "BUCKB log and regulator summary disagree"
 [ $((sram_mv * 1000)) -eq "$sram_uv" ] ||
@@ -268,23 +293,34 @@ require_unsigned "MP2 ARMPLL clock" "$mp2_pll_hz"
 [ "$mp2_path_hz" = "$mp2_hz" ] || fail "MP2 driver and clock summary disagree"
 [ "$mp2_pll_hz" = "$mp2_path_hz" ] || fail "MP2 path is not sourced at ARMPLL rate"
 
-log_errors=$(printf '%s\n' "$log_text" | grep -Ei \
-	'(mt6797-a72|resource-preflight|DA9214|bigidvfs|vproc-big|vsram-big).*(fail|error|timeout|rollback|uncertain|invalid|mismatch|fenced|EUCLEAN)|'\
-'(fail|error|timeout|rollback|uncertain|invalid|mismatch|fenced|EUCLEAN).*(mt6797-a72|resource-preflight|DA9214|bigidvfs|vproc-big|vsram-big)' || true)
+resource_pattern='mt6797-a72|resource-preflight|DA9214|bigidvfs|vproc-big|vsram-big'
+error_pattern='fail|error|timeout|rollback|uncertain|invalid|mismatch|fenced|EUCLEAN'
+log_error_pattern="($resource_pattern).*($error_pattern)"
+log_error_pattern="$log_error_pattern|($error_pattern).*($resource_pattern)"
+log_errors=$(printf '%s\n' "$log_text" |
+	grep -Ei "$log_error_pattern" || true)
 [ -z "$log_errors" ] || {
 	printf '%s\n' "$log_errors" >&2
 	fail "A72 resource error found in kernel log"
 }
 
-echo "schema=gemini-mt6797-a72-resource-preflight-v1"
+gate_count=$(printf '%s\n' "$log_text" | grep -Fc 'cpu-on-gate-v3:' || true)
+case "$expected_mode:$gate_count" in
+provider-only:0|cpu8-admission:1) ;;
+*) fail "unexpected CPU_ON gate transcript count for $expected_mode: $gate_count" ;;
+esac
+
+echo "schema=gemini-mt6797-a72-resource-preflight-v2"
 echo "collector_mode=read_only"
 echo "cpu8_online=no"
 echo "cpu9_online=no"
 echo "cpu_on_requested=no"
+printf 'preflight_mode=%s\n' "$preflight_mode"
 echo "da9214_identity=accepted"
 printf 'vproc_big_uv=%s\n' "$vproc_uv"
+printf 'vproc_little_uv=%s\n' "$((little_mv * 1000))"
 printf 'vsram_big_uv=%s\n' "$sram_uv"
-printf 'vsram_status=%s\n' "$sram_status"
+printf 'vsram_selector=%s\n' "$sram_selector"
 printf 'mp2_hz=%s\n' "$mp2_hz"
 printf 'pwrap_reset_asserted=%s\n' "$pwrap_reset"
 printf 'spm_mp2=%s\n' "$spm_mp2"

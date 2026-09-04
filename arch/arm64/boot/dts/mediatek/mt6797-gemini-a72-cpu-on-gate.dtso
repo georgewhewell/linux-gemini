@@ -3,11 +3,11 @@
  * Planet Computers Gemini PDA Cortex-A72 PSCI CPU_ON gate.
  *
  * Apply after mt6797-gemini-a72-resource-preflight.dtso in a volatile FIT.
- * maxcpus=8 prevents the generic PSCI path from reaching CPU8/9 during SMP
- * boot, before the platform resource gate is installed.  The gate remains
- * fail-closed because the secure SRAM regulator cannot report or restore its
- * enable state.  A later write to CPU8/9's sysfs online file therefore stops
- * at CPUHP_BP_PREPARE_DYN with -EOPNOTSUPP, before PSCI CPU_ON.
+ * maxcpus=8 prevents CPU8 from reaching the custom PSCI admission owner during
+ * SMP boot, before the platform resource gate is installed.  This overlay
+ * admits only CPU8 but leaves it offline for read-only qualification.  CPU9
+ * stays closed by the custom operation, and no OPP, OCP, or frequency-changing
+ * path is exposed.
  */
 
 /dts-v1/;
@@ -22,11 +22,11 @@
 };
 
 &cpu8 {
-	enable-method = "psci";
-	status = "disabled";
+	enable-method = "mediatek,mt6797-psci";
+	status = "okay";
 };
 
 &cpu9 {
-	enable-method = "psci";
+	enable-method = "mediatek,mt6797-psci";
 	status = "disabled";
 };

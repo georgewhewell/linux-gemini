@@ -19,7 +19,7 @@
  * those fields remain firmware-owned and are excluded here.
  */
 static const struct mt6797_a72_step mt6797_a72_power_steps[] = {
-	{ MT6797_A72_OCP_GUARD_ENTER },
+	{ MT6797_A72_TRANSACTION_GUARD_ENTER },
 	{
 		.action = MT6797_A72_SPM_UPDATE,
 		.reg = MT6797_A72_SPM_MP2_PWR_CON,
@@ -36,7 +36,7 @@ static const struct mt6797_a72_step mt6797_a72_power_steps[] = {
 		.mask = MT6797_A72_BIG_BUCK_ISO,
 	},
 	{ MT6797_A72_PWRAP_RESET_DEASSERT },
-	{ MT6797_A72_OCP_GUARD_EXIT },
+	{ MT6797_A72_TRANSACTION_GUARD_EXIT },
 	{ MT6797_A72_DELAY_US, .value = 240 },
 	{ MT6797_A72_VSRAM_SET_UV, .value = MT6797_A72_SRAM_BOOT_UV },
 	{ MT6797_A72_DELAY_US, .value = 240 },
@@ -84,24 +84,30 @@ int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
 {
 	if (!state)
 		return -EINVAL;
-	if (state->a72_online || state->ocp_guarded)
+	if (state->a72_online || state->transaction_guarded)
 		return -EBUSY;
 
-	/* A voltage selector is not evidence that the secure LDO is enabled. */
-	if (!(capabilities & MT6797_A72_CAP_SRAM_STATUS) ||
-	    state->vsram_enabled == -EOPNOTSUPP)
-		return -EOPNOTSUPP;
-	if (state->vsram_enabled < 0)
-		return state->vsram_enabled;
-	if (state->vsram_enabled > 1 || state->vproc_enabled < 0 ||
-	    state->vproc_enabled > 1 || state->pwrap_reset_asserted < 0 ||
+	if (state->vproc_enabled < 0 || state->vproc_enabled > 1 ||
+	    state->pwrap_reset_asserted < 0 ||
 	    state->pwrap_reset_asserted > 1)
 		return -EUCLEAN;
+	if (state->pwrap_reset_asserted)
+		return -EBUSY;
+	if (state->vproc_uv < MT6797_A72_VPROC_MIN_UV ||
+	    state->vproc_uv > MT6797_A72_VPROC_MAX_UV ||
+	    state->vsram_uv < MT6797_A72_SRAM_MIN_UV ||
+	    state->vsram_uv > MT6797_A72_SRAM_MAX_UV)
+		return -ERANGE;
+	/* Selector 0 reads as 1.05 V but cannot be recreated by the set FID. */
+	if (!state->vsram_selector || state->vsram_selector > 15)
+		return -EOPNOTSUPP;
 
 	/*
-	 * Disable is required even when the observed LDO starts enabled: the
-	 * transaction must also be able to restore a changed enable state after
-	 * a partial or firmware-handoff failure.
+	 * The deployed firmware implements only voltage selection for the MP2
+	 * SRAM LDO.  It has neither an enable-state getter nor a state-changing
+	 * enable/disable service, and the pinned vendor CPU_ON path changes only
+	 * its selector.  Admission consequently requires exact voltage rollback,
+	 * supplied by the transaction backend, but must not infer an enable bit.
 	 */
 	if ((capabilities & MT6797_A72_REQUIRED_CAPS) !=
 	    MT6797_A72_REQUIRED_CAPS)
@@ -116,11 +122,11 @@ static bool mt6797_a72_states_equal(const struct mt6797_a72_state *first,
 	return first->mp2_pwr_con == second->mp2_pwr_con &&
 	       first->ext_buck_iso == second->ext_buck_iso &&
 	       first->vproc_enabled == second->vproc_enabled &&
-	       first->vsram_enabled == second->vsram_enabled &&
 	       first->pwrap_reset_asserted == second->pwrap_reset_asserted &&
 	       first->vproc_uv == second->vproc_uv &&
 	       first->vsram_uv == second->vsram_uv &&
-	       first->ocp_guarded == second->ocp_guarded &&
+	       first->vsram_selector == second->vsram_selector &&
+	       first->transaction_guarded == second->transaction_guarded &&
 	       first->a72_online == second->a72_online;
 }
 
@@ -211,4 +217,15 @@ int mt6797_a72_transaction_abort(struct mt6797_a72_transaction *transaction)
 		return -EINVAL;
 
 	return mt6797_a72_transaction_rollback(transaction);
+}
+
+int mt6797_a72_transaction_commit(struct mt6797_a72_transaction *transaction)
+{
+	if (!transaction || !transaction->active || !transaction->ops ||
+	    !transaction->plan)
+		return -EINVAL;
+
+	transaction->active = false;
+	transaction->applied = 0;
+	return 0;
 }

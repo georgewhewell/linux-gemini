@@ -26,10 +26,10 @@ static struct mt6797_a72_fake mt6797_a72_new_fake(void)
 			.mp2_pwr_con = BIT(1) | BIT(4) | BIT(16),
 			.ext_buck_iso = BIT(0) | BIT(1),
 			.vproc_enabled = 0,
-			.vsram_enabled = 0,
 			.pwrap_reset_asserted = 0,
 			.vproc_uv = 900000,
 			.vsram_uv = 900000,
+			.vsram_selector = 3,
 		},
 		.fail_apply_at = -1,
 		.fail_verify_at = -1,
@@ -50,8 +50,8 @@ static void mt6797_a72_fake_apply_step(struct mt6797_a72_fake *fake,
 				       const struct mt6797_a72_step *step)
 {
 	switch (step->action) {
-	case MT6797_A72_OCP_GUARD_ENTER:
-		fake->state.ocp_guarded = true;
+	case MT6797_A72_TRANSACTION_GUARD_ENTER:
+		fake->state.transaction_guarded = true;
 		break;
 	case MT6797_A72_SPM_UPDATE:
 		if (step->reg == MT6797_A72_SPM_MP2_PWR_CON)
@@ -72,12 +72,12 @@ static void mt6797_a72_fake_apply_step(struct mt6797_a72_fake *fake,
 	case MT6797_A72_PWRAP_RESET_DEASSERT:
 		fake->state.pwrap_reset_asserted = 0;
 		break;
-	case MT6797_A72_OCP_GUARD_EXIT:
-		fake->state.ocp_guarded = false;
+	case MT6797_A72_TRANSACTION_GUARD_EXIT:
+		fake->state.transaction_guarded = false;
 		break;
 	case MT6797_A72_VSRAM_SET_UV:
-		fake->state.vsram_enabled = 1;
 		fake->state.vsram_uv = step->value;
+		fake->state.vsram_selector = 11;
 		break;
 	case MT6797_A72_IDVFS_READ_FENCE:
 	case MT6797_A72_DELAY_US:
@@ -108,8 +108,8 @@ static int mt6797_a72_fake_verify(void *context,
 		return -EIO;
 
 	switch (step->action) {
-	case MT6797_A72_OCP_GUARD_ENTER:
-		return fake->state.ocp_guarded ? 0 : -EIO;
+	case MT6797_A72_TRANSACTION_GUARD_ENTER:
+		return fake->state.transaction_guarded ? 0 : -EIO;
 	case MT6797_A72_SPM_UPDATE:
 		if (step->reg == MT6797_A72_SPM_MP2_PWR_CON)
 			return (fake->state.mp2_pwr_con & step->mask) ==
@@ -122,11 +122,11 @@ static int mt6797_a72_fake_verify(void *context,
 		return fake->state.vproc_enabled == 1 ? 0 : -EIO;
 	case MT6797_A72_PWRAP_RESET_DEASSERT:
 		return fake->state.pwrap_reset_asserted == 0 ? 0 : -EIO;
-	case MT6797_A72_OCP_GUARD_EXIT:
-		return !fake->state.ocp_guarded ? 0 : -EIO;
+	case MT6797_A72_TRANSACTION_GUARD_EXIT:
+		return !fake->state.transaction_guarded ? 0 : -EIO;
 	case MT6797_A72_VSRAM_SET_UV:
-		return fake->state.vsram_enabled == 1 &&
-		       fake->state.vsram_uv == step->value ? 0 : -EIO;
+		return fake->state.vsram_uv == step->value &&
+		       fake->state.vsram_selector == 11 ? 0 : -EIO;
 	case MT6797_A72_IDVFS_READ_FENCE:
 	case MT6797_A72_DELAY_US:
 		return 0;
@@ -149,12 +149,12 @@ mt6797_a72_fake_rollback(void *context, const struct mt6797_a72_step *step,
 		return -EIO;
 
 	switch (step->action) {
-	case MT6797_A72_OCP_GUARD_ENTER:
-		fake->state.ocp_guarded = initial->ocp_guarded;
+	case MT6797_A72_TRANSACTION_GUARD_ENTER:
+		fake->state.transaction_guarded = initial->transaction_guarded;
 		break;
-	case MT6797_A72_OCP_GUARD_EXIT:
+	case MT6797_A72_TRANSACTION_GUARD_EXIT:
 		/* Undoing guard exit protects the remaining rollback. */
-		fake->state.ocp_guarded = true;
+		fake->state.transaction_guarded = true;
 		break;
 	case MT6797_A72_SPM_UPDATE:
 		if (step->reg == MT6797_A72_SPM_MP2_PWR_CON)
@@ -175,8 +175,8 @@ mt6797_a72_fake_rollback(void *context, const struct mt6797_a72_step *step,
 		fake->state.vproc_uv = initial->vproc_uv;
 		break;
 	case MT6797_A72_VSRAM_SET_UV:
-		fake->state.vsram_enabled = initial->vsram_enabled;
 		fake->state.vsram_uv = initial->vsram_uv;
+		fake->state.vsram_selector = initial->vsram_selector;
 		break;
 	case MT6797_A72_IDVFS_READ_FENCE:
 	case MT6797_A72_DELAY_US:
@@ -202,7 +202,7 @@ static void mt6797_a72_plan_matches_vendor_boundary_test(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, mt6797_a72_build_plan(&plan), 0);
 	KUNIT_ASSERT_EQ(test, plan.count, 12U);
 	KUNIT_EXPECT_EQ(test, plan.steps[0].action,
-			(enum mt6797_a72_action)MT6797_A72_OCP_GUARD_ENTER);
+			(enum mt6797_a72_action)MT6797_A72_TRANSACTION_GUARD_ENTER);
 	KUNIT_EXPECT_EQ(test, plan.steps[1].reg,
 			(u32)MT6797_A72_SPM_MP2_PWR_CON);
 	KUNIT_EXPECT_EQ(test, plan.steps[1].mask,
@@ -225,18 +225,16 @@ static void mt6797_a72_plan_matches_vendor_boundary_test(struct kunit *test)
 	}
 }
 
-static void mt6797_a72_admission_fences_unknown_sram_test(struct kunit *test)
+static void mt6797_a72_admission_requires_live_backends_test(struct kunit *test)
 {
 	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
+	int ret;
 
-	fake.state.vsram_enabled = -EOPNOTSUPP;
-	KUNIT_EXPECT_EQ(test,
-		mt6797_a72_validate_admission(&fake.state,
-					      MT6797_A72_REQUIRED_CAPS),
-		-EOPNOTSUPP);
-	KUNIT_EXPECT_EQ(test,
-		mt6797_a72_validate_admission(&fake.state, 0),
-		-EOPNOTSUPP);
+	ret = mt6797_a72_validate_admission(&fake.state, 0);
+	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
+	ret = mt6797_a72_validate_admission(&fake.state,
+					    MT6797_A72_REQUIRED_CAPS);
+	KUNIT_EXPECT_EQ(test, ret, 0);
 }
 
 static void mt6797_a72_admission_fences_online_cpu_test(struct kunit *test)
@@ -250,18 +248,30 @@ static void mt6797_a72_admission_fences_online_cpu_test(struct kunit *test)
 		-EBUSY);
 }
 
+static void mt6797_a72_admission_rejects_unrestorable_selector_test(struct kunit *test)
+{
+	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
+	int ret;
+
+	fake.state.vsram_selector = 0;
+	ret = mt6797_a72_validate_admission(&fake.state,
+					    MT6797_A72_REQUIRED_CAPS);
+	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
+}
+
 static void mt6797_a72_transaction_orders_and_aborts_test(struct kunit *test)
 {
 	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
 	struct mt6797_a72_state initial = fake.state;
 	struct mt6797_a72_transaction transaction = { };
 	struct mt6797_a72_plan plan;
+	int ret;
 
 	KUNIT_ASSERT_EQ(test, mt6797_a72_build_plan(&plan), 0);
-	KUNIT_ASSERT_EQ(test,
-		mt6797_a72_transaction_begin(&transaction, &plan,
-			&mt6797_a72_fake_ops, &fake, MT6797_A72_REQUIRED_CAPS),
-		0);
+	ret = mt6797_a72_transaction_begin(&transaction, &plan,
+					   &mt6797_a72_fake_ops, &fake,
+					   MT6797_A72_REQUIRED_CAPS);
+	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_EXPECT_TRUE(test, transaction.active);
 	KUNIT_EXPECT_EQ(test, fake.apply_calls, plan.count);
 	KUNIT_EXPECT_EQ(test, fake.applied[2],
@@ -274,7 +284,6 @@ static void mt6797_a72_transaction_orders_and_aborts_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, fake.state.mp2_pwr_con, initial.mp2_pwr_con);
 	KUNIT_EXPECT_EQ(test, fake.state.ext_buck_iso, initial.ext_buck_iso);
 	KUNIT_EXPECT_EQ(test, fake.state.vproc_enabled, initial.vproc_enabled);
-	KUNIT_EXPECT_EQ(test, fake.state.vsram_enabled, initial.vsram_enabled);
 	KUNIT_EXPECT_EQ(test, fake.state.vsram_uv, initial.vsram_uv);
 	KUNIT_EXPECT_EQ(test, fake.rollback_calls, plan.count);
 }
@@ -313,7 +322,6 @@ static void mt6797_a72_verify_failure_rolls_back_test(struct kunit *test)
 			&mt6797_a72_fake_ops, &fake, MT6797_A72_REQUIRED_CAPS),
 		-EIO);
 	KUNIT_EXPECT_EQ(test, fake.rollback_calls, 11U);
-	KUNIT_EXPECT_EQ(test, fake.state.vsram_enabled, initial.vsram_enabled);
 	KUNIT_EXPECT_EQ(test, fake.state.vsram_uv, initial.vsram_uv);
 	KUNIT_EXPECT_FALSE(test, transaction.faulted);
 }
@@ -353,15 +361,36 @@ static void mt6797_a72_rejects_modified_plan_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, fake.apply_calls, 0U);
 }
 
+static void mt6797_a72_commit_forgets_rollback_state_test(struct kunit *test)
+{
+	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
+	struct mt6797_a72_transaction transaction = { };
+	struct mt6797_a72_plan plan;
+	int ret;
+
+	KUNIT_ASSERT_EQ(test, mt6797_a72_build_plan(&plan), 0);
+	ret = mt6797_a72_transaction_begin(&transaction, &plan,
+					   &mt6797_a72_fake_ops, &fake,
+					   MT6797_A72_REQUIRED_CAPS);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, mt6797_a72_transaction_commit(&transaction), 0);
+	KUNIT_EXPECT_FALSE(test, transaction.active);
+	KUNIT_EXPECT_EQ(test, transaction.applied, 0U);
+	KUNIT_EXPECT_EQ(test, fake.rollback_calls, 0U);
+	KUNIT_EXPECT_EQ(test, mt6797_a72_transaction_abort(&transaction), -EINVAL);
+}
+
 static struct kunit_case mt6797_a72_power_test_cases[] = {
 	KUNIT_CASE(mt6797_a72_plan_matches_vendor_boundary_test),
-	KUNIT_CASE(mt6797_a72_admission_fences_unknown_sram_test),
+	KUNIT_CASE(mt6797_a72_admission_requires_live_backends_test),
 	KUNIT_CASE(mt6797_a72_admission_fences_online_cpu_test),
+	KUNIT_CASE(mt6797_a72_admission_rejects_unrestorable_selector_test),
 	KUNIT_CASE(mt6797_a72_transaction_orders_and_aborts_test),
 	KUNIT_CASE(mt6797_a72_failure_rolls_back_attempted_step_test),
 	KUNIT_CASE(mt6797_a72_verify_failure_rolls_back_test),
 	KUNIT_CASE(mt6797_a72_uncertain_rollback_fences_test),
 	KUNIT_CASE(mt6797_a72_rejects_modified_plan_test),
+	KUNIT_CASE(mt6797_a72_commit_forgets_rollback_state_test),
 	{ }
 };
 

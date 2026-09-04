@@ -122,5 +122,67 @@ int mt6797_cldma_address_decode(__le32 low, __le16 debug_id,
 	return 0;
 }
 
+void mt6797_ccci_boot_begin(enum mt6797_ccci_boot_state *state)
+{
+	if (state)
+		*state = MT6797_CCCI_BOOT_WAIT_HS1;
+}
+
+int mt6797_ccci_boot_runtime_sent(enum mt6797_ccci_boot_state *state)
+{
+	if (!state)
+		return -EINVAL;
+	if (*state != MT6797_CCCI_BOOT_SEND_RUNTIME) {
+		*state = MT6797_CCCI_BOOT_FAILED;
+		return -EPROTO;
+	}
+
+	*state = MT6797_CCCI_BOOT_WAIT_HS2;
+	return 0;
+}
+
+int mt6797_ccci_boot_receive(enum mt6797_ccci_boot_state *state,
+			     const struct mt6797_ccci_header_fields *fields)
+{
+	if (!state || !fields)
+		return -EINVAL;
+	if (fields->channel != MT6797_CCCI_CONTROL_RX)
+		return -ENOMSG;
+
+	switch (fields->data[1]) {
+	case MT6797_CCCI_MD_INIT_START_BOOT:
+		if (*state == MT6797_CCCI_BOOT_WAIT_HS1 &&
+		    fields->reserved == MT6797_CCCI_MD_INIT_CHECK_ID) {
+			*state = MT6797_CCCI_BOOT_SEND_RUNTIME;
+			return MT6797_CCCI_BOOT_EVENT_HS1;
+		}
+		if (*state == MT6797_CCCI_BOOT_WAIT_HS2 &&
+		    fields->reserved != MT6797_CCCI_MD_INIT_CHECK_ID) {
+			*state = MT6797_CCCI_BOOT_READY;
+			return MT6797_CCCI_BOOT_EVENT_READY;
+		}
+		break;
+	case MT6797_CCCI_DRIVER_VERSION_ERROR:
+		*state = MT6797_CCCI_BOOT_FAILED;
+		return -EPROTONOSUPPORT;
+	case MT6797_CCCI_MD_EXCEPTION:
+	case MT6797_CCCI_MD_EXCEPTION_OK:
+	case MT6797_CCCI_MD_EXCEPTION_PASS:
+		*state = MT6797_CCCI_BOOT_FAILED;
+		return -EIO;
+	default:
+		break;
+	}
+
+	*state = MT6797_CCCI_BOOT_FAILED;
+	return -EPROTO;
+}
+
+void mt6797_ccci_boot_abort(enum mt6797_ccci_boot_state *state)
+{
+	if (state)
+		*state = MT6797_CCCI_BOOT_FAILED;
+}
+
 MODULE_DESCRIPTION("MediaTek MT6797 modem protocol helpers");
 MODULE_LICENSE("GPL");

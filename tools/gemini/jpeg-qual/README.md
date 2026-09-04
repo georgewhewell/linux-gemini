@@ -14,8 +14,20 @@ single binary:
 
     make -C tools/gemini/jpeg-qual CC=aarch64-linux-gnu-gcc
 
-After booting the RAM-only JPEG activation overlay, identify the encoder and
-decoder paths from `v4l2-ctl --list-devices`, then run:
+The first hardware gate uses the existing
+`mt6797-gemini-pda-jpeg.dtbo` overlay, but submits no jobs.  Do not compose a
+display or other media-consumer overlay into this isolated gate.  Before
+opening any video node, run:
+
+    capture-jpeg-preflight.sh
+
+Proceed only when it prints `JPEG_PREFLIGHT=PASS`.  This verifies exact driver
+and video-node binding, IOMMU attachment, stable registered IRQs, suspended
+runtime-PM state, disabled clocks, and powered-off MM/VENC domains.  It also
+rejects accidental GCE activation, probe errors, and IOMMU faults.
+
+For the subsequent one-job gate, identify the encoder and decoder paths from
+`v4l2-ctl --list-devices`, then run exactly once:
 
     gemini-jpeg-qual --encoder /dev/video0 --decoder /dev/video1 --timeout 3000
 

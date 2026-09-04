@@ -30,6 +30,11 @@ properties:
   vproc-big-supply:
     description: External processor supply for the Cortex-A72 cluster.
 
+  sram-big-supply:
+    description:
+      Secure BigiDVFS SRAM supply for the Cortex-A72 cluster. The preflight
+      remains blocked until this provider supports truthful status and disable.
+
   clocks:
     maxItems: 1
     description: Read-only MP2 clock exposed by the CPU clock provider.
@@ -48,6 +53,7 @@ required:
   - mediatek,spm
   - cpus
   - vproc-big-supply
+  - sram-big-supply
   - clocks
   - clock-names
   - resets
@@ -65,6 +71,7 @@ examples:
         mediatek,spm = <&scpsys>;
         cpus = <&cpu8>, <&cpu9>;
         vproc-big-supply = <&da9214_buckb>;
+        sram-big-supply = <&vsram_big>;
         clocks = <&cpuclk CLK_MCU_MP2>;
         clock-names = "mp2";
         resets = <&watchdog MT6797_TOPRGU_PWRAP_SPI_CTL_RST>;

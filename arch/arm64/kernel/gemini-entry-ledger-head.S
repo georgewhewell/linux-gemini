@@ -43,8 +43,8 @@
 	gemini_entry_ledger_store_word \base, 24, 0x442d, 0x470a
 	gemini_entry_ledger_store_word \base, 28, 0x4541, 0x2d4c
 	gemini_entry_ledger_store_word \base, 32, 0x3032, 0x3632
-	gemini_entry_ledger_store_word \base, 36, 0x3830, 0x3631
-	gemini_entry_ledger_store_word \base, 40, 0x412d, 0x4520
+	gemini_entry_ledger_store_word \base, 36, 0x3930, 0x3430
+	gemini_entry_ledger_store_word \base, 40, 0x492d, 0x4520
 	gemini_entry_ledger_store_word \base, 44, 0x0a30, 0x0000
 	.endm
 
@@ -55,8 +55,8 @@
 	gemini_entry_ledger_verify_word \base, 24, 0x442d, 0x470a, \fail
 	gemini_entry_ledger_verify_word \base, 28, 0x4541, 0x2d4c, \fail
 	gemini_entry_ledger_verify_word \base, 32, 0x3032, 0x3632, \fail
-	gemini_entry_ledger_verify_word \base, 36, 0x3830, 0x3631, \fail
-	gemini_entry_ledger_verify_word \base, 40, 0x412d, 0x4520, \fail
+	gemini_entry_ledger_verify_word \base, 36, 0x3930, 0x3430, \fail
+	gemini_entry_ledger_verify_word \base, 40, 0x492d, 0x4520, \fail
 	gemini_entry_ledger_verify_word \base, 44, 0x0a30, 0x0000, \fail
 	.endm
 
@@ -67,8 +67,8 @@
 	gemini_entry_ledger_store_word \base, 24, 0x442d, 0x470a
 	gemini_entry_ledger_store_word \base, 28, 0x4541, 0x2d4c
 	gemini_entry_ledger_store_word \base, 32, 0x3032, 0x3632
-	gemini_entry_ledger_store_word \base, 36, 0x3830, 0x3631
-	gemini_entry_ledger_store_word \base, 40, 0x412d, 0x4520
+	gemini_entry_ledger_store_word \base, 36, 0x3930, 0x3430
+	gemini_entry_ledger_store_word \base, 40, 0x492d, 0x4520
 	gemini_entry_ledger_store_word \base, 44, 0x0a31, 0x0000
 	.endm
 
@@ -79,8 +79,8 @@
 	gemini_entry_ledger_verify_word \base, 24, 0x442d, 0x470a, \fail
 	gemini_entry_ledger_verify_word \base, 28, 0x4541, 0x2d4c, \fail
 	gemini_entry_ledger_verify_word \base, 32, 0x3032, 0x3632, \fail
-	gemini_entry_ledger_verify_word \base, 36, 0x3830, 0x3631, \fail
-	gemini_entry_ledger_verify_word \base, 40, 0x412d, 0x4520, \fail
+	gemini_entry_ledger_verify_word \base, 36, 0x3930, 0x3430, \fail
+	gemini_entry_ledger_verify_word \base, 40, 0x492d, 0x4520, \fail
 	gemini_entry_ledger_verify_word \base, 44, 0x0a31, 0x0000, \fail
 	.endm
 

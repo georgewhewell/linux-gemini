@@ -20,13 +20,13 @@
 
 static const char * const gemini_entry_records[] __initconst = {
 	"====0.000000-D\n"
-	"GAEL-20260816-A E0\n",
+	"GAEL-20260904-I E0\n",
 	"====0.000000-D\n"
-	"GAEL-20260816-A E1\n",
+	"GAEL-20260904-I E1\n",
 	"====0.000000-D\n"
-	"GAEL-20260816-A E2\n",
+	"GAEL-20260904-I E2\n",
 	"====0.000000-D\n"
-	"GAEL-20260816-A E3\n",
+	"GAEL-20260904-I E3\n",
 };
 
 static bool __init gemini_entry_slot_empty(void __iomem *slot)

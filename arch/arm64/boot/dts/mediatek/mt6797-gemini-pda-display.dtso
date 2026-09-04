@@ -180,6 +180,7 @@
 		outn-supply = <&outn>;
 		/* Vendor aeon6797_6m_n.dts identifies GPIO180 as LCM_RST. */
 		reset-gpios = <&pio 180 GPIO_ACTIVE_HIGH>;
+		rotation = <270>;
 		port { gemini_panel_in: endpoint { remote-endpoint = <&gemini_dsi0_out>; }; };
 	};
 };

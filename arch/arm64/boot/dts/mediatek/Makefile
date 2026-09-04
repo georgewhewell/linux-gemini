@@ -26,6 +26,11 @@ mt6797-gemini-pda-bluetooth-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-bluetooth.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-bluetooth.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-a72-resource-preflight.dtbo
+mt6797-gemini-pda-a72-resource-preflight-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-a72-resource-preflight.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-a72-resource-preflight.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-identity.dtbo
 mt6797-gemini-pda-consys-identity-dtbs := \
 	mt6797-gemini-pda.dtb \

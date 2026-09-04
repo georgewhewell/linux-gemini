@@ -63,10 +63,12 @@ int mtk_vcodec_enc_pw_on(struct mtk_vcodec_pm *pm)
 	int ret;
 
 	ret = pm_runtime_resume_and_get(pm->dev);
-	if (ret)
+	if (ret < 0) {
 		dev_err(pm->dev, "pm_runtime_resume_and_get fail: %d", ret);
+		return ret;
+	}
 
-	return ret;
+	return 0;
 }
 
 void mtk_vcodec_enc_pw_off(struct mtk_vcodec_pm *pm)
@@ -74,7 +76,7 @@ void mtk_vcodec_enc_pw_off(struct mtk_vcodec_pm *pm)
 	pm_runtime_put(pm->dev);
 }
 
-void mtk_vcodec_enc_clock_on(struct mtk_vcodec_pm *pm)
+int mtk_vcodec_enc_clock_on(struct mtk_vcodec_pm *pm)
 {
 	struct mtk_vcodec_clk *enc_clk = &pm->venc_clk;
 	int ret, i = 0;
@@ -88,11 +90,13 @@ void mtk_vcodec_enc_clock_on(struct mtk_vcodec_pm *pm)
 		}
 	}
 
-	return;
+	return 0;
 
 clkerr:
 	for (i -= 1; i >= 0; i--)
 		clk_disable_unprepare(enc_clk->clk_info[i].vcodec_clk);
+
+	return ret;
 }
 
 void mtk_vcodec_enc_clock_off(struct mtk_vcodec_pm *pm)

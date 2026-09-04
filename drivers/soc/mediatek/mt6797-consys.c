@@ -372,7 +372,8 @@ static int mt6797_consys_start(struct mt6797_consys *consys)
 		goto fail_terminal;
 	/* Vendor power-on waits this long after releasing CONMCU reset. */
 	msleep(MT6797_CONSYS_RESET_RELEASE_SETTLE_MS);
-	ret = ops->start(context, &consys->runtime_lease, &stp_lease);
+	ret = ops->start(context, &consys->runtime_lease, consys->firmware,
+			 &stp_lease);
 	if (ret)
 		goto fail_terminal;
 	if (!mt6797_consys_stp_session_owns_lease(consys->stp_session, stp_lease)) {
@@ -464,7 +465,8 @@ static int mt6797_consys_component_bind(struct device *dev)
 				     "failed terminal CONSYS/STP bring-up\n");
 	}
 
-	dev_info(dev, "CONSYS powered; chip %#x and full-STP session verified\n",
+	dev_info(dev,
+		 "CONSYS powered; chip %#x and firmware patched; radios disabled\n",
 		 consys->chip_id);
 	return 0;
 }

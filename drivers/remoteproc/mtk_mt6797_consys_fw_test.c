@@ -141,11 +141,41 @@ static void mt6797_consys_patch_packet_test(struct kunit *test)
 	KUNIT_EXPECT_MEMEQ(test, packet, last_packet, 6);
 }
 
+static void mt6797_consys_patch_view_test(struct kunit *test)
+{
+	struct mt6797_consys_fw_patch_view view;
+	struct mt6797_consys_fw_bundle bundle = { };
+	struct firmware firmware = { };
+	u8 image[MT6797_CONSYS_WMT_HEADER_SIZE + 2] = { };
+	static const u8 address[] = { 0x00, 0x00, 0x0a, 0xf0 };
+
+	firmware.data = image;
+	firmware.size = sizeof(image);
+	bundle.patch[0].firmware = &firmware;
+	bundle.patch[0].metadata.payload =
+		image + MT6797_CONSYS_WMT_HEADER_SIZE;
+	bundle.patch[0].metadata.payload_size = 2;
+	memcpy(bundle.patch[0].metadata.address, address, sizeof(address));
+
+	KUNIT_ASSERT_EQ(test, mt6797_consys_fw_patch_view(&bundle, 0, &view), 0);
+	KUNIT_EXPECT_MEMEQ(test, view.address, address, sizeof(address));
+	KUNIT_EXPECT_PTR_EQ(test, view.payload,
+			    image + MT6797_CONSYS_WMT_HEADER_SIZE);
+	KUNIT_EXPECT_EQ(test, view.payload_size, (size_t)2);
+	KUNIT_EXPECT_EQ(test,
+			mt6797_consys_fw_patch_view(&bundle, 2, &view), -EINVAL);
+	bundle.patch[0].metadata.payload++;
+	KUNIT_EXPECT_EQ(test,
+			mt6797_consys_fw_patch_view(&bundle, 0, &view),
+			-EKEYREJECTED);
+}
+
 static struct kunit_case mt6797_consys_fw_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_fw_verify_test),
 	KUNIT_CASE(mt6797_consys_wmt_parse_test),
 	KUNIT_CASE(mt6797_consys_wmt_reject_test),
 	KUNIT_CASE(mt6797_consys_patch_packet_test),
+	KUNIT_CASE(mt6797_consys_patch_view_test),
 	{ }
 };
 

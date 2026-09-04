@@ -5,6 +5,7 @@
 #include <linux/types.h>
 
 struct device;
+struct mt6797_consys_fw_bundle;
 struct mt6797_consys_stp_session;
 struct mt6797_consys_runtime_lease;
 struct mt6797_consys_stp_session_lease;
@@ -17,6 +18,7 @@ struct mt6797_consys_btif_ops {
 			       struct mt6797_consys_stp_session *session);
 	int (*start)(void *context,
 		     const struct mt6797_consys_runtime_lease *runtime_lease,
+		     const struct mt6797_consys_fw_bundle *firmware,
 		     const struct mt6797_consys_stp_session_lease **session_lease);
 	void (*stop)(void *context);
 };

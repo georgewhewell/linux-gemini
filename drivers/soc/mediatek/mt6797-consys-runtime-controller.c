@@ -15,12 +15,12 @@
  * No DT node in the shipped Gemini image matches this driver. Even a custom
  * node needs a boolean property and this read-only default-false parameter.
  * Binding does not start a transaction. A separate in-kernel caller must
- * start it, at which point the runtime, platform, bootstrap, and patch
- * controller gates all still apply. It never escalates the resources-only
+ * start it, at which point the runtime, platform, and bootstrap gates all
+ * still apply. It never escalates the resources-only
  * provider into identity: without an earlier owner, its runtime-lease lookup
- * fails closed. Before it publishes its full-STP lease it invokes the exact,
- * separately gated firmware manifest stage through the bootstrap's opaque
- * post-full capability. This driver has no client registration,
+ * fails closed. It cannot consume the canonical aggregate's firmware bundle,
+ * so its production patch callback fails closed before session publication.
+ * This driver has no client registration,
  * radio-function command, reset release, AFE write, shared-EMI mapping, or
  * userspace ABI.
  */
@@ -47,7 +47,6 @@
 #include <linux/soc/mediatek/mt6797-consys-runtime-controller.h>
 #include <linux/soc/mediatek/mt6797-consys-runtime.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
-#include <linux/soc/mediatek/mt6797-consys-wmt-patch.h>
 
 static bool enable_experimental_runtime_controller;
 module_param_named(enable_experimental_runtime_controller,
@@ -495,7 +494,8 @@ static int mt6797_consys_runtime_controller_patch_download(void *context,
 		struct device *dev,
 		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
 {
-	return mt6797_consys_wmt_patch_download(dev, lease);
+	/* Only the canonical aggregate owns the authenticated firmware bundle. */
+	return -EOPNOTSUPP;
 }
 
 static void mt6797_consys_runtime_controller_destroy_bootstrap(void *context,

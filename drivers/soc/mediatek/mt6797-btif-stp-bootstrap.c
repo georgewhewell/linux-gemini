@@ -610,16 +610,19 @@ mt6797_btif_stp_bootstrap_run(struct mt6797_btif_stp_bootstrap *bootstrap)
 EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_run);
 
 const struct mt6797_consys_stp_session_lease *
-mt6797_btif_stp_bootstrap_run_owned(struct mt6797_btif_stp_bootstrap *bootstrap)
+mt6797_btif_stp_bootstrap_run_owned_stage(struct mt6797_btif_stp_bootstrap *bootstrap,
+					  mt6797_btif_stp_bootstrap_full_wmt_stage_t stage,
+					  void *stage_context)
 {
-	if (!bootstrap)
+	if (!bootstrap || !stage)
 		return ERR_PTR(-EINVAL);
 	if (!bootstrap->external_session)
 		return ERR_PTR(-EXDEV);
 
-	return mt6797_btif_stp_bootstrap_run_unchecked(bootstrap, NULL, NULL);
+	return mt6797_btif_stp_bootstrap_run_unchecked(bootstrap, stage,
+						       stage_context);
 }
-EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_run_owned);
+EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_run_owned_stage);
 
 const struct mt6797_consys_stp_session_lease *
 mt6797_btif_stp_bootstrap_run_with_full_wmt_stage(

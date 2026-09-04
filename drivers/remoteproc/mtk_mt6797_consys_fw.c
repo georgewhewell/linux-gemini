@@ -193,6 +193,32 @@ void mt6797_consys_fw_release(struct mt6797_consys_fw_bundle *bundle)
 	kfree(bundle);
 }
 
+int mt6797_consys_fw_patch_view(const struct mt6797_consys_fw_bundle *bundle,
+				unsigned int patch_index,
+				struct mt6797_consys_fw_patch_view *view)
+{
+	const struct mt6797_consys_fw_patch *patch;
+
+	if (!bundle || patch_index >= ARRAY_SIZE(bundle->patch) || !view)
+		return -EINVAL;
+	patch = &bundle->patch[patch_index];
+	if (!patch->firmware || !patch->firmware->data ||
+	    patch->firmware->size <= MT6797_CONSYS_WMT_HEADER_SIZE ||
+	    !patch->metadata.payload ||
+	    !patch->metadata.payload_size ||
+	    patch->metadata.payload != patch->firmware->data +
+				       MT6797_CONSYS_WMT_HEADER_SIZE ||
+	    patch->metadata.payload_size != patch->firmware->size -
+					    MT6797_CONSYS_WMT_HEADER_SIZE)
+		return -EKEYREJECTED;
+
+	memcpy(view->address, patch->metadata.address, sizeof(view->address));
+	view->payload = patch->metadata.payload;
+	view->payload_size = patch->metadata.payload_size;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_fw_patch_view);
+
 int mt6797_consys_fw_build_patch_packet(const struct mt6797_consys_fw_bundle *bundle,
 					unsigned int patch_index, size_t offset,
 					u8 *packet, size_t packet_size,

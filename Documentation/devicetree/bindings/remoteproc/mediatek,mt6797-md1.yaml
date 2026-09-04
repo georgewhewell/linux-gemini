@@ -16,12 +16,23 @@ description:
   binding describes those resources only; it does not define a firmware or
   power-on ABI.
 
+  The mediatek,mt6797-md1-clocked-observer compatible is an explicit,
+  temporary ownership-preflight mode.  An opt-in overlay replaces the normal
+  compatible with this value; it must not be listed as a fallback after the
+  production compatible.  The observer checks the SPM state, enables only the
+  three clocks, reads the AP CLDMA and CCIF register resources twice, and
+  unwinds the clocks.  It deliberately ignores the interrupt, reset,
+  reserved-memory and modem-side register resources inherited from the normal
+  hardware description.
+
 $nodename:
   pattern: "^remoteproc@[0-9a-f]+$"
 
 properties:
   compatible:
-    const: mediatek,mt6797-md1
+    enum:
+      - mediatek,mt6797-md1
+      - mediatek,mt6797-md1-clocked-observer
 
   reg:
     items:

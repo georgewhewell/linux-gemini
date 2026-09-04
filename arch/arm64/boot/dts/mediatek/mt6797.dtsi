@@ -1136,7 +1136,7 @@
 		mediatek,smi = <&smi_common>;
 		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
 		clocks = <&vencsys CLK_VENC_1>,
-			 <&vencsys CLK_VENC_1>;
+			 <&vencsys CLK_VENC_0>;
 		clock-names = "apb", "smi";
 		status = "disabled";
 	};

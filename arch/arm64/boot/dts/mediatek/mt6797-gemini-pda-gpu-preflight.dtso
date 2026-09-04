@@ -15,6 +15,19 @@
 
 / {
 	compatible = "planet,gemini-pda", "mediatek,mt6797";
+
+	/*
+	 * G3 admits one selector step above the inherited 843750 uV state and
+	 * one clock rate only.  A later gate must qualify every other OPP.
+	 */
+	g3_gpu_opp_table: gpu-g3-opp-table {
+		compatible = "operating-points-v2";
+
+		opp-238000000 {
+			opp-hz = /bits/ 64 <238000000>;
+			opp-microvolt = <846700 846700 850000>;
+		};
+	};
 };
 
 &i2c7 {
@@ -31,5 +44,6 @@
 };
 
 &gpu {
+	operating-points-v2 = <&g3_gpu_opp_table>;
 	status = "okay";
 };

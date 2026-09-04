@@ -350,14 +350,14 @@ config COMMON_CLK_MT6797
 	  This driver supports MediaTek MT6797 basic clocks.
 
 config COMMON_CLK_MT6797_CPU
-	bool "Read-only clock provider for MediaTek MT6797 CPUs"
+	bool "Clock provider for MediaTek MT6797 CPUs"
 	depends on ARM64
 	depends on COMMON_CLK_MT6797
 	help
-	  Build the observational CCF topology and rate-planning foundation
-	  for the MT6797 CPU and CCI clocks. The provider takes stable,
-	  read-only snapshots and has no clock mutation operations. It does
-	  not enable any CPU clock, OPP table, or cpufreq policy.
+	  Build the CCF topology for the MT6797 CPU and CCI clocks. A53 clock
+	  changes are serialized with firmware, use exact validated rate
+	  points, and are verified and rolled back on errors. A72 and CCI
+	  mutations remain unsupported.
 
 config COMMON_CLK_MT6797_CPU_KUNIT_TEST
 	bool "KUnit tests for MediaTek MT6797 CPU clocks" if !KUNIT_ALL_TESTS

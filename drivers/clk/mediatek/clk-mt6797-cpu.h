@@ -30,6 +30,7 @@ struct mt6797_cpuclk_snapshot {
 	u32 mp2_armpll_con1;
 	u32 muxsel;
 	u32 clkdiv;
+	u32 sync_dcm;
 };
 
 struct mt6797_cpuclk_state {

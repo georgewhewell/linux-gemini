@@ -293,4 +293,11 @@
 #define	CLK_VENC_3				4
 #define	CLK_VENC_NR				5
 
+/* MCUMIXED_SYS */
+#define CLK_MCU_MP0				0
+#define CLK_MCU_MP1				1
+#define CLK_MCU_MP2				2
+#define CLK_MCU_CCI				3
+#define CLK_MCU_NR_CLK				4
+
 #endif /* _DT_BINDINGS_CLK_MT6797_H */

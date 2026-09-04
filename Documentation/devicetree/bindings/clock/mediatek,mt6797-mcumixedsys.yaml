@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/clock/mediatek,mt6797-mcumixedsys.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 CPU clock controller
+
+maintainers:
+  - Matthias Brugger <matthias.bgg@gmail.com>
+
+description: |
+  The MT6797 MCUMIXEDSYS block contains the clock muxes and dividers for the
+  three CPU clusters and the coherent interconnect. It also contains the
+  PLLs for the two Cortex-A53 clusters and the interconnect.
+
+  The Cortex-A72 cluster PLL is controlled by secure firmware instead of
+  MCUMIXEDSYS MMIO. The controller is nevertheless the single owner of each
+  complete CPU clock path: its secure PLL, MCUMIXEDSYS mux and divider, and
+  the CSPM hardware semaphore which serializes MCUMIXEDSYS access with
+  firmware. Secure-firmware details are implied by the SoC compatible and
+  are not a device-tree policy choice.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-mcumixedsys
+
+  reg:
+    items:
+      - description: MCUMIXEDSYS registers
+      - description: CSPM registers containing the hardware semaphore
+
+  reg-names:
+    items:
+      - const: mcumixed
+      - const: cspm
+
+  clocks:
+    items:
+      - description: 26 MHz reference and safe clock source
+      - description: MAINPLL intermediate clock source
+      - description: UNIVPLL intermediate clock source
+      - description: I2C_APPM clock required while using the CSPM semaphore
+
+  clock-names:
+    items:
+      - const: clk26m
+      - const: mainpll
+      - const: univpll
+      - const: i2c
+
+  '#clock-cells':
+    const: 1
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - clocks
+  - clock-names
+  - '#clock-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+
+    clock-controller@1001a000 {
+        compatible = "mediatek,mt6797-mcumixedsys";
+        reg = <0x1001a000 0x1000>, <0x11015000 0x1000>;
+        reg-names = "mcumixed", "cspm";
+        clocks = <&clk26m>,
+                 <&apmixedsys CLK_APMIXED_MAINPLL>,
+                 <&apmixedsys CLK_APMIXED_UNIVPLL>,
+                 <&infrasys CLK_INFRA_I2C_APPM>;
+        clock-names = "clk26m", "mainpll", "univpll", "i2c";
+        #clock-cells = <1>;
+    };

@@ -593,6 +593,7 @@ int mt6797_wifi_ais_hif_open_auth(
 		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, detach);
 		spin_unlock_irqrestore(&auth->lock, flags);
 	}
+	/* Detach synchronizes any in-flight IRQ callback before disarm/release. */
 	spin_lock_irqsave(&auth->lock, flags);
 	auth->armed = false;
 	result->tx = auth->tx;

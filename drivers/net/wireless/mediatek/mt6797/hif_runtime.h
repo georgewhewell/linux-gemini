@@ -104,9 +104,10 @@ struct mt6797_wifi_hif_irq {
 	struct mt6797_wifi_ahb_hif *hif;
 	struct mt6797_wifi_boot *boot;
 	struct mutex lifecycle_lock; /* Serializes runtime start/stop/worker. */
-	spinlock_t sink_lock;
 	/* Publishes terminal mode and its reason as one observable state. */
 	spinlock_t terminal_lock;
+	/* Lock order: lifecycle_lock -> terminal_lock -> sink_lock. */
+	spinlock_t sink_lock;
 	struct work_struct terminal_work;
 	irqreturn_t (*capability_thread)(void *context);
 	void *capability_context;

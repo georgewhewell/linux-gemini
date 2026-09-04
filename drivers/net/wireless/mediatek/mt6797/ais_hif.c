@@ -402,8 +402,19 @@ static int mt6797_wifi_ais_hif_auth_wait(
 		status = mt6797_wifi_ais_hif_status(ais);
 		if (status)
 			return status;
-		if (!mt6797_wifi_ais_hif_remaining(ais, deadline))
-			return -ETIMEDOUT;
+		if (mt6797_wifi_ais_hif_remaining(ais, deadline))
+			continue;
+
+		/* Completion and timeout choose one winner under the same lock. */
+		spin_lock_irqsave(&auth->lock, flags);
+		if (auth->terminal_reason)
+			status = auth->terminal_reason;
+		else if (mt6797_wifi_ais_hif_auth_finished(auth))
+			status = 0;
+		else
+			status = mt6797_wifi_ais_hif_auth_claim_terminal(auth, -ETIMEDOUT);
+		spin_unlock_irqrestore(&auth->lock, flags);
+		return status;
 	}
 }
 
@@ -583,7 +594,10 @@ int mt6797_wifi_ais_hif_open_auth(
 			request->response_timeout_ms);
 	if (ret) {
 		spin_lock_irqsave(&auth->lock, flags);
-		ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, ret);
+		if (auth->terminal_reason)
+			ret = auth->terminal_reason;
+		else
+			ret = mt6797_wifi_ais_hif_auth_claim_terminal(auth, ret);
 		spin_unlock_irqrestore(&auth->lock, flags);
 	}
 

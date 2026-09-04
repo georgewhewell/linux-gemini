@@ -330,9 +330,8 @@
 		infracfg = <&infrasys>;
 	};
 
-	a72_power: a72-power@10222000 {
+	a72_power: a72-power {
 		compatible = "mediatek,mt6797-a72-power";
-		reg = <0 0x10222000 0 0x1000>;
 		mediatek,spm = <&scpsys>;
 		cpus = <&cpu8>, <&cpu9>;
 		resets = <&watchdog MT6797_TOPRGU_PWRAP_SPI_CTL_RST>;

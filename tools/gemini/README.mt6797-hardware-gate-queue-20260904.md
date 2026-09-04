@@ -43,6 +43,7 @@ These entries are immutable identities, not a run order or schedule.
 | A53 registration/calibration observation R2 | `f2fc2447a7465b96b9816487d6c36074cf2ca4fb` | `5dca07f1fd7a83dcbf8b905353725fb85619da3f` -> `8a62fff69574a8555baca600baf898fa2d02bd4c` | `e123c1984d46ee7609a98ac087232dfb13ac9e8d55f6540c94c1ee2e037c0a56` | Hardware FAIL; exact Stage-A rollback/readback complete; retired/no-retry; CSPM ownership remediation required |
 | MD1 post-vector observer R1 | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `7027acfa7ad57242a0bf930559088bfc11a8f285` | `76387822474c35d55fb4804b670166e5279c239d965418481733f6998c2c1c16` | Reminted offline package and rendered BusyBox-ash recovery checks: PASS; hardware not run; independent live-readiness audit required |
 | G3 fixed-low Panfrost no-job R1 | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` -> `a81879abb63a7ad7c40bc946b3c95bf1657edef7` -> `02b36ca602774b032e633bbfec103ea6a1c4baec` | `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b` | Hardware FAIL; exact Stage-A rollback/readback/pstore complete; retired/no-retry; efuse/OPP and MFG-domain remediation required |
+| G3 fixed-low Panfrost no-job R2 | `f3f6dbb4ec9b4f95854c2a3df5a2c842559116b4` | `16e9ee2378f53803ea9dd32eb0eaf8036edb5bdb` | `ed85f692394ebd4924ec582feb2f354d7a156eeb5cd6c6145c20be14b85a72a3` | Efuse linkage and SCPSYS VGPU ordering remediated; full offline build/fixtures PASS; hardware not run; independent audit required |
 | A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Offline contract review: PASS; source/package are not hardware-ready |
 | A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Blocked with provider; no provider-success predecessor exists |
 
@@ -261,6 +262,18 @@ and console SHA-256 is
 `20ed96737c33dd7c3839d5f4997881eb35db3952b1d3d762f47977f8ea69f08c`.
 The next rung must remediate efuse/safe-OPP identity and the MFG-domain timeout,
 mint a fresh source/package/hash, and receive a new independent audit.
+
+That remediation is now packaged, but remains audit-only and has not been run.
+Source `f3f6dbb4...` restores the GPU efuse link and makes the SCPSYS MFG
+transition own the VGPU prerequisite before clocks and `PWR_ON`. Package
+`16e9ee23...` produced
+`/nix/store/nd5lnghfa264cchx8fqkfl64brh7lkwl-gemini-g3-low-opp-nojob-r2-p22-bundle`
+and candidate `ed85f692...`; bundle NAR hash is
+`sha256-zdWZlWUW6/7JLgQ08xQbTci+mg4WEJrZEz2Ic9iCMGs=`. The full ARM64
+target build, source contract, exact rendered-DT assertions, module plan,
+parser, supervisor, recovery, and pstore fixtures pass offline. Its manifest
+retains `authorization=none` and `scheduling=none`; it requires independent
+readiness review before any separately authorized transaction.
 
 Evidence:
 

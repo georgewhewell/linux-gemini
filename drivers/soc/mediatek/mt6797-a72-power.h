@@ -21,6 +21,8 @@
 #define MT6797_A72_SRAM_MIN_UV		600000
 #define MT6797_A72_SRAM_MAX_UV		1200000
 
+#define MT6797_A72_R0P1_MIDR		0x410fd081U
+
 #define MT6797_A72_CAP_EXCLUSIVE_GUARD	BIT(0)
 #define MT6797_A72_CAP_IDVFS_FENCE	BIT(1)
 #define MT6797_A72_REQUIRED_CAPS		(MT6797_A72_CAP_EXCLUSIVE_GUARD | \
@@ -87,6 +89,9 @@ struct mt6797_a72_transaction {
 int mt6797_a72_build_plan(struct mt6797_a72_plan *plan);
 int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
 				  unsigned long capabilities);
+int mt6797_a72_validate_cpu8_boot(unsigned int cpu, bool cpu4_online,
+				  bool transaction_armed, bool faulted);
+int mt6797_a72_validate_cpu8_identity(u32 midr);
 /* A successful begin remains reversible until CPU_ON is verified and committed. */
 int mt6797_a72_transaction_begin(struct mt6797_a72_transaction *transaction,
 				  const struct mt6797_a72_plan *plan,

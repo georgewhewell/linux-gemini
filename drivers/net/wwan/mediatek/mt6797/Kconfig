@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config MTK_MT6797_MODEM_PROTOCOL
+	bool "MediaTek MT6797 modem protocol helpers"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	  Build helpers for the fixed CCCI header and CLDMA descriptor address
+	  formats used by the integrated MT6797 modem.  This option does not
+	  register a device, access hardware, or start modem firmware.
+
+	  If unsure, say N.
+
+config MTK_MT6797_MODEM_PROTOCOL_KUNIT_TEST
+	bool "KUnit tests for MT6797 modem protocol helpers" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	depends on MTK_MT6797_MODEM_PROTOCOL=y
+	default KUNIT_ALL_TESTS
+	help
+	  Run tests for the fixed-width MT6797 CCCI header and for packing
+	  36-bit CLDMA addresses into descriptors.  The tests cover exact
+	  little-endian representations, round trips, range checking, and
+	  preservation of unrelated descriptor bits.

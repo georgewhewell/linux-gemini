@@ -121,6 +121,8 @@ config MTK_T7XX
 
 	  If unsure, say N.
 
+source "drivers/net/wwan/mediatek/mt6797/Kconfig"
+
 endif # WWAN
 
 endmenu

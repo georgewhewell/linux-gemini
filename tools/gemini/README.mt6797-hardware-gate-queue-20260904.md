@@ -429,6 +429,38 @@ Evidence `/mnt/Home/src/nixos-gemini/repo-g3-remediation/artifacts/p22-recovery-
 Pstore SHA-256 `d726a86eabadc7eb24c624c15b254334cf16f12ae26f91385190a239d69f3193`.
 Console SHA-256 `05509d52c5b41f63febc2f302d31bc683b66ccda52e2421a65cae5061fa46197`.
 
+### G3 R6: on-device no-job preflight PASS; live host observation FAIL
+
+R6 reused the exact R5 kernel/modules/DT from source
+`8805de28f813493494c946c7a90ae4ece33e8158` with collector
+`3cc9db596251fdb53c4034243178faf78df1357a`, package
+`d6c05ebf93fd146f87f4864e6eded34ed768e9b3`. Candidate
+`61c0213eea891171e5034a343ed600580b4805413dc494b3afb25b14f1d0d41e`
+was written once at 2026-09-05T01:12:23+02:00 and is consumed/no-retry.
+
+Pstore proves `GPU_PREFLIGHT=PASS` and the exact requested no-job pass marker.
+IRQ identities now explicitly report MT_SYSIRQ 264/263/262, all counts zero.
+Both runtime snapshots are suspended; all six MFG domains are off; paired
+SPM off masks, TOPAXI protection masks and deasserted MFG reset are correct
+and stable. Sole 238MHz OPP/850000uV rail remain stable. No collector reject,
+idle error or internal transition timeout. Initial bind/autosuspend has
+passed its on-device checks. Resume and actual jobs remain unproven.
+
+The host did not capture a pass live; its terminal state remains
+`observation_failed_recovered_stage_a_pstore_captured`. Do not relabel that
+transport result or repeat a consumed image just to get a green host state.
+The supervisor restored exact rescue at 01:14:14, verified at 01:14:15,
+without manual reset. Closure at 01:15:40 includes exact p22/p30/p31 hashes,
+boot ID `434a0ed1-ca65-4022-bbaa-00bb26348b19`, zero failed units, USB/RJ45
+reachable and final holder/watcher cleanup. No hardware run remains active.
+
+Handoff `/mnt/Home/src/nixos-gemini/handoff/g3-collector-r6-XntcjTYG/RESULT.md`.
+Evidence `/mnt/Home/src/nixos-gemini/repo-g3-remediation/artifacts/p22-recovery-20260905-011211-2510070`.
+Pstore SHA-256 `7be8bb04a26ee988066072ef68ae28a16289e76c03957cc2284dc6bc987b07ee`.
+Console SHA-256 `d6746ebf7725551267c52c488144c2e020a6a4a6a679ef275a4f546712a29be4`.
+Next: bounded resume/re-suspend, then job admission; investigate initramfs
+SSH readiness alongside that functional work.
+
 ## A72 provider and CPU8-admission observations blocked
 
 The remediated, independently reviewed provider bundle is:
@@ -547,6 +579,7 @@ surfaces and are not an alternative to the read-only observer.
 
 ### GPU/G2/G3 historical candidates
 
+- `61c0213eea891171e5034a343ed600580b4805413dc494b3afb25b14f1d0d41e`
 - `369a20c970f68cce95dd3c3dbac34daa386ecac1d695fd78dd4aea2397673077`
 - `31d58094947153ea17c589081dfab869ba7a42d2a4a9b21ab87bc46da7315551`
 - `669a5f22982763f8a917cbcfcf3100e2a41659f73eacc8110343fc4884c8b6bb`

@@ -13,8 +13,9 @@ description:
   The legacy DA9213, DA9214, and DA9215 interface exposes its primary and
   secondary register banks at fixed I2C addresses.  This binding is distinct
   from dlg,da9211.yaml, whose driver selects paged registers through PAGE_CON.
-  A regulators child describes the physical outputs, but is optional so a
-  board can first bind an identification-only driver without exposing rails.
+  A regulators child describes the physical outputs. Boards must keep the
+  device disabled until the direct-address transport and rail constraints
+  have been validated for that board.
 
 properties:
   compatible:
@@ -44,8 +45,7 @@ properties:
     type: object
     additionalProperties: false
     description:
-      Physical buck outputs.  An identification-only integration omits this
-      node until provider behavior has been validated separately.
+      Physical buck outputs registered with the regulator core.
 
     patternProperties:
       "^BUCK[AB]$":
@@ -75,6 +75,7 @@ required:
   - compatible
   - reg
   - reg-names
+  - regulators
 
 allOf:
   - if:
@@ -111,6 +112,22 @@ examples:
             compatible = "dlg,da9214-legacy";
             reg = <0x68>, <0x69>;
             reg-names = "primary", "page2";
+            status = "disabled";
+
+            regulators {
+                BUCKA {
+                    regulator-name = "vproc-little";
+                    regulator-min-microvolt = <800000>;
+                    regulator-max-microvolt = <1200000>;
+                    regulator-always-on;
+                };
+
+                BUCKB {
+                    regulator-name = "vproc-big";
+                    regulator-min-microvolt = <800000>;
+                    regulator-max-microvolt = <1200000>;
+                };
+            };
         };
     };
 

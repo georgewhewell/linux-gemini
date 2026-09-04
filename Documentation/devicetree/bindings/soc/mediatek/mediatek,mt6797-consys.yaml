@@ -168,6 +168,9 @@ properties:
   memory-region-names:
     const: shared
 
+  bluetooth:
+    $ref: /schemas/net/bluetooth/mediatek,mt6797-bluetooth.yaml#
+
 required:
   - compatible
   - reg
@@ -198,6 +201,8 @@ allOf:
         - power-domain-names
         - vcn18-supply
         - vcn28-supply
+        - vcn33-bt-supply
+        - vcn33-wifi-supply
   - if:
       properties:
         compatible:

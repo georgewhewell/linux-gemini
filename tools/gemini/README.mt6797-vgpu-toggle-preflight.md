@@ -15,6 +15,9 @@ probe cannot program that separate register. Its successful transaction is
 user-count, clock, power-domain, GPU, or Panfrost changes. Each raw value is a
 read-only register-0x11 sample from the RT5735 regmap selected by exact I2C
 device ancestry and driver identity; it is not inferred from regulator state.
+Clock preparation is allowed to have an inherited nonzero baseline, but the
+dedicated GPU-I2C clock must be disabled and both it and shared AP-DMA must
+return to their complete pre-transaction enable/prepare counts.
 The helper gives asynchronous provider/consumer probing a bounded five-second
 readiness window before rejecting; that window precedes the state transaction.
 

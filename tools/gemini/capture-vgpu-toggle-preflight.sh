@@ -208,8 +208,8 @@ printf 'before=%s vsel0=0x%s\n' "$before" "$before_raw"
 [ "$before_raw" = 27 ] || die "initial VSEL0 is 0x$before_raw, expected 0x27"
 i2c_clock_before=$(read_clock_counts infra_i2c_gpupm) ||
 	die 'cannot read infra_i2c_gpupm counts before enable'
-[ "$i2c_clock_before" = 0:0 ] ||
-	die "infra_i2c_gpupm is not idle before enable: $i2c_clock_before"
+[ "${i2c_clock_before%%:*}" = 0 ] ||
+	die "infra_i2c_gpupm is enabled before transaction: $i2c_clock_before"
 ap_dma_before=$(read_clock_counts infra_ap_dma) ||
 	die 'cannot read shared infra_ap_dma counts before enable'
 printf 'clock_before=infra_i2c_gpupm:%s infra_ap_dma:%s\n' \
@@ -243,8 +243,10 @@ printf 'after=%s vsel0=0x%s\n' "$after" "$after_raw"
 	die "VSEL0 restore mismatch: 0x$before_raw -> 0x$after_raw"
 i2c_clock_after=$(read_clock_counts infra_i2c_gpupm) ||
 	die 'cannot read infra_i2c_gpupm counts after disable'
-[ "$i2c_clock_after" = 0:0 ] ||
-	die "infra_i2c_gpupm is not idle after disable: $i2c_clock_after"
+[ "${i2c_clock_after%%:*}" = 0 ] ||
+	die "infra_i2c_gpupm is enabled after disable: $i2c_clock_after"
+[ "$i2c_clock_after" = "$i2c_clock_before" ] ||
+	die "infra_i2c_gpupm count drift: $i2c_clock_before -> $i2c_clock_after"
 ap_dma_after=$(read_clock_counts infra_ap_dma) ||
 	die 'cannot read shared infra_ap_dma counts after disable'
 [ "$ap_dma_after" = "$ap_dma_before" ] ||

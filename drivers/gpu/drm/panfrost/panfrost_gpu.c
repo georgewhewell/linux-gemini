@@ -695,19 +695,28 @@ void panfrost_gpu_power_off(struct panfrost_device *pfdev)
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + SHADER_PWRTRANS_LO,
 					 val, !val, 1, 2000);
 	if (ret)
-		dev_err(pfdev->base.dev, "shader power transition timeout");
+		dev_err(pfdev->base.dev,
+			"shader power transition timeout: ready=%#x transition=%#x present=%#x\n",
+			gpu_read(pfdev, SHADER_READY_LO), val,
+			lower_32_bits(pfdev->features.shader_present));
 
 	gpu_write(pfdev, TILER_PWROFF_LO, pfdev->features.tiler_present);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + TILER_PWRTRANS_LO,
 					 val, !val, 1, 2000);
 	if (ret)
-		dev_err(pfdev->base.dev, "tiler power transition timeout");
+		dev_err(pfdev->base.dev,
+			"tiler power transition timeout: ready=%#x transition=%#x present=%#x\n",
+			gpu_read(pfdev, TILER_READY_LO), val,
+			lower_32_bits(pfdev->features.tiler_present));
 
 	gpu_write(pfdev, L2_PWROFF_LO, pfdev->features.l2_present);
 	ret = readl_poll_timeout(pfdev->iomem + L2_PWRTRANS_LO,
 				 val, !val, 0, 2000);
 	if (ret)
-		dev_err(pfdev->base.dev, "l2 power transition timeout");
+		dev_err(pfdev->base.dev,
+			"l2 power transition timeout: ready=%#x transition=%#x present=%#x\n",
+			gpu_read(pfdev, L2_READY_LO), val,
+			lower_32_bits(pfdev->features.l2_present));
 }
 
 void panfrost_gpu_suspend_irq(struct panfrost_device *pfdev)

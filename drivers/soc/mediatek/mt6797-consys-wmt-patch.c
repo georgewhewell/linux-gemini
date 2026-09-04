@@ -387,7 +387,7 @@ struct mt6797_consys_wmt_patch_test_transport {
 		  [MT6797_CONSYS_WMT_PATCH_TEST_PACKET_SIZE];
 	size_t packet_lengths[MT6797_CONSYS_WMT_PATCH_TEST_MAX_PACKETS];
 	unsigned int packet_count;
-	bool fail_transaction;
+	int fail_error;
 	unsigned int fail_packet;
 };
 
@@ -412,8 +412,8 @@ mt6797_consys_wmt_patch_test_receive(void *context, const u8 *payload,
 	memcpy(transport->packets[index], payload, length);
 	transport->packet_lengths[index] = length;
 	transport->packet_count++;
-	if (transport->fail_transaction && index == transport->fail_packet)
-		return -EIO;
+	if (transport->fail_error && index == transport->fail_packet)
+		return transport->fail_error;
 	if (payload[1] == MT6797_CONSYS_WMT_OPCODE_PATCH_ADDRESS) {
 		reply = address_event;
 		reply_size = sizeof(address_event);
@@ -572,7 +572,7 @@ static void mt6797_consys_wmt_patch_test_envelope_failure_fences(
 	mtk_wmt_init(&wmt, MTK_STP_MODE_FULL,
 			 mt6797_consys_wmt_patch_test_transmit, transport);
 	transport->wmt = &wmt;
-	transport->fail_transaction = true;
+	transport->fail_error = -EIO;
 	transport->fail_packet = 2;
 	mtk_stp_init(&transport->stp, MTK_STP_MODE_FULL);
 	KUNIT_ASSERT_EQ(test, mtk_stp_register_client(&transport->stp, MTK_STP_WMT,
@@ -587,10 +587,53 @@ static void mt6797_consys_wmt_patch_test_envelope_failure_fences(
 	ret = mt6797_consys_wmt_patch_download_views(&patch_transport, patches);
 	KUNIT_EXPECT_EQ(test, ret, -EIO);
 	KUNIT_EXPECT_EQ(test, transport->packet_count, 3U);
-	transport->fail_transaction = false;
+	transport->fail_error = 0;
 	ret = mt6797_consys_wmt_patch_download_views(&patch_transport, patches);
 	KUNIT_EXPECT_EQ(test, ret, -EPIPE);
 	KUNIT_EXPECT_EQ(test, transport->packet_count, 3U);
+}
+
+static void mt6797_consys_wmt_patch_test_reset_timeout(struct kunit *test)
+{
+	static const u8 reset[] = { 0x01, 0x07, 0x01, 0x00, 0x04 };
+	struct mt6797_consys_wmt_patch_test_transport *transport;
+	struct mt6797_consys_wmt_patch_transport patch_transport;
+	struct mt6797_consys_fw_patch_view patches[MT6797_CONSYS_FW_PATCH_COUNT];
+	struct mtk_wmt wmt;
+	u8 patch_data[] = { 'X' };
+	int ret;
+
+	transport = kunit_kzalloc(test, sizeof(*transport), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, transport);
+	mtk_wmt_init(&wmt, MTK_STP_MODE_FULL,
+		     mt6797_consys_wmt_patch_test_transmit, transport);
+	transport->wmt = &wmt;
+	/* DLM (3), clock-up (4), address (2), body (1), then reset. */
+	transport->fail_packet = 10;
+	transport->fail_error = -ETIMEDOUT;
+	mtk_stp_init(&transport->stp, MTK_STP_MODE_FULL);
+	KUNIT_ASSERT_EQ(test,
+			mtk_stp_register_client(&transport->stp, MTK_STP_WMT,
+						mt6797_consys_wmt_patch_test_receive,
+						transport),
+			0);
+	mt6797_consys_wmt_patch_test_views(patches, patch_data, sizeof(patch_data));
+	patch_transport = (struct mt6797_consys_wmt_patch_transport) {
+		.transaction = mt6797_consys_wmt_patch_test_transaction,
+		.context = &wmt,
+	};
+
+	ret = mt6797_consys_wmt_patch_download_views(&patch_transport, patches);
+	KUNIT_EXPECT_EQ(test, ret, -ETIMEDOUT);
+	KUNIT_ASSERT_EQ(test, transport->packet_count, 11U);
+	KUNIT_EXPECT_EQ(test, transport->packet_lengths[10], sizeof(reset));
+	KUNIT_EXPECT_MEMEQ(test, transport->packets[10], reset, sizeof(reset));
+
+	/* The ambiguous patch RAM state remains fenced; no retry can emit bytes. */
+	transport->fail_error = 0;
+	ret = mt6797_consys_wmt_patch_download_views(&patch_transport, patches);
+	KUNIT_EXPECT_EQ(test, ret, -EPIPE);
+	KUNIT_EXPECT_EQ(test, transport->packet_count, 11U);
 }
 
 static void mt6797_consys_wmt_patch_test_fragment_tags(struct kunit *test)
@@ -650,6 +693,7 @@ static void mt6797_consys_wmt_patch_test_unowned_transport_rejected(struct kunit
 static struct kunit_case mt6797_consys_wmt_patch_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_manifest_sequence),
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_envelope_failure_fences),
+	KUNIT_CASE(mt6797_consys_wmt_patch_test_reset_timeout),
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_fragment_tags),
 	KUNIT_CASE(mt6797_consys_wmt_patch_test_unowned_transport_rejected),
 	{ }

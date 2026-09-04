@@ -9,8 +9,10 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/mfd/syscon.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/regmap.h>
 
 #include <drm/drm_print.h>
 
@@ -112,6 +114,37 @@ void panfrost_gpu_amlogic_quirk(struct panfrost_device *pfdev)
 	 */
 	gpu_write(pfdev, GPU_PWR_KEY, GPU_PWR_KEY_UNLOCK);
 	gpu_write(pfdev, GPU_PWR_OVERRIDE1, 0xfff | (0x20 << 16));
+}
+
+#define MT6797_MFG_PMU_ENABLE_FIRST	0x3e0
+#define MT6797_MFG_PMU_ENABLE_LAST	0x3f0
+
+int panfrost_gpu_mt6797_init(struct panfrost_device *pfdev)
+{
+	pfdev->mfgcfg = syscon_regmap_lookup_by_phandle(pfdev->base.dev->of_node,
+							"mediatek,mfgcfg");
+	if (IS_ERR(pfdev->mfgcfg))
+		return dev_err_probe(pfdev->base.dev, PTR_ERR(pfdev->mfgcfg),
+				     "failed to get MFG configuration\n");
+
+	return 0;
+}
+
+void panfrost_gpu_mt6797_quirk(struct panfrost_device *pfdev)
+{
+	unsigned int reg;
+	int ret;
+
+	for (reg = MT6797_MFG_PMU_ENABLE_FIRST;
+	     reg <= MT6797_MFG_PMU_ENABLE_LAST; reg += sizeof(u32)) {
+		ret = regmap_write(pfdev->mfgcfg, reg, U32_MAX);
+		if (ret) {
+			dev_err(pfdev->base.dev,
+				"failed to enable MFG PMU register %#x: %d\n",
+				reg, ret);
+			break;
+		}
+	}
 }
 
 static void panfrost_gpu_init_quirks(struct panfrost_device *pfdev)

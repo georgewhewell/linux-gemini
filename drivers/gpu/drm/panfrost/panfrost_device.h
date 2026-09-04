@@ -23,6 +23,7 @@ struct panfrost_mmu;
 struct panfrost_job_slot;
 struct panfrost_job;
 struct panfrost_perfcnt;
+struct regmap;
 
 #define MAX_PM_DOMAINS 5
 
@@ -107,7 +108,8 @@ struct panfrost_compatible {
 	/* Only required if num_pm_domains > 1. */
 	const char * const *pm_domain_names;
 
-	/* Vendor implementation quirks callback */
+	/* Vendor implementation callbacks */
+	int (*vendor_init)(struct panfrost_device *pfdev);
 	void (*vendor_quirk)(struct panfrost_device *pfdev);
 
 	/* Allowed PM features */
@@ -138,6 +140,7 @@ struct panfrost_device {
 	struct clk *bus_clock;
 	struct regulator_bulk_data *regulators;
 	struct reset_control *rstc;
+	struct regmap *mfgcfg;
 	/* pm_domains for devices with more than one. */
 	struct device *pm_domain_devs[MAX_PM_DOMAINS];
 	struct device_link *pm_domain_links[MAX_PM_DOMAINS];

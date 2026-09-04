@@ -536,7 +536,7 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret,
 				     "A72 CPU is already online; refusing preflight\n");
 
-	preflight->vproc_big = devm_regulator_get(dev, "vproc-big");
+	preflight->vproc_big = devm_regulator_get_exclusive(dev, "vproc-big");
 	if (IS_ERR(preflight->vproc_big))
 		return dev_err_probe(dev, PTR_ERR(preflight->vproc_big),
 				     "failed to get big-cluster regulator\n");
@@ -546,7 +546,7 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(preflight->pwrap_reset),
 				     "failed to get PWRAP reset\n");
 
-	preflight->sram_big = devm_regulator_get(dev, "sram-big");
+	preflight->sram_big = devm_regulator_get_exclusive(dev, "sram-big");
 	if (IS_ERR(preflight->sram_big))
 		return dev_err_probe(dev, PTR_ERR(preflight->sram_big),
 				     "failed to get big-cluster SRAM regulator\n");

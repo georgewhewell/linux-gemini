@@ -703,28 +703,17 @@
 		status = "disabled";
 	};
 
-	dvfsp_clock_backend: dvfsp-clock-backend@1001a000 {
-		compatible = "mediatek,mt6797-dvfsp-clock-backend";
+	cpuclk: clock-controller@1001a000 {
+		compatible = "mediatek,mt6797-mcumixedsys";
 		reg = <0 0x1001a000 0 0x1000>,
 		      <0 0x11015000 0 0x1000>;
 		reg-names = "mcumixed", "cspm";
-		clocks = <&infrasys CLK_INFRA_I2C_APPM>;
-		clock-names = "i2c";
-		status = "disabled";
-	};
-
-	dvfsp_bigidvfs_backend: dvfsp-bigidvfs-backend {
-		compatible = "mediatek,mt6797-bigidvfs-backend";
-		method = "smc";
-		status = "disabled";
-	};
-
-	dvfsp_resource_owner: dvfsp-resource-owner {
-		compatible = "mediatek,mt6797-dvfsp-resource-owner";
-		mediatek,clock-backend = <&dvfsp_clock_backend>;
-		mediatek,bigidvfs-backend = <&dvfsp_bigidvfs_backend>;
-		mediatek,thermal = <&thermal>;
-		mediatek,calibration-source = <&dvfsp_handoff>;
+		clocks = <&clk26m>,
+			 <&apmixedsys CLK_APMIXED_MAINPLL>,
+			 <&apmixedsys CLK_APMIXED_UNIVPLL>,
+			 <&infrasys CLK_INFRA_I2C_APPM>;
+		clock-names = "clk26m", "mainpll", "univpll", "i2c";
+		#clock-cells = <1>;
 		status = "disabled";
 	};
 

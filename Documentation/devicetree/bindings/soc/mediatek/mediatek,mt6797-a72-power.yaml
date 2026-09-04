@@ -32,8 +32,10 @@ properties:
 
   sram-big-supply:
     description:
-      Secure BigiDVFS SRAM supply for the Cortex-A72 cluster. The preflight
-      remains blocked until this provider supports truthful status and disable.
+      Secure BigiDVFS SRAM supply for the Cortex-A72 cluster. A read-only
+      preflight may accept an unsupported status operation after obtaining a
+      truthful voltage. CPU_ON remains blocked until this provider supports
+      truthful status and disable operations.
 
   clocks:
     maxItems: 1

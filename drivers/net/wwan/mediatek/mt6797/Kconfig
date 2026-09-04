@@ -29,15 +29,15 @@ config MTK_MT6797_MD1
 	  hardware.  If unsure, say N.
 
 config MTK_MT6797_MD1_KUNIT_TEST
-	bool "KUnit tests for MT6797 MD1 power observation" if !KUNIT_ALL_TESTS
+	bool "KUnit tests for MT6797 MD1 observation" if !KUNIT_ALL_TESTS
 	depends on KUNIT
 	depends on MTK_MT6797_MD1=y
 	default KUNIT_ALL_TESTS
 	help
-	  Validate the fail-closed classification of the two read-only SPM
-	  power-status bits, including disagreement between the primary and
-	  secondary status registers.  These tests are hardware independent;
-	  no modem resources are acquired or accessed.
+	  Validate fail-closed classification of the two read-only SPM
+	  power-status bits and inherited CLDMA/CCIF configuration.  These tests
+	  cover disagreement, pending CCIF work, and foreign rings.  They are
+	  hardware independent; no modem resources are acquired or accessed.
 
 config MTK_MT6797_MODEM_PROTOCOL_KUNIT_TEST
 	bool "KUnit tests for MT6797 modem protocol helpers" if !KUNIT_ALL_TESTS

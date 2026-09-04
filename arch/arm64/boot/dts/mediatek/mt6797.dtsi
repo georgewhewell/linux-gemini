@@ -850,6 +850,7 @@
 		compatible = "mediatek,mt6797-mjcsys", "syscon";
 		reg = <0 0x12000000 0 0x1000>;
 		#clock-cells = <1>;
+		status = "disabled";
 	};
 
 	larb4: larb@12002000 {
@@ -1155,6 +1156,7 @@
 		compatible = "mediatek,mt6797-camsys", "syscon";
 		reg = <0 0x1a000000 0 0x1000>;
 		#clock-cells = <1>;
+		status = "disabled";
 	};
 
 	larb2: larb@1a001000 {

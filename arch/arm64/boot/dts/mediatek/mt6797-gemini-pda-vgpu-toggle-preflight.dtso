@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA VGPU enable-bit preflight.
+ *
+ * Compose this after the MFG provider preflight overlay.  The standard
+ * regulator-output consumer allows a bounded userspace enable/readback/
+ * disable transaction without binding the GPU or changing its voltage.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&{/} {
+	vgpu-toggle {
+		compatible = "regulator-output";
+		vout-supply = <&rt5735_vgpu>;
+	};
+};
+
+&i2c7 {
+	status = "okay";
+};
+
+&rt5735_vgpu {
+	status = "okay";
+};

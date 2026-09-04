@@ -1,0 +1,73 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef __DRV_CLK_MT6797_CPU_H
+#define __DRV_CLK_MT6797_CPU_H
+
+#include <linux/types.h>
+
+enum mt6797_cpuclk_domain {
+	MT6797_CPUCLK_MP0,
+	MT6797_CPUCLK_MP1,
+	MT6797_CPUCLK_MP2,
+	MT6797_CPUCLK_CCI,
+	MT6797_CPUCLK_NR_DOMAINS,
+};
+
+enum mt6797_cpuclk_source {
+	MT6797_CPUCLK_CLK26M,
+	MT6797_CPUCLK_ARMPLL,
+	MT6797_CPUCLK_MAINPLL,
+	MT6797_CPUCLK_UNIVPLL,
+	MT6797_CPUCLK_NR_SOURCES,
+};
+
+struct mt6797_cpuclk_snapshot {
+	u32 armpll_con1[MT6797_CPUCLK_NR_DOMAINS];
+	u32 mp2_armpll_con0;
+	u32 mp2_armpll_con1;
+	u32 muxsel;
+	u32 clkdiv;
+};
+
+struct mt6797_cpuclk_state {
+	u64 armpll_rate;
+	u8 source;
+	u8 divider;
+};
+
+struct mt6797_cpuclk_rate_plan {
+	enum mt6797_cpuclk_domain domain;
+	unsigned long clk26m_rate;
+	struct mt6797_cpuclk_state initial;
+	struct mt6797_cpuclk_state target;
+	struct mt6797_cpuclk_state rollback;
+	struct mt6797_cpuclk_snapshot rollback_snapshot;
+	u8 intermediate_source;
+};
+
+struct mt6797_cpuclk_backend_ops {
+	int (*snapshot)(void *context, struct mt6797_cpuclk_snapshot *snapshot);
+	int (*apply)(void *context, const struct mt6797_cpuclk_rate_plan *plan);
+};
+
+struct mt6797_cpuclk_backend {
+	const struct mt6797_cpuclk_backend_ops *ops;
+	void *context;
+};
+
+int mt6797_cpuclk_decode_state(enum mt6797_cpuclk_domain domain,
+			       const struct mt6797_cpuclk_snapshot *snapshot,
+			       unsigned long clk26m_rate,
+			       struct mt6797_cpuclk_state *state);
+unsigned long mt6797_cpuclk_apply_divider(unsigned long parent_rate,
+					  u8 divider);
+int mt6797_cpuclk_build_rate_plan(enum mt6797_cpuclk_domain domain,
+				  const struct mt6797_cpuclk_snapshot *snapshot,
+				  unsigned long clk26m_rate,
+				  const struct mt6797_cpuclk_state *target,
+				  struct mt6797_cpuclk_rate_plan *plan);
+int mt6797_cpuclk_get_rollback_state(const struct mt6797_cpuclk_rate_plan *plan,
+				     struct mt6797_cpuclk_state *rollback);
+int mt6797_cpuclk_apply_rate_plan(struct mt6797_cpuclk_backend *backend,
+				  const struct mt6797_cpuclk_rate_plan *plan);
+
+#endif /* __DRV_CLK_MT6797_CPU_H */

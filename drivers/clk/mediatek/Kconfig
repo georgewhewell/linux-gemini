@@ -349,6 +349,26 @@ config COMMON_CLK_MT6797
 	help
 	  This driver supports MediaTek MT6797 basic clocks.
 
+config COMMON_CLK_MT6797_CPU
+	bool "Clock provider foundation for MediaTek MT6797 CPUs"
+	depends on COMMON_CLK_MT6797
+	help
+	  Build the read-only CCF topology and rate-planning foundation for
+	  the MT6797 CPU and CCI clocks. The driver fails closed until a
+	  serialized MCUMIXEDSYS and secure-firmware backend is available. It
+	  does not enable any CPU clock, OPP table, or cpufreq policy.
+
+config COMMON_CLK_MT6797_CPU_KUNIT_TEST
+	bool "KUnit tests for MediaTek MT6797 CPU clocks" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	depends on COMMON_CLK_MT6797_CPU
+	default KUNIT_ALL_TESTS
+	help
+	  Test the MT6797 CPU clock field decoding, rate calculation, plan
+	  validation, rollback state, and unsupported mutation fence. These
+	  tests perform no MMIO or secure-monitor calls and are safe to run on
+	  non-MT6797 systems.
+
 config COMMON_CLK_MT6797_CAMSYS
 	tristate "Clock driver for MediaTek MT6797 camsys"
 	depends on COMMON_CLK_MT6797

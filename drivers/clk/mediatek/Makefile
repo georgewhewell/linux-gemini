@@ -30,6 +30,9 @@ obj-$(CONFIG_COMMON_CLK_MT6795_MMSYS) += clk-mt6795-mm.o
 obj-$(CONFIG_COMMON_CLK_MT6795_VDECSYS) += clk-mt6795-vdecsys.o
 obj-$(CONFIG_COMMON_CLK_MT6795_VENCSYS) += clk-mt6795-vencsys.o
 obj-$(CONFIG_COMMON_CLK_MT6797) += clk-mt6797.o
+obj-$(CONFIG_COMMON_CLK_MT6797_CPU) += clk-mt6797-cpu.o \
+					      clk-mt6797-cpu-core.o
+obj-$(CONFIG_COMMON_CLK_MT6797_CPU_KUNIT_TEST) += clk-mt6797-cpu-test.o
 obj-$(CONFIG_COMMON_CLK_MT6797_CAMSYS) += clk-mt6797-cam.o
 obj-$(CONFIG_COMMON_CLK_MT6797_IMGSYS) += clk-mt6797-img.o
 obj-$(CONFIG_COMMON_CLK_MT6797_MJCSYS) += clk-mt6797-mjc.o

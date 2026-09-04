@@ -28,6 +28,10 @@ int mt6797_wifi_ahb_cmd53_read(struct mt6797_wifi_ahb_hif *hif, u32 address,
 int mt6797_wifi_ahb_cmd53_write(struct mt6797_wifi_ahb_hif *hif, u32 address,
 				const void *buffer, size_t length);
 
+/* MT6797's AHB wrapper gate: one masks and zero unmasks IRQ283. */
+void mt6797_wifi_ahb_irq_mask(struct mt6797_wifi_ahb_hif *hif);
+void mt6797_wifi_ahb_irq_unmask(struct mt6797_wifi_ahb_hif *hif);
+
 int mt6797_wifi_ahb_pack_cmd52(bool write, u8 function, u32 address, u8 value,
 			       u32 *command);
 int mt6797_wifi_ahb_plan_cmd53(bool write, u32 address, size_t length,

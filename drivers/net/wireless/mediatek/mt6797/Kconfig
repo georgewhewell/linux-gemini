@@ -34,11 +34,14 @@ config MTK_MT6797_WIFI
 	  Build the platform endpoint for the MT6797 integrated GEN3 WLAN host
 	  interface. The driver acquires the aggregate's exclusive Wi-Fi lease,
 	  downloads the exact SHA-256-pinned divided firmware over the bounded
-	  AHB PIO and temporary shared-EMI paths, and waits for firmware READY.
+	  AHB PIO and temporary shared-EMI paths, waits for firmware READY, then
+	  performs one bounded NIC capability command/event exchange.
 
-	  The driver neither requests nor enables the interrupt and registers no
-	  wiphy or network device. The Device Tree node is disabled by default, so
-	  enabling this option alone performs no hardware access.
+	  IRQ283 is requested with IRQF_NO_AUTOEN and is enabled only around that
+	  post-READY exchange. Both the device-global gate and MT6797 AHB-wrapper
+	  gate are synchronously disabled afterwards. No wiphy or network device is
+	  registered. The Device Tree node is disabled by default, so enabling this
+	  option alone performs no hardware access.
 
 config MTK_MT6797_WIFI_KUNIT_TEST
 	bool "KUnit tests for the MT6797 WLAN firmware boundary" if !KUNIT_ALL_TESTS
@@ -46,7 +49,7 @@ config MTK_MT6797_WIFI_KUNIT_TEST
 	depends on MTK_MT6797_WIFI=y
 	default KUNIT_ALL_TESTS
 	help
-	  Exercise exact divided-header parsing and the boot transaction's ordering,
-	  rollback, and terminal fencing with memory-only fixtures. No firmware is
-	  requested and no MMIO, interrupt, regulator, CONSYS, or Wi-Fi hardware is
-	  accessed.
+	  Exercise exact divided-header parsing, boot and NIC-capability transaction
+	  ordering, command/event codecs, rollback, and terminal fencing using
+	  memory-only fixtures. No firmware is requested and no MMIO, interrupt,
+	  regulator, CONSYS, or Wi-Fi hardware is accessed.

@@ -13,6 +13,7 @@
 
 #define MT6797_WIFI_AHB_CMD_SETUP	0x0000
 #define MT6797_WIFI_AHB_CMD52_DATA	0x0004
+#define MT6797_WIFI_AHB_IRQ_GATE		0x0200
 #define MT6797_WIFI_AHB_CMD53_DATA	0x1000
 
 #define MT6797_WIFI_AHB_CMD_COUNT	GENMASK(8, 0)
@@ -204,6 +205,20 @@ int mt6797_wifi_ahb_cmd53_write(struct mt6797_wifi_ahb_hif *hif, u32 address,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_cmd53_write);
+
+void mt6797_wifi_ahb_irq_mask(struct mt6797_wifi_ahb_hif *hif)
+{
+	if (hif && hif->base)
+		writel(1, hif->base + MT6797_WIFI_AHB_IRQ_GATE);
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_irq_mask);
+
+void mt6797_wifi_ahb_irq_unmask(struct mt6797_wifi_ahb_hif *hif)
+{
+	if (hif && hif->base)
+		writel(0, hif->base + MT6797_WIFI_AHB_IRQ_GATE);
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_irq_unmask);
 
 MODULE_DESCRIPTION("MediaTek MT6797 Wi-Fi AHB transport library");
 MODULE_LICENSE("GPL");

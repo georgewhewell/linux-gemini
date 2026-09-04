@@ -435,6 +435,25 @@ config REGULATOR_DA9213_LEGACY_KUNIT_TEST
 	  CPU object and perform no hardware operation. They do not exercise the
 	  physical I2C transport.
 
+config REGULATOR_MT6797_BIGIDVFS_SRAM
+	tristate "MediaTek MT6797 secure SRAM regulator"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	help
+	  Register the MT6797 MP2 SRAM LDO voltage selector through the secure
+	  BigiDVFS interface. Voltage changes are read back and rolled back on
+	  failure. The known firmware ABI has no status or disable operation, so
+	  those regulator operations fail explicitly and cannot authorize CPU_ON.
+
+config REGULATOR_MT6797_BIGIDVFS_SRAM_KUNIT_TEST
+	bool "KUnit tests for the MT6797 secure SRAM regulator"
+	depends on KUNIT=y
+	depends on REGULATOR_MT6797_BIGIDVFS_SRAM=y
+	help
+	  Exercise the hardware-free voltage transaction using a fake secure
+	  backend. The tests cover successful and no-op changes, initial read
+	  failure, readback mismatch with verified rollback, and uncertain
+	  rollback. They issue no SMC, MMIO, firmware, or CPU operation.
+
 config REGULATOR_DBX500_PRCMU
 	bool
 

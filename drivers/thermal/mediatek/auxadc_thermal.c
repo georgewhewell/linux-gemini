@@ -354,6 +354,7 @@ struct mtk_thermal_data {
 	const int num_controller;
 	const int *controller_offset;
 	bool need_switch_bank;
+	bool require_valid_calibration;
 	struct thermal_bank_cfg bank_data[MAX_NUM_ZONES];
 	enum mtk_thermal_version version;
 	u32 apmixed_buffer_ctl_reg;
@@ -648,6 +649,7 @@ static const struct mtk_thermal_data mt6797_thermal_data = {
 	.num_controller = MT6797_NUM_CONTROLLER,
 	.controller_offset = mt6797_tc_offset,
 	.need_switch_bank = true,
+	.require_valid_calibration = true,
 	.bank_data = {
 		{ .num_sensors = 1, .sensors = mt6797_bank_data[0] },
 		{ .num_sensors = 1, .sensors = mt6797_bank_data[1] },
@@ -1674,6 +1676,9 @@ static int mtk_thermal_get_calibration_data(struct device *dev,
 	if (IS_ERR(cell)) {
 		if (PTR_ERR(cell) == -EPROBE_DEFER)
 			return PTR_ERR(cell);
+		if (mt->conf->require_valid_calibration)
+			return dev_err_probe(dev, PTR_ERR(cell),
+					     "required calibration data unavailable\n");
 		return 0;
 	}
 
@@ -1709,6 +1714,10 @@ static int mtk_thermal_get_calibration_data(struct device *dev,
 	}
 
 	if (ret) {
+		if (mt->conf->require_valid_calibration) {
+			dev_err(dev, "required calibration data is invalid\n");
+			goto out;
+		}
 		dev_info(dev, "Device not calibrated, using default calibration values\n");
 		ret = 0;
 	}

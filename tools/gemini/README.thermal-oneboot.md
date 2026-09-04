@@ -25,13 +25,37 @@ hardware temperatures. The vendor source confirms this mapping in
 There are five calibration entries including ABB, but the active bank table
 does not sample ABB. Do not claim five readable independent sensors or a
 separate thermometer per CPU. Existing `#thermal-sensor-cells = <0>` and
-registration of zone index zero expose only the aggregate. Per-sensor hwmon
-inputs require a driver addition using the driver's bank lock and calibrated
-conversion; userspace must not bypass it with arbitrary MMIO bank writes.
+registration of zone index zero expose only the aggregate. This branch adds
+`mt6797_sensors` hwmon with four labelled `temp*_input` channels for MCU1–4,
+using existing calibrated conversion and the driver's bank lock, restoring
+the complete selector after every read. Unpopulated zero ADC samples and
+invalid converted temperatures return `-EAGAIN`, never fake 0 C. The aggregate
+thermal zone and its cooling policy remain unchanged. No ABB channel or
+duplicate A53 thermometers are invented. Userspace must not bypass the
+driver with arbitrary MMIO bank writes.
 
 The base DT leaves thermal and AUXADC disabled. Existing thermal overlays
 enable them; a GPU-only image can therefore have no zone by construction.
 Check the exact assembled DT/config before treating missing sysfs as a bug.
+The new sensor-only overlay enables the existing thermal/AUXADC nodes and
+one aggregate zone, with no CPU clock/CSPM, cpufreq, Hall, trips or cooling
+changes. Required configs are `CONFIG_MTK_THERMAL`, `CONFIG_MTK_SOC_THERMAL`,
+`CONFIG_THERMAL_OF`, `CONFIG_HWMON`, and the existing clock/NVMEM providers.
+The thermal module must actually be included/loaded in the initramfs.
+
+Retained vendor boot lines 1060–1073 show calibration words
+`995ff095 01529771 48a3c000`, enable=1, gain=613, offset=511,
+calibration temperature=56, slope=0 and VTS MCU1/2/3/4/ABB
+169/151/149/145/143. These values satisfy the current parser bounds. This
+is evidence that this device has usable fuses, not a new-mainline-boot
+temperature measurement or independent laboratory calibration.
+
+Validation: the full modified driver object cross-compiles with GCC12
+against the prepared G3 kernel headers. The actual hwmon read function is
+compiled by `test-thermal-physical-hwmon.py` against banked MMIO mocks,
+checking all four mappings, lock ownership, complete selector restoration,
+out-of-range and zero readings, and unsupported requests. These tests are
+not hardware proof. Root retains sole ownership of device boot and capture.
 
 ## Other hardware is not covered by the SoC sensor
 
@@ -39,10 +63,11 @@ Check the exact assembled DT/config before treating missing sysfs as a bug.
   and applies PMIC efuse calibration. The current MT6351 MFD has no matching
   AUXADC child; `mt6359-auxadc.c` does not support MT6351. This is a missing
   driver/integration path, not an extra SoC thermal-zone declaration.
-- Battery: vendor battery thermal delegates to the battery-meter path,
-  including an initial **synthetic 25000 mC** reading. A plausible 25 C
-  alone is not proof of a live thermistor. Need verified MT6351 battery ADC
-  acquisition plus actual board thermistor conversion before claiming it.
+- Battery: **physically unavailable**. The owner confirms the damaged
+  connector has only battery + and - connected; temperature sensing is
+  disconnected. This cannot be restored in software and is outside this
+  lane. Never synthesize a safe temperature or satisfy charging policy with
+  a substitute. The vendor's initial synthetic 25000 mC is not sensor proof.
 - DA9214: vendor `common/thermal_zones/ts_da9214.c:69` maps threshold status
   to fabricated representative readings 60000/125000/140000 mC. This is a
   threshold alarm, not a calibrated continuous thermometer.

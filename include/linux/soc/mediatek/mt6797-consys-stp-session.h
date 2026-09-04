@@ -38,7 +38,10 @@ typedef int (*mt6797_consys_stp_rx_cb_t)(void *context,
 						 size_t payload_length);
 typedef int (*mt6797_consys_stp_gnss_rx_cb_t)(void *context,
 						      const u8 *payload,
-						      size_t payload_length);
+					      size_t payload_length);
+typedef int (*mt6797_consys_stp_bt_rx_cb_t)(void *context,
+					    const u8 *payload,
+					    size_t payload_length);
 
 struct mt6797_consys_stp_session_ops {
 	mt6797_consys_stp_tx_cb_t transmit;
@@ -112,6 +115,8 @@ mt6797_consys_stp_session_bootstrap_promote(
  */
 bool mt6797_consys_stp_session_lease_active(
 			const struct mt6797_consys_stp_session_lease *lease);
+bool mt6797_consys_stp_session_tx_pending(
+			const struct mt6797_consys_stp_session_lease *lease);
 
 /*
  * Verify that a capability belongs to the specified session owner. The caller
@@ -120,6 +125,13 @@ bool mt6797_consys_stp_session_lease_active(
  */
 bool mt6797_consys_stp_session_owns_lease(struct mt6797_consys_stp_session *session,
 					  const struct mt6797_consys_stp_session_lease *lease);
+
+int mt6797_consys_stp_session_bind_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context);
+int mt6797_consys_stp_session_unbind_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context);
 
 /*
  * Bind one GNSS endpoint to an already-active full-STP owner. The GNSS client
@@ -146,7 +158,7 @@ int mt6797_consys_stp_session_unbind_wmt(struct mt6797_consys_stp_session *sessi
 					 mt6797_consys_stp_rx_cb_t receive,
 					 void *receive_context);
 
-/* Send one WMT or GNSS payload through an active full-STP capability. */
+/* Send one BT, WMT, or GNSS payload through an active full-STP capability. */
 int mt6797_consys_stp_session_transmit(
 		const struct mt6797_consys_stp_session_lease *lease,
 		enum mtk_stp_channel channel, const u8 *payload, size_t payload_length);

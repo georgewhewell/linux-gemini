@@ -106,6 +106,22 @@ int mt6797_btif_stp_bootstrap_full_wmt_transaction(
 		u8 opcode, const u8 *data, size_t data_len,
 		const struct mtk_wmt_match *expected, unsigned long timeout);
 
+int mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range(
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease,
+		u8 opcode, const u8 *data, size_t data_len, u8 expected_opcode,
+		size_t min_data_len, size_t max_data_len, u8 *reply,
+		size_t reply_len, size_t *actual_data_len, unsigned long timeout);
+
+/* Runtime WMT is accepted only for this bootstrap's promoted full session. */
+int mt6797_btif_stp_bootstrap_active_wmt_transaction(
+		struct mt6797_btif_stp_bootstrap *bootstrap,
+		const struct mt6797_consys_stp_session_lease *session_lease,
+		u8 opcode, const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected, unsigned long timeout);
+int mt6797_btif_stp_bootstrap_active_arm_retry(
+		struct mt6797_btif_stp_bootstrap *bootstrap,
+		const struct mt6797_consys_stp_session_lease *session_lease);
+
 /*
  * The returned full session remains owned by bootstrap until destroy().
  * destroy() prevents another run and waits for an in-progress run to finish

@@ -78,6 +78,14 @@ struct mtk_wmt {
 	mtk_wmt_unsolicited_cb_t unsolicited;
 	void *unsolicited_context;
 	struct mtk_wmt_match expected;
+	/* A capture transaction matches opcode and a bounded SDU length. */
+	bool capture_pending;
+	u8 capture_opcode;
+	size_t capture_min_data_len;
+	size_t capture_max_data_len;
+	size_t capture_copy_len;
+	u8 *capture_data;
+	size_t *capture_actual_data_len;
 	u32 generation;
 	int result;
 	bool pending;
@@ -126,6 +134,18 @@ int mtk_wmt_transaction(struct mtk_wmt *wmt, u8 opcode,
 			const u8 *data, size_t data_len,
 			const struct mtk_wmt_match *expected,
 			unsigned long timeout);
+
+/*
+ * Accept a complete event by opcode and SDU-length range, copy a bounded
+ * prefix, and return the controller's complete declared SDU length.  Requiring
+ * @reply_len <= @min_data_len makes the copy valid for every accepted event.
+ */
+int mtk_wmt_transaction_capture_range(struct mtk_wmt *wmt, u8 opcode,
+				      const u8 *data, size_t data_len,
+				      u8 expected_opcode, size_t min_data_len,
+				      size_t max_data_len, u8 *reply,
+				      size_t reply_len, size_t *actual_data_len,
+				      unsigned long timeout);
 
 /*
  * Local cancellation/generation fence; this never emits a controller reset.

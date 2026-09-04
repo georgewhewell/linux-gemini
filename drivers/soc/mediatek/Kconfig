@@ -300,6 +300,10 @@ config MTK_MT6797_CONSYS_INVENTORY
 	select MTK_MT6797_CONSYS_POSTID
 	select MTK_MT6797_CONSYS_EMI_MPU
 	select MTK_MT6797_CONSYS_STP_SESSION
+	select MTK_MT6797_BTIF_PIO
+	select MTK_MT6797_CONSYS_WMT_INITIAL
+	select MTK_MT6797_BTIF_STP_BOOTSTRAP
+	select MTK_MT6797_CONSYS_WMT_PATCH_DOWNLOAD
 	help
 	  Build the shared lifecycle owner for the MT6797 connectivity subsystem.
 	  When its explicitly disabled Device Tree node is enabled, it verifies the

@@ -68,6 +68,8 @@ struct mt6797_consys_stp_session {
 	struct mt6797_consys_stp_session_ops ops;
 	mt6797_consys_stp_rx_cb_t wmt_receive;
 	void *wmt_receive_context;
+	mt6797_consys_stp_bt_rx_cb_t bt_receive;
+	void *bt_receive_context;
 	mt6797_consys_stp_gnss_rx_cb_t gnss_receive;
 	void *gnss_receive_context;
 	struct mt6797_consys_stp_session_lease *lease;
@@ -111,7 +113,8 @@ static u8 mt6797_consys_stp_sequence_next(u8 sequence)
 
 static bool mt6797_consys_stp_channel_supported(enum mtk_stp_channel channel)
 {
-	return channel == MTK_STP_WMT || channel == MTK_STP_GNSS;
+	return channel == MTK_STP_BT || channel == MTK_STP_WMT ||
+		channel == MTK_STP_GNSS;
 }
 
 static u8 mt6797_consys_stp_header_checksum(const u8 header[MTK_STP_HEADER_SIZE])
@@ -256,7 +259,11 @@ static int mt6797_consys_stp_finish_frame_locked(
 	ack = session->header[0] & 0x7;
 
 	if (sequence == session->expected_rxseq) {
-		if (session->channel == MTK_STP_WMT && session->wmt_receive)
+		if (session->channel == MTK_STP_BT && session->bt_receive)
+			ret = session->bt_receive(session->bt_receive_context,
+					  session->payload,
+					  session->payload_length);
+		else if (session->channel == MTK_STP_WMT && session->wmt_receive)
 			ret = session->wmt_receive(session->wmt_receive_context,
 						   session->channel, session->payload,
 						   session->payload_length);
@@ -525,12 +532,78 @@ bool mt6797_consys_stp_session_lease_active(
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_lease_active);
 
+bool mt6797_consys_stp_session_tx_pending(
+			const struct mt6797_consys_stp_session_lease *lease)
+{
+	struct mt6797_consys_stp_session *session;
+	bool pending;
+
+	if (!lease || !lease->session)
+		return false;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	pending = mt6797_consys_stp_lease_valid(lease) &&
+		session->credits != MT6797_CONSYS_STP_WINDOW_SIZE;
+	mutex_unlock(&session->lock);
+	return pending;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_tx_pending);
+
 bool mt6797_consys_stp_session_owns_lease(struct mt6797_consys_stp_session *session,
 					  const struct mt6797_consys_stp_session_lease *lease)
 {
 	return session && lease && lease->session == session;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_owns_lease);
+
+int mt6797_consys_stp_session_bind_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret = 0;
+
+	if (!lease || !lease->session || !receive)
+		return -EINVAL;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else if (session->bt_receive)
+		ret = -EBUSY;
+	else {
+		session->bt_receive = receive;
+		session->bt_receive_context = receive_context;
+	}
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_bind_bt);
+
+int mt6797_consys_stp_session_unbind_bt(
+		const struct mt6797_consys_stp_session_lease *lease,
+		mt6797_consys_stp_bt_rx_cb_t receive, void *receive_context)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret = 0;
+
+	if (!lease || !lease->session || !receive)
+		return -EINVAL;
+	session = lease->session;
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else if (session->bt_receive != receive ||
+		 session->bt_receive_context != receive_context)
+		ret = -ENOENT;
+	else {
+		session->bt_receive = NULL;
+		session->bt_receive_context = NULL;
+	}
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_unbind_bt);
 
 int mt6797_consys_stp_session_bind_gnss(
 		const struct mt6797_consys_stp_session_lease *lease,

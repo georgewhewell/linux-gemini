@@ -15,6 +15,7 @@
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/irq.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
@@ -22,6 +23,7 @@
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -32,8 +34,13 @@
 #include <linux/sizes.h>
 
 #include <linux/soc/mediatek/mt6797-consys-emi-mpu.h>
+#include <linux/soc/mediatek/mt6797-consys-bt.h>
 #include <linux/soc/mediatek/mt6797-consys-postid.h>
+#include <linux/soc/mediatek/mt6797-consys-postpatch.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
+#include <linux/soc/mediatek/mt6797-consys-wmt-patch.h>
+#include <linux/soc/mediatek/mt6797-btif-stp-bootstrap.h>
+#include <linux/soc/mediatek/mtk-wmt.h>
 
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
@@ -52,6 +59,8 @@
 #define MT6797_CONSYS_CHIP_POLL_INTERVAL_US	20000
 #define MT6797_CONSYS_CHIP_POLL_TIMEOUT_US	200000
 #define MT6797_CONSYS_RESET_RELEASE_SETTLE_MS	20
+#define MT6797_CONSYS_WMT_TIMEOUT_MS		3000
+#define MT6797_CONSYS_VCN33_UV			3300000
 
 struct mt6797_consys_afe_write {
 	u8 offset;
@@ -102,6 +111,8 @@ struct mt6797_consys {
 	struct resource shared_mem;
 	struct regulator *vcn18;
 	struct regulator *vcn28;
+	struct regulator *vcn33_bt;
+	struct regulator *vcn33_wifi;
 	struct reset_control *conn_mcu_reset;
 	struct mt6797_consys_fw_bundle *firmware;
 	struct device *btif_supplier;
@@ -109,6 +120,7 @@ struct mt6797_consys {
 	void *btif_context;
 	struct mt6797_consys_stp_session *stp_session;
 	const struct mt6797_consys_stp_session_lease *stp_lease;
+	struct mt6797_consys_bt_lease *bt_lease;
 	struct mt6797_consys_lifecycle lifecycle;
 	struct mt6797_consys_runtime_lease runtime_lease;
 	struct mt6797_consys_postid_owner postid;
@@ -119,8 +131,25 @@ struct mt6797_consys {
 	bool vcn28_vote;
 	bool conn_domain_vote;
 	bool emi_committed;
+	bool children_populated;
 	int bgf_irq;
 	int wdt_irq;
+};
+
+struct mt6797_consys_bt_lease {
+	struct mt6797_consys *consys;
+	mt6797_consys_bt_rx_cb_t receive;
+	void *receive_context;
+	bool active;
+};
+
+static const u8 mt6797_consys_bt_on[] = { 0x00, 0x01 };
+static const u8 mt6797_consys_bt_off[] = { 0x00, 0x00 };
+static const u8 mt6797_consys_wmt_ok[] = { 0x00 };
+static const struct mtk_wmt_match mt6797_consys_bt_reply = {
+	.opcode = 0x06,
+	.data = mt6797_consys_wmt_ok,
+	.data_len = sizeof(mt6797_consys_wmt_ok),
 };
 
 static int
@@ -337,6 +366,307 @@ static int mt6797_consys_stop_runtime(struct mt6797_consys *consys)
 	return ret ?: release_ret;
 }
 
+struct mt6797_consys_postpatch_context {
+	struct mt6797_consys *consys;
+	const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease;
+};
+
+static struct regulator *mt6797_consys_vcn33(struct mt6797_consys *consys,
+					      bool wifi)
+{
+	return wifi ? consys->vcn33_wifi : consys->vcn33_bt;
+}
+
+static int mt6797_consys_postpatch_get_voltage(void *context, bool wifi)
+{
+	struct mt6797_consys_postpatch_context *stage = context;
+
+	return regulator_get_voltage(mt6797_consys_vcn33(stage->consys, wifi));
+}
+
+static int mt6797_consys_postpatch_is_enabled(void *context, bool wifi)
+{
+	struct mt6797_consys_postpatch_context *stage = context;
+
+	return regulator_is_enabled(mt6797_consys_vcn33(stage->consys, wifi));
+}
+
+static int mt6797_consys_postpatch_set_voltage(void *context, bool wifi,
+					       int microvolts)
+{
+	struct mt6797_consys_postpatch_context *stage = context;
+
+	return regulator_set_voltage(mt6797_consys_vcn33(stage->consys, wifi),
+				     microvolts, microvolts);
+}
+
+static int mt6797_consys_postpatch_enable(void *context, bool wifi)
+{
+	struct mt6797_consys_postpatch_context *stage = context;
+
+	return regulator_enable(mt6797_consys_vcn33(stage->consys, wifi));
+}
+
+static int mt6797_consys_postpatch_disable(void *context, bool wifi)
+{
+	struct mt6797_consys_postpatch_context *stage = context;
+
+	return regulator_disable(mt6797_consys_vcn33(stage->consys, wifi));
+}
+
+static int mt6797_consys_postpatch_wmt(void *context, u8 opcode,
+		const u8 *data, size_t data_len,
+		const struct mtk_wmt_match *expected)
+{
+	struct mt6797_consys_postpatch_context *stage = context;
+
+	return mt6797_btif_stp_bootstrap_full_wmt_transaction(stage->lease,
+		opcode, data, data_len, expected,
+		msecs_to_jiffies(MT6797_CONSYS_WMT_TIMEOUT_MS));
+}
+
+static int mt6797_consys_postpatch_wmt_capture(void *context, u8 opcode,
+		const u8 *data, size_t data_len, u8 expected_opcode,
+		size_t min_data_len, size_t max_data_len, u8 *reply,
+		size_t reply_len, size_t *actual_data_len)
+{
+	struct mt6797_consys_postpatch_context *stage = context;
+
+	return mt6797_btif_stp_bootstrap_full_wmt_transaction_capture_range(
+		stage->lease, opcode, data, data_len, expected_opcode,
+		min_data_len, max_data_len, reply, reply_len, actual_data_len,
+		msecs_to_jiffies(MT6797_CONSYS_WMT_TIMEOUT_MS));
+}
+
+static void mt6797_consys_postpatch_delay(void *context,
+					 unsigned int milliseconds)
+{
+	msleep(milliseconds);
+}
+
+static int mt6797_consys_bootstrap_stage(void *context,
+		const struct mt6797_btif_stp_bootstrap_full_wmt_lease *lease)
+{
+	struct mt6797_consys *consys = context;
+	struct mt6797_consys_postpatch_context stage = {
+		.consys = consys,
+		.lease = lease,
+	};
+	const struct mt6797_consys_postpatch_ops ops = {
+		.get_voltage = mt6797_consys_postpatch_get_voltage,
+		.is_enabled = mt6797_consys_postpatch_is_enabled,
+		.set_voltage = mt6797_consys_postpatch_set_voltage,
+		.enable = mt6797_consys_postpatch_enable,
+		.disable = mt6797_consys_postpatch_disable,
+		.wmt = mt6797_consys_postpatch_wmt,
+		.wmt_capture = mt6797_consys_postpatch_wmt_capture,
+		.delay_ms = mt6797_consys_postpatch_delay,
+		.context = &stage,
+	};
+	int ret;
+
+	ret = mt6797_consys_wmt_patch_download(consys->firmware, lease);
+	if (ret)
+		return ret;
+	return mt6797_consys_postpatch_run(&ops);
+}
+
+static int mt6797_consys_bt_session_receive(void *context, const u8 *payload,
+					     size_t payload_length)
+{
+	struct mt6797_consys_bt_lease *lease = context;
+
+	if (!READ_ONCE(lease->active))
+		return -ESHUTDOWN;
+	return lease->receive(lease->receive_context, payload, payload_length);
+}
+
+static int mt6797_consys_bt_wmt(struct mt6797_consys *consys, bool enable)
+{
+	const u8 *command = enable ? mt6797_consys_bt_on : mt6797_consys_bt_off;
+
+	return consys->btif_ops->wmt_transaction(consys->btif_context,
+		consys->stp_lease, 0x06, command, sizeof(mt6797_consys_bt_on),
+		&mt6797_consys_bt_reply,
+		msecs_to_jiffies(MT6797_CONSYS_WMT_TIMEOUT_MS));
+}
+
+static void mt6797_consys_bt_fence(struct mt6797_consys *consys)
+{
+	consys->state = MT6797_CONSYS_OWNER_ERROR;
+	mt6797_consys_stp_session_quiesce(consys->stp_session);
+	mt6797_consys_emi_mpu_latch_fatal();
+}
+
+const struct mt6797_consys_bt_lease *
+mt6797_consys_bt_acquire(struct device *consumer,
+			 mt6797_consys_bt_rx_cb_t receive,
+			 void *receive_context)
+{
+	struct mt6797_consys_bt_lease *lease;
+	struct mt6797_consys *consys;
+	bool rail_dirty = false;
+	bool function_dirty = false;
+	bool terminal = false;
+	int cleanup_ret = 0;
+	int ret;
+
+	if (!consumer || !consumer->parent || !receive)
+		return ERR_PTR(-EINVAL);
+	consys = dev_get_drvdata(consumer->parent);
+	if (!consys)
+		return ERR_PTR(-EPROBE_DEFER);
+	lease = kzalloc_obj(*lease, GFP_KERNEL);
+	if (!lease)
+		return ERR_PTR(-ENOMEM);
+	lease->consys = consys;
+	lease->receive = receive;
+	lease->receive_context = receive_context;
+
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->state != MT6797_CONSYS_OWNER_ACTIVE || !consys->stp_lease ||
+	    !consys->btif_ops || !consys->btif_ops->wmt_transaction) {
+		ret = -ESHUTDOWN;
+		goto unlock_free;
+	}
+	if (consys->bt_lease) {
+		ret = -EBUSY;
+		goto unlock_free;
+	}
+	ret = mt6797_consys_stp_session_bind_bt(consys->stp_lease,
+		mt6797_consys_bt_session_receive, lease);
+	if (ret)
+		goto unlock_free;
+	ret = regulator_set_voltage(consys->vcn33_bt, MT6797_CONSYS_VCN33_UV,
+				    MT6797_CONSYS_VCN33_UV);
+	if (ret)
+		goto unbind;
+	rail_dirty = true;
+	ret = regulator_enable(consys->vcn33_bt);
+	if (ret) {
+		int enabled = regulator_is_enabled(consys->vcn33_bt);
+
+		if (enabled <= 0)
+			rail_dirty = false;
+		goto unbind;
+	}
+	function_dirty = true;
+	ret = mt6797_consys_bt_wmt(consys, true);
+	if (ret) {
+		terminal = true;
+		goto unbind;
+	}
+	lease->active = true;
+	consys->bt_lease = lease;
+	mutex_unlock(&consys->lifecycle_lock);
+	return lease;
+
+unbind:
+	mt6797_consys_stp_session_unbind_bt(consys->stp_lease,
+		mt6797_consys_bt_session_receive, lease);
+	if (function_dirty) {
+		cleanup_ret = mt6797_consys_bt_wmt(consys, false);
+		if (cleanup_ret)
+			terminal = true;
+	}
+	if (rail_dirty) {
+		int rail_ret = regulator_disable(consys->vcn33_bt);
+
+		if (!cleanup_ret)
+			cleanup_ret = rail_ret;
+		if (rail_ret)
+			terminal = true;
+	}
+	if (terminal)
+		mt6797_consys_bt_fence(consys);
+unlock_free:
+	mutex_unlock(&consys->lifecycle_lock);
+	if (terminal)
+		consys->btif_ops->stop(consys->btif_context);
+	kfree(lease);
+	return ERR_PTR(ret ?: cleanup_ret);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_bt_acquire);
+
+int mt6797_consys_bt_transmit(const struct mt6797_consys_bt_lease *lease,
+			     const u8 *frame, size_t frame_length)
+{
+	struct mt6797_consys *consys;
+	bool terminal = false;
+	int ret;
+
+	if (!lease || !frame || !frame_length)
+		return -EINVAL;
+	consys = lease->consys;
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->state != MT6797_CONSYS_OWNER_ACTIVE ||
+	    consys->bt_lease != lease || !lease->active)
+		ret = -ESHUTDOWN;
+	else {
+		ret = mt6797_consys_stp_session_transmit(consys->stp_lease,
+						  MTK_STP_BT, frame,
+						  frame_length);
+		if (!ret)
+			ret = consys->btif_ops->arm_session_timeout(
+				consys->btif_context, consys->stp_lease);
+		if (ret && ret != -EAGAIN) {
+			mt6797_consys_bt_fence(consys);
+			terminal = true;
+		}
+	}
+	mutex_unlock(&consys->lifecycle_lock);
+	if (terminal)
+		consys->btif_ops->stop(consys->btif_context);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_bt_transmit);
+
+int mt6797_consys_bt_release(const struct mt6797_consys_bt_lease *lease_arg)
+{
+	struct mt6797_consys_bt_lease *lease =
+		(struct mt6797_consys_bt_lease *)lease_arg;
+	struct mt6797_consys *consys;
+	bool owned = false;
+	bool terminal = false;
+	int rail_ret;
+	int ret;
+
+	if (!lease || !lease->consys)
+		return -EINVAL;
+	consys = lease->consys;
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->bt_lease != lease) {
+		ret = -ENOENT;
+		goto unlock;
+	}
+	owned = true;
+	WRITE_ONCE(lease->active, false);
+	ret = mt6797_consys_stp_session_unbind_bt(consys->stp_lease,
+		mt6797_consys_bt_session_receive, lease);
+	if (ret)
+		terminal = true;
+	if (!ret)
+		ret = mt6797_consys_bt_wmt(consys, false);
+	if (ret)
+		terminal = true;
+	rail_ret = regulator_disable(consys->vcn33_bt);
+	if (!ret)
+		ret = rail_ret;
+	if (rail_ret)
+		terminal = true;
+	consys->bt_lease = NULL;
+	if (terminal)
+		mt6797_consys_bt_fence(consys);
+unlock:
+	mutex_unlock(&consys->lifecycle_lock);
+	if (terminal)
+		consys->btif_ops->stop(consys->btif_context);
+	if (owned)
+		kfree(lease);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_bt_release);
+
 static int mt6797_consys_start(struct mt6797_consys *consys)
 {
 	const struct mt6797_consys_stp_session_lease *stp_lease;
@@ -372,7 +702,8 @@ static int mt6797_consys_start(struct mt6797_consys *consys)
 		goto fail_terminal;
 	/* Vendor power-on waits this long after releasing CONMCU reset. */
 	msleep(MT6797_CONSYS_RESET_RELEASE_SETTLE_MS);
-	ret = ops->start(context, &consys->runtime_lease, consys->firmware,
+	ret = ops->start(context, &consys->runtime_lease,
+			 mt6797_consys_bootstrap_stage, consys,
 			 &stp_lease);
 	if (ret)
 		goto fail_terminal;
@@ -464,6 +795,14 @@ static int mt6797_consys_component_bind(struct device *dev)
 		return dev_err_probe(dev, ret,
 				     "failed terminal CONSYS/STP bring-up\n");
 	}
+	ret = of_platform_populate(dev->of_node, NULL, NULL, dev);
+	if (ret) {
+		component_unbind_all(dev, consys);
+		mt6797_consys_stop(consys);
+		return dev_err_probe(dev, ret,
+				     "failed to populate radio consumers\n");
+	}
+	consys->children_populated = true;
 
 	dev_info(dev,
 		 "CONSYS powered; chip %#x and firmware patched; radios disabled\n",
@@ -478,6 +817,10 @@ static void mt6797_consys_component_unbind(struct device *dev)
 	struct mt6797_consys *consys = dev_get_drvdata(dev);
 	void *context = NULL;
 
+	if (consys->children_populated) {
+		of_platform_depopulate(dev);
+		consys->children_populated = false;
+	}
 	component_unbind_all(dev, consys);
 
 	/* A component must detach, but keep aggregate teardown fail-safe. */
@@ -537,7 +880,8 @@ int mt6797_consys_btif_attach(struct device *master, struct device *supplier,
 	int ret = 0;
 
 	if (!master || !supplier || !ops || !ops->transmit ||
-	    !ops->bind_session || !ops->unbind_session || !ops->start || !ops->stop)
+	    !ops->bind_session || !ops->unbind_session || !ops->start ||
+	    !ops->wmt_transaction || !ops->arm_session_timeout || !ops->stop)
 		return -EINVAL;
 
 	consys = dev_get_drvdata(master);
@@ -850,6 +1194,13 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 		return ret;
 
 	ret = mt6797_consys_get_supply(dev, "vcn28", &consys->vcn28);
+	if (ret)
+		return ret;
+	ret = mt6797_consys_get_supply(dev, "vcn33-bt", &consys->vcn33_bt);
+	if (ret)
+		return ret;
+	ret = mt6797_consys_get_supply(dev, "vcn33-wifi",
+				       &consys->vcn33_wifi);
 	if (ret)
 		return ret;
 

@@ -158,6 +158,12 @@ temperature=$(read_one "$zone/temp") || fail "SoC temperature is unreadable"
 require_unsigned "SoC temperature" "$temperature"
 [ "$temperature" -le 130000 ] || fail "SoC temperature is implausible"
 
+trip_count=0
+for type_file in "$zone"/trip_point_*_type; do
+	[ -r "$type_file" ] || continue
+	trip_count=$((trip_count + 1))
+done
+[ "$trip_count" -eq 3 ] || fail "expected three thermal trips, found $trip_count"
 passive_trip=$(find_trip passive 85000 5000)
 emergency_trip=$(find_trip passive 95000 5000)
 critical_trip=$(find_trip critical 117000 0)
@@ -199,6 +205,10 @@ errors=$(printf '%s\n' "$log_text" | grep -Ei "$error_pattern" || true)
 echo "schema=gemini-mt6797-a53-dvfs-thermal-preflight-v1"
 echo "collector_mode=read_only"
 echo "frequency_transition_available=no"
+echo "frequency_transition_evidence=not_exercised"
+echo "cooling_action_evidence=not_exercised"
+echo "critical_shutdown_evidence=dt_policy_only"
+echo "calibration_gate=driver_bound_requires_valid_nvmem"
 echo "temperature_millic=$temperature"
 echo "cooling_devices=2"
 echo "cooling_bindings=4"

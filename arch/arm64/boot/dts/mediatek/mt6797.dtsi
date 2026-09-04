@@ -95,6 +95,9 @@
 			compatible = "arm,cortex-a72";
 			enable-method = "mediatek,mt6797-psci";
 			reg = <0x200>;
+			clocks = <&cpuclk CLK_MCU_MP2>,
+				 <&apmixedsys CLK_APMIXED_MAINPLL>;
+			clock-names = "cpu", "intermediate";
 		};
 
 		cpu9: cpu@201 {
@@ -102,6 +105,9 @@
 			compatible = "arm,cortex-a72";
 			enable-method = "mediatek,mt6797-psci";
 			reg = <0x201>;
+			clocks = <&cpuclk CLK_MCU_MP2>,
+				 <&apmixedsys CLK_APMIXED_MAINPLL>;
+			clock-names = "cpu", "intermediate";
 		};
 	};
 

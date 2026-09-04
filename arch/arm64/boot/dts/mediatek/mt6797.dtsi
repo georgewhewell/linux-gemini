@@ -448,6 +448,7 @@
 		resets = <&infrasys MT6797_INFRA_CLDMA_RST>,
 			 <&infrasys MT6797_INFRA_CLDMA_AO_RST>;
 		reset-names = "cldma-pdn", "cldma-ao";
+		mediatek,spm = <&scpsys>;
 		status = "disabled";
 	};
 

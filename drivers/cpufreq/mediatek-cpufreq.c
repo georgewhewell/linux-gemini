@@ -23,6 +23,8 @@ struct mtk_cpufreq_platform_data {
 	int sram_min_volt;
 	int sram_max_volt;
 	bool ccifreq_supported;
+	bool shared_regulators;
+	const char *cpu_compatible;
 };
 
 /*
@@ -62,6 +64,9 @@ struct mtk_cpu_dvfs_info {
 static struct platform_device *cpufreq_pdev;
 
 static LIST_HEAD(dvfs_info_list);
+
+/* Serialize complete transitions when policies share Vproc and Vsram. */
+static DEFINE_MUTEX(mtk_cpufreq_shared_reg_lock);
 
 static struct mtk_cpu_dvfs_info *mtk_cpu_dvfs_info_lookup(int cpu)
 {
@@ -213,6 +218,8 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 
 	pre_freq_hz = clk_get_rate(cpu_clk);
 
+	if (info->soc_data->shared_regulators)
+		mutex_lock(&mtk_cpufreq_shared_reg_lock);
 	mutex_lock(&info->reg_lock);
 
 	if (unlikely(info->pre_vproc <= 0))
@@ -309,6 +316,8 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 
 out:
 	mutex_unlock(&info->reg_lock);
+	if (info->soc_data->shared_regulators)
+		mutex_unlock(&mtk_cpufreq_shared_reg_lock);
 
 	return ret;
 }
@@ -327,6 +336,8 @@ static int mtk_cpufreq_opp_notifier(struct notifier_block *nb,
 	if (event == OPP_EVENT_ADJUST_VOLTAGE) {
 		freq = dev_pm_opp_get_freq(opp);
 
+		if (info->soc_data->shared_regulators)
+			mutex_lock(&mtk_cpufreq_shared_reg_lock);
 		mutex_lock(&info->reg_lock);
 		if (info->current_freq == freq) {
 			volt = dev_pm_opp_get_voltage(opp);
@@ -336,6 +347,8 @@ static int mtk_cpufreq_opp_notifier(struct notifier_block *nb,
 					"failed to scale voltage: %d\n", ret);
 		}
 		mutex_unlock(&info->reg_lock);
+		if (info->soc_data->shared_regulators)
+			mutex_unlock(&mtk_cpufreq_shared_reg_lock);
 	} else if (event == OPP_EVENT_DISABLE) {
 		freq = dev_pm_opp_get_freq(opp);
 
@@ -639,6 +652,15 @@ static int mtk_cpufreq_probe(struct platform_device *pdev)
 				     "failed to get mtk cpufreq platform data\n");
 
 	for_each_present_cpu(cpu) {
+		struct device *cpu_dev = get_cpu_device(cpu);
+
+		if (!cpu_dev)
+			continue;
+		if (data->cpu_compatible &&
+		    !of_device_is_compatible(cpu_dev->of_node,
+					     data->cpu_compatible))
+			continue;
+
 		info = mtk_cpu_dvfs_info_lookup(cpu);
 		if (info)
 			continue;
@@ -743,10 +765,22 @@ static const struct mtk_cpufreq_platform_data mt8516_platform_data = {
 	.ccifreq_supported = false,
 };
 
+static const struct mtk_cpufreq_platform_data mt6797_platform_data = {
+	.min_volt_shift = 100000,
+	.max_volt_shift = 300000,
+	.proc_max_volt = 1200000,
+	.sram_min_volt = 1000000,
+	.sram_max_volt = 1200000,
+	.ccifreq_supported = false,
+	.shared_regulators = true,
+	.cpu_compatible = "arm,cortex-a53",
+};
+
 /* List of machines supported by this driver */
 static const struct of_device_id mtk_cpufreq_machines[] __initconst __maybe_unused = {
 	{ .compatible = "mediatek,mt2701", .data = &mt2701_platform_data },
 	{ .compatible = "mediatek,mt2712", .data = &mt2701_platform_data },
+	{ .compatible = "mediatek,mt6797", .data = &mt6797_platform_data },
 	{ .compatible = "mediatek,mt7622", .data = &mt7622_platform_data },
 	{ .compatible = "mediatek,mt7623", .data = &mt7623_platform_data },
 	{ .compatible = "mediatek,mt7988a", .data = &mt7988_platform_data },

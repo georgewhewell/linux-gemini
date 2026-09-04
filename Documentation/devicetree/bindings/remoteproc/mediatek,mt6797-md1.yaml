@@ -63,6 +63,16 @@ properties:
       - const: ccif-ap
       - const: ccif-md
 
+  resets:
+    items:
+      - description: CLDMA power-down register-domain reset
+      - description: CLDMA always-on register-domain reset
+
+  reset-names:
+    items:
+      - const: cldma-pdn
+      - const: cldma-ao
+
   memory-region:
     description:
       Reserved memory for the modem and for application-processor/modem
@@ -84,6 +94,8 @@ required:
   - interrupt-names
   - clocks
   - clock-names
+  - resets
+  - reset-names
 
 dependencies:
   memory-region: [memory-region-names]
@@ -95,6 +107,7 @@ examples:
   - |
     #include <dt-bindings/clock/mt6797-clk.h>
     #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/reset/mt6797-resets.h>
 
     remoteproc@10014000 {
         compatible = "mediatek,mt6797-md1";
@@ -113,6 +126,9 @@ examples:
         clocks = <&infracfg CLK_INFRA_CCIF_AP>,
                  <&infracfg CLK_INFRA_CCIF_MD>;
         clock-names = "ccif-ap", "ccif-md";
+        resets = <&infracfg MT6797_INFRA_CLDMA_RST>,
+                 <&infracfg MT6797_INFRA_CLDMA_AO_RST>;
+        reset-names = "cldma-pdn", "cldma-ao";
         status = "disabled";
     };
 

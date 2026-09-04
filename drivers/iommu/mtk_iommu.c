@@ -28,7 +28,6 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/soc/mediatek/infracfg.h>
-#include <linux/soc/mediatek/mtk-mmsys.h>
 #include <linux/soc/mediatek/mtk_sip_svc.h>
 #include <linux/string_choices.h>
 #include <asm/barrier.h>
@@ -1318,9 +1317,6 @@ static int mtk_iommu_probe(struct platform_device *pdev)
 	char                    *p;
 	struct mtk_iommu_bank_data *bank;
 	void __iomem		*base;
-
-	if (!mtk_mmsys_display_is_activated())
-		return -EPROBE_DEFER;
 
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)

@@ -14,7 +14,6 @@
 #include <linux/pm_runtime.h>
 #include <linux/seq_file.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
-#include <linux/soc/mediatek/mtk-mmsys.h>
 
 #include "mtk_crtc.h"
 #include "mtk_ddp_comp.h"
@@ -337,9 +336,6 @@ static int mtk_disp_rdma_probe(struct platform_device *pdev)
 	struct mtk_disp_rdma *priv;
 	int irq;
 	int ret;
-
-	if (!mtk_mmsys_display_is_activated())
-		return -EPROBE_DEFER;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)

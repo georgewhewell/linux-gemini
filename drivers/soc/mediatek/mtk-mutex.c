@@ -1180,9 +1180,6 @@ static int mtk_mutex_probe(struct platform_device *pdev)
 	struct resource *regs;
 	int i, ret;
 
-	if (!mtk_mmsys_display_is_activated())
-		return -EPROBE_DEFER;
-
 	mtx = devm_kzalloc(dev, sizeof(*mtx), GFP_KERNEL);
 	if (!mtx)
 		return -ENOMEM;

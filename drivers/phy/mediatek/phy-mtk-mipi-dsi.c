@@ -4,7 +4,6 @@
  */
 
 #include "phy-mtk-mipi-dsi.h"
-#include <linux/soc/mediatek/mtk-mmsys.h>
 
 inline struct mtk_mipi_tx *mtk_mipi_tx_from_clk_hw(struct clk_hw *hw)
 {
@@ -117,9 +116,6 @@ static int mtk_mipi_tx_probe(struct platform_device *pdev)
 	struct phy *phy;
 	struct phy_provider *phy_provider;
 	int ret;
-
-	if (!mtk_mmsys_display_is_activated())
-		return -EPROBE_DEFER;
 
 	mipi_tx = devm_kzalloc(dev, sizeof(*mipi_tx), GFP_KERNEL);
 	if (!mipi_tx)

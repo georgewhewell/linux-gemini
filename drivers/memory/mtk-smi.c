@@ -16,7 +16,6 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/soc/mediatek/mtk_sip_svc.h>
-#include <linux/soc/mediatek/mtk-mmsys.h>
 #include <soc/mediatek/smi.h>
 #include <dt-bindings/memory/mt2701-larb-port.h>
 #include <dt-bindings/memory/mtk-memory-port.h>
@@ -157,7 +156,6 @@ struct mtk_smi_larb { /* larb: local arbiter */
 	const struct mtk_smi_larb_gen	*larb_gen;
 	int				larbid;
 	u32				*mmu;
-	u32				mmu_bypass;
 	unsigned char			*bank;
 };
 
@@ -650,9 +648,6 @@ static int mtk_smi_larb_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	if (!mtk_mmsys_display_is_activated())
-		return -EPROBE_DEFER;
-
 	larb = devm_kzalloc(dev, sizeof(*larb), GFP_KERNEL);
 	if (!larb)
 		return -ENOMEM;
@@ -668,13 +663,6 @@ static int mtk_smi_larb_probe(struct platform_device *pdev)
 		return ret;
 
 	larb->smi.dev = dev;
-	/*
-	 * An IOMMU component normally supplies the per-port MMU mask in bind().
-	 * Keep IOMMU-less display clients in physical-address mode until then;
-	 * runtime resume always programs this mask before a component can bind.
-	 */
-	larb->mmu = &larb->mmu_bypass;
-
 	ret = mtk_smi_device_link_common(dev, &larb->smi_common_dev);
 	if (ret < 0)
 		return ret;
@@ -885,9 +873,6 @@ static int mtk_smi_common_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct mtk_smi *common;
 	int ret, clk_required = MTK_SMI_COM_REQ_CLK_NR;
-
-	if (!mtk_mmsys_display_is_activated())
-		return -EPROBE_DEFER;
 
 	common = devm_kzalloc(dev, sizeof(*common), GFP_KERNEL);
 	if (!common)

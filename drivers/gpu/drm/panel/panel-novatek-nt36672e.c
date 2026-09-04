@@ -54,6 +54,7 @@ struct nt36672e_panel {
 	struct gpio_desc *reset_gpio;
 	struct regulator_bulk_data supplies[3];
 	const struct panel_desc *desc;
+	enum drm_panel_orientation orientation;
 };
 
 #define NT36672E_DCS_SWITCH_PAGE	0xff
@@ -908,10 +909,18 @@ static int nt36672e_panel_get_modes(struct drm_panel *panel, struct drm_connecto
 	return 1;
 }
 
+static enum drm_panel_orientation nt36672e_panel_get_orientation(struct drm_panel *panel)
+{
+	struct nt36672e_panel *ctx = to_nt36672e_panel(panel);
+
+	return ctx->orientation;
+}
+
 static const struct drm_panel_funcs nt36672e_drm_funcs = {
 	.prepare = nt36672e_panel_prepare,
 	.unprepare = nt36672e_panel_unprepare,
 	.get_modes = nt36672e_panel_get_modes,
+	.get_orientation = nt36672e_panel_get_orientation,
 };
 
 static int nt36672e_panel_probe(struct mipi_dsi_device *dsi)
@@ -931,6 +940,10 @@ static int nt36672e_panel_probe(struct mipi_dsi_device *dsi)
 		dev_err(dev, "missing device configuration\n");
 		return -ENODEV;
 	}
+
+	ret = of_drm_get_panel_orientation(dev->of_node, &ctx->orientation);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to get orientation\n");
 
 	if (!ctx->desc->supply_names ||
 	    ctx->desc->num_supplies > ARRAY_SIZE(ctx->supplies))

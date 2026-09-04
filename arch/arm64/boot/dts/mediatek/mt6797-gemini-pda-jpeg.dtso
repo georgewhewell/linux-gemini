@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA MT6797 JPEG codec qualification overlay.
+ *
+ * The JPEG encoder and decoder share the VENC power domain and larb3.  Keep
+ * this opt-in until the MT6797 M4U path has completed hardware qualification;
+ * the base board remains bootable with all of these devices disabled.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&smi_common {
+	status = "okay";
+};
+
+&larb3 {
+	status = "okay";
+};
+
+&m4u {
+	status = "okay";
+};
+
+&jpeg_encoder {
+	status = "okay";
+};
+
+&jpeg_decoder {
+	status = "okay";
+};

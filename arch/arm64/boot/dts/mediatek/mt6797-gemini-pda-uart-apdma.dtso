@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Opt-in UART0 APDMA activation for the Gemini PDA.
+ *
+ * The 8250 MediaTek driver intentionally keeps a console UART in PIO mode.
+ * Exercise this DMA path only in a RAM boot with another capture console,
+ * and remove the overlay from the next boot if probe or serial traffic fails.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&uart_apdma {
+	status = "okay";
+};
+
+&uart0 {
+	dmas = <&uart_apdma 0>, <&uart_apdma 1>;
+	dma-names = "tx", "rx";
+};

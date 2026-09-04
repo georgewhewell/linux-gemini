@@ -313,6 +313,7 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 {
 	struct scp_domain *scpd = container_of(genpd, struct scp_domain, genpd);
 	struct scp *scp = scpd->scp;
+	const char *stage = "regulator enable";
 	void __iomem *ctl_addr = scp->base + scpd->data->ctl_offs;
 	void __iomem *sram_pdn_addr = scp->base + (scpd->data->sram_pdn_ctl_offs ?
 		scpd->data->sram_pdn_ctl_offs : scpd->data->ctl_offs);
@@ -323,8 +324,9 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 
 	ret = scpsys_regulator_enable(scpd);
 	if (ret < 0)
-		return ret;
+		goto err_regulator;
 
+	stage = "clock enable";
 	ret = scpsys_clk_enable(scpd->clk, MAX_CLKS);
 	if (ret)
 		goto err_clk;
@@ -337,6 +339,7 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 	writel(val, ctl_addr);
 
 	/* wait until PWR_ACK = 1 */
+	stage = "power acknowledge";
 	ret = readx_poll_timeout(scpsys_domain_is_on, scpd, tmp, tmp > 0,
 				 MTK_POLL_DELAY_US, MTK_POLL_TIMEOUT);
 	if (ret < 0)
@@ -351,10 +354,12 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 	val |= PWR_RST_B_BIT;
 	writel(val, ctl_addr);
 
+	stage = "SRAM acknowledge";
 	ret = scpsys_sram_enable(scpd, sram_pdn_addr, sram_ack_addr);
 	if (ret < 0)
 		goto err_pwr_ack;
 
+	stage = "bus protection release";
 	ret = scpsys_bus_protect_disable(scpd);
 	if (ret < 0)
 		goto err_pwr_ack;
@@ -365,8 +370,10 @@ err_pwr_ack:
 	scpsys_clk_disable(scpd->clk, MAX_CLKS);
 err_clk:
 	scpsys_regulator_disable(scpd);
+err_regulator:
 
-	dev_err(scp->dev, "Failed to power on domain %s\n", genpd->name);
+	dev_err(scp->dev, "Failed to power on domain %s at %s: %d\n",
+		genpd->name, stage, ret);
 
 	return ret;
 }
@@ -375,6 +382,7 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 {
 	struct scp_domain *scpd = container_of(genpd, struct scp_domain, genpd);
 	struct scp *scp = scpd->scp;
+	const char *stage = "bus protection engage";
 	void __iomem *ctl_addr = scp->base + scpd->data->ctl_offs;
 	void __iomem *sram_pdn_addr = scp->base + (scpd->data->sram_pdn_ctl_offs ?
 		scpd->data->sram_pdn_ctl_offs : scpd->data->ctl_offs);
@@ -387,6 +395,7 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 	if (ret < 0)
 		goto out;
 
+	stage = "SRAM acknowledge";
 	ret = scpsys_sram_disable(scpd, sram_pdn_addr, sram_ack_addr);
 	if (ret < 0)
 		goto out;
@@ -409,6 +418,7 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 	writel(val, ctl_addr);
 
 	/* wait until PWR_ACK = 0 */
+	stage = "power acknowledge";
 	ret = readx_poll_timeout(scpsys_domain_is_on, scpd, tmp, tmp == 0,
 				 MTK_POLL_DELAY_US, MTK_POLL_TIMEOUT);
 	if (ret < 0)
@@ -416,6 +426,7 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 
 	scpsys_clk_disable(scpd->clk, MAX_CLKS);
 
+	stage = "regulator disable";
 	ret = scpsys_regulator_disable(scpd);
 	if (ret < 0)
 		goto out;
@@ -423,7 +434,8 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 	return 0;
 
 out:
-	dev_err(scp->dev, "Failed to power off domain %s\n", genpd->name);
+	dev_err(scp->dev, "Failed to power off domain %s at %s: %d\n",
+		genpd->name, stage, ret);
 
 	return ret;
 }

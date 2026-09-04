@@ -62,4 +62,5 @@ config MTK_MT6797_WIFI_KUNIT_TEST
 	  interrupt, regulator, CONSYS, or Wi-Fi hardware is accessed.
 	  The suite also covers the pure caller-serialized AIS station and
 	  WLAN-table resource ledger, including atomic allocation rollback and
-	  stale-handle rejection.
+	  stale-handle rejection, plus caller-driven AIS transaction ordering,
+	  timeout arbitration, reverse teardown, and terminal fencing.

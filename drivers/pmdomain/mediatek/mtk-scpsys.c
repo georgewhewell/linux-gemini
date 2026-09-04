@@ -833,6 +833,12 @@ static const struct scp_subdomain scp_subdomain_mt2712[] = {
 
 #define SPM_MFG_SRAM_CON_MT6797		0x033c
 #define MT6797_MFG_BUS_PROT_MASK	(BIT(21) | BIT(23))
+#define MT6797_MFG_CORE_STATUS_MASK	GENMASK(11, 8)
+
+/*
+ * MFG protection covers all four independently controlled cores. Assert it
+ * before any core powers down and release it only after every core is on.
+ */
 
 /*
  * The GPU and its MFGSYS clock provider are disabled in the Gemini DT.  Do
@@ -903,7 +909,6 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_bits = GENMASK(1, 0),
 		.sram_pdn_ack_bits = GENMASK(17, 16),
 		.clk_id = {CLK_MFG_52M},
-		.bus_prot_mask = MT6797_MFG_BUS_PROT_MASK,
 		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE0] = {
@@ -914,6 +919,8 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_ack_offs = SPM_MFG_SRAM_CON_MT6797,
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(20),
+		.bus_prot_mask = MT6797_MFG_BUS_PROT_MASK,
+		.bus_prot_group_mask = MT6797_MFG_CORE_STATUS_MASK,
 		.clk_id = {CLK_MFG_52M},
 		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
@@ -925,6 +932,8 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_ack_offs = SPM_MFG_SRAM_CON_MT6797,
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(21),
+		.bus_prot_mask = MT6797_MFG_BUS_PROT_MASK,
+		.bus_prot_group_mask = MT6797_MFG_CORE_STATUS_MASK,
 		.clk_id = {CLK_MFG_52M},
 		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
@@ -936,6 +945,8 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_ack_offs = SPM_MFG_SRAM_CON_MT6797,
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(22),
+		.bus_prot_mask = MT6797_MFG_BUS_PROT_MASK,
+		.bus_prot_group_mask = MT6797_MFG_CORE_STATUS_MASK,
 		.clk_id = {CLK_MFG_52M},
 		.caps = MT6797_MFG_DEFAULT_OFF,
 	},
@@ -947,6 +958,8 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_ack_offs = SPM_MFG_SRAM_CON_MT6797,
 		.sram_pdn_bits = BIT(8),
 		.sram_pdn_ack_bits = BIT(23),
+		.bus_prot_mask = MT6797_MFG_BUS_PROT_MASK,
+		.bus_prot_group_mask = MT6797_MFG_CORE_STATUS_MASK,
 		.clk_id = {CLK_MFG_52M},
 		.caps = MT6797_MFG_DEFAULT_OFF,
 	},

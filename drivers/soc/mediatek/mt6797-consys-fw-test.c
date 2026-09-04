@@ -6,7 +6,7 @@
 #include <linux/string.h>
 #include <kunit/test.h>
 
-#include "mtk_mt6797_consys_fw.h"
+#include "mt6797-consys-fw.h"
 
 static const u8 sha256_abc[MT6797_CONSYS_FW_SHA256_SIZE] = {
 	0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,

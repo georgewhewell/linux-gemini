@@ -27,7 +27,7 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/regulator/mt6351-regulator.h>
-#include <linux/remoteproc/mtk_mt6797_consys.h>
+#include <linux/soc/mediatek/mt6797-consys-fw.h>
 #include <linux/reset.h>
 #include <linux/sizes.h>
 

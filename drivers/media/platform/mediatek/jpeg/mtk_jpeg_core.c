@@ -1094,7 +1094,7 @@ static int mtk_jpeg_queue_init(void *priv, struct vb2_queue *src_vq,
 	return ret;
 }
 
-static void mtk_jpeg_clk_on(struct mtk_jpeg_dev *jpeg)
+static int mtk_jpeg_clk_on(struct mtk_jpeg_dev *jpeg)
 {
 	int ret;
 
@@ -1102,6 +1102,8 @@ static void mtk_jpeg_clk_on(struct mtk_jpeg_dev *jpeg)
 				      jpeg->variant->clks);
 	if (ret)
 		dev_err(jpeg->dev, "Failed to open jpeg clk: %d\n", ret);
+
+	return ret;
 }
 
 static void mtk_jpeg_clk_off(struct mtk_jpeg_dev *jpeg)
@@ -1421,9 +1423,7 @@ static __maybe_unused int mtk_jpeg_pm_resume(struct device *dev)
 {
 	struct mtk_jpeg_dev *jpeg = dev_get_drvdata(dev);
 
-	mtk_jpeg_clk_on(jpeg);
-
-	return 0;
+	return mtk_jpeg_clk_on(jpeg);
 }
 
 static __maybe_unused int mtk_jpeg_suspend(struct device *dev)

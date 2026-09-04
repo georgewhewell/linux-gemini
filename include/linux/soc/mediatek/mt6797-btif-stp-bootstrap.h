@@ -24,11 +24,14 @@ struct mtk_wmt_match;
 
 /*
  * enable_irq() is called only after PIO mandatory setup installed its RX
- * consumer; it must make an already-requested IRQ deliverable. close() must
- * synchronously mask that Linux IRQ before fencing the associated PIO lease.
+ * consumer; it must make an already-requested IRQ deliverable. If supplied,
+ * wake() then emits the transport's hardware wake pulse before the first WMT
+ * exchange. close() must synchronously mask that Linux IRQ before fencing the
+ * associated PIO lease.
  */
 struct mt6797_btif_stp_bootstrap_ops {
 	int (*enable_irq)(void *context);
+	int (*wake)(void *context);
 	void (*close)(void *context);
 	void *context;
 };
@@ -67,6 +70,14 @@ mt6797_btif_stp_bootstrap_create_owned(const struct mt6797_btif_pio_lease *pio_l
  */
 const struct mt6797_consys_stp_session_lease *
 mt6797_btif_stp_bootstrap_run(struct mt6797_btif_stp_bootstrap *bootstrap);
+
+/*
+ * Run the same bounded handoff for an aggregate-owned session.  This entry is
+ * valid only for an object returned by create_owned(); ownership of the
+ * session and its promoted lease remains with the aggregate.
+ */
+const struct mt6797_consys_stp_session_lease *
+mt6797_btif_stp_bootstrap_run_owned(struct mt6797_btif_stp_bootstrap *bootstrap);
 
 /*
  * As mt6797_btif_stp_bootstrap_run(), but runs @stage after the exact

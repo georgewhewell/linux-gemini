@@ -16,19 +16,24 @@ current root-owned, read-only Stage-A sysfs check found no device under
 produced no authoritative capacity, voltage, charge-state, or external-power
 datum.  It is therefore not qualifying power evidence.
 
-The full cellular candidate also records that the Gemini battery connector
-must be repaired before the physically disconnected device is used.  The
-read-only BQ observer explicitly forbids treating its identity/status fields
-as battery-capacity or external-power proof.  Relevant retained evidence is:
+The full cellular candidate records the earlier broken-connector state, but
+the owner later reported reconnecting it and historical battery telemetry
+corroborated that reconnection.  Its current state is unknown, not proved
+unrepaired.  The read-only BQ observer explicitly forbids treating its
+identity/status fields as battery-capacity or external-power proof.  The
+reconciled power decision is in
+`tools/gemini/README.mt6797-power-sufficiency-20260904.md`.  Relevant retained
+evidence is:
 
 - `/mnt/Home/src/nixos-gemini/handoff/restore-stagea-20260904/device-feature-baseline.txt`
 - `/mnt/Home/src/nixos-gemini/handoff/restore-stagea-20260904/device-baseline-and-pstore.txt`
 - `/mnt/Home/src/nixos-gemini/repo-g3-p22/research/mt6797-bq25896-routing-evidence/README.md`
 - `/mnt/Home/src/nixos-gemini/repo-cellular-reconstruction/campaign/06-cellular-modem.md`
 
-Keep every gate closed until the battery connector/power condition is repaired
-and a separate, independently trustworthy check establishes sufficient battery
-or stable external power for the entire candidate, timeout/reset, and Stage-A
+Keep every gate closed until the battery connector/power condition is freshly
+qualified (and physically repaired if that check fails) and a separate,
+independently trustworthy check establishes sufficient battery and stable
+external power for the entire candidate, timeout/reset, and Stage-A
 rollback/readback interval.  Reconfirm exact accepted Stage-A p22 SHA-256
 `1b5f808e494f8c91ec5feedcbce89bf018271b30b87ce3910082cd298d8817dc`
 immediately before any later transaction.  Absence or ambiguity is a stop, not
@@ -118,9 +123,9 @@ eUICC remain absent and closed.  Evidence:
 The later full cellular source/package tips
 `9b501ccd5347019e056f7b3153ba95957bbcd6c0` /
 `d2c9a6adafbf2eebe54671b588b475d21714da40` are not an alternative gate.
-Firmware identities are unset, hardware is untested, the battery connector is
-unrepaired, and the candidate adds transport, IRQ/NAPI, firmware, SIM/raw-IP
-and optional eUICC surfaces.  Keep it closed.
+Firmware identities are unset, hardware is untested, current power sufficiency
+is unqualified, and the candidate adds transport, IRQ/NAPI, firmware,
+SIM/raw-IP and optional eUICC surfaces.  Keep it closed.
 
 ### 4. G3 fixed-low Panfrost no-job gate
 

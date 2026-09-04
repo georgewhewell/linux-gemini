@@ -66,7 +66,8 @@ void mt6797_dvfsp_cspm_access_assert_held(
 
 int mt6797_dvfsp_cspm_access_transaction(
 	struct mt6797_dvfsp_cspm_access *access, void __iomem *base,
-	mt6797_dvfsp_cspm_access_fn operation, void *context)
+	mt6797_dvfsp_cspm_access_fn operation, void *context,
+	mt6797_dvfsp_cspm_terminal_fn terminal, void *terminal_context)
 {
 	int ret;
 
@@ -75,10 +76,18 @@ int mt6797_dvfsp_cspm_access_transaction(
 
 	mt6797_dvfsp_cspm_access_lock(access);
 	if (mt6797_dvfsp_cspm_access_read(access) !=
-	    MT6797_DVFSP_PERMISSION_READY)
+	    MT6797_DVFSP_PERMISSION_READY) {
 		ret = -EHOSTDOWN;
-	else
+	} else {
 		ret = operation(base, context);
+		if (ret == -EUCLEAN) {
+			/* Fence every later admission before publishing the fault. */
+			mt6797_dvfsp_cspm_access_set(
+				access, MT6797_DVFSP_PERMISSION_FAULTED);
+			if (terminal)
+				terminal(terminal_context);
+		}
+	}
 	mt6797_dvfsp_cspm_access_unlock(access);
 
 	return ret;

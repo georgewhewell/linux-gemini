@@ -1954,8 +1954,7 @@ err_lease:
 	if (lease_active) {
 		lease_ret = mt6797_dvfsp_handoff_end_i2c6_transfer(
 			i2c->dvfsp_handoff, &lease, ret);
-		if (!ret && lease_ret)
-			ret = lease_ret;
+		ret = mt6797_dvfsp_i2c6_merge_transfer_result(ret, lease_ret);
 	}
 
 	return ret;

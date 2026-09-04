@@ -24,6 +24,16 @@ struct mt6797_dvfsp_i2c6_lease {
 	u64 cookie;
 };
 
+static inline int
+mt6797_dvfsp_i2c6_merge_transfer_result(int transfer_result, int lease_result)
+{
+	/* Lease teardown is a 0-or-negative status, never a transfer count. */
+	if (transfer_result < 0 || lease_result >= 0)
+		return transfer_result;
+
+	return lease_result;
+}
+
 /*
  * This private contract describes an authoritative state owner. It is not
  * an OPP, clock, regulator, or userspace ABI. No owner is registered by

@@ -24,6 +24,8 @@ struct mt6797_dvfsp_cspm_access {
 };
 
 typedef int (*mt6797_dvfsp_cspm_access_fn)(void __iomem *base, void *context);
+/* Called under the access lock after an -EUCLEAN result has been fenced. */
+typedef void (*mt6797_dvfsp_cspm_terminal_fn)(void *context);
 
 void mt6797_dvfsp_cspm_access_init(struct mt6797_dvfsp_cspm_access *access);
 int mt6797_dvfsp_cspm_access_read(const struct mt6797_dvfsp_cspm_access *access);
@@ -37,6 +39,7 @@ void mt6797_dvfsp_cspm_access_assert_held(
 	struct mt6797_dvfsp_cspm_access *access);
 int mt6797_dvfsp_cspm_access_transaction(
 	struct mt6797_dvfsp_cspm_access *access, void __iomem *base,
-	mt6797_dvfsp_cspm_access_fn operation, void *context);
+	mt6797_dvfsp_cspm_access_fn operation, void *context,
+	mt6797_dvfsp_cspm_terminal_fn terminal, void *terminal_context);
 
 #endif /* __MT6797_DVFSP_CSPM_ACCESS_H */

@@ -24,6 +24,7 @@ properties:
           - enum:
               - mediatek,mt2712-uart-dma
               - mediatek,mt6795-uart-dma
+              - mediatek,mt6797-uart-dma
               - mediatek,mt8173-uart-dma
               - mediatek,mt8183-uart-dma
               - mediatek,mt8365-uart-dma

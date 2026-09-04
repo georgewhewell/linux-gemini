@@ -57,11 +57,13 @@ properties:
     items:
       - description: Application-processor CCIF interface clock
       - description: Modem CCIF interface clock
+      - description: Application-processor CLDMA functional clock
 
   clock-names:
     items:
       - const: ccif-ap
       - const: ccif-md
+      - const: cldma
 
   resets:
     items:
@@ -84,8 +86,8 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
       Phandle to the MT6797 infrastructure syscon. The ownership core checks
-      the read-only clock-gate status before observing CCIF registers and does
-      not change any gate.
+      the read-only clock-gate status before observing inherited state. The
+      functional CCIF and CLDMA gates are owned through the clocks property.
 
   memory-region:
     description:
@@ -140,8 +142,9 @@ examples:
                      <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
         interrupt-names = "cldma", "ccif", "wdt";
         clocks = <&infracfg CLK_INFRA_CCIF_AP>,
-                 <&infracfg CLK_INFRA_CCIF_MD>;
-        clock-names = "ccif-ap", "ccif-md";
+                 <&infracfg CLK_INFRA_CCIF_MD>,
+                 <&infracfg CLK_INFRA_CLDMA>;
+        clock-names = "ccif-ap", "ccif-md", "cldma";
         resets = <&infracfg MT6797_INFRA_CLDMA_RST>,
                  <&infracfg MT6797_INFRA_CLDMA_AO_RST>;
         reset-names = "cldma-pdn", "cldma-ao";

@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA Cortex-A72 PSCI CPU_ON gate.
+ *
+ * Apply after mt6797-gemini-a72-resource-preflight.dtso in a volatile FIT.
+ * maxcpus=8 prevents the generic PSCI path from reaching CPU8/9 during SMP
+ * boot, before the platform resource gate is installed.  The gate remains
+ * fail-closed because the secure SRAM regulator cannot report or restore its
+ * enable state.  A later write to CPU8/9's sysfs online file therefore stops
+ * at CPUHP_BP_PREPARE_DYN with -EOPNOTSUPP, before PSCI CPU_ON.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&{/chosen} {
+	bootargs = "maxcpus=8 regulator_ignore_unused";
+};
+
+&cpu8 {
+	enable-method = "psci";
+	status = "disabled";
+};
+
+&cpu9 {
+	enable-method = "psci";
+	status = "disabled";
+};

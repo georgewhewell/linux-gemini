@@ -53,6 +53,12 @@ mt6797-gemini-pda-wifi-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-wifi.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-wifi.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-a72-cpu-on-gate.dtbo
+mt6797-gemini-pda-a72-cpu-on-gate-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-a72-resource-preflight.dtbo \
+	mt6797-gemini-a72-cpu-on-gate.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-a72-cpu-on-gate.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-consys-identity.dtbo
 mt6797-gemini-pda-consys-identity-dtbs := \
 	mt6797-gemini-pda.dtb \

@@ -443,6 +443,8 @@
 		regulator-name = "vgpu";
 		regulator-min-microvolt = <600000>;
 		regulator-max-microvolt = <1393750>;
+		regulator-ramp-delay = <32000>;
+		regulator-enable-ramp-delay = <350>;
 		status = "disabled";
 	};
 };

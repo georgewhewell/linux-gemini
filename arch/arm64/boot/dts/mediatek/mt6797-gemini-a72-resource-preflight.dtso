@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA Cortex-A72 resource preflight.
+ *
+ * This is a volatile FIT-only observation candidate.  It makes only the
+ * providers needed to read the dormant MP2 resource state available.  CPU8
+ * and CPU9 remain disabled, no OPP is exposed, and the preflight driver has
+ * no CPU_ON or hardware-mutation operation.
+ *
+ * regulator_ignore_unused is part of the safety contract: it prevents the
+ * regulator core from changing an already-enabled, otherwise-unused BUCKB
+ * after its read-only identity and state capture.  The BUCKB voltage bounds
+ * are removed from this overlay so provider registration cannot normalize
+ * an out-of-range firmware setting; the preflight rejects it instead.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&{/chosen} {
+	bootargs = "regulator_ignore_unused";
+};
+
+&cpuclk {
+	status = "okay";
+};
+
+&cluster0_opp {
+	status = "disabled";
+};
+
+&cluster1_opp {
+	status = "disabled";
+};
+
+&da9214 {
+	status = "okay";
+};
+
+&da9214_bucka {
+	status = "disabled";
+};
+
+&da9214_buckb {
+	/delete-property/ regulator-min-microvolt;
+	/delete-property/ regulator-max-microvolt;
+	status = "okay";
+};
+
+&vsram_big {
+	status = "okay";
+};
+
+&a72_power {
+	status = "okay";
+};
+
+&cpu8 {
+	status = "disabled";
+};
+
+&cpu9 {
+	status = "disabled";
+};

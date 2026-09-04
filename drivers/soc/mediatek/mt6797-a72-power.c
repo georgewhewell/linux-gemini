@@ -9,15 +9,19 @@
 
 #include <linux/clk.h>
 #include <linux/cpu.h>
+#include <linux/cpuhotplug.h>
 #include <linux/cpumask.h>
 #include <linux/device.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/psci.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
+#include <linux/smp.h>
+#include <uapi/linux/psci.h>
 
 #include "mt6797-a72-power.h"
 
@@ -25,6 +29,10 @@
 #define MT6797_A72_VPROC_MAX_UV		1200000
 #define MT6797_A72_SRAM_MIN_UV		600000
 #define MT6797_A72_SRAM_MAX_UV		1200000
+#define MT6797_A72_CPU_COUNT		2
+#define MT6797_A72_FIRST_CPU		8
+#define MT6797_A72_FIRST_MPIDR		0x200
+#define MT6797_A72_BOOT_CPU_LIMIT	8
 
 struct mt6797_a72_preflight {
 	struct regulator *vproc_big;
@@ -32,17 +40,25 @@ struct mt6797_a72_preflight {
 	struct reset_control *pwrap_reset;
 	struct clk *mp2_clk;
 	struct regmap *spm;
-	unsigned int cpus[2];
+	unsigned int cpus[MT6797_A72_CPU_COUNT];
+	u64 mpidrs[MT6797_A72_CPU_COUNT];
 	cpumask_t cpu_mask;
+	struct hlist_node cpuhp_node;
+	int cpuhp_state;
+	int admission_ret;
+	bool psci_gate;
 };
 
 static int mt6797_a72_preflight_parse_cpus(struct device *dev,
 					   struct mt6797_a72_preflight *preflight)
 {
 	struct device_node *cpu_node;
+	const char *enable_method;
 	int count;
 	int cpu;
 	int i;
+	bool psci_gate = true;
+	bool this_psci;
 
 	count = of_count_phandle_with_args(dev->of_node, "cpus", NULL);
 	if (count != ARRAY_SIZE(preflight->cpus))
@@ -57,15 +73,125 @@ static int mt6797_a72_preflight_parse_cpus(struct device *dev,
 					     "failed to parse CPU phandle %d\n", i);
 
 		cpu = of_cpu_node_to_id(cpu_node);
-		of_node_put(cpu_node);
 		if (cpu < 0 || cpu >= nr_cpu_ids)
-			return dev_err_probe(dev, -EINVAL,
-					     "invalid logical CPU phandle %d\n", i);
+			goto invalid_cpu;
+		if (cpu != MT6797_A72_FIRST_CPU + i)
+			goto invalid_cpu;
+
+		preflight->mpidrs[i] = of_get_cpu_hwid(cpu_node, 0);
+		if (preflight->mpidrs[i] != MT6797_A72_FIRST_MPIDR + i)
+			goto invalid_cpu;
+
+		if (of_property_read_string(cpu_node, "enable-method",
+					    &enable_method))
+			goto invalid_cpu;
+		if (strcmp(enable_method, "psci") &&
+		    strcmp(enable_method, "mediatek,mt6797-psci"))
+			goto invalid_cpu;
+		this_psci = !strcmp(enable_method, "psci");
+		if (i && this_psci != psci_gate)
+			goto invalid_cpu;
+		psci_gate = this_psci;
+
+		of_node_put(cpu_node);
 		if (cpumask_test_and_set_cpu(cpu, &preflight->cpu_mask))
 			return dev_err_probe(dev, -EINVAL,
 					     "duplicate CPU phandle %d\n", i);
 
 		preflight->cpus[i] = cpu;
+		continue;
+
+invalid_cpu:
+		of_node_put(cpu_node);
+		return dev_err_probe(dev, -EINVAL,
+				     "CPU phandle %d is not CPU%u/MPIDR 0x%llx\n",
+				     i, MT6797_A72_FIRST_CPU + i,
+				     (unsigned long long)
+				     (MT6797_A72_FIRST_MPIDR + i));
+	}
+	preflight->psci_gate = psci_gate;
+
+	return 0;
+}
+
+static int
+mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
+{
+	struct mt6797_a72_preflight *preflight;
+
+	preflight = hlist_entry(node, struct mt6797_a72_preflight, cpuhp_node);
+	if (!cpumask_test_cpu(cpu, &preflight->cpu_mask))
+		return 0;
+
+	/*
+	 * This is the future transaction boundary immediately before PSCI
+	 * CPU_ON.  Never open it from the stale probe-time snapshot: a live
+	 * backend must re-snapshot and prepare the resources here, and its
+	 * teardown callback must abort them if a later bring-up state fails.
+	 */
+	return preflight->admission_ret;
+}
+
+static int mt6797_a72_install_cpu_on_gate(struct device *dev,
+					  struct mt6797_a72_preflight *preflight,
+					  int affinity[MT6797_A72_CPU_COUNT],
+					  u32 *version)
+{
+	int ret;
+	int i;
+
+	if (setup_max_cpus != MT6797_A72_BOOT_CPU_LIMIT)
+		return dev_err_probe(dev, -EPERM,
+				     "PSCI gate requires maxcpus=8, got %u\n",
+				     setup_max_cpus);
+	if (!cpu_possible(preflight->cpus[0]) ||
+	    !cpu_possible(preflight->cpus[1]) ||
+	    !cpu_present(preflight->cpus[0]) ||
+	    !cpu_present(preflight->cpus[1]))
+		return dev_err_probe(dev, -ENODEV,
+				     "CPU8/9 must be possible and present\n");
+
+	if (!psci_ops.get_version || !psci_ops.cpu_on ||
+	    !psci_ops.affinity_info)
+		return dev_err_probe(dev, -EOPNOTSUPP,
+				     "required PSCI operations are unavailable\n");
+
+	*version = psci_ops.get_version();
+	if ((s32)*version < 0)
+		return dev_err_probe(dev, (s32)*version,
+				     "failed to read PSCI version\n");
+	if (PSCI_VERSION_MAJOR(*version) == 0 &&
+	    PSCI_VERSION_MINOR(*version) < 2)
+		return dev_err_probe(dev, -EOPNOTSUPP,
+				     "PSCI v0.2 or newer is required\n");
+
+	for (i = 0; i < MT6797_A72_CPU_COUNT; i++) {
+		affinity[i] = psci_ops.affinity_info(preflight->mpidrs[i], 0);
+		if (affinity[i] < 0)
+			return dev_err_probe(dev, affinity[i],
+					     "PSCI does not recognize CPU%u\n",
+					     preflight->cpus[i]);
+		if (affinity[i] != PSCI_0_2_AFFINITY_LEVEL_OFF)
+			return dev_err_probe(dev, -EBUSY,
+					     "CPU%u PSCI affinity is not off: %d\n",
+					     preflight->cpus[i], affinity[i]);
+	}
+
+	preflight->cpuhp_state =
+		cpuhp_setup_state_multi(CPUHP_BP_PREPARE_DYN,
+					"soc/mediatek:mt6797-a72-prepare",
+					mt6797_a72_cpu_on_prepare, NULL);
+	if (preflight->cpuhp_state < 0)
+		return dev_err_probe(dev, preflight->cpuhp_state,
+				     "failed to register CPU_ON preparation state\n");
+
+	ret = cpuhp_state_add_instance_nocalls(preflight->cpuhp_state,
+					       &preflight->cpuhp_node);
+	if (ret) {
+		cpuhp_remove_multi_state(preflight->cpuhp_state);
+		preflight->cpuhp_state = CPUHP_INVALID;
+		return dev_err_probe(dev, ret,
+				     "failed to install CPU_ON preparation gate\n");
 	}
 
 	return 0;
@@ -86,11 +212,14 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	int sram_uv;
 	int pwrap_reset_asserted;
 	int transaction_ret;
+	int affinity[MT6797_A72_CPU_COUNT] = { };
+	u32 psci_version = 0;
 	int ret;
 
 	preflight = devm_kzalloc(dev, sizeof(*preflight), GFP_KERNEL);
 	if (!preflight)
 		return -ENOMEM;
+	preflight->cpuhp_state = CPUHP_INVALID;
 
 	ret = mt6797_a72_preflight_parse_cpus(dev, preflight);
 	if (ret)
@@ -204,6 +333,14 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	if (transaction_ret != -EOPNOTSUPP)
 		return dev_err_probe(dev, -EUCLEAN,
 				     "A72 transaction gate unexpectedly opened\n");
+	preflight->admission_ret = transaction_ret;
+
+	if (preflight->psci_gate) {
+		ret = mt6797_a72_install_cpu_on_gate(dev, preflight,
+						     affinity, &psci_version);
+		if (ret)
+			return ret;
+	}
 
 	platform_set_drvdata(pdev, preflight);
 	dev_info(dev,
@@ -211,8 +348,28 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		 preflight->cpus[0], preflight->cpus[1], vproc_uv,
 		 vproc_enabled, sram_uv, sram_enabled, mp2_rate,
 		 pwrap_reset_asserted, mp2_power, buck_iso, plan.count);
+	if (preflight->psci_gate)
+		dev_info(dev,
+			 "cpu-on-gate-v1: CPU8-mpidr=0x%llx CPU9-mpidr=0x%llx PSCI=%u.%u affinity8=off affinity9=off hp-state=%d admission=-EOPNOTSUPP CPU_ON=blocked\n",
+			 (unsigned long long)preflight->mpidrs[0],
+			 (unsigned long long)preflight->mpidrs[1],
+			 PSCI_VERSION_MAJOR(psci_version),
+			 PSCI_VERSION_MINOR(psci_version),
+			 preflight->cpuhp_state);
 
 	return 0;
+}
+
+static void mt6797_a72_preflight_remove(struct platform_device *pdev)
+{
+	struct mt6797_a72_preflight *preflight = platform_get_drvdata(pdev);
+
+	if (preflight->cpuhp_state == CPUHP_INVALID)
+		return;
+
+	cpuhp_state_remove_instance_nocalls(preflight->cpuhp_state,
+					    &preflight->cpuhp_node);
+	cpuhp_remove_multi_state(preflight->cpuhp_state);
 }
 
 static const struct of_device_id mt6797_a72_preflight_of_match[] = {
@@ -223,6 +380,7 @@ MODULE_DEVICE_TABLE(of, mt6797_a72_preflight_of_match);
 
 static struct platform_driver mt6797_a72_preflight_driver = {
 	.probe = mt6797_a72_preflight_probe,
+	.remove = mt6797_a72_preflight_remove,
 	.driver = {
 		.name = "mt6797-a72-preflight",
 		.of_match_table = mt6797_a72_preflight_of_match,
@@ -231,5 +389,5 @@ static struct platform_driver mt6797_a72_preflight_driver = {
 };
 builtin_platform_driver(mt6797_a72_preflight_driver);
 
-MODULE_DESCRIPTION("MediaTek MT6797 Cortex-A72 resource preflight");
+MODULE_DESCRIPTION("MediaTek MT6797 Cortex-A72 resource preflight and CPU_ON gate");
 MODULE_LICENSE("GPL");

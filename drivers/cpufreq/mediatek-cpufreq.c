@@ -50,6 +50,13 @@ struct mtk_cpu_dvfs_info {
 	int intermediate_voltage;
 	bool need_voltage_tracking;
 	int vproc_on_boot;
+	int boot_vproc;
+	int boot_vsram;
+	int rail_vproc_before;
+	int rail_vsram_before;
+	bool boot_vote_attempted;
+	bool boot_vote_seeded;
+	bool opp_nb_registered;
 	int pre_vproc;
 	/* Avoid race condition for regulators between notify and policy */
 	struct mutex reg_lock;
@@ -398,7 +405,7 @@ static int mtk_cpu_dvfs_info_init(struct mtk_cpu_dvfs_info *info, int cpu)
 {
 	struct device *cpu_dev;
 	struct dev_pm_opp *opp;
-	unsigned long rate;
+	unsigned long rate, boot_rate;
 	int ret;
 
 	cpu_dev = get_cpu_device(cpu);
@@ -511,14 +518,47 @@ static int mtk_cpu_dvfs_info_init(struct mtk_cpu_dvfs_info *info, int cpu)
 
 	mutex_init(&info->reg_lock);
 	info->current_freq = clk_get_rate(info->cpu_clk);
+	if (!info->current_freq) {
+		ret = dev_err_probe(cpu_dev, -EINVAL,
+				    "cpu%d: invalid boot clock rate\n", cpu);
+		goto out_disable_inter_clock;
+	}
+
+	if (info->soc_data->shared_regulators) {
+		if (!info->sram_reg) {
+			ret = dev_err_probe(cpu_dev, -ENODEV,
+					    "cpu%d: shared rail lacks sram regulator\n",
+					    cpu);
+			goto out_disable_inter_clock;
+		}
+
+		boot_rate = info->current_freq;
+		opp = dev_pm_opp_find_freq_exact(cpu_dev, boot_rate, true);
+		if (IS_ERR(opp)) {
+			ret = dev_err_probe(cpu_dev, PTR_ERR(opp),
+					    "cpu%d: boot rate %lu has no enabled OPP\n",
+					    cpu, info->current_freq);
+			goto out_disable_inter_clock;
+		}
+
+		info->boot_vproc = dev_pm_opp_get_voltage(opp);
+		dev_pm_opp_put(opp);
+		if (info->boot_vproc <= 0 ||
+		    info->boot_vproc > info->soc_data->proc_max_volt) {
+			ret = dev_err_probe(cpu_dev, -ERANGE,
+					    "cpu%d: invalid boot OPP voltage %d\n",
+					    cpu, info->boot_vproc);
+			goto out_disable_inter_clock;
+		}
+
+		info->boot_vsram = clamp(info->boot_vproc +
+					 info->soc_data->min_volt_shift,
+					 info->soc_data->sram_min_volt,
+					 info->soc_data->sram_max_volt);
+	}
 
 	info->opp_cpu = cpu;
 	info->opp_nb.notifier_call = mtk_cpufreq_opp_notifier;
-	ret = dev_pm_opp_register_notifier(cpu_dev, &info->opp_nb);
-	if (ret) {
-		dev_err_probe(cpu_dev, ret, "cpu%d: failed to register opp notifier\n", cpu);
-		goto out_disable_inter_clock;
-	}
 
 	/*
 	 * If SRAM regulator is present, software "voltage tracking" is needed
@@ -575,6 +615,8 @@ out_put_cci_dev:
 
 static void mtk_cpu_dvfs_info_release(struct mtk_cpu_dvfs_info *info)
 {
+	if (info->opp_nb_registered)
+		dev_pm_opp_unregister_notifier(info->cpu_dev, &info->opp_nb);
 	regulator_disable(info->proc_reg);
 	regulator_put(info->proc_reg);
 	if (info->sram_reg) {
@@ -586,9 +628,237 @@ static void mtk_cpu_dvfs_info_release(struct mtk_cpu_dvfs_info *info)
 	clk_disable_unprepare(info->inter_clk);
 	clk_put(info->inter_clk);
 	dev_pm_opp_of_cpumask_remove_table(&info->cpus);
-	dev_pm_opp_unregister_notifier(info->cpu_dev, &info->opp_nb);
 	if (info->soc_data->ccifreq_supported)
 		put_device(info->cci_dev);
+}
+
+static int mtk_cpufreq_read_shared_rails(struct mtk_cpu_dvfs_info *info,
+					 int *vproc, int *vsram)
+{
+	*vproc = regulator_get_voltage(info->proc_reg);
+	if (*vproc < 0)
+		return *vproc;
+
+	*vsram = regulator_get_voltage(info->sram_reg);
+	if (*vsram < 0)
+		return *vsram;
+
+	return 0;
+}
+
+static void mtk_cpufreq_restore_vote(struct mtk_cpu_dvfs_info *info, bool sram,
+				     int *first_error)
+{
+	struct regulator *reg = sram ? info->sram_reg : info->proc_reg;
+	int max_voltage = sram ? info->soc_data->sram_max_volt :
+				 info->soc_data->proc_max_volt;
+	int voltage = sram ? info->rail_vsram_before :
+			     info->rail_vproc_before;
+	int ret;
+
+	if (!info->boot_vote_attempted)
+		return;
+
+	ret = regulator_set_voltage(reg, voltage, max_voltage);
+	if (ret && !*first_error)
+		*first_error = ret;
+}
+
+static int mtk_cpufreq_restore_shared_boot_votes(struct device *dev)
+{
+	struct mtk_cpu_dvfs_info *info;
+	int initial_vproc = 0, initial_vsram = 0;
+	int max_boot_vproc = 0;
+	int vproc, vsram;
+	int ret = 0;
+	bool attempted = false;
+
+	list_for_each_entry(info, &dvfs_info_list, list_head) {
+		if (!info->soc_data->shared_regulators ||
+		    !info->boot_vote_attempted)
+			continue;
+
+		if (!attempted) {
+			initial_vproc = info->rail_vproc_before;
+			initial_vsram = info->rail_vsram_before;
+			attempted = true;
+		}
+		max_boot_vproc = max(max_boot_vproc, info->boot_vproc);
+	}
+
+	if (!attempted)
+		return 0;
+
+	/*
+	 * Restore the pre-probe physical state while every consumer handle is
+	 * still owned.  Lower Vproc before Vsram; raise Vsram before Vproc.
+	 */
+	if (max_boot_vproc >= initial_vproc) {
+		list_for_each_entry(info, &dvfs_info_list, list_head)
+			mtk_cpufreq_restore_vote(info, false, &ret);
+		list_for_each_entry(info, &dvfs_info_list, list_head)
+			mtk_cpufreq_restore_vote(info, true, &ret);
+	} else {
+		list_for_each_entry(info, &dvfs_info_list, list_head)
+			mtk_cpufreq_restore_vote(info, true, &ret);
+		list_for_each_entry(info, &dvfs_info_list, list_head)
+			mtk_cpufreq_restore_vote(info, false, &ret);
+	}
+
+	list_for_each_entry(info, &dvfs_info_list, list_head) {
+		int read_ret;
+
+		if (!info->soc_data->shared_regulators)
+			continue;
+
+		read_ret = mtk_cpufreq_read_shared_rails(info, &vproc, &vsram);
+		if (read_ret || vproc != initial_vproc ||
+		    vsram != initial_vsram) {
+			dev_err(dev, "shared rail rollback is unverifiable\n");
+			return -EUCLEAN;
+		}
+	}
+
+	if (ret) {
+		dev_err(dev, "shared rail rollback reported an error: %d\n", ret);
+		return -EUCLEAN;
+	}
+
+	list_for_each_entry(info, &dvfs_info_list, list_head) {
+		if (!info->soc_data->shared_regulators)
+			continue;
+		info->pre_vproc = initial_vproc;
+		info->boot_vote_attempted = false;
+		info->boot_vote_seeded = false;
+	}
+
+	return 0;
+}
+
+static int mtk_cpufreq_seed_shared_boot_votes(struct device *dev)
+{
+	struct mtk_cpu_dvfs_info *info, *next;
+	int initial_vproc = 0, initial_vsram = 0;
+	int max_boot_vproc = 0, max_boot_vsram = 0;
+	int proc_max_volt = 0, sram_max_volt = 0;
+	int vproc, vsram;
+	int ret, rollback_ret;
+	bool first = true;
+
+	list_for_each_entry(info, &dvfs_info_list, list_head) {
+		if (!info->soc_data->shared_regulators)
+			continue;
+
+		ret = mtk_cpufreq_read_shared_rails(info, &vproc, &vsram);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "failed to read shared boot rails\n");
+
+		if (first) {
+			initial_vproc = vproc;
+			initial_vsram = vsram;
+			proc_max_volt = info->soc_data->proc_max_volt;
+			sram_max_volt = info->soc_data->sram_max_volt;
+			first = false;
+		} else if (vproc != initial_vproc || vsram != initial_vsram) {
+			return dev_err_probe(dev, -EUCLEAN,
+					     "shared rail consumers disagree at boot\n");
+		}
+
+		info->rail_vproc_before = initial_vproc;
+		info->rail_vsram_before = initial_vsram;
+		max_boot_vproc = max(max_boot_vproc, info->boot_vproc);
+		max_boot_vsram = max(max_boot_vsram, info->boot_vsram);
+	}
+
+	if (first)
+		return dev_err_probe(dev, -ENODEV,
+				     "no shared-rail CPU policy found\n");
+	if (initial_vproc <= 0 || initial_vsram <= 0 ||
+	    initial_vproc > proc_max_volt || initial_vsram > sram_max_volt)
+		return dev_err_probe(dev, -ERANGE,
+				     "shared boot rails exceed supported limits\n");
+
+	/* Seed the highest requirement first so no later vote can undercut it. */
+	for (;;) {
+		next = NULL;
+		list_for_each_entry(info, &dvfs_info_list, list_head) {
+			if (!info->soc_data->shared_regulators ||
+			    info->boot_vote_attempted)
+				continue;
+			if (!next || info->boot_vproc > next->boot_vproc ||
+			    (info->boot_vproc == next->boot_vproc &&
+			     info->boot_vsram > next->boot_vsram))
+				next = info;
+		}
+
+		if (!next)
+			break;
+
+		next->boot_vote_attempted = true;
+		ret = mtk_cpufreq_set_voltage(next, next->boot_vproc);
+		if (ret) {
+			dev_err(dev, "cpu%d: failed to seed shared boot vote: %d\n",
+				next->opp_cpu, ret);
+			goto rollback;
+		}
+		next->boot_vote_seeded = true;
+	}
+
+	list_for_each_entry(info, &dvfs_info_list, list_head) {
+		if (!info->soc_data->shared_regulators)
+			continue;
+
+		ret = mtk_cpufreq_read_shared_rails(info, &vproc, &vsram);
+		if (ret)
+			goto rollback;
+		if (!info->boot_vote_seeded || vproc < max_boot_vproc ||
+		    vproc > proc_max_volt || vsram < max_boot_vsram ||
+		    vsram > sram_max_volt) {
+			ret = -ERANGE;
+			dev_err(dev,
+				"shared boot rails do not satisfy all CPU OPPs\n");
+			goto rollback;
+		}
+	}
+
+	return 0;
+
+rollback:
+	rollback_ret = mtk_cpufreq_restore_shared_boot_votes(dev);
+	if (rollback_ret)
+		return -EUCLEAN;
+
+	return ret;
+}
+
+static int mtk_cpufreq_register_opp_notifiers(struct device *dev)
+{
+	struct mtk_cpu_dvfs_info *info;
+	int ret;
+
+	list_for_each_entry(info, &dvfs_info_list, list_head) {
+		ret = dev_pm_opp_register_notifier(info->cpu_dev, &info->opp_nb);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "cpu%d: failed to register OPP notifier\n",
+					     info->opp_cpu);
+		info->opp_nb_registered = true;
+	}
+
+	return 0;
+}
+
+static void mtk_cpufreq_unregister_opp_notifiers(void)
+{
+	struct mtk_cpu_dvfs_info *info;
+
+	list_for_each_entry(info, &dvfs_info_list, list_head) {
+		if (!info->opp_nb_registered)
+			continue;
+		dev_pm_opp_unregister_notifier(info->cpu_dev, &info->opp_nb);
+		info->opp_nb_registered = false;
+	}
 }
 
 static int mtk_cpufreq_init(struct cpufreq_policy *policy)
@@ -680,13 +950,29 @@ static int mtk_cpufreq_probe(struct platform_device *pdev)
 		list_add(&info->list_head, &dvfs_info_list);
 	}
 
+	if (data->shared_regulators) {
+		ret = mtk_cpufreq_seed_shared_boot_votes(&pdev->dev);
+		if (ret)
+			goto release_dvfs_info_list;
+	}
+
+	ret = mtk_cpufreq_register_opp_notifiers(&pdev->dev);
+	if (ret)
+		goto restore_shared_boot_votes;
+
 	ret = cpufreq_register_driver(&mtk_cpufreq_driver);
 	if (ret) {
 		dev_err_probe(&pdev->dev, ret, "failed to register mtk cpufreq driver\n");
-		goto release_dvfs_info_list;
+		goto restore_shared_boot_votes;
 	}
 
 	return 0;
+
+restore_shared_boot_votes:
+	mtk_cpufreq_unregister_opp_notifiers();
+	if (data->shared_regulators &&
+	    mtk_cpufreq_restore_shared_boot_votes(&pdev->dev))
+		ret = -EUCLEAN;
 
 release_dvfs_info_list:
 	list_for_each_entry_safe(info, tmp, &dvfs_info_list, list_head) {

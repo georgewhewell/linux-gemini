@@ -41,10 +41,11 @@ These entries are immutable identities, not a run order or schedule.
 | Lane | Source commit | Package commit | Candidate SHA-256 | Disposition |
 | --- | --- | --- | --- | --- |
 | A53 registration/calibration observation R2 | `f2fc2447a7465b96b9816487d6c36074cf2ca4fb` | `5dca07f1fd7a83dcbf8b905353725fb85619da3f` -> `8a62fff69574a8555baca600baf898fa2d02bd4c` | `e123c1984d46ee7609a98ac087232dfb13ac9e8d55f6540c94c1ee2e037c0a56` | Hardware FAIL; exact Stage-A rollback/readback complete; retired/no-retry; CSPM ownership remediation required |
-| MD1 post-vector observer R1 | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `7027acfa7ad57242a0bf930559088bfc11a8f285` | `76387822474c35d55fb4804b670166e5279c239d965418481733f6998c2c1c16` | Reminted offline package and rendered BusyBox-ash recovery checks: PASS; hardware not run; independent live-readiness audit required |
-| MD1 post-vector observer R2 | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `2af050b21a6382297a765d23f4e255cc261d036d` -> `5bcf4dfa63299d7686a111447f155b27043d1265` | `296d5731271e3511624568056b7d7e6f78d910332a19b0e187adffa35dbb57c4` | R1 parser regression remediated; full offline build/fixtures PASS; hardware not run; independent audit required |
+| MD1 post-vector observer R1 | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `7027acfa7ad57242a0bf930559088bfc11a8f285` | `76387822474c35d55fb4804b670166e5279c239d965418481733f6998c2c1c16` | Independent audit BLOCKED before hardware: omitted prior lexical hardening; retired/no-retry |
+| MD1 post-vector observer R2 | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `2af050b21a6382297a765d23f4e255cc261d036d` -> `5bcf4dfa63299d7686a111447f155b27043d1265` | `296d5731271e3511624568056b7d7e6f78d910332a19b0e187adffa35dbb57c4` | Independent audit BLOCKED before hardware: manifest schema/identity mismatch and incomplete fail-closed subject grammar; retired/no-retry |
 | G3 fixed-low Panfrost no-job R1 | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` -> `a81879abb63a7ad7c40bc946b3c95bf1657edef7` -> `02b36ca602774b032e633bbfec103ea6a1c4baec` | `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b` | Hardware FAIL; exact Stage-A rollback/readback/pstore complete; retired/no-retry; efuse/OPP and MFG-domain remediation required |
-| G3 fixed-low Panfrost no-job R2 | `f3f6dbb4ec9b4f95854c2a3df5a2c842559116b4` | `16e9ee2378f53803ea9dd32eb0eaf8036edb5bdb` | `ed85f692394ebd4924ec582feb2f354d7a156eeb5cd6c6145c20be14b85a72a3` | Efuse linkage and SCPSYS VGPU ordering remediated; full offline build/fixtures PASS; hardware not run; independent audit required |
+| G3 fixed-low Panfrost no-job R2 | `f3f6dbb4ec9b4f95854c2a3df5a2c842559116b4` | `16e9ee2378f53803ea9dd32eb0eaf8036edb5bdb` | `ed85f692394ebd4924ec582feb2f354d7a156eeb5cd6c6145c20be14b85a72a3` | Independent audit BLOCKED before hardware: cumulative no-retry guard did not match the authoritative registry; retired without execution |
+| G3 fixed-low Panfrost no-job R3 | `f3f6dbb4ec9b4f95854c2a3df5a2c842559116b4` | `baa7487a0b63c4425889b34d99520683a2d93f45` | `669a5f22982763f8a917cbcfcf3100e2a41659f73eacc8110343fc4884c8b6bb` | Exact 16-entry registry plus retired R2 enforced; full offline rebuild and independent audit PASS; hardware not run; authorization/scheduling remain absent |
 | A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Offline contract review: PASS; source/package are not hardware-ready |
 | A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Blocked with provider; no provider-success predecessor exists |
 
@@ -220,8 +221,13 @@ complete-helper fixtures, and changes the inert package identity. Package
 with candidate `296d5731...` and bundle NAR
 `sha256-RyFqUSGrtSo8cWhz3yqKgmYUlxOZGRxKihsMnjgqd5A=`. The local-only offline
 build and all bundled checksum, parser, recovery, rendered-ash, and acceptance
-fixtures pass. R2 retains no scheduling or authorization and requires a fresh
-independent audit.
+fixtures pass. Independent audit nevertheless rejected R2 before hardware:
+its rendered manifest repeats a key that its scalar parser rejects, its v2
+package identity is checked against the retired v1 identity, and both safety
+consumers still admit additional affirmative CCCI/radio start and activation
+phrases. Candidate `296d5731...` was never written and is retired/no-retry.
+A v3 package must exercise the exact rendered manifest through a
+side-effect-free parser mode and use a conservative remaining-subject policy.
 
 ### G3 fixed-low Panfrost no-job old bundle blocked; R1 hardware result
 
@@ -287,7 +293,22 @@ and candidate `ed85f692...`; bundle NAR hash is
 target build, source contract, exact rendered-DT assertions, module plan,
 parser, supervisor, recovery, and pstore fixtures pass offline. Its manifest
 retains `authorization=none` and `scheduling=none`; it requires independent
-readiness review before any separately authorized transaction.
+readiness review before any separately authorized transaction. That review
+found the package's cumulative retired-candidate case arm rejected only four
+of the sixteen authoritative historical hashes. Candidate `ed85f692...` was
+never written and is retired/no-retry.
+
+R3 package `baa7487a...` derives its historical case arm from a checked-in,
+exact 16-entry registry and adds `ed85f692...` as the seventeenth retired
+candidate. It produced
+`/nix/store/n54kajar8pg2bkcv4qjw5y2ix9qfg6sa-gemini-g3-low-opp-nojob-r3-p22-bundle`
+with candidate `669a5f22...` and bundle NAR
+`sha256-AYdMw3Yw+ZMZycVdt98WESwy6iuaPTePVoBi1js7e+k=`. Independent audit
+verified every registry entry and rendered case arm, rebuilt with empty
+builders/substituters, and proved the kernel, DT, module plan, entry code and
+runtime init are byte-identical to R2; only the inert, unreferenced package
+identity file changed. R3 remains hardware-not-run with `authorization=none`
+and `scheduling=none` pending a separately reviewed one-run authorization.
 
 Evidence:
 
@@ -375,6 +396,7 @@ for a current identity.
 
 ### Cellular predecessors
 
+- `296d5731271e3511624568056b7d7e6f78d910332a19b0e187adffa35dbb57c4`
 - `76387822474c35d55fb4804b670166e5279c239d965418481733f6998c2c1c16`
 - `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213`
 - `34689b1814e2a3ce12eb248d7e6594c57e9c661d8a9e1e3b38f9942bf30d184c`
@@ -388,6 +410,7 @@ surfaces and are not an alternative to the read-only observer.
 
 ### GPU/G2/G3 historical candidates
 
+- `ed85f692394ebd4924ec582feb2f354d7a156eeb5cd6c6145c20be14b85a72a3`
 - `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b`
 - `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985`
 - `9a667439e951297d931583a6629486b2c3fc292cdc885b249fdd07fb5f7fefbb`

@@ -239,6 +239,8 @@
 		interrupt-names = "bgf", "wdt";
 		resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
 		reset-names = "conn-mcu";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+		power-domain-names = "conn";
 		vcn18-supply = <&mt6351_vcn18_reg>;
 		vcn28-supply = <&mt6351_vcn28_reg>;
 		memory-region = <&consys_reserved_memory>;

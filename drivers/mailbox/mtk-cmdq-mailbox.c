@@ -208,11 +208,14 @@ static void cmdq_thread_resume(struct cmdq_thread *thread)
 	writel(CMDQ_THR_RESUME, thread->base + CMDQ_THR_SUSPEND_TASK);
 }
 
-static void cmdq_init(struct cmdq *cmdq)
+static int cmdq_init(struct cmdq *cmdq)
 {
+	int ret;
 	int i;
 
-	WARN_ON(clk_bulk_enable(cmdq->pdata->gce_num, cmdq->clocks));
+	ret = clk_bulk_enable(cmdq->pdata->gce_num, cmdq->clocks);
+	if (ret)
+		return ret;
 
 	cmdq_vm_init(cmdq);
 	cmdq_gctl_value_toggle(cmdq, true);
@@ -221,6 +224,8 @@ static void cmdq_init(struct cmdq *cmdq)
 	for (i = 0; i <= CMDQ_MAX_EVENT; i++)
 		writel(i, cmdq->base + CMDQ_SYNC_TOKEN_UPDATE);
 	clk_bulk_disable(cmdq->pdata->gce_num, cmdq->clocks);
+
+	return 0;
 }
 
 static int cmdq_thread_reset(struct cmdq *cmdq, struct cmdq_thread *thread)
@@ -436,10 +441,13 @@ static int cmdq_resume(struct device *dev)
 
 static void cmdq_remove(struct platform_device *pdev)
 {
-	struct cmdq *cmdq = platform_get_drvdata(pdev);
-
 	if (!IS_ENABLED(CONFIG_PM))
 		cmdq_runtime_suspend(&pdev->dev);
+}
+
+static void cmdq_unprepare_clocks(void *data)
+{
+	struct cmdq *cmdq = data;
 
 	clk_bulk_unprepare(cmdq->pdata->gce_num, cmdq->clocks);
 }
@@ -746,9 +754,17 @@ static int cmdq_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, cmdq);
 
-	WARN_ON(clk_bulk_prepare(cmdq->pdata->gce_num, cmdq->clocks));
+	err = clk_bulk_prepare(cmdq->pdata->gce_num, cmdq->clocks);
+	if (err)
+		return dev_err_probe(dev, err, "failed to prepare GCE clocks\n");
 
-	cmdq_init(cmdq);
+	err = devm_add_action_or_reset(dev, cmdq_unprepare_clocks, cmdq);
+	if (err)
+		return err;
+
+	err = cmdq_init(cmdq);
+	if (err)
+		return dev_err_probe(dev, err, "failed to initialize GCE\n");
 
 	err = devm_request_irq(dev, cmdq->irq, cmdq_irq_handler, IRQF_SHARED,
 			       "mtk_cmdq", cmdq);
@@ -766,7 +782,7 @@ static int cmdq_probe(struct platform_device *pdev)
 
 	err = devm_pm_runtime_enable(dev);
 	if (err)
-		return err;
+		goto err_runtime_suspend;
 
 	pm_runtime_set_autosuspend_delay(dev, CMDQ_MBOX_AUTOSUSPEND_DELAY_MS);
 	pm_runtime_use_autosuspend(dev);
@@ -774,10 +790,15 @@ static int cmdq_probe(struct platform_device *pdev)
 	err = devm_mbox_controller_register(dev, &cmdq->mbox);
 	if (err < 0) {
 		dev_err(dev, "failed to register mailbox: %d\n", err);
-		return err;
+		goto err_runtime_suspend;
 	}
 
 	return 0;
+
+err_runtime_suspend:
+	if (!IS_ENABLED(CONFIG_PM))
+		cmdq_runtime_suspend(dev);
+	return err;
 }
 
 static const struct dev_pm_ops cmdq_pm_ops = {

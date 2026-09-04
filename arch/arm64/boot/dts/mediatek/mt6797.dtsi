@@ -364,8 +364,10 @@
 		clocks = <&mfgsys CLK_MFG_BG3D>,
 			 <&infrasys CLK_INFRA_MFG_VCG>;
 		clock-names = "core", "bus";
-		assigned-clocks = <&topckgen CLK_TOP_MUX_MFG_52M>;
-		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL2_D8>;
+		assigned-clocks = <&topckgen CLK_TOP_MUX_MFG>,
+				  <&topckgen CLK_TOP_MUX_MFG_52M>;
+		assigned-clock-parents = <&topckgen CLK_TOP_MFGPLL_CK>,
+					  <&topckgen CLK_TOP_UNIVPLL2_D8>;
 		mediatek,mfgcfg = <&mfgsys>;
 		power-domains = <&scpsys MT6797_POWER_DOMAIN_MFG_CORE0>,
 				 <&scpsys MT6797_POWER_DOMAIN_MFG_CORE1>,

@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA multimedia fabric provider preflight.
+ *
+ * This overlay binds the CMDQ, SMI and IOMMU providers used by MDP, JPEG and
+ * vcodec without enabling any DMA consumer.  Apply it only to a recoverable
+ * RAM boot and run tools/gemini/capture-media-fabric-preflight.sh.  Omitting
+ * the overlay leaves the complete multimedia fabric disabled.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&gce {
+	status = "okay";
+};
+
+&smi_common {
+	status = "okay";
+};
+
+/* MDP/display paths; no engine is enabled by this overlay. */
+&larb0 {
+	status = "okay";
+};
+
+&larb5 {
+	status = "okay";
+};
+
+/* VDEC and VENC/JPEG paths; all codec engines remain disabled. */
+&larb1 {
+	status = "okay";
+};
+
+&larb3 {
+	status = "okay";
+};
+
+&m4u {
+	status = "okay";
+};

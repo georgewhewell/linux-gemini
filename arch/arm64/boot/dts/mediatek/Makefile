@@ -16,6 +16,11 @@ mt6797-gemini-pda-gpu-preflight-test-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-gpu-preflight.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-gpu-preflight-test.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-media-fabric-preflight.dtbo
+mt6797-gemini-pda-media-fabric-preflight-test-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-media-fabric-preflight.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-media-fabric-preflight-test.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-a53-dvfs-preflight.dtbo
 mt6797-gemini-pda-a53-dvfs-preflight-dtbs := \
 	mt6797-gemini-pda.dtb \

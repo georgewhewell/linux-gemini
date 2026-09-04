@@ -13,6 +13,17 @@ config MTK_HSDMA
 	  memory-to-memory transfer to offload from CPU through ring-
 	  based descriptor management.
 
+config MTK_HIF_DMA
+	tristate "MediaTek MT6797 connectivity HIF DMA support"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	select DMA_ENGINE
+	select DMA_VIRTUAL_CHANNELS
+	help
+	  Enable support for the single-channel peripheral DMA engine used by
+	  the connectivity HIF on MediaTek MT6797 SoCs. The engine moves one
+	  contiguous buffer between system memory and the HIF data port. It is
+	  exposed through the standard DMA slave API.
+
 config MTK_CQDMA
 	tristate "MediaTek Command-Queue DMA controller support"
 	depends on ARCH_MEDIATEK || COMPILE_TEST

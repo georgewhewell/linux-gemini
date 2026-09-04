@@ -524,6 +524,35 @@ This is an offline qualification only: `hardware_run=not-run`,
 ineligible until this provider identity passes once and exact Stage A is
 restored; R2 does not authorize either transaction.
 
+### A72 single-boot attempt and watchdog hardening, 2026-09-05
+
+The user's later simplification instruction supersedes the historical
+separate-provider/admission scheduling above. Package `repo-a72-oneboot`
+combines prerequisite checks and one manual CPU8 request plus a bounded
+CPU8-pinned workload, with no CPU9, CPU_OFF, DVFS or charging changes.
+Candidate `f22f184c4b51b2f2a8ec1414995dc2ec0d33ae0c3eec3a994692186a557f3213`
+was paused before any write when the user asked to remove the older kernel's
+indefinite pre-userspace watchdog servicing. It remains unconsumed.
+
+Package `fadd69d` rebuilds the same source `ca094ed4...` with exactly two
+configuration changes: `WATCHDOG_OPEN_TIMEOUT=90` and `WATCHDOG_NOWAYOUT=y`.
+Candidate `7e2b2e148a65c2898a23de861c98f5355ace0fdb473fe224e9263b61fc3c0d78`
+was written once at 01:53:47 Europe/Zurich. It did not reach observed SSH;
+no CPU8 request was issued. Automatic reset and exact rescue restoration
+completed at 01:54:26, without a manual reset. This proves recovery for this
+failure, not that every pre-Linux failure is covered or that Linux's new
+watchdog settings caused this particular reset.
+
+Pstore contains only the previous Stage-A shutdown tail, no attributable
+candidate Linux banner or A72 admission result. Failure location is unknown;
+inspect boot artifacts before adding another hardware diagnostic. Final
+state `observation_failed_recovered_stage_a_pstore_captured`; rescue boot
+`18fd2b15-1e28-4cd1-a8c4-bd8699825967`, CPUs0-7, zero failed units,
+USB/RJ45 working, exact p22/p30/p31 hashes, no remaining transaction locks.
+Candidate 7e2b2e is consumed/no-retry. Handoff/result:
+`/mnt/Home/src/nixos-gemini/handoff/a72-oneboot-hardened-lNBTMGNO`.
+Pstore SHA256: `5eb1ed2a8e99712e415e66a4ced9439ec4b087b6986d85bbb3330225f04d19ba`.
+
 ## Wi-Fi open-auth lane is closed before assembly
 
 The current clean software pins are source
@@ -561,6 +590,7 @@ for a current identity.
 - `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5`
 - `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3`
 - `6ddc55bfb8d79e8442644812582dc58643d87eb8223007982a821f1d67e0a803`
+- `7e2b2e148a65c2898a23de861c98f5355ace0fdb473fe224e9263b61fc3c0d78`
 - `cc8b3ab8864766138a9697ffae79b2c86204cef086eabdeabfca6179b2ca57e0`
 
 ### Cellular predecessors

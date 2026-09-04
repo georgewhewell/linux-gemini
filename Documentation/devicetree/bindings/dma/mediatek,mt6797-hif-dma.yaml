@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/dma/mediatek,mt6797-hif-dma.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 HIF peripheral DMA controller
+
+maintainers:
+  - Matthias Brugger <matthias.bgg@gmail.com>
+
+description:
+  The MT6797 HIF DMA controller is a single-channel peripheral DMA engine.
+  It transfers one contiguous buffer between memory and the memory-mapped
+  data port of the connectivity HIF.
+
+allOf:
+  - $ref: dma-controller.yaml#
+
+properties:
+  compatible:
+    const: mediatek,mt6797-hif-dma
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: apdma
+
+  "#dma-cells":
+    const: 1
+    description: The cell must contain zero, the only hardware channel ID.
+
+  dma-channels:
+    const: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - "#dma-cells"
+  - dma-channels
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    dma-controller@11000080 {
+        compatible = "mediatek,mt6797-hif-dma";
+        reg = <0x11000080 0x80>;
+        interrupts = <GIC_SPI 97 IRQ_TYPE_LEVEL_LOW>;
+        clocks = <&infrasys CLK_INFRA_AP_DMA>;
+        clock-names = "apdma";
+        dma-channels = <1>;
+        #dma-cells = <1>;
+    };

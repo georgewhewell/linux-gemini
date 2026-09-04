@@ -7,6 +7,10 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 overlay=$root/arch/arm64/boot/dts/mediatek/mt6797-gemini-pda-gpu-preflight.dtso
 capture=$root/tools/gemini/capture-gpu-preflight.sh
+compiled_overlay=${GPU_PREFLIGHT_DTBO:-}
+if [ -z "$compiled_overlay" ]; then
+	compiled_overlay=$root/arch/arm64/boot/dts/mediatek/mt6797-gemini-pda-gpu-preflight.dtbo
+fi
 
 need()
 {
@@ -32,12 +36,20 @@ reject()
 
 test "$(grep -Fc 'opp-hz = /bits/ 64 <238000000>;' "$overlay")" -eq 1
 test "$(grep -Fc 'opp-microvolt = <846700 846700 850000>;' "$overlay")" -eq 1
+test "$(grep -Fc 'opp-supported-hw = <0x1000>;' "$overlay")" -eq 1
 test "$(grep -Fc 'status = "okay";' "$overlay")" -eq 4
 need "$overlay" 'regulator-ramp-delay = <32000>;'
 need "$overlay" 'operating-points-v2 = <&g3_gpu_opp_table>;'
 reject "$overlay" 'regulator-boot-on'
 reject "$overlay" 'regulator-min-microvolt'
 reject "$overlay" 'regulator-max-microvolt'
+
+if [ -e "$compiled_overlay" ]; then
+	: "${FDTGET:=fdtget}"
+	test -f "$compiled_overlay"
+	test "$("$FDTGET" -t x "$compiled_overlay" \
+		/gpu-g3-opp-table/opp-238000000 opp-supported-hw)" = 1000
+fi
 
 need "$capture" "identity_pattern='13040000\\.gpu: mali-t880 id 0x880 major 0x1 minor 0x0 status 0x8$'"
 need "$capture" "topology_pattern='shader_present=0xf l2_present=0x1$'"

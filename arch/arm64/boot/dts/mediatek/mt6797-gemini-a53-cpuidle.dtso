@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA A53 per-core cpuidle candidate.
+ *
+ * This overlay is for a separately qualified, volatile FIT only. The pinned
+ * MT6797 vendor DT describes this exact PSCI state and timing tuple for every
+ * CPU. Expose it only to the eight bootable Cortex-A53 CPUs. Do not expose the
+ * vendor cluster state: the retained firmware's cluster-domain behavior has
+ * not been independently qualified, and its vendor CPU state lists are
+ * malformed. The base DT and Cortex-A72 CPU nodes remain unchanged.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&{/cpus} {
+	idle-states {
+		entry-method = "psci";
+
+		a53_core_powerdown: cpu-sleep-a53 {
+			compatible = "arm,idle-state";
+			arm,psci-suspend-param = <0x00010000>;
+			entry-latency-us = <600>;
+			exit-latency-us = <600>;
+			min-residency-us = <1200>;
+		};
+	};
+};
+
+&cpu0 {
+	cpu-idle-states = <&a53_core_powerdown>;
+};
+
+&cpu1 {
+	cpu-idle-states = <&a53_core_powerdown>;
+};
+
+&cpu2 {
+	cpu-idle-states = <&a53_core_powerdown>;
+};
+
+&cpu3 {
+	cpu-idle-states = <&a53_core_powerdown>;
+};
+
+&cpu4 {
+	cpu-idle-states = <&a53_core_powerdown>;
+};
+
+&cpu5 {
+	cpu-idle-states = <&a53_core_powerdown>;
+};
+
+&cpu6 {
+	cpu-idle-states = <&a53_core_powerdown>;
+};
+
+&cpu7 {
+	cpu-idle-states = <&a53_core_powerdown>;
+};

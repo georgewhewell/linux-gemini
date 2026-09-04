@@ -32,6 +32,11 @@ mt6797-gemini-pda-a53-dvfs-thermal-dtbs := \
 	mt6797-gemini-a53-dvfs-activation.dtbo \
 	mt6797-gemini-a53-dvfs-thermal.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-a53-dvfs-thermal.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-a53-cpuidle.dtbo
+mt6797-gemini-pda-a53-cpuidle-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-a53-cpuidle.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-a53-cpuidle.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-a72-resource-preflight.dtbo
 mt6797-gemini-pda-a72-resource-preflight-dtbs := \
 	mt6797-gemini-pda.dtb \

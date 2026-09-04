@@ -6,6 +6,14 @@ Status: offline evidence and decision only.  This note does not authorize a
 hardware probe, USB/I2C/PMIC access, register write, flash, boot, reset, remote
 operation, or opening the device.
 
+Historical boundary: this audit predates the owner's 2026-09-04 power
+attestation and the subsequently remediated packages.  Its package-policy and
+eligibility conclusions are retained as the record at that point in time, but
+are superseded for the current queue by
+`README.mt6797-power-owner-attestation-20260904.md` and
+`README.mt6797-hardware-gate-queue-20260904.md`.  The current ledgers still
+require separate candidate-specific authorization and scheduling.
+
 ## Decision
 
 No p22 transaction is eligible.  The battery connector was physically open,

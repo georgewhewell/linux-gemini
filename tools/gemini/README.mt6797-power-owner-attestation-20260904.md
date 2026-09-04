@@ -75,10 +75,11 @@ Its unchanged source is
 
 That final cellular manifest uses the same exact owner-attested token, and
 retains `scheduling=none`, `specific-p22-authorization=none`, and
-`hardware-proof=none-offline-build-only`.  The package was built and tested
-offline, but this ledger treats it as pending root review.  It becomes
-offline-qualified only after root confirms the final predicate, policy,
-bundle identity, and tests.  It is not hardware-authorized or scheduled.
+`hardware-proof=none-offline-build-only`.  Independent offline review
+reproduced the bundle, verified every embedded checksum, and passed the full
+acceptance/recovery harness plus an additional adversarial predicate matrix.
+The final predicate and exact policy token are offline-qualified.  It is not
+hardware-authorized or scheduled.
 
 The exact token means explicit owner authority with no machine power probe.
 Near misses or generic `owner-attested` values are not equivalent, and the
@@ -86,11 +87,28 @@ token must never be treated as a BQ- or USB-derived result.  It changes no
 watchdog, rollback, transcript, hash, supervisor-ownership, mutual-exclusion,
 or no-retry rule.
 
-The old A72 packages still use an obsolete package policy and are closed
-pending a fresh reviewed remediation.  The owner statement does not make
-those immutable bundles eligible.  All superseded hashes, including the old
-A72 provider and admission candidates, are explicitly closed/no-retry in the
-managed queue ledger.
+The current offline-qualified A72 package is
+`7f528b23b8a10a5338229449c26d7da1cc18a6c8`, with source
+`301a95567a799bbb3c81eba6653acc7491050b88` and package contract
+`fe16911ccbd55801a3c79a26e117f5d3a91b169a`.  The provider bundle is
+`/nix/store/r7wnz7m86739dj5l8wjlwinhj3z0d8z5-gemini-a72-provider-resource-preflight-p22-bundle`,
+candidate SHA-256
+`da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5`.
+The separate CPU8-admission bundle is
+`/nix/store/iqb6k8mvra3gsjj47kmhzlv1x0n3xan4-gemini-a72-cpu8-gate-preflight-p22-bundle`,
+candidate SHA-256
+`fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3`.
+Both carry the exact owner-attested policy token and passed independent
+offline review of their immutable hashes, watchdog-before-access,
+supervisor-owned recovery, strict 21-sample/at-least-60-second parsers, and
+exact Stage-A p22/p30/p31 rollback contract.  The CPU8 gate mechanically
+requires a successful provider result bound to the exact provider candidate,
+source, package contract, and rollback identity.  Neither bundle has been run
+on hardware, specifically authorized, or scheduled.
+
+The superseded A72 provider and admission candidates remain closed/no-retry
+in the managed queue ledger.  The owner statement does not make those old
+immutable bundles eligible.
 
 This update changes documentation only.  No package, source, hardware, USB,
 radio, or remote-host action was performed.

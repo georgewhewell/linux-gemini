@@ -409,52 +409,25 @@ config REGULATOR_DA9211
 	  interface.
 
 config REGULATOR_DA9213_LEGACY
-	tristate "Dialog DA9213/DA9214/DA9215 legacy identification"
+	tristate "Dialog DA9213/DA9214/DA9215 direct-address regulators"
 	depends on I2C
 	help
-	  Say y here to identify legacy direct-address DA9213, DA9214, and
-	  DA9215 devices without exposing regulator providers.
+	  Say y here to support DA9213, DA9214, and DA9215 devices whose
+	  primary and identification banks are exposed at separate I2C
+	  addresses. The driver validates a fixed, read-only identity transcript
+	  before registering the physical buck outputs with the regulator core.
 
-	  The probe performs only a fixed, read-only identification transcript
-	  against the primary and page2 I2C addresses.  It does not use PAGE_CON,
-	  register regulators, request interrupts, or change hardware state.
+	  Register changes are serialized and read back. A failed or mismatched
+	  change restores and verifies the pre-transaction value; an uncertain
+	  rollback is reported as -EUCLEAN.
 
 	  This driver can also be built as a module.  If so, the module is
 	  called da9213-legacy-regulator.
 
-config REGULATOR_DA9213_LEGACY_PROVIDER
-	bool "Dialog DA9213/DA9214/DA9215 legacy read-only provider"
-	depends on REGULATOR_DA9213_LEGACY
-	help
-	  Say y here to register a resource-only regulator provider after the
-	  fixed legacy identification transcript succeeds. The provider exposes
-	  only read-only voltage-selector and enable-state observations; it has no
-	  writable regulator operation, consumer, IRQ, or A72 integration.
-
-	  This is an offline/provider-boundary experiment. It does not establish
-	  rail ownership, constraints, rollback, suspend/resume, or CPU bring-up.
-
-config REGULATOR_DA9213_LEGACY_OBSERVER
-	bool "Dialog legacy DA921x read-only provider observer"
-	depends on REGULATOR_DA9213_LEGACY_PROVIDER
-	help
-	  Emit one attributable record after the fixed identity transcript and
-	  both read-only regulator descriptors are registered. The observation
-	  samples only selector, linear voltage, and enable state and fails probe
-	  rather than publishing a partial result.
-
-	  This default-off diagnostic adds no writable regulator operation,
-	  consumer, register-data write, transition owner, or CPU action.
-
-config REGULATOR_DA9213_LEGACY_OBSERVER_KUNIT_TEST
-	bool "KUnit tests for the legacy DA921x read-only observer"
+config REGULATOR_DA9213_LEGACY_KUNIT_TEST
+	bool "KUnit tests for DA921x direct-address transactions"
 	depends on KUNIT=y
-	depends on REGULATOR_DA9213_LEGACY_OBSERVER
-	help
-	  Exercise the hardware-free observer success, bounded failure, semantic
-	  validation, and cleanup contracts with a fake read callback. The tests
-	  create no device, adapter, regulator, firmware, or CPU object and
-	  perform no hardware operation.
+	depends on REGULATOR_DA9213_LEGACY=y
 
 config REGULATOR_DBX500_PRCMU
 	bool

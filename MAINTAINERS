@@ -7448,6 +7448,7 @@ F:	drivers/mfd/da91??-*.c
 F:	drivers/pinctrl/pinctrl-da90??.c
 F:	drivers/power/supply/da9052-battery.c
 F:	drivers/power/supply/da91??-*.c
+F:	drivers/regulator/da9213-legacy*
 F:	drivers/regulator/da9???-regulator.[ch]
 F:	drivers/regulator/slg51000-regulator.[ch]
 F:	drivers/rtc/rtc-da90??.c

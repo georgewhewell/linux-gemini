@@ -251,20 +251,18 @@ config MTK_MT6797_A72_POWER
 	  authorizes CPU_ON. CPU core power remains owned by PSCI firmware.
 
 config MTK_MT6797_CONSYS_INVENTORY
-	bool "MediaTek MT6797 CONSYS resource inventory"
+	bool "MediaTek MT6797 CONSYS ownership foundation"
 	depends on ARM64 && ARCH_MEDIATEK && OF
 	depends on RESET_CONTROLLER
-	select MTK_MT6797_CONSYS_CORE
 	help
-	  Build the resource-only inventory driver for the MT6797 connectivity
-	  subsystem. It validates Device Tree resource metadata and acquires no
-	  active hardware ownership: no MMIO mapping or access, firmware request,
-	  power-domain change, or clock, regulator, reset, or interrupt operation.
+	  Build the inert shared-resource owner for the MT6797 connectivity
+	  subsystem. It validates and retains the common MMIO, interrupt, reset,
+	  regulator, power-domain, and reserved-memory descriptions without mapping
+	  MMIO or operating any resource.
 
-	  It reuses only the shared-memory geometry validator from the hardware-
-	  neutral core; it never enters the core's lifecycle state machine. Keep the
-	  Device Tree node disabled until a separate power and transport
-	  implementation has been reviewed.
+	  The owner does not request firmware or register client interfaces. Keep
+	  the Device Tree node disabled until the firmware format, reset release,
+	  and remote-processor boot protocol have been reviewed.
 
 config MTK_MT6797_CONSYS_CORE
 	bool "MediaTek MT6797 CONSYS identity transaction core"

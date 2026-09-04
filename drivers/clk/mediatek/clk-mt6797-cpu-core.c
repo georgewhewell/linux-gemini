@@ -3,6 +3,7 @@
 #include <linux/bitfield.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
+#include <linux/string.h>
 
 #include "clk-mt6797-cpu.h"
 
@@ -26,6 +27,21 @@ static const struct mt6797_cpuclk_domain_data mt6797_cpuclk_domains[] = {
 static bool mt6797_cpuclk_domain_valid(enum mt6797_cpuclk_domain domain)
 {
 	return domain >= MT6797_CPUCLK_MP0 && domain < MT6797_CPUCLK_NR_DOMAINS;
+}
+
+bool mt6797_cpuclk_secure_read_allowed(unsigned long fid, u32 address)
+{
+	if (fid != MT6797_CPUCLK_SMC_REG_READ)
+		return false;
+
+	return address == MT6797_CPUCLK_MP2_PLL_CON0 ||
+	       address == MT6797_CPUCLK_MP2_PLL_CON1;
+}
+
+bool mt6797_cpuclk_snapshots_equal(const struct mt6797_cpuclk_snapshot *first,
+				   const struct mt6797_cpuclk_snapshot *second)
+{
+	return first && second && !memcmp(first, second, sizeof(*first));
 }
 
 static bool mt6797_cpuclk_divider_valid(u8 divider)

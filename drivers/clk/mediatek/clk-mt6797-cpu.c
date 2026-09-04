@@ -8,16 +8,35 @@
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/errno.h>
+#include <linux/io.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/string.h>
+
+#include <linux/arm-smccc.h>
 
 #include <dt-bindings/clock/mt6797-clk.h>
 
 #include "clk-mt6797-cpu.h"
 
 struct mt6797_cpuclk;
+
+#define MT6797_CPUCLK_MP0_PLL_CON1 0x204
+#define MT6797_CPUCLK_MP1_PLL_CON1 0x214
+#define MT6797_CPUCLK_CCI_PLL_CON1 0x224
+#define MT6797_CPUCLK_MUXSEL 0x270
+#define MT6797_CPUCLK_CLKDIV 0x274
+
+struct mt6797_cpuclk_observer {
+	void __iomem *mcumixed;
+	/* Serializes complete snapshot pairs and the probe snapshot cache. */
+	struct mutex lock;
+	bool probe_snapshot_valid;
+	struct mt6797_cpuclk_snapshot probe_snapshot;
+};
 
 struct mt6797_cpuclk_pll_hw {
 	struct clk_hw hw;
@@ -35,6 +54,7 @@ struct mt6797_cpuclk_path_hw {
 struct mt6797_cpuclk {
 	struct device *dev;
 	struct mt6797_cpuclk_backend backend;
+	struct mt6797_cpuclk_observer observer;
 	struct mt6797_cpuclk_pll_hw plls[MT6797_CPUCLK_NR_DOMAINS];
 	struct mt6797_cpuclk_path_hw paths[MT6797_CPUCLK_NR_DOMAINS];
 	struct clk_hw_onecell_data *clk_data;
@@ -52,6 +72,92 @@ static const char *const mt6797_cpuclk_path_names[] = {
 	[MT6797_CPUCLK_MP1] = "mt6797_mp1",
 	[MT6797_CPUCLK_MP2] = "mt6797_mp2",
 	[MT6797_CPUCLK_CCI] = "mt6797_cci",
+};
+
+static int mt6797_cpuclk_secure_read(unsigned long fid, u32 address, u32 *value)
+{
+	struct arm_smccc_res result;
+
+	if (!value || !mt6797_cpuclk_secure_read_allowed(fid, address))
+		return -EINVAL;
+
+	arm_smccc_smc(fid, address, 0, 0, 0, 0, 0, 0, &result);
+	if (result.a0 >> 32)
+		return -EIO;
+
+	*value = result.a0;
+	return 0;
+}
+
+static int mt6797_cpuclk_read_once(struct mt6797_cpuclk_observer *observer,
+				   struct mt6797_cpuclk_snapshot *snapshot)
+{
+	int ret;
+
+	memset(snapshot, 0, sizeof(*snapshot));
+	snapshot->armpll_con1[MT6797_CPUCLK_MP0] =
+		readl_relaxed(observer->mcumixed + MT6797_CPUCLK_MP0_PLL_CON1);
+	snapshot->armpll_con1[MT6797_CPUCLK_MP1] =
+		readl_relaxed(observer->mcumixed + MT6797_CPUCLK_MP1_PLL_CON1);
+	snapshot->armpll_con1[MT6797_CPUCLK_CCI] =
+		readl_relaxed(observer->mcumixed + MT6797_CPUCLK_CCI_PLL_CON1);
+	snapshot->muxsel =
+		readl_relaxed(observer->mcumixed + MT6797_CPUCLK_MUXSEL);
+	snapshot->clkdiv =
+		readl_relaxed(observer->mcumixed + MT6797_CPUCLK_CLKDIV);
+
+	ret = mt6797_cpuclk_secure_read(MT6797_CPUCLK_SMC_REG_READ,
+					MT6797_CPUCLK_MP2_PLL_CON1,
+					&snapshot->mp2_armpll_con1);
+	if (ret)
+		return ret;
+
+	return mt6797_cpuclk_secure_read(MT6797_CPUCLK_SMC_REG_READ,
+					 MT6797_CPUCLK_MP2_PLL_CON0,
+					 &snapshot->mp2_armpll_con0);
+}
+
+static int mt6797_cpuclk_read_stable(struct mt6797_cpuclk_observer *observer,
+				     struct mt6797_cpuclk_snapshot *snapshot)
+{
+	struct mt6797_cpuclk_snapshot second;
+	int ret;
+
+	ret = mt6797_cpuclk_read_once(observer, snapshot);
+	if (ret)
+		return ret;
+
+	ret = mt6797_cpuclk_read_once(observer, &second);
+	if (ret)
+		return ret;
+
+	return mt6797_cpuclk_snapshots_equal(snapshot, &second) ? 0 : -EAGAIN;
+}
+
+static int
+mt6797_cpuclk_observer_snapshot(void *context,
+				struct mt6797_cpuclk_snapshot *snapshot)
+{
+	struct mt6797_cpuclk_observer *observer = context;
+	int ret;
+
+	if (!observer || !snapshot)
+		return -EINVAL;
+
+	mutex_lock(&observer->lock);
+	if (observer->probe_snapshot_valid) {
+		*snapshot = observer->probe_snapshot;
+		ret = 0;
+	} else {
+		ret = mt6797_cpuclk_read_stable(observer, snapshot);
+	}
+	mutex_unlock(&observer->lock);
+
+	return ret;
+}
+
+static const struct mt6797_cpuclk_backend_ops mt6797_cpuclk_observer_ops = {
+	.snapshot = mt6797_cpuclk_observer_snapshot,
 };
 
 static int mt6797_cpuclk_snapshot(struct mt6797_cpuclk *provider,
@@ -95,13 +201,13 @@ static u8 mt6797_cpuclk_path_get_parent(struct clk_hw *hw)
 
 	clk26m = clk_hw_get_parent_by_index(hw, MT6797_CPUCLK_CLK26M);
 	if (!clk26m)
-		return MT6797_CPUCLK_CLK26M;
+		return -EINVAL;
 
 	clk26m_rate = clk_hw_get_rate(clk26m);
 	if (mt6797_cpuclk_snapshot(path->provider, &snapshot) ||
 	    mt6797_cpuclk_decode_state(path->domain, &snapshot, clk26m_rate,
 				       &state))
-		return MT6797_CPUCLK_CLK26M;
+		return -EINVAL;
 
 	return state.source;
 }
@@ -113,7 +219,7 @@ static unsigned long mt6797_cpuclk_path_recalc_rate(struct clk_hw *hw,
 		container_of(hw, struct mt6797_cpuclk_path_hw, hw);
 	struct mt6797_cpuclk_snapshot snapshot;
 	struct mt6797_cpuclk_state state;
-	struct clk_hw *clk26m;
+	struct clk_hw *clk26m, *parent;
 	unsigned long clk26m_rate;
 
 	clk26m = clk_hw_get_parent_by_index(hw, MT6797_CPUCLK_CLK26M);
@@ -126,8 +232,14 @@ static unsigned long mt6797_cpuclk_path_recalc_rate(struct clk_hw *hw,
 				       &state))
 		return 0;
 
-	if (state.source == MT6797_CPUCLK_ARMPLL)
+	if (state.source == MT6797_CPUCLK_ARMPLL) {
 		parent_rate = state.armpll_rate;
+	} else {
+		parent = clk_hw_get_parent_by_index(hw, state.source);
+		if (!parent)
+			return 0;
+		parent_rate = clk_hw_get_rate(parent);
+	}
 
 	return mt6797_cpuclk_apply_divider(parent_rate, state.divider);
 }
@@ -224,13 +336,38 @@ static int mt6797_cpuclk_register(struct mt6797_cpuclk *provider)
 }
 
 static int mt6797_cpuclk_backend_init(struct platform_device *pdev,
-				      struct mt6797_cpuclk_backend *backend)
+				      struct mt6797_cpuclk *provider)
 {
-	/*
-	 * A backend must take one serialized snapshot and own every future
-	 * MCUMIXEDSYS/secure-firmware transition. No such backend is proved yet.
-	 */
-	return -EOPNOTSUPP;
+	struct mt6797_cpuclk_observer *observer = &provider->observer;
+	int ret;
+
+	observer->mcumixed =
+		devm_platform_ioremap_resource_byname(pdev, "mcumixed");
+	if (IS_ERR(observer->mcumixed))
+		return PTR_ERR(observer->mcumixed);
+
+	mutex_init(&observer->lock);
+	ret = mt6797_cpuclk_read_stable(observer, &observer->probe_snapshot);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "cannot obtain a stable clock snapshot\n");
+
+	observer->probe_snapshot_valid = true;
+	provider->backend.ops = &mt6797_cpuclk_observer_ops;
+	provider->backend.context = observer;
+
+	return 0;
+}
+
+static void mt6797_cpuclk_drop_probe_snapshot(struct mt6797_cpuclk *provider)
+{
+	struct mt6797_cpuclk_observer *observer = &provider->observer;
+
+	mutex_lock(&observer->lock);
+	memzero_explicit(&observer->probe_snapshot,
+			 sizeof(observer->probe_snapshot));
+	observer->probe_snapshot_valid = false;
+	mutex_unlock(&observer->lock);
 }
 
 static int mt6797_cpuclk_probe(struct platform_device *pdev)
@@ -243,14 +380,14 @@ static int mt6797_cpuclk_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	provider->dev = &pdev->dev;
-	ret = mt6797_cpuclk_backend_init(pdev, &provider->backend);
-	if (ret) {
-		dev_err_probe(&pdev->dev, ret,
-			      "serialized clock backend is unavailable\n");
+	ret = mt6797_cpuclk_backend_init(pdev, provider);
+	if (ret)
 		return ret;
-	}
 
-	return mt6797_cpuclk_register(provider);
+	ret = mt6797_cpuclk_register(provider);
+	mt6797_cpuclk_drop_probe_snapshot(provider);
+
+	return ret;
 }
 
 static const struct of_device_id mt6797_cpuclk_of_match[] = {

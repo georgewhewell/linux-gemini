@@ -21,6 +21,35 @@ static struct mt6797_cpuclk_snapshot mt6797_cpuclk_test_snapshot(void)
 	return snapshot;
 }
 
+static void mt6797_cpuclk_read_fence_test(struct kunit *test)
+{
+	const unsigned long fid = MT6797_CPUCLK_SMC_REG_READ;
+	const u32 con0 = MT6797_CPUCLK_MP2_PLL_CON0;
+	const u32 con1 = MT6797_CPUCLK_MP2_PLL_CON1;
+	bool allowed;
+
+	allowed = mt6797_cpuclk_secure_read_allowed(fid, con0);
+	KUNIT_EXPECT_TRUE(test, allowed);
+	allowed = mt6797_cpuclk_secure_read_allowed(fid, con1);
+	KUNIT_EXPECT_TRUE(test, allowed);
+	allowed = mt6797_cpuclk_secure_read_allowed(fid + 1, con0);
+	KUNIT_EXPECT_FALSE(test, allowed);
+	allowed = mt6797_cpuclk_secure_read_allowed(fid, con1 + 4);
+	KUNIT_EXPECT_FALSE(test, allowed);
+}
+
+static void mt6797_cpuclk_snapshot_equality_test(struct kunit *test)
+{
+	struct mt6797_cpuclk_snapshot first = mt6797_cpuclk_test_snapshot();
+	struct mt6797_cpuclk_snapshot second = first;
+
+	KUNIT_EXPECT_TRUE(test, mt6797_cpuclk_snapshots_equal(&first, &second));
+	second.clkdiv ^= 1;
+	KUNIT_EXPECT_FALSE(test,
+			   mt6797_cpuclk_snapshots_equal(&first, &second));
+	KUNIT_EXPECT_FALSE(test, mt6797_cpuclk_snapshots_equal(NULL, &second));
+}
+
 static void mt6797_cpuclk_decode_fields_test(struct kunit *test)
 {
 	struct mt6797_cpuclk_snapshot snapshot = mt6797_cpuclk_test_snapshot();
@@ -182,6 +211,8 @@ static void mt6797_cpuclk_rate_plan_rejects_invalid_test(struct kunit *test)
 }
 
 static struct kunit_case mt6797_cpuclk_test_cases[] = {
+	KUNIT_CASE(mt6797_cpuclk_read_fence_test),
+	KUNIT_CASE(mt6797_cpuclk_snapshot_equality_test),
 	KUNIT_CASE(mt6797_cpuclk_decode_fields_test),
 	KUNIT_CASE(mt6797_cpuclk_pll_formats_test),
 	KUNIT_CASE(mt6797_cpuclk_divider_test),

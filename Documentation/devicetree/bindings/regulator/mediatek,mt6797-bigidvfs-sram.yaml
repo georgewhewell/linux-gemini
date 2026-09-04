@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/mediatek,mt6797-bigidvfs-sram.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 BigiDVFS secure SRAM regulator
+
+maintainers:
+  - Julien Etienne <julien.etienne@gmail.com>
+
+description:
+  The MT6797 MP2 SRAM LDO is controlled by a secure BigiDVFS service. The
+  service can read and set its voltage selector, but provides no verified
+  status or disable operation. The node must remain disabled until firmware
+  compatibility and the missing lifecycle operations are resolved.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-bigidvfs-sram
+
+  regulator-name: true
+
+  regulator-min-microvolt:
+    const: 600000
+
+  regulator-max-microvolt:
+    const: 1200000
+
+required:
+  - compatible
+  - regulator-name
+  - regulator-min-microvolt
+  - regulator-max-microvolt
+
+allOf:
+  - $ref: regulator.yaml#
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    vsram_big: regulator-sram-big {
+        compatible = "mediatek,mt6797-bigidvfs-sram";
+        regulator-name = "vsram-big";
+        regulator-min-microvolt = <600000>;
+        regulator-max-microvolt = <1200000>;
+        status = "disabled";
+    };
+
+...

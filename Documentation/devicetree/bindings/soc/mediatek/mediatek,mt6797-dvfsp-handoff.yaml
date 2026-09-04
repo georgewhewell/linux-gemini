@@ -20,10 +20,13 @@ description: |
   cleanup window, and requires AP-DMA to be observed gated at least once;
   unrelated users may reopen the shared AP-DMA gate.
 
-  The device does not start, stop, pause, reset, or load DVFSP firmware. It
-  does not directly write CSPM or infracfg registers. It is not a complete
-  DVFSP coordination provider and does not by itself authorize an I2C6
-  controller, regulator, or CPU-voltage consumer.
+  The handoff device is the sole software owner of the CSPM mapping. It does
+  not start, stop, pause, reset, or load DVFSP firmware and its validation
+  never writes CSPM or infracfg registers. After reaching READY, it may lend
+  the mapping to a CPU-clock transaction which uses the CSPM power-on and
+  hardware-semaphore registers. One shared gate serializes that callback with
+  validation, PM revalidation, and I2C6 admission. The provider does not by
+  itself select an OPP or authorize a regulator or CPU-voltage change.
 
 properties:
   compatible:
@@ -31,7 +34,9 @@ properties:
 
   reg:
     maxItems: 1
-    description: CSPM register window used for read-only validation.
+    description:
+      CSPM register window owned by this provider for read-only handoff
+      validation and explicitly admitted CPU-clock semaphore transactions.
 
   clocks:
     maxItems: 1
@@ -49,8 +54,8 @@ properties:
   "#access-controller-cells":
     const: 0
     description:
-      Declares this receiver as the access controller for the single I2C
-      controller whose use depends on a completed handoff.
+      Declares this receiver as the access controller for I2C6 and the CPU
+      clock controller, whose use depends on a completed handoff.
 
 required:
   - compatible

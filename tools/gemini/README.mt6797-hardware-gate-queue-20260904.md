@@ -52,6 +52,22 @@ p22 authorization and no schedule.  The cellular manifest additionally
 retains `scheduling=none`, `specific-p22-authorization=none`, and
 `hardware-proof=none-offline-build-only`.
 
+### Cumulative-tree replay boundary
+
+The package rows above intentionally retain the exact reviewed lane source
+identities.  The managed cumulative tree replays the same current A53 source
+delta as `97b0e7e5dee9` plus `fe0dbda655ad`, the A72 series ending at
+`55a2b88548aa`, and the G3 source delta as `d2ae9dc37cdc`.  These replay
+commits compose the independently developed changes without pretending to be
+the source revisions embedded in the immutable bundles.
+
+The cellular source remains in its separate post-audit source lineage.  Its
+final watchdog-gate commit depends on the earlier cold-owner and CCIF/CLDMA
+observer files that do not exist in the cumulative tree, so importing that
+tip alone would be incomplete.  The exact external source and package pin is
+therefore deliberate, not an alternate source identity or permission to
+substitute a cumulative build.
+
 ### A53 registration/calibration observation
 
 The exact offline-qualified bundle is:

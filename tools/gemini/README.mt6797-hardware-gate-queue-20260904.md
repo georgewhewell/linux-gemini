@@ -40,7 +40,6 @@ These entries are immutable identities, not a run order or schedule.
 
 | Lane | Source commit | Package commit | Candidate SHA-256 | Offline status |
 | --- | --- | --- | --- | --- |
-| A53 registration/calibration | `d772bb04b727101ae089012c253753ce70d6221a` | `b1fa9539561dee6674fa6a839d7f2f4851f623f2` | `baf0f1fdcb581f19f6dc55bf21f6f86b5ac11ba5a54e5b8ff7a35c645d2a90c0` | Independently reviewed: PASS |
 | MD1 post-vector observer | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `c56ea7a569a8ce7a29f602fdb1c8ca1f0fb4690f` -> `718b9d1849d632b2135a2da23d43a337a1efab59` -> `5b45870571e2dfbf0dd06731001ce9a624ad085e` -> `7194ebaec4b36cf5d46075cc4d1836254c2b196d` | `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213` | Independently reviewed: PASS |
 | G3 fixed-low Panfrost no-job | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` | `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985` | Independently reviewed: PASS |
 | A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Independently reviewed: PASS |
@@ -55,7 +54,7 @@ retains `scheduling=none`, `specific-p22-authorization=none`, and
 ### Cumulative-tree replay boundary
 
 The package rows above intentionally retain the exact reviewed lane source
-identities.  The managed cumulative tree replays the same current A53 source
+identities.  The managed cumulative tree replays the same defensive A53 source
 delta as `97b0e7e5dee9` plus `fe0dbda655ad`, the A72 series ending at
 `55a2b88548aa`, and the G3 source delta as `d2ae9dc37cdc`.  These replay
 commits compose the independently developed changes without pretending to be
@@ -68,18 +67,20 @@ tip alone would be incomplete.  The exact external source and package pin is
 therefore deliberate, not an alternate source identity or permission to
 substitute a cumulative build.
 
-### A53 registration/calibration observation
+### Retired A53 registration/calibration observation
 
-The exact offline-qualified bundle is:
+The exact previously offline-qualified bundle was:
 
 `/nix/store/x5m20gna2w7mzalywikvk92bs16g26hg-gemini-a53-thermal-preflight-p22-bundle`
 
-Its source/package/candidate triple is the A53 row above.  Independent review
-passed the source, package, hash, execution-owner, watchdog, rollback, and
-strict observation contract offline.  Hardware has not been run by that
-review.  A pass would qualify only registration/calibration at the package's
-single retained frequency; it would not authorize a lower-OPP transition,
-cooling action, load, or shutdown experiment.
+Its source was `d772bb04b727101ae089012c253753ce70d6221a`, its package was
+`b1fa9539561dee6674fa6a839d7f2f4851f623f2`, and its candidate was
+`baf0f1fdcb581f19f6dc55bf21f6f86b5ac11ba5a54e5b8ff7a35c645d2a90c0`.
+Independent review passed the source, package, hash, execution-owner,
+watchdog, rollback, and strict observation contract offline.  The subsequent
+hardware collector failed, so this exact candidate is retired and
+closed/no-retry.  The earlier offline PASS is not a hardware pass or evidence
+of production readiness.
 
 Evidence:
 
@@ -186,8 +187,9 @@ Every candidate hash below is superseded, completed historical evidence, or
 rejected.  It is closed and must not be scheduled, retried, or substituted
 for a current identity.
 
-### A53 predecessors
+### A53 retired candidates
 
+- `baf0f1fdcb581f19f6dc55bf21f6f86b5ac11ba5a54e5b8ff7a35c645d2a90c0`
 - `50f3cca869b43cadd32e5dd97b1d848004080ff93234da8962817093db5fd5b0`
 - `e0566d596d4b0be3e92b77215b0269251734da8da62cfadadf1a7eed5991362c`
 - `8f65e46a94e288b2fed585647822cab6b356493b19c4b7de9edc4612deee1139`

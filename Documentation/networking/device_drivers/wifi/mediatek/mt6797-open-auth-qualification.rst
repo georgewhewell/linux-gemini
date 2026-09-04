@@ -7,13 +7,14 @@ MT6797 one-shot open-auth qualification gate
 Status
 ======
 
-This document remains a design contract, not an implemented trigger.  The tree
-contains the bounded AIS HIF open-auth transaction and its separately owned
-passive-scan HIF precursor, but intentionally has no production caller.  It is
-not a bootable open-auth candidate.
+This tree contains the bounded AIS HIF transaction, the separately owned
+passive-scan HIF precursor, and a dormant qualification caller.  The caller is
+compiled out by default, probe never invokes it, and this source change is not
+a bootable open-auth candidate.
 
-A caller must not be added directly to ``core.c``.  It must first satisfy the
-candidate-only trigger and transcript contract below.
+No AP identity or credential is built into the driver.  Candidate packaging
+must still supply an independently reviewed AP manifest, exact source
+provenance, Stage2 transcript handling, and the accepted rollback supervisor.
 
 Implemented precursor boundary
 ==============================
@@ -32,8 +33,8 @@ explicit key and channel, copies the validated target, arbitrates completion
 versus timeout under one lock, sends at most one best-effort cancel, and
 detaches before returning.
 
-This precursor does not call ``mt6797_wifi_ais_hif_open_auth()``, expose a
-userspace trigger, select an AP manifest, or make a bootable candidate.
+The precursor itself does not call ``mt6797_wifi_ais_hif_open_auth()``, expose
+a userspace trigger, select an AP manifest, or make a bootable candidate.
 Constructing a target from command-line BSSID/channel fields, or writing the
 private ``selected`` member directly, remains prohibited because it would
 replace received evidence with reviewed intent and bypass the anti-stale
@@ -66,12 +67,34 @@ compile both its production and KUnit objects before integration.
 Candidate-only trigger ABI
 ==========================
 
-After that precursor exists, the smallest acceptable production caller is a
-candidate-only, write-once device attribute.  It must be compiled only under a
-new ``CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION`` option which defaults to
-``n`` and depends on the built-in MT6797 endpoint.  No attribute is registered
-when the option is disabled.  Merely probing the endpoint must never run the
-gate.
+The caller is compiled only under
+``CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION``, which defaults to ``n`` and
+depends on the built-in MT6797 endpoint.  No qualification attribute exists
+when it is disabled.  Enabling it also requires
+``CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_SOURCE_REVISION`` to contain the exact
+40-character lowercase hexadecimal candidate source commit; otherwise probe
+fails before acquiring WLAN resources.  Merely probing a valid candidate
+never runs the gate.
+
+The candidate exposes the write-only ``open_auth_qualification`` and read-only
+``open_auth_qualification_result`` device attributes.  The write accepts only
+this exact ordered, newline-terminated format::
+
+   schema=mt6797-open-auth-ap-v1
+   ap_manifest_sha256=<64-lowercase-hex, not all zero>
+   authentication=open
+   credential=none
+   ssid_hex=<2..64 lowercase hex digits, not an all-zero SSID>
+   bssid=<lowercase unicast xx:xx:xx:xx:xx:xx>
+   band=<2ghz|5ghz>
+   channel=<canonical decimal channel>
+   basic_rate=<canonical 0x1..0xfff lowercase hex>
+   scan_timeout_ms=<canonical decimal 1..30000>
+   auth_timeout_ms=<canonical decimal 1..4000>
+
+For ``2ghz``, channels are 1..14.  For ``5ghz``, this bounded firmware ABI
+accepts 15..199.  No leading zero is accepted in a multi-digit decimal or hex
+field.  No additional line, byte, or embedded NUL is accepted.
 
 The attribute consumes one complete command.  An attempted write atomically
 changes the per-boot state from ``idle`` to ``consumed`` before parsing; every
@@ -88,10 +111,10 @@ The command is generated from an independently reviewed manifest and contains:
 * one evidenced basic rate; and
 * bounded scan and authentication timeouts.
 
-Unknown, duplicate, empty, noncanonical, multicast, secret, PSK, passphrase,
-key, association, retry, or data-path fields are rejected.  Kernel parsing is
-bounded and must not log the SSID or BSSID.  The manifest SHA-256 is the only AP
-identifier exported in results.
+Unknown, duplicate, reordered, empty, noncanonical, multicast, secret, PSK,
+passphrase, key, association, retry, or data-path fields are rejected.  Kernel
+parsing is bounded and must not log the SSID or BSSID.  The manifest SHA-256 is
+the only AP identifier exported in results.
 
 One consumed command performs this sequence exactly once:
 
@@ -108,11 +131,12 @@ data frame is part of this state machine.
 Result and transcript ABI
 =========================
 
-The kernel must expose a read-only, immutable result after the consumed
-operation finishes.  It must not write files from kernel context.  Candidate
-Stage2 reads that result once and creates, as root using a temporary file plus
-atomic rename, ``/run/mt6797-wifi-open-auth.transcript``.  The file is not
-group- or other-writable and has exactly these eleven ordered lines::
+After the synchronous consumed operation finishes, the result attribute is
+immutable for the rest of the boot.  Before that it returns ``-ENODATA``.  The
+kernel does not write files.  Candidate Stage2 reads the result once and
+creates, as root using a temporary file plus atomic rename,
+``/run/mt6797-wifi-open-auth.transcript``.  The file is not group- or
+other-writable and has exactly these eleven ordered lines::
 
    schema=mt6797-open-auth-transcript-v1
    ap_manifest_sha256=<64-lowercase-hex>
@@ -125,6 +149,17 @@ group- or other-writable and has exactly these eleven ordered lines::
    key_install=not-attempted
    data_path=not-attempted
    result=success errno=0 tx_done=yes response_received=yes
+
+A failed operation uses the same ordering with ``result=failure``, its negative
+errno, truthful ``yes``/``no`` completion fields, and ``attempts=0`` when the
+authentication call was never reached.  A command rejected during parsing uses
+``ap_manifest_sha256=invalid`` rather than presenting unvalidated bytes as an
+AP identity.  Stage2 must accept only ``attempts=1``, a valid 64-hex AP digest,
+and the exact success line above.
+
+``retry=none`` means this caller never resubmits the scan or authentication
+transaction.  It does not assert or qualify lower firmware/MAC retransmission
+behavior.
 
 The source revision comes from candidate build provenance, not a writable
 runtime parameter.  Stage2 creates the success transcript only when the

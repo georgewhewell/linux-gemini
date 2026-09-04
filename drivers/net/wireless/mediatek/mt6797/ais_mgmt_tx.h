@@ -2,6 +2,7 @@
 #ifndef __MT6797_WIFI_AIS_MGMT_TX_H
 #define __MT6797_WIFI_AIS_MGMT_TX_H
 
+#include <linux/bits.h>
 #include <linux/types.h>
 
 #include "ais_protocol.h"
@@ -9,6 +10,7 @@
 
 #define MT6797_WIFI_AIS_MGMT_PID_MIN		1U
 #define MT6797_WIFI_AIS_MGMT_PID_MAX		127U
+#define MT6797_WIFI_AIS_MGMT_RATE_MAX		GENMASK(11, 0)
 #define MT6797_WIFI_AIS_MGMT_TX_EVENT_LENGTH	24U
 
 enum mt6797_wifi_ais_mgmt_pid_state {

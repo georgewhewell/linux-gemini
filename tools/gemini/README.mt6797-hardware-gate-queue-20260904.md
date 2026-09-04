@@ -34,14 +34,14 @@ SHA-256 immediately before the write:
 The detailed authority record and package-policy audit are in
 `tools/gemini/README.mt6797-power-owner-attestation-20260904.md`.
 
-## Current offline-qualified artifacts
+## Current reviewed artifact identities and disposition
 
 These entries are immutable identities, not a run order or schedule.
 
 | Lane | Source commit | Package commit | Candidate SHA-256 | Offline status |
 | --- | --- | --- | --- | --- |
 | MD1 post-vector observer | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `c56ea7a569a8ce7a29f602fdb1c8ca1f0fb4690f` -> `718b9d1849d632b2135a2da23d43a337a1efab59` -> `5b45870571e2dfbf0dd06731001ce9a624ad085e` -> `7194ebaec4b36cf5d46075cc4d1836254c2b196d` | `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213` | Independently reviewed: PASS |
-| G3 fixed-low Panfrost no-job | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` | `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985` | Independently reviewed: PASS |
+| G3 fixed-low Panfrost no-job | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` | `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985` | Offline source/contract review: PASS; package is not hardware-ready and requires repackaging |
 | A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Independently reviewed: PASS |
 | A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Independently reviewed: PASS; provider pass plus exact rollback required first |
 
@@ -141,9 +141,9 @@ exact, while
 `scheduling=none`, `specific-p22-authorization=none`, and
 `hardware-proof=none-offline-build-only` remain explicit.
 
-### G3 fixed-low Panfrost no-job gate
+### G3 fixed-low Panfrost no-job gate blocked for repackaging
 
-The exact offline-qualified owner-policy bundle is:
+The exact independently reviewed owner-policy bundle is:
 
 `/nix/store/ygwllkhz39xv4a07m5ys9a479qfmv481-gemini-g3-low-opp-nojob-p22-bundle`
 
@@ -153,6 +153,15 @@ rollback, and no-job acceptance contract offline.  Hardware has not been run
 by that review.  It binds Panfrost once at the fixed-low OPP and submits no
 job.  No GPU job, other OPP, DVFS, thermal, suspend, or render-node experiment
 is eligible from this result.
+
+A later hardware-readiness audit found two packaging defects shared with the
+retired A53 bundle: the primary validator expects model substring `Gemini`
+while the retained runtime reports `Machine model: MT6797X`, and the recovery
+harness's pstore helper directly invokes `/bin/busybox`, which is absent in
+that environment.  The source/contract review remains useful offline, but
+candidate `d1d188f0...` is not hardware-ready, must not be scheduled, and is
+closed/no-retry.  Repackaging must produce and independently review a new
+immutable candidate identity before this lane can re-enter the queue.
 
 Evidence:
 
@@ -235,6 +244,7 @@ surfaces and are not an alternative to the read-only observer.
 
 ### GPU/G2/G3 historical candidates
 
+- `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985`
 - `9a667439e951297d931583a6629486b2c3fc292cdc885b249fdd07fb5f7fefbb`
 - `002d312d2be67054f6a399b1ec3a715182c909819f05b22f6dd1f9a41e364f0f`
 - `75e8b4c5907bda9de3b5f8c6caf7cc82fd635c503677d7c52e9e8fae22217f5b`

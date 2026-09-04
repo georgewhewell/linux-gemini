@@ -85,8 +85,12 @@ retains `scheduling=none`, `specific-p22-authorization=none`, and
 `hardware-proof=none-offline-build-only`.  Independent offline review
 reproduced the bundle, verified every embedded checksum, and passed the full
 acceptance/recovery harness plus an additional adversarial predicate matrix.
-The final predicate and exact policy token are offline-qualified.  It is not
-hardware-authorized or scheduled.
+The final predicate and exact policy token are offline-qualified.  A later
+live-readiness audit found that all candidate validators reject the real
+`MT6797X` model and that this package has no run-scoped post-rollback pstore
+capture or durable resume path.  Candidate `777c1828...` was not run, is not
+hardware-ready, and is closed pending a newly hashed, independently reviewed
+package.  It is not hardware-authorized or scheduled.
 
 The exact token means explicit owner authority with no machine power probe.
 Near misses or generic `owner-attested` values are not equivalent, and the

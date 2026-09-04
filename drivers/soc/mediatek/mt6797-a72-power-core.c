@@ -116,6 +116,24 @@ int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
 	return 0;
 }
 
+int mt6797_a72_validate_cpu8_boot(unsigned int cpu, bool cpu4_online,
+				  bool transaction_armed, bool faulted)
+{
+	if (cpu != 8)
+		return -EPERM;
+	if (faulted)
+		return -EUCLEAN;
+	if (!cpu4_online || !transaction_armed)
+		return -EAGAIN;
+
+	return 0;
+}
+
+int mt6797_a72_validate_cpu8_identity(u32 midr)
+{
+	return midr == MT6797_A72_R0P1_MIDR ? 0 : -ENODEV;
+}
+
 static bool mt6797_a72_states_equal(const struct mt6797_a72_state *first,
 				     const struct mt6797_a72_state *second)
 {

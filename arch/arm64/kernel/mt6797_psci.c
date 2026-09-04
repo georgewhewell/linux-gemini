@@ -15,6 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/of.h>
 #include <linux/printk.h>
+#include <linux/soc/mediatek/mt6797-a72-power.h>
 #include <linux/string.h>
 
 #include <asm/cpu_ops.h>
@@ -1460,10 +1461,16 @@ static int mt6797_psci_cpu_kill(unsigned int cpu)
 
 static int mt6797_psci_cpu_boot(unsigned int cpu)
 {
-	pr_warn_ratelimited("CPU%u boot rejected: A72 power sequence inactive\n",
-			    cpu);
+	int ret;
 
-	return -EAGAIN;
+	ret = mt6797_a72_power_cpu_boot_admit(cpu);
+	if (ret) {
+		pr_warn_ratelimited("CPU%u boot rejected by A72 power owner: %d\n",
+				    cpu, ret);
+		return ret;
+	}
+
+	return cpu_psci_ops.cpu_boot(cpu);
 }
 
 #ifdef CONFIG_HOTPLUG_CPU

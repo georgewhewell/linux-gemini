@@ -24,7 +24,10 @@
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
 #include <linux/smp.h>
+#include <linux/soc/mediatek/mt6797-a72-power.h>
 #include <uapi/linux/psci.h>
+
+#include <asm/cputype.h>
 
 #include "mt6797-a72-power.h"
 
@@ -36,6 +39,9 @@
 #define MT6797_A72_IDVFS_FENCE_REG	0x102224a0U
 #define MT6797_A72_SRAM_SELECTOR_REG	0x102222b0U
 #define MT6797_A72_SRAM_BOOT_SELECTOR	11
+
+static_assert(MT6797_A72_R0P1_MIDR ==
+	      (MIDR_CORTEX_A72 | MIDR_CPU_VAR_REV(0, 1)));
 
 struct mt6797_a72_preflight {
 	struct device *dev;
@@ -59,8 +65,34 @@ struct mt6797_a72_preflight {
 	u32 fence_value;
 	bool guarded;
 	bool faulted;
-	bool psci_gate;
+	bool cpu8_armed;
 };
+
+static DEFINE_MUTEX(mt6797_a72_owner_lock);
+static struct mt6797_a72_preflight *mt6797_a72_owner;
+
+int mt6797_a72_power_cpu_boot_admit(unsigned int cpu)
+{
+	struct mt6797_a72_preflight *preflight;
+	bool cpu4_online;
+	bool armed;
+	bool faulted;
+	int ret;
+
+	mutex_lock(&mt6797_a72_owner_lock);
+	preflight = mt6797_a72_owner;
+	if (!preflight) {
+		ret = -EAGAIN;
+	} else {
+		cpu4_online = cpu_online(4);
+		armed = preflight->cpu8_armed;
+		faulted = preflight->faulted;
+		ret = mt6797_a72_validate_cpu8_boot(cpu, cpu4_online, armed, faulted);
+	}
+	mutex_unlock(&mt6797_a72_owner_lock);
+
+	return ret;
+}
 
 static int mt6797_a72_secure_read(u32 address, u32 *value)
 {
@@ -279,8 +311,6 @@ static int mt6797_a72_preflight_parse_cpus(struct device *dev,
 	int count;
 	int cpu;
 	int i;
-	bool psci_gate = true;
-	bool this_psci;
 
 	count = of_count_phandle_with_args(dev->of_node, "cpus", NULL);
 	if (count != ARRAY_SIZE(preflight->cpus))
@@ -303,13 +333,8 @@ static int mt6797_a72_preflight_parse_cpus(struct device *dev,
 		if (of_property_read_string(cpu_node, "enable-method",
 					    &enable_method))
 			goto invalid_cpu;
-		if (strcmp(enable_method, "psci") &&
-		    strcmp(enable_method, "mediatek,mt6797-psci"))
+		if (strcmp(enable_method, "mediatek,mt6797-psci"))
 			goto invalid_cpu;
-		this_psci = !strcmp(enable_method, "psci");
-		if (i && this_psci != psci_gate)
-			goto invalid_cpu;
-		psci_gate = this_psci;
 
 		of_node_put(cpu_node);
 		if (!i && cpu < nr_cpu_ids &&
@@ -328,8 +353,6 @@ invalid_cpu:
 				     (unsigned long long)
 				     (MT6797_A72_FIRST_MPIDR + i));
 	}
-	preflight->psci_gate = psci_gate;
-
 	return 0;
 }
 
@@ -356,8 +379,24 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 					   &mt6797_a72_live_ops,
 					   preflight,
 					   MT6797_A72_REQUIRED_CAPS);
-	if (ret == -EUCLEAN)
+	if (ret == -EUCLEAN) {
 		preflight->faulted = true;
+		return ret;
+	}
+	if (ret)
+		return ret;
+
+	mutex_lock(&mt6797_a72_owner_lock);
+	if (mt6797_a72_owner != preflight) {
+		mutex_unlock(&mt6797_a72_owner_lock);
+		ret = mt6797_a72_transaction_abort(&preflight->transaction);
+		if (ret)
+			preflight->faulted = true;
+		return ret ?: -ESHUTDOWN;
+	}
+	preflight->cpu8_armed = true;
+	mutex_unlock(&mt6797_a72_owner_lock);
+
 	return ret;
 }
 
@@ -368,7 +407,13 @@ mt6797_a72_cpu_on_abort(unsigned int cpu, struct hlist_node *node)
 	int ret;
 
 	preflight = hlist_entry(node, struct mt6797_a72_preflight, cpuhp_node);
-	if (cpu != MT6797_A72_FIRST_CPU || !preflight->transaction.active)
+	if (cpu != MT6797_A72_FIRST_CPU)
+		return 0;
+
+	mutex_lock(&mt6797_a72_owner_lock);
+	preflight->cpu8_armed = false;
+	mutex_unlock(&mt6797_a72_owner_lock);
+	if (!preflight->transaction.active)
 		return 0;
 
 	ret = mt6797_a72_transaction_abort(&preflight->transaction);
@@ -381,20 +426,37 @@ static int
 mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 {
 	struct mt6797_a72_preflight *preflight;
+	bool cpu4_online;
+	bool faulted;
+	bool transaction_active;
 	int affinity;
 	int ret;
 
 	preflight = hlist_entry(node, struct mt6797_a72_preflight, online_node);
 	if (cpu != MT6797_A72_FIRST_CPU)
 		return 0;
-	if (!preflight->transaction.active)
-		return -EUCLEAN;
+
+	cpu4_online = cpu_online(4);
+	faulted = preflight->faulted;
+	transaction_active = preflight->transaction.active;
+	ret = mt6797_a72_validate_cpu8_boot(cpu, cpu4_online, transaction_active, faulted);
+	if (ret)
+		goto disarm;
+	ret = mt6797_a72_validate_cpu8_identity(read_cpuid_id());
+	if (ret)
+		goto disarm;
 
 	affinity = psci_ops.affinity_info(preflight->mpidrs[0], 0);
-	if (affinity != PSCI_0_2_AFFINITY_LEVEL_ON)
-		return affinity < 0 ? affinity : -EIO;
+	if (affinity != PSCI_0_2_AFFINITY_LEVEL_ON) {
+		ret = affinity < 0 ? affinity : -EIO;
+		goto disarm;
+	}
 
 	ret = mt6797_a72_transaction_commit(&preflight->transaction);
+disarm:
+	mutex_lock(&mt6797_a72_owner_lock);
+	preflight->cpu8_armed = false;
+	mutex_unlock(&mt6797_a72_owner_lock);
 	if (ret)
 		preflight->faulted = true;
 	else
@@ -491,6 +553,24 @@ remove_prepare_instance:
 	preflight->cpuhp_state = CPUHP_INVALID;
 	return dev_err_probe(dev, ret,
 			     "failed to install CPU_ON commit state\n");
+}
+
+static void
+mt6797_a72_remove_cpu_on_gate(struct mt6797_a72_preflight *preflight)
+{
+	if (preflight->online_state != CPUHP_INVALID) {
+		cpuhp_state_remove_instance_nocalls(preflight->online_state,
+						    &preflight->online_node);
+		cpuhp_remove_multi_state(preflight->online_state);
+		preflight->online_state = CPUHP_INVALID;
+	}
+
+	if (preflight->cpuhp_state != CPUHP_INVALID) {
+		cpuhp_state_remove_instance_nocalls(preflight->cpuhp_state,
+						    &preflight->cpuhp_node);
+		cpuhp_remove_multi_state(preflight->cpuhp_state);
+		preflight->cpuhp_state = CPUHP_INVALID;
+	}
 }
 
 static int mt6797_a72_preflight_probe(struct platform_device *pdev)
@@ -635,11 +715,22 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	preflight->plan = plan;
 	preflight->admission_ret = transaction_ret;
 
-	if (preflight->psci_gate) {
-		ret = mt6797_a72_install_cpu_on_gate(dev, preflight,
-						     affinity, &psci_version);
-		if (ret)
-			return ret;
+	mutex_lock(&mt6797_a72_owner_lock);
+	if (mt6797_a72_owner) {
+		mutex_unlock(&mt6797_a72_owner_lock);
+		return dev_err_probe(dev, -EBUSY,
+				     "A72 admission owner already exists\n");
+	}
+	mt6797_a72_owner = preflight;
+	mutex_unlock(&mt6797_a72_owner_lock);
+
+	ret = mt6797_a72_install_cpu_on_gate(dev, preflight, affinity, &psci_version);
+	if (ret) {
+		mutex_lock(&mt6797_a72_owner_lock);
+		if (mt6797_a72_owner == preflight)
+			mt6797_a72_owner = NULL;
+		mutex_unlock(&mt6797_a72_owner_lock);
+		return ret;
 	}
 
 	platform_set_drvdata(pdev, preflight);
@@ -648,14 +739,13 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		 preflight->cpus[0], preflight->cpus[1], vproc_uv,
 		 vproc_enabled, sram_uv, sram_selector, mp2_rate,
 		 pwrap_reset_asserted, mp2_power, buck_iso, plan.count);
-	if (preflight->psci_gate)
-		dev_info(dev,
-			 "cpu-on-gate-v2: CPU8-mpidr=0x%llx CPU9-mpidr=0x%llx PSCI=%u.%u affinity8=off affinity9=off prepare-state=%d commit-state=%d CPU4-prerequisite=required CPU8=armed CPU9=blocked\n",
-			 (unsigned long long)preflight->mpidrs[0],
-			 (unsigned long long)preflight->mpidrs[1],
-			 PSCI_VERSION_MAJOR(psci_version),
-			 PSCI_VERSION_MINOR(psci_version),
-			 preflight->cpuhp_state, preflight->online_state);
+	dev_info(dev,
+		 "cpu-on-gate-v3: method=mediatek,mt6797-psci CPU8-mpidr=0x%llx CPU9-mpidr=0x%llx PSCI=%u.%u affinity8=off affinity9=off prepare-state=%d commit-state=%d CPU4-prerequisite=required CPU8-r0p1=required CPU8-admission=ready CPU9=blocked\n",
+		 (unsigned long long)preflight->mpidrs[0],
+		 (unsigned long long)preflight->mpidrs[1],
+		 PSCI_VERSION_MAJOR(psci_version),
+		 PSCI_VERSION_MINOR(psci_version), preflight->cpuhp_state,
+		 preflight->online_state);
 
 	return 0;
 }
@@ -664,17 +754,13 @@ static void mt6797_a72_preflight_remove(struct platform_device *pdev)
 {
 	struct mt6797_a72_preflight *preflight = platform_get_drvdata(pdev);
 
-	if (preflight->cpuhp_state == CPUHP_INVALID)
-		return;
-	if (preflight->online_state != CPUHP_INVALID) {
-		cpuhp_state_remove_instance_nocalls(preflight->online_state,
-						    &preflight->online_node);
-		cpuhp_remove_multi_state(preflight->online_state);
-	}
+	mutex_lock(&mt6797_a72_owner_lock);
+	if (mt6797_a72_owner == preflight)
+		mt6797_a72_owner = NULL;
+	preflight->cpu8_armed = false;
+	mutex_unlock(&mt6797_a72_owner_lock);
 
-	cpuhp_state_remove_instance_nocalls(preflight->cpuhp_state,
-					    &preflight->cpuhp_node);
-	cpuhp_remove_multi_state(preflight->cpuhp_state);
+	mt6797_a72_remove_cpu_on_gate(preflight);
 }
 
 static const struct of_device_id mt6797_a72_preflight_of_match[] = {

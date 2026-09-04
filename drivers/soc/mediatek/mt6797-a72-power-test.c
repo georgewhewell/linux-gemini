@@ -259,6 +259,34 @@ static void mt6797_a72_admission_rejects_unrestorable_selector_test(struct kunit
 	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
 }
 
+static void mt6797_a72_cpu8_boot_admission_test(struct kunit *test)
+{
+	int ret;
+
+	ret = mt6797_a72_validate_cpu8_boot(8, true, true, false);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	ret = mt6797_a72_validate_cpu8_boot(9, true, true, false);
+	KUNIT_EXPECT_EQ(test, ret, -EPERM);
+	ret = mt6797_a72_validate_cpu8_boot(8, false, true, false);
+	KUNIT_EXPECT_EQ(test, ret, -EAGAIN);
+	ret = mt6797_a72_validate_cpu8_boot(8, true, false, false);
+	KUNIT_EXPECT_EQ(test, ret, -EAGAIN);
+	ret = mt6797_a72_validate_cpu8_boot(8, true, true, true);
+	KUNIT_EXPECT_EQ(test, ret, -EUCLEAN);
+}
+
+static void mt6797_a72_cpu8_identity_test(struct kunit *test)
+{
+	int ret;
+
+	ret = mt6797_a72_validate_cpu8_identity(MT6797_A72_R0P1_MIDR);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	ret = mt6797_a72_validate_cpu8_identity(0x410fd080);
+	KUNIT_EXPECT_EQ(test, ret, -ENODEV);
+	ret = mt6797_a72_validate_cpu8_identity(0x411fd081);
+	KUNIT_EXPECT_EQ(test, ret, -ENODEV);
+}
+
 static void mt6797_a72_transaction_orders_and_aborts_test(struct kunit *test)
 {
 	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
@@ -385,6 +413,8 @@ static struct kunit_case mt6797_a72_power_test_cases[] = {
 	KUNIT_CASE(mt6797_a72_admission_requires_live_backends_test),
 	KUNIT_CASE(mt6797_a72_admission_fences_online_cpu_test),
 	KUNIT_CASE(mt6797_a72_admission_rejects_unrestorable_selector_test),
+	KUNIT_CASE(mt6797_a72_cpu8_boot_admission_test),
+	KUNIT_CASE(mt6797_a72_cpu8_identity_test),
 	KUNIT_CASE(mt6797_a72_transaction_orders_and_aborts_test),
 	KUNIT_CASE(mt6797_a72_failure_rolls_back_attempted_step_test),
 	KUNIT_CASE(mt6797_a72_verify_failure_rolls_back_test),

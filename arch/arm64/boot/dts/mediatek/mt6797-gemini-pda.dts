@@ -725,7 +725,8 @@
 	/*
 	 * Live Gemian identifies the external GPU buck as RT5735 at 0x1c.
 	 * Keep the provider disabled until the board rail and OPP sequence
-	 * have a recovery-tested runtime bring-up plan.
+	 * have a recovery-tested runtime bring-up plan.  Overlays which permit
+	 * voltage changes must also provide the measured ramp rate.
 	 */
 	rt5735_vgpu: regulator@1c {
 		compatible = "richtek,rt5735";
@@ -733,7 +734,6 @@
 		regulator-name = "vgpu";
 		regulator-min-microvolt = <600000>;
 		regulator-max-microvolt = <1393750>;
-		regulator-ramp-delay = <32000>;
 		regulator-enable-ramp-delay = <350>;
 		status = "disabled";
 	};

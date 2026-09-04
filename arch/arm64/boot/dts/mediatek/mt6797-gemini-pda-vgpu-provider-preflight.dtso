@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Planet Computers Gemini PDA VGPU rail-provider-only preflight.
+ *
+ * Apply this after the MFG provider preflight overlay.  It deliberately
+ * enables only I2C7 and the RT5735 provider: the GPU remains disabled and no
+ * regulator consumer can change the inherited bootloader rail state.
+ * Omitting this overlay is the complete rollback.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&i2c7 {
+	status = "okay";
+};
+
+&rt5735_vgpu {
+	status = "okay";
+};

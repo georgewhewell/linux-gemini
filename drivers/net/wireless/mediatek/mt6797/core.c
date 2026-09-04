@@ -16,6 +16,7 @@
 #include "capability.h"
 #include "firmware.h"
 #include "hif.h"
+#include "runtime_config.h"
 
 #define MT6797_WIFI_HIF_BASE	0x180f0000
 #define MT6797_WIFI_HIF_SPI	283
@@ -26,6 +27,7 @@ struct mt6797_wifi {
 	struct mt6797_wifi_boot boot;
 	struct mt6797_wifi_capability_irq capability_irq;
 	struct mt6797_wifi_capability capability;
+	struct mt6797_wifi_runtime_config runtime_config;
 	int irq;
 };
 
@@ -112,10 +114,14 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret,
 				     "failed WLAN NIC capability exchange\n");
 	}
+	ret = mt6797_wifi_runtime_configure(&wifi->runtime_config, &wifi->boot);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed WLAN post-capability basic config\n");
 
 	platform_set_drvdata(pdev, wifi);
 	dev_info(dev,
-		 "WLAN %#06x firmware %#06x ready; IRQ and network interfaces remain disabled\n",
+		 "WLAN %#06x fw %#06x BASIC_CONFIG_SENT seq=2 native80211=0 csum=0; IRQ/net disabled\n",
 		 wifi->capability.product_id, wifi->capability.firmware_version);
 	return 0;
 }

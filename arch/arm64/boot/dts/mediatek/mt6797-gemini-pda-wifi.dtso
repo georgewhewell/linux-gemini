@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Explicit preparation gate for the canonical MT6797 WLAN endpoint.
- * The endpoint verifies firmware and acquires its dormant HIF/IRQ resources;
- * it does not boot WLAN firmware, request the IRQ, or register a wiphy.
+ * Explicit volatile activation gate for the canonical MT6797 WLAN endpoint.
+ * The endpoint boots verified firmware, performs the bounded capability and
+ * basic-config exchanges, then leaves its IRQ and network interfaces disabled.
  */
 /dts-v1/;
 /plugin/;

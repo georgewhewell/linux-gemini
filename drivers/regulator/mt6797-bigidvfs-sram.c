@@ -120,8 +120,7 @@ int mt6797_sram_set_transaction(const struct mt6797_sram_io *io,
 	}
 
 	ret = io->read_selector(context, &observed);
-	if (!ret && observed < count &&
-	    voltages[observed] == voltages[selector])
+	if (!ret && observed == selector)
 		return 0;
 
 	primary_ret = ret ?: -EIO;
@@ -132,8 +131,7 @@ rollback:
 		return -EUCLEAN;
 
 	ret = io->read_selector(context, &observed);
-	if (ret || observed >= count ||
-	    voltages[observed] != voltages[before])
+	if (ret || observed != before)
 		return -EUCLEAN;
 
 	return primary_ret;
@@ -184,12 +182,33 @@ out_unlock:
 
 static int mt6797_bigidvfs_sram_status_unsupported(struct regulator_dev *rdev)
 {
+	/*
+	 * The deployed ATF's 0xc2000380 handler returns success without touching
+	 * hardware, and the pinned vendor disable function is a no-op.  The
+	 * selector at 0x102222b0 is therefore not promoted to lifecycle state.
+	 */
 	return -EOPNOTSUPP;
+}
+
+static int
+mt6797_bigidvfs_sram_map_voltage(struct regulator_dev *rdev, int min_uv,
+				 int max_uv)
+{
+	unsigned int selector;
+
+	/* Selector 0 is readable but the firmware setter cannot recreate it. */
+	for (selector = 1;
+	     selector < ARRAY_SIZE(mt6797_bigidvfs_sram_voltages); selector++)
+		if (mt6797_bigidvfs_sram_voltages[selector] >= min_uv &&
+		    mt6797_bigidvfs_sram_voltages[selector] <= max_uv)
+			return selector;
+
+	return -EINVAL;
 }
 
 static const struct regulator_ops mt6797_bigidvfs_sram_ops = {
 	.list_voltage = regulator_list_voltage_table,
-	.map_voltage = regulator_map_voltage_iterate,
+	.map_voltage = mt6797_bigidvfs_sram_map_voltage,
 	.get_voltage_sel = mt6797_bigidvfs_sram_get_voltage_sel,
 	.set_voltage_sel = mt6797_sram_set_voltage_sel,
 	.is_enabled = mt6797_bigidvfs_sram_status_unsupported,

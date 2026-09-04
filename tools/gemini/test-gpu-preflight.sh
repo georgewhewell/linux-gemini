@@ -63,4 +63,5 @@ need "$capture" 'GPU devfreq policy changed during the no-job observation'
 need "$capture" 'GPU_PREFLIGHT=PASS'
 
 sh -n "$capture"
+python3 "$root/tools/gemini/test-gpu-irq-identity.py"
 echo "Gemini G3 no-job source contract: PASS"

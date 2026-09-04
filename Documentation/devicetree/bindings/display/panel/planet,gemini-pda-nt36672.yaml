@@ -33,6 +33,7 @@ properties:
   outn-supply: true
   reset-gpios: true
   backlight: true
+  rotation: true
   port: true
 
 required:

@@ -40,7 +40,7 @@ These entries are immutable identities, not a run order or schedule.
 
 | Lane | Source commit | Package commit | Candidate SHA-256 | Offline status |
 | --- | --- | --- | --- | --- |
-| MD1 post-vector observer | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `c56ea7a569a8ce7a29f602fdb1c8ca1f0fb4690f` -> `718b9d1849d632b2135a2da23d43a337a1efab59` -> `5b45870571e2dfbf0dd06731001ce9a624ad085e` -> `7194ebaec4b36cf5d46075cc4d1836254c2b196d` | `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213` | Independently reviewed: PASS |
+| MD1 post-vector observer | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `c56ea7a569a8ce7a29f602fdb1c8ca1f0fb4690f` -> `718b9d1849d632b2135a2da23d43a337a1efab59` -> `5b45870571e2dfbf0dd06731001ce9a624ad085e` -> `7194ebaec4b36cf5d46075cc4d1836254c2b196d` | `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213` | Offline source/predicate review: PASS; package is not hardware-ready and requires repackaging |
 | G3 fixed-low Panfrost no-job | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` | `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985` | Offline source/contract review: PASS; package is not hardware-ready and requires repackaging |
 | A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Independently reviewed: PASS |
 | A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Independently reviewed: PASS; provider pass plus exact rollback required first |
@@ -110,7 +110,7 @@ Evidence:
 - `/mnt/Home/src/nixos-gemini/repo-a53-thermal-remediation/research/A53_DVFS_THERMAL_SOFTWARE_PREFLIGHT_20260904.md`
 - `/nix/store/x5m20gna2w7mzalywikvk92bs16g26hg-gemini-a53-thermal-preflight-p22-bundle/p22-one-shot.manifest`
 
-### MD1 post-vector CCIF/CLDMA read-only observation
+### MD1 post-vector observer blocked for repackaging
 
 The final candidate bundle is:
 
@@ -136,8 +136,19 @@ p22/p30/p31 rollback contract.
 Independent review reproduced the exact bundle with local offline builders,
 verified all 15 bundle checksums, passed the package's full acceptance and
 recovery harnesses, and passed an additional adversarial predicate matrix.
-It remains unscheduled and unauthorized for hardware.  Its owner token is
-exact, while
+That review established the source and observation predicate, but a later
+live-readiness audit found two packaging defects.  All four candidate
+validators require model substring `Gemini` while LK exposes the exact model
+`MT6797X`, and the recovery harness has neither run-scoped post-rollback pstore
+collection nor a durable `--resume-run` path.  Its sole pstore read is a
+best-effort pre-run console read.  Consequently the exact bundle cannot prove
+recovery after a watchdog or connectivity interruption.
+
+Candidate `777c1828...` was not run, is not hardware-ready, and is closed
+pending a newly hashed and independently reviewed package.  The source's
+watchdog-before-first-write, no-CCCI/radio/SIM predicate, and strict
+5,000-poll/at-least-five-second read-only boundary remain useful offline; they
+do not override the recovery defect.  Its owner token is exact, while
 `scheduling=none`, `specific-p22-authorization=none`, and
 `hardware-proof=none-offline-build-only` remain explicit.
 
@@ -233,6 +244,7 @@ for a current identity.
 
 ### Cellular predecessors
 
+- `777c182860863009174817e1d57970fc9fa8eb6f0bcc416803ba7ea8952a3213`
 - `34689b1814e2a3ce12eb248d7e6594c57e9c661d8a9e1e3b38f9942bf30d184c`
 - `edb4876686c6c18d534b3966948490280299d02fbd141f08e4f8fa4457f0f6cf`
 - `40ce0860e3871476d1c3fc4f4888d7e7e54755445ec96d7479df510bab2d0f4a`

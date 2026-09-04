@@ -96,6 +96,7 @@ struct mt6797_btif_stp_bootstrap {
 	bool raw_pending;
 	struct mtk_wmt full_wmt;
 	struct mt6797_consys_stp_session *session;
+	bool external_session;
 	bool owns_session;
 	const struct mt6797_consys_stp_session_bootstrap_lease *full_bootstrap;
 	const struct mt6797_consys_stp_session_lease *full_session;
@@ -378,6 +379,7 @@ mt6797_btif_stp_bootstrap_create_common(const struct mt6797_btif_pio_lease *pio_
 	bootstrap->runtime_lease = runtime_lease;
 	bootstrap->ops = *ops;
 	bootstrap->session = session;
+	bootstrap->external_session = !!session;
 	bootstrap->full_wmt_lease.bootstrap = bootstrap;
 	if (session) {
 		int ret;
@@ -477,6 +479,11 @@ mt6797_btif_stp_bootstrap_run_unchecked(
 	ret = bootstrap->ops.enable_irq(bootstrap->ops.context);
 	if (ret)
 		goto fail_locked;
+	if (bootstrap->ops.wake) {
+		ret = bootstrap->ops.wake(bootstrap->ops.context);
+		if (ret)
+			goto fail_locked;
+	}
 	mutex_unlock(&bootstrap->lifecycle_lock);
 
 	ret = mt6797_consys_wmt_initial_run_exclusive(bootstrap->initial,
@@ -601,6 +608,18 @@ mt6797_btif_stp_bootstrap_run(struct mt6797_btif_stp_bootstrap *bootstrap)
 	return mt6797_btif_stp_bootstrap_run_unchecked(bootstrap, NULL, NULL);
 }
 EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_run);
+
+const struct mt6797_consys_stp_session_lease *
+mt6797_btif_stp_bootstrap_run_owned(struct mt6797_btif_stp_bootstrap *bootstrap)
+{
+	if (!bootstrap)
+		return ERR_PTR(-EINVAL);
+	if (!bootstrap->external_session)
+		return ERR_PTR(-EXDEV);
+
+	return mt6797_btif_stp_bootstrap_run_unchecked(bootstrap, NULL, NULL);
+}
+EXPORT_SYMBOL_GPL(mt6797_btif_stp_bootstrap_run_owned);
 
 const struct mt6797_consys_stp_session_lease *
 mt6797_btif_stp_bootstrap_run_with_full_wmt_stage(

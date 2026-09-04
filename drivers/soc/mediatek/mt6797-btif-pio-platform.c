@@ -16,15 +16,15 @@
  *
  * Thus probe obtains, but does not enable, btifc and requests a threaded core
  * IRQ with IRQF_NO_AUTOEN. It then registers as the explicitly referenced
- * component of the shared CONSYS owner. Component binding only joins the
- * dormant PIO object to the one inert full-STP session; lease acquisition
- * remains the later hardware boundary and enables only the PIO-core clock.
- * It deliberately neither obtains nor votes APDMA. A future activation owner
- * must still establish CONSYS power/reset/wake, pads and mandatory-STP handover
- * before PIO register setup or IRQ enable is possible.
+ * component of the shared CONSYS owner. That aggregate alone may reserve PIO,
+ * emit the vendor 64--96 us internal wake pulse, and bootstrap its sole STP
+ * session after establishing the long-lived CONSYS power/reset lease. Teardown
+ * synchronizes the IRQ and fences PIO before returning to the power owner. It
+ * deliberately neither obtains nor votes APDMA.
  */
 
 #include <linux/completion.h>
+#include <linux/delay.h>
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/device.h>
@@ -64,6 +64,8 @@
 #define MT6797_BTIF_CORE_BASE	0x1100c000
 #define MT6797_BTIF_CORE_SIZE	0x1000
 #define MT6797_BTIF_CORE_SPI	130
+#define MT6797_BTIF_WAKE		0x64
+#define MT6797_BTIF_WAKE_BIT	BIT(0)
 #define MT6797_BTIF_LOOPBACK_PATTERN	0xa5
 /* Safety bound only; vendor BTIF source supplies no loopback deadline. */
 #define MT6797_BTIF_LOOPBACK_TIMEOUT_MS	100
@@ -134,10 +136,40 @@ struct mt6797_btif_pio_platform {
 	bool btifc_enabled;
 	bool component_registered;
 	struct mt6797_consys_stp_session *session;
+#if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
+	struct mt6797_btif_stp_bootstrap *active_bootstrap;
+	const struct mt6797_consys_stp_session_lease *active_session_lease;
+#endif
 	int loopback_status;
 	u8 loopback_byte;
 	enum mt6797_btif_pio_platform_state state;
 };
+
+static const struct mt6797_btif_pio_platform_lease *
+mt6797_btif_pio_platform_reserve(struct mt6797_btif_pio_platform *adapter);
+
+static int mt6797_btif_pio_platform_wake(void *context)
+{
+	struct mt6797_btif_pio_platform *adapter = context;
+	u32 value;
+	int ret = 0;
+
+	mutex_lock(&adapter->state_lock);
+	if (adapter->state != MT6797_BTIF_PIO_PLATFORM_ACTIVE ||
+	    !adapter->btifc_enabled) {
+		ret = -ESHUTDOWN;
+	} else {
+		/* Vendor btif_raise_wak_signal(): low for 64--96 us, then high. */
+		value = readl(adapter->base + MT6797_BTIF_WAKE);
+		writel(value & ~MT6797_BTIF_WAKE_BIT,
+		       adapter->base + MT6797_BTIF_WAKE);
+		usleep_range(64, 96);
+		writel(value | MT6797_BTIF_WAKE_BIT,
+		       adapter->base + MT6797_BTIF_WAKE);
+	}
+	mutex_unlock(&adapter->state_lock);
+	return ret;
+}
 
 static int
 mt6797_btif_component_bind_session(void *context,
@@ -184,10 +216,111 @@ static int mt6797_btif_component_transmit(void *context, const u8 *frame,
 					 frame_length);
 }
 
+#if IS_ENABLED(CONFIG_MTK_MT6797_BTIF_STP_BOOTSTRAP)
+static int
+mt6797_btif_component_start(void *context,
+			    const struct mt6797_consys_runtime_lease *runtime_lease,
+			    const struct mt6797_consys_stp_session_lease **session_lease)
+{
+	struct mt6797_btif_pio_platform *adapter = context;
+	const struct mt6797_btif_pio_platform_lease *platform_lease;
+	struct mt6797_btif_stp_bootstrap *bootstrap;
+	const struct mt6797_consys_stp_session_lease *lease;
+	int ret;
+
+	if (!adapter || !runtime_lease || !session_lease)
+		return -EINVAL;
+
+	mutex_lock(&adapter->state_lock);
+	if (!adapter->session)
+		ret = -ENOLINK;
+	else if (adapter->active_bootstrap)
+		ret = -EBUSY;
+	else
+		ret = 0;
+	mutex_unlock(&adapter->state_lock);
+	if (ret)
+		return ret;
+
+	platform_lease = mt6797_btif_pio_platform_reserve(adapter);
+	if (IS_ERR(platform_lease))
+		return PTR_ERR(platform_lease);
+
+	bootstrap = mt6797_btif_pio_platform_bootstrap_create(platform_lease,
+							      runtime_lease);
+	if (IS_ERR(bootstrap)) {
+		ret = PTR_ERR(bootstrap);
+		goto close_platform;
+	}
+
+	lease = mt6797_btif_stp_bootstrap_run_owned(bootstrap);
+	if (IS_ERR(lease)) {
+		ret = PTR_ERR(lease);
+		goto destroy_bootstrap;
+	}
+	if (!mt6797_consys_stp_session_owns_lease(adapter->session, lease)) {
+		ret = -EXDEV;
+		goto destroy_bootstrap;
+	}
+
+	mutex_lock(&adapter->state_lock);
+	if (adapter->active_bootstrap) {
+		ret = -EBUSY;
+	} else {
+		adapter->active_bootstrap = bootstrap;
+		adapter->active_session_lease = lease;
+		*session_lease = lease;
+		ret = 0;
+	}
+	mutex_unlock(&adapter->state_lock);
+	if (!ret)
+		return 0;
+
+destroy_bootstrap:
+	mt6797_btif_stp_bootstrap_destroy(bootstrap);
+close_platform:
+	/* Also covers allocation failure before bootstrap acquired close(). */
+	mt6797_btif_pio_platform_close(platform_lease);
+	return ret;
+}
+
+static void mt6797_btif_component_stop(void *context)
+{
+	struct mt6797_btif_pio_platform *adapter = context;
+	struct mt6797_btif_stp_bootstrap *bootstrap;
+
+	if (!adapter)
+		return;
+
+	mutex_lock(&adapter->state_lock);
+	bootstrap = adapter->active_bootstrap;
+	adapter->active_bootstrap = NULL;
+	adapter->active_session_lease = NULL;
+	mutex_unlock(&adapter->state_lock);
+
+	/* destroy() synchronously masks IRQ and fences PIO before returning. */
+	mt6797_btif_stp_bootstrap_destroy(bootstrap);
+}
+#else
+static int
+mt6797_btif_component_start(void *context,
+			    const struct mt6797_consys_runtime_lease *runtime_lease,
+			    const struct mt6797_consys_stp_session_lease **session_lease)
+{
+	return -EOPNOTSUPP;
+}
+
+static void mt6797_btif_component_stop(void *context)
+{
+}
+#endif
+
 static const struct mt6797_consys_btif_ops mt6797_btif_component_transport_ops = {
 	.transmit = mt6797_btif_component_transmit,
 	.bind_session = mt6797_btif_component_bind_session,
 	.unbind_session = mt6797_btif_component_unbind_session,
+	.start = mt6797_btif_component_start,
+	.stop = mt6797_btif_component_stop,
 };
 
 static int mt6797_btif_component_bind(struct device *dev,
@@ -215,15 +348,8 @@ static int mt6797_btif_component_bind(struct device *dev,
 static void mt6797_btif_component_unbind(struct device *dev,
 					 struct device *master, void *master_data)
 {
-	struct mt6797_btif_pio_platform *adapter = dev_get_drvdata(dev);
-
 	(void)master_data;
 
-	/*
-	 * Stop and synchronize the sole RX producer before destroying the session
-	 * which receives its fragments. close() then fences PIO and drops btifc.
-	 */
-	mt6797_btif_pio_platform_close(&adapter->lease);
 	mt6797_consys_btif_detach(master, dev);
 }
 
@@ -518,8 +644,6 @@ mt6797_btif_pio_platform_bootstrap_create(
 
 	if (!platform_lease || !platform_lease->adapter || !runtime_lease)
 		return ERR_PTR(-EINVAL);
-	if (!READ_ONCE(enable_experimental_platform_adapter))
-		return ERR_PTR(-EPERM);
 	if (!mt6797_consys_runtime_lease_active(runtime_lease))
 		return ERR_PTR(-ESHUTDOWN);
 
@@ -534,12 +658,17 @@ mt6797_btif_pio_platform_bootstrap_create(
 		mutex_unlock(&adapter->state_lock);
 		return ERR_PTR(-EBUSY);
 	}
+	if (!READ_ONCE(enable_experimental_platform_adapter) && !adapter->session) {
+		mutex_unlock(&adapter->state_lock);
+		return ERR_PTR(-EPERM);
+	}
 	/* Prevent the direct full-session path from racing this one owner. */
 	adapter->state = MT6797_BTIF_PIO_PLATFORM_BOOTSTRAP;
 	mutex_unlock(&adapter->state_lock);
 
 	ops = (struct mt6797_btif_stp_bootstrap_ops) {
 		.enable_irq = mt6797_btif_pio_platform_bootstrap_enable_irq,
+		.wake = mt6797_btif_pio_platform_wake,
 		.close = mt6797_btif_pio_platform_bootstrap_close,
 		.context = adapter,
 	};

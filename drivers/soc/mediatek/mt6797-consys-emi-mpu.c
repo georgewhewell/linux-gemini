@@ -9,6 +9,7 @@
  */
 
 #include <linux/arm-smccc.h>
+#include <linux/component.h>
 #include <linux/device.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -200,6 +201,27 @@ static const struct mt6797_consys_emi_ops mt6797_consys_emi_mpu_ops = {
 	.map_clear = mt6797_consys_emi_mpu_map_clear,
 };
 
+static int mt6797_emi_component_bind(struct device *dev, struct device *master,
+				     void *master_data)
+{
+	return dev_get_drvdata(dev) ? 0 : -ENODEV;
+}
+
+static void mt6797_emi_component_unbind(struct device *dev,
+					struct device *master, void *master_data)
+{
+}
+
+static const struct component_ops mt6797_consys_emi_mpu_component_ops = {
+	.bind = mt6797_emi_component_bind,
+	.unbind = mt6797_emi_component_unbind,
+};
+
+static void mt6797_consys_emi_mpu_component_del(void *data)
+{
+	component_del(data, &mt6797_consys_emi_mpu_component_ops);
+}
+
 static int
 mt6797_consys_emi_mpu_claim_provider(struct mt6797_consys_emi_mpu *mpu)
 {
@@ -313,6 +335,19 @@ static int mt6797_consys_emi_mpu_probe(struct platform_device *pdev)
 		return ret;
 
 	platform_set_drvdata(pdev, mpu);
+	ret = component_add(&pdev->dev,
+			    &mt6797_consys_emi_mpu_component_ops);
+	if (ret) {
+		platform_set_drvdata(pdev, NULL);
+		return ret;
+	}
+	ret = devm_add_action_or_reset(&pdev->dev,
+				       mt6797_consys_emi_mpu_component_del,
+				       &pdev->dev);
+	if (ret) {
+		platform_set_drvdata(pdev, NULL);
+		return ret;
+	}
 	dev_info(&pdev->dev,
 		 "shared EMI prepared; ownership remains inactive until claimed\n");
 	return 0;

@@ -16404,6 +16404,14 @@ F:	include/dt-bindings/reset/mediatek,mt6735-mfgcfg.h
 F:	include/dt-bindings/reset/mediatek,mt6735-pericfg.h
 F:	include/dt-bindings/reset/mediatek,mt6735-vdecsys.h
 
+MEDIATEK MT6797 WI-FI AHB DRIVER
+M:	Julien Etienne <julien.etienne@gmail.com>
+L:	linux-wireless@vger.kernel.org
+L:	linux-mediatek@lists.infradead.org (moderated for non-subscribers)
+S:	Maintained
+F:	Documentation/devicetree/bindings/net/wireless/mediatek,mt6797-wifi.yaml
+F:	drivers/net/wireless/mediatek/mt6797/
+
 MEDIATEK MT76 WIRELESS LAN DRIVER
 M:	Felix Fietkau <nbd@nbd.name>
 M:	Lorenzo Bianconi <lorenzo@kernel.org>

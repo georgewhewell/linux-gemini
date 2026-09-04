@@ -105,6 +105,13 @@ properties:
   clock-names:
     const: conn
 
+  power-domains:
+    maxItems: 1
+    description: Shared MT6797 CONN power domain.
+
+  power-domain-names:
+    const: conn
+
   mediatek,conn-power-domain:
     $ref: /schemas/types.yaml#/definitions/phandle-array
     description: |
@@ -164,6 +171,16 @@ required:
   - memory-region-names
 
 allOf:
+  - if:
+      properties:
+        compatible:
+          const: mediatek,mt6797-consys
+    then:
+      required:
+        - power-domains
+        - power-domain-names
+        - vcn18-supply
+        - vcn28-supply
   - if:
       properties:
         compatible:
@@ -253,6 +270,10 @@ examples:
             interrupt-parent = <&gic>;
             resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
             reset-names = "conn-mcu";
+            power-domains = <&scpsys 12>;
+            power-domain-names = "conn";
+            vcn18-supply = <&vcn18>;
+            vcn28-supply = <&vcn28>;
             memory-region = <&consys_reserved_memory>;
             memory-region-names = "shared";
             status = "disabled";

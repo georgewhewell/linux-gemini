@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * MediaTek MT6797 connectivity subsystem resource inventory.
+ * MediaTek MT6797 connectivity subsystem ownership foundation.
  *
  * This driver is deliberately fail-closed: it only retains and validates
  * Device Tree resource metadata for a later CONSYS owner. It never maps or
@@ -8,11 +8,11 @@
  * or power domain; loads firmware; or maps the shared reserved memory.
  */
 
-#include <linux/clk.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
@@ -20,7 +20,14 @@
 #include <linux/reset.h>
 #include <linux/sizes.h>
 
-#include <linux/soc/mediatek/mt6797-consys.h>
+#define MT6797_CONSYS_SHARED_MEM_SIZE	0x200000ULL
+#define MT6797_CONSYS_SHARED_MEM_MIN	0x40000000ULL
+#define MT6797_CONSYS_SHARED_MEM_END	0xc0000000ULL
+
+enum mt6797_consys_owner_state {
+	MT6797_CONSYS_OWNER_OFF,
+	MT6797_CONSYS_OWNER_ERROR,
+};
 
 struct mt6797_consys_resource {
 	const char *name;
@@ -36,10 +43,10 @@ struct mt6797_consys {
 	struct resource shared_mem;
 	struct regulator *vcn18;
 	struct regulator *vcn28;
-	struct regulator *vcn33_bt;
-	struct regulator *vcn33_wifi;
-	struct clk *conn_clk;
 	struct reset_control *conn_mcu_reset;
+	/* Reserved for the eventual single remoteproc lifetime owner. */
+	struct mutex lifecycle_lock;
+	enum mt6797_consys_owner_state state;
 	int bgf_irq;
 	int wdt_irq;
 };
@@ -64,6 +71,8 @@ static const struct mt6797_consys_resource mt6797_consys_resources[] = {
 	},
 };
 
+static_assert(ARRAY_SIZE(mt6797_consys_resources) == 4);
+
 static int mt6797_consys_get_resource(struct platform_device *pdev,
 				      const struct mt6797_consys_resource *expected,
 				      const struct resource **resource)
@@ -86,18 +95,22 @@ static int mt6797_consys_get_resource(struct platform_device *pdev,
 static int mt6797_consys_get_supply(struct device *dev, const char *name,
 				    struct regulator **supply)
 {
-	*supply = devm_regulator_get_optional(dev, name);
+	*supply = devm_regulator_get(dev, name);
 	if (IS_ERR(*supply)) {
-		if (PTR_ERR(*supply) == -ENODEV) {
-			*supply = NULL;
-			return 0;
-		}
-
 		return dev_err_probe(dev, PTR_ERR(*supply),
 				     "failed to acquire %s supply\n", name);
 	}
 
 	return 0;
+}
+
+static bool
+mt6797_consys_shared_mem_valid(phys_addr_t start, resource_size_t size)
+{
+	return size == MT6797_CONSYS_SHARED_MEM_SIZE &&
+		IS_ALIGNED(start, MT6797_CONSYS_SHARED_MEM_SIZE) &&
+		start >= MT6797_CONSYS_SHARED_MEM_MIN &&
+		start <= MT6797_CONSYS_SHARED_MEM_END - size;
 }
 
 static int
@@ -173,21 +186,8 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = mt6797_consys_get_supply(dev, "vcn33-bt", &consys->vcn33_bt);
-	if (ret)
-		return ret;
-
-	ret = mt6797_consys_get_supply(dev, "vcn33-wifi", &consys->vcn33_wifi);
-	if (ret)
-		return ret;
-
-	consys->conn_clk = devm_clk_get_optional(dev, "conn");
-	if (IS_ERR(consys->conn_clk))
-		return dev_err_probe(dev, PTR_ERR(consys->conn_clk),
-				     "failed to acquire conn clock\n");
-
 	consys->conn_mcu_reset =
-		devm_reset_control_get_optional_exclusive(dev, "conn-mcu");
+		devm_reset_control_get_exclusive(dev, "conn-mcu");
 	if (IS_ERR(consys->conn_mcu_reset))
 		return dev_err_probe(dev, PTR_ERR(consys->conn_mcu_reset),
 				     "failed to acquire CONN MCU reset\n");
@@ -202,8 +202,10 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, consys->wdt_irq,
 				     "failed to acquire WDT IRQ\n");
 
+	mutex_init(&consys->lifecycle_lock);
+	consys->state = MT6797_CONSYS_OWNER_OFF;
 	platform_set_drvdata(pdev, consys);
-	dev_info(dev, "resource inventory only; hardware remains untouched\n");
+	dev_info(dev, "shared owner initialized; hardware remains untouched\n");
 
 	return 0;
 }
@@ -223,5 +225,5 @@ static struct platform_driver mt6797_consys_driver = {
 };
 module_platform_driver(mt6797_consys_driver);
 
-MODULE_DESCRIPTION("MediaTek MT6797 CONSYS resource inventory");
+MODULE_DESCRIPTION("MediaTek MT6797 CONSYS ownership foundation");
 MODULE_LICENSE("GPL");

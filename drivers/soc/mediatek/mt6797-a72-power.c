@@ -19,8 +19,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
 
-#define SPM_MP2_CPUSYS_PWR_CON		0x218
-#define SPM_EXT_BUCK_ISO		0x290
+#include "mt6797-a72-power.h"
 
 #define MT6797_A72_VPROC_MIN_UV		800000
 #define MT6797_A72_VPROC_MAX_UV		1200000
@@ -77,6 +76,8 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct mt6797_a72_preflight *preflight;
 	unsigned long mp2_rate;
+	struct mt6797_a72_state state = { };
+	struct mt6797_a72_plan plan;
 	u32 mp2_power;
 	u32 buck_iso;
 	int vproc_enabled;
@@ -84,6 +85,7 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	int sram_enabled;
 	int sram_uv;
 	int pwrap_reset_asserted;
+	int transaction_ret;
 	int ret;
 
 	preflight = devm_kzalloc(dev, sizeof(*preflight), GFP_KERNEL);
@@ -94,6 +96,7 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	ret = 0;
 	cpus_read_lock();
 	if (cpu_online(preflight->cpus[0]) ||
 	    cpu_online(preflight->cpus[1]))
@@ -163,12 +166,14 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, -EINVAL,
 				     "MP2 clock rate is unavailable\n");
 
-	ret = regmap_read(preflight->spm, SPM_MP2_CPUSYS_PWR_CON, &mp2_power);
+	ret = regmap_read(preflight->spm, MT6797_A72_SPM_MP2_PWR_CON,
+			  &mp2_power);
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to read MP2 power control\n");
 
-	ret = regmap_read(preflight->spm, SPM_EXT_BUCK_ISO, &buck_iso);
+	ret = regmap_read(preflight->spm, MT6797_A72_SPM_EXT_BUCK_ISO,
+			  &buck_iso);
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to read external buck isolation\n");
@@ -178,12 +183,34 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, pwrap_reset_asserted,
 				     "failed to read PWRAP reset state\n");
 
+	ret = mt6797_a72_build_plan(&plan);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to build A72 transaction model\n");
+
+	state.mp2_pwr_con = mp2_power;
+	state.ext_buck_iso = buck_iso;
+	state.vproc_enabled = vproc_enabled;
+	state.vsram_enabled = sram_enabled;
+	state.pwrap_reset_asserted = pwrap_reset_asserted;
+	state.vproc_uv = vproc_uv;
+	state.vsram_uv = sram_uv;
+	/*
+	 * No live backend or OCP guard is wired.  In particular, the secure
+	 * SRAM provider cannot report or restore enable state, so admission
+	 * must remain closed before the first write.
+	 */
+	transaction_ret = mt6797_a72_validate_admission(&state, 0);
+	if (transaction_ret != -EOPNOTSUPP)
+		return dev_err_probe(dev, -EUCLEAN,
+				     "A72 transaction gate unexpectedly opened\n");
+
 	platform_set_drvdata(pdev, preflight);
 	dev_info(dev,
-		 "CPU%u/%u resource-preflight-v1: offline=1 vproc=%duV vproc-enabled=%d sram=%duV sram-status=%d mp2=%luHz pwrap-reset=%d spm-mp2=0x%08x spm-buck-iso=0x%08x CPU_ON=denied\n",
+		 "CPU%u/%u resource-preflight-v1: offline=1 vproc=%duV vproc-enabled=%d sram=%duV sram-status=%d mp2=%luHz pwrap-reset=%d spm-mp2=0x%08x spm-buck-iso=0x%08x plan-steps=%u transaction=-EOPNOTSUPP CPU_ON=denied\n",
 		 preflight->cpus[0], preflight->cpus[1], vproc_uv,
 		 vproc_enabled, sram_uv, sram_enabled, mp2_rate,
-		 pwrap_reset_asserted, mp2_power, buck_iso);
+		 pwrap_reset_asserted, mp2_power, buck_iso, plan.count);
 
 	return 0;
 }

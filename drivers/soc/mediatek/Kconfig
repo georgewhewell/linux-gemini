@@ -288,6 +288,16 @@ config MTK_MT6797_CONSYS_FW_HANDOFF_KUNIT_TEST
 	  size limits, and malformed input rejection with in-memory data. No
 	  firmware request or hardware access is performed by the tests.
 
+config MTK_MT6797_A72_POWER_KUNIT_TEST
+	bool "KUnit tests for the MT6797 Cortex-A72 transaction model"
+	depends on KUNIT=y
+	depends on MTK_MT6797_A72_POWER=y
+	help
+	  Exercise the vendor-evidenced pre-CPU_ON plan, admission fences,
+	  ordered execution, and complete reverse rollback against an in-memory
+	  backend. The tests issue no SMC, MMIO, regulator, reset, PSCI CPU_ON,
+	  or other hardware operation.
+
 config MTK_MT6797_CONSYS_INVENTORY
 	bool "MediaTek MT6797 CONSYS ownership foundation"
 	depends on ARM64 && ARCH_MEDIATEK && OF

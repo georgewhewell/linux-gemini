@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/dma/mediatek,mt6765-cqdma.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek Command-Queue DMA Controller
+
+maintainers:
+  - Matthias Brugger <matthias.bgg@gmail.com>
+
+description:
+  The MediaTek Command-Queue DMA (CQDMA) controller provides multiple virtual
+  DMA channels backed by a small number of physical memcpy engines.
+
+properties:
+  compatible:
+    enum:
+      - mediatek,mt6765-cqdma
+      - mediatek,mt6797-cqdma
+
+  reg:
+    minItems: 2
+    maxItems: 3
+
+  interrupts:
+    minItems: 2
+    maxItems: 3
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: cqdma
+
+  "#dma-cells":
+    const: 1
+    description: Virtual DMA channel number
+
+  dma-channels:
+    minimum: 2
+    maximum: 3
+
+  dma-requests:
+    minimum: 1
+    maximum: 32
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - "#dma-cells"
+  - dma-channels
+
+additionalProperties: false
+
+allOf:
+  - $ref: dma-controller.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: mediatek,mt6797-cqdma
+    then:
+      properties:
+        reg:
+          minItems: 2
+          maxItems: 2
+        interrupts:
+          minItems: 2
+          maxItems: 2
+        dma-channels:
+          const: 2
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    dma-controller@10212c00 {
+        compatible = "mediatek,mt6797-cqdma";
+        reg = <0x10212c00 0x100>,
+              <0x10212d00 0x100>;
+        interrupts = <GIC_SPI 118 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 119 IRQ_TYPE_LEVEL_LOW>;
+        clocks = <&infrasys CLK_INFRA_GCE>;
+        clock-names = "cqdma";
+        dma-channels = <2>;
+        dma-requests = <32>;
+        #dma-cells = <1>;
+    };

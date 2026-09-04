@@ -6,7 +6,6 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/errno.h>
-#include <linux/interrupt.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
@@ -17,30 +16,13 @@
 #include "boot.h"
 #include "capability.h"
 #include "hif.h"
+#include "hif_regs.h"
+#include "hif_runtime.h"
 #include "protocol.h"
 
-#define MT6797_WIFI_MCR_WHLPCR		0x0004
-#define MT6797_WIFI_MCR_WHCR		0x000c
-#define MT6797_WIFI_MCR_WHISR		0x0010
-#define MT6797_WIFI_MCR_WHIER		0x0014
-#define MT6797_WIFI_MCR_WTDR1		0x0034
-#define MT6797_WIFI_MCR_WRDR1		0x0054
-#define MT6797_WIFI_MCR_WRPLR		0x0090
-#define MT6797_WIFI_MCR_WTQCR0		0x0130
-
-#define MT6797_WIFI_WHLPCR_INT_SET	BIT(0)
-#define MT6797_WIFI_WHLPCR_INT_CLR	BIT(1)
-#define MT6797_WIFI_WHCR_INT_WRITE_1_CLEAR BIT(1)
-#define MT6797_WIFI_WHISR_TX_DONE	BIT(0)
-#define MT6797_WIFI_WHISR_RX0_DONE	BIT(1)
-#define MT6797_WIFI_WHISR_RX1_DONE	BIT(2)
-#define MT6797_WIFI_WHISR_ABNORMAL	BIT(6)
-#define MT6797_WIFI_WHISR_FW_OWN_BACK	BIT(7)
-#define MT6797_WIFI_WHISR_D2H_SW		GENMASK(31, 8)
 #define MT6797_WIFI_WHIER_CAPABILITY	(MT6797_WIFI_WHISR_TX_DONE | \
 					 MT6797_WIFI_WHISR_RX1_DONE | \
 					 MT6797_WIFI_WHISR_ABNORMAL)
-#define MT6797_WIFI_WHIER_DEFAULT	0xffffff47U
 
 #define MT6797_WIFI_CMD_CAPABILITY	0x80U
 #define MT6797_WIFI_EVENT_CAPABILITY	0x01U
@@ -73,8 +55,10 @@ mt6797_wifi_capability_transaction(const struct mt6797_wifi_capability_ops *ops)
 	ret = ops->precheck(ops->context);
 	if (ret)
 		goto out_fence;
+	ret = ops->arm(ops->context);
+	if (ret)
+		goto out_fence;
 	armed = true;
-	ops->arm(ops->context);
 	/* Close the wrapper gate before changing device or Linux IRQ state. */
 	ops->mask_hif_irq(ops->context);
 	device_touched = true;
@@ -178,13 +162,13 @@ int mt6797_wifi_capability_event_parse(const u8 *event, size_t length,
 }
 
 static int
-mt6797_wifi_capability_reg_read(struct mt6797_wifi_capability_irq *irq,
+mt6797_wifi_capability_reg_read(struct mt6797_wifi_capability_session *irq,
 				u32 address, u32 *value)
 {
 	__le32 data;
 	int ret;
 
-	ret = mt6797_wifi_ahb_cmd53_read(irq->hif, address, &data,
+	ret = mt6797_wifi_ahb_cmd53_read(irq->owner->hif, address, &data,
 					 sizeof(data));
 	if (!ret)
 		*value = le32_to_cpu(data);
@@ -192,17 +176,17 @@ mt6797_wifi_capability_reg_read(struct mt6797_wifi_capability_irq *irq,
 }
 
 static int
-mt6797_wifi_capability_reg_write(struct mt6797_wifi_capability_irq *irq,
+mt6797_wifi_capability_reg_write(struct mt6797_wifi_capability_session *irq,
 				 u32 address, u32 value)
 {
 	__le32 data = cpu_to_le32(value);
 
-	return mt6797_wifi_ahb_cmd53_write(irq->hif, address, &data,
+	return mt6797_wifi_ahb_cmd53_write(irq->owner->hif, address, &data,
 					  sizeof(data));
 }
 
-static int
-mt6797_wifi_capability_read_tx_completion(struct mt6797_wifi_capability_irq *irq)
+static int mt6797_wifi_capability_read_tx_completion(
+	struct mt6797_wifi_capability_session *irq)
 {
 	unsigned int queue;
 	int ret;
@@ -218,7 +202,7 @@ mt6797_wifi_capability_read_tx_completion(struct mt6797_wifi_capability_irq *irq
 }
 
 static void
-mt6797_wifi_capability_complete(struct mt6797_wifi_capability_irq *irq,
+mt6797_wifi_capability_complete(struct mt6797_wifi_capability_session *irq,
 				int result)
 {
 	irq->result = result;
@@ -226,22 +210,12 @@ mt6797_wifi_capability_complete(struct mt6797_wifi_capability_irq *irq,
 	complete(&irq->completion);
 }
 
-static irqreturn_t mt6797_wifi_capability_irq(int linux_irq, void *data)
+static irqreturn_t mt6797_wifi_capability_irq_thread(void *data)
 {
-	struct mt6797_wifi_capability_irq *irq = data;
-
-	(void)linux_irq;
-	mt6797_wifi_ahb_irq_mask(irq->hif);
-	return READ_ONCE(irq->armed) ? IRQ_WAKE_THREAD : IRQ_HANDLED;
-}
-
-static irqreturn_t mt6797_wifi_capability_irq_thread(int linux_irq, void *data)
-{
-	struct mt6797_wifi_capability_irq *irq = data;
+	struct mt6797_wifi_capability_session *irq = data;
 	u16 length;
 	int ret;
 
-	(void)linux_irq;
 	if (!READ_ONCE(irq->armed) || irq->done)
 		return IRQ_HANDLED;
 	if (++irq->irq_count > MT6797_WIFI_CAPABILITY_MAX_IRQS) {
@@ -264,7 +238,7 @@ static irqreturn_t mt6797_wifi_capability_irq_thread(int linux_irq, void *data)
 	}
 	if (!(irq->whisr & MT6797_WIFI_WHISR_RX1_DONE)) {
 		if (READ_ONCE(irq->armed))
-			mt6797_wifi_ahb_irq_unmask(irq->hif);
+			mt6797_wifi_ahb_irq_unmask(irq->owner->hif);
 		return IRQ_HANDLED;
 	}
 	ret = mt6797_wifi_capability_reg_read(irq, MT6797_WIFI_MCR_WRPLR,
@@ -276,7 +250,8 @@ static irqreturn_t mt6797_wifi_capability_irq_thread(int linux_irq, void *data)
 		ret = -EMSGSIZE;
 		goto complete;
 	}
-	ret = mt6797_wifi_ahb_cmd53_read(irq->hif, MT6797_WIFI_MCR_WRDR1,
+	ret = mt6797_wifi_ahb_cmd53_read(irq->owner->hif,
+					 MT6797_WIFI_MCR_WRDR1,
 					 irq->response, sizeof(irq->response));
 	if (ret)
 		goto complete;
@@ -288,32 +263,26 @@ complete:
 	return IRQ_HANDLED;
 }
 
-int mt6797_wifi_capability_irq_init(struct mt6797_wifi_capability_irq *irq,
-				    struct device *dev,
-				    struct mt6797_wifi_ahb_hif *hif,
-				    int linux_irq)
+int mt6797_wifi_capability_session_init(
+	struct mt6797_wifi_capability_session *irq,
+	struct mt6797_wifi_hif_irq *owner)
 {
-	int ret;
-
-	if (!irq || !dev || !hif || linux_irq < 0)
+	if (!irq || !owner)
 		return -EINVAL;
 	memset(irq, 0, sizeof(*irq));
-	irq->hif = hif;
-	irq->irq = linux_irq;
+	irq->owner = owner;
 	init_completion(&irq->completion);
-	ret = devm_request_threaded_irq(dev, linux_irq,
-					mt6797_wifi_capability_irq,
-					mt6797_wifi_capability_irq_thread,
-					IRQF_ONESHOT | IRQF_NO_AUTOEN,
-					dev_name(dev), irq);
-	return ret;
+	return 0;
 }
 
 static int mt6797_wifi_capability_precheck(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 	int ret;
 
+	if (mt6797_wifi_hif_irq_mode(irq->owner) !=
+	    MT6797_WIFI_HIF_IRQ_QUIESCENT)
+		return -EUCLEAN;
 	ret = mt6797_wifi_capability_reg_read(irq, MT6797_WIFI_MCR_WRPLR,
 					      &irq->wrplr);
 	if (ret)
@@ -321,9 +290,10 @@ static int mt6797_wifi_capability_precheck(void *context)
 	return FIELD_GET(GENMASK(31, 16), irq->wrplr) ? -EUCLEAN : 0;
 }
 
-static void mt6797_wifi_capability_arm(void *context)
+static int mt6797_wifi_capability_arm(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
+	int ret;
 
 	reinit_completion(&irq->completion);
 	memset(&irq->capability, 0, sizeof(irq->capability));
@@ -336,18 +306,23 @@ static void mt6797_wifi_capability_arm(void *context)
 	irq->done = false;
 	irq->whcr_changed = false;
 	WRITE_ONCE(irq->armed, true);
+	ret = mt6797_wifi_hif_irq_enter_capability(
+		irq->owner, mt6797_wifi_capability_irq_thread, irq);
+	if (ret)
+		WRITE_ONCE(irq->armed, false);
+	return ret;
 }
 
 static void mt6797_wifi_capability_enable_linux_irq(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 
-	enable_irq(irq->irq);
+	enable_irq(irq->owner->irq);
 }
 
 static int mt6797_wifi_capability_enable_device_irq(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 	u32 whcr;
 	int ret;
 
@@ -388,14 +363,14 @@ static int mt6797_wifi_capability_enable_device_irq(void *context)
 
 static void mt6797_wifi_capability_unmask_hif_irq(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 
-	mt6797_wifi_ahb_irq_unmask(irq->hif);
+	mt6797_wifi_ahb_irq_unmask(irq->owner->hif);
 }
 
 static int mt6797_wifi_capability_send(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 	u8 command[MT6797_WIFI_CAPABILITY_LENGTH];
 	int ret;
 
@@ -403,13 +378,14 @@ static int mt6797_wifi_capability_send(void *context)
 						   irq->sequence);
 	if (ret)
 		return ret;
-	return mt6797_wifi_ahb_cmd53_write(irq->hif, MT6797_WIFI_MCR_WTDR1,
+	return mt6797_wifi_ahb_cmd53_write(irq->owner->hif,
+					  MT6797_WIFI_MCR_WTDR1,
 					  command, sizeof(command));
 }
 
 static int mt6797_wifi_capability_wait(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 
 	if (!wait_for_completion_timeout(&irq->completion,
 					 msecs_to_jiffies(MT6797_WIFI_CAPABILITY_TIMEOUT_MS)))
@@ -419,21 +395,22 @@ static int mt6797_wifi_capability_wait(void *context)
 
 static void mt6797_wifi_capability_disarm(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 
 	WRITE_ONCE(irq->armed, false);
+	mt6797_wifi_hif_irq_leave_capability(irq->owner);
 }
 
 static void mt6797_wifi_capability_mask_hif_irq(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 
-	mt6797_wifi_ahb_irq_mask(irq->hif);
+	mt6797_wifi_ahb_irq_mask(irq->owner->hif);
 }
 
 static int mt6797_wifi_capability_disable_device_irq(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 	int cleanup = 0;
 	int ret;
 
@@ -450,26 +427,25 @@ static int mt6797_wifi_capability_disable_device_irq(void *context)
 						       irq->whcr_before);
 		if (!cleanup && ret)
 			cleanup = ret;
-		irq->whcr_changed = false;
 	}
 	return cleanup;
 }
 
 static void mt6797_wifi_capability_disable_linux_irq(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 
-	disable_irq(irq->irq);
+	disable_irq(irq->owner->irq);
 }
 
 static void mt6797_wifi_capability_fence(void *context)
 {
-	struct mt6797_wifi_capability_irq *irq = context;
+	struct mt6797_wifi_capability_session *irq = context;
 
 	mt6797_consys_wifi_fence(irq->boot->lease);
 }
 
-int mt6797_wifi_capability_query(struct mt6797_wifi_capability_irq *irq,
+int mt6797_wifi_capability_query(struct mt6797_wifi_capability_session *irq,
 				 struct mt6797_wifi_boot *boot,
 				 struct mt6797_wifi_capability *capability)
 {
@@ -490,7 +466,8 @@ int mt6797_wifi_capability_query(struct mt6797_wifi_capability_irq *irq,
 	};
 	int ret;
 
-	if (!irq || !boot || !capability || irq->hif != boot->hif ||
+	if (!irq || !boot || !capability || !irq->owner ||
+	    irq->owner->hif != boot->hif ||
 	    !boot->online || !boot->transaction.ready || !boot->lease)
 		return -EINVAL;
 	irq->boot = boot;

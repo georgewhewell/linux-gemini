@@ -16,10 +16,11 @@ description: |
 
   The Cortex-A72 cluster PLL is controlled by secure firmware instead of
   MCUMIXEDSYS MMIO. The controller is nevertheless the single owner of each
-  complete CPU clock path: its secure PLL, MCUMIXEDSYS mux and divider, and
-  the CSPM hardware semaphore which serializes MCUMIXEDSYS access with
-  firmware. Secure-firmware details are implied by the SoC compatible and
-  are not a device-tree policy choice.
+  complete CPU clock path: its secure PLL and MCUMIXEDSYS mux and divider.
+  It uses the DVFSP handoff access controller's CSPM mapping and transaction
+  gate to acquire the hardware semaphore which serializes MCUMIXEDSYS access
+  with firmware. Secure-firmware details are implied by the SoC compatible
+  and are not a device-tree policy choice.
 
 properties:
   compatible:
@@ -28,14 +29,18 @@ properties:
   reg:
     items:
       - description: MCUMIXEDSYS registers
-      - description: CSPM registers containing the hardware semaphore
       - description: MCUCFG registers containing the synchronous DCM control
 
   reg-names:
     items:
       - const: mcumixed
-      - const: cspm
       - const: mcucfg
+
+  access-controllers:
+    maxItems: 1
+    description:
+      MT6797 DVFSP handoff provider which owns the CSPM mapping and admits a
+      CPU-clock transaction only after its handoff validation reaches READY.
 
   clocks:
     items:
@@ -66,6 +71,7 @@ required:
   - reg-names
   - clocks
   - clock-names
+  - access-controllers
   - '#clock-cells'
   - mediatek,boot-watchdog
 
@@ -77,14 +83,14 @@ examples:
 
     clock-controller@1001a000 {
         compatible = "mediatek,mt6797-mcumixedsys";
-        reg = <0x1001a000 0x1000>, <0x11015000 0x1000>,
-              <0x10220000 0x1000>;
-        reg-names = "mcumixed", "cspm", "mcucfg";
+        reg = <0x1001a000 0x1000>, <0x10220000 0x1000>;
+        reg-names = "mcumixed", "mcucfg";
         clocks = <&clk26m>,
                  <&apmixedsys CLK_APMIXED_MAINPLL>,
                  <&apmixedsys CLK_APMIXED_UNIVPLL>,
                  <&infrasys CLK_INFRA_I2C_APPM>;
         clock-names = "clk26m", "mainpll", "univpll", "i2c";
+        access-controllers = <&dvfsp_handoff>;
         #clock-cells = <1>;
         mediatek,boot-watchdog = <&watchdog>;
     };

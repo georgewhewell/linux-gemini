@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef __LINUX_REMOTEPROC_MTK_MT6797_CONSYS_H
-#define __LINUX_REMOTEPROC_MTK_MT6797_CONSYS_H
+#ifndef __LINUX_SOC_MEDIATEK_MT6797_CONSYS_FW_H
+#define __LINUX_SOC_MEDIATEK_MT6797_CONSYS_FW_H
 
 #include <linux/types.h>
 
@@ -26,4 +26,4 @@ int mt6797_consys_fw_patch_view(const struct mt6797_consys_fw_bundle *bundle,
 				unsigned int patch_index,
 				struct mt6797_consys_fw_patch_view *view);
 
-#endif
+#endif /* __LINUX_SOC_MEDIATEK_MT6797_CONSYS_FW_H */

@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef __MTK_MT6797_CONSYS_FW_H
-#define __MTK_MT6797_CONSYS_FW_H
+#ifndef __MT6797_CONSYS_FW_H
+#define __MT6797_CONSYS_FW_H
 
 #include <linux/types.h>
 
-#include <linux/remoteproc/mtk_mt6797_consys.h>
+#include <linux/soc/mediatek/mt6797-consys-fw.h>
 #include <linux/soc/mediatek/mtk-wmt.h>
 
 struct device;
@@ -52,4 +52,4 @@ int mt6797_consys_fw_build_patch_packet(const struct mt6797_consys_fw_bundle *bu
 					size_t *packet_len, size_t *consumed,
 					bool *last);
 
-#endif
+#endif /* __MT6797_CONSYS_FW_H */

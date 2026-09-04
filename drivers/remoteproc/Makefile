@@ -4,9 +4,6 @@
 #
 
 obj-$(CONFIG_REMOTEPROC)		+= remoteproc.o
-obj-$(CONFIG_MTK_MT6797_CONSYS_FW_HANDOFF) += mtk_mt6797_consys_fw_handoff.o
-mtk_mt6797_consys_fw_handoff-y := mtk_mt6797_consys_fw.o
-mtk_mt6797_consys_fw_handoff-$(CONFIG_MTK_MT6797_CONSYS_FW_HANDOFF_KUNIT_TEST) += mtk_mt6797_consys_fw_test.o
 remoteproc-y				:= remoteproc_core.o
 remoteproc-y				+= remoteproc_coredump.o
 remoteproc-y				+= remoteproc_debugfs.o

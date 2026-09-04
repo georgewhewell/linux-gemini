@@ -6,8 +6,9 @@
  * physical address. The production launcher reads bytes 24..27 from each
  * 28-byte WMT header, obtains patch count/sequence from byte 24, clears that
  * byte, and passes the resulting four opaque bytes to the kernel patch
- * protocol. Keep that discovery contract here; a future remoteproc owner can
- * own the lifetime, while a separate WMT transport must own transmission.
+ * protocol. Keep that discovery contract here; the canonical CONSYS lifecycle
+ * owner owns the bundle lifetime, while a separate WMT transport owns
+ * transmission.
  */
 
 #include <crypto/sha2.h>
@@ -20,7 +21,7 @@
 #include <linux/string.h>
 #include <linux/unaligned.h>
 
-#include "mtk_mt6797_consys_fw.h"
+#include "mt6797-consys-fw.h"
 
 struct mt6797_consys_fw_spec {
 	const char *name;

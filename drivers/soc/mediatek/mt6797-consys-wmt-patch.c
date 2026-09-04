@@ -51,8 +51,8 @@
 #include <kunit/test.h>
 #endif
 
-#include <linux/remoteproc/mtk_mt6797_consys.h>
 #include <linux/soc/mediatek/mt6797-btif-stp-bootstrap.h>
+#include <linux/soc/mediatek/mt6797-consys-fw.h>
 #include <linux/soc/mediatek/mt6797-consys-wmt-patch.h>
 #include <linux/soc/mediatek/mtk-wmt.h>
 

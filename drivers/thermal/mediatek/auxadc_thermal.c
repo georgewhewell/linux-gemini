@@ -9,6 +9,7 @@
 
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/hwmon.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -1418,6 +1419,120 @@ static const struct thermal_zone_device_ops mtk_thermal_ops = {
 	.get_temp = mtk_read_temp,
 };
 
+#if IS_REACHABLE(CONFIG_HWMON)
+/*
+ * Six MT6797 banks sample four physical MCU sensors. Banks 3/4/5 all
+ * reuse MCU2; expose each physical sensor once, not six thermometers.
+ * ABB has calibration fuses but is not sampled by the active bank table.
+ */
+static const struct {
+	u8 bank;
+	u8 slot;
+	u8 sensor;
+	const char *label;
+} mt6797_hwmon_sensors[] = {
+	{ 0, 0, MT6797_TS_MCU1, "MCU1 (A72)" },
+	{ 2, 0, MT6797_TS_MCU2, "MCU2 (A53/SoC shared)" },
+	{ 2, 1, MT6797_TS_MCU3, "MCU3 (SoC)" },
+	{ 1, 0, MT6797_TS_MCU4, "MCU4 (GPU)" },
+};
+
+static umode_t mt6797_hwmon_is_visible(const void *data,
+				       enum hwmon_sensor_types type,
+				       u32 attr, int channel)
+{
+	if (type != hwmon_temp || channel < 0 ||
+	    channel >= ARRAY_SIZE(mt6797_hwmon_sensors))
+		return 0;
+
+	return attr == hwmon_temp_input || attr == hwmon_temp_label ? 0444 : 0;
+}
+
+static int mt6797_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
+			     u32 attr, int channel, long *value)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	u32 selector, selected, raw;
+	int temp;
+
+	if (type != hwmon_temp || attr != hwmon_temp_input || channel < 0 ||
+	    channel >= ARRAY_SIZE(mt6797_hwmon_sensors))
+		return -EOPNOTSUPP;
+
+	/* Share ownership with aggregate reads and EEM; restore every bit. */
+	mutex_lock(&mt->lock);
+	selector = readl(mt->thermal_base + PTPCORESEL);
+	selected = (selector & ~0xf) | mt6797_hwmon_sensors[channel].bank;
+	writel(selected, mt->thermal_base + PTPCORESEL);
+	readl(mt->thermal_base + PTPCORESEL);
+	raw = readl(mt->thermal_base +
+		    mt->conf->msr[mt6797_hwmon_sensors[channel].slot]);
+	writel(selector, mt->thermal_base + PTPCORESEL);
+	readl(mt->thermal_base + PTPCORESEL);
+	mutex_unlock(&mt->lock);
+
+	/* An unpopulated measurement must not masquerade as a real 0 C. */
+	if (!(raw & 0xfff))
+		return -EAGAIN;
+
+	temp = mt->raw_to_mcelsius(mt, mt6797_hwmon_sensors[channel].sensor, raw);
+	if (!mtk_thermal_temp_is_valid(temp))
+		return -EAGAIN;
+
+	*value = temp;
+	return 0;
+}
+
+static int mt6797_hwmon_read_string(struct device *dev,
+				    enum hwmon_sensor_types type,
+				    u32 attr, int channel, const char **str)
+{
+	if (type != hwmon_temp || attr != hwmon_temp_label || channel < 0 ||
+	    channel >= ARRAY_SIZE(mt6797_hwmon_sensors))
+		return -EOPNOTSUPP;
+
+	*str = mt6797_hwmon_sensors[channel].label;
+	return 0;
+}
+
+static const struct hwmon_ops mt6797_hwmon_ops = {
+	.is_visible = mt6797_hwmon_is_visible,
+	.read = mt6797_hwmon_read,
+	.read_string = mt6797_hwmon_read_string,
+};
+
+static const struct hwmon_channel_info * const mt6797_hwmon_info[] = {
+	HWMON_CHANNEL_INFO(temp,
+			   HWMON_T_INPUT | HWMON_T_LABEL,
+			   HWMON_T_INPUT | HWMON_T_LABEL,
+			   HWMON_T_INPUT | HWMON_T_LABEL,
+			   HWMON_T_INPUT | HWMON_T_LABEL),
+	NULL,
+};
+
+static const struct hwmon_chip_info mt6797_hwmon_chip = {
+	.ops = &mt6797_hwmon_ops,
+	.info = mt6797_hwmon_info,
+};
+
+static int mt6797_hwmon_register(struct mtk_thermal *mt)
+{
+	struct device *hwmon;
+
+	if (mt->conf != &mt6797_thermal_data)
+		return 0;
+
+	hwmon = devm_hwmon_device_register_with_info(mt->dev, "mt6797_sensors",
+						     mt, &mt6797_hwmon_chip, NULL);
+	return PTR_ERR_OR_ZERO(hwmon);
+}
+#else
+static int mt6797_hwmon_register(struct mtk_thermal *mt)
+{
+	return 0;
+}
+#endif
+
 static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 				  u32 apmixed_phys_base, u32 auxadc_phys_base,
 				  int ctrl_id)
@@ -1898,6 +2013,10 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	ret = devm_thermal_add_hwmon_sysfs(&pdev->dev, tzdev);
 	if (ret)
 		dev_warn(&pdev->dev, "error in thermal_add_hwmon_sysfs");
+
+	ret = mt6797_hwmon_register(mt);
+	if (ret)
+		dev_warn(&pdev->dev, "physical sensor hwmon registration failed: %d\n", ret);
 
 	return 0;
 }

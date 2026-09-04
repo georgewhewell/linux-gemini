@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Sensor visibility only: no CPU DVFS, Hall, trips, or cooling changes. */
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	thermal-zones {
+		soc-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <1000>;
+			thermal-sensors = <&thermal>;
+		};
+	};
+};
+
+&auxadc {
+	status = "okay";
+};
+
+&thermal {
+	status = "okay";
+};

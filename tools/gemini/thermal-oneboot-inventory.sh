@@ -15,6 +15,8 @@ read_attr()
 	fi
 }
 printf 'THERMAL_INVENTORY_BEGIN units=thermal_hwmon_millicelsius,power_supply_decicelsius,iio_driver_defined\n'
+printf 'battery_temperature=hardware_disconnected owner_attested=plus_minus_only\n'
+printf 'battery_reported_values=not_verified_physical_temperature\n'
 read_attr /proc/sys/kernel/random/boot_id
 read_attr /proc/uptime
 zones=0

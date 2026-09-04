@@ -54,9 +54,12 @@ enum panfrost_gpu_pm {
 /**
  * enum panfrost_gpu_quirks - GPU optional quirks
  * @GPU_QUIRK_FORCE_AARCH64_PGTABLE: Use AARCH64_4K page table format
+ * @GPU_QUIRK_MALI_INNER_SHAREABLE: Use GPU-inner-only legacy MMU attributes
+ *	when the GPU is not DMA coherent
  */
 enum panfrost_gpu_quirks {
 	GPU_QUIRK_FORCE_AARCH64_PGTABLE,
+	GPU_QUIRK_MALI_INNER_SHAREABLE,
 };
 
 struct panfrost_features {

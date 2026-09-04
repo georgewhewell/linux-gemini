@@ -141,6 +141,8 @@
 
 #define ARM_MALI_LPAE_MEMATTR_IMP_DEF	0x88ULL
 #define ARM_MALI_LPAE_MEMATTR_WRITE_ALLOC 0x8DULL
+#define ARM_MALI_LPAE_MEMATTR_INNER_IMP_DEF 0x48ULL
+#define ARM_MALI_LPAE_MEMATTR_INNER_WRITE_ALLOC 0x4DULL
 
 /* IOPTE accessors */
 #define iopte_deref(pte,d) __va(iopte_to_paddr(pte, d))
@@ -529,10 +531,16 @@ static arm_lpae_iopte arm_lpae_prot_to_pte(struct arm_lpae_io_pgtable *data,
 	 * "outside the GPU" (i.e. either the Inner or System domain in CPU
 	 * terms, depending on coherency).
 	 */
-	if (prot & IOMMU_CACHE && data->iop.fmt != ARM_MALI_LPAE)
+	if (data->iop.fmt == ARM_MALI_LPAE &&
+	    (data->iop.cfg.quirks & IO_PGTABLE_QUIRK_ARM_MALI_INNER_SHAREABLE)) {
+		/* Legacy Mali: 3 is GPU-inner, 2 is inner-and-outer shareable. */
+		if ((prot & IOMMU_CACHE) && !(prot & IOMMU_MMIO))
+			pte |= ARM_LPAE_PTE_SH_IS;
+	} else if (prot & IOMMU_CACHE && data->iop.fmt != ARM_MALI_LPAE) {
 		pte |= ARM_LPAE_PTE_SH_IS;
-	else
+	} else {
 		pte |= ARM_LPAE_PTE_SH_OS;
+	}
 
 	if (prot & IOMMU_NOEXEC)
 		pte |= ARM_LPAE_PTE_XN;
@@ -1182,8 +1190,10 @@ arm_mali_lpae_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
 {
 	struct arm_lpae_io_pgtable *data;
 
-	/* No quirks for Mali (hopefully) */
-	if (cfg->quirks)
+	if (cfg->quirks & ~IO_PGTABLE_QUIRK_ARM_MALI_INNER_SHAREABLE)
+		return NULL;
+	if (cfg->coherent_walk &&
+	    (cfg->quirks & IO_PGTABLE_QUIRK_ARM_MALI_INNER_SHAREABLE))
 		return NULL;
 
 	if (cfg->ias > 48 || cfg->oas > 40)
@@ -1214,6 +1224,14 @@ arm_mali_lpae_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
 		 << ARM_LPAE_MAIR_ATTR_SHIFT(ARM_LPAE_MAIR_ATTR_IDX_CACHE)) |
 		(ARM_MALI_LPAE_MEMATTR_IMP_DEF
 		 << ARM_LPAE_MAIR_ATTR_SHIFT(ARM_LPAE_MAIR_ATTR_IDX_DEV));
+	if (cfg->quirks & IO_PGTABLE_QUIRK_ARM_MALI_INNER_SHAREABLE)
+		cfg->arm_mali_lpae_cfg.memattr =
+			(ARM_MALI_LPAE_MEMATTR_INNER_IMP_DEF
+			 << ARM_LPAE_MAIR_ATTR_SHIFT(ARM_LPAE_MAIR_ATTR_IDX_NC)) |
+			(ARM_MALI_LPAE_MEMATTR_INNER_WRITE_ALLOC
+			 << ARM_LPAE_MAIR_ATTR_SHIFT(ARM_LPAE_MAIR_ATTR_IDX_CACHE)) |
+			(ARM_MALI_LPAE_MEMATTR_INNER_IMP_DEF
+			 << ARM_LPAE_MAIR_ATTR_SHIFT(ARM_LPAE_MAIR_ATTR_IDX_DEV));
 
 	data->pgd = __arm_lpae_alloc_pages(ARM_LPAE_PGD_SIZE(data), GFP_KERNEL,
 					   cfg, cookie);

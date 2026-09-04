@@ -817,6 +817,10 @@ struct panfrost_mmu *panfrost_mmu_ctx_create(struct panfrost_device *pfdev)
 		.iommu_dev	= pfdev->base.dev,
 	};
 
+	if (fmt == ARM_MALI_LPAE && !pfdev->coherent &&
+	    (pfdev->comp->gpu_quirks & BIT(GPU_QUIRK_MALI_INNER_SHAREABLE)))
+		mmu->pgtbl_cfg.quirks |= IO_PGTABLE_QUIRK_ARM_MALI_INNER_SHAREABLE;
+
 	mmu->pgtbl_ops = alloc_io_pgtable_ops(fmt, &mmu->pgtbl_cfg, mmu);
 	if (!mmu->pgtbl_ops) {
 		ret = -EINVAL;

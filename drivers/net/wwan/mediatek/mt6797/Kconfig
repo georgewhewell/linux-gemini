@@ -57,6 +57,29 @@ config MTK_MT6797_MD1_CLOCKED_OBSERVER_KUNIT_TEST
 	  quiescent, pending and foreign-ring classification.  These tests are
 	  hardware independent and can run without the platform observer driver.
 
+config MTK_MT6797_MD1_POWER_TRANSACTION
+	bool "MediaTek MT6797 MD1 power transaction helpers"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	  Build the hardware-independent, callback-driven transaction which models
+	  the evidenced MT6797 MD1 rail voltage and hardware-control contract plus
+	  MTCMOS sequence, bounded acknowledgment waits, exact reverse unwind, and
+	  final inherited-state verification.  It does not register a device or
+	  implement regulator or register access.
+
+	  If unsure, say N.
+
+config MTK_MT6797_MD1_POWER_TRANSACTION_KUNIT_TEST
+	bool "KUnit tests for MT6797 MD1 power transactions" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	depends on MTK_MT6797_MD1_POWER_TRANSACTION=y
+	default KUNIT_ALL_TESTS
+	help
+	  Exercise failure after every rail enable, voltage, hardware-control and
+	  MTCMOS mutation, bounded acknowledgment timeouts, exact reverse unwind,
+	  and final inherited rail plus paired SPM-off verification.  The tests are
+	  hardware independent.
+
 config MTK_MT6797_MD1_KUNIT_TEST
 	bool "KUnit tests for MT6797 MD1 observation" if !KUNIT_ALL_TESTS
 	depends on KUNIT

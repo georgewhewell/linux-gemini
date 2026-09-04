@@ -17,3 +17,6 @@ mt6797-md1-$(CONFIG_MTK_MT6797_MD1_KUNIT_TEST) += observer_test.o
 mt6797-md1-clocked-observer-y := clocked_observer.o
 obj-$(CONFIG_MTK_MT6797_MD1_CLOCKED_OBSERVER_KUNIT_TEST) += \
 	clocked_observer_test.o
+obj-$(CONFIG_MTK_MT6797_MD1_POWER_TRANSACTION) += power_transaction.o
+obj-$(CONFIG_MTK_MT6797_MD1_POWER_TRANSACTION_KUNIT_TEST) += \
+	power_transaction_test.o

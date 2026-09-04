@@ -148,6 +148,7 @@ struct mt6797_consys_bt_lease {
 struct mt6797_consys_wifi_lease {
 	struct mt6797_consys *consys;
 	bool active;
+	bool emi_window_open;
 };
 
 static const u8 mt6797_consys_bt_on[] = { 0x00, 0x01 };
@@ -743,7 +744,43 @@ unlock_free:
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_wifi_acquire);
 
-int mt6797_consys_wifi_release(const struct mt6797_consys_wifi_lease *lease_arg)
+int
+mt6797_consys_wifi_emi_window_open(const struct mt6797_consys_wifi_lease *lease_arg,
+				   struct resource *window)
+{
+	struct mt6797_consys_wifi_lease *lease =
+		(struct mt6797_consys_wifi_lease *)lease_arg;
+	struct mt6797_consys *consys;
+	bool terminal = false;
+	int ret;
+
+	if (!lease || !lease->consys || !window)
+		return -EINVAL;
+	consys = lease->consys;
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->state != MT6797_CONSYS_OWNER_ACTIVE ||
+	    consys->wifi_lease != lease || !lease->active) {
+		ret = -ESHUTDOWN;
+	} else if (lease->emi_window_open) {
+		ret = -EBUSY;
+	} else {
+		ret = mt6797_consys_emi_mpu_wifi_window_open(consys->dev, window);
+		if (!ret) {
+			lease->emi_window_open = true;
+		} else {
+			mt6797_consys_radio_fence(consys);
+			terminal = true;
+		}
+	}
+	mutex_unlock(&consys->lifecycle_lock);
+	if (terminal)
+		consys->btif_ops->stop(consys->btif_context);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_wifi_emi_window_open);
+
+int
+mt6797_consys_wifi_emi_window_close(const struct mt6797_consys_wifi_lease *lease_arg)
 {
 	struct mt6797_consys_wifi_lease *lease =
 		(struct mt6797_consys_wifi_lease *)lease_arg;
@@ -755,12 +792,70 @@ int mt6797_consys_wifi_release(const struct mt6797_consys_wifi_lease *lease_arg)
 		return -EINVAL;
 	consys = lease->consys;
 	mutex_lock(&consys->lifecycle_lock);
+	if (consys->wifi_lease != lease || !lease->active ||
+	    !lease->emi_window_open) {
+		ret = -EPERM;
+	} else {
+		ret = mt6797_consys_emi_mpu_wifi_window_close(consys->dev);
+		lease->emi_window_open = false;
+		if (ret) {
+			mt6797_consys_radio_fence(consys);
+			terminal = true;
+		}
+	}
+	mutex_unlock(&consys->lifecycle_lock);
+	if (terminal)
+		consys->btif_ops->stop(consys->btif_context);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_wifi_emi_window_close);
+
+void mt6797_consys_wifi_fence(const struct mt6797_consys_wifi_lease *lease)
+{
+	struct mt6797_consys *consys;
+	bool terminal = false;
+
+	if (!lease || !lease->consys)
+		return;
+	consys = lease->consys;
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->wifi_lease == lease && lease->active) {
+		mt6797_consys_radio_fence(consys);
+		terminal = true;
+	}
+	mutex_unlock(&consys->lifecycle_lock);
+	if (terminal)
+		consys->btif_ops->stop(consys->btif_context);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_wifi_fence);
+
+int mt6797_consys_wifi_release(const struct mt6797_consys_wifi_lease *lease_arg)
+{
+	struct mt6797_consys_wifi_lease *lease =
+		(struct mt6797_consys_wifi_lease *)lease_arg;
+	struct mt6797_consys *consys;
+	bool terminal = false;
+	int window_ret = 0;
+	int ret;
+
+	if (!lease || !lease->consys)
+		return -EINVAL;
+	consys = lease->consys;
+	mutex_lock(&consys->lifecycle_lock);
 	if (consys->wifi_lease != lease) {
 		ret = -ENOENT;
 		goto unlock;
 	}
 	WRITE_ONCE(lease->active, false);
+	if (lease->emi_window_open) {
+		window_ret = mt6797_consys_emi_mpu_wifi_window_close(consys->dev);
+		lease->emi_window_open = false;
+		if (window_ret)
+			terminal = true;
+	}
 	ret = regulator_disable(consys->vcn33_wifi);
+	if (!ret)
+		ret = window_ret;
 	consys->wifi_lease = NULL;
 	if (ret) {
 		mt6797_consys_radio_fence(consys);

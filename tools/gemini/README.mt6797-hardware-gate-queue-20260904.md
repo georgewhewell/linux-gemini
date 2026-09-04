@@ -45,7 +45,7 @@ These entries are immutable identities, not a run order or schedule.
 | MD1 post-vector observer R2 | `8faeb854c00524a2a39450f9c72aaa3601e1c2a5` | `2af050b21a6382297a765d23f4e255cc261d036d` -> `5bcf4dfa63299d7686a111447f155b27043d1265` | `296d5731271e3511624568056b7d7e6f78d910332a19b0e187adffa35dbb57c4` | Independent audit BLOCKED before hardware: manifest schema/identity mismatch and incomplete fail-closed subject grammar; retired/no-retry |
 | G3 fixed-low Panfrost no-job R1 | `ec191faadb50d01a709fcb7786c4ea530839b7d8` | `f51d661e823d9ece2011c5688141ddaa7e3c44b6` -> `a81879abb63a7ad7c40bc946b3c95bf1657edef7` -> `02b36ca602774b032e633bbfec103ea6a1c4baec` | `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b` | Hardware FAIL; exact Stage-A rollback/readback/pstore complete; retired/no-retry; efuse/OPP and MFG-domain remediation required |
 | G3 fixed-low Panfrost no-job R2 | `f3f6dbb4ec9b4f95854c2a3df5a2c842559116b4` | `16e9ee2378f53803ea9dd32eb0eaf8036edb5bdb` | `ed85f692394ebd4924ec582feb2f354d7a156eeb5cd6c6145c20be14b85a72a3` | Independent audit BLOCKED before hardware: cumulative no-retry guard did not match the authoritative registry; retired without execution |
-| G3 fixed-low Panfrost no-job R3 | `f3f6dbb4ec9b4f95854c2a3df5a2c842559116b4` | `baa7487a0b63c4425889b34d99520683a2d93f45` | `669a5f22982763f8a917cbcfcf3100e2a41659f73eacc8110343fc4884c8b6bb` | Exact 16-entry registry plus retired R2 enforced; full offline rebuild and independent audit PASS; hardware not run; authorization/scheduling remain absent |
+| G3 fixed-low Panfrost no-job R3 | `f3f6dbb4ec9b4f95854c2a3df5a2c842559116b4` | `baa7487a0b63c4425889b34d99520683a2d93f45` | `669a5f22982763f8a917cbcfcf3100e2a41659f73eacc8110343fc4884c8b6bb` | Hardware FAIL; exact Stage-A rollback/readback/pstore complete; retired/no-retry; type-12 `opp-supported-hw` encoding remediation required |
 | A72 provider/resource observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `da66b64a37bc3e8c9695f0181fde45e8084179aacab55b5e4aae36c315ae98a5` | Offline contract review: PASS; source/package are not hardware-ready |
 | A72 CPU8-admission observation | `301a95567a799bbb3c81eba6653acc7491050b88` | `7f528b23b8a10a5338229449c26d7da1cc18a6c8` | `fd2c457aee5aedd3d736acd3f68463c20c0a07db9334d81d0376b2e3ef164dd3` | Blocked with provider; no provider-success predecessor exists |
 
@@ -307,8 +307,38 @@ with candidate `669a5f22...` and bundle NAR
 verified every registry entry and rendered case arm, rebuilt with empty
 builders/substituters, and proved the kernel, DT, module plan, entry code and
 runtime init are byte-identical to R2; only the inert, unreferenced package
-identity file changed. R3 remains hardware-not-run with `authorization=none`
-and `scheduling=none` pending a separately reviewed one-run authorization.
+identity file changed.
+
+Candidate `669a5f22...` was subsequently authorized for exactly one p22 write,
+written once, and never retried.  The watchdog was armed at 31 seconds with
+`nowayout=1` before GPU activation, and the no-job/no-DRM-open contract held.
+Unlike R1, all MFG power-domain probes completed: the old acknowledge timeout
+is gone.  Efuse selection resolved GPU type 12 and supported-hardware mask
+`0x1000`, but Panfrost rejected the rendered `opp-supported-hw` property with
+`-EINVAL`, found no supported OPPs, failed devfreq initialization with
+`-ENOENT`, and did not bind.  The collector correctly emitted
+`gpu_preflight=reject ret=1`.  Pstore contains no panic, Oops, BUG, abort, or
+lockup marker.
+
+The durable supervisor caught the natural BROM/watchdog transition and wrote
+the exact rescue once; no physical reset was performed.  The package-bound
+resume path closed with
+`observation_failed_recovered_stage_a_pstore_captured`. Final Stage-A boot ID
+is `6f23b43a-7df0-4935-a5bf-e359eec333f6`, with zero failed units and exact
+p22/p30/p31 hashes. Candidate `669a5f22...` and its consumed authorization are
+permanently retired/no-retry. No candidate is currently authorized.
+
+The immutable result record is
+`/mnt/Home/src/nixos-gemini/handoff/g3-low-opp-nojob-p22-f3f6dbb4-669a5f22-one-shot-20260904T213242Z`.
+Its pstore archive SHA-256 is
+`3d2bff46914b8120b98573072fe59742d33d6630e80c3a056973f208bc6716d2`,
+and `console-ramoops-0` SHA-256 is
+`3642700ed5d8d820ac8929c41b07baa4c25dccd664f0e940e427012db37a8930`.
+`RESULT-SHA256SUMS` verifies the local result and the run's retained evidence.
+The next source identity must minimally correct the type-12
+`opp-supported-hw` encoding while retaining the now-proven MFG/efuse and
+no-job boundaries, then mint a fresh package/candidate and receive a new
+independent audit before any separately authorized transaction.
 
 Evidence:
 
@@ -410,6 +440,7 @@ surfaces and are not an alternative to the read-only observer.
 
 ### GPU/G2/G3 historical candidates
 
+- `669a5f22982763f8a917cbcfcf3100e2a41659f73eacc8110343fc4884c8b6bb`
 - `ed85f692394ebd4924ec582feb2f354d7a156eeb5cd6c6145c20be14b85a72a3`
 - `78342f989983ac7de48abbc5b9c0763dcc600421df4e418508d48c2888551d1b`
 - `d1d188f0a94ae00b4a4697cac56ccf066fc25e344caf9c7e3e94bd91552bf985`

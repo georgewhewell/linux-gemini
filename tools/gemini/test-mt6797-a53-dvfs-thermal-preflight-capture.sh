@@ -14,6 +14,7 @@ cpu_root=$fixture/sys/devices/system/cpu
 cpufreq_root=$cpu_root/cpufreq
 thermal_root=$fixture/sys/class/thermal
 kernel_log=$fixture/dmesg
+source_identity=0123456789abcdef0123456789abcdef01234567
 
 write_policy()
 {
@@ -33,6 +34,7 @@ expect_failure()
 	wanted=$1
 	if CPU_ROOT=$cpu_root CPUFREQ_ROOT=$cpufreq_root \
 		THERMAL_ROOT=$thermal_root KERNEL_LOG=$kernel_log \
+		SOURCE_IDENTITY=$source_identity \
 		"$collector" > "$fixture/failure.out" 2> "$fixture/failure.err"; then
 		echo "collector unexpectedly accepted: $wanted" >&2
 		exit 1
@@ -96,9 +98,12 @@ printf '%s\n' 'mtk-thermal: calibrated sensor ready' > "$kernel_log"
 
 CPU_ROOT=$cpu_root CPUFREQ_ROOT=$cpufreq_root \
 	THERMAL_ROOT=$thermal_root KERNEL_LOG=$kernel_log \
+	SOURCE_IDENTITY=$source_identity \
 	"$collector" > "$fixture/pass.out"
 for marker in \
-	'schema=gemini-mt6797-a53-dvfs-thermal-preflight-v1' \
+	'schema=gemini-mt6797-a53-dvfs-thermal-preflight-v2' \
+	"source_identity=$source_identity" \
+	"kernel_release=$(uname -r)" \
 	'collector_mode=read_only' \
 	'frequency_transition_available=no' \
 	'frequency_transition_evidence=not_exercised' \
@@ -108,6 +113,15 @@ for marker in \
 	'cooling_devices=2' 'cooling_bindings=4' 'a72_touched=no' 'result=pass'; do
 	grep -Fqx "$marker" "$fixture/pass.out"
 done
+
+if CPU_ROOT=$cpu_root CPUFREQ_ROOT=$cpufreq_root \
+	THERMAL_ROOT=$thermal_root KERNEL_LOG=$kernel_log \
+	"$collector" > "$fixture/failure.out" 2> "$fixture/failure.err"; then
+	echo "collector accepted a missing source identity" >&2
+	exit 1
+fi
+grep -Fqx result=fail "$fixture/failure.out"
+grep -Fq 'source identity is not lowercase hexadecimal' "$fixture/failure.err"
 
 printf '%s\n' active > "$zone/trip_point_3_type"
 printf '%s\n' 100000 > "$zone/trip_point_3_temp"

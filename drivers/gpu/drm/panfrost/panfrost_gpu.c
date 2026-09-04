@@ -122,6 +122,11 @@ void panfrost_gpu_amlogic_quirk(struct panfrost_device *pfdev)
 	gpu_write(pfdev, GPU_PWR_OVERRIDE1, 0xfff | (0x20 << 16));
 }
 
+#define MT6797_MFG_ASYNC_TIMING		0x1c
+#define MT6797_MFG_ASYNC_TIMING_LOW	0x5
+#define MT6797_MFG_ASYNC_TIMING_HIGH	0xa
+/* The vendor platform selects the timing from the fastest enabled OPP. */
+#define MT6797_MFG_ASYNC_TIMING_THRESHOLD	780000000UL
 #define MT6797_MFG_PMU_ENABLE_FIRST	0x3e0
 #define MT6797_MFG_PMU_ENABLE_LAST	0x3f0
 #define MT6797_GPU_FUNCTION_CODE_MASK	GENMASK(3, 0)
@@ -266,8 +271,22 @@ int panfrost_gpu_mt6797_init(struct panfrost_device *pfdev)
 
 void panfrost_gpu_mt6797_quirk(struct panfrost_device *pfdev)
 {
+	u32 async_timing;
 	unsigned int reg;
 	int ret;
+
+	async_timing = pfdev->pfdevfreq.fast_rate >=
+			MT6797_MFG_ASYNC_TIMING_THRESHOLD ?
+			MT6797_MFG_ASYNC_TIMING_HIGH :
+			MT6797_MFG_ASYNC_TIMING_LOW;
+
+	ret = regmap_set_bits(pfdev->mfgcfg, MT6797_MFG_ASYNC_TIMING,
+			      async_timing);
+	if (ret) {
+		dev_err(pfdev->base.dev,
+			"failed to configure MFG asynchronous timing: %d\n", ret);
+		return;
+	}
 
 	for (reg = MT6797_MFG_PMU_ENABLE_FIRST;
 	     reg <= MT6797_MFG_PMU_ENABLE_LAST; reg += sizeof(u32)) {

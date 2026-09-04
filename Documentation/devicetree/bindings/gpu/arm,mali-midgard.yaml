@@ -197,6 +197,7 @@ allOf:
         - mediatek,mfgcfg
         - power-domains
         - power-domain-names
+        - resets
 
 examples:
   - |

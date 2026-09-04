@@ -7,38 +7,42 @@ MT6797 one-shot open-auth qualification gate
 Status
 ======
 
-This document is a design contract, not an implemented trigger.  Commit
-``2597a1100741e9f87debd4e80038371c7c7ecd17`` contains the bounded AIS HIF
-open-auth transaction, but it intentionally has no production caller.  It is
+This document remains a design contract, not an implemented trigger.  The tree
+contains the bounded AIS HIF open-auth transaction and its separately owned
+passive-scan HIF precursor, but intentionally has no production caller.  It is
 not a bootable open-auth candidate.
 
-A caller must not be added directly to ``core.c`` yet.  The missing scan/HIF
-ownership described below is a correctness boundary, not packaging work.
+A caller must not be added directly to ``core.c``.  It must first satisfy the
+candidate-only trigger and transcript contract below.
 
-Current blocker
-===============
+Implemented precursor boundary
+==============================
 
 ``mt6797_wifi_ais_hif_start()`` accepts only a generation- and cookie-valid
 ``mt6797_wifi_scan_target``.  That target can currently be populated only by
 ``mt6797_wifi_scan_target_observe()``, which validates the complete firmware RX
 packet, including the RX descriptor and group-3 RCPI metadata.
 
-The runtime sink receives ``struct mt6797_wifi_rx_view`` after
-``mt6797_wifi_rx_parse()`` has stripped that metadata.  Its ``payload`` points
-at the 802.11 frame, not at the original RX packet.  It therefore cannot call
-``mt6797_wifi_scan_target_observe()`` truthfully.  The runtime also has no
-production owner which sends a passive-scan command, waits for the matching
-scan-done event, arbitrates timeout/cancel, and detaches its sink.
+``struct mt6797_wifi_rx_view`` now carries both the stripped ``payload`` and a
+synchronous borrowed ``packet`` pointer to the complete firmware RX packet.
+The pointer is valid only through the runtime sink call and is never retained.
+``struct mt6797_wifi_scan_hif`` owns one passive-scan transaction and one scan
+target owner.  It attaches before command publication, accepts only the
+explicit key and channel, copies the validated target, arbitrates completion
+versus timeout under one lock, sends at most one best-effort cancel, and
+detaches before returning.
 
-Consequently, a small caller has no valid target to pass to AIS.  Constructing
-the target from command-line BSSID/channel fields, or writing the private
-``selected`` member directly, would turn reviewed intent into fabricated RX
-evidence and bypass the existing anti-stale contract.  Neither is permitted.
+This precursor does not call ``mt6797_wifi_ais_hif_open_auth()``, expose a
+userspace trigger, select an AP manifest, or make a bootable candidate.
+Constructing a target from command-line BSSID/channel fields, or writing the
+private ``selected`` member directly, remains prohibited because it would
+replace received evidence with reviewed intent and bypass the anti-stale
+contract.
 
-Required precursor
-==================
+Precursor invariants
+====================
 
-Before the one-shot caller, add one separately reviewable scan-HIF change that:
+The separately reviewable scan-HIF boundary:
 
 1. preserves a synchronous borrowed view of the complete RX packet through
    the runtime sink, or supplies equivalently validated owned metadata;
@@ -54,10 +58,10 @@ Before the one-shot caller, add one separately reviewable scan-HIF change that:
 6. returns an owned target snapshot only while its generation, cookie, and age
    remain valid.
 
-The precursor needs fixture coverage for a target frame before/after
-scan-done, foreign and hidden frames, malformed metadata, timeout versus late
-completion, terminal abort, sink-detach synchronization, and stale target
-rejection.  ARM64 ``W=1`` must compile both its production and KUnit objects.
+Its fixtures cover a target frame before/after scan-done, foreign and hidden
+frames, malformed metadata, timeout versus late completion, terminal abort,
+sink-detach synchronization, and stale target rejection.  ARM64 ``W=1`` must
+compile both its production and KUnit objects before integration.
 
 Candidate-only trigger ABI
 ==========================

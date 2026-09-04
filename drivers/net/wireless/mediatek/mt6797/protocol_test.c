@@ -117,6 +117,7 @@ static void mt6797_wifi_rx_event_test(struct kunit *test)
 	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
 	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_EXPECT_EQ(test, frame.kind, MT6797_WIFI_RX_EVENT);
+	KUNIT_EXPECT_PTR_EQ(test, frame.packet, (const u8 *)packet);
 	KUNIT_EXPECT_EQ(test, frame.event_id, (u8)0x0d);
 	KUNIT_EXPECT_EQ(test, frame.sequence, (u8)3);
 	KUNIT_EXPECT_EQ(test, frame.payload_length, (size_t)4);
@@ -139,6 +140,7 @@ static void mt6797_wifi_rx_descriptor_test(struct kunit *test)
 	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
 	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_EXPECT_EQ(test, frame.kind, MT6797_WIFI_RX_ETHERNET);
+	KUNIT_EXPECT_PTR_EQ(test, frame.packet, (const u8 *)packet);
 	KUNIT_EXPECT_PTR_EQ(test, frame.payload, packet + 80);
 	KUNIT_EXPECT_EQ(test, frame.payload_length, (size_t)16);
 	KUNIT_EXPECT_EQ(test, frame.channel, (u8)6);
@@ -153,6 +155,7 @@ static void mt6797_wifi_rx_descriptor_test(struct kunit *test)
 	ret = mt6797_wifi_rx_parse(packet, 44, &frame);
 	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_EXPECT_EQ(test, frame.kind, MT6797_WIFI_RX_IEEE80211);
+	KUNIT_EXPECT_PTR_EQ(test, frame.packet, (const u8 *)packet);
 	KUNIT_EXPECT_PTR_EQ(test, frame.payload, packet + 16);
 	KUNIT_EXPECT_EQ(test, frame.payload_length, (size_t)26);
 }

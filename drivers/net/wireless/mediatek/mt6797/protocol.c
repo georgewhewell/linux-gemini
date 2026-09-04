@@ -140,6 +140,7 @@ int mt6797_wifi_rx_parse(const u8 *packet, size_t available,
 		ret = mt6797_wifi_event_parse(packet, available, &event);
 		if (ret)
 			return ret;
+		frame->packet = packet;
 		frame->payload = event.payload;
 		frame->payload_length = event.payload_length;
 		frame->packet_length = event.packet_length;
@@ -173,6 +174,7 @@ int mt6797_wifi_rx_parse(const u8 *packet, size_t available,
 	if (offset >= packet_length)
 		return -EPROTO;
 
+	frame->packet = packet;
 	frame->payload = packet + offset;
 	frame->payload_length = packet_length - offset;
 	frame->packet_length = packet_length;

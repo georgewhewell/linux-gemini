@@ -428,6 +428,12 @@ config REGULATOR_DA9213_LEGACY_KUNIT_TEST
 	bool "KUnit tests for DA921x direct-address transactions"
 	depends on KUNIT=y
 	depends on REGULATOR_DA9213_LEGACY=y
+	help
+	  Exercise the hardware-free no-op, successful update, readback mismatch,
+	  rollback, and uncertain-state paths with a fake register transport.
+	  The tests instantiate no I2C adapter, regulator, firmware interface, or
+	  CPU object and perform no hardware operation. They do not exercise the
+	  physical I2C transport.
 
 config REGULATOR_DBX500_PRCMU
 	bool

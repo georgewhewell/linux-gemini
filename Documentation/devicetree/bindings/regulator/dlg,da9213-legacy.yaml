@@ -38,9 +38,6 @@ properties:
       - const: primary
       - const: page2
 
-  interrupts:
-    maxItems: 1
-
   regulators:
     type: object
     additionalProperties: false
@@ -54,22 +51,6 @@ properties:
         unevaluatedProperties: false
         description:
           Properties for one physical buck output.
-
-        properties:
-          regulator-initial-mode:
-            items:
-              enum: [ 1, 2, 3 ]
-            description:
-              Defined in include/dt-bindings/regulator/dlg,da9211-regulator.h
-
-          regulator-allowed-modes:
-            items:
-              enum: [ 1, 2, 3 ]
-            description:
-              Defined in include/dt-bindings/regulator/dlg,da9211-regulator.h
-
-          enable-gpios:
-            maxItems: 1
 
 required:
   - compatible
@@ -87,6 +68,8 @@ allOf:
         regulators:
           properties:
             BUCKB: false
+          required:
+            - BUCKA
   - if:
       properties:
         compatible:

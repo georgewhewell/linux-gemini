@@ -45,7 +45,9 @@ mt6797-consys-fw-handoff-y := mt6797-consys-fw.o
 mt6797-consys-fw-handoff-$(CONFIG_MTK_MT6797_CONSYS_FW_HANDOFF_KUNIT_TEST) += \
 	mt6797-consys-fw-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_WMT_INITIAL) += mt6797-consys-wmt-initial.o
-obj-$(CONFIG_MTK_MT6797_A72_POWER) += mt6797-a72-power.o
+obj-$(CONFIG_MTK_MT6797_A72_POWER) += mt6797-a72-power-driver.o
+mt6797-a72-power-driver-y := mt6797-a72-power.o mt6797-a72-power-core.o
+obj-$(CONFIG_MTK_MT6797_A72_POWER_KUNIT_TEST) += mt6797-a72-power-test.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_INVENTORY) += mt6797-consys.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_INVENTORY) += mt6797-consys-postpatch.o
 obj-$(CONFIG_MTK_MT6797_CONSYS_CORE) += mt6797-consys-core.o

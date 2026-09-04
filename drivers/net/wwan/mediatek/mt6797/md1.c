@@ -11,19 +11,44 @@
 #include <linux/regmap.h>
 #include <linux/reset.h>
 
+#include "observer.h"
 #include "power.h"
+#include "protocol.h"
 
 #define MT6797_MD1_DMA_BITS	36
 #define MT6797_MD1_SPM_PWR_STATUS	0x180
 #define MT6797_MD1_SPM_PWR_STATUS_2ND	0x184
 #define MT6797_MD1_POWER_SAMPLES	3
+#define MT6797_MD1_INFRA_CG_STA1	0x94
+#define MT6797_MD1_INFRA_CCIF_GATES	(BIT(23) | BIT(26))
+
+#define MT6797_MD1_CLDMA_UL_START	0x004
+#define MT6797_MD1_CLDMA_UL_STATUS	0x050
+#define MT6797_MD1_CLDMA_DL_START	0xa78
+#define MT6797_MD1_CLDMA_DL_STATUS	0xab8
+
+#define MT6797_MD1_CCIF_BUSY	0x004
+#define MT6797_MD1_CCIF_RCHNUM	0x010
+
+enum mt6797_md1_reg {
+	MT6797_MD1_AP_AO,
+	MT6797_MD1_MD_AO,
+	MT6797_MD1_AP_PDN,
+	MT6797_MD1_MD_PDN,
+	MT6797_MD1_AP_CCIF,
+	MT6797_MD1_MD_CCIF,
+};
 
 struct mt6797_md1 {
 	void __iomem *regs[6];
 	struct clk_bulk_data clocks[2];
 	struct reset_control_bulk_data resets[2];
 	struct regmap *spm;
+	struct regmap *infracfg;
 	enum mt6797_md1_power_state power_state;
+	enum mt6797_md1_inherited_state inherited_state;
+	enum mt6797_ccci_boot_state boot_state;
+	struct mt6797_md1_snapshot inherited_snapshot;
 	u32 power_status;
 	u32 power_status_2nd;
 	int irqs[3];
@@ -98,6 +123,88 @@ static int mt6797_md1_observe_power(struct device *dev,
 			     "MD1 SPM power status did not stabilize\n");
 }
 
+static void
+mt6797_md1_read_inherited_snapshot(struct mt6797_md1 *md1,
+				   struct mt6797_md1_snapshot *snapshot)
+{
+	unsigned int i;
+
+	for (i = 0; i < MT6797_MD1_CLDMA_QUEUES; i++) {
+		snapshot->tx_start[i] = readl(md1->regs[MT6797_MD1_AP_PDN] +
+					      MT6797_MD1_CLDMA_UL_START + i * 4);
+		snapshot->rx_start[i] = readl(md1->regs[MT6797_MD1_AP_AO] +
+					      MT6797_MD1_CLDMA_DL_START + i * 4);
+	}
+
+	snapshot->tx_active = readl(md1->regs[MT6797_MD1_AP_PDN] +
+				    MT6797_MD1_CLDMA_UL_STATUS);
+	snapshot->rx_active = readl(md1->regs[MT6797_MD1_AP_AO] +
+				    MT6797_MD1_CLDMA_DL_STATUS);
+	snapshot->ccif_busy = readl(md1->regs[MT6797_MD1_AP_CCIF] +
+				    MT6797_MD1_CCIF_BUSY);
+	snapshot->ccif_pending = readl(md1->regs[MT6797_MD1_AP_CCIF] +
+				       MT6797_MD1_CCIF_RCHNUM);
+}
+
+static int mt6797_md1_observe_inherited_transport(struct device *dev,
+						  struct mt6797_md1 *md1)
+{
+	struct mt6797_md1_snapshot *second = &md1->inherited_snapshot;
+	struct mt6797_md1_snapshot first;
+	bool stable;
+	u32 clock_gates;
+	int ret;
+
+	md1->boot_state = MT6797_CCCI_BOOT_OFFLINE;
+	if (md1->power_state != MT6797_MD1_POWERED) {
+		md1->inherited_state = MT6797_MD1_INHERITED_POWER_OFF;
+		return 0;
+	}
+
+	ret = regmap_read(md1->infracfg, MT6797_MD1_INFRA_CG_STA1,
+			  &clock_gates);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to read infrastructure clock gates\n");
+	if (clock_gates & MT6797_MD1_INFRA_CCIF_GATES) {
+		md1->inherited_state = MT6797_MD1_INHERITED_CLOCK_GATED;
+		return 0;
+	}
+
+	mt6797_md1_read_inherited_snapshot(md1, &first);
+	mt6797_md1_read_inherited_snapshot(md1, second);
+	stable = mt6797_md1_snapshot_equal(&first, second);
+	if (!stable) {
+		md1->inherited_state = MT6797_MD1_INHERITED_UNSTABLE;
+		return 0;
+	}
+
+	md1->inherited_state =
+		mt6797_md1_snapshot_classify(second);
+	return 0;
+}
+
+static const char *
+mt6797_md1_inherited_state_name(enum mt6797_md1_inherited_state state)
+{
+	switch (state) {
+	case MT6797_MD1_INHERITED_POWER_OFF:
+		return "power-off";
+	case MT6797_MD1_INHERITED_CLOCK_GATED:
+		return "clock-gated";
+	case MT6797_MD1_INHERITED_QUIESCENT:
+		return "quiescent-unconfigured";
+	case MT6797_MD1_INHERITED_CCIF_PENDING:
+		return "ccif-pending";
+	case MT6797_MD1_INHERITED_FOREIGN_RINGS:
+		return "foreign-rings";
+	case MT6797_MD1_INHERITED_UNSTABLE:
+		return "unstable";
+	}
+
+	return "invalid";
+}
+
 static int mt6797_md1_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -115,6 +222,11 @@ static int mt6797_md1_probe(struct platform_device *pdev)
 	if (IS_ERR(md1->spm))
 		return dev_err_probe(dev, PTR_ERR(md1->spm),
 				     "failed to acquire SPM syscon\n");
+	md1->infracfg = syscon_regmap_lookup_by_phandle(dev->of_node,
+							"mediatek,infracfg");
+	if (IS_ERR(md1->infracfg))
+		return dev_err_probe(dev, PTR_ERR(md1->infracfg),
+				     "failed to acquire infracfg syscon\n");
 
 	for (i = 0; i < ARRAY_SIZE(mt6797_md1_reg_names); i++) {
 		const char *name = mt6797_md1_reg_names[i];
@@ -154,10 +266,14 @@ static int mt6797_md1_probe(struct platform_device *pdev)
 	ret = mt6797_md1_observe_power(dev, md1);
 	if (ret)
 		return ret;
+	ret = mt6797_md1_observe_inherited_transport(dev, md1);
+	if (ret)
+		return ret;
 
 	platform_set_drvdata(pdev, md1);
-	dev_info(dev, "preserving inherited MD1 power state: %s\n",
-		 md1->power_state == MT6797_MD1_POWERED ? "powered" : "off");
+	dev_info(dev, "preserving MD1 state: power=%s transport=%s; handshake unproven\n",
+		 md1->power_state == MT6797_MD1_POWERED ? "powered" : "off",
+		 mt6797_md1_inherited_state_name(md1->inherited_state));
 	return 0;
 }
 

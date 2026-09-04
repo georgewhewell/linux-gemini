@@ -127,7 +127,7 @@ static void mt6797_bigidvfs_sram_rolls_back_mismatch(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, fake.sets, 2U);
 }
 
-static void mt6797_bigidvfs_sram_accepts_equivalent_selector(struct kunit *test)
+static void mt6797_bigidvfs_sram_rejects_equivalent_selector(struct kunit *test)
 {
 	struct mt6797_bigidvfs_sram_fake fake =
 		mt6797_bigidvfs_sram_new_fake();
@@ -135,10 +135,10 @@ static void mt6797_bigidvfs_sram_accepts_equivalent_selector(struct kunit *test)
 
 	ret = mt6797_sram_fake_transition(&fake, 9);
 
-	KUNIT_EXPECT_EQ(test, ret, 0);
-	KUNIT_EXPECT_EQ(test, fake.selector, 0U);
-	KUNIT_EXPECT_EQ(test, fake.reads, 2U);
-	KUNIT_EXPECT_EQ(test, fake.sets, 1U);
+	KUNIT_EXPECT_EQ(test, ret, -EIO);
+	KUNIT_EXPECT_EQ(test, fake.selector, 7U);
+	KUNIT_EXPECT_EQ(test, fake.reads, 3U);
+	KUNIT_EXPECT_EQ(test, fake.sets, 2U);
 }
 
 static void mt6797_bigidvfs_sram_rolls_back_set_error(struct kunit *test)
@@ -205,7 +205,7 @@ static struct kunit_case mt6797_bigidvfs_sram_test_cases[] = {
 	KUNIT_CASE(mt6797_bigidvfs_sram_commits_verified_selector),
 	KUNIT_CASE(mt6797_bigidvfs_sram_skips_equal_selector),
 	KUNIT_CASE(mt6797_bigidvfs_sram_rolls_back_mismatch),
-	KUNIT_CASE(mt6797_bigidvfs_sram_accepts_equivalent_selector),
+	KUNIT_CASE(mt6797_bigidvfs_sram_rejects_equivalent_selector),
 	KUNIT_CASE(mt6797_bigidvfs_sram_rolls_back_set_error),
 	KUNIT_CASE(mt6797_bigidvfs_sram_propagates_unsupported_set),
 	KUNIT_CASE(mt6797_bigidvfs_sram_reports_uncertain_rollback),

@@ -27,6 +27,10 @@ make_fixture()
 		printf '0\n' > "$root/debug/clk/$clock/clk_enable_count"
 		printf '0\n' > "$root/debug/clk/$clock/clk_prepare_count"
 	done
+	# AP-DMA is shared with the independently active I2C6 handoff path.  A
+	# nonzero baseline is valid; the G2 transaction must leave it unchanged.
+	printf '1\n' > "$root/debug/clk/infra_ap_dma/clk_enable_count"
+	printf '4\n' > "$root/debug/clk/infra_ap_dma/clk_prepare_count"
 	printf 'okay\000' > "$root/sys/firmware/devicetree/base/i2c@11010000/regulator@1c/status"
 	printf 'disabled\000' > "$root/sys/firmware/devicetree/base/gpu@13040000/status"
 	printf 'disabled\n' > "$root/sys/bus/platform/devices/vgpu-toggle/state"
@@ -74,6 +78,12 @@ case ${WRITE_MODE:-success}:$state in
 		printf '900000\n' > "$rail/microvolts"
 		printf '1\n' > "$rail/num_users"
 		printf '11: a7\n' > "$registers" ;;
+	clock_drift:enabled)
+		printf 'enabled\n' > "$state_file"
+		printf 'enabled\n' > "$rail/state"
+		printf '1\n' > "$rail/num_users"
+		printf '11: a7\n' > "$registers"
+		printf '2\n' > "$root/debug/clk/infra_ap_dma/clk_enable_count" ;;
 	raw_bad:enabled)
 		printf 'enabled\n' > "$state_file"
 		printf 'enabled\n' > "$rail/state"
@@ -115,7 +125,7 @@ test "$(cat "$success/sys/class/regulator/regulator.0/state")" = disabled
 test "$(cat "$success/sys/class/regulator/regulator.0/microvolts")" = 843750
 test "$(cat "$success/sys/class/regulator/regulator.0/num_users")" = 0
 
-for mode in enable_fail term_after_enable active_bad raw_bad disable_fail disable_noop; do
+for mode in enable_fail term_after_enable active_bad raw_bad clock_drift disable_fail disable_noop; do
 	fixture=$tmp/$mode
 	make_fixture "$fixture"
 	if run_helper "$fixture" env WRITE_MODE="$mode" > "$fixture/output" 2>&1; then

@@ -93,13 +93,13 @@ wait_output_bound()
 	return 1
 }
 
-clock_idle()
+read_clock_counts()
 {
 	clock=$1
 	enable=$(cat "$DEBUGFS_ROOT/clk/$clock/clk_enable_count") || return 1
 	prepare=$(cat "$DEBUGFS_ROOT/clk/$clock/clk_prepare_count") || return 1
-	[ "$enable:$prepare" = 0:0 ] || return 1
-	printf '%s=0:0\n' "$clock"
+	case $enable:$prepare in *[!0-9:]*) return 1 ;; esac
+	printf '%s:%s\n' "$enable" "$prepare"
 }
 
 domains_off()
@@ -206,8 +206,14 @@ printf 'before=%s vsel0=0x%s\n' "$before" "$before_raw"
 [ "$before" = disabled:843750:0 ] ||
 	die "initial rail is $before, expected disabled:843750:0"
 [ "$before_raw" = 27 ] || die "initial VSEL0 is 0x$before_raw, expected 0x27"
-clock_idle infra_i2c_gpupm || die 'infra_i2c_gpupm is not idle before enable'
-clock_idle infra_ap_dma || die 'infra_ap_dma is not idle before enable'
+i2c_clock_before=$(read_clock_counts infra_i2c_gpupm) ||
+	die 'cannot read infra_i2c_gpupm counts before enable'
+[ "$i2c_clock_before" = 0:0 ] ||
+	die "infra_i2c_gpupm is not idle before enable: $i2c_clock_before"
+ap_dma_before=$(read_clock_counts infra_ap_dma) ||
+	die 'cannot read shared infra_ap_dma counts before enable'
+printf 'clock_before=infra_i2c_gpupm:%s infra_ap_dma:%s\n' \
+	"$i2c_clock_before" "$ap_dma_before"
 
 echo '[g2-enable]'
 # Arm cleanup before the only state-changing operation.  A partial enable or
@@ -235,8 +241,16 @@ printf 'after=%s vsel0=0x%s\n' "$after" "$after_raw"
 [ "$after" = "$before" ] || die "rail restore mismatch: $before -> $after"
 [ "$after_raw" = "$before_raw" ] ||
 	die "VSEL0 restore mismatch: 0x$before_raw -> 0x$after_raw"
-clock_idle infra_i2c_gpupm || die 'infra_i2c_gpupm is not idle after disable'
-clock_idle infra_ap_dma || die 'infra_ap_dma is not idle after disable'
+i2c_clock_after=$(read_clock_counts infra_i2c_gpupm) ||
+	die 'cannot read infra_i2c_gpupm counts after disable'
+[ "$i2c_clock_after" = 0:0 ] ||
+	die "infra_i2c_gpupm is not idle after disable: $i2c_clock_after"
+ap_dma_after=$(read_clock_counts infra_ap_dma) ||
+	die 'cannot read shared infra_ap_dma counts after disable'
+[ "$ap_dma_after" = "$ap_dma_before" ] ||
+	die "shared infra_ap_dma count drift: $ap_dma_before -> $ap_dma_after"
+printf 'clock_after=infra_i2c_gpupm:%s infra_ap_dma:%s\n' \
+	"$i2c_clock_after" "$ap_dma_after"
 gpu_closed || die 'GPU/Panfrost appeared during the transaction'
 domains_off || die 'an MFG power domain is on after the transaction'
 

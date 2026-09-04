@@ -53,6 +53,16 @@ properties:
       - const: ccif
       - const: wdt
 
+  clocks:
+    items:
+      - description: Application-processor CCIF interface clock
+      - description: Modem CCIF interface clock
+
+  clock-names:
+    items:
+      - const: ccif-ap
+      - const: ccif-md
+
   memory-region:
     description:
       Reserved memory for the modem and for application-processor/modem
@@ -72,6 +82,8 @@ required:
   - reg-names
   - interrupts
   - interrupt-names
+  - clocks
+  - clock-names
 
 dependencies:
   memory-region: [memory-region-names]
@@ -81,6 +93,7 @@ additionalProperties: false
 
 examples:
   - |
+    #include <dt-bindings/clock/mt6797-clk.h>
     #include <dt-bindings/interrupt-controller/arm-gic.h>
 
     remoteproc@10014000 {
@@ -97,6 +110,9 @@ examples:
                      <GIC_SPI 147 IRQ_TYPE_LEVEL_LOW>,
                      <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
         interrupt-names = "cldma", "ccif", "wdt";
+        clocks = <&infracfg CLK_INFRA_CCIF_AP>,
+                 <&infracfg CLK_INFRA_CCIF_MD>;
+        clock-names = "ccif-ap", "ccif-md";
         status = "disabled";
     };
 

@@ -112,6 +112,8 @@ struct panfrost_compatible {
 	int (*vendor_init)(struct panfrost_device *pfdev);
 	/* Restore platform state before the first GPU register access. */
 	int (*vendor_power_on)(struct panfrost_device *pfdev);
+	/* Whole-GPU shutdown readiness; core power stays on until genpd off. */
+	int (*vendor_power_off)(struct panfrost_device *pfdev);
 	void (*vendor_quirk)(struct panfrost_device *pfdev);
 	/* Assert reset for one microsecond before the initial deassert. */
 	bool pulse_reset_on_init;

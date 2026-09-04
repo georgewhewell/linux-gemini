@@ -379,6 +379,7 @@
 &a72_power {
 	clocks = <&cpuclk CLK_MCU_MP2>;
 	clock-names = "mp2";
+	sram-big-supply = <&vsram_big>;
 	vproc-big-supply = <&da9214_buckb>;
 	status = "disabled";
 };

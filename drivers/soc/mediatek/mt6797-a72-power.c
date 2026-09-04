@@ -24,6 +24,7 @@
 
 struct mt6797_a72_preflight {
 	struct regulator *vproc_big;
+	struct regulator *sram_big;
 	struct reset_control *pwrap_reset;
 	struct clk *mp2_clk;
 	struct regmap *spm;
@@ -75,6 +76,8 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	u32 buck_iso;
 	int vproc_enabled;
 	int vproc_uv;
+	int sram_enabled;
+	int sram_uv;
 	int ret;
 
 	preflight = devm_kzalloc(dev, sizeof(*preflight), GFP_KERNEL);
@@ -94,6 +97,11 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	if (IS_ERR(preflight->pwrap_reset))
 		return dev_err_probe(dev, PTR_ERR(preflight->pwrap_reset),
 				     "failed to get PWRAP reset\n");
+
+	preflight->sram_big = devm_regulator_get(dev, "sram-big");
+	if (IS_ERR(preflight->sram_big))
+		return dev_err_probe(dev, PTR_ERR(preflight->sram_big),
+				     "failed to get big-cluster SRAM regulator\n");
 
 	preflight->mp2_clk = devm_clk_get(dev, "mp2");
 	if (IS_ERR(preflight->mp2_clk))
@@ -116,6 +124,17 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, vproc_uv,
 				     "failed to read big-cluster voltage\n");
 
+	sram_uv = regulator_get_voltage(preflight->sram_big);
+	if (sram_uv < 0)
+		return dev_err_probe(dev, sram_uv,
+				     "failed to read big-cluster SRAM voltage\n");
+
+	sram_enabled = regulator_is_enabled(preflight->sram_big);
+	if (sram_enabled < 0)
+		return dev_err_probe(dev, sram_enabled,
+				     "SRAM status/disable unavailable at %duV; CPU_ON remains blocked\n",
+				     sram_uv);
+
 	mp2_rate = clk_get_rate(preflight->mp2_clk);
 	if (!mp2_rate)
 		return dev_err_probe(dev, -EINVAL,
@@ -133,9 +152,10 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, preflight);
 	dev_info(dev,
-		 "CPU%u/%u preflight: vproc=%duV enabled=%d mp2=%luHz pwr=0x%08x iso=0x%08x; CPU_ON remains denied\n",
+		 "CPU%u/%u preflight: vproc=%duV enabled=%d sram=%duV enabled=%d mp2=%luHz pwr=0x%08x iso=0x%08x; CPU_ON remains denied\n",
 		 preflight->cpus[0], preflight->cpus[1], vproc_uv,
-		 vproc_enabled, mp2_rate, mp2_power, buck_iso);
+		 vproc_enabled, sram_uv, sram_enabled, mp2_rate, mp2_power,
+		 buck_iso);
 
 	return 0;
 }

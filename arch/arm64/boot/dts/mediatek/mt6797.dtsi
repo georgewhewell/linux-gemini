@@ -443,8 +443,9 @@
 			     <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
 		interrupt-names = "cldma", "ccif", "wdt";
 		clocks = <&infrasys CLK_INFRA_CCIF_AP>,
-			 <&infrasys CLK_INFRA_CCIF_MD>;
-		clock-names = "ccif-ap", "ccif-md";
+			 <&infrasys CLK_INFRA_CCIF_MD>,
+			 <&infrasys CLK_INFRA_CLDMA>;
+		clock-names = "ccif-ap", "ccif-md", "cldma";
 		resets = <&infrasys MT6797_INFRA_CLDMA_RST>,
 			 <&infrasys MT6797_INFRA_CLDMA_AO_RST>;
 		reset-names = "cldma-pdn", "cldma-ao";

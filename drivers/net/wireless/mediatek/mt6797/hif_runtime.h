@@ -113,7 +113,6 @@ struct mt6797_wifi_hif_irq {
 	void *capability_context;
 	struct mt6797_wifi_hif_runtime_transaction transaction;
 	struct mt6797_wifi_hif_pump_stats pump_stats;
-	struct mt6797_wifi_scan_transaction scan_transaction;
 	struct mt6797_wifi_hif_wait_event wait_event;
 	struct mt6797_wifi_hif_runtime_sink sink;
 	u8 *rx_buffer[2];

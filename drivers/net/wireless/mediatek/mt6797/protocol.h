@@ -32,6 +32,8 @@ struct mt6797_wifi_event_view {
 };
 
 struct mt6797_wifi_rx_view {
+	/* Borrowed complete packet; valid only during synchronous delivery. */
+	const u8 *packet;
 	const u8 *payload;
 	size_t payload_length;
 	size_t packet_length;

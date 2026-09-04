@@ -863,10 +863,6 @@ static int mt6797_wifi_hif_runtime_pump_event(
 	struct mt6797_wifi_hif_irq *irq = context;
 	int ret;
 
-	ret = mt6797_wifi_hif_runtime_route_event(&irq->scan_transaction,
-						 event);
-	if (ret)
-		return ret;
 	ret = mt6797_wifi_hif_wait_event_offer(&irq->wait_event, event);
 	if (ret)
 		return ret;

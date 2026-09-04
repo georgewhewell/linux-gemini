@@ -19,14 +19,14 @@ config MTK_MT6797_MD1
 	select MTK_MT6797_MODEM_PROTOCOL
 	help
 	  Claim the standard clock, reset, interrupt, MMIO, and reserved-memory
-	  resources of the integrated MT6797 MD1 modem.  The driver preserves
-	  firmware and power state inherited from the bootloader and does not
-	  expose WWAN ports until a future CLDMA owner completes the CCCI boot
-	  handshake.
+	  resources of the integrated MT6797 MD1 modem.  If the bootloader left
+	  MD1 powered and CLDMA/CCIF strictly quiescent, the driver resets the AP
+	  CLDMA block and creates a private control-RX ring to receive CCCI HS1.
+	  It stops at that boundary and does not expose WWAN ports.
 
-	  This driver does not load or start modem firmware, change power state,
-	  toggle reset lines, enable clocks or interrupts, or access radio
-	  hardware.  If unsure, say N.
+	  This driver does not load or start modem firmware, change modem power
+	  state, send runtime data, or access radio hardware.  The DT node is
+	  disabled by default.  If unsure, say N.
 
 config MTK_MT6797_MD1_KUNIT_TEST
 	bool "KUnit tests for MT6797 MD1 observation" if !KUNIT_ALL_TESTS
@@ -35,9 +35,11 @@ config MTK_MT6797_MD1_KUNIT_TEST
 	default KUNIT_ALL_TESTS
 	help
 	  Validate fail-closed classification of the two read-only SPM
-	  power-status bits and inherited CLDMA/CCIF configuration.  These tests
-	  cover disagreement, pending CCIF work, and foreign rings.  They are
-	  hardware independent; no modem resources are acquired or accessed.
+	  power-status bits and inherited CLDMA/CCIF configuration, plus exact
+	  construction and ownership checks for the control receive ring.  The
+	  tests cover disagreement, pending CCIF work, foreign rings, invalid DMA
+	  addresses, and malformed descriptors.  They are hardware independent;
+	  no modem resources are acquired or accessed.
 
 config MTK_MT6797_MODEM_PROTOCOL_KUNIT_TEST
 	bool "KUnit tests for MT6797 modem protocol helpers" if !KUNIT_ALL_TESTS

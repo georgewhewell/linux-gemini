@@ -83,6 +83,186 @@
 		};
 	};
 
+	/* Vendor CPU_LEVEL_1 (SB) table; both A53 clusters share their rails. */
+	cluster0_opp: opp-table-cluster0 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-221000000 {
+			opp-hz = /bits/ 64 <221000000>;
+			opp-microvolt = <770000>;
+			status = "disabled";
+		};
+
+		opp-338000000 {
+			opp-hz = /bits/ 64 <338000000>;
+			opp-microvolt = <800000>;
+			status = "disabled";
+		};
+
+		opp-481000000 {
+			opp-hz = /bits/ 64 <481000000>;
+			opp-microvolt = <850000>;
+			status = "disabled";
+		};
+
+		opp-624000000 {
+			opp-hz = /bits/ 64 <624000000>;
+			opp-microvolt = <900000>;
+		};
+
+		opp-715000000 {
+			opp-hz = /bits/ 64 <715000000>;
+			opp-microvolt = <940000>;
+		};
+
+		opp-806000000 {
+			opp-hz = /bits/ 64 <806000000>;
+			opp-microvolt = <970000>;
+		};
+
+		opp-897000000 {
+			opp-hz = /bits/ 64 <897000000>;
+			opp-microvolt = <1000000>;
+		};
+
+		opp-1014000000 {
+			opp-hz = /bits/ 64 <1014000000>;
+			opp-microvolt = <1040000>;
+		};
+
+		opp-1118000000 {
+			opp-hz = /bits/ 64 <1118000000>;
+			opp-microvolt = <1070000>;
+		};
+
+		opp-1222000000 {
+			opp-hz = /bits/ 64 <1222000000>;
+			opp-microvolt = <1100000>;
+		};
+
+		opp-1274000000 {
+			opp-hz = /bits/ 64 <1274000000>;
+			opp-microvolt = <1130000>;
+		};
+
+		opp-1339000000 {
+			opp-hz = /bits/ 64 <1339000000>;
+			opp-microvolt = <1140000>;
+		};
+
+		opp-1391000000 {
+			opp-hz = /bits/ 64 <1391000000>;
+			opp-microvolt = <1150000>;
+		};
+
+		opp-1443000000 {
+			opp-hz = /bits/ 64 <1443000000>;
+			opp-microvolt = <1170000>;
+			status = "disabled";
+		};
+
+		opp-1495000000 {
+			opp-hz = /bits/ 64 <1495000000>;
+			opp-microvolt = <1190000>;
+			status = "disabled";
+		};
+
+		opp-1547000000 {
+			opp-hz = /bits/ 64 <1547000000>;
+			opp-microvolt = <1200000>;
+			status = "disabled";
+		};
+	};
+
+	cluster1_opp: opp-table-cluster1 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-325000000 {
+			opp-hz = /bits/ 64 <325000000>;
+			opp-microvolt = <770000>;
+			status = "disabled";
+		};
+
+		opp-468000000 {
+			opp-hz = /bits/ 64 <468000000>;
+			opp-microvolt = <800000>;
+			status = "disabled";
+		};
+
+		opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+			opp-microvolt = <850000>;
+		};
+
+		opp-832000000 {
+			opp-hz = /bits/ 64 <832000000>;
+			opp-microvolt = <900000>;
+		};
+
+		opp-962000000 {
+			opp-hz = /bits/ 64 <962000000>;
+			opp-microvolt = <940000>;
+		};
+
+		opp-1092000000 {
+			opp-hz = /bits/ 64 <1092000000>;
+			opp-microvolt = <970000>;
+		};
+
+		opp-1209000000 {
+			opp-hz = /bits/ 64 <1209000000>;
+			opp-microvolt = <1000000>;
+		};
+
+		opp-1352000000 {
+			opp-hz = /bits/ 64 <1352000000>;
+			opp-microvolt = <1040000>;
+		};
+
+		opp-1495000000 {
+			opp-hz = /bits/ 64 <1495000000>;
+			opp-microvolt = <1070000>;
+		};
+
+		opp-1625000000 {
+			opp-hz = /bits/ 64 <1625000000>;
+			opp-microvolt = <1100000>;
+		};
+
+		opp-1703000000 {
+			opp-hz = /bits/ 64 <1703000000>;
+			opp-microvolt = <1130000>;
+		};
+
+		opp-1755000000 {
+			opp-hz = /bits/ 64 <1755000000>;
+			opp-microvolt = <1140000>;
+		};
+
+		opp-1820000000 {
+			opp-hz = /bits/ 64 <1820000000>;
+			opp-microvolt = <1150000>;
+		};
+
+		opp-1885000000 {
+			opp-hz = /bits/ 64 <1885000000>;
+			opp-microvolt = <1170000>;
+		};
+
+		opp-1950000000 {
+			opp-hz = /bits/ 64 <1950000000>;
+			opp-microvolt = <1190000>;
+		};
+
+		opp-2002000000 {
+			opp-hz = /bits/ 64 <2002000000>;
+			opp-microvolt = <1200000>;
+			status = "disabled";
+		};
+	};
+
 	memory@40000000 {
 		device_type = "memory";
 		reg = <0 0x40000000 1 0>;
@@ -194,14 +374,35 @@
 
 &cpu0 {
 	clock-frequency = <1391000000>;
+	clocks = <&cpuclk CLK_MCU_MP0>,
+		 <&apmixedsys CLK_APMIXED_MAINPLL>;
+	clock-names = "cpu", "intermediate";
+	cpu-supply = <&da9214_bucka>;
+	sram-supply = <&mt6351_vsram_proc_reg>;
+	operating-points-v2 = <&cluster0_opp>;
+	#cooling-cells = <2>;
 };
 
 &cpu1 {
 	clock-frequency = <1391000000>;
+	clocks = <&cpuclk CLK_MCU_MP0>,
+		 <&apmixedsys CLK_APMIXED_MAINPLL>;
+	clock-names = "cpu", "intermediate";
+	cpu-supply = <&da9214_bucka>;
+	sram-supply = <&mt6351_vsram_proc_reg>;
+	operating-points-v2 = <&cluster0_opp>;
+	#cooling-cells = <2>;
 };
 
 &cpu2 {
 	clock-frequency = <1391000000>;
+	clocks = <&cpuclk CLK_MCU_MP0>,
+		 <&apmixedsys CLK_APMIXED_MAINPLL>;
+	clock-names = "cpu", "intermediate";
+	cpu-supply = <&da9214_bucka>;
+	sram-supply = <&mt6351_vsram_proc_reg>;
+	operating-points-v2 = <&cluster0_opp>;
+	#cooling-cells = <2>;
 };
 
 /*
@@ -217,22 +418,57 @@
 
 &cpu3 {
 	clock-frequency = <1391000000>;
+	clocks = <&cpuclk CLK_MCU_MP0>,
+		 <&apmixedsys CLK_APMIXED_MAINPLL>;
+	clock-names = "cpu", "intermediate";
+	cpu-supply = <&da9214_bucka>;
+	sram-supply = <&mt6351_vsram_proc_reg>;
+	operating-points-v2 = <&cluster0_opp>;
+	#cooling-cells = <2>;
 };
 
 &cpu4 {
 	clock-frequency = <1950000000>;
+	clocks = <&cpuclk CLK_MCU_MP1>,
+		 <&apmixedsys CLK_APMIXED_MAINPLL>;
+	clock-names = "cpu", "intermediate";
+	cpu-supply = <&da9214_bucka>;
+	sram-supply = <&mt6351_vsram_proc_reg>;
+	operating-points-v2 = <&cluster1_opp>;
+	#cooling-cells = <2>;
 };
 
 &cpu5 {
 	clock-frequency = <1950000000>;
+	clocks = <&cpuclk CLK_MCU_MP1>,
+		 <&apmixedsys CLK_APMIXED_MAINPLL>;
+	clock-names = "cpu", "intermediate";
+	cpu-supply = <&da9214_bucka>;
+	sram-supply = <&mt6351_vsram_proc_reg>;
+	operating-points-v2 = <&cluster1_opp>;
+	#cooling-cells = <2>;
 };
 
 &cpu6 {
 	clock-frequency = <1950000000>;
+	clocks = <&cpuclk CLK_MCU_MP1>,
+		 <&apmixedsys CLK_APMIXED_MAINPLL>;
+	clock-names = "cpu", "intermediate";
+	cpu-supply = <&da9214_bucka>;
+	sram-supply = <&mt6351_vsram_proc_reg>;
+	operating-points-v2 = <&cluster1_opp>;
+	#cooling-cells = <2>;
 };
 
 &cpu7 {
 	clock-frequency = <1950000000>;
+	clocks = <&cpuclk CLK_MCU_MP1>,
+		 <&apmixedsys CLK_APMIXED_MAINPLL>;
+	clock-names = "cpu", "intermediate";
+	cpu-supply = <&da9214_bucka>;
+	sram-supply = <&mt6351_vsram_proc_reg>;
+	operating-points-v2 = <&cluster1_opp>;
+	#cooling-cells = <2>;
 };
 
 &cpu8 {
@@ -244,6 +480,13 @@
 };
 
 &mt6351regulator {
+	mt6351_vsram_proc_reg: buck-vsram-proc {
+		regulator-name = "vsram-proc";
+		regulator-min-microvolt = <1000000>;
+		regulator-max-microvolt = <1200000>;
+		regulator-always-on;
+	};
+
 	mt6351_vcn18_reg: ldo-vcn18 {
 		regulator-name = "vcn18";
 		regulator-min-microvolt = <1800000>;
@@ -405,7 +648,7 @@
 		regulators {
 			da9214_bucka: BUCKA {
 				regulator-name = "vproc-little";
-				regulator-min-microvolt = <800000>;
+				regulator-min-microvolt = <770000>;
 				regulator-max-microvolt = <1200000>;
 				regulator-always-on;
 			};

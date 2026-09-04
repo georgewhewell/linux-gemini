@@ -28,3 +28,18 @@ watchdog and observe-always-rollback policy must already be armed. TERM/HUP/INT
 and ordinary errors run the disable path. A stuck kernel I2C transaction or
 SIGKILL cannot be unwound by a shell trap. Absence of the final PASS marker is
 a hard stop; never advance directly to a GPU-enabled image.
+
+## Qualification
+
+The exact source commit
+`2bfbf91f1cfc74003c23564c4e5741bb487225eb`, packaged as p22 image
+`75e8b4c5907bda9de3b5f8c6caf7cc82fd635c503677d7c52e9e8fae22217f5b`,
+passed one guarded hardware transaction on 2026-09-04. It observed stable
+clock baselines `infra_i2c_gpupm:0:1` and `infra_ap_dma:1:4`, performed exactly
+`0x27 -> 0xa7 -> 0x27`, and returned the rail to disabled at 843750 uV with
+zero consumers. The watchdog reset and exact Stage-A rollback then completed.
+This candidate is closed: do not repeat it as another qualification run.
+
+That result qualifies only the isolated enable-bit transaction. It does not
+qualify GPU power domains, clocks, IRQs, Panfrost binding, workloads, voltage
+changes, thermal behavior, or suspend/resume.

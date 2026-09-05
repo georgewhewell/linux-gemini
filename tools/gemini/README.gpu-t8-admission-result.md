@@ -1,4 +1,4 @@
-# T8 admission failure — preliminary hardware result
+# T8 admission failure — closed hardware result
 
 Candidate boot `9fadb841-4981-4090-9ec9-795168f948ae`, exact T8 release/token.
 Image `4ebd5671160df6a24bb0aea37a259d7d47d3201f86b746dd37d4b01e12c6ab4f`
@@ -37,11 +37,18 @@ not assumed. An orderly quiescent normalization and vendor-equivalent setup
 under inherited rail power are alternatives to evaluate, not authorized changes.
 No separate observer-only boot or live takeover is authorized.
 
-## Recovery status at this note
+## Recovery closure
 
-Original owner execution60897 and supervisor2324990 remain responsible for
-recovery. Supervisor started08:18:04 before writer2325140 at08:18:05; candidate
-write completed08:18:14. RAM archive completed and was fsynced before verified
-petter111 was stopped at178.20 uptime. Exact rescue restoration, pstore,
-three hashes, both networks and final process/lock closure are not yet claimed
-by this preliminary note.
+Supervisor2324990 started08:18:04 before writer2325140 at08:18:05; candidate
+write completed08:18:14. RAM evidence was fsynced before verified petter111
+was stopped at178.20 uptime. The supervisor verified exact rescue at08:22:04;
+original owner execution60897 terminated exit1 at08:23:27 with
+`observation_failed_recovered_stage_a_pstore_captured`.
+
+Owner receipt `handoff/gpu-owner-t8-lzOqXg2i/RESULT.md` records rescue boot
+`b94758f3-e7f3-4aca-bee8-20f1e2aeb69a` through USB and RJ45, CPUs0–7,
+no failed units, exact p22/p30/p31 hashes, transaction processes gone and
+both locks free. Immediate and harness pstore archives have different member
+paths but byte-identical console SHA256
+`72d71a2b2a1962cf73995acd1dd2149cce3d15c7f46695acd6794e4b9ead69f9`.
+No manual reset, deadline extension, retry or renderer dispatch occurred.

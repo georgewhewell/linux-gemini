@@ -109,6 +109,16 @@ a modem selector or emulate accidental zero initialization for absent fields.
 A response needs proven board metadata, bounded framing and terminal/teardown
 ownership tests. No filesystem service is inferred from this request.
 
-Original execution39850 is still owned through rescue closure: this records
-the request and off-device archive, not verified restoration. C6 is consumed
-and must not be retried.
+Original execution39850 terminated exit1 at 06:07:59 after the independent
+supervisor wrote and verified exact rescue. Its misleading local
+`manual_reset_required` state did not establish a need for reset; no reset or
+restart occurred. The owner separately completed read-only closure: rescued
+boot `d7016fbd-0b19-44d4-902a-b588e4ae2d6c`, exact p22/p30/p31 hashes,
+same-boot USB/RJ45 health, CPUs0–7, no failed units and all locks released.
+The original/supervisor/holder/watcher processes are gone. Authoritative
+owner pstore archive SHA256:
+`ff35e1825697f16753ac4db0181adc7b6cec82a30965bbd2cfe523b354142b95`,
+attributed to C6 by the 484.228160 recovery marker. The normal harness
+pstore-post archive is absent; do not invent a second matching capture.
+Full chronology and anomaly are preserved in the handoff RESULT.md.
+C6 is closed, consumed and must not be retried.

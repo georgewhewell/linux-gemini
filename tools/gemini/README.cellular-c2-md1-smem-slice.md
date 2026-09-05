@@ -38,3 +38,16 @@ All refusals leave output/resource/runtime fields untouched. Actual common
 header runtime-window constants are checked against the resulting mapping.
 The in-kernel CLDMA KUnit fixture likewise uses 2 MiB and explicitly rejects
 6 MiB. This is a source admission fix, not a successful modem-handshake claim.
+
+Root integrated this correction as `8fd7f4c24d3ff`, independently reran the
+27-refusal actual-code test, and compiled both CLDMA core and KUnit objects
+for ARM64 successfully. The subsequent post-GO IP_BUSY admission audit remains
+separate; the slice fix alone is not sufficient grounds to repeat C2.
+
+C2 recovery closed at 04:16:34 with exact rescue, all three partition
+readbacks, USB/RJ45 health and free locks. Recovered Stage A boot:
+`e87053e9-3983-465b-b1da-c512cf38224d`. Its run-scoped pstore SHA256 is
+`c1e0f9c01c8cfeeea79fa169b7abaa316f350c7a46bbdd35093f9b53a22049b1`,
+attributable to C2 and its saved-evidence marker without an appended exception.
+Candidate `336e4c0f4a867c5867fec4ba4af182d90e2d67cc27ffa39ad29e14512fd77045`
+is consumed. No AT command or handshake success was observed.

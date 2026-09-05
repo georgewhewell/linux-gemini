@@ -66,6 +66,9 @@ static int panfrost_mmu_as_get(struct panfrost_device *dev, struct panfrost_mmu 
 { assert(dev && mmu && phase == 1); phase = 2; return as_result; }
 static void panfrost_devfreq_record_busy(int *freq)
 { (void)freq; assert(phase == 2 && as_result >= 0); }
+/* Optional default-off capture has no MMIO or allocation-policy effects. */
+static void panfrost_mmu_first_submit_pte_diag(struct panfrost_job *job, int js)
+{ assert(job && js == 1 && phase == 2); }
 static void job_write(struct panfrost_device *dev, unsigned reg, u32 value)
 {
  assert(dev && phase == 2 && !pm_error && as_result >= 0);

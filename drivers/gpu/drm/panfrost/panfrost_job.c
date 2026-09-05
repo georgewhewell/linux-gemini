@@ -222,6 +222,7 @@ static int panfrost_job_hw_submit(struct panfrost_job *job, int js)
 		goto err_hwsubmit;
 
 	cfg = ret;
+	panfrost_mmu_first_submit_pte_diag(job, js);
 
 	panfrost_devfreq_record_busy(&pfdev->pfdevfreq);
 

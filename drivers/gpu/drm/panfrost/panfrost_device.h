@@ -160,6 +160,7 @@ struct panfrost_device {
 	DECLARE_BITMAP(is_suspended, PANFROST_COMP_BIT_MAX);
 	/* MT6797 first-event diagnostics; deliberately not cleared by reset. */
 	unsigned long mt6797_diag_seen;
+	unsigned long mt6797_pte_diag_seen;
 
 	spinlock_t as_lock;
 	unsigned long as_alloc_mask;
@@ -208,6 +209,10 @@ struct panfrost_mmu {
 	struct io_pgtable_ops *pgtbl_ops;
 	struct drm_mm mm;
 	spinlock_t mm_lock;
+	/* Opt-in walk exclusion; never held over allocating map/unmap work. */
+	spinlock_t pte_diag_gate;
+	unsigned int pte_diag_mutators;
+	bool pte_diag_enabled;
 	int as;
 	atomic_t as_count;
 	struct list_head list;

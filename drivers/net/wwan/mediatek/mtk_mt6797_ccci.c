@@ -29,6 +29,7 @@
 
 #include "mtk_ccci_common.h"
 #include "mtk_mt6797_ccci_diag.h"
+#include "mtk_mt6797_ccci_rpc.h"
 
 #define MT6797_CCCI_QUEUE_COUNT		7U
 #define MT6797_CCCI_RING_SIZE		16U
@@ -123,6 +124,10 @@ struct mt6797_ccci {
 	resource_size_t smem_size;
 	struct dma_pool *gpd_pool;
 	struct mt6797_ccci_queue queue[MT6797_CCCI_QUEUE_COUNT];
+	/* queue.tx_lock -> tx_stop_lock; STOP never takes queue.tx_lock. */
+	spinlock_t tx_stop_lock;
+	struct mt6797_rpc_eint sim_eint[2];
+	atomic_t rpc_logs;
 	struct net_device *napi_dev;
 	struct napi_struct napi;
 	struct mt6797_md1_hs hs;
@@ -256,6 +261,8 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 static void mt6797_ccci_quiesce_from(struct mt6797_ccci *ccci, int reason,
 				     const char *site)
 {
+	unsigned long flags;
+
 	if (atomic_xchg(&ccci->failed, 1))
 		return;
 
@@ -265,11 +272,13 @@ static void mt6797_ccci_quiesce_from(struct mt6797_ccci *ccci, int reason,
 	}
 
 	mt6797_ccci_frontend_ready(ccci, false);
+	spin_lock_irqsave(&ccci->tx_stop_lock, flags);
 	writel(MT6797_CCCI_ACTIVE_IRQS, ccci->pdn + CLDMA_L2_TX_MASK_SET);
 	writel(MT6797_CCCI_ACTIVE_IRQS, ccci->ao + CLDMA_L2_RX_MASK_SET);
 	writel(MT6797_MD1_CLDMA_ACTIVE_QUEUES, ccci->pdn + CLDMA_UL_STOP_CMD);
 	writel(MT6797_MD1_CLDMA_ACTIVE_QUEUES, ccci->pdn + CLDMA_SO_STOP_CMD);
 	readl(ccci->pdn + CLDMA_SO_STOP_CMD);
+	spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
 	mt6797_md1_hs_crash(&ccci->hs, reason);
 	if (reason != -ESHUTDOWN)
 		mt6797_md1_cold_owner_transport_fatal(reason);
@@ -405,7 +414,7 @@ static int mt6797_ccci_tx(struct mt6797_ccci *ccci, unsigned int q,
 	struct mt6797_ccci_queue *queue = &ccci->queue[q];
 	struct mtk_ccci_header *header;
 	struct mt6797_ccci_slot *slot;
-	__le32 reserved;
+	__le32 reserved, data0;
 	dma_addr_t dma;
 	unsigned long flags;
 	int ret;
@@ -421,9 +430,12 @@ static int mt6797_ccci_tx(struct mt6797_ccci *ccci, unsigned int q,
 		goto busy;
 	header = (struct mtk_ccci_header *)skb->data;
 	reserved = header->reserved;
+	data0 = header->data0;
 	mtk_ccci_header_init(header, channel,
 			     mt6797_ccci_next_sequence(ccci, channel), skb->len);
 	header->reserved = reserved;
+	if (channel == MT6797_RPC_TX)
+		header->data0 = data0;
 	if (!q && channel == MTK_CCCI_CONTROL_TX)
 		mt6797_ccci_diag_final_reply(&ccci->diag, skb->data, skb->len);
 	dma = dma_map_single(ccci->dev, skb->data, skb->len, DMA_TO_DEVICE);
@@ -438,22 +450,29 @@ static int mt6797_ccci_tx(struct mt6797_ccci *ccci, unsigned int q,
 	slot->skb = skb;
 	slot->skb_dma = dma;
 	slot->mapped = true;
-	ret = mt6797_md1_cldma_tgpd_publish(slot->gpd);
-	if (ret) {
-		slot->skb = NULL;
-		slot->mapped = false;
-		goto unmap;
+	spin_lock(&ccci->tx_stop_lock);
+	if (atomic_read(&ccci->failed)) {
+		ret = -ESHUTDOWN;
+		goto no_publish;
 	}
+	ret = mt6797_md1_cldma_tgpd_publish(slot->gpd);
+	if (ret)
+		goto no_publish;
 	queue->tx_head = (queue->tx_head + 1) % MT6797_CCCI_RING_SIZE;
 	queue->tx_used++;
+	writel(BIT(q), ccci->pdn + CLDMA_UL_RESUME_CMD);
+	readl(ccci->pdn + CLDMA_UL_RESUME_CMD);
+	spin_unlock(&ccci->tx_stop_lock);
 	if (!q)
 		mt6797_ccci_diag_tx(&ccci->diag, false, queue->tx_head,
 				     queue->tx_tail, queue->tx_used);
-	writel(BIT(q), ccci->pdn + CLDMA_UL_RESUME_CMD);
-	readl(ccci->pdn + CLDMA_UL_RESUME_CMD);
 	spin_unlock_irqrestore(&queue->tx_lock, flags);
 	return 0;
 
+no_publish:
+	spin_unlock(&ccci->tx_stop_lock);
+	slot->skb = NULL;
+	slot->mapped = false;
 unmap:
 	dma_unmap_single(ccci->dev, dma, skb->len, DMA_TO_DEVICE);
 rollback_sequence:
@@ -814,6 +833,35 @@ static int mt6797_ccci_control_rx(struct mt6797_ccci *ccci,
 	return ret;
 }
 
+static int mt6797_ccci_rpc_rx(struct mt6797_ccci *ccci,
+			    struct sk_buff *skb, unsigned int q)
+{
+	u8 bytes[MT6797_RPC_REPLY_SIZE];
+	struct sk_buff *reply;
+	s32 status;
+	int ret;
+
+	if (q != 1 || atomic_read(&ccci->failed))
+		return -ESHUTDOWN;
+	ret = mt6797_rpc_eint_reply(skb->data, skb->len, ccci->sim_eint,
+				  bytes, sizeof(bytes), &status);
+	if (ret)
+		return ret;
+	reply = alloc_skb(sizeof(bytes), GFP_ATOMIC);
+	if (!reply)
+		return -ENOMEM;
+	skb_put_data(reply, bytes, sizeof(bytes));
+	/* On success TX owns reply through reclaim; on failure we still own it. */
+	ret = mt6797_ccci_tx(ccci, 1, reply, MT6797_RPC_TX);
+	if (ret)
+		kfree_skb(reply);
+	if (atomic_add_unless(&ccci->rpc_logs, 1, 16))
+		dev_info(ccci->dev,
+			 "CCCI RPC op=0x4005 reply_channel=33 status=%d tx_result=%d bytes=40\n",
+			 status, ret);
+	return ret;
+}
+
 static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 				    struct sk_buff *skb, unsigned int q)
 {
@@ -848,6 +896,15 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 	ccci->rx_sequence[frame.channel] = frame.sequence;
 	if (frame.channel == MTK_CCCI_CONTROL_RX) {
 		mt6797_ccci_control_rx(ccci, skb, &frame);
+		goto drop;
+	}
+	if (frame.channel == MT6797_RPC_RX) {
+		ret = mt6797_ccci_rpc_rx(ccci, skb, q);
+		if (ret && !atomic_read(&ccci->ready))
+			mt6797_ccci_diag_rx_save(&ccci->diag, skb->data, skb->len, q,
+				MT6797_CCCI_DIAG_BEFORE_READY, 0, frame.channel);
+		if (ret == -ENOMEM || ret == -EIO || ret == -EBUSY)
+			mt6797_ccci_quiesce(ccci, ret);
 		goto drop;
 	}
 	if (!atomic_read(&ccci->ready)) {
@@ -1261,6 +1318,38 @@ static int mt6797_ccci_validate_resources(struct platform_device *pdev)
 	return mt6797_md1_cldma_resources_validate(&resources);
 }
 
+static void mt6797_ccci_read_sim_eint(struct mt6797_ccci *ccci)
+{
+	static const char * const nodes[] = { "sim-eint-1", "sim-eint-2" };
+	static const char * const properties[] = {
+		"mediatek,eint-number", "mediatek,debounce-us", "mediatek,active-high",
+		"mediatek,edge-triggered", "mediatek,socket-type",
+		"mediatek,dedicated-enable", "mediatek,source-selector",
+	};
+	struct device_node *node;
+	u32 raw;
+	unsigned int sim, type;
+
+	/* Immutable metadata only; never request an IRQ or change pinmux/GPIO. */
+	for (sim = 0; sim < ARRAY_SIZE(nodes); sim++) {
+		node = of_get_child_by_name(ccci->dev->of_node, nodes[sim]);
+		if (!node)
+			continue;
+		if (of_device_is_available(node)) {
+			ccci->sim_eint[sim].present = true;
+			for (type = 0; type < ARRAY_SIZE(properties); type++) {
+				if (of_property_count_u32_elems(node, properties[type]) != 1 ||
+				    of_property_read_u32(node, properties[type], &raw) ||
+				    !mt6797_rpc_eint_value(type, raw,
+					&ccci->sim_eint[sim].value[type]))
+					continue;
+				ccci->sim_eint[sim].valid |= BIT(type);
+			}
+		}
+		of_node_put(node);
+	}
+}
+
 static int mt6797_ccci_probe(struct platform_device *pdev)
 {
 	struct mt6797_md1_cldma_mapping mapping;
@@ -1285,6 +1374,9 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	ccci->dev = &pdev->dev;
 	spin_lock_init(&ccci->diag.lock);
+	spin_lock_init(&ccci->tx_stop_lock);
+	atomic_set(&ccci->rpc_logs, 0);
+	mt6797_ccci_read_sim_eint(ccci);
 	atomic_set(&ccci->failed, 0);
 	atomic_set(&ccci->ready, 0);
 	atomic_set(&ccci->at_open, 0);

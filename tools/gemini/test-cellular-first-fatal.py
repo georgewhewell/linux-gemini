@@ -184,6 +184,9 @@ struct mtk_ccci_header { u32 data0,data1,status,reserved; };
 struct mtk_ccci_frame { u32 data0,data1,reserved; u16 channel,sequence; bool assert_bit; };
 struct sk_buff { u8 *data; size_t len; };
 struct mt6797_ccci { struct mt6797_ccci_diag diag; int ready; int rx_sequence[256]; };
+#define MT6797_RPC_RX 32
+static int mt6797_ccci_rpc_rx(struct mt6797_ccci *c, struct sk_buff *s, unsigned q)
+{ (void)c; (void)s; (void)q; return -EOPNOTSUPP; }
 static int frees, controls, crashes;
 static void kfree_skb(struct sk_buff *skb) { (void)skb; frees++; }
 static void mt6797_ccci_control_rx(struct mt6797_ccci *c, struct sk_buff *s,

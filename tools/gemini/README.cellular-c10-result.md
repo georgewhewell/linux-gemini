@@ -43,6 +43,13 @@ regression fixture proving log capture without reading backing files. Do not
 unmount the held authority to simplify capture. Archive SHA256 reported by owner:
 98b2a1b6b428486f778ddce0714a1c3dc00ce94913414272d6ac96a6890e6742.
 
-Original owner37348 retains responsibility through exact-rescue/pstore/three
-hashes/both networks/process and lock closure. No further hardware is authorized
-by this preliminary result; final closure receipt is pending at this note.
+Original owner37348 terminated exit1 in the normal failed-recovered state at
+09:11:09. Root read the completed owner RESULT. Exact rescue boot
+6ad19ccb-7aec-436b-9632-73fb90ab79f4 passed USB/RJ45, all three expected hashes,
+CPUs0–7/no failed units, process and lock closure. Immediate and harness pstore
+console copies match SHA256
+f592cdbb2cae554e0feb0cf0c18ff28927a257158fcd63b01716aeea1e99db45,
+retaining C10 terminal timestamps and watchdog stop187.394111. Nothing cleared.
+The accidental extraction is also restricted with go-rwx; no provision-file
+inspection or further capture followed. No further hardware is authorized
+by this result.

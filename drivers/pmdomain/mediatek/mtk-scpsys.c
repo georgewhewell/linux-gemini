@@ -9,9 +9,13 @@
 #include <linux/mfd/syscon.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/moduleparam.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/regulator/consumer.h>
+#include <linux/regmap.h>
+#include <linux/soc/mediatek/mt6797-gpuldo-owner.h>
 #include <linux/soc/mediatek/infracfg.h>
 
 #include <dt-bindings/power/mt2701-power.h>
@@ -22,6 +26,12 @@
 #include <dt-bindings/power/mt8173-power.h>
 
 #include "mtk-scpsys-internal.h"
+#include "mt6797-gpuldo-owner.h"
+
+static bool mt6797_gpuldo_owner_enable;
+module_param_named(mt6797_gpuldo_owner, mt6797_gpuldo_owner_enable, bool, 0400);
+MODULE_PARM_DESC(mt6797_gpuldo_owner, "Experimental Gemini exclusive fixed-profile GPULDO supply owner");
+#define MT6797_GPULDO_DOMAIN_MASK GENMASK(13, 8)
 
 #define MTK_POLL_DELAY_US   10
 #define MTK_POLL_TIMEOUT    USEC_PER_SEC
@@ -167,7 +177,50 @@ struct scp {
 	struct mutex bus_prot_lock;
 	struct scp_ctrl_reg ctrl_reg;
 	bool bus_prot_reg_update;
+	bool gpuldo_mode;
+	struct mutex gpuldo_lock;
+	struct mt6797_gpuldo_owner gpuldo;
+	struct device_node *gpuldo_gpu;
 };
+
+/* Built-in, non-removable provider; publish only after registration. */
+static struct scp *gpuldo_provider;
+
+int mtk_scpsys_gpuldo_gpu_admit(struct device_node *gpu)
+{
+	static const char * const names[] = { "core0", "core1", "core2", "core3" };
+	struct scp *scp = smp_load_acquire(&gpuldo_provider);
+	struct of_phandle_args args;
+	const char *name;
+	unsigned int i;
+	int ret;
+
+	if (!scp)
+		return -EPROBE_DEFER;
+	if (gpu != scp->gpuldo_gpu ||
+	    !of_property_read_bool(gpu, "mediatek,gemini-gpuldo-owner") ||
+	    of_find_property(gpu, "mali-supply", NULL) ||
+	    of_count_phandle_with_args(gpu, "power-domains", "#power-domain-cells") != 4 ||
+	    of_property_count_strings(gpu, "power-domain-names") != 4)
+		return -EINVAL;
+	for (i = 0; i < 4; ++i) {
+		ret = of_parse_phandle_with_args(gpu, "power-domains",
+					 "#power-domain-cells", i, &args);
+		if (ret)
+			return ret;
+		ret = args.np != scp->dev->of_node || args.args_count != 1 ||
+			args.args[0] != MT6797_POWER_DOMAIN_MFG_CORE0 + i;
+		of_node_put(args.np);
+		if (ret || of_property_read_string_index(gpu, "power-domain-names", i, &name) ||
+		    strcmp(name, names[i]))
+			return -EINVAL;
+	}
+	mutex_lock(&scp->gpuldo_lock);
+	ret = scp->gpuldo_mode && scp->gpuldo.admitted && !scp->gpuldo.failed ? 0 : -EPERM;
+	mutex_unlock(&scp->gpuldo_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mtk_scpsys_gpuldo_gpu_admit);
 
 struct scp_subdomain {
 	int origin;
@@ -205,8 +258,66 @@ static int scpsys_domain_is_on(struct scp_domain *scpd)
 	return -EINVAL;
 }
 
+static bool scpsys_gpuldo_domain(struct scp_domain *scpd)
+{
+	return scpd->scp->gpuldo_mode &&
+		(scpd->data->sta_mask & MT6797_GPULDO_DOMAIN_MASK);
+}
+
+static int scpsys_gpuldo_all_off(void *ctx)
+{
+	struct scp *scp = ctx;
+	u32 a = readl(scp->base + scp->ctrl_reg.pwr_sta_offs);
+	u32 b = readl(scp->base + scp->ctrl_reg.pwr_sta2nd_offs);
+
+	return !((a | b) & MT6797_GPULDO_DOMAIN_MASK);
+}
+
+static int scpsys_gpuldo_write(void *ctx, unsigned int reg, unsigned int value)
+{
+	struct scp *scp = ctx;
+
+	return regmap_write(scp->infracfg, reg, value);
+}
+
+static int scpsys_gpuldo_supply_on(void *ctx)
+{
+	struct scp *scp = ctx;
+	struct regulator *supply = scp->domains[MT6797_POWER_DOMAIN_MFG_ASYNC].supply;
+	int ret;
+
+	/* Existing G3 single-OPP interval; not an inferred internal LDO voltage. */
+	ret = regulator_set_voltage(supply, 846700, 850000);
+	return ret ? ret : regulator_enable(supply);
+}
+
+static int scpsys_gpuldo_supply_off(void *ctx)
+{
+	struct scp *scp = ctx;
+
+	return regulator_disable(scp->domains[MT6797_POWER_DOMAIN_MFG_ASYNC].supply);
+}
+
+static int scpsys_gpuldo_supply_enabled(void *ctx)
+{
+	struct scp *scp = ctx;
+
+	return regulator_is_enabled(scp->domains[MT6797_POWER_DOMAIN_MFG_ASYNC].supply);
+}
+
+static const struct mt6797_gpuldo_ops scpsys_gpuldo_ops = {
+	.write = scpsys_gpuldo_write,
+	.supply_enable = scpsys_gpuldo_supply_on,
+	.supply_disable = scpsys_gpuldo_supply_off,
+	.supply_is_enabled = scpsys_gpuldo_supply_enabled,
+	.all_domains_off = scpsys_gpuldo_all_off,
+};
+
 static int scpsys_regulator_enable(struct scp_domain *scpd)
 {
+	if (scpsys_gpuldo_domain(scpd) && scpd->data->sta_mask == BIT(13))
+		return mt6797_gpuldo_enable(&scpd->scp->gpuldo,
+				&scpsys_gpuldo_ops, scpd->scp);
 	if (!scpd->supply)
 		return 0;
 
@@ -215,6 +326,9 @@ static int scpsys_regulator_enable(struct scp_domain *scpd)
 
 static int scpsys_regulator_disable(struct scp_domain *scpd)
 {
+	if (scpsys_gpuldo_domain(scpd) && scpd->data->sta_mask == BIT(13))
+		return mt6797_gpuldo_disable(&scpd->scp->gpuldo,
+				&scpsys_gpuldo_ops, scpd->scp);
 	if (!scpd->supply)
 		return 0;
 
@@ -325,7 +439,7 @@ static int scpsys_bus_protect_disable(struct scp_domain *scpd)
 			scp->bus_prot_reg_update);
 }
 
-static int scpsys_power_on(struct generic_pm_domain *genpd)
+static int scpsys_power_on_raw(struct generic_pm_domain *genpd)
 {
 	struct scp_domain *scpd = container_of(genpd, struct scp_domain, genpd);
 	struct scp *scp = scpd->scp;
@@ -402,8 +516,13 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 	return 0;
 
 err_pwr_ack:
+	/* Unknown state: retain clocks, rail and LDO until separate rescue boot. */
+	if (scpsys_gpuldo_domain(scpd))
+		goto err_regulator;
 	scpsys_clk_disable(scpd->clk, MAX_CLKS);
 err_clk:
+	if (scpsys_gpuldo_domain(scpd))
+		goto err_regulator;
 	scpsys_regulator_disable(scpd);
 err_regulator:
 
@@ -415,7 +534,7 @@ err_regulator:
 	return ret;
 }
 
-static int scpsys_power_off(struct generic_pm_domain *genpd)
+static int scpsys_power_off_raw(struct generic_pm_domain *genpd)
 {
 	struct scp_domain *scpd = container_of(genpd, struct scp_domain, genpd);
 	struct scp *scp = scpd->scp;
@@ -486,12 +605,172 @@ out:
 	return ret;
 }
 
+/* Serialize siblings; a child failure latches before any parent supply-off. */
+static int scpsys_gpuldo_transition(struct generic_pm_domain *genpd, bool on)
+{
+	struct scp_domain *scpd = container_of(genpd, struct scp_domain, genpd);
+	struct scp *scp = scpd->scp;
+	int ret;
+
+	if (!scpsys_gpuldo_domain(scpd))
+		return on ? scpsys_power_on_raw(genpd) : scpsys_power_off_raw(genpd);
+	mutex_lock(&scp->gpuldo_lock);
+	if (scp->gpuldo.failed || !scp->gpuldo.admitted ||
+	    (scpd->data->sta_mask != BIT(13) && !scp->gpuldo.active)) {
+		ret = -EPERM;
+		goto out;
+	}
+	ret = on ? scpsys_power_on_raw(genpd) : scpsys_power_off_raw(genpd);
+	if (ret)
+		mt6797_gpuldo_fail(&scp->gpuldo, ret);
+out:
+	mutex_unlock(&scp->gpuldo_lock);
+	return ret;
+}
+
+static int scpsys_power_on(struct generic_pm_domain *genpd)
+{
+	return scpsys_gpuldo_transition(genpd, true);
+}
+
+static int scpsys_power_off(struct generic_pm_domain *genpd)
+{
+	return scpsys_gpuldo_transition(genpd, false);
+}
+
 static void init_clks(struct platform_device *pdev, struct clk **clk)
 {
 	int i;
 
 	for (i = CLK_NONE + 1; i < CLK_MAX; i++)
 		clk[i] = devm_clk_get(&pdev->dev, clk_names[i]);
+}
+
+static int scpsys_gpuldo_validate_dt(struct device *dev)
+{
+	struct device_node *np = dev->of_node, *infra, *gpu, *supply, *table, *opp;
+	struct device_node *node;
+	struct property *prop;
+	struct resource res;
+	struct device_node *other, *parent;
+	const char *name;
+	u32 addr;
+	u32 uv[3];
+	u64 hz;
+	int ret = -EINVAL, count = 0;
+
+	if (!of_property_read_bool(np, "mediatek,gemini-gpuldo-owner"))
+		return 0;
+	if (!mt6797_gpuldo_owner_enable ||
+	    !of_machine_is_compatible("planet,gemini-pda") ||
+	    !of_machine_is_compatible("mediatek,mt6797") ||
+	    !of_device_is_compatible(np, "mediatek,mt6797-scpsys"))
+		return -EPERM;
+	infra = of_parse_phandle(np, "infracfg", 0);
+	if (!infra)
+		return -EINVAL;
+	ret = of_address_to_resource(infra, 0, &res);
+	if (!ret && (!of_device_is_compatible(infra, "mediatek,mt6797-infracfg") ||
+	    !of_device_is_compatible(infra, "syscon") ||
+	    of_find_property(infra, "clocks", NULL) ||
+	    of_find_property(infra, "resets", NULL) ||
+	    !of_device_is_available(infra) || res.start != 0x10001000 ||
+	    resource_size(&res) != 0x1000))
+		ret = -EINVAL;
+	other = of_find_compatible_node(NULL, NULL, "mediatek,mt6797-infracfg");
+	if (other != infra)
+		ret = -EINVAL;
+	other = of_find_compatible_node(other, NULL, "mediatek,mt6797-infracfg");
+	if (other)
+		ret = -EINVAL;
+	of_node_put(other);
+	of_node_put(infra);
+	if (ret)
+		return ret;
+	ret = -EINVAL;
+	supply = of_parse_phandle(np, "mfg_async-supply", 0);
+	if (!supply)
+		return ret;
+	if (!of_device_is_compatible(supply, "richtek,rt5735") ||
+	    !of_device_is_available(supply) ||
+	    of_property_count_u32_elems(supply, "reg") != 1 ||
+	    of_property_read_u32(supply, "reg", &addr) || addr != 0x1c ||
+	    of_property_read_string(supply, "regulator-name", &name) ||
+	    strcmp(name, "vgpu") ||
+	    of_property_read_bool(supply, "regulator-always-on") ||
+	    of_property_read_bool(supply, "regulator-boot-on"))
+		goto put_supply;
+	parent = of_get_parent(supply);
+	if (!parent)
+		goto put_supply;
+	if (!of_device_is_available(parent) ||
+	    !of_device_is_compatible(parent, "mediatek,mt6797-i2c") ||
+	    of_address_to_resource(parent, 0, &res) ||
+	    res.start != 0x11010000 || resource_size(&res) != 0x1000 ||
+	    of_address_to_resource(parent, 1, &res) ||
+	    res.start != 0x11000580 || resource_size(&res) != 0x80) {
+		of_node_put(parent);
+		goto put_supply;
+	}
+	of_node_put(parent);
+	/* No upstream supply side effects from exclusive-get on inherited state. */
+	for_each_property_of_node(supply, prop)
+		if (strends(prop->name, "-supply"))
+			goto put_supply;
+	/* Reject every duplicate reference, including the former MFG/OPP votes. */
+	for_each_of_allnodes(node) {
+		for_each_property_of_node(node, prop) {
+			struct device_node *target;
+
+			if (!strends(prop->name, "-supply"))
+				continue;
+			target = of_parse_phandle(node, prop->name, 0);
+			if (target == supply &&
+			    (node != np || strcmp(prop->name, "mfg_async-supply"))) {
+				of_node_put(target);
+				of_node_put(node);
+				goto put_supply;
+			}
+			of_node_put(target);
+		}
+	}
+	gpu = of_find_compatible_node(NULL, NULL, "mediatek,mt6797-mali");
+	if (!gpu)
+		goto put_supply;
+	other = of_find_compatible_node(of_node_get(gpu), NULL, "mediatek,mt6797-mali");
+	if (other) {
+		of_node_put(other);
+		goto put_gpu;
+	}
+	if (!of_device_is_available(gpu) ||
+	    of_address_to_resource(gpu, 0, &res) ||
+	    res.start != 0x13040000 || resource_size(&res) != 0x4000 ||
+	    !of_property_read_bool(gpu, "mediatek,gemini-gpuldo-owner"))
+		goto put_gpu;
+	table = of_parse_phandle(gpu, "operating-points-v2", 0);
+	if (!table)
+		goto put_gpu;
+	for_each_available_child_of_node(table, opp) {
+		if (++count != 1 ||
+		    of_property_count_u64_elems(opp, "opp-hz") != 1 ||
+		    of_property_count_u32_elems(opp, "opp-microvolt") != 3 ||
+		    of_property_read_u64(opp, "opp-hz", &hz) ||
+		    hz != 238000000 ||
+		    of_property_read_u32_array(opp, "opp-microvolt", uv, 3) ||
+		    uv[0] != 846700 || uv[1] != 846700 || uv[2] != 850000) {
+			of_node_put(opp);
+			count = -1;
+			break;
+		}
+	}
+	of_node_put(table);
+	if (count == 1)
+		ret = 1;
+put_gpu:
+	of_node_put(gpu);
+put_supply:
+	of_node_put(supply);
+	return ret;
 }
 
 static struct scp *init_scp(struct platform_device *pdev,
@@ -513,6 +792,11 @@ static struct scp *init_scp(struct platform_device *pdev,
 
 	scp->bus_prot_reg_update = bus_prot_reg_update;
 	mutex_init(&scp->bus_prot_lock);
+	mutex_init(&scp->gpuldo_lock);
+	i = scpsys_gpuldo_validate_dt(&pdev->dev);
+	if (i < 0)
+		return ERR_PTR(i);
+	scp->gpuldo_mode = i == 1;
 
 	scp->dev = &pdev->dev;
 
@@ -544,9 +828,13 @@ static struct scp *init_scp(struct platform_device *pdev,
 		struct scp_domain *scpd = &scp->domains[i];
 		const struct scp_domain_data *data = &scp_domain_data[i];
 
-		scpd->supply = devm_regulator_get_optional(&pdev->dev, data->name);
+		if (scp->gpuldo_mode && i == MT6797_POWER_DOMAIN_MFG_ASYNC)
+			scpd->supply = devm_regulator_get_exclusive(&pdev->dev, data->name);
+		else
+			scpd->supply = devm_regulator_get_optional(&pdev->dev, data->name);
 		if (IS_ERR(scpd->supply)) {
-			if (PTR_ERR(scpd->supply) == -ENODEV)
+			if (PTR_ERR(scpd->supply) == -ENODEV &&
+			    !(scp->gpuldo_mode && i == MT6797_POWER_DOMAIN_MFG_ASYNC))
 				scpd->supply = NULL;
 			else
 				return ERR_CAST(scpd->supply);
@@ -586,14 +874,21 @@ static struct scp *init_scp(struct platform_device *pdev,
 			genpd->flags |= GENPD_FLAG_ACTIVE_WAKEUP;
 	}
 
+	if (scp->gpuldo_mode) {
+		i = mt6797_gpuldo_admit(&scp->gpuldo, &scpsys_gpuldo_ops, scp);
+		if (i)
+			return ERR_PTR(i);
+		/* Static non-removable provider retains this validated node identity. */
+		scp->gpuldo_gpu = of_find_compatible_node(NULL, NULL, "mediatek,mt6797-mali");
+	}
 	return scp;
 }
 
-static void mtk_register_power_domains(struct platform_device *pdev,
+static int mtk_register_power_domains(struct platform_device *pdev,
 				struct scp *scp, int num)
 {
 	struct genpd_onecell_data *pd_data;
-	int i, ret;
+	int i, ret, first_error = 0;
 
 	for (i = 0; i < num; i++) {
 		struct scp_domain *scpd = &scp->domains[i];
@@ -611,7 +906,9 @@ static void mtk_register_power_domains(struct platform_device *pdev,
 		else
 			on = !WARN_ON(genpd->power_on(genpd) < 0);
 
-		pm_genpd_init(genpd, NULL, !on);
+		ret = pm_genpd_init(genpd, NULL, !on);
+		if (ret && !first_error)
+			first_error = ret;
 	}
 
 	/*
@@ -622,9 +919,13 @@ static void mtk_register_power_domains(struct platform_device *pdev,
 
 	pd_data = &scp->pd_data;
 
+	/* Keep initialized objects alive, but never expose a partial owner. */
+	if (scp->gpuldo_mode && first_error)
+		return first_error;
 	ret = of_genpd_add_provider_onecell(pdev->dev.of_node, pd_data);
 	if (ret)
 		dev_err(&pdev->dev, "Failed to add OF provider: %d\n", ret);
+	return ret;
 }
 
 /*
@@ -1310,7 +1611,12 @@ static int scpsys_probe(struct platform_device *pdev)
 	if (IS_ERR(scp))
 		return PTR_ERR(scp);
 
-	mtk_register_power_domains(pdev, scp, soc->num_domains);
+	ret = mtk_register_power_domains(pdev, scp, soc->num_domains);
+	if (ret && scp->gpuldo_mode) {
+		mt6797_gpuldo_fail(&scp->gpuldo, ret);
+		/* Success retains devres backing non-removable domains. */
+		return 0;
+	}
 
 	pd_data = &scp->pd_data;
 
@@ -1320,7 +1626,11 @@ static int scpsys_probe(struct platform_device *pdev)
 		if (ret && IS_ENABLED(CONFIG_PM))
 			dev_err(&pdev->dev, "Failed to add subdomain: %d\n",
 				ret);
+		if (ret && scp->gpuldo_mode)
+			mt6797_gpuldo_fail(&scp->gpuldo, ret);
 	}
+	if (scp->gpuldo_mode && !scp->gpuldo.failed)
+		smp_store_release(&gpuldo_provider, scp);
 
 	return 0;
 }

@@ -20,6 +20,7 @@
 #include <linux/unaligned.h>
 
 #include <linux/soc/mediatek/mt6797-dvfsp-ptp.h>
+#include <linux/soc/mediatek/mt6797-gpuldo-owner.h>
 
 #include <drm/drm_print.h>
 
@@ -464,6 +465,29 @@ set_supported_hw:
 
 int panfrost_gpu_mt6797_init(struct panfrost_device *pfdev)
 {
+	struct device_node *np = pfdev->base.dev->of_node;
+	struct panfrost_compatible *comp;
+	int ret;
+
+	if (of_property_read_bool(np, "mediatek,gemini-gpuldo-owner")) {
+		if (!of_machine_is_compatible("planet,gemini-pda") ||
+		    !of_machine_is_compatible("mediatek,mt6797") ||
+		    of_find_property(np, "mali-supply", NULL))
+			return -EINVAL;
+		ret = mtk_scpsys_gpuldo_gpu_admit(np);
+		if (ret)
+			return ret;
+		/* Per-device copy: ordinary compatible data and other GPUs unchanged. */
+		comp = devm_kmemdup(pfdev->base.dev, pfdev->comp,
+				   sizeof(*comp), GFP_KERNEL);
+		if (!comp)
+			return -ENOMEM;
+		comp->num_supplies = 0;
+		comp->supply_names = NULL;
+		comp->pm_features &= ~(BIT(GPU_PM_VREG_OFF) | BIT(GPU_PM_CLK_DIS));
+		pfdev->comp = comp;
+		pfdev->mt6797_gpuldo_domain_supply = true;
+	}
 	panfrost_mt6797_gpuldo_prepare(pfdev);
 	pfdev->mfgcfg = syscon_regmap_lookup_by_phandle(pfdev->base.dev->of_node,
 							"mediatek,mfgcfg");

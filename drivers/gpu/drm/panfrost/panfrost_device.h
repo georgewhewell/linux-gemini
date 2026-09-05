@@ -149,6 +149,7 @@ struct panfrost_device {
 	struct clk *bus_clock;
 	struct clk *bus_ace_clock;
 	struct regulator_bulk_data *regulators;
+	bool mt6797_gpuldo_domain_supply;
 	struct reset_control *rstc;
 	struct regmap *mfgcfg;
 	struct regmap *mt6797_gpuldo_map;

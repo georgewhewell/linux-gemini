@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Opt-in, boot-lifetime MD1 Z-drive metadata authority. Never executes FS ops. */
+/* Opt-in, boot-lifetime MD1 Z-drive metadata authority. Never reads file data. */
 #include <linux/capability.h>
 #include <linux/compat.h>
 #include <linux/file.h>
@@ -8,6 +8,7 @@
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mount.h>
+#include <linux/namei.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -86,6 +87,62 @@ int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *stats)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_stats);
+
+int mt6797_md1_fs_provider_getattr(const char *name, unsigned int *mode)
+{
+	struct file *file = NULL;
+	struct dentry *child;
+	struct path path;
+	struct kstat stat;
+	struct qstr qname;
+	unsigned long flags;
+	size_t length;
+	int ret;
+
+	might_sleep();
+	if (!name || !mode)
+		return -EINVAL;
+	length = strnlen(name, 256);
+	if (!length || length == 256 || !strcmp(name, ".") ||
+	    !strcmp(name, "..") || strpbrk(name, "/\\:"))
+		return -EACCES;
+	spin_lock_irqsave(&provider_lock, flags);
+	if (provider_state.stage == MT6797_FS_CONSUMED &&
+	    mt6797_fs_readonly(provider_file))
+		file = get_file(provider_file);
+	spin_unlock_irqrestore(&provider_lock, flags);
+	if (!file)
+		return -ENODEV;
+	qname = (struct qstr)QSTR_INIT(name, length);
+	child = lookup_one_positive_unlocked(mnt_idmap(file->f_path.mnt),
+					    &qname, file->f_path.dentry);
+	if (IS_ERR(child)) {
+		ret = PTR_ERR(child);
+		goto put_file;
+	}
+	/* lookup_one never traverses a mount or follows a symlink. Reject even
+	 * covered mountpoints and non-file objects rather than stat their backing.
+	 */
+	if (d_mountpoint(child) || d_is_symlink(child) ||
+	    (!d_is_reg(child) && !d_is_dir(child)) ||
+	    child->d_sb != file_inode(file)->i_sb || !mt6797_fs_readonly(file)) {
+		ret = -EACCES;
+		goto put_child;
+	}
+	path.mnt = file->f_path.mnt;
+	path.dentry = child;
+	ret = vfs_getattr(&path, &stat, STATX_MODE, AT_STATX_DONT_SYNC);
+	if (!ret && !mt6797_fs_readonly(file))
+		ret = -EACCES;
+	if (!ret)
+		*mode = stat.mode;
+put_child:
+	dput(child);
+put_file:
+	fput(file);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_getattr);
 
 static int mt6797_fs_cancel_registration(void)
 {

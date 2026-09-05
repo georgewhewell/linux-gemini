@@ -19,7 +19,18 @@ assert initial.index('mt6797_md1_fs_provider_claim(')<initial.index('mt6797_md1_
 ccci=(root/'drivers/net/wwan/mediatek/mtk_mt6797_ccci.c').read_text()
 def timer_tail(s):
     start=s.index('\tret = mt6797_md1_hs_arm(')
-    return s[start:s.index('\nstatic void mt6797_ccci_remove(',start)]
+    tail=s[start:s.index('\nstatic void mt6797_ccci_remove(',start)]
+    # GETATTR adds a process-context workqueue before enabling NAPI. Exclude
+    # only that exact independently-tested allocation block, not timer logic.
+    allocation='''\tccci->fs_attr_wq = alloc_ordered_workqueue("mt6797-fs-attr", 0);
+\tif (!ccci->fs_attr_wq)
+\t\treturn -ENOMEM;
+\tret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_fs_attr_destroy, ccci);
+\tif (ret)
+\t\treturn ret;
+'''
+    assert tail.count(allocation)==1
+    return tail.replace(allocation,'')
 # Independently checked against b71187c5; works in a Nix source without .git.
 assert hashlib.sha256(timer_tail(ccci).encode()).hexdigest() == 'e53fb1ac6d6436a6dfac203c6327dfad560a033e6aee084c2267de1104559b7a'
 assert '#define MT6797_CCCI_HANDSHAKE_TIMEOUT\t(30 * HZ)' in ccci

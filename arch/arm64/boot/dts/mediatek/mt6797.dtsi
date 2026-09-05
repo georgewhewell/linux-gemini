@@ -942,6 +942,7 @@
 		clocks = <&infrasys CLK_INFRA_THERM>,
 			 <&infrasys CLK_INFRA_AUXADC>;
 		clock-names = "therm", "auxadc";
+		resets = <&infrasys MT6797_INFRA_THERM_CTRL_RST>;
 		mediatek,auxadc = <&auxadc>;
 		mediatek,apmixedsys = <&apmixedsys>;
 		#thermal-sensor-cells = <0>;

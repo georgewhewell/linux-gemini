@@ -6,6 +6,10 @@
 #define MT6797_INFRA_THERM_CTRL_RST	0
 #define MT6797_INFRA_PMIC_WRAP_RST	1
 
+/* Historical disabled MD1 DT references; not exposed by the reset provider. */
+#define MT6797_INFRA_CLDMA_RST		13
+#define MT6797_INFRA_CLDMA_AO_RST		68
+
 /* TOPRGU resets: WDT_SWSYSRST */
 #define MT6797_TOPRGU_INFRA_SW_RST		0
 #define MT6797_TOPRGU_DISP_SW_RST		1

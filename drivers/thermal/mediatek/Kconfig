@@ -18,6 +18,16 @@ config MTK_SOC_THERMAL
 	  This driver configures thermal controllers to collect
 	  temperature via AUXADC interface.
 
+config MTK_SOC_THERMAL_TRANSACTION_KUNIT_TEST
+	tristate "Test MT6797 thermal transaction" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test the hardware-free ordering, failure unwind, APMIXED mask,
+	  idle predicates, and first-sample gate used by the disabled-node
+	  MT6797 thermal transaction. The test performs no MMIO, clock,
+	  reset, DT, NVMEM, platform-device, or thermal-zone operation.
+
 config MTK_LVTS_THERMAL
         tristate "LVTS Thermal Driver for MediaTek SoCs"
         depends on HAS_IOMEM

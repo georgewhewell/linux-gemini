@@ -14,7 +14,8 @@
 };
 
 &auxadc {
-	status = "okay";
+	/* The thermal transaction owns AUXADC; no standalone IIO consumer. */
+	status = "disabled";
 };
 
 &thermal {

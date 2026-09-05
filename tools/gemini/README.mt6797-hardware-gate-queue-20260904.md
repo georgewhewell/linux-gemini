@@ -630,8 +630,51 @@ supervisor restored exact rescue at 01:37:58. Boot ID
 readbacks. The candidate is consumed/no-retry. Evidence and result:
 `/mnt/Home/src/nixos-gemini/handoff/gpu-oneboot-OnQnGXTf`.
 
+### GPU R7: shareability hypothesis failed, exact recovery complete
+
+Candidate `3f441aef15aae346078a5ddd513ee1ff23db43997e45d9e85fbcee4d7574253d`
+was written once on 2026-09-05 at 01:59:49 Europe/Zurich. Initial no-job
+preflight and live SSH passed. Mesa identified Mali-T880 MC4 (Panfrost), but
+the first draw again timed out with `GPU_SHAREABILITY_FAULT` 0x00ff0388 and
+`AS_ACTIVE bit stuck`. Job IRQ progress was zero; no pixels were verified.
+The MT6797 inner-shareable MMU experiment is therefore NOT a rendering fix.
+Do not schedule another identical draw or promote the quirk as validated.
+
+RAM evidence was saved before stopping the watchdog petter. Automatic reset
+and exact rescue succeeded without a manual reset; p22/p30/p31 readbacks and
+Stage A health passed. Terminal result at 02:08:50:
+`observation_failed_recovered_stage_a_pstore_captured`. Candidate consumed,
+no retry. Result: `/mnt/Home/src/nixos-gemini/handoff/gpu-oneboot-r7-bKKu03YH/RESULT.md`.
+Pstore SHA256: `8357c9d5083f3b7b931321ac9b712410f0b9df3acf83bba71dcd32e5708c76c5`.
+
+### Fresh upstream A72 and thermal integration direction, 2026-09-05
+
+User requested checking ixoo's newer work. Fresh upstream main was
+`b7b72311c5eecfbead4b45494e2dd2f467d559b7`; cached README/search status is
+not sufficient evidence. Exact proven A72 build is
+`556575a202e09d25093c578cded454854a3e6d08`, profile
+`gemini-a72-frequency-thermal-candidate`, selected series through 0534.
+Runtime receipt:
+https://github.com/ixoo/gemini-pda-mainline/blob/b7b72311c5eecfbead4b45494e2dd2f467d559b7/experiments/2026-09-04-mt6797-a72-frequency-observation/results/zero-divider-runtime-pass-20260904.txt
+
+That receipt records CPUs 0-9 online, CPU9 down/restore, independent pinned
+A72 accounting and 16 matching writer/peer-reader checks, Big at 750 MHz.
+It is upstream device evidence, not a local hardware pass. General cpufreq,
+OPP changes, idle and suspend remain outside that proof; a later cold repeat
+failed the thermal-repeatability predicate despite passing the CPU workload.
+
+Our older ca094 CPU8-only power gate lacks this complete late-capability and
+admission/lifecycle chain. Do not enable its unfinished capability profile
+or transplant only the upstream CPU9 controller. Preserve the proven source
+chain together when adapting our SSH and bounded recovery packaging.
+Independent useful imports under review are 0482 topology, 0525/0526 and
+0533/0534 clock decoding/tests, plus thermal reset/ordered acquisition and
+reader-lifetime fixes. Standalone AUXADC must remain disabled in the thermal
+carrier. The physically disconnected battery sensor remains unavailable.
+
 ### GPU/G2/G3 historical candidates
 
+- `3f441aef15aae346078a5ddd513ee1ff23db43997e45d9e85fbcee4d7574253d`
 - `57c57001542702d0c9a9802e22ed32d4dcafdba4c192a95fe4b20295e304753b`
 - `61c0213eea891171e5034a343ed600580b4805413dc494b3afb25b14f1d0d41e`
 - `369a20c970f68cce95dd3c3dbac34daa386ecac1d695fd78dd4aea2397673077`

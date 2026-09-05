@@ -6,6 +6,86 @@
 #define MT6797_FS_TX 15U
 #define MT6797_FS_GETDISKINFO 0x100eU
 #define MT6797_FS_REPLY_SIZE 120U
+#define MT6797_FS_GETATTRIBUTES 0x1010U
+#define MT6797_FS_ATTR_REPLY_SIZE 32U
+#define MT6797_FS_NAME_MAX 255U
+
+struct mt6797_fs_attr_request {
+	u32 index;
+	char name[MT6797_FS_NAME_MAX + 1];
+};
+
+/* Only a direct child of the retained Z root. Unsupported paths stay captured
+ * rather than pretending a broader filesystem operation was performed.
+ */
+static inline int mt6797_fs_attr_parse(const u8 *data, size_t len,
+			       struct mt6797_fs_attr_request *request)
+{
+	u32 bytes, index;
+	size_t chars, i;
+
+	if (!data || !request || len < 28 || len > 3584)
+		return -EMSGSIZE;
+	if (mt6797_rpc_read(data) || mt6797_rpc_read(data + 4) != len ||
+	    (mt6797_rpc_read(data + 8) & 0xffff) != MT6797_FS_RX)
+		return -EPROTO;
+	if (mt6797_rpc_read(data + 16) != MT6797_FS_GETATTRIBUTES)
+		return -EOPNOTSUPP;
+	index = mt6797_rpc_read(data + 12);
+	if (index >= 5 || mt6797_rpc_read(data + 20) != 1)
+		return -EPROTO;
+	bytes = mt6797_rpc_read(data + 24);
+	if (bytes < 10 || bytes > 2 * (MT6797_FS_NAME_MAX + 4) ||
+	    (bytes & 1) || ((bytes + 3) & ~3U) != len - 28)
+		return -EMSGSIZE;
+	data += 28;
+	if (data[0] != 'Z' || data[1] || data[2] != ':' || data[3] ||
+	    data[4] != '\\' || data[5] || data[bytes - 2] || data[bytes - 1])
+		return -EOPNOTSUPP;
+	chars = bytes / 2 - 4;
+	for (i = 0; i < chars; i++) {
+		u8 c = data[6 + i * 2];
+
+		if (data[7 + i * 2] || c < 32 || c > 126 ||
+		    c == '/' || c == '\\' || c == ':')
+			return -EOPNOTSUPP;
+		request->name[i] = c;
+	}
+	request->name[chars] = 0;
+	if (!strcmp(request->name, ".") || !strcmp(request->name, ".."))
+		return -EOPNOTSUPP;
+	request->index = index;
+	return 0;
+}
+
+/* Installed Android25 helper11980: EMFILE/EACCES/ENOENT, otherwise general
+ * failure. A nonnegative result is the actual attribute mask, not status+data.
+ */
+static inline s32 mt6797_fs_attr_result(int error, unsigned int mode)
+{
+	if (error) {
+		switch (error) {
+		case -EMFILE: return -5;
+		case -EACCES: return -16;
+		case -ENOENT: return -9;
+		default: return -18;
+		}
+	}
+	return (!(mode & 0333) && (mode & 0444) ? 1 : 0) |
+		((mode & 0170000) == 0040000 ? 0x10 : 0);
+}
+
+static inline void mt6797_fs_attr_reply(u32 index, s32 result, u8 *reply)
+{
+	memset(reply, 0, MT6797_FS_ATTR_REPLY_SIZE);
+	mt6797_rpc_write(reply + 4, MT6797_FS_ATTR_REPLY_SIZE);
+	mt6797_rpc_write(reply + 8, MT6797_FS_TX);
+	mt6797_rpc_write(reply + 12, index);
+	mt6797_rpc_write(reply + 16, 0xffff0000U | MT6797_FS_GETATTRIBUTES);
+	mt6797_rpc_write(reply + 20, 1);
+	mt6797_rpc_write(reply + 24, 4);
+	mt6797_rpc_write(reply + 28, (u32)result);
+}
 
 /* Complete, unfragmented GETDISKINFO only. No modem path is ever opened. */
 static int mt6797_fs_disk_reply(const u8 *data, size_t len,

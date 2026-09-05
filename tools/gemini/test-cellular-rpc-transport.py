@@ -77,7 +77,7 @@ struct mt6797_md1_fs_stats {u32 block_size,blocks,free_blocks;};
 adapter=r'''
 struct mt6797_ccci_slot {void *gpd;struct sk_buff *skb;dma_addr_t skb_dma;bool mapped;};
 struct mt6797_ccci_queue {struct mt6797_ccci_slot tx[16];unsigned tx_head,tx_tail,tx_used;pthread_mutex_t tx_lock;};
-struct mt6797_ccci {int failed,ready,rpc_logs,fs_logs,hs,diag;void *dev;char *ao,*pdn;
+struct mt6797_ccci {int failed,ready,rpc_logs,fs_logs,hs,diag;unsigned long fs_attr_indices;void *dev;char *ao,*pdn;
  struct mt6797_ccci_queue queue[7];pthread_mutex_t tx_stop_lock;struct mt6797_rpc_eint sim_eint[2];
  int tx_sequence[256],rx_sequence[256];};
 struct mt6797_ccci_link;
@@ -85,6 +85,15 @@ static struct mt6797_ccci c;static char ao[4096],pdn[4096];static u8 desc[7][16]
 static int mode,allocs,frees,maps,unmaps,publishes,resumes,stops,captures,controls;
 static pthread_t stopper;static bool stopper_started;
 static __thread bool stop_locked;
+static inline bool mt6797_ccci_fs_index_busy(struct mt6797_ccci *,u32);
+static int rx_started,rx_busy;
+static bool test_bit(unsigned i,unsigned long *p){return (*p&(1UL<<i))!=0;}
+static void clear_bit(unsigned i,unsigned long *p){assert(stop_locked);*p&=~(1UL<<i);}
+/* Async work is exercised by its own actual worker suite, not this synchronous
+ * legacy RPC/disk fixture. Any accidental call here is a test failure.
+ */
+static int mt6797_ccci_fs_attr_queue(struct mt6797_ccci *p,const struct sk_buff *s)
+{(void)p;(void)s;assert(!"unexpected async dispatch in synchronous fixture");return -EOPNOTSUPP;}
 static bool fs_enabled=true;
 static bool mt6797_md1_fs_provider_enabled(void){return fs_enabled;}
 static int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *s)
@@ -122,6 +131,7 @@ static void dma_unmap_single(void *dev,dma_addr_t a,size_t n,int dir)
 {(void)dev;(void)a;(void)n;(void)dir;assert(!stop_locked);unmaps++;}
 static void mt6797_ccci_quiesce(struct mt6797_ccci *,int);
 static void *fail_thread(void *unused){(void)unused;mt6797_ccci_quiesce(&c,-EIO);return NULL;}
+static void *rx_thread(void *unused){(void)unused;__atomic_store_n(&rx_started,1,__ATOMIC_SEQ_CST);rx_busy=mt6797_ccci_fs_index_busy(&c,4);return NULL;}
 static int mt6797_md1_cldma_tgpd_prepare_tx(void *g,dma_addr_t a,size_t n)
 {(void)g;(void)a;(void)n;assert(!stop_locked);if(mode==3)return -EIO;
  if(mode==5)mt6797_ccci_quiesce(&c,-EIO);
@@ -129,6 +139,8 @@ static int mt6797_md1_cldma_tgpd_prepare_tx(void *g,dma_addr_t a,size_t n)
 static int mt6797_md1_cldma_tgpd_publish(void *g){(void)g;assert(stop_locked);if(mode==4)return -EIO;
  if(mode==6){assert(!pthread_create(&stopper,NULL,fail_thread,NULL));stopper_started=true;
   while(!atomic_read(&c.failed))sched_yield();}
+ if(mode==7){rx_started=0;rx_busy=-1;assert(!pthread_create(&stopper,NULL,rx_thread,NULL));stopper_started=true;
+  while(!__atomic_load_n(&rx_started,__ATOMIC_SEQ_CST))sched_yield();}
  publishes++;return 0;}
 static void mt6797_ccci_control_rx(struct mt6797_ccci *p,struct sk_buff *s,const struct mtk_ccci_frame *f)
 {(void)p;(void)s;(void)f;controls++;}
@@ -186,7 +198,17 @@ int main(void){
  assert(captures==1&&!maps&&!publishes&&frees==1);clean();
  reset(0);req=fs_request();mt6797_rpc_write(req->data,1);mt6797_ccci_dispatch_rx(&c,req,1);
  assert(captures==1&&!maps&&!publishes&&frees==1);clean();
- puts("PASS actual pre-ready RPC/FS dispatch/TX/STOP: 40/120-byte replies, FS queue1/index4/channel15 independent sequence, opt-in, malformed/unsupported capture, DMA ownership unwind, concurrent publish-before-STOP");
+ reset(0);c.fs_attr_indices=1UL<<4;mt6797_ccci_dispatch_rx(&c,fs_request(),1);
+ assert(captures==1&&!maps&&!publishes&&c.fs_attr_indices==(1UL<<4));clean();
+ for(int m=0;m<=7;m++)if(m!=1){
+   reset(0);u8 bytes[32];mt6797_fs_attr_reply(4,-9,bytes);
+   req=alloc_skb(32,GFP_ATOMIC);skb_put_data(req,bytes,32);c.fs_attr_indices=1UL<<4;mode=m;
+   int ret=mt6797_ccci_tx(&c,1,req,15);
+   if(ret){assert(c.fs_attr_indices==(1UL<<4));kfree_skb(req);}
+   else {assert(!c.fs_attr_indices&&mt6797_rpc_read(req->data+8)==0x8009000f&&mt6797_rpc_read(req->data+12)==4);}
+   clean();assert(allocs==frees);if(m==7)assert(rx_busy==0);
+ }
+ puts("PASS actual pre-ready RPC/FS dispatch/TX/STOP: 40/120/32-byte replies, FS index collision capture and successful publish-only index release, independent sequence, DMA ownership unwind, concurrent publish-before-STOP");
 }
 '''
 parts=[shim,(root/'drivers/net/wwan/mediatek/mtk_mt6797_ccci_rpc.h').read_text(),
@@ -194,6 +216,7 @@ parts=[shim,(root/'drivers/net/wwan/mediatek/mtk_mt6797_ccci_rpc.h').read_text()
        function(common,'mtk_ccci_header_init('),function(common,'mtk_ccci_header_decode('),
        function(source,'mt6797_ccci_quiesce_from('),function(source,'mt6797_ccci_quiesce('),
        function(source,'mt6797_ccci_tx('),function(source,'mt6797_ccci_rpc_rx('),
+       function(source,'mt6797_ccci_fs_index_busy('),
        function(source,'mt6797_ccci_fs_rx('),dispatch,tests]
 with tempfile.TemporaryDirectory(prefix='gemini-rpc-transport-') as d:
     p=Path(d);(p/'test.c').write_text('\n'.join(parts))

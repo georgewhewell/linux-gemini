@@ -25,7 +25,7 @@ static struct mt6797_md1_mpu_remap_layout mt6797_md1_cldma_layout = {
 	.md_base = 0xb4000000ULL,
 	.md_size = 0x08000000,
 	.ap_md_smem_base = 0x88000000ULL,
-	.ap_md_smem_size = 0x00600000,
+	.ap_md_smem_size = 0x00200000,
 	.lk_reported_load_complete = true,
 };
 
@@ -59,6 +59,10 @@ mt6797_md1_cldma_accepts_only_attested_lk_carveout(struct kunit *test)
 
 	KUNIT_EXPECT_EQ(test, mt6797_md1_cldma_lk_carveout_validate(&layout),
 			0);
+	layout.ap_md_smem_size = 0x00600000; /* Whole LK mblock, not MD1. */
+	KUNIT_EXPECT_EQ(test, mt6797_md1_cldma_lk_carveout_validate(&layout),
+			-ERANGE);
+	layout = mt6797_md1_cldma_layout;
 	layout.ap_md_smem_size--;
 	KUNIT_EXPECT_EQ(test, mt6797_md1_cldma_lk_carveout_validate(&layout),
 			-ERANGE);

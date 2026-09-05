@@ -20,6 +20,9 @@ probe = function(source, 'static int mt6797_ccci_probe(')
 assert 'of_parse_phandle' not in probe and 'of_address_to_resource' not in probe
 assert probe.index('mt6797_ccci_validate_handoff') < probe.index('devm_ioremap_wc')
 constants = '\n'.join(re.findall(r'^#define MT6797_MD1_CLDMA_LK_.*$', core, re.M))
+constants += '\n' + '\n'.join(re.findall(
+    r'^#define MTK_CCCI_RUNTIME_(?:AP_SIZE|MD_SIZE|OFFSET)\s+.*$',
+    (root / 'drivers/net/wwan/mediatek/mtk_ccci_common.h').read_text(), re.M))
 layout = re.search(r'struct mt6797_md1_mpu_remap_layout \{.*?\n};', header, re.S).group(0)
 shim = r'''
 #include <assert.h>
@@ -68,7 +71,8 @@ static void reset(void)
  saved=(struct mt6797_md1_mpu_remap_layout){
  .md_base=MT6797_MD1_CLDMA_LK_MD_BASE, .md_size=MT6797_MD1_CLDMA_LK_MD_SIZE,
  .ap_md_smem_base=MT6797_MD1_CLDMA_LK_SMEM_BASE,
- .ap_md_smem_size=MT6797_MD1_CLDMA_LK_SMEM_SIZE, .lk_reported_load_complete=true };
+ /* Independent live C2 RMPU slice, not the validator's constant. */
+ .ap_md_smem_size=0x00200000, .lk_reported_load_complete=true };
 }
 static void rejected(int expected)
 {
@@ -85,8 +89,11 @@ int main(void)
  struct resource r;
  struct mt6797_ccci c={0};
  reset(); assert(!mt6797_ccci_validate_handoff(&c,&r));
- assert(r.start==0x88000000 && r.end==0x885fffff && r.flags==IORESOURCE_MEM);
+ assert(r.start==0x88000000 && r.end==0x881fffff && r.flags==IORESOURCE_MEM);
  assert(c.runtime_config.smem_md_addr==0x40000000 && c.runtime_config.smem_size==SZ_1M);
+ assert(MTK_CCCI_RUNTIME_OFFSET + MTK_CCCI_RUNTIME_AP_SIZE +
+        MTK_CCCI_RUNTIME_MD_SIZE <= c.runtime_config.smem_size);
+ assert(c.runtime_config.smem_size <= r.end-r.start+1);
  assert(step==3 && random_calls==1);
  const int errors[]={-ENODATA,-EPROBE_DEFER,-ETIMEDOUT,-ESHUTDOWN,-EIO};
  for (unsigned i=0;i<sizeof(errors)/sizeof(errors[0]);i++) {
@@ -102,9 +109,11 @@ int main(void)
  reset(); saved.ap_md_smem_base++; rejected(-ERANGE);
  reset(); saved.ap_md_smem_size=0; rejected(-ERANGE);
  reset(); saved.ap_md_smem_size++; rejected(-ERANGE);
+ reset(); saved.ap_md_smem_size=0x00600000; rejected(-ERANGE);
+ reset(); saved.ap_md_smem_size=0x00100000; rejected(-ERANGE);
  reset(); offset=UINT64_MAX; rejected(-ERANGE);
  reset(); offset=saved.ap_md_smem_base+1; rejected(-ERANGE);
- puts("PASS actual CCCI live smem: validated output, 25 refusal paths leave output untouched, no pre-LK phandle dependency");
+ puts("PASS actual CCCI live smem: exact 2 MiB AP-MD1 slice, 27 refusal paths including whole 6 MiB mblock, output untouched");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='cellular-live-smem-') as directory:

@@ -150,6 +150,9 @@ struct panfrost_device {
 	struct regulator_bulk_data *regulators;
 	struct reset_control *rstc;
 	struct regmap *mfgcfg;
+	struct regmap *mt6797_gpuldo_map;
+	int mt6797_gpuldo_status;
+	unsigned long mt6797_gpuldo_seen;
 	/* pm_domains for devices with more than one. */
 	struct device *pm_domain_devs[MAX_PM_DOMAINS];
 	struct device_link *pm_domain_links[MAX_PM_DOMAINS];

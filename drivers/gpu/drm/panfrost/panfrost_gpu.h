@@ -8,6 +8,8 @@
 struct panfrost_device;
 struct panfrost_mmu;
 
+void panfrost_gpu_mt6797_gpuldo_diag(struct panfrost_device *pfdev);
+
 void panfrost_gpu_mt6797_submit_diag(struct panfrost_device *pfdev,
 				  struct panfrost_mmu *mmu, int js,
 				  u64 head, u32 config);

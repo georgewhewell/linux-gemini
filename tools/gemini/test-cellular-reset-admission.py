@@ -115,3 +115,41 @@ probe = function(owner, "mt6797_md1_cold_owner_probe")
 assert probe.index("devm_reset_control_bulk_get_exclusive(") < probe.index("mt6797_md1_firmware_load(")
 assert probe.index('cldma_resets[0].id = "cldma-ao"') < probe.index('cldma_resets[1].id = "cldma-pdn"')
 print("PASS reset acquisition before writes and pulse before modem power")
+
+transport = (root / "drivers/net/wwan/mediatek/mtk_mt6797_ccci.c").read_text()
+defines = "\n".join(line for line in transport.splitlines() if line.startswith((
+    "#define CLDMA_UL_STATUS", "#define CLDMA_SO_STATUS", "#define CLDMA_L2_TX_STATUS",
+    "#define CLDMA_L2_RX_STATUS", "#define CLDMA_UL_START_ADDR", "#define CLDMA_SO_START_ADDR",
+    "#define MT6797_CCCI_QUEUE_COUNT")))
+clean = r'''
+#include <assert.h>
+#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+typedef uint32_t u32;
+#define dev_info(...) do {} while (0)
+struct mt6797_ccci { unsigned char *ao, *pdn; void *dev; };
+static unsigned calls, inject;
+static u32 readl(void *address) { (void)address; return ++calls == inject ? 1 : 0; }
+''' + defines + "\n" + function(transport, "mt6797_ccci_clean_reset_check") + r'''
+int main(void)
+{
+ unsigned char ao[0x1e00],pdn[0x1e00];
+ struct mt6797_ccci ccci={ao,pdn,0};
+ assert(!mt6797_ccci_clean_reset_check(&ccci));
+ assert(calls == 19);
+ for (inject=1; inject<=19; inject++) {
+  calls=0;
+  assert(mt6797_ccci_clean_reset_check(&ccci)==-EUCLEAN && calls==19);
+ }
+ puts("PASS actual pre-ring snapshot: every queue/IRQ/busy/head read rejects nonzero state");
+}
+'''
+with tempfile.TemporaryDirectory(prefix="gemini-cellular-clean-") as directory:
+    path = Path(directory)
+    (path / "clean.c").write_text(clean)
+    subprocess.run([os.environ.get("CC", "cc"), "-Wall", "-Wextra", "-Werror",
+                    str(path / "clean.c"), "-o", str(path / "clean")], check=True)
+    subprocess.run([str(path / "clean")], check=True, timeout=5)
+start = function(transport, "mt6797_ccci_start")
+assert start.index("mt6797_ccci_clean_reset_check(") < start.index("writel(")

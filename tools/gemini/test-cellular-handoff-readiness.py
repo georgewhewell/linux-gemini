@@ -151,5 +151,7 @@ assert ".shutdown = mt6797_md1_cold_owner_shutdown" in source
 transport = (root / "drivers/net/wwan/mediatek/mtk_mt6797_ccci.c").read_text()
 assert ".shutdown = mt6797_ccci_remove" in transport
 assert "atomic_xchg(&ccci->teardown, 1)" in transport
-assert "!evidence.passive_complete || !evidence.cldma_register_activity" in transport
-print("PASS source lifecycle ordering and unchanged transport admission checks")
+assert "!evidence.passive_complete" in transport
+assert "if (!mapping.reset_completed)" in transport
+assert "mt6797_ccci_clean_reset_check(ccci)" in transport
+print("PASS lifecycle ordering and reset-lease/fresh-state transport admission wiring")

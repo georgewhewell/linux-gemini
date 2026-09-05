@@ -356,7 +356,7 @@ int mt6797_md1_cold_owner_acquire_cldma(struct device *consumer,
 	if (ret)
 		return ret;
 	if (evidence.token != MT6797_MD1_POST_VECTOR_GO ||
-	    !evidence.passive_complete || !evidence.cldma_register_activity)
+	    !evidence.passive_complete)
 		return -EPERM;
 
 	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
@@ -370,6 +370,10 @@ int mt6797_md1_cold_owner_acquire_cldma(struct device *consumer,
 	}
 	if (!backend || atomic_read(&mt6797_md1_cold_owner_fatal_latch)) {
 		ret = -EUCLEAN;
+		goto unlock;
+	}
+	if (!backend->cldma_reset_completed) {
+		ret = -EPERM;
 		goto unlock;
 	}
 	mt6797_md1_cldma_lease_taken = true;
@@ -391,6 +395,7 @@ int mt6797_md1_cold_owner_acquire_cldma(struct device *consumer,
 		*mapping = (struct mt6797_md1_cldma_mapping) {
 			.ao = backend->base[MT6797_MD1_RES_AP_CLDMA_AO],
 			.pdn = backend->base[MT6797_MD1_RES_AP_CLDMA_PDN],
+			.reset_completed = backend->cldma_reset_completed,
 		};
 	}
 	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);

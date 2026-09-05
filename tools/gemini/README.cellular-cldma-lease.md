@@ -1,5 +1,10 @@
 # Supplier-owned AP CLDMA register lease
 
+The description below records the lease-only change. The integrated reset
+follow-up now requires reset completion from the same supplier epoch, returns
+it with the mapping, and requires fresh clean queue/IRQ/busy/head state before
+the consumer's first register write. See `README.cellular-integrated.md`.
+
 Based on readiness source `b83d28018`. This fixes a deterministic reservation
 collision, not PLL/reset admission or a demonstrated modem handshake. The cold
 owner already uses `devm_ioremap_resource()` for AP CLDMA AO `0x10014000/0x1e00`

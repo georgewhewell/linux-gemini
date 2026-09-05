@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Default-disabled cellular lifecycle and transport resources; no activation. */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	fragment@0 {
+		target-path = "/";
+
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <2>;
+
+			md1_lk_handoff_probe: modem-lk-handoff-probe {
+				compatible = "mediatek,mt6797-md1-lk-handoff-probe";
+				mediatek,experimental-md1-lk-handoff-probe;
+				mediatek,stage-lk-handoff-read-only;
+				status = "disabled";
+			};
+
+			md1_boot_status_observe: modem-boot-status@10201300 {
+				compatible = "mediatek,mt6797-md1-boot-status-observe";
+				reg = <0 0x10201300 0 0x8>,
+				      <0 0x10209000 0 0x1000>,
+				      <0 0x1020a000 0 0x1000>;
+				reg-names = "md1-boot-status", "ap-ccif", "md-ccif";
+				mediatek,spm = <&scpsys>;
+				mediatek,infracfg = <&infrasys>;
+				mediatek,experimental-md1-boot-status;
+				status = "disabled";
+			};
+
+			md1_remap_observe: modem-remap-observe@10001000 {
+				compatible = "mediatek,mt6797-md1-remap-observe";
+				reg = <0 0x10001000 0 0x1000>;
+				reg-names = "infracfg-ao";
+				mediatek,experimental-md1-remap-observe;
+				mediatek,stage-lk-remap-observe-read-only;
+				status = "disabled";
+			};
+
+			md1_emi_mpu: modem-emi-mpu {
+				compatible = "mediatek,mt6797-md1-emi-mpu";
+				mediatek,experimental-md1-emi-mpu;
+				status = "disabled";
+			};
+
+			md1_cold_owner: modem-cold-owner@10001000 {
+				compatible = "mediatek,mt6797-md1-cold-owner";
+				reg = <0 0x10001000 0 0x1000>,
+				      <0 0x10209000 0 0x1000>,
+				      <0 0x1020a000 0 0x1000>,
+				      <0 0x10014000 0 0x1e00>,
+				      <0 0x10219000 0 0x1e00>,
+				      <0 0x1000c000 0 0x1000>,
+				      <0 0x20150000 0 0x118>,
+				      <0 0x20130000 0 0x1004>,
+				      <0 0x20060000 0 0xd0>,
+				      <0 0x260f0000 0 0x200>,
+				      <0 0x20140000 0 0xa0>,
+				      <0 0x20120000 0 0xd0>,
+				      <0 0x200f0100 0 0x300>,
+				      <0 0x26010000 0 0x40>,
+				      <0 0x20000024 0 0x4>,
+				      <0 0x10201300 0 0x8>;
+				reg-names = "infracfg", "ap-ccif", "md-ccif", "ap-cldma-ao",
+					    "ap-cldma-pdn", "apmixed",
+					    "md-clksw", "md-dcm", "md-peri-misc", "md-l1-a0",
+					    "md-top-pll", "md-sys-clk", "md-rgu", "l1-rgu",
+					    "boot-vector", "boot-status";
+				mediatek,experimental-md1-cold-owner;
+				mediatek,stage-cold-reset-held;
+				mediatek,pmic = <&pmic>;
+				mediatek,boot-watchdog = <&watchdog>;
+				mediatek,spm = <&scpsys>;
+				mediatek,emi-mpu = <&md1_emi_mpu>;
+				mediatek,stage-md1-boot-vector-release;
+				status = "disabled";
+			};
+			md1_ccci: modem@10014000 {
+				compatible = "mediatek,mt6797-ccci";
+				interrupt-parent = <&sysirq>;
+				reg = <0 0x10014000 0 0x1e00>,
+				      <0 0x10015000 0 0x1e00>,
+				      <0 0x10219000 0 0x1e00>,
+				      <0 0x1021a000 0 0x1e00>,
+				      <0 0x10209000 0 0x1000>,
+				      <0 0x1020a000 0 0x1000>;
+				reg-names = "ap-cldma-ao", "md-cldma-ao",
+					    "ap-cldma-pdn", "md-cldma-pdn",
+					    "ap-ccif", "md-ccif";
+				interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>,
+					     <GIC_SPI 147 IRQ_TYPE_LEVEL_LOW>,
+					     <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
+				interrupt-names = "cldma", "ap-ccif", "md-wdt";
+				memory-region = <&md1_shared_memory>;
+				memory-region-names = "md-shared";
+				status = "disabled";
+			};
+
+		};
+	};
+};

@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/mediatek,mt6797-ccci.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 CCCI integrated modem interface
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The MT6797 Cross-Core Communication Interface (CCCI) combines the AP and
+  modem views of CLDMA, CCIF mailboxes, a modem watchdog interrupt, and a
+  reserved shared-memory window. The interface transports framed control and
+  data channels between Linux and firmware already loaded and started by a
+  separate modem lifecycle owner.
+
+  The node does not describe firmware loading, modem power, reset or boot-vector
+  release. A CCCI driver must not start CLDMA until that lifecycle owner has
+  provided positive post-vector activity evidence.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-ccci
+
+  reg:
+    items:
+      - description: AP view of the always-on CLDMA registers
+      - description: Modem view of the always-on CLDMA registers
+      - description: AP view of the power-domain CLDMA registers
+      - description: Modem view of the power-domain CLDMA registers
+      - description: AP CCIF mailbox registers
+      - description: Modem CCIF mailbox registers
+
+  reg-names:
+    items:
+      - const: ap-cldma-ao
+      - const: md-cldma-ao
+      - const: ap-cldma-pdn
+      - const: md-cldma-pdn
+      - const: ap-ccif
+      - const: md-ccif
+
+  interrupts:
+    items:
+      - description: CLDMA completion and error interrupt
+      - description: AP CCIF mailbox interrupt
+      - description: Modem watchdog interrupt
+
+  interrupt-names:
+    items:
+      - const: cldma
+      - const: ap-ccif
+      - const: md-wdt
+
+  memory-region:
+    maxItems: 1
+    description: Reserved AP-to-modem CCCI shared-memory window.
+
+  memory-region-names:
+    items:
+      - const: md-shared
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - memory-region
+  - memory-region-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    reserved-memory {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+
+        ccci_shared: memory@88000000 {
+            reg = <0x88000000 0x600000>;
+            no-map;
+        };
+    };
+
+    modem@10014000 {
+        compatible = "mediatek,mt6797-ccci";
+        reg = <0x10014000 0x1e00>, <0x10015000 0x1e00>,
+              <0x10219000 0x1e00>, <0x1021a000 0x1e00>,
+              <0x10209000 0x1000>, <0x1020a000 0x1000>;
+        reg-names = "ap-cldma-ao", "md-cldma-ao",
+                    "ap-cldma-pdn", "md-cldma-pdn",
+                    "ap-ccif", "md-ccif";
+        interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 147 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
+        interrupt-names = "cldma", "ap-ccif", "md-wdt";
+        memory-region = <&ccci_shared>;
+        memory-region-names = "md-shared";
+    };

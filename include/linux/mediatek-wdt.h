@@ -9,8 +9,13 @@ struct device;
 
 #if IS_REACHABLE(CONFIG_MEDIATEK_WATCHDOG)
 int mtk_wdt_require_boot_running(struct device *consumer);
+int mtk_wdt_require_boot_recovery(struct device *consumer);
 #else
 static inline int mtk_wdt_require_boot_running(struct device *consumer)
+{
+	return -EOPNOTSUPP;
+}
+static inline int mtk_wdt_require_boot_recovery(struct device *consumer)
 {
 	return -EOPNOTSUPP;
 }

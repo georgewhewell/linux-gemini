@@ -37,6 +37,10 @@ safe sequencing must be established before proposing control writes.
 Owner-restricted evidence is in `handoff/gpu-thermal-t7-sXr5Olyw` under the
 workspace, with full RAM archive SHA256
 `a52a868bd944e20f28edd792ab6267348a9586c07612b083e771aa1bcf200684`.
-At this documentation boundary the exact accepted rescue has been flashed
-and supervisor-verified; final live network/hash/pstore/ownership closure is
-still pending. The image is consumed and must not be retried. No public push.
+Recovery closed at06:56:20: exact accepted rescue boot
+`3dfe1aaf-025a-4bba-b267-c48ba903ecec`, USB and RJ45 healthy, all three
+partition hashes unchanged, no failed units, and transaction processes/locks
+released. Attributed pstore SHA256
+`2de8e09298c22ae8fdc48d477e15d31df2bccdcbabf1446e8ae577fec8868af2`
+matches the harness archive. The image is consumed and must not be retried.
+No public push.

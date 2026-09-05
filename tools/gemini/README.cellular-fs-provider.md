@@ -108,6 +108,42 @@ No directory authority has been registered; do not initialize or substitute
 modem storage. A candidate must use the exact existing directory through a
 read-only, no-journal-replay mount and the one-shot FD registration interface.
 
+### Fresh backing metadata and standalone helper
+
+The sole hardware owner then verified the actual `nvdata` partition is
+`/dev/mmcblk0p6`, PARTN6, 33554432 bytes, and copied it once to a private host
+artifact for metadata-only inspection. Saved `nvdata-superblock.txt` reports
+ext4 magic EF53, clean state without needs_recovery, 8192 blocks of 4096 bytes,
+and last mount point `/nvdata`. `nvdata-md-stat.txt` proves `/md` already exists
+as directory inode13. No provision file contents were inspected and no device
+mount or modem start was performed. This establishes a genuine backing, not a
+synthetic filesystem. The observed free count is evidence only, never an input
+constant to the service.
+
+`tools/gemini/mt6797-fs-register.c` now implements the standalone helper portion
+of the proposed sequence. It takes only an absolute pre-established RO nvdata
+mountpoint; it does not mount anything. It checks fresh kernel partition name,
+number and sector count, block-device byte size, and exactly the 1024-byte ext4
+superblock metadata. Dirty, error, recovery-needed, non-ext4 and invalid geometry
+are refused. The mountpoint must be the actual filesystem root (inode2) on that
+same device, with ext4 type and read-only mount flags. It opens only `md`, using
+openat2 with no symlinks, no escape and no child mount traversal. Missing `/md`
+is refused, not created. The kernel additionally enforces RO superblock state.
+
+Exactly one REGISTER ioctl is issued with the open directory FD. EINTR or any
+other result never causes an ioctl retry or cancel. All local descriptors are
+closed on every path; successful publication retains the kernel reference.
+The helper contains no daemon execution, mount, formatting, repair, directory
+enumeration or provisioning-file reads. It is not installed in an initramfs by
+this commit and must not be run on the rescue boot.
+
+`test-cellular-fs-register-helper.py` compiles the actual helper against syscall
+adapters, not a duplicate algorithm. It passed label/number/size, ext4/dirty/
+needs-recovery, wrong-device/root, RW mount, missing/symlink `/md`, short
+superblock-read and ambiguous ioctl fixtures, checking no more than one ioctl
+and complete descriptor cleanup. The helper passed host and ARM64 GCC12 syntax
+compilation. Tests invoke no actual mount, ioctl or block-device access.
+
 ## Authority and concurrency
 
 `CONFIG_MTK_MT6797_MD1_FS_PROVIDER` is built-in-only and defaults off.

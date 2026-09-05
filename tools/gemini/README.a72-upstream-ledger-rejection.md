@@ -142,3 +142,16 @@ Stage A boot is `3229b943-62cd-44b7-aa91-d575983c46fe`. Pstore SHA256
 is attributable to prior Stage A, not this A72 candidate: the ledger profile
 intentionally bypasses normal ramoops registration. The same-boot RAM archive
 and raw slot, not that recovery console, prove this candidate's refusal.
+
+The subsequent binary audit found a concrete competing writer in the exact
+MT6797 download agent selected by the recovery XML. DA SHA256
+`ac4c36f222a12445ea2222088f17afb9b6bb4c790724ec2ec76b66947f4b56e5`
+contains a routine that copies the 12-byte marker every 16 KiB while probing
+DRAM capacity/aliasing. Its caller supplies base `0x40000000`, so its write
+sequence includes `0x44410000`. Execution is conditional on a DA configuration
+flag; the host flag path and all other write extents remain under review.
+Older saved console captures contain matching markers at 16 KiB intervals.
+See `handoff/a72-ram-rw-provenance-20260905.md` for binary offsets, reproduction
+and limits. This is not a normal Linux console-wrap marker, nor proof that
+the remaining slot payload is disposable. Initializing the current header
+alone would not protect it from this DA path during subsequent rescue.

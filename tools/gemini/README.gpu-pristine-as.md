@@ -102,5 +102,9 @@ and full RAM archive SHA256
 `77a6e204411d996add17de47016045f12bd82de9aa332f3c40e3c65dade9208e`.
 Root independently checked two saved thermal inventories: four readable
 channels, same boot, PASS. Calibration/protection remain unverified.
-The hardware owner restored the exact rescue image; final health/readback
-closure is recorded separately in the handoff. No retry of this candidate.
+The hardware owner restored the exact rescue image and closed final health
+and all three partition readbacks at 03:08:53. USB/RJ45 are healthy, and the
+supervisor and locks are released. Pstore SHA256
+`cd96e5883f0221f8ecdc91e1050d36bbf731070ccbeab0f11b6e39d9fcccde21`
+contains this T3 submit/fault and evidence-saved marker, ending with the
+expected nowayout message and no observed appended exception. No retry.

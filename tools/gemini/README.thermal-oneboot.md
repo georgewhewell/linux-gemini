@@ -45,6 +45,20 @@ changes. Required configs are `CONFIG_MTK_THERMAL`, `CONFIG_MTK_SOC_THERMAL`,
 `CONFIG_THERMAL_OF`, `CONFIG_HWMON`, and the existing clock/NVMEM providers.
 The thermal module must actually be included/loaded in the initramfs.
 
+For saved before/after inventories, run:
+
+```
+python3 tools/gemini/check-thermal-oneboot.py thermal-before thermal-final
+```
+
+This requires one four-channel `mt6797_sensors` provider with the exact physical
+labels, valid numeric readings, one readable `soc-thermal` zone, and a common
+boot ID with advancing uptime. It rejects missing/read-error channels and
+rebooted or duplicated captures. A physical 0 C reading is valid. The result
+is only `THERMAL_INTERFACES_PASS`: it does not prove calibration accuracy,
+workload safety, cooling action, GPU rendering, or battery temperature.
+`test-thermal-oneboot-check.py` exercises the host checker without hardware.
+
 Retained vendor boot lines 1060–1073 show calibration words
 `995ff095 01529771 48a3c000`, enable=1, gain=613, offset=511,
 calibration temperature=56, slope=0 and VTS MCU1/2/3/4/ABB

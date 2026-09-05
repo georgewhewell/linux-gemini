@@ -7,6 +7,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/mediatek-wdt.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
@@ -2463,6 +2464,26 @@ static const struct of_device_id of_pwrap_match_tbl[] = {
 };
 MODULE_DEVICE_TABLE(of, of_pwrap_match_tbl);
 
+static int pwrap_enable_clocks(struct pmic_wrapper *wrp,
+			       struct clk_bulk_data **clk)
+{
+	int ret;
+
+	/*
+	 * MT6797 recovery must already be armed before the first clock, DCM,
+	 * reset or PMIC initialization write. This only reads watchdog state;
+	 * it never starts, pets or extends the recovery deadline.
+	 */
+	if (wrp->master->type == PWRAP_MT6797) {
+		ret = mtk_wdt_require_boot_recovery(wrp->dev);
+		if (ret)
+			return dev_err_probe(wrp->dev, ret,
+					     "boot watchdog recovery unavailable\n");
+	}
+
+	return devm_clk_bulk_get_all_enabled(wrp->dev, clk);
+}
+
 static int pwrap_probe(struct platform_device *pdev)
 {
 	int ret, irq;
@@ -2518,7 +2539,7 @@ static int pwrap_probe(struct platform_device *pdev)
 		}
 	}
 
-	ret = devm_clk_bulk_get_all_enabled(wrp->dev, &clk);
+	ret = pwrap_enable_clocks(wrp, &clk);
 	if (ret < 0)
 		return dev_err_probe(wrp->dev, ret,
 				     "failed to get clocks\n");

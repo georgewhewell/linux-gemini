@@ -102,6 +102,13 @@ properties:
   power-domains:
     maxItems: 1
 
+  mediatek,boot-watchdog:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      MT6797 boot recovery watchdog. The experimental MT6797 driver requires
+      an already running, reset-enabled 31-second watchdog before enabling
+      wrapper clocks or initializing the PMIC. It does not start or pet it.
+
   pmic:
     type: object
 
@@ -117,6 +124,18 @@ dependentRequired:
   resets: [reset-names]
 
 allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: mediatek,mt6797-pwrap
+    then:
+      required:
+        - mediatek,boot-watchdog
+    else:
+      properties:
+        mediatek,boot-watchdog: false
+
   - if:
       properties:
         compatible:

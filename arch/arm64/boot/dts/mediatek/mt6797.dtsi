@@ -441,6 +441,7 @@
 
 	pwrap: pwrap@1000d000 {
 		compatible = "mediatek,mt6797-pwrap";
+		mediatek,boot-watchdog = <&watchdog>;
 		reg = <0 0x1000d000 0 0x1000>;
 		reg-names = "pwrap";
 		interrupts = <GIC_SPI 178 IRQ_TYPE_LEVEL_HIGH>;

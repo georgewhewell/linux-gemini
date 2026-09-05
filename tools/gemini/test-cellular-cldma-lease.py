@@ -49,7 +49,7 @@ struct resource { uint64_t start, end; unsigned long flags; };
 #define resource_type(r) ((r)->flags)
 #define resource_size(r) ((r)->end - (r)->start + 1)
 struct work_struct { int unused; };
-struct mt6797_md1_cldma_mapping { void *ao, *pdn; };
+struct mt6797_md1_cldma_mapping { void *ao, *pdn; bool reset_completed; };
 struct mt6797_md1_post_vector_evidence {
  int token; bool passive_complete, cldma_register_activity;
 };
@@ -57,7 +57,7 @@ struct mt6797_md1_cold_owner_cldma {
  unsigned coda_version, ul_status, so_status, l2_tx_status, l2_rx_status, irq_mask, ip_busy;
 };
 struct mt6797_md1_cold_owner_backend {
- void *base[2]; bool cldma_leased; struct work_struct passive_observe_work;
+ void *base[2]; bool cldma_leased, cldma_reset_completed; struct work_struct passive_observe_work;
 };
 static pthread_mutex_t mt6797_md1_post_vector_evidence_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct device consumers[2] = {{0}, {1}};
@@ -117,7 +117,7 @@ tests = r'''
 static struct resource ao, pdn;
 static void reset(void)
 {
- backend = (struct mt6797_md1_cold_owner_backend){ .base = {ao_memory, pdn_memory} };
+ backend = (struct mt6797_md1_cold_owner_backend){ .base = {ao_memory, pdn_memory}, .cldma_reset_completed = true };
  mt6797_md1_handoff_backend = &backend;
  mt6797_md1_cldma_consumer = NULL; mt6797_md1_cldma_lease_taken = false;
  mt6797_md1_handoff_status = mt6797_md1_cold_owner_fatal_latch = 0;
@@ -160,7 +160,7 @@ int main(void)
   case 2: wait_error = -ENOMEM; break;
   case 3: input.token = 0; break;
   case 4: input.passive_complete = false; break;
-  case 5: input.cldma_register_activity = false; break;
+  case 5: backend.cldma_reset_completed = false; break;
   case 6: mt6797_md1_handoff_status = -ESHUTDOWN; break;
   case 7: mt6797_md1_handoff_backend = NULL; break;
   case 8: mt6797_md1_cold_owner_fatal_latch = 1; break;
@@ -178,8 +178,9 @@ int main(void)
  assert(!mt6797_md1_cldma_consumer && mt6797_md1_cldma_lease_taken);
  reset(); assert(!mt6797_md1_cold_cldma_registers_observe(&backend, &observation));
  assert(reads == 7); reads = 0;
+ input.cldma_register_activity = false; /* reset proof, not circular queue activity */
  assert(!acquire(0, &out) && out.ao == ao_memory && out.pdn == pdn_memory);
- assert(cancel_count == 1 && backend.cldma_leased && release_action);
+ assert(cancel_count == 1 && backend.cldma_leased && release_action && out.reset_completed);
  assert(mt6797_md1_cold_cldma_registers_observe(&backend, &observation) == -EBUSY);
  assert(!reads && acquire(0, &out) == -EBUSY && acquire(1, &out) == -EBUSY);
  mt6797_md1_cold_release_cldma(&consumers[1]);
@@ -218,7 +219,7 @@ worker = function("mt6797_md1_cold_passive_observe_work")
 assert worker.index("backend->cldma_leased") < worker.index("readl(")
 assert source.count("schedule_work(&backend->passive_observe_work)") == 1
 # All supplier AP CLDMA register reads are in the guarded, drained worker helper.
-assert source.count("mt6797_md1_cold_cldma_registers_observe(") == 3
+assert source.count("mt6797_md1_cold_cldma_registers_observe(") == 4
 assert source.count("backend->base[MT6797_MD1_RES_AP_CLDMA_AO]") == 2
 assert source.count("backend->base[MT6797_MD1_RES_AP_CLDMA_PDN]") == 2
 dd = (root / "drivers/base/dd.c").read_text()

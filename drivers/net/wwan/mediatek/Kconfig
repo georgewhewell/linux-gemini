@@ -18,7 +18,8 @@ config MTK_MT6797_CCCI
 	help
 	  Own the AP-side CLDMA rings and CCCI handshake for the integrated MT6797
 	  MD1 modem. The driver requires an LK-attested shared-memory layout and a
-	  positive post-vector activity token from the separate lifecycle owner.
+	  positive post-vector token and exclusive reset-completed AP CLDMA lease
+	  from the separate lifecycle owner, plus fresh clean queue/IRQ/head state.
 	  It finalizes the vendor stage-two region-13 protection before the HS1
 	  runtime reply and latches duplicate/invalid handshake, WDT and bounded
 	  handshake-timeout failures until platform reset. After HS2 it exposes the

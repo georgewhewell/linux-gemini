@@ -991,12 +991,38 @@ static irqreturn_t mt6797_ccci_disabled_ccif_irq(int irq, void *data)
 	return IRQ_NONE;
 }
 
+static int mt6797_ccci_clean_reset_check(struct mt6797_ccci *ccci)
+{
+	u32 ul, so, txirq, rxirq, busy, heads = 0;
+	unsigned int q;
+
+	/* Lease proves our reset epoch; idle alone would not establish ownership. */
+	ul = readl(ccci->pdn + CLDMA_UL_STATUS);
+	so = readl(ccci->ao + CLDMA_SO_STATUS);
+	txirq = readl(ccci->pdn + CLDMA_L2_TX_STATUS);
+	rxirq = readl(ccci->pdn + CLDMA_L2_RX_STATUS);
+	busy = readl(ccci->pdn + 0x04b4); /* vendor CLDMA_AP_IP_BUSY */
+	for (q = 0; q < MT6797_CCCI_QUEUE_COUNT; q++) {
+		heads |= readl(ccci->pdn + CLDMA_UL_START_ADDR(q));
+		heads |= readl(ccci->ao + CLDMA_SO_START_ADDR(q));
+	}
+	dev_info(ccci->dev,
+		 "leased AP CLDMA pre-ring snapshot: ul=%#x so=%#x txirq=%#x rxirq=%#x busy=%#x heads_or=%#x\n",
+		 ul, so, txirq, rxirq, busy, heads);
+	if (ul || so || txirq || rxirq || busy || heads)
+		return -EUCLEAN;
+	return 0;
+}
+
 static int mt6797_ccci_start(struct mt6797_ccci *ccci)
 {
 	u32 status;
 	unsigned int q, i;
 	int ret;
 
+	ret = mt6797_ccci_clean_reset_check(ccci);
+	if (ret)
+		return ret;
 	/* Establish an idle, fully masked AP-side engine before replacing heads. */
 	writel(MT6797_CCCI_ACTIVE_IRQS, ccci->pdn + CLDMA_L2_TX_MASK_SET);
 	writel(MT6797_CCCI_ACTIVE_IRQS, ccci->ao + CLDMA_L2_RX_MASK_SET);
@@ -1070,7 +1096,7 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	if (ret)
 		return ret == -ENODATA ? -EPROBE_DEFER : ret;
 	if (evidence.token != MT6797_MD1_POST_VECTOR_GO ||
-	    !evidence.passive_complete || !evidence.cldma_register_activity)
+	    !evidence.passive_complete)
 		return -EPERM;
 	ret = mt6797_md1_lk_handoff_layout_get(&layout);
 	if (ret)
@@ -1196,6 +1222,8 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	ret = mt6797_md1_cold_owner_acquire_cldma(&pdev->dev, ao_res, pdn_res, &mapping);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "AP CLDMA lease unavailable\n");
+	if (!mapping.reset_completed)
+		return -EPERM;
 	ccci->ao = mapping.ao;
 	ccci->pdn = mapping.pdn;
 	ccci->runtime = devm_kzalloc(&pdev->dev, MTK_CCCI_RUNTIME_AP_SIZE,

@@ -204,6 +204,8 @@ struct resource;
 struct mt6797_md1_cldma_mapping {
 	void __iomem *ao;
 	void __iomem *pdn;
+	/* This supplier's sole AO/PD reset epoch; never renewable after release. */
+	bool reset_completed;
 };
 
 /* Sleepable, bounded readiness wait; links consumer lifetime to cold owner. */

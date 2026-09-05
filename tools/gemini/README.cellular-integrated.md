@@ -74,12 +74,11 @@ reply construction. Output directories are
 
 ## Remaining hardware admission
 
-The AP CLDMA reservation collision between supplier and consumer requires
-an explicit single-owner mapping lease; bypassing resource reservations is
-not acceptable. Until that is integrated, this profile must not be enabled.
-The pre-ring positive-activity guard remains: idle alone does not prove
-ownership or justify programming queue heads. A subsequent change requires
-verified clock/reset ownership and fresh idle/head/IRQ state.
+The AP CLDMA reservation collision is resolved by the explicit single-owner
+mapping lease described below. Reset ownership and fresh state replace the
+circular requirement for queue activity before AP queue installation. Idle
+alone still cannot admit the consumer. The profile remains disabled pending
+review and an explicitly authorized bounded hardware test.
 
 The next useful bounded boot should exercise the corrected strict PLL
 sequence under the existing watchdog/rescue workflow and capture each
@@ -114,6 +113,17 @@ release drops ownership without asserting hardware. Actual reset callback
 and actual reset-core bulk-get error paths are executed by
 `test-cellular-reset-admission.py`.
 
-The reset-completed bit still needs propagation into the mapping lease and
-consumer's fresh ownership checks before replacing historical activity
-admission. All nodes remain disabled during that integration.
+The reset-completed bit is now checked under the supplier evidence mutex
+before reserving the one-shot mapping lease, and returned with the mappings.
+It identifies this supplier's sole reset epoch, not a renewable capability.
+The consumer requires that bit and GO/completed observation, then captures
+fresh UL/SO, L2 IRQ, IP_BUSY and all fourteen queue-head words immediately
+before its first CLDMA write. Any nonzero field is rejected with the raw
+snapshot retained. This intentionally strict zero-head admission is not a
+claim that every possible bootloader configuration resets identically: a
+rejected snapshot requires examination, not bypassing the check.
+
+Tests execute all nineteen fresh reads with each field independently dirty,
+and prove a clean reset lease can succeed without circular pre-ring queue
+activity. No reset epoch admits a second consumer after release or failure.
+All nodes remain disabled; host/QEMU validation still is not a live handshake.

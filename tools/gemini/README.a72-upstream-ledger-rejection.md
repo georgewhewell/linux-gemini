@@ -134,3 +134,11 @@ kernel's pstore implementation or the inspected vendor/LK source. It is not
 permission to initialize this slot. The captured bytes now replace the
 earlier stale-DBGC hypothesis for this boot; marker provenance and retained
 slot ownership need evidence before selecting a successor preparation policy.
+
+The original transaction closed at 04:09:06 with exact rescue, all partition
+readbacks, USB/RJ45 health, no failed units and both locks free. Recovered
+Stage A boot is `3229b943-62cd-44b7-aa91-d575983c46fe`. Pstore SHA256
+`84021ee5a6f341f8cf919e9f352d3fead6a16ed36ca488bc5e06d9469b75444f`
+is attributable to prior Stage A, not this A72 candidate: the ledger profile
+intentionally bypasses normal ramoops registration. The same-boot RAM archive
+and raw slot, not that recovery console, prove this candidate's refusal.

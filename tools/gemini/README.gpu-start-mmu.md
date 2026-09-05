@@ -53,3 +53,26 @@ complete Panfrost object directory with ARM64 GCC12.
 
 No hardware action, candidate activation or attribute change is part of this
 source commit. The sole hardware owner and root still control any next boot.
+
+## T4 hardware result: synchronization bit applied, rendering still fails
+
+Candidate `a1a14c4ba890ae088af5971a8b73d1fd9718288ed92350e59c2ca9effe9ced13`
+was consumed once on boot `be70a81b-f438-49f3-b98a-a5582cd698f2`.
+Preflight and original Mesa upload passed. The sole host test reached submit
+at 166.331837 seconds: expected job config `00083f00`, readback `00003f00`.
+Compared with T3's `00003b00`, this proves the START_MMU delta reached the
+hardware. AS0 matched its expected root/attributes and had no AS fault.
+
+The first GPU shareability fault `00ff0388` followed at 166.339858 seconds,
+with JS1 active and no recorded MMU fault. The render returned pixel mismatch;
+there was no second host render invocation. This rejects START_MMU as a
+sufficient fix. Do not reinterpret the result as a working render, claim a
+stale-TLB cause, or retry the same image. Further candidates need evidence
+distinguishing the remaining vendor/platform initialization differences.
+
+Saved evidence is under workspace `handoff/gpu-thermal-t4-a9dRJSnj`.
+Full RAM archive SHA256:
+`bab3429654615f3abe69a875dcbdf0eafe3bf413ff8f7dc3e66d890ed5391dec`.
+Root independently verified two same-boot, four-channel thermal inventories;
+calibration/protection remain unverified. The owner restored exact rescue at
+03:27:53; final recovery health/readback closure is recorded in the handoff.

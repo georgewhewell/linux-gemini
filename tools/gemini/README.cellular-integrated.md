@@ -80,13 +80,15 @@ circular requirement for queue activity before AP queue installation. Idle
 alone still cannot admit the consumer. The profile remains disabled pending
 review and an explicitly authorized bounded hardware test.
 
-The next useful bounded boot should exercise the corrected strict PLL
-sequence under the existing watchdog/rescue workflow and capture each
-stage's selectors/status plus fresh CLDMA ownership state. If admission
-holds, attempt real HS1/HS2 and an AT response in that same session. GO is
-only a vector-release token, not HS1. Attach and packet data require their
-own observed results; no SIM or subscription change is implied. Device
-access remains exclusively with the root-designated hardware owner.
+C3 has now exercised the corrected startup and AP ownership path: seven
+queues were installed, HS1 v2 was received and a 324-byte runtime reply was
+queued. It failed before HS2; no AT command was sent. The next investigation
+is runtime TX consumption, payload compatibility and modem-watchdog cause,
+not another unmodified startup attempt. See `README.cellular-c3-result.md`
+for the exact evidence and limits. GO is only a vector-release token, not
+HS1. Attach and packet data require their own observed results; no SIM or
+subscription change is implied. Device access remains exclusively with the
+root-designated hardware owner.
 Battery NTC is physically disconnected and neither faked nor a power blocker.
 
 ## Reset admission follow-up

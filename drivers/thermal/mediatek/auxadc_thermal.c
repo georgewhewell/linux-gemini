@@ -881,6 +881,12 @@ static int raw_to_mcelsius_v3(struct mtk_thermal *mt, int sensno, s32 raw)
 static int raw_to_mcelsius_v4(struct mtk_thermal *mt, int sensno, s32 raw)
 {
 	s64 gain, x_roomt, measured, delta, slope_denominator;
+	s64 offset = mt->adc_oe - 512;
+	int vts_index;
+
+	if (sensno < 0 || sensno >= mt->conf->num_sensors)
+		return THERMAL_TEMP_INVALID;
+	vts_index = mt->conf->vts_index[sensno];
 
 	raw &= 0xfff;
 	if (!raw)
@@ -890,9 +896,9 @@ static int raw_to_mcelsius_v4(struct mtk_thermal *mt, int sensno, s32 raw)
 	if (gain <= 0)
 		return THERMAL_TEMP_INVALID;
 
-	x_roomt = (((((s64)mt->vts[sensno] + 3350 - mt->adc_oe) *
+	x_roomt = (((((s64)mt->vts[vts_index] + 3350 - offset) *
 		      10000) >> 12) * 10000) / gain;
-	measured = (((((s64)raw - mt->adc_oe) * 10000) >> 12) *
+	measured = (((((s64)raw - offset) * 10000) >> 12) *
 		    10000) / gain;
 	delta = (measured - x_roomt) * 15 / 18;
 	slope_denominator = 1663 +

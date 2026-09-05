@@ -42,11 +42,12 @@ struct mtk_thermal;
 struct mtk_thermal_bank { struct mtk_thermal *mt; unsigned id; };
 struct thermal_bank_cfg { unsigned num_sensors; const int *sensors; };
 struct mtk_thermal_data {
+ unsigned num_sensors; const int *vts_index;
  unsigned num_banks; struct thermal_bank_cfg bank_data[6]; unsigned msr[2];
 };
 struct mtk_thermal {
  char *thermal_base; s32 adc_ge, adc_oe, degc_cali, o_slope, o_slope_sign;
- s32 vts[5]; const struct mtk_thermal_data *conf;
+ s32 vts[6]; const struct mtk_thermal_data *conf;
  struct mtk_thermal_bank banks[6];
  int (*raw_to_mcelsius)(struct mtk_thermal *, int, s32);
 };
@@ -70,14 +71,17 @@ static u32 readl(char *addr) {
 """
 tests = r"""
 int main(void) {
+ const int vts_index[5] = {0,1,2,3,5};
  const int sensors[6][2] = {{0,0},{3,0},{1,2},{1,0},{1,0},{1,0}};
  /* Actual vendor efuse decode: gain613, offset511, degc56, slope0. */
  struct mtk_thermal mt = {
   .thermal_base=registers, .adc_ge=613, .adc_oe=511, .degc_cali=56,
-  .vts={169,151,149,145,143}, .conf=&mt6797_thermal_data,
+  .vts={169,151,149,145,0,143}, .conf=&mt6797_thermal_data,
   .raw_to_mcelsius=raw_to_mcelsius_v4
  };
  struct thermal_zone_device tz = { &mt };
+ mt6797_thermal_data.num_sensors=5;
+ mt6797_thermal_data.vts_index=vts_index;
  mt6797_thermal_data.num_banks=6;
  mt6797_thermal_data.msr[1]=4;
  for (int bank=0; bank<6; bank++) {

@@ -776,6 +776,33 @@ Panfrost-only Mesa build and enhanced failed-pixel diagnostic are not silently
 substituted. DT is unchanged; the fixed harness checksum and early recovery
 exit are retained.
 
+### GPU T5: capture existing first-timeout devcoredump
+
+Package `repo-gpu-devcoredump-thermal-t5@f7f704340564` builds bundle
+`/nix/store/ax5l74d1p9cgzwciwmjga2lzwgqjy60a-gemini-gpu-oneboot-p22-bundle`.
+Candidate SHA256:
+`4dd2c606ece19c59a4f6137059af7fb4a5a614f096c886ebc7264f57685539b0`.
+The kernel remains T4 source `e5e16d9`; root independently compared identical
+DT bytes and identity-only configuration changes. No runtime GPU fix is claimed.
+
+The full render protocol now saves the existing RAM-backed first-timeout
+devcoredump, with a 64 MiB cap, memory-headroom check and bounded read deadline.
+It never clears, rearms or resets the device. Thermal capture runs first.
+An explicit one-run latch preserves prior logs on accidental reinvocation.
+Root independently reran all nine collector/decoder/latch tests successfully.
+Both test script and collector must be uploaded side by side.
+
+The separately reviewed Panfrost-only Mesa archive is 209,093,664 bytes,
+SHA256 `5e214831cf773dca7894cab6ccef24ffbc061758056d6ca279436dcee70d32e0`.
+Pixel acceptance is unchanged, with an additional failed-pixel diagnostic.
+This userspace has not yet been device-validated and must not be attributed
+to T3/T4. Dump structure or offline decoding cannot count as rendering PASS.
+
+Root authorized one complete bounded T5 transaction only after C2 recovery
+fully closes with pstore, health, all partition readbacks and free locks.
+The sole hardware owner retains the supervisor-before-writer and unconditional
+exact-rescue protocol; no retry, reprobe, unload or second host dispatch.
+
 ### GPU/G2/G3 historical candidates
 
 - `2a0b903405328fc085c7b9239467dfc6275dc465bbeee82fb8f1e765c698553f`

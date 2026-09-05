@@ -104,6 +104,26 @@
 				memory-region = <&md1_shared_memory>;
 				memory-region-names = "md-shared";
 				status = "disabled";
+
+				/* Known-good Gemian DT metadata, not AP IRQ/pin ownership. */
+				sim-eint-1 {
+					mediatek,eint-number = <0>;
+					mediatek,debounce-us = <100000>;
+					mediatek,active-high = <1>;
+					mediatek,edge-triggered = <0>;
+					mediatek,socket-type = <0>;
+					mediatek,dedicated-enable = <0>;
+					mediatek,source-selector = <1>;
+				};
+				sim-eint-2 {
+					mediatek,eint-number = <1>;
+					mediatek,debounce-us = <100000>;
+					mediatek,active-high = <1>;
+					mediatek,edge-triggered = <0>;
+					mediatek,socket-type = <0>;
+					mediatek,dedicated-enable = <0>;
+					mediatek,source-selector = <0>;
+				};
 			};
 
 		};

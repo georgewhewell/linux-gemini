@@ -29,9 +29,11 @@ shim = r'''
 #define CLDMA_UL_STOP_CMD 0x5c
 #define CLDMA_SO_STOP_CMD 0x3c4
 #define atomic_xchg(p,v) __atomic_exchange_n((p), (v), __ATOMIC_SEQ_CST)
-struct mt6797_ccci { int failed; void *dev; char *ao, *pdn; int hs; };
+struct mt6797_ccci { int failed; void *dev; char *ao, *pdn; int hs; pthread_mutex_t tx_stop_lock; };
+#define spin_lock_irqsave(p,f) do { (f)=0; assert(!pthread_mutex_lock(p)); } while(0)
+#define spin_unlock_irqrestore(p,f) do { (void)(f); assert(!pthread_mutex_unlock(p)); } while(0)
 static char ao[0x1000], pdn[0x1000];
-static struct mt6797_ccci ccci = {.dev = &ccci, .ao = ao, .pdn = pdn};
+static struct mt6797_ccci ccci = {.dev = &ccci, .ao = ao, .pdn = pdn, .tx_stop_lock=PTHREAD_MUTEX_INITIALIZER};
 static int logs, frontends, writes, reads, crashes, fatals, logged_reason;
 static void mt6797_ccci_first_fatal(struct mt6797_ccci *c, const char *site)
 { assert(c == &ccci && site && !logs && !frontends && !writes); }

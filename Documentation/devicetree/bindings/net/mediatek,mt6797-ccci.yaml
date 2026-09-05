@@ -63,6 +63,51 @@ properties:
     items:
       - const: md-shared
 
+patternProperties:
+  '^sim-eint-[12]$':
+    type: object
+    description: |
+      Immutable SIM1/SIM2 board wiring metadata queried by modem EINT RPC.
+      These are modem-domain interrupt numbers and source selectors, not
+      Linux IRQs or GPIO numbers. This node does not allocate an AP interrupt,
+      select pinctrl, drive GPIOs or control SIM power.
+    additionalProperties: false
+    properties:
+      mediatek,eint-number:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        maximum: 255
+        description: Modem-domain EINT number.
+      mediatek,debounce-us:
+        description: Board debounce interval, converted to modem milliseconds.
+      mediatek,active-high:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        enum: [0, 1]
+        description: One for active-high polarity, zero for active-low.
+      mediatek,edge-triggered:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        enum: [0, 1]
+        description: One for edge sensitivity, zero for level sensitivity.
+      mediatek,socket-type:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        maximum: 255
+        description: Vendor modem SIM socket wiring type.
+      mediatek,dedicated-enable:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        enum: [0, 1]
+        description: Whether the board uses dedicated modem EINT wiring.
+      mediatek,source-selector:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        maximum: 2
+        description: MT6797 modem EINT source mux selector, not AP GPIO number.
+    required:
+      - mediatek,eint-number
+      - mediatek,debounce-us
+      - mediatek,active-high
+      - mediatek,edge-triggered
+      - mediatek,socket-type
+      - mediatek,dedicated-enable
+      - mediatek,source-selector
+
 required:
   - compatible
   - reg

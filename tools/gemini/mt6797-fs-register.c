@@ -72,7 +72,8 @@ static int clean_ext4(const unsigned char sb[1024], uint64_t bytes)
 	if (bytes != NVDATA_BYTES || get16(sb + 56) != EXT4_SUPER_MAGIC)
 		return -ENODEV;
 	/* Refuse dirty/error/orphan state and pending journal recovery. No repair. */
-	if (state != 1 || (incompat & 4))
+	if (state != 1 || (incompat & 4) || get32(sb + 0xe8) ||
+	    (get32(sb + 0x64) & 0x10000))
 		return -EUCLEAN;
 	if (incompat & 0x80) /* 64-bit block-count format */
 		blocks |= (uint64_t)get32(sb + 0x150) << 32;

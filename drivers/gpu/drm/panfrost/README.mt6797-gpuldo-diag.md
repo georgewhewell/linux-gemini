@@ -34,6 +34,18 @@ MTK_GPU_SPM. Initialization values therefore do not establish stable
 draw-time state or sole ownership. Firmware behavior, register encoding and
 safe sequencing must be established before proposing control writes.
 
+Follow-up configuration check narrows that firmware lead: root freshly
+extracted IKCONFIG from the known-good Gemian Image blob SHA256
+`b53d191dc41d3f7364b0fa62b4bc920b1d013a1942b2e6b06727263fc56fcf4d`.
+The extracted configuration SHA256
+`231d8a2ffe7afac3a4cc62c27d0eb6fe8bd9165ebd096e3e3346dd6df35c18f4`
+matches `repo/research/vendor-kernel.config` exactly. It explicitly disables
+CONFIG_MTK_GPU_SPM_DVFS_SUPPORT and enables COMMON_DVFS_SUPPORT. The optional
+PCM is therefore not enabled by this actual working-image configuration;
+its embedded addresses alone are not evidence of a competing owner in that
+profile. Focus further comparison on the conventional vendor setup/power
+path, while retaining the unresolved register-encoding/sequencing questions.
+
 Owner-restricted evidence is in `handoff/gpu-thermal-t7-sXr5Olyw` under the
 workspace, with full RAM archive SHA256
 `a52a868bd944e20f28edd792ab6267348a9586c07612b083e771aa1bcf200684`.

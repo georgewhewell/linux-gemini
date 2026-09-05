@@ -149,9 +149,40 @@ MT6797 download agent selected by the recovery XML. DA SHA256
 contains a routine that copies the 12-byte marker every 16 KiB while probing
 DRAM capacity/aliasing. Its caller supplies base `0x40000000`, so its write
 sequence includes `0x44410000`. Execution is conditional on a DA configuration
-flag; the host flag path and all other write extents remain under review.
+flag; the captured preloader argument producer is now traced below, while
+other write extents remain under review.
 Older saved console captures contain matching markers at 16 KiB intervals.
 See `handoff/a72-ram-rw-provenance-20260905.md` for binary offsets, reproduction
 and limits. This is not a normal Linux console-wrap marker, nor proof that
 the remaining slot payload is disposable. Initializing the current header
 alone would not protect it from this DA path during subsequent rescue.
+
+## Captured bootloader follow-up
+
+Read-only captures in `handoff/bootloader-readonly-pfNXC7u4` pin the installed
+LK/LK2 bytes to SHA256
+`c2a66e3a220fa020353a14ea2fa4aed4dee5a0ef2a0fafd4c389cbac6f5588a3`
+and both eMMC boot-area copies to
+`080a87bb022e9a9555bdcc5564ca049c19746aad9df2b23fe475c5143c577de4`.
+Identical copies do not establish which copy was active. The captured
+preloader's DA handoff writes magic `0x58885168`, version 1 and literal
+flags 3 into its 12-byte argument block at `0x401ffff4`. This traces the
+probe-enabling bit to a device-side producer; no supported host toggle has
+been established. Clearing the flag is not a reviewed fix: the DA uses the
+same bit to skip hardware initialization.
+
+Relocation must avoid more than the 16-KiB marker stripes. The selected DA
+uses a normal-download heap ending at `0x50000000`, and an additional segment
+loaded at `0x50000000` declares GFH max_size `0x4000`. Therefore the initially
+considered off-stripe page `0x50001000` is rejected: it lies inside that
+declared segment extent. `0x50005000` is a candidate for further ownership
+analysis, not a selected or authorized address. Actual LK image/BSS bounds
+and scratch mappings help narrow the audit but do not prove absence of
+dynamic or DMA writes. See `handoff/a72-ledger-relocation-class-20260905.md`
+for exact binary offsets and remaining normal-transfer write paths.
+
+The accepted rescue does not reserve a replacement page. Any relocation
+must update the candidate and rescue retention contract together, preserve
+normal ramoops separately, and pass an exact-DA known-record retention test
+before a CPU transition experiment. No address, rescue image or preparation
+admission rule was changed by this audit.

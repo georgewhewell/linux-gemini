@@ -99,3 +99,17 @@ transport. Missing files, symlinks, rejected watchdog state and wrong expected
 boot cannot publish. Root independently reran the actual host validator and
 device acceptance-tail tests successfully. These are acceptance-protocol
 tests, not evidence that the modem has booted on hardware.
+
+Root reviewed the final bundle
+`/nix/store/qg9zzk5lc3h72qv5pf6h29ik3q8qmb63-gemini-gpu-oneboot-p22-bundle`
+and authorized the sole hardware owner for one complete bounded transaction.
+Candidate SHA256:
+`8674616e5d1863a464111cfdc3eea6a13b82a79e093ba9037586bd82ce6c8071`.
+Manifest SHA256:
+`96da6dfb7a17f9965fc6fbed51d879a48c9fed35fd57a6a0e67dcebe1dcbb41a`.
+Host validator SHA256:
+`426b0d662e3ef2d699db343c7786de5be8442d3b97d229c97c41dbc5677f924c`.
+This authorization is not an execution result. The owner must preserve the
+original transaction through terminal recovery and save exact rescue health,
+run-scoped pstore and all three partition readbacks. No retry or reprobe is
+authorized; the A72 successor remains queued separately.

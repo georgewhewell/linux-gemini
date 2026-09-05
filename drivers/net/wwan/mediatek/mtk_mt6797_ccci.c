@@ -1132,6 +1132,8 @@ static int mt6797_ccci_validate_resources(struct platform_device *pdev)
 
 static int mt6797_ccci_probe(struct platform_device *pdev)
 {
+	struct mt6797_md1_cldma_mapping mapping;
+	struct resource *ao_res, *pdn_res;
 	struct wwan_port_caps at_caps = {
 		.frag_len = MTK_CCCI_NET_RX_SIZE,
 		.headroom_len = MTK_CCCI_HEADER_SIZE,
@@ -1189,12 +1191,13 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	ccci->smem = devm_ioremap_wc(&pdev->dev, smem_res.start, ccci->smem_size);
 	if (!ccci->smem)
 		return -ENOMEM;
-	ccci->ao = devm_platform_ioremap_resource_byname(pdev, "ap-cldma-ao");
-	if (IS_ERR(ccci->ao))
-		return PTR_ERR(ccci->ao);
-	ccci->pdn = devm_platform_ioremap_resource_byname(pdev, "ap-cldma-pdn");
-	if (IS_ERR(ccci->pdn))
-		return PTR_ERR(ccci->pdn);
+	ao_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ap-cldma-ao");
+	pdn_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ap-cldma-pdn");
+	ret = mt6797_md1_cold_owner_acquire_cldma(&pdev->dev, ao_res, pdn_res, &mapping);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "AP CLDMA lease unavailable\n");
+	ccci->ao = mapping.ao;
+	ccci->pdn = mapping.pdn;
 	ccci->runtime = devm_kzalloc(&pdev->dev, MTK_CCCI_RUNTIME_AP_SIZE,
 				     GFP_KERNEL);
 	if (!ccci->runtime)

@@ -103,7 +103,7 @@ static int write_cmd(struct panfrost_device *pfdev, u32 as_nr, u32 cmd)
 	return status;
 }
 
-static void lock_region(struct panfrost_device *pfdev, u32 as_nr,
+static int lock_region(struct panfrost_device *pfdev, u32 as_nr,
 			u64 region_start, u64 size)
 {
 	u8 region_width;
@@ -111,7 +111,7 @@ static void lock_region(struct panfrost_device *pfdev, u32 as_nr,
 	u64 region_end = region_start + size;
 
 	if (!size)
-		return;
+		return 0;
 
 	/*
 	 * The locked region is a naturally aligned power of 2 block encoded as
@@ -135,21 +135,28 @@ static void lock_region(struct panfrost_device *pfdev, u32 as_nr,
 	/* Lock the region that needs to be updated */
 	mmu_write(pfdev, AS_LOCKADDR_LO(as_nr), lower_32_bits(region));
 	mmu_write(pfdev, AS_LOCKADDR_HI(as_nr), upper_32_bits(region));
-	write_cmd(pfdev, as_nr, AS_COMMAND_LOCK);
+	return write_cmd(pfdev, as_nr, AS_COMMAND_LOCK);
 }
 
 
 static int mmu_hw_do_operation_locked(struct panfrost_device *pfdev, int as_nr,
 				      u64 iova, u64 size, u32 op)
 {
+	int ret;
+
 	if (as_nr < 0)
 		return 0;
 
-	if (op != AS_COMMAND_UNLOCK)
-		lock_region(pfdev, as_nr, iova, size);
+	if (op != AS_COMMAND_UNLOCK) {
+		ret = lock_region(pfdev, as_nr, iova, size);
+		if (ret)
+			return ret;
+	}
 
 	/* Run the MMU operation */
-	write_cmd(pfdev, as_nr, op);
+	ret = write_cmd(pfdev, as_nr, op);
+	if (ret)
+		return ret;
 
 	/* Wait for the flush to complete */
 	return wait_ready(pfdev, as_nr, op, false);
@@ -167,14 +174,30 @@ static int mmu_hw_do_operation(struct panfrost_device *pfdev,
 	return ret;
 }
 
-static void panfrost_mmu_enable(struct panfrost_device *pfdev, struct panfrost_mmu *mmu)
+static int panfrost_mmu_enable(struct panfrost_device *pfdev, struct panfrost_mmu *mmu)
 {
 	int as_nr = mmu->as;
 	u64 transtab = mmu->cfg.transtab;
 	u64 memattr = mmu->cfg.memattr;
 	u64 transcfg = mmu->cfg.transcfg;
+	int ret;
 
-	mmu_hw_do_operation_locked(pfdev, as_nr, 0, ~0ULL, AS_COMMAND_FLUSH_MEM);
+	lockdep_assert_held(&pfdev->as_lock);
+	/*
+	 * MT6797 faults on FLUSH_MEM before a reset-pristine legacy AS has
+	 * been configured. The vendor initial activation programs the AS and
+	 * issues UPDATE directly. Retain the flush for every previously used
+	 * AS, including freed, reclaimed and fault-disabled address spaces.
+	 */
+	if (pfdev->comp->vendor_init == panfrost_gpu_mt6797_init &&
+	    io_pgtable_ops_to_pgtable(mmu->pgtbl_ops)->fmt == ARM_MALI_LPAE &&
+	    !(pfdev->as_configured_mask & BIT(as_nr)))
+		ret = wait_ready(pfdev, as_nr, AS_COMMAND_UPDATE, true);
+	else
+		ret = mmu_hw_do_operation_locked(pfdev, as_nr, 0, ~0ULL,
+						AS_COMMAND_FLUSH_MEM);
+	if (ret)
+		goto failed;
 
 	mmu_write(pfdev, AS_TRANSTAB_LO(as_nr), lower_32_bits(transtab));
 	mmu_write(pfdev, AS_TRANSTAB_HI(as_nr), upper_32_bits(transtab));
@@ -188,7 +211,19 @@ static void panfrost_mmu_enable(struct panfrost_device *pfdev, struct panfrost_m
 	mmu_write(pfdev, AS_TRANSCFG_LO(as_nr), lower_32_bits(transcfg));
 	mmu_write(pfdev, AS_TRANSCFG_HI(as_nr), upper_32_bits(transcfg));
 
-	write_cmd(pfdev, as_nr, AS_COMMAND_UPDATE);
+	ret = write_cmd(pfdev, as_nr, AS_COMMAND_UPDATE);
+	if (!ret)
+		ret = wait_ready(pfdev, as_nr, AS_COMMAND_UPDATE, false);
+	if (ret)
+		goto failed;
+
+	set_bit(as_nr, &pfdev->as_configured_mask);
+	return 0;
+
+failed:
+	/* A failed UPDATE may have changed hardware. Only reset can rearm it. */
+	set_bit(as_nr, &pfdev->as_enable_failed_mask);
+	return ret;
 }
 
 static void panfrost_mmu_disable(struct panfrost_device *pfdev, u32 as_nr)
@@ -264,33 +299,37 @@ static int panfrost_mmu_cfg_init(struct panfrost_mmu *mmu,
 
 int panfrost_mmu_as_get(struct panfrost_device *pfdev, struct panfrost_mmu *mmu)
 {
-	int as;
+	int as, ret;
 
 	spin_lock(&pfdev->as_lock);
+	if (pfdev->as_enable_failed_mask) {
+		as = -EIO;
+		goto out;
+	}
 
 	as = mmu->as;
 	if (as >= 0) {
-		int en = atomic_inc_return(&mmu->as_count);
+		int en;
 		u32 mask = BIT(as) | BIT(16 + as);
-
-		/*
-		 * AS can be retained by active jobs or a perfcnt context,
-		 * hence the '+ 1' here.
-		 */
-		WARN_ON(en >= (NUM_JOB_SLOTS + 1));
-
-		list_move(&mmu->list, &pfdev->as_lru_list);
 
 		if (pfdev->as_faulty_mask & mask) {
 			/* Unhandled pagefault on this AS, the MMU was
 			 * disabled. We need to re-enable the MMU after
-			 * clearing+unmasking the AS interrupts.
+			 * clearing the AS interrupts. Unmask only after success.
 			 */
 			mmu_write(pfdev, MMU_INT_CLEAR, mask);
-			mmu_write(pfdev, MMU_INT_MASK, ~pfdev->as_faulty_mask);
+			ret = panfrost_mmu_enable(pfdev, mmu);
+			if (ret) {
+				as = ret;
+				goto out;
+			}
 			pfdev->as_faulty_mask &= ~mask;
-			panfrost_mmu_enable(pfdev, mmu);
+			mmu_write(pfdev, MMU_INT_MASK, ~pfdev->as_faulty_mask);
 		}
+		/* Existing users retain their references even on enable failure. */
+		en = atomic_inc_return(&mmu->as_count);
+		WARN_ON(en >= (NUM_JOB_SLOTS + 1));
+		list_move(&mmu->list, &pfdev->as_lru_list);
 
 		goto out;
 	}
@@ -326,7 +365,14 @@ int panfrost_mmu_as_get(struct panfrost_device *pfdev, struct panfrost_mmu *mmu)
 		"Assigned AS%d to mmu %p, alloc_mask=%lx",
 		as, mmu, pfdev->as_alloc_mask);
 
-	panfrost_mmu_enable(pfdev, mmu);
+	ret = panfrost_mmu_enable(pfdev, mmu);
+	if (ret) {
+		clear_bit(as, &pfdev->as_alloc_mask);
+		atomic_set(&mmu->as_count, 0);
+		list_del_init(&mmu->list);
+		mmu->as = -1;
+		as = ret;
+	}
 
 out:
 	spin_unlock(&pfdev->as_lock);
@@ -349,6 +395,8 @@ void panfrost_mmu_reset(struct panfrost_device *pfdev)
 
 	pfdev->as_alloc_mask = 0;
 	pfdev->as_faulty_mask = 0;
+	pfdev->as_configured_mask = 0;
+	pfdev->as_enable_failed_mask = 0;
 
 	list_for_each_entry_safe(mmu, mmu_tmp, &pfdev->as_lru_list, list) {
 		mmu->as = -1;

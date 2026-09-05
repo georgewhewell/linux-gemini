@@ -21,6 +21,7 @@
 #include "panfrost_device.h"
 #include "panfrost_mmu.h"
 #include "panfrost_gem.h"
+#include "panfrost_gpu.h"
 #include "panfrost_features.h"
 #include "panfrost_regs.h"
 
@@ -69,7 +70,8 @@ static u64 mair_to_memattr(u64 mair, bool coherent)
 	return memattr;
 }
 
-static int wait_ready(struct panfrost_device *pfdev, u32 as_nr)
+static int wait_ready(struct panfrost_device *pfdev, u32 as_nr,
+		      u32 command, bool before)
 {
 	int ret;
 	u32 val;
@@ -80,6 +82,7 @@ static int wait_ready(struct panfrost_device *pfdev, u32 as_nr)
 		val, !(val & AS_STATUS_AS_ACTIVE), 10, 100000);
 
 	if (ret) {
+		panfrost_gpu_mt6797_timeout_diag(pfdev, as_nr, command, before, val);
 		/* The GPU hung, let's trigger a reset */
 		panfrost_device_schedule_reset(pfdev);
 		dev_err(pfdev->base.dev, "AS_ACTIVE bit stuck\n");
@@ -93,7 +96,7 @@ static int write_cmd(struct panfrost_device *pfdev, u32 as_nr, u32 cmd)
 	int status;
 
 	/* write AS_COMMAND when MMU is ready to accept another command */
-	status = wait_ready(pfdev, as_nr);
+	status = wait_ready(pfdev, as_nr, cmd, true);
 	if (!status)
 		mmu_write(pfdev, AS_COMMAND(as_nr), cmd);
 
@@ -149,7 +152,7 @@ static int mmu_hw_do_operation_locked(struct panfrost_device *pfdev, int as_nr,
 	write_cmd(pfdev, as_nr, op);
 
 	/* Wait for the flush to complete */
-	return wait_ready(pfdev, as_nr);
+	return wait_ready(pfdev, as_nr, op, false);
 }
 
 static int mmu_hw_do_operation(struct panfrost_device *pfdev,

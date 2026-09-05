@@ -29,6 +29,120 @@
 #include "panfrost_perfcnt.h"
 #include "panfrost_regs.h"
 
+/* MT6797_DIAG_BEGIN: bounded read-only observations, not a recovery policy. */
+enum panfrost_mt6797_diag_event {
+	MT6797_DIAG_SUBMIT,
+	MT6797_DIAG_FAULT,
+	MT6797_DIAG_TIMEOUT,
+};
+
+static bool panfrost_mt6797_diag_claim(struct panfrost_device *pfdev,
+				      unsigned int event)
+{
+	/* Callers already own a powered submit/MMU path or a live GPU IRQ. */
+	if (pfdev->comp->vendor_init != panfrost_gpu_mt6797_init ||
+	    !bitmap_empty(pfdev->is_suspended, PANFROST_COMP_BIT_MAX))
+		return false;
+
+	return !test_and_set_bit(event, &pfdev->mt6797_diag_seen);
+}
+
+static u64 panfrost_mt6797_diag_read64(struct panfrost_device *pfdev, u32 reg)
+{
+	/* Sequential observation, not an atomic hardware snapshot. */
+	u32 lo = gpu_read(pfdev, reg);
+	u32 hi = gpu_read(pfdev, reg + 4);
+
+	return ((u64)hi << 32) | lo;
+}
+
+static void panfrost_mt6797_diag_status(struct panfrost_device *pfdev,
+				       const char *event)
+{
+	dev_info(pfdev->base.dev,
+		 "MT6797_GPU_DIAG event=%s gpu_raw=%08x mmu_raw=%08x job_raw=%08x l2_mmu=%08x\n",
+		 event, gpu_read(pfdev, GPU_INT_RAWSTAT),
+		 gpu_read(pfdev, MMU_INT_RAWSTAT), gpu_read(pfdev, JOB_INT_RAWSTAT),
+		 gpu_read(pfdev, GPU_L2_MMU_CONFIG));
+}
+
+static void panfrost_mt6797_diag_as(struct panfrost_device *pfdev,
+				   const char *event, unsigned int as)
+{
+	/* Never publish the physical page-table base or kernel pointers. */
+	dev_info(pfdev->base.dev,
+		 "MT6797_GPU_DIAG event=%s as=%u status=%08x fault=%08x tt_flags=%03x memattr=%016llx transcfg=%016llx\n",
+		 event, as, gpu_read(pfdev, AS_STATUS(as)),
+		 gpu_read(pfdev, AS_FAULTSTATUS(as)),
+		 gpu_read(pfdev, AS_TRANSTAB_LO(as)) & 0xfff,
+		 panfrost_mt6797_diag_read64(pfdev, AS_MEMATTR_LO(as)),
+		 panfrost_mt6797_diag_read64(pfdev, AS_TRANSCFG_LO(as)));
+}
+
+void panfrost_gpu_mt6797_submit_diag(struct panfrost_device *pfdev,
+				  struct panfrost_mmu *mmu, int js,
+				  u64 head, u32 config)
+{
+	u64 transtab;
+
+	if (!panfrost_mt6797_diag_claim(pfdev, MT6797_DIAG_SUBMIT))
+		return;
+
+	transtab = panfrost_mt6797_diag_read64(pfdev, AS_TRANSTAB_LO(mmu->as));
+	dev_info(pfdev->base.dev,
+		 "MT6797_GPU_DIAG event=submit fmt=%u quirks=%lx coherent=%u selected=%u as=%d tt_match=%u expected_tt_flags=%03llx expected_memattr=%016llx expected_transcfg=%016llx\n",
+		 io_pgtable_ops_to_pgtable(mmu->pgtbl_ops)->fmt,
+		 mmu->pgtbl_cfg.quirks, pfdev->coherent,
+		 pfdev->features.selected_coherency, mmu->as,
+		 transtab == mmu->cfg.transtab, mmu->cfg.transtab & 0xfff,
+		 mmu->cfg.memattr, mmu->cfg.transcfg);
+	dev_info(pfdev->base.dev,
+		 "MT6797_GPU_DIAG event=submit js=%d expected_head=%016llx head_next=%016llx expected_config=%08x config_next=%08x status=%08x\n",
+		 js, head, panfrost_mt6797_diag_read64(pfdev, JS_HEAD_NEXT_LO(js)),
+		 config, gpu_read(pfdev, JS_CONFIG_NEXT(js)), gpu_read(pfdev, JS_STATUS(js)));
+	panfrost_mt6797_diag_as(pfdev, "submit", mmu->as);
+	panfrost_mt6797_diag_status(pfdev, "submit");
+}
+
+static void panfrost_mt6797_fault_diag(struct panfrost_device *pfdev,
+				      u32 status, u32 irq)
+{
+	unsigned int i;
+
+	if (!panfrost_mt6797_diag_claim(pfdev, MT6797_DIAG_FAULT))
+		return;
+
+	dev_info(pfdev->base.dev,
+		 "MT6797_GPU_DIAG event=fault status=%08x irq=%08x\n", status, irq);
+	panfrost_mt6797_diag_status(pfdev, "fault");
+	/* T880 has eight address spaces and three job slots. No absent reads. */
+	for (i = 0; i < 8; i++)
+		if (pfdev->features.as_present & BIT(i))
+			panfrost_mt6797_diag_as(pfdev, "fault", i);
+	for (i = 0; i < NUM_JOB_SLOTS; i++)
+		if (pfdev->features.js_present & BIT(i))
+			dev_info(pfdev->base.dev,
+				 "MT6797_GPU_DIAG event=fault js=%u status=%08x config=%08x head=%016llx next_config=%08x next_head=%016llx\n",
+				 i, gpu_read(pfdev, JS_STATUS(i)), gpu_read(pfdev, JS_CONFIG(i)),
+				 panfrost_mt6797_diag_read64(pfdev, JS_HEAD_LO(i)),
+				 gpu_read(pfdev, JS_CONFIG_NEXT(i)),
+				 panfrost_mt6797_diag_read64(pfdev, JS_HEAD_NEXT_LO(i)));
+}
+
+void panfrost_gpu_mt6797_timeout_diag(struct panfrost_device *pfdev,
+				   u32 as, u32 command, bool before, u32 status)
+{
+	if (!panfrost_mt6797_diag_claim(pfdev, MT6797_DIAG_TIMEOUT))
+		return;
+
+	dev_info(pfdev->base.dev,
+		 "MT6797_GPU_DIAG event=timeout as=%u command=%u before=%u polled_status=%08x\n",
+		 as, command, before, status);
+	panfrost_mt6797_diag_as(pfdev, "timeout", as);
+	panfrost_mt6797_diag_status(pfdev, "timeout");
+}
+/* MT6797_DIAG_END */
+
 static irqreturn_t panfrost_gpu_irq_handler(int irq, void *data)
 {
 	struct panfrost_device *pfdev = data;
@@ -44,7 +158,9 @@ static irqreturn_t panfrost_gpu_irq_handler(int irq, void *data)
 
 	if (state & GPU_IRQ_MASK_ERROR) {
 		u64 address = (u64) gpu_read(pfdev, GPU_FAULT_ADDRESS_HI) << 32;
+
 		address |= gpu_read(pfdev, GPU_FAULT_ADDRESS_LO);
+		panfrost_mt6797_fault_diag(pfdev, fault_status, state);
 
 		dev_warn(pfdev->base.dev, "GPU Fault 0x%08x (%s) at 0x%016llx\n",
 			 fault_status, panfrost_exception_name(fault_status & 0xFF),

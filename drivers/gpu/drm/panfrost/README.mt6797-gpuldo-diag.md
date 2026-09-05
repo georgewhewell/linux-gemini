@@ -46,6 +46,17 @@ its embedded addresses alone are not evidence of a competing owner in that
 profile. Focus further comparison on the conventional vendor setup/power
 path, while retaining the unresolved register-encoding/sequencing questions.
 
+Integration constraint: root decompiled the actual T7 DT and found
+`mali-supply` but no `mfg_async-supply`. Current scpsys regulator enable/disable
+are no-ops when that domain has no supply. Panfrost's device initialization
+attaches domains, enables clocks, then calls devfreq initialization, whose
+`dev_pm_opp_set_opp()` enables/configures VGPU. Consequently a GPULDO hook
+merely surrounding `scpsys_regulator_enable/disable()` does not by itself
+establish the vendor's external-supply ordering or prove VGPU is off before
+clearing the LDO control. A proposed fix must resolve actual supply ownership
+and both initialization/runtime lifecycles; no DT ownership change or GPU
+control-write candidate is approved by this observation.
+
 Owner-restricted evidence is in `handoff/gpu-thermal-t7-sXr5Olyw` under the
 workspace, with full RAM archive SHA256
 `a52a868bd944e20f28edd792ab6267348a9586c07612b083e771aa1bcf200684`.

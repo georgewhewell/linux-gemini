@@ -762,7 +762,11 @@ Candidate SHA256 (independently checked):
 `a1a14c4ba890ae088af5971a8b73d1fd9718288ed92350e59c2ca9effe9ced13`.
 Root authorized the sole hardware owner to admit and execute one complete
 bounded transaction, with the original T3 userspace/test script to isolate
-the kernel change. No T4 runtime result is yet recorded here. The separate
+the kernel change. T4 is now consumed: START_MMU readback confirmed, but the
+first render still failed with the same shareability fault and pixel mismatch.
+Four thermal interfaces passed separately. Exact rescue restored at 03:27:53;
+final health collection remains with the owner. See `README.gpu-start-mmu.md`.
+The separate
 Panfrost-only Mesa build and enhanced failed-pixel diagnostic are not silently
 substituted. DT is unchanged; the fixed harness checksum and early recovery
 exit are retained.

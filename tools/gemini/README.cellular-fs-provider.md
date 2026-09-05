@@ -85,10 +85,28 @@ Extracted build metadata says `Gemini-7.1-Planet-08102018-V1`, SDK25,
 Android7.1.1. This supersedes the installed-version uncertainty above; the
 Android27 stock mapping must not be substituted for this installed version.
 
-The actual backing directory remains unresolved: the scoped expected paths,
-including `/gemian/data/nvram/md`, were absent in the existing rescue mounts.
-No directory authority has been registered. Inspect installed mount/init
-configuration to resolve it; do not initialize or substitute modem storage.
+Root independently parsed only init/fstab metadata from the installed image's
+embedded `/boot/android-ramdisk.img` (gzip/newc), SHA256
+`c6a3fab29ecf21fe5ba8ace12fa1f3ada2083c2cd810b24e03ae9301c3d41e1a`:
+
+- `fstab.mt6797:16` mounts by-name nvdata at `/nvdata` as ext4.
+- `init.mt6797.rc:85` invokes that fstab; line137 symlinks `/data/nvram`
+  to `/nvdata`.
+- `init.modem.rc:26` creates the modem directory `/data/nvram/md`; line140
+  launches `/vendor/bin/ccci_fsd 0`.
+
+Thus the installed daemon's Z root resolves to **nvdata's `/md`**, not a
+directory on Gemian p29. The absent `/gemian/data/nvram/md` is expected and
+does not prove absent provisioning. These Android scripts are provenance
+only; their write/check/formattable behavior must not be executed.
+
+The sole hardware owner subsequently verified the live by-partlabel nvdata
+target is `/dev/mmcblk0p6`, PARTNAME nvdata, PARTN6, 33554432 bytes, ext4,
+currently unmounted. Its block read-only flag remains unchanged at zero.
+Existing `/md` and filesystem cleanliness still need read-only metadata checks.
+No directory authority has been registered; do not initialize or substitute
+modem storage. A candidate must use the exact existing directory through a
+read-only, no-journal-replay mount and the one-shot FD registration interface.
 
 ## Authority and concurrency
 

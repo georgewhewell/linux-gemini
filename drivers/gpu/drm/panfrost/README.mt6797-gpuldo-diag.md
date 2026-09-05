@@ -1,6 +1,6 @@
 # Default-off first-job GPULDO observation
 
-Exact source baseline: T6 e23f25eddde3135efc707ca10a8cfa99c22bdd83. Host-only implementation and object validation; no image build or hardware authorization.
+Exact source baseline: T6 e23f25eddde3135efc707ca10a8cfa99c22bdd83. The original implementation was host-only; the separately reviewed T7 observation is recorded below.
 
 `panfrost.mt6797_gpuldo_diag` is immutable0400 and defaults false. Disabled mode performs no DT lookup, mapping or read. Enabled mode requires MT6797 vendor initialization, Gemini+MT6797 root compatibles, a unique available `mediatek,mt6797-infracfg` generic syscon node, and exact resource10001000/1000. Nodes declaring clocks/resets are refused. The shared `device_node_to_regmap` path deliberately uses check_res=false: unlike syscon_node_to_regmap it does not acquire clocks or deassert reset on new-map creation. There is no private/arbitrary MMIO mapping or fallback address.
 
@@ -15,4 +15,28 @@ Host tests:
 - ARM64 object-only compile PASS, handle54667 exit0, output `/tmp/gemini-gpuldo-diag-build-WwiZ3CeT/{config.log,build.log}`. CONFIG_DRM_PANFROST=y, CONFIG_PROVE_LOCKING=y, CONFIG_LOCKDEP=y. Objects panfrost_gpu.o and panfrost_job.o. This is compile-time lockdep coverage, not runtime validation.
 - HOSTCC `/nix/store/061ybr50r1m2jnvih4vvpgmgwb37df3r-gcc-wrapper-12.2.0/bin/gcc`; cross compiler `/nix/store/2j8rr9fqjqpj4fwb062l1pkbvy51lsf9-aarch64-unknown-linux-gnu-stage-final-gcc-wrapper-12.2.0/bin/aarch64-unknown-linux-gnu-`; make4.4.1. Fresh outdir copied prior lockdep configuration then olddefconfig. No reused source-dependent generated files.
 
-Package identity, opt-in parameter selection, image review and any actual transaction remain separate future steps. No public push.
+## T7 observation, 2026-09-05
+
+Image `1f8329ae7c5763ea72307788a9232950227f292b8293a6929e50153670f08d12`
+uses source `9728e9a5b3964b429e406ca94956b0c08680abec`, the exact T6 DT,
+and both GPULDO and PTE diagnostics enabled. Saved boot identity is
+`c9d2b2e4-8387-4481-9f29-2e7c9c9f85fd`. At uptime129.964769 the three
+pre-AS reads succeeded: fc0=09090909, fc4=09090909, fc8=00000009.
+The first saved GPU_SHAREABILITY_FAULT followed at130.018871, with address
+000000ffdffffb80. The single test failed its first pixel comparison;
+rendering remains unproven. No repeated host test was dispatched.
+
+The captured values differ from vendor r12p1 initialization's
+0f0f0f0f/0f0f0f0f/0000000f. This is a code difference, not a measured voltage
+or causal proof. The vendor GPU DVFS PCM binary in `mtk_kbase_spm_fw.c`
+also embeds these three addresses, and its startup is conditional on
+MTK_GPU_SPM. Initialization values therefore do not establish stable
+draw-time state or sole ownership. Firmware behavior, register encoding and
+safe sequencing must be established before proposing control writes.
+
+Owner-restricted evidence is in `handoff/gpu-thermal-t7-sXr5Olyw` under the
+workspace, with full RAM archive SHA256
+`a52a868bd944e20f28edd792ab6267348a9586c07612b083e771aa1bcf200684`.
+At this documentation boundary the exact accepted rescue has been flashed
+and supervisor-verified; final live network/hash/pstore/ownership closure is
+still pending. The image is consumed and must not be retried. No public push.

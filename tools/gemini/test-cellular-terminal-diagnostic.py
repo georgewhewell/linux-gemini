@@ -12,8 +12,8 @@ import tempfile
 
 root = Path(__file__).resolve().parents[2]
 source = (root / "drivers/net/wwan/mediatek/mtk_mt6797_ccci.c").read_text()
-start = source.index("static void mt6797_ccci_quiesce(")
-end = source.index("\n}\n", start) + 3
+start = source.index("static void mt6797_ccci_quiesce_from(")
+end = source.index("\nstatic void mt6797_ccci_free_rings", start)
 body = source[start:end]
 shim = r'''
 #include <assert.h>
@@ -33,6 +33,8 @@ struct mt6797_ccci { int failed; void *dev; char *ao, *pdn; int hs; };
 static char ao[0x1000], pdn[0x1000];
 static struct mt6797_ccci ccci = {.dev = &ccci, .ao = ao, .pdn = pdn};
 static int logs, frontends, writes, reads, crashes, fatals, logged_reason;
+static void mt6797_ccci_first_fatal(struct mt6797_ccci *c, const char *site)
+{ assert(c == &ccci && site && !logs && !frontends && !writes); }
 static void dev_err(void *dev, const char *format, int reason)
 {
  assert(dev == &ccci && ccci.failed == 1);

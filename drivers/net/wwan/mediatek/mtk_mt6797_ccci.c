@@ -28,6 +28,7 @@
 #include <linux/workqueue.h>
 
 #include "mtk_ccci_common.h"
+#include "mtk_mt6797_ccci_diag.h"
 
 #define MT6797_CCCI_QUEUE_COUNT		7U
 #define MT6797_CCCI_RING_SIZE		16U
@@ -114,6 +115,7 @@ struct mt6797_ccci_link {
 };
 
 struct mt6797_ccci {
+	struct mt6797_ccci_diag diag;
 	struct device *dev;
 	void __iomem *ao;
 	void __iomem *pdn;
@@ -209,13 +211,42 @@ static void mt6797_ccci_unregister_wwan(void *data)
 	wwan_unregister_ops(data);
 }
 
-static void mt6797_ccci_quiesce(struct mt6797_ccci *ccci, int reason)
+static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
+{
+	struct mt6797_ccci_diag *d = &ccci->diag;
+
+	if (!mt6797_ccci_diag_freeze(d, ccci->queue[0].tx[0].gpd))
+		return;
+	dev_err(ccci->dev,
+		"MT6797_CCCI_FIRST_FATAL site=%s ready=%d irqs=%u first_tx=%08x/%08x first_rx=%08x/%08x last_tx=%08x/%08x last_rx=%08x/%08x q0_submitted=%u reclaimed=%u head=%u tail=%u used=%u descriptor_valid=%u payload_valid=%u reply_finalized=%u runtime_len=%zu\n",
+		site, atomic_read(&ccci->ready), d->irq_count,
+		d->first_irq[0], d->first_irq[1], d->first_irq[2], d->first_irq[3],
+		d->last_irq[0], d->last_irq[1], d->last_irq[2], d->last_irq[3],
+		d->submitted, d->reclaimed, d->head, d->tail, d->used,
+		d->descriptor_valid, d->payload_valid, d->reply_finalized, d->runtime_len);
+	if (d->descriptor_valid)
+		print_hex_dump(KERN_ERR, "CCCI_Q0_GPD ", DUMP_PREFIX_OFFSET,
+			       32, 1, d->descriptor, sizeof(d->descriptor), false);
+	if (d->payload_valid) {
+		print_hex_dump(KERN_ERR, "CCCI_HS1 ", DUMP_PREFIX_OFFSET,
+			       32, 1, d->hs1, sizeof(d->hs1), false);
+		print_hex_dump(KERN_ERR, "CCCI_AP_REPLY ", DUMP_PREFIX_OFFSET,
+			       32, 1, d->reply, sizeof(d->reply), false);
+		print_hex_dump(KERN_ERR, "CCCI_RUNTIME ", DUMP_PREFIX_OFFSET,
+			       32, 1, d->runtime, d->runtime_len, false);
+	}
+}
+
+static void mt6797_ccci_quiesce_from(struct mt6797_ccci *ccci, int reason,
+				     const char *site)
 {
 	if (atomic_xchg(&ccci->failed, 1))
 		return;
 
-	if (reason != -ESHUTDOWN)
+	if (reason != -ESHUTDOWN) {
+		mt6797_ccci_first_fatal(ccci, site);
 		dev_err(ccci->dev, "MT6797_CCCI_TERMINAL_FAILURE reason=%d\n", reason);
+	}
 
 	mt6797_ccci_frontend_ready(ccci, false);
 	writel(MT6797_CCCI_ACTIVE_IRQS, ccci->pdn + CLDMA_L2_TX_MASK_SET);
@@ -226,6 +257,11 @@ static void mt6797_ccci_quiesce(struct mt6797_ccci *ccci, int reason)
 	mt6797_md1_hs_crash(&ccci->hs, reason);
 	if (reason != -ESHUTDOWN)
 		mt6797_md1_cold_owner_transport_fatal(reason);
+}
+
+static void mt6797_ccci_quiesce(struct mt6797_ccci *ccci, int reason)
+{
+	mt6797_ccci_quiesce_from(ccci, reason, "transport");
 }
 
 static void mt6797_ccci_free_rings(void *data)
@@ -372,6 +408,8 @@ static int mt6797_ccci_tx(struct mt6797_ccci *ccci, unsigned int q,
 	mtk_ccci_header_init(header, channel,
 			     mt6797_ccci_next_sequence(ccci, channel), skb->len);
 	header->reserved = reserved;
+	if (!q && channel == MTK_CCCI_CONTROL_TX)
+		mt6797_ccci_diag_final_reply(&ccci->diag, skb->data, skb->len);
 	dma = dma_map_single(ccci->dev, skb->data, skb->len, DMA_TO_DEVICE);
 	if (dma_mapping_error(ccci->dev, dma)) {
 		ret = -EIO;
@@ -392,6 +430,9 @@ static int mt6797_ccci_tx(struct mt6797_ccci *ccci, unsigned int q,
 	}
 	queue->tx_head = (queue->tx_head + 1) % MT6797_CCCI_RING_SIZE;
 	queue->tx_used++;
+	if (!q)
+		mt6797_ccci_diag_tx(&ccci->diag, false, queue->tx_head,
+				     queue->tx_tail, queue->tx_used);
 	writel(BIT(q), ccci->pdn + CLDMA_UL_RESUME_CMD);
 	readl(ccci->pdn + CLDMA_UL_RESUME_CMD);
 	spin_unlock_irqrestore(&queue->tx_lock, flags);
@@ -683,6 +724,8 @@ static void mt6797_ccci_hs1_work(struct work_struct *work)
 		    ccci->runtime, runtime_len);
 	/* Publish the complete runtime block before queuing its HS1 response. */
 	wmb();
+	mt6797_ccci_diag_payload(&ccci->diag, skb->data, skb->len,
+				reply->data, reply_len, ccci->runtime, runtime_len);
 	ret = mt6797_ccci_tx(ccci, 0, reply, MTK_CCCI_CONTROL_TX);
 	if (!ret) {
 		dev_info(ccci->dev,
@@ -706,7 +749,7 @@ static void mt6797_ccci_handshake_timeout_work(struct work_struct *work)
 		struct mt6797_ccci, handshake_timeout_work);
 
 	if (!atomic_read(&ccci->ready))
-		mt6797_ccci_quiesce(ccci, -ETIMEDOUT);
+		mt6797_ccci_quiesce_from(ccci, -ETIMEDOUT, "ap-handshake-timer");
 }
 
 static int mt6797_ccci_control_rx(struct mt6797_ccci *ccci,
@@ -904,6 +947,9 @@ static void mt6797_ccci_tx_poll(struct mt6797_ccci *ccci, unsigned int q)
 		slot->mapped = false;
 		queue->tx_tail = (queue->tx_tail + 1) % MT6797_CCCI_RING_SIZE;
 		queue->tx_used--;
+		if (!q)
+			mt6797_ccci_diag_tx(&ccci->diag, true, queue->tx_head,
+					     queue->tx_tail, queue->tx_used);
 		reclaimed = true;
 	}
 	spin_unlock_irqrestore(&queue->tx_lock, flags);
@@ -962,6 +1008,7 @@ static irqreturn_t mt6797_ccci_cldma_irq(int irq, void *data)
 	tx_mask = readl(ccci->pdn + CLDMA_L2_TX_MASK);
 	rx_status = readl(ccci->pdn + CLDMA_L2_RX_STATUS);
 	rx_mask = readl(ccci->ao + CLDMA_L2_RX_MASK);
+	mt6797_ccci_diag_irq(&ccci->diag, tx_status, tx_mask, rx_status, rx_mask);
 	mt6797_md1_cldma_irq_decode(tx_status, tx_mask, rx_status, rx_mask, &pending);
 	if (!pending.tx_done && !pending.rx_done && !pending.tx_error &&
 	    !pending.rx_error)
@@ -988,7 +1035,7 @@ static irqreturn_t mt6797_ccci_wdt_irq(int irq, void *data)
 {
 	struct mt6797_ccci *ccci = data;
 
-	mt6797_ccci_quiesce(ccci, -ETIMEDOUT);
+	mt6797_ccci_quiesce_from(ccci, -ETIMEDOUT, "md-wdt-irq");
 	return IRQ_HANDLED;
 }
 
@@ -1205,6 +1252,7 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	if (!ccci)
 		return -ENOMEM;
 	ccci->dev = &pdev->dev;
+	spin_lock_init(&ccci->diag.lock);
 	atomic_set(&ccci->failed, 0);
 	atomic_set(&ccci->ready, 0);
 	atomic_set(&ccci->at_open, 0);

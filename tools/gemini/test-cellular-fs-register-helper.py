@@ -16,6 +16,7 @@ shim=r'''
 #include <linux/magic.h>
 #include <linux/openat2.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -117,6 +118,13 @@ int main(void){
   assert(registered==((mode==0||mode==13)?1:0));
   for(unsigned i=0;i<8;i++)assert(opened[i]==closed[i]);
   assert(super_reads<=1);
+ }
+ for(mode=0;mode<=16;mode++){
+  registered=super_reads=0;memset(opened,0,sizeof(opened));memset(closed,0,sizeof(closed));
+  int ret=register_nvdata(NULL);
+  bool reject=(mode>=1&&mode<=5)||mode==12||mode>=14;
+  assert((ret<0)==reject&&!registered&&!opened[4]&&!opened[5]&&!opened[6]);
+  for(unsigned i=0;i<8;i++)assert(opened[i]==closed[i]);
  }
  puts("PASS actual one-shot FS helper: metadata-only reads, label/size/ext4/dirty/recovery/root/RO/missing-md/symlink refusals, no mount, one ioctl even EINTR, complete FD cleanup");
 }

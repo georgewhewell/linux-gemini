@@ -159,6 +159,11 @@ static int register_nvdata(const char *mountpoint)
 	ret = clean_ext4(super, bytes);
 	if (ret)
 		goto out;
+	/* Pre-mount mode shares every block metadata check, but opens neither
+	 * filesystem directories nor the provider and can never issue REGISTER.
+	 */
+	if (!mountpoint)
+		goto out;
 	root = no_symlink_dir(AT_FDCWD, mountpoint, 0);
 	if (root < 0) {
 		ret = root;
@@ -207,15 +212,16 @@ int main(int argc, char **argv)
 {
 	int ret;
 
-	if (argc != 2 || argv[1][0] != '/' || geteuid()) {
-		fprintf(stderr, "usage (root only): mt6797-fs-register /absolute/verified-ro-nvdata-mount\n");
+	if (argc != 2 || (argv[1][0] != '/' && strcmp(argv[1], "--check-device")) || geteuid()) {
+		fprintf(stderr, "usage (root only): mt6797-fs-register --check-device | /absolute/verified-ro-nvdata-mount\n");
 		return 2;
 	}
-	ret = register_nvdata(argv[1]);
+	ret = register_nvdata(argv[1][0] == '/' ? argv[1] : NULL);
 	if (ret) {
 		fprintf(stderr, "MD1 FS authority registration failed: %s; no retry\n", strerror(-ret));
 		return 1;
 	}
-	puts("MD1 FS authority published once; this is not an HS2/AT result");
+	puts(argv[1][0] == '/' ? "MD1 FS authority published once; this is not an HS2/AT result" :
+	     "MD1 nvdata metadata precheck passed; no mount or provider registration");
 	return 0;
 }

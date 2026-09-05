@@ -2,8 +2,10 @@
 
 The description below records the lease-only change. The integrated reset
 follow-up now requires reset completion from the same supplier epoch, returns
-it with the mapping, and requires fresh clean queue/IRQ/busy/head state before
-the consumer's first register write. See `README.cellular-integrated.md`.
+it with the mapping, and requires fresh clean queue/IRQ/head state before
+the consumer's first register write. Post-GO IP_BUSY is observed separately
+from the supplier's pre-power reset-time zero check; see
+`README.cellular-integrated.md` and `README.cellular-post-go-ip-busy.md`.
 
 Based on readiness source `b83d28018`. This fixes a deterministic reservation
 collision, not PLL/reset admission or a demonstrated modem handshake. The cold

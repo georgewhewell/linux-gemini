@@ -3,7 +3,29 @@
 This source is based on C8 `b71187c5f02b8ee63225c65892a806e7f42f0a92`.
 It implements a real, narrowly scoped FS GETDISKINFO service and a pre-write
 cold-start gate. It is not a demonstrated HS2 fix and is not a hardware/package
-authorization. No installed backing directory has been selected by this change.
+authorization. The source change alone selects no backing directory; the later
+installed-lineage and metadata checks below establish the real nvdata `/md`.
+
+## Current integration and candidate boundary
+
+Installed Android25 provenance and private metadata-only inspection have resolved
+the backing question: existing `/dev/mmcblk0p6` (nvdata), existing directory
+`/md`. This is not an unresolved filesystem-location blocker. The helper now
+also accepts `--check-device`, sharing its partition/superblock checks without
+opening mount directories or the provider and without issuing any ioctl.
+It rejects both journal recovery and ext4 orphan-recovery indicators before
+the separately controlled RO+noload mount; registration repeats the checks.
+
+The separate C9 package builds that helper, one-shot prepare and a host launcher.
+Root reviewed candidate SHA256
+`2c2304ff4c73b670e09ac8d6d3d0897336865573ff62480a22a1f1b181f21eba`
+and authorized one sole-owner observe-always-rollback run in
+`handoff/cellular-c9-root-review-20260905.md`. This document does not assert
+that run completed or that HS2, AT, attach or data work. The launch deadline
+receipt is fixed at original transaction launch+540 seconds, conservatively
+earlier than the harness's acceptance anchor; it cannot create a new window.
+Registration can synchronously start the modem and is a write boundary, not
+a read-only diagnostic. Never run it in rescue or retry an ambiguous result.
 
 ## Observed missing service
 
@@ -22,6 +44,15 @@ the initial cold start cannot satisfy this observed initialization sequence.
 This patch defers cold probe until a real metadata authority is published.
 It does not alter the A72/DVFSP sequence, the recovery watchdog, the one-GO
 contract, or the literal existing 30-second timer from CCCI queue start.
+
+For interpretation of the next trace, vendor eccci `port_proxy.c:486,628`
+emits FS_IN after accepted pre-HS2 FS RX and FS_OUT after successful FS TX.
+`ccci_fsm.c:463` toggles fs_ongoing on these events; its handshake loop at
+line232 resets the timeout count while FS is ongoing. This source uses the
+reviewed fixed 30-second bound instead. A timeout following a new unsupported
+FS operation therefore does not itself prove rejection of the preceding
+metadata response. Correlate actual reply, subsequent request and HS2 first.
+This comparison is not authorization to extend the timer or invent responses.
 
 ## Vendor wire and stock mapping evidence
 

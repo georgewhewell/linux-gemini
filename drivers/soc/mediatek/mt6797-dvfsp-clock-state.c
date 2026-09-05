@@ -30,6 +30,7 @@ static int mt6797_dvfsp_clock_divider_decode(
 		return -EINVAL;
 
 	switch (selector) {
+	case 0:
 	case 8:
 		*divider = (struct mt6797_dvfsp_clock_divider){ 1, 1 };
 		break;

@@ -27,12 +27,24 @@ initial baseline S, not the newly flashed rescue. Thus the automatic path
 could attempt capture before the rescue gadget appeared. This explains the
 missing readiness wait, not the original candidate capture failure.
 
-At this record's publication, bounded read-only closure through the original
-backend and supervisor is authorized but not yet verified. It must prove the
-new accepted boot, all three partition hashes, CID, baseline watchdog policy,
-USB and RJ45 access, pstore preservation, and process/lock closure. Preserve
-the failed automatic receipt and label any subsequent manual closure as such;
-neither recovery nor manual closure would qualify the retention experiment.
+Bounded read-only manual closure through the original backend and supervisor
+subsequently succeeded. Client77613 exited0; the original orchestrator94866
+and backend43652 exited1, preserving the failed automatic result. The original
+supervisor2981244 was reaped, its session empty and both locks verified free.
+No new writer, reboot, seed, source change or deadline extension was used.
+
+Accepted boot `1213eab8-535f-4fed-b799-69fde4a79d21` matched USB and separate
+RJ45 SSH. All three hashes matched their original values; CID, release,
+cmdline and baseline `mtk-wdt/inactive/NOWAYOUT0/31` passed validation.
+The manual archive digest is
+`2947699706058f6e467c719780e9714702ecb4094fd178abfa863a1407683627`;
+retained pstore tar SHA256 is
+`1d533ed43be53cb83de72f26050e3b09ea0672fdbf48f69f7a50c508f8aadd63`.
+See `owner/manual-accepted-closed.json` and `owner/manual-accepted-archive`
+under the run directory. Root independently checked the raw partition hashes,
+RJ45 boot identity, watchdog tuple, pstore hash and absent original processes.
+The failed automatic receipt remains preserved. Manual recovery closure does
+not qualify retention; no A72 CPU transition occurred.
 
 Host-only follow-up capture diagnostics are isolated at `8372060` in
 `repo-a72-retention-capture-diagnostics`, not applied to the running owner.

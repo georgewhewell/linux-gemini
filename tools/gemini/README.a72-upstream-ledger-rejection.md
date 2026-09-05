@@ -99,3 +99,22 @@ conventional pstore records only. Unknown or corrupt transition records must
 remain rejected. The intent is evidence capture and, only when justified,
 preparation followed by the complete CPU workload in the same boot—not a
 separate observer-only boot or automatic reset-on-error behavior.
+
+## Reviewed preparation successor
+
+The fixed-slot facility is implemented in source `37489020c0315`, with the
+conditional configuration identity followup `9656543cfd045`. Package
+`repo-a72-ledger-prepare@e851727` builds candidate
+`e8348d4f34acba0051d5e378df0ede4d08f57bc1c5828b7b5c50c1f2e2001613`.
+Root independently checked the candidate hash, identity-only followup,
+archival/prepare/readback tests and runtime adapter refusal of unknown slots.
+
+After C1 recovery closed, the sole hardware owner was authorized for one
+complete bounded transaction (`handoff/a72-ledger-prepare-rBRTJPog`). A saved
+4096-byte slot must be archived and classified by the actual kernel C before
+any preparation. Raw, empty or valid ledger states skip preparation. Only
+recognized conventional stale text may receive one exact compare-before-write
+preparation, after root reviews that same-boot capture. The readback must
+preserve every byte except the two zeroed header words and pass admission
+before the original CPU token is used. Unknown state remains a refusal.
+This is authorization and host-test evidence, not a CPU runtime result.

@@ -13,6 +13,7 @@
 #include <linux/iopoll.h>
 #include <linux/io-pgtable.h>
 #include <linux/iommu.h>
+#include <linux/moduleparam.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/shmem_fs.h>
@@ -24,9 +25,101 @@
 #include "panfrost_gpu.h"
 #include "panfrost_features.h"
 #include "panfrost_regs.h"
+#include "panfrost_job.h"
+#include "panfrost_pte_diag.h"
 
 #define mmu_write(dev, reg, data) writel(data, dev->iomem + reg)
 #define mmu_read(dev, reg) readl(dev->iomem + reg)
+
+static bool mt6797_first_submit_pte;
+module_param_named(mt6797_first_submit_pte, mt6797_first_submit_pte, bool, 0400);
+MODULE_PARM_DESC(mt6797_first_submit_pte,
+	"Restricted debug: expose raw page-table physical addresses for one MT6797 pre-submit (default off)");
+
+/*
+ * Writers announce activity but hold no lock across allocations, reclaim,
+ * TLB callbacks or hardware operations. Reclaim may nest another writer.
+ * The diagnostic never waits for writers: it holds the gate only if none
+ * are active, excluding new writers during its bounded software walks.
+ */
+static void panfrost_pte_mutator(struct panfrost_mmu *mmu, bool begin)
+{
+	unsigned long flags;
+
+	if (!mmu->pte_diag_enabled)
+		return;
+	spin_lock_irqsave(&mmu->pte_diag_gate, flags);
+	if (begin)
+		mmu->pte_diag_mutators++;
+	else
+		mmu->pte_diag_mutators--;
+	spin_unlock_irqrestore(&mmu->pte_diag_gate, flags);
+}
+
+void panfrost_mmu_first_submit_pte_diag(struct panfrost_job *job, int js)
+{
+	struct panfrost_mmu *mmu = job->mmu;
+	struct panfrost_device *pfdev = job->pfdev;
+	struct {
+		u64 va, size;
+		int ret;
+		struct arm_lpae_io_pgtable_walk_data walk;
+	} samples[PANFROST_PTE_BO_LIMIT + 1] = {};
+	unsigned int i, bos = panfrost_pte_bo_count(job->bo_count);
+	unsigned long flags;
+
+	if (!mmu->pte_diag_enabled ||
+	    test_and_set_bit(0, &pfdev->mt6797_pte_diag_seen))
+		return;
+	/* The job owns mapping refs; each mapping explicitly pins its MMU. */
+	if (!job->bo_count || !job->mappings || !job->mappings[0] ||
+	    job->mappings[0]->mmu != mmu) {
+		dev_info(pfdev->base.dev, "MT6797_PTE_CAPTURE skipped=no-pinned-mapping\n");
+		return;
+	}
+	/* This is a pre-submit attempt, not proof JS_COMMAND_START occurred. */
+	if (!spin_trylock_irqsave(&mmu->pte_diag_gate, flags)) {
+		dev_info(pfdev->base.dev, "MT6797_PTE_CAPTURE skipped=gate-busy\n");
+		return;
+	}
+	if (mmu->pte_diag_mutators) {
+		spin_unlock_irqrestore(&mmu->pte_diag_gate, flags);
+		dev_info(pfdev->base.dev, "MT6797_PTE_CAPTURE skipped=mutator-active\n");
+		return;
+	}
+	/* Job mapping refs and gpu_usecount pin lifetimes; no user data read. */
+	samples[0].va = job->jc;
+	for (i = 0; i <= bos; i++) {
+		if (i) {
+			struct panfrost_gem_mapping *mapping = job->mappings[i - 1];
+
+			if (!mapping || mapping->mmu != mmu) {
+				samples[i].ret = -ENOENT;
+				continue;
+			}
+			samples[i].va = mapping->mmnode.start << PAGE_SHIFT;
+			samples[i].size = mapping->obj->base.base.size;
+		}
+		if (!panfrost_pte_iova_valid(samples[i].va, mmu->pgtbl_cfg.ias))
+			samples[i].ret = -ERANGE;
+		else
+			samples[i].ret = mmu->pgtbl_ops->pgtable_walk(
+				mmu->pgtbl_ops, samples[i].va, &samples[i].walk);
+	}
+	spin_unlock_irqrestore(&mmu->pte_diag_gate, flags);
+
+	dev_info(pfdev->base.dev,
+		 "MT6797_PTE_CAPTURE restricted=physical-addresses phase=pre-submit js=%d jc=%#llx bos=%u sampled=%u omitted=%u target=host-correlation-only\n",
+		 js, job->jc, job->bo_count, bos, job->bo_count - bos);
+	for (i = 0; i <= bos; i++)
+		dev_info(pfdev->base.dev,
+			 "MT6797_PTE_WALK kind=%s bo=%d va=%#llx size=%#llx offset=%#llx ret=%d pte=%016llx,%016llx,%016llx,%016llx\n",
+			 i ? "bo-base" : "jc", (int)i - 1, samples[i].va,
+			 samples[i].size, samples[i].va & (PAGE_SIZE - 1),
+			 samples[i].ret, samples[i].walk.ptes[0],
+			 samples[i].walk.ptes[1], samples[i].walk.ptes[2],
+			 samples[i].walk.ptes[3]);
+}
 
 static u64 mair_to_memattr(u64 mair, bool coherent)
 {
@@ -474,6 +567,7 @@ static int mmu_map_sg(struct panfrost_device *pfdev, struct panfrost_mmu *mmu,
 	u64 start_iova = iova;
 	int ret;
 
+	panfrost_pte_mutator(mmu, true);
 	for_each_sgtable_dma_sg(sgt, sgl, count) {
 		unsigned long paddr = sg_dma_address(sgl);
 		size_t len = sg_dma_len(sgl);
@@ -500,12 +594,14 @@ static int mmu_map_sg(struct panfrost_device *pfdev, struct panfrost_mmu *mmu,
 		}
 	}
 
+	panfrost_pte_mutator(mmu, false);
 	panfrost_mmu_flush_range(pfdev, mmu, start_iova, iova - start_iova);
 
 	return 0;
 
 err_unmap_pages:
 	mmu_unmap_range(mmu, start_iova, total_mapped);
+	panfrost_pte_mutator(mmu, false);
 	return ret;
 }
 
@@ -555,6 +651,7 @@ void panfrost_mmu_unmap(struct panfrost_gem_mapping *mapping)
 
 	if (WARN_ON(!mapping->active))
 		return;
+	panfrost_pte_mutator(mapping->mmu, true);
 
 	dev_dbg(pfdev->base.dev, "unmap: as=%d, iova=%llx, len=%zx",
 		mapping->mmu->as, iova, len);
@@ -573,6 +670,7 @@ void panfrost_mmu_unmap(struct panfrost_gem_mapping *mapping)
 		unmapped_len += pgsize * pgcount;
 	}
 
+	panfrost_pte_mutator(mapping->mmu, false);
 	panfrost_mmu_flush_range(pfdev, mapping->mmu,
 				 mapping->mmnode.start << PAGE_SHIFT, len);
 	mapping->active = false;
@@ -851,6 +949,7 @@ struct panfrost_mmu *panfrost_mmu_ctx_create(struct panfrost_device *pfdev)
 
 	mmu->pfdev = pfdev;
 	spin_lock_init(&mmu->mm_lock);
+	spin_lock_init(&mmu->pte_diag_gate);
 
 	/* 4G enough for now. can be 48-bit */
 	drm_mm_init(&mmu->mm, SZ_32M >> PAGE_SHIFT, (SZ_4G - SZ_32M) >> PAGE_SHIFT);
@@ -877,6 +976,9 @@ struct panfrost_mmu *panfrost_mmu_ctx_create(struct panfrost_device *pfdev)
 		ret = -EINVAL;
 		goto err_free_mmu;
 	}
+	mmu->pte_diag_enabled = mt6797_first_submit_pte &&
+		pfdev->comp->vendor_init == panfrost_gpu_mt6797_init &&
+		fmt == ARM_MALI_LPAE && mmu->pgtbl_ops->pgtable_walk;
 
 	ret = panfrost_mmu_cfg_init(mmu, fmt);
 	if (ret)

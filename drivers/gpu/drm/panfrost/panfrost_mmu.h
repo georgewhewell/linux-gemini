@@ -8,6 +8,9 @@ struct panfrost_device;
 struct panfrost_gem_mapping;
 struct panfrost_file_priv;
 struct panfrost_mmu;
+struct panfrost_job;
+
+void panfrost_mmu_first_submit_pte_diag(struct panfrost_job *job, int js);
 
 int panfrost_mmu_map(struct panfrost_gem_mapping *mapping);
 void panfrost_mmu_unmap(struct panfrost_gem_mapping *mapping);

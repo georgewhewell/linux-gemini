@@ -240,7 +240,14 @@ static int panfrost_job_hw_submit(struct panfrost_job *job, int js)
 	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_FLUSH_REDUCTION))
 		cfg |= JS_CONFIG_ENABLE_FLUSH_REDUCTION;
 
-	if (panfrost_has_hw_issue(pfdev, HW_ISSUE_10649))
+	/*
+	 * MT6797's vendor legacy-MMU path starts every job with this cache/TLB
+	 * synchronization, including the first job after AS UPDATE. Preserve
+	 * that sequencing without changing attributes or other platforms.
+	 */
+	if (panfrost_has_hw_issue(pfdev, HW_ISSUE_10649) ||
+	    (pfdev->comp->vendor_init == panfrost_gpu_mt6797_init &&
+	     io_pgtable_ops_to_pgtable(job->mmu->pgtbl_ops)->fmt == ARM_MALI_LPAE))
 		cfg |= JS_CONFIG_START_MMU;
 
 	job_write(pfdev, JS_CONFIG_NEXT(js), cfg);

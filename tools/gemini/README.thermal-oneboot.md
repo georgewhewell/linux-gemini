@@ -7,10 +7,26 @@ for calibration or cooling. No separate thermal-only boot is needed.
 
 ## What exists
 
+T2 hardware evidence: candidate
+`2a0b903405328fc085c7b9239467dfc6275dc465bbeee82fb8f1e765c698553f`,
+boot `83b8cf8d-0d19-436f-96fb-686d473ba81a`, returned
+`THERMAL_INTERFACES_PASS snapshots=2 channels=4 same_boot=yes`.
+Root independently ran the host checker on saved inventories at uptimes
+192.46 and 253.38 seconds. MCU1/2/3/4 readings were respectively
+44.4/46.6/44.7/50.2 C before and 41.7/43.9/40.0/39.8 C after the attempted
+GPU workload. This proves readable labeled interfaces, not successful GPU
+rendering, calibrated accuracy, protection, or all-hardware sensor coverage.
+The GPU draw failed before submission. Battery temperature remains physically
+disconnected. Evidence:
+`/mnt/Home/src/nixos-gemini/handoff/gpu-thermal-t2-GrhqeH41/ram-evidence/run/gpu-oneboot/`.
+Full RAM archive SHA256:
+`0afc936fa994fa7e74d5455140933f5cdab257219df202c0247efe2871b2a9b0`.
+
 The MT6797 driver in `drivers/thermal/mediatek/auxadc_thermal.c` already
 programs six hardware banks and uses required, validated NVMEM calibration.
-It exports **one maximum temperature**, not six independently measured
-hardware temperatures. The vendor source confirms this mapping in
+Its thermal zone exports **one maximum temperature**; the added hwmon device
+exports four physical channels, not six independently measured hardware
+temperatures. The vendor source confirms this mapping in
 `drivers/misc/mediatek/thermal/mt6797/src/mtk_tc.c:71`:
 
 | Bank | Vendor domain | Physical sensor |

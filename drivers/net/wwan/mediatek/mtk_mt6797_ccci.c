@@ -682,6 +682,9 @@ static void mt6797_ccci_hs1_work(struct work_struct *work)
 	wmb();
 	ret = mt6797_ccci_tx(ccci, 0, reply, MTK_CCCI_CONTROL_TX);
 	if (!ret) {
+		dev_info(ccci->dev,
+			 "MD1 accepted CCCI HS1 v2; runtime reply queued (%zu bytes)\n",
+			 runtime_len);
 		kfree_skb(skb);
 		atomic_set(&ccci->hs1_pending, 0);
 		return;

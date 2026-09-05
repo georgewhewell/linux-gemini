@@ -228,6 +228,7 @@ struct mt6797_md1_cold_owner_backend {
 	struct mt6797_md1_wdt_gate wdt_gate;
 	struct work_struct passive_observe_work;
 	struct mt6797_md1_post_vector_evidence passive_evidence;
+	bool cldma_leased;
 };
 
 static bool enable_experimental_md1_cold_owner;
@@ -241,6 +242,10 @@ static DECLARE_WAIT_QUEUE_HEAD(mt6797_md1_handoff_waitq);
 /* One-shot boot ownership: terminal shutdown must never be republished ready. */
 static int mt6797_md1_handoff_status = -EPROBE_DEFER;
 static struct device *mt6797_md1_handoff_supplier;
+static struct mt6797_md1_cold_owner_backend *mt6797_md1_handoff_backend;
+/* Protected by the evidence lock; a relinquished lease is never reissued. */
+static struct device *mt6797_md1_cldma_consumer;
+static bool mt6797_md1_cldma_lease_taken;
 static DEFINE_MUTEX(mt6797_md1_stage2_lock);
 static struct device *mt6797_md1_stage2_dev;
 static struct mt6797_md1_mpu_remap_plan mt6797_md1_stage2_plan;
@@ -317,6 +322,86 @@ unlock:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_wait_handoff);
+
+static void mt6797_md1_cold_release_cldma(void *data)
+{
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	if (mt6797_md1_cldma_consumer == data) {
+		mt6797_md1_cldma_consumer = NULL;
+		atomic_set(&mt6797_md1_cold_owner_fatal_latch, 1);
+	}
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+}
+
+int mt6797_md1_cold_owner_acquire_cldma(struct device *consumer,
+	const struct resource *ao, const struct resource *pdn,
+	struct mt6797_md1_cldma_mapping *mapping)
+{
+	struct mt6797_md1_post_vector_evidence evidence;
+	struct mt6797_md1_cold_owner_backend *backend;
+	int ret;
+
+	if (!consumer || !ao || !pdn || !mapping)
+		return -EINVAL;
+	if (resource_type(ao) != IORESOURCE_MEM ||
+	    resource_type(pdn) != IORESOURCE_MEM ||
+	    ao->start != MT6797_MD1_AP_CLDMA_AO_BASE ||
+	    pdn->start != MT6797_MD1_AP_CLDMA_PDN_BASE ||
+	    resource_size(ao) != MT6797_MD1_CLDMA_SIZE ||
+	    resource_size(pdn) != MT6797_MD1_CLDMA_SIZE)
+		return -EINVAL;
+
+	/* Also establish the supplier lifetime lease for direct API callers. */
+	ret = mt6797_md1_cold_owner_wait_handoff(consumer, &evidence);
+	if (ret)
+		return ret;
+	if (evidence.token != MT6797_MD1_POST_VECTOR_GO ||
+	    !evidence.passive_complete || !evidence.cldma_register_activity)
+		return -EPERM;
+
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	backend = mt6797_md1_handoff_backend;
+	ret = mt6797_md1_handoff_status;
+	if (ret)
+		goto unlock;
+	if (mt6797_md1_cldma_lease_taken) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	if (!backend || atomic_read(&mt6797_md1_cold_owner_fatal_latch)) {
+		ret = -EUCLEAN;
+		goto unlock;
+	}
+	mt6797_md1_cldma_lease_taken = true;
+	mt6797_md1_cldma_consumer = consumer;
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+
+	/* Publication may precede worker return. Never wait holding its lock. */
+	cancel_work_sync(&backend->passive_observe_work);
+	ret = devm_add_action_or_reset(consumer, mt6797_md1_cold_release_cldma,
+				       consumer);
+	if (ret)
+		return ret;
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	ret = mt6797_md1_handoff_status;
+	if (!ret && atomic_read(&mt6797_md1_cold_owner_fatal_latch))
+		ret = -EUCLEAN;
+	if (!ret) {
+		WRITE_ONCE(backend->cldma_leased, true);
+		*mapping = (struct mt6797_md1_cldma_mapping) {
+			.ao = backend->base[MT6797_MD1_RES_AP_CLDMA_AO],
+			.pdn = backend->base[MT6797_MD1_RES_AP_CLDMA_PDN],
+		};
+	}
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	if (ret)
+		devm_release_action(consumer, mt6797_md1_cold_release_cldma, consumer);
+	return ret;
+unlock:
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_acquire_cldma);
 
 static void mt6797_md1_handoff_finish(int error)
 {
@@ -534,6 +619,8 @@ static int mt6797_md1_cold_cldma_registers_observe(void *context,
 
 	if (!backend || !state)
 		return -EINVAL;
+	if (READ_ONCE(backend->cldma_leased))
+		return -EBUSY;
 	ao = backend->base[MT6797_MD1_RES_AP_CLDMA_AO];
 	pdn = backend->base[MT6797_MD1_RES_AP_CLDMA_PDN];
 	memset(state, 0, sizeof(*state));
@@ -1206,6 +1293,10 @@ static void mt6797_md1_cold_passive_observe_work(struct work_struct *work)
 	unsigned int attempt;
 	int ret;
 
+	/* One-shot observer; a leased engine must never be observed again here. */
+	if (READ_ONCE(backend->cldma_leased))
+		return;
+
 	previous_stats0 = readl(backend->base[MT6797_MD1_RES_BOOT_STATUS] +
 		MT6797_MD1_BOOT_STATUS0);
 	previous_stats1 = readl(backend->base[MT6797_MD1_RES_BOOT_STATUS] +
@@ -1581,6 +1672,7 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	mutex_unlock(&mt6797_md1_stage2_lock);
 	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
 	mt6797_md1_handoff_supplier = &pdev->dev;
+	mt6797_md1_handoff_backend = backend;
 	WRITE_ONCE(mt6797_md1_handoff_status, -EAGAIN);
 	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
 	schedule_work(&backend->passive_observe_work);

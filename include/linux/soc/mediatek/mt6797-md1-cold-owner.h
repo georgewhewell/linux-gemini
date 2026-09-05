@@ -199,9 +199,27 @@ int mt6797_md1_cold_owner_post_vector_evidence_get(
 	struct mt6797_md1_post_vector_evidence *evidence);
 
 struct device;
+struct resource;
+
+struct mt6797_md1_cldma_mapping {
+	void __iomem *ao;
+	void __iomem *pdn;
+};
+
 /* Sleepable, bounded readiness wait; links consumer lifetime to cold owner. */
 int mt6797_md1_cold_owner_wait_handoff(struct device *consumer,
 				       struct mt6797_md1_post_vector_evidence *evidence);
+
+/*
+ * Single, non-renewable AP CLDMA lease. The supplier retains its reservations;
+ * a managed device link retains its mappings through consumer devres cleanup.
+ * Register ring/IRQ cleanup after acquisition so it runs before lease cleanup.
+ * Success drains the supplier observer; only the consumer may then touch AP
+ * CLDMA. Shutdown does not revoke this mapping before the consumer can stop DMA.
+ */
+int mt6797_md1_cold_owner_acquire_cldma(struct device *consumer,
+	const struct resource *ao, const struct resource *pdn,
+	struct mt6797_md1_cldma_mapping *mapping);
 
 /* Finalize vendor region 13 after HS1 and before publishing runtime data. */
 int mt6797_md1_cold_owner_hs1_stage2(void);

@@ -685,7 +685,17 @@ identity, and diagnostic tests pass (at most 20 lines / 109 register reads).
 Capture both thermal inventories and first-fault evidence off-device before
 recovery. No unload/reprobe or identical retry. Thermal interface acceptance
 is separate from rendering and from thermal protection/calibration accuracy.
-Consumption and hardware results must be recorded from the actual run.
+T2 was consumed once at 02:34:39; no retry. Thermal interface checking passed
+for four channels in two same-boot snapshots. The first GPU draw timed out;
+the trace localized the first fault to AS0 FLUSH_MEM completion before AS
+configuration or any job submission. It does not expose the physical root
+address, and it does not prove an attribute or lock-geometry defect.
+Exact rescue was restored at 02:41:46 and the run closed at 02:43:38 with
+healthy USB/RJ45, no failed units, matching p22/p30/p31 and released locks.
+Pstore SHA256: `48448d37cbb685351ab4a1cc8b6805bf10020c45b4fe343105fdac2c201d1bf4`.
+Its tail contains a truncated DABT at uptime 406.213 after the petter stopped;
+without a PC/stack the cause is unknown, not a clean-watchdog-path proof.
+Result: `/mnt/Home/src/nixos-gemini/handoff/gpu-thermal-t2-GrhqeH41/RESULT.md`.
 
 The complete upstream A72 derivative also builds, but awaits its later hardware
 review/run. Source `400b1abd630326a6b52de881cb7aa70599bd416f`; candidate
@@ -702,6 +712,7 @@ intact. Do not reuse the old ca094 execution helpers.
 
 ### GPU/G2/G3 historical candidates
 
+- `2a0b903405328fc085c7b9239467dfc6275dc465bbeee82fb8f1e765c698553f`
 - `3f441aef15aae346078a5ddd513ee1ff23db43997e45d9e85fbcee4d7574253d`
 - `57c57001542702d0c9a9802e22ed32d4dcafdba4c192a95fe4b20295e304753b`
 - `61c0213eea891171e5034a343ed600580b4805413dc494b3afb25b14f1d0d41e`

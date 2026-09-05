@@ -143,6 +143,7 @@ struct mt6797_ccci {
 	/* Mask ownership survives repolls independently of pending work. */
 	atomic_t tx_mask_owned;
 	atomic_t rx_mask_owned;
+	u64 napi_mask_generation; /* tx_stop_lock; no practical per-boot wrap */
 	atomic_t failed;
 	atomic_t ready;
 	atomic_t at_open;
@@ -1053,12 +1054,14 @@ static int mt6797_ccci_poll(struct napi_struct *napi, int budget)
 {
 	struct mt6797_ccci *ccci = container_of(napi, struct mt6797_ccci, napi);
 	u32 tx, rx, tx_rearm, rx_rearm;
+	u64 generation;
 	unsigned long flags;
 	unsigned int q;
 	int done = 0;
 
 	/* No gap between consuming pending bits and taking their mask ownership. */
 	spin_lock_irqsave(&ccci->tx_stop_lock, flags);
+	ccci->napi_mask_generation++;
 	tx = atomic_xchg(&ccci->tx_pending, 0);
 	rx = atomic_xchg(&ccci->rx_pending, 0);
 	atomic_or(tx, &ccci->tx_mask_owned);
@@ -1094,24 +1097,23 @@ static int mt6797_ccci_poll(struct napi_struct *napi, int budget)
 		return budget;
 	if (done < budget) {
 		/* Complete can release NAPI and flush GRO (which can enter TX).
-		 * Detach old ownership first; never clear a new poll's ownership
-		 * afterward, and never hold tx_stop_lock across this callback.
+		 * Keep the masked union visible to every newer poll. A completing
+		 * generation may rearm only if no IRQ or poll has superseded it.
+		 * Never hold tx_stop_lock across this callback.
 		 */
-		tx_rearm = atomic_xchg(&ccci->tx_mask_owned, 0);
-		rx_rearm = atomic_xchg(&ccci->rx_mask_owned, 0);
-		if (!napi_complete_done(napi, done)) {
-			/* Includes deferred completion which has already released SCHED. */
-			atomic_or(tx_rearm, &ccci->tx_mask_owned);
-			atomic_or(rx_rearm, &ccci->rx_mask_owned);
-			return done;
-		}
 		spin_lock_irqsave(&ccci->tx_stop_lock, flags);
-		if (!atomic_read(&ccci->failed)) {
-			/* A newer IRQ/poll may already own some of these same bits. */
-			tx_rearm &= ~(atomic_read(&ccci->tx_mask_owned) |
-				      atomic_read(&ccci->tx_pending));
-			rx_rearm &= ~(atomic_read(&ccci->rx_mask_owned) |
-				      atomic_read(&ccci->rx_pending));
+		generation = ccci->napi_mask_generation;
+		spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
+		if (!napi_complete_done(napi, done))
+			/* No restore: a newer completion may already have rearmed all. */
+			return done;
+		spin_lock_irqsave(&ccci->tx_stop_lock, flags);
+		if (!atomic_read(&ccci->failed) &&
+		    generation == ccci->napi_mask_generation &&
+		    !atomic_read(&ccci->tx_pending) &&
+		    !atomic_read(&ccci->rx_pending)) {
+			tx_rearm = atomic_xchg(&ccci->tx_mask_owned, 0);
+			rx_rearm = atomic_xchg(&ccci->rx_mask_owned, 0);
 			writel(tx_rearm, ccci->pdn + CLDMA_L2_TX_MASK_CLEAR);
 			writel(rx_rearm, ccci->ao + CLDMA_L2_RX_MASK_CLEAR);
 		}
@@ -1136,8 +1138,9 @@ static irqreturn_t mt6797_ccci_cldma_irq(int irq, void *data)
 	if (!pending.tx_done && !pending.rx_done && !pending.tx_error &&
 	    !pending.rx_error)
 		return IRQ_NONE;
-	writel(tx_status, ccci->pdn + CLDMA_L2_TX_STATUS);
-	writel(rx_status, ccci->pdn + CLDMA_L2_RX_STATUS);
+	/* Match vendor ACK scope: masked events were not claimed by this IRQ. */
+	writel(tx_status & ~tx_mask, ccci->pdn + CLDMA_L2_TX_STATUS);
+	writel(rx_status & ~rx_mask, ccci->pdn + CLDMA_L2_RX_STATUS);
 	if (pending.tx_error || pending.rx_error) {
 		mt6797_ccci_quiesce(ccci, -EIO);
 		return IRQ_HANDLED;
@@ -1148,6 +1151,7 @@ static irqreturn_t mt6797_ccci_cldma_irq(int irq, void *data)
 		spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
 		return IRQ_HANDLED;
 	}
+	ccci->napi_mask_generation++;
 	if (pending.tx_done) {
 		writel(pending.tx_done, ccci->pdn + CLDMA_L2_TX_MASK_SET);
 		atomic_or(pending.tx_done, &ccci->tx_pending);

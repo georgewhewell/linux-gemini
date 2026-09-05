@@ -1013,9 +1013,18 @@ static int mt6797_ccci_clean_reset_check(struct mt6797_ccci *ccci)
 		heads |= readl(ccci->ao + CLDMA_SO_START_ADDR(q));
 	}
 	dev_info(ccci->dev,
-		 "leased AP CLDMA pre-ring snapshot: ul=%#x so=%#x txirq=%#x rxirq=%#x busy=%#x heads_or=%#x\n",
+		 "leased AP CLDMA pre-ring snapshot: ul=%#x so=%#x txirq=%#x rxirq=%#x busy=%#x heads_or=%#x; IP_BUSY observed-only after MD1 GO\n",
 		 ul, so, txirq, rxirq, busy, heads);
-	if (ul || so || txirq || rxirq || busy || heads)
+	/*
+	 * This is after MD1 GO, not the supplier's pre-power reset check.
+	 * Vendor modem_cldma.c starts AP queues after releasing MD1 and treats
+	 * IP_BUSY as wakeup state acknowledged during RX handling. MD1 may
+	 * therefore assert it before we install AP descriptors. Preserve it:
+	 * neither require reset-time zero nor acknowledge it before RX here.
+	 * The exclusive reset-completed lease and fresh AP queue/IRQ/head
+	 * checks remain mandatory; IP_BUSY alone is not AP queue ownership.
+	 */
+	if (ul || so || txirq || rxirq || heads)
 		return -EUCLEAN;
 	return 0;
 }

@@ -24,6 +24,21 @@ def fixture():
 
 
 class Tests(unittest.TestCase):
+    def test_preready_rx(self):
+        data = struct.pack('<5I', 0, 20, 32, 0, 0x1234)
+        addition = ('\nCCCI_PREREADY_RX_COUNT count=1 cap=4 bytes_per_frame=1024\n'
+                    'CCCI_PREREADY_RX index=0 queue=1 drop=3 length=20 captured=20 truncated=0 '
+                    'decode_error=0 header_valid=1 channel=32 payload_word0_valid=1 payload_word0=00001234\n'
+                    'CCCI_PREREADY_RX0 00000000: ' + data.hex(' '))
+        report = decoder.decode(fixture() + addition)
+        self.assertEqual(report['preready_rx'][0]['payload_word0'], 0x1234)
+        for bad in (addition.rsplit('\n', 1)[0], addition.replace('count=1', 'count=5'),
+                    addition.replace('channel=32', 'channel=33'), addition.replace('00001234', '00000000'),
+                    addition.replace('length=20', 'length=19'), addition + addition):
+            with self.subTest(bad=bad[:100]), self.assertRaises(ValueError):
+                decoder.decode(fixture() + bad)
+        self.assertEqual(decoder.decode(fixture() + '\nCCCI_PREREADY_RX_COUNT count=0 cap=4 bytes_per_frame=1024')['preready_rx'], [])
+
     def test_wire_fields(self):
         report = decoder.decode(fixture())
         self.assertEqual(report['ap_response']['mpu_size'], 0x100000)

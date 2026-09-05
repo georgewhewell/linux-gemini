@@ -18,6 +18,57 @@ def require(ok, message):
         raise ValueError(message)
 
 
+def hex_block(log, name, maximum):
+    data = bytearray()
+    for offset, text in re.findall(r'CCCI_' + name + r' ([0-9a-fA-F]+):([^\n]*)', log):
+        require(int(offset, 16) == len(data), name + ' gap/duplicate/out-of-order row')
+        octets = text.split()
+        require(0 < len(octets) <= 32 and all(re.fullmatch(r'[0-9a-fA-F]{2}', x) for x in octets),
+                name + ' malformed hex row')
+        data.extend(int(x, 16) for x in octets)
+        require(len(data) <= maximum, name + ' exceeds capture bound')
+    return bytes(data)
+
+
+def preready_rx(log):
+    counts = re.findall(r'CCCI_PREREADY_RX_COUNT count=(\d+) cap=4 bytes_per_frame=1024', log)
+    rows = re.findall(r'CCCI_PREREADY_RX ([^\n]+)', log)
+    indices = re.findall(r'CCCI_PREREADY_RX(\d+) ', log)
+    if not counts and 'CCCI_PREREADY_RX' not in log:
+        return None  # Historical C4/C5 diagnostic format.
+    require(len(counts) == 1, 'missing/duplicate/unsupported RX count')
+    count = int(counts[0])
+    require(count <= 4 and len(rows) == count, 'incomplete/excess RX records')
+    require(all(int(i) < count for i in indices), 'unexpected RX data index')
+    result = []
+    for index, row in enumerate(rows):
+        pairs = [field.split('=', 1) for field in row.split()]
+        require(all(len(pair) == 2 for pair in pairs), 'malformed RX metadata')
+        fields = dict(pairs)
+        require(len(fields) == len(pairs), 'duplicate RX metadata')
+        r = {k: int(v, 16 if k == 'payload_word0' else 10) for k, v in fields.items()}
+        require(r['index'] == index and 0 <= r['queue'] < 7 and 1 <= r['drop'] <= 4,
+                'invalid RX index/queue/cause')
+        require(0 <= r['length'] <= 3584 and r['captured'] == min(r['length'], 1024),
+                'invalid RX lengths')
+        require(r['truncated'] == int(r['length'] > r['captured']), 'invalid RX truncation flag')
+        data = hex_block(log, 'PREREADY_RX' + str(index), 1024)
+        require(len(data) == r['captured'], 'incomplete RX packet capture')
+        valid = not r['decode_error'] and r['length'] >= 16
+        require(r['header_valid'] == int(valid), 'invalid RX header flag')
+        require(r['payload_word0_valid'] == int(valid and r['length'] >= 20), 'invalid RX payload flag')
+        if valid:
+            header = struct.unpack_from('<4I', data)
+            require(r['channel'] == header[2] & 0xffff, 'RX channel differs from captured header')
+            r['header_words'] = [hex(word) for word in header]
+        if r['payload_word0_valid']:
+            require(r['payload_word0'] == struct.unpack_from('<I', data, 16)[0],
+                    'RX payload word differs from captured bytes')
+        r['sha256'] = hashlib.sha256(data).hexdigest()
+        result.append(r)
+    return result
+
+
 def decode(log):
     summaries = re.findall(r'MT6797_CCCI_FIRST_FATAL ([^\n]+)', log)
     require(len(summaries) == 1, 'expected exactly one first-fatal summary')
@@ -36,16 +87,7 @@ def decode(log):
             'payload flags contradict saved length/finalization')
     blocks = {}
     for name in ('Q0_GPD', 'HS1', 'AP_REPLY', 'RUNTIME'):
-        data = bytearray()
-        rows = re.findall(r'CCCI_' + name + r' ([0-9a-fA-F]+):([^\n]*)', log)
-        for offset, text in rows:
-            require(int(offset, 16) == len(data), name + ' gap/duplicate/out-of-order row')
-            octets = text.split()
-            require(0 < len(octets) <= 32 and all(re.fullmatch(r'[0-9a-fA-F]{2}', x) for x in octets),
-                    name + ' malformed hex row')
-            data.extend(int(x, 16) for x in octets)
-            require(len(data) <= 2048, name + ' exceeds capture bound')
-        blocks[name] = bytes(data)
+        blocks[name] = hex_block(log, name, 2048)
     lengths = {'Q0_GPD': 16 if summary['descriptor_valid'] == '1' else 0,
                'HS1': 88 if summary['payload_valid'] == '1' else 0,
                'AP_REPLY': 116 if summary['payload_valid'] == '1' else 0,
@@ -56,6 +98,9 @@ def decode(log):
               'blocks': {name: {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
                          for name, data in blocks.items()},
               'caveat': 'Caller must establish boot attribution; queued/finalized is not delivered or accepted.'}
+    rx = preready_rx(log)
+    if rx is not None:
+        report['preready_rx'] = rx
     if summary['payload_valid'] == '1':
         reply = blocks['AP_REPLY']
         data0, data1, status, reserved = struct.unpack_from('<4I', reply)

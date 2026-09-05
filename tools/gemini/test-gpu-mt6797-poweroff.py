@@ -42,6 +42,7 @@ struct panfrost_device {
     struct { struct device *dev; } base;
     struct panfrost_compatible *comp;
     void *mfgcfg, *bus_clock, *clock, *rstc;
+    bool mt6797_gpuldo_domain_supply;
 };
 static int fail_read, fail_select, fail_restore, poll_error, devfreq_error;
 static int reads, writes, polls, mutations, generic_off, errors;

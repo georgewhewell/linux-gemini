@@ -672,6 +672,34 @@ Independent useful imports under review are 0482 topology, 0525/0526 and
 reader-lifetime fixes. Standalone AUXADC must remain disabled in the thermal
 carrier. The physically disconnected battery sensor remains unavailable.
 
+### Next useful boots after upstream integration, 2026-09-05
+
+GPU/thermal T2 is scheduled through the sole hardware owner, not a rendering
+fix claim. Package `1ab8bd5602efd569b74ae478ca43622e91c390e4`, source
+`664b2de786854d6e08c1bc91c3a725547b94a5a8`: exact thermal acquisition source
+plus bounded first-submit/first-fault/first-timeout diagnostics. Candidate
+`2a0b903405328fc085c7b9239467dfc6275dc465bbeee82fb8f1e765c698553f`.
+Bundle: `/nix/store/hbs7sq9qj4zslalfll3grw7c10ngsdkx-gemini-gpu-oneboot-p22-bundle`.
+Root verified its DT equals thermal T1, config changes only release/gadget
+identity, and diagnostic tests pass (at most 20 lines / 109 register reads).
+Capture both thermal inventories and first-fault evidence off-device before
+recovery. No unload/reprobe or identical retry. Thermal interface acceptance
+is separate from rendering and from thermal protection/calibration accuracy.
+Consumption and hardware results must be recorded from the actual run.
+
+The complete upstream A72 derivative also builds, but awaits its later hardware
+review/run. Source `400b1abd630326a6b52de881cb7aa70599bd416f`; candidate
+`fa148df6c9d547c53321165d6369ec5682aaacddd4c0abc2d1cc522aac87a099`.
+Bundle: `/nix/store/kr14qsmrvszcrar2rs9lc4xbn93w4mg7-gemini-a72-upstream-oneboot-p22-bundle`.
+Exact upstream topology/thermal input `fe24e244...` is reproducible with
+`reproduce-upstream-a72-topology-dtb.sh`. Fresh local A41 identity and bounded
+watchdog changes are not upstream binary certification. Root review corrected
+two packaging mismatches before hardware: no separate `/run` mount (upstream
+RAM workload requires rootfs), and a thermal zone enabled by absent status
+must not be rejected or given a new property solely to satisfy a checker.
+The one-shot upstream CPU8/CPU9/down-restore and checked-RAM protocol remains
+intact. Do not reuse the old ca094 execution helpers.
+
 ### GPU/G2/G3 historical candidates
 
 - `3f441aef15aae346078a5ddd513ee1ff23db43997e45d9e85fbcee4d7574253d`

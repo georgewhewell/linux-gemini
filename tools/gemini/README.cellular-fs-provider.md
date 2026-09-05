@@ -68,6 +68,28 @@ directory still require read-only provenance checks before provider installation
 Neither `/gemian` generally nor an arbitrary host filesystem is an acceptable
 substitute for the modem backing. Do not create directories or provision NV data.
 
+### Subsequent installed-lineage verification
+
+The persistent hardware owner completed one bounded read-only copy of the
+existing `/gemian/data/system.img`, without mounting or changing it. The
+642129920-byte host copy SHA256 is
+`3e3bb6b2fa1410acd98488bd8214afba6e715fdff9a318e8186ed44cd22ce2fa`.
+Source metadata matched before/after and the accepted rescue boot remained
+`671e5fa7-d61d-477d-bfc5-f0465df05182`. Existing mountinfo identifies `/gemian`
+as p29 ext4 read-only with norecovery.
+
+Read-only host debugfs extraction of `/vendor/bin/ccci_fsd` produced
+`688e9f4d3bca872b8d6db883fa4b268e57e40e212fe4d6cdc292da3c8b836cdf`,
+independently hash-checked by root: the already analysed Android25 daemon.
+Extracted build metadata says `Gemini-7.1-Planet-08102018-V1`, SDK25,
+Android7.1.1. This supersedes the installed-version uncertainty above; the
+Android27 stock mapping must not be substituted for this installed version.
+
+The actual backing directory remains unresolved: the scoped expected paths,
+including `/gemian/data/nvram/md`, were absent in the existing rescue mounts.
+No directory authority has been registered. Inspect installed mount/init
+configuration to resolve it; do not initialize or substitute modem storage.
+
 ## Authority and concurrency
 
 `CONFIG_MTK_MT6797_MD1_FS_PROVIDER` is built-in-only and defaults off.

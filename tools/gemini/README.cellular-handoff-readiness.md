@@ -44,7 +44,7 @@ until the existing stop-status checks establish that result.
 
 ## Admission deliberately unchanged
 
-CCCI still requires GO, completed passive observation, positive CLDMA register
+The original handoff-only patch required GO, completed passive observation, positive CLDMA register
 activity and validated LK layout/remap before touching rings. GO is not HS1,
 and neither GO nor a successful readiness wait proves HS1/HS2.
 
@@ -56,7 +56,14 @@ exclude a legitimate idle engine. This patch does not merely delete it: clean
 ownership needs a separately reviewed reset/clock lease and fresh idle/head/
 interrupt snapshot, accounting for the cold owner's overlapping register
 mapping and the vendor CLDMA clock condition. That is the remaining source
-admission work, not evidence of a battery or firmware-download blocker.
+admission work at that revision, not evidence of a battery or firmware-download blocker.
+
+The current integration has now supplied that missing ownership: exclusive
+AO/PD reset controls, a single supplier-owned mapping lease after observer
+drain, and nineteen fresh consumer queue/IRQ/busy/head reads before its first
+write. It no longer requires circular pre-ring activity. See
+`README.cellular-cldma-lease.md` and `README.cellular-integrated.md`; hardware
+handshake and data validation remain outstanding.
 
 ## Verification and remaining hardware needs
 

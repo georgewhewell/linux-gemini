@@ -17,8 +17,9 @@ description: |
   separate modem lifecycle owner.
 
   The node does not describe firmware loading, modem power, reset or boot-vector
-  release. A CCCI driver must not start CLDMA until that lifecycle owner has
-  provided positive post-vector activity evidence.
+  release. The lifecycle owner retains the AP CLDMA register reservations
+  through handoff. The transport needs exclusive ownership of the reset
+  engine before programming queue heads; idle status alone is insufficient.
 
 properties:
   compatible:

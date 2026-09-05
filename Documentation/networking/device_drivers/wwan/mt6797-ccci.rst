@@ -87,7 +87,10 @@ The implementation is divided into four ownership layers:
    rechecks the reset-held proof after firmware acquisition, clears the MD
    reservation, copies only wrapper-declared bytes, then establishes MPU/remap,
    powers MD1 and releases its boot vector.  Transport is allowed to attach
-   only after a positive post-vector activity token.
+   only after completed post-vector handoff and an exclusive, reset-completed
+   AP register lease. The supplier retains the register reservations and
+   drains its observer before handing over access. Fresh queue, IRQ, busy and
+   head checks must pass before the transport's first register write.
 2. The CLDMA transport owns the AP-side register windows, IRQ and coherent GPD
    rings.  It uses DMA API mappings, per-TX-ring locks and NAPI for RX/TX
    completion.  Descriptor contents are published before HWO with ``dma_wmb``;
@@ -116,8 +119,9 @@ validation, descriptor reinitialization and a fresh HS1/HS2 exchange.
 Known hardware-validation gaps
 -------------------------------
 
-The installed SIM is expired, so successful registration and packet service
-cannot currently be used as gates.  Hardware validation must still prove
+Registration and packet service require a usable SIM/subscription and must
+be validated separately from transport bring-up; their status is not inferred
+from historical campaign notes. Hardware validation must still prove
 CLDMA interrupt polarity, all queue head/current transitions, HS1 v2 contents,
 AT command/response flow, raw IPv4/IPv6 delivery, WDT quiesce and a full
 lifecycle-owner recovery.  The vendor SIM switch at

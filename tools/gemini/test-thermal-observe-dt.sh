@@ -38,6 +38,12 @@ require_equal "$("$FDTGET" "$dtb" /thermal@1100b000 status)" okay \
 require_equal "$("$FDTGET" "$dtb" /adc@11001000 status)" disabled \
 	"AUXADC status"
 
+infracfg_phandle=$("$FDTGET" -t x "$dtb" /syscon@10001000 phandle)
+require_equal "$("$FDTGET" -t x "$dtb" /thermal@1100b000 resets)" \
+	"$infracfg_phandle 0" "compact thermal reset"
+require_equal "$("$FDTGET" -t x "$dtb" /pwrap@1000d000 resets)" \
+	"$infracfg_phandle 1" "compact PWRAP reset"
+
 if [ -n "$("$FDTGET" -l "$dtb" "$zone")" ]; then
 	echo "thermal observation zone must not add trips or cooling maps" >&2
 	exit 1

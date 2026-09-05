@@ -2427,6 +2427,7 @@ struct regulator *_regulator_get_common(struct regulator_dev *rdev, struct devic
 {
 	struct regulator *regulator;
 	struct device_link *link;
+	unsigned int saved_use_count;
 	int ret;
 
 	if (IS_ERR(rdev)) {
@@ -2460,6 +2461,7 @@ struct regulator *_regulator_get_common(struct regulator_dev *rdev, struct devic
 			break;
 
 		case EXCLUSIVE_GET:
+		case EXCLUSIVE_GET_STRICT:
 			dev_warn(dev,
 				 "dummy supplies not allowed for exclusive requests (id=%s)\n", id);
 			fallthrough;
@@ -2475,7 +2477,8 @@ struct regulator *_regulator_get_common(struct regulator_dev *rdev, struct devic
 		return regulator;
 	}
 
-	if (get_type == EXCLUSIVE_GET && rdev->open_count) {
+	if ((get_type == EXCLUSIVE_GET || get_type == EXCLUSIVE_GET_STRICT) &&
+	    rdev->open_count) {
 		regulator = ERR_PTR(-EBUSY);
 		put_device(&rdev->dev);
 		return regulator;
@@ -2517,10 +2520,18 @@ struct regulator *_regulator_get_common(struct regulator_dev *rdev, struct devic
 	link_and_create_debugfs(regulator, rdev, dev);
 
 	rdev->open_count++;
-	if (get_type == EXCLUSIVE_GET) {
+	if (get_type == EXCLUSIVE_GET || get_type == EXCLUSIVE_GET_STRICT) {
 		rdev->exclusive = 1;
 
+		saved_use_count = rdev->use_count;
 		ret = _regulator_is_enabled(rdev);
+		/* The strict API must not turn an unreadable inherited vote into OFF. */
+		if (ret < 0 && get_type == EXCLUSIVE_GET_STRICT) {
+			destroy_regulator(regulator);
+			module_put(rdev->owner);
+			put_device(&rdev->dev);
+			return ERR_PTR(ret);
+		}
 		if (ret > 0) {
 			rdev->use_count = 1;
 			regulator->enable_count = 1;
@@ -2529,6 +2540,8 @@ struct regulator *_regulator_get_common(struct regulator_dev *rdev, struct devic
 			if (rdev->supply) {
 				ret = regulator_enable(rdev->supply);
 				if (ret < 0) {
+					if (get_type == EXCLUSIVE_GET_STRICT)
+						rdev->use_count = saved_use_count;
 					destroy_regulator(regulator);
 					module_put(rdev->owner);
 					put_device(&rdev->dev);
@@ -2609,6 +2622,31 @@ struct regulator *regulator_get_exclusive(struct device *dev, const char *id)
 	return _regulator_get(dev, id, EXCLUSIVE_GET);
 }
 EXPORT_SYMBOL_GPL(regulator_get_exclusive);
+
+/**
+ * regulator_get_exclusive_state - exclusively adopt a known initial vote
+ * @dev: consumer device
+ * @id: supply name
+ * @inherited_enabled: adopted enable vote; unchanged on error
+ *
+ * Like regulator_get_exclusive(), but reject an enabled-state read error.
+ * Return the adopted vote from that same sample, not a later hardware read.
+ * A true output already owns one enable reference: do not enable it again
+ * merely to account for inherited power. Balance that reference before put.
+ */
+struct regulator *regulator_get_exclusive_state(struct device *dev,
+				const char *id, bool *inherited_enabled)
+{
+	struct regulator *regulator;
+
+	if (!inherited_enabled)
+		return ERR_PTR(-EINVAL);
+	regulator = _regulator_get(dev, id, EXCLUSIVE_GET_STRICT);
+	if (!IS_ERR(regulator))
+		*inherited_enabled = regulator->enable_count != 0;
+	return regulator;
+}
+EXPORT_SYMBOL_GPL(regulator_get_exclusive_state);
 
 /**
  * regulator_get_optional - obtain optional access to a regulator.

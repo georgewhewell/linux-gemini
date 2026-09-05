@@ -157,7 +157,11 @@ struct regulator *__must_check devm_regulator_get(struct device *dev,
 struct regulator *__must_check regulator_get_exclusive(struct device *dev,
 						       const char *id);
 struct regulator *__must_check devm_regulator_get_exclusive(struct device *dev,
-							const char *id);
+							 const char *id);
+struct regulator *__must_check regulator_get_exclusive_state(struct device *dev,
+				const char *id, bool *inherited_enabled);
+struct regulator *__must_check devm_regulator_get_exclusive_state(struct device *dev,
+				const char *id, bool *inherited_enabled);
 struct regulator *__must_check regulator_get_optional(struct device *dev,
 						      const char *id);
 struct regulator *__must_check devm_regulator_get_optional(struct device *dev,
@@ -319,6 +323,20 @@ regulator_get_exclusive(struct device *dev, const char *id)
 
 static inline struct regulator *__must_check
 devm_regulator_get_exclusive(struct device *dev, const char *id)
+{
+	return ERR_PTR(-ENODEV);
+}
+
+static inline struct regulator *__must_check
+regulator_get_exclusive_state(struct device *dev, const char *id,
+			      bool *inherited_enabled)
+{
+	return ERR_PTR(-ENODEV);
+}
+
+static inline struct regulator *__must_check
+devm_regulator_get_exclusive_state(struct device *dev, const char *id,
+				   bool *inherited_enabled)
 {
 	return ERR_PTR(-ENODEV);
 }

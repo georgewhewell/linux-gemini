@@ -70,6 +70,34 @@ struct regulator *devm_regulator_get_exclusive(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(devm_regulator_get_exclusive);
 
+/**
+ * devm_regulator_get_exclusive_state - managed strict exclusive acquisition
+ * @dev: consumer device
+ * @id: supply name
+ * @inherited_enabled: adopted enable vote; unchanged on error
+ *
+ * Storage is allocated before acquisition. As with the ordinary managed API,
+ * the consumer must balance any adopted enable vote before devres teardown.
+ */
+struct regulator *devm_regulator_get_exclusive_state(struct device *dev,
+				const char *id, bool *inherited_enabled)
+{
+	struct regulator **ptr, *regulator;
+
+	ptr = devres_alloc(devm_regulator_release, sizeof(*ptr), GFP_KERNEL);
+	if (!ptr)
+		return ERR_PTR(-ENOMEM);
+	regulator = regulator_get_exclusive_state(dev, id, inherited_enabled);
+	if (IS_ERR(regulator)) {
+		devres_free(ptr);
+		return regulator;
+	}
+	*ptr = regulator;
+	devres_add(dev, ptr);
+	return regulator;
+}
+EXPORT_SYMBOL_GPL(devm_regulator_get_exclusive_state);
+
 static void regulator_action_disable(void *d)
 {
 	struct regulator *r = (struct regulator *)d;

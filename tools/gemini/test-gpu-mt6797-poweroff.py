@@ -3,12 +3,19 @@
 """Compile the actual idle and suspend functions with fault-injected backends."""
 
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[2]
 driver = root / "drivers/gpu/drm/panfrost"
+compatible = (driver / "panfrost_drv.c").read_text().split(
+    "static const struct panfrost_compatible mediatek_mt6797_data = {", 1
+)[1].split("\n};", 1)[0]
+pm_features = re.search(r"\.pm_features\s*=\s*([^,]+),", compatible).group(1)
+pm_enum = re.search(r"enum panfrost_gpu_pm\s*\{[^}]+\};",
+                    (driver / "panfrost_device.h").read_text())
 
 
 def function(file, signature):
@@ -22,7 +29,6 @@ code = r'''
 #include <stdbool.h>
 #include <stdio.h>
 #define BIT(n) (1U << (n))
-#define GPU_PM_RT 0
 #define MT6797_MFG_DEBUG_SEL 0x180
 #define MT6797_MFG_DEBUG_A 0x184
 #define MT6797_MFG_DEBUG_IDLE BIT(2)
@@ -39,6 +45,7 @@ struct panfrost_device {
 };
 static int fail_read, fail_select, fail_restore, poll_error, devfreq_error;
 static int reads, writes, polls, mutations, generic_off, errors;
+static int clock_disables, reset_asserts;
 static bool jobs_idle;
 static unsigned int selector;
 static void *dev_get_drvdata(struct device *d) { return d->data; }
@@ -73,9 +80,10 @@ static void panfrost_gpu_suspend_irq(struct panfrost_device *p)
 { (void)p; ++mutations; }
 static void panfrost_gpu_power_off(struct panfrost_device *p)
 { (void)p; ++generic_off; }
-static void clk_disable(void *p) { (void)p; ++mutations; }
-static void reset_control_assert(void *p) { (void)p; ++mutations; }
+static void clk_disable(void *p) { (void)p; ++mutations; ++clock_disables; }
+static void reset_control_assert(void *p) { (void)p; ++mutations; ++reset_asserts; }
 '''
+code += pm_enum.group(0) + "\n#define MT6797_PM_FEATURES (" + pm_features + ")\n"
 code += function("panfrost_gpu.c", "int panfrost_gpu_mt6797_power_off(")
 code += function("panfrost_device.c", "static int panfrost_device_runtime_suspend(")
 code += r'''
@@ -83,11 +91,15 @@ static void reset_fixture(void)
 {
     fail_read = fail_select = fail_restore = poll_error = devfreq_error = 0;
     reads = writes = polls = mutations = generic_off = errors = 0;
+    clock_disables = reset_asserts = 0;
     selector = 0x57; jobs_idle = true;
 }
 int main(void)
 {
-    struct panfrost_compatible comp = { .vendor_power_off = panfrost_gpu_mt6797_power_off };
+    struct panfrost_compatible comp = {
+        .vendor_power_off = panfrost_gpu_mt6797_power_off,
+        .pm_features = MT6797_PM_FEATURES,
+    };
     struct device dev;
     struct panfrost_device gpu = { .base.dev = &dev, .comp = &comp };
     dev.data = &gpu;
@@ -95,6 +107,8 @@ int main(void)
     assert(panfrost_device_runtime_suspend(&dev) == 0);
     assert(selector == 0x57 && writes == 2 && polls == 1);
     assert(mutations == 4 && generic_off == 0 && errors == 0);
+    assert(!(MT6797_PM_FEATURES & BIT(GPU_PM_RT)));
+    assert(clock_disables == 0 && reset_asserts == 0);
     reset_fixture(); jobs_idle = false;
     assert(panfrost_device_runtime_suspend(&dev) == -EBUSY);
     assert(reads == 0 && mutations == 0);
@@ -119,7 +133,11 @@ int main(void)
     reset_fixture(); comp.vendor_power_off = NULL;
     assert(panfrost_device_runtime_suspend(&dev) == 0);
     assert(reads == 0 && mutations == 4 && generic_off == 1);
-    puts("MT6797 GPU shutdown: 9 fault-injected paths PASS");
+    reset_fixture(); comp.pm_features |= BIT(GPU_PM_RT);
+    gpu.bus_clock = &gpu;
+    assert(panfrost_device_runtime_suspend(&dev) == 0);
+    assert(clock_disables == 2 && reset_asserts == 1 && mutations == 7);
+    puts("MT6797 GPU shutdown: 10 paths, actual platform flags and clock/reset counts PASS");
     return 0;
 }
 '''

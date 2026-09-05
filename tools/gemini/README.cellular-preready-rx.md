@@ -80,4 +80,35 @@ exclusion, invalid channel, raw payload word, pre-freeze sequence failure,
 3584/3585 boundary, truncation, null/queue/cause refusal, four-slot limit,
 immutable copies and concurrent capture/freeze. Existing first-fatal and
 terminal-latch tests remain required. ARM64 `mtk_mt6797_ccci.o` cross-compiles
-with GCC 12.2. No hardware test has been performed for this change.
+with GCC 12.2. C6's hardware result follows; no service reply is tested yet.
+
+## C6 captured request
+
+Candidate `9192bcad815ec6ac698e256fef65759850058846f80d87faa57555b648337284`
+was used once on boot `1605f91c-98bd-440e-a6f6-b7ab0319a918`, source
+`833a23c2a8ed072169d9d3ecfbec638258d3b982`. The single installed test
+returned `CELLULAR_FAIL no-HS2`; no AT or acceptance publication occurred.
+
+First fatal is the AP handshake timer at 37.888991, ready=0, runtime_len636,
+Q0 submitted1/reclaimed1/used0. One complete 68-byte queue-1/channel-32 RPC
+request was dropped BEFORE_READY. Strict offline parsing identifies operation
+0x4005 (GET_EINT_ATTR), request index0 and three arguments: the public vendor
+SIM1 hot-plug name, its length23, and attribute type6 (SRCPIN). Argument lengths
+are23/4/4 and offsets28/56/64; nothing is truncated. This establishes a real
+unserved bootstrap request, not every subsequent modem failure's cause.
+
+Request SHA256:
+`f6eb539ba3f13b92db71c27e37361e090d6fc112fef8920f8a648ad27a79fcde`.
+Owner-restricted handoff: `handoff/cellular-c6-a2oFXilD`. Full selected RAM
+archive SHA256:
+`426b3c48c1950c408c5a7ba58eee64d2ea1f6de8e972719212c0f203ee8e84cf`.
+Live DT SHA256:
+`130fb093b0d877cbfce95d190e87853f826fe8b209b3001233fee52ead27e66d`.
+The live DT lacks SIM hot-plug metadata. Do not substitute a GPIO number for
+a modem selector or emulate accidental zero initialization for absent fields.
+A response needs proven board metadata, bounded framing and terminal/teardown
+ownership tests. No filesystem service is inferred from this request.
+
+Original execution39850 is still owned through rescue closure: this records
+the request and off-device archive, not verified restoration. C6 is consumed
+and must not be retried.

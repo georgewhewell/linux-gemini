@@ -6,6 +6,7 @@
 
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/reset/mt6797-resets.h>
 
 / {
 	fragment@0 {
@@ -76,6 +77,9 @@
 				mediatek,stage-cold-reset-held;
 				mediatek,pmic = <&pmic>;
 				mediatek,boot-watchdog = <&watchdog>;
+				resets = <&infrasys MT6797_INFRA_CLDMA_AO_RST>,
+					 <&infrasys MT6797_INFRA_CLDMA_RST>;
+				reset-names = "cldma-ao", "cldma-pdn";
 				mediatek,spm = <&scpsys>;
 				mediatek,emi-mpu = <&md1_emi_mpu>;
 				mediatek,stage-md1-boot-vector-release;

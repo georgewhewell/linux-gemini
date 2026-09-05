@@ -214,6 +214,7 @@ static void mt6797_ccci_unregister_wwan(void *data)
 static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 {
 	struct mt6797_ccci_diag *d = &ccci->diag;
+	unsigned int i;
 
 	if (!mt6797_ccci_diag_freeze(d, ccci->queue[0].tx[0].gpd))
 		return;
@@ -234,6 +235,21 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 			       32, 1, d->reply, sizeof(d->reply), false);
 		print_hex_dump(KERN_ERR, "CCCI_RUNTIME ", DUMP_PREFIX_OFFSET,
 			       32, 1, d->runtime, d->runtime_len, false);
+	}
+	dev_err(ccci->dev, "CCCI_PREREADY_RX_COUNT count=%u cap=4 bytes_per_frame=1024\n",
+		d->rx_count);
+	for (i = 0; i < d->rx_count; i++) {
+		const struct mt6797_ccci_diag_rx *r = &d->rx[i];
+		char prefix[32];
+
+		dev_err(ccci->dev,
+			"CCCI_PREREADY_RX index=%u queue=%u drop=%u length=%zu captured=%zu truncated=%u decode_error=%d header_valid=%u channel=%u payload_word0_valid=%u payload_word0=%08x\n",
+			i, r->queue, r->cause, r->length, r->captured, r->truncated,
+			r->decode_error, r->header_valid, r->channel,
+			r->payload_word0_valid, r->payload_word0);
+		snprintf(prefix, sizeof(prefix), "CCCI_PREREADY_RX%u ", i);
+		print_hex_dump(KERN_ERR, prefix, DUMP_PREFIX_OFFSET,
+			       32, 1, r->bytes, r->captured, false);
 	}
 }
 
@@ -799,22 +815,33 @@ static int mt6797_ccci_control_rx(struct mt6797_ccci *ccci,
 }
 
 static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
-				    struct sk_buff *skb)
+				    struct sk_buff *skb, unsigned int q)
 {
+	/* RX buffers are linear; rx_poll has unmapped DMA before dispatch.
+	 * Diagnostic copies finish here before the sole skb release below.
+	 */
 	struct mt6797_ccci_link *link;
 	struct mtk_ccci_frame frame;
 	__be16 protocol;
 	int if_id;
 	u8 version;
+	u32 diag_drop = 0;
 	int ret;
 
 	ret = mtk_ccci_header_decode(skb->data, skb->len, &frame);
-	if (ret)
+	if (ret) {
+		diag_drop = MT6797_CCCI_DIAG_BAD_HEADER;
 		goto drop;
-	if (frame.channel >= MT6797_CCCI_CHANNEL_COUNT)
+	}
+	if (frame.channel >= MT6797_CCCI_CHANNEL_COUNT) {
+		diag_drop = MT6797_CCCI_DIAG_BAD_CHANNEL;
 		goto drop;
+	}
 	if (frame.assert_bit && ccci->rx_sequence[frame.channel] != 0 &&
 	    ((frame.sequence - ccci->rx_sequence[frame.channel]) & 0x7fff) != 1) {
+		if (!atomic_read(&ccci->ready) && frame.channel != MTK_CCCI_CONTROL_RX)
+			mt6797_ccci_diag_rx_save(&ccci->diag, skb->data, skb->len, q,
+				MT6797_CCCI_DIAG_BAD_SEQUENCE, 0, frame.channel);
 		mt6797_ccci_quiesce(ccci, -EILSEQ);
 		goto drop;
 	}
@@ -823,8 +850,10 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 		mt6797_ccci_control_rx(ccci, skb, &frame);
 		goto drop;
 	}
-	if (!atomic_read(&ccci->ready))
+	if (!atomic_read(&ccci->ready)) {
+		diag_drop = MT6797_CCCI_DIAG_BEFORE_READY;
 		goto drop;
+	}
 	if (frame.data1 != skb->len || skb->len <= MTK_CCCI_HEADER_SIZE)
 		goto drop;
 	if (frame.channel == MTK_CCCI_UART2_RX) {
@@ -861,6 +890,9 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 	rcu_read_unlock();
 	return;
 drop:
+	if (diag_drop && !atomic_read(&ccci->ready))
+		mt6797_ccci_diag_rx_save(&ccci->diag, skb->data, skb->len, q,
+				       diag_drop, ret, ret ? 0 : frame.channel);
 	kfree_skb(skb);
 }
 
@@ -909,7 +941,7 @@ static int mt6797_ccci_rx_poll(struct mt6797_ccci *ccci, unsigned int q,
 			break;
 		}
 		queue->rx_tail = (queue->rx_tail + 1) % MT6797_CCCI_RING_SIZE;
-		mt6797_ccci_dispatch_rx(ccci, skb);
+		mt6797_ccci_dispatch_rx(ccci, skb, q);
 		done++;
 		if (atomic_read(&ccci->failed))
 			break;

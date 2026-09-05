@@ -2,6 +2,25 @@
 #ifndef _MTK_MT6797_CCCI_DIAG_H
 #define _MTK_MT6797_CCCI_DIAG_H
 
+#define MT6797_CCCI_DIAG_RX_COUNT 4
+#define MT6797_CCCI_DIAG_RX_BYTES 1024
+#define MT6797_CCCI_DIAG_RX_WIRE_MAX 3584
+
+enum mt6797_ccci_diag_drop {
+	MT6797_CCCI_DIAG_BAD_HEADER = 1,
+	MT6797_CCCI_DIAG_BAD_CHANNEL,
+	MT6797_CCCI_DIAG_BEFORE_READY,
+	MT6797_CCCI_DIAG_BAD_SEQUENCE,
+};
+
+struct mt6797_ccci_diag_rx {
+	u32 queue, cause, channel, payload_word0;
+	size_t length, captured;
+	int decode_error;
+	bool header_valid, payload_word0_valid, truncated;
+	u8 bytes[MT6797_CCCI_DIAG_RX_BYTES];
+};
+
 /* No allocation, MMIO, or descriptor writes. Caller owns this through teardown.
  * TX lock may nest this lock; diagnostic code never takes the TX lock.
  * Freezing makes all saved bytes immutable before any printk or STOP command.
@@ -17,7 +36,48 @@ struct mt6797_ccci_diag {
 	u8 reply[MTK_CCCI_RUNTIME_V2_REPLY_SIZE];
 	u8 runtime[MTK_CCCI_RUNTIME_AP_SIZE];
 	size_t runtime_len;
+	u32 rx_count;
+	struct mt6797_ccci_diag_rx rx[MT6797_CCCI_DIAG_RX_COUNT];
 };
+
+static void mt6797_ccci_diag_rx_save(struct mt6797_ccci_diag *d,
+		const void *data, size_t length, u32 queue, u32 cause,
+		int decode_error, u32 channel)
+{
+	const u8 *bytes = data;
+	struct mt6797_ccci_diag_rx *r;
+	unsigned long flags;
+
+	if (!bytes || length > MT6797_CCCI_DIAG_RX_WIRE_MAX || queue >= 7 ||
+	    cause < MT6797_CCCI_DIAG_BAD_HEADER ||
+	    cause > MT6797_CCCI_DIAG_BAD_SEQUENCE)
+		return;
+	spin_lock_irqsave(&d->lock, flags);
+	if (d->frozen || d->rx_count == MT6797_CCCI_DIAG_RX_COUNT)
+		goto out;
+	r = &d->rx[d->rx_count++];
+	r->queue = queue;
+	r->cause = cause;
+	r->length = length;
+	r->captured = length < sizeof(r->bytes) ? length : sizeof(r->bytes);
+	r->truncated = length > r->captured;
+	r->decode_error = decode_error;
+	r->header_valid = !decode_error && length >= MTK_CCCI_HEADER_SIZE;
+	if (r->header_valid) {
+		r->channel = channel;
+		/* Raw first payload word, not an assumed RPC/FS operation. */
+		if (length >= MTK_CCCI_HEADER_SIZE + 4) {
+			const u8 *p = bytes + MTK_CCCI_HEADER_SIZE;
+
+			r->payload_word0 = p[0] | ((u32)p[1] << 8) |
+				((u32)p[2] << 16) | ((u32)p[3] << 24);
+			r->payload_word0_valid = true;
+		}
+	}
+	memcpy(r->bytes, data, r->captured);
+out:
+	spin_unlock_irqrestore(&d->lock, flags);
+}
 
 static void mt6797_ccci_diag_irq(struct mt6797_ccci_diag *d,
 			       u32 tx, u32 txmask, u32 rx, u32 rxmask)

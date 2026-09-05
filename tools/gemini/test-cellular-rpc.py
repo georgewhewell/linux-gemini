@@ -36,6 +36,26 @@ class Tests(unittest.TestCase):
             with self.subTest(data=data), self.assertRaises(ValueError): self.parse(data)
         self.assertIn('two slots', self.parse(wire(index=2))['request_index_caveat'])
 
+    def test_sim_eint_request_shape(self):
+        # Public vendor name and protocol constants reconstruct C6's shape;
+        # no filesystem/provisioning payload or raw device log is embedded.
+        name = b'MD1_SIM1_HOT_PLUG_EINT\x00'
+        data = bytearray(wire([name, struct.pack('<I', 23),
+                               struct.pack('<I', 6)], op=0x4005))
+        struct.pack_into('<I', data, 8, 0x80000020)
+        r = self.parse(data)
+        self.assertEqual(len(data), 68)
+        self.assertEqual(r['classification'], 'COMPLETE_RPC_REQUEST')
+        self.assertEqual(r['operation'], '0x4005')
+        self.assertEqual(r['request_index'], 0)
+        self.assertTrue(r['asserted'])
+        self.assertEqual(r['sequence'], 0)
+        self.assertEqual(r['argc'], 3)
+        self.assertEqual([a['length'] for a in r['arguments']], [23, 4, 4])
+        self.assertEqual([a['offset'] for a in r['arguments']], [28, 56, 64])
+        self.assertEqual(r['arguments'][0]['padding_hex'], '00')
+        self.assertEqual(r['arguments'][2]['hex'], '06000000')
+
     def test_length_padding_overflow(self):
         original = wire([b'abcd'])
         for length in (5, 2049, 0xffffffff):

@@ -78,3 +78,29 @@ submit diagnostic and produce verified pixels/job IRQ progress? Preserve the
 same bounded render and thermal evidence protocol, and retain errors if it
 does not. T2's later truncated DABT after evidence save and petter termination
 has no PC/stack and remains unattributed; it is not explained by this patch.
+
+## T3 hardware result: setup advances, rendering still fails
+
+Candidate `d5783d87d297d944fa680697b1c79ac9a4df26213374c9914c6d0e54072b7ac1`
+was consumed exactly once. Boot `e1014109-d06b-453e-9e1e-018dd25677d7`
+passed GPU preflight and reached the first submit diagnostic at uptime
+312.400. The root-table match predicate passed; AS0 was idle with flags
+`007`, MEMATTR `0000000000484d48`, TRANSCFG zero and no AS fault. This
+demonstrates progress past T2's pre-configuration FLUSH_MEM timeout.
+
+The first render nevertheless failed its pixel check. Immediately after
+submission, GPU fault `00ff0388` recurred; JS1 was active (`status=8`) with
+the submitted head retained, and MMU fault status remained zero. Expected
+job configuration `00083b00` read back `00003b00`; that difference alone
+does not establish a defect because the vendor also requests priority 8.
+Subsequent kernel scheduler resets/timeouts belong to that same render
+invocation, not another host dispatch. The second render was not invoked.
+Do not promote the attribute quirk or claim functional GPU rendering.
+
+Evidence: workspace `handoff/gpu-thermal-t3-gcstVt3C/first-draw-live.txt`
+and full RAM archive SHA256
+`77a6e204411d996add17de47016045f12bd82de9aa332f3c40e3c65dade9208e`.
+Root independently checked two saved thermal inventories: four readable
+channels, same boot, PASS. Calibration/protection remain unverified.
+The hardware owner restored the exact rescue image; final health/readback
+closure is recorded separately in the handoff. No retry of this candidate.

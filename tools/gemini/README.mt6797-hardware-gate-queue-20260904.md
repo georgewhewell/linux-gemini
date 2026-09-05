@@ -735,7 +735,11 @@ Package `ac1e2161bcf9b5106cc8362d947d4045bddc9e6e` in
 Candidate SHA256:
 `d5783d87d297d944fa680697b1c79ac9a4df26213374c9914c6d0e54072b7ac1`.
 Root handed this exact candidate to the sole hardware owner for one bounded
-transaction after fresh admission. Runtime outcome is pending, not PASS.
+transaction after fresh admission. It is now consumed: setup reached submit,
+but GPU shareability faults and a pixel mismatch failed the first render.
+No second render was dispatched. Thermal interfaces passed separately.
+See `README.gpu-pristine-as.md` and workspace handoff
+`gpu-thermal-t3-gcstVt3C`; exact rescue restored, final health collection pending.
 Use its new `nix/gpu-oneboot-test.sh` (SHA256
 `967db8a05a74534686dc83541b1b319bd41598c576cf5c4e975e623822c320e5`),
 which exempts only the exact healthy zero-fault submit diagnostic from the

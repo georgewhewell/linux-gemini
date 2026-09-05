@@ -6,6 +6,13 @@
 #define __PANFROST_GPU_H__
 
 struct panfrost_device;
+struct panfrost_mmu;
+
+void panfrost_gpu_mt6797_submit_diag(struct panfrost_device *pfdev,
+				  struct panfrost_mmu *mmu, int js,
+				  u64 head, u32 config);
+void panfrost_gpu_mt6797_timeout_diag(struct panfrost_device *pfdev,
+				   u32 as, u32 command, bool before, u32 status);
 
 int panfrost_gpu_init(struct panfrost_device *pfdev);
 void panfrost_gpu_fini(struct panfrost_device *pfdev);

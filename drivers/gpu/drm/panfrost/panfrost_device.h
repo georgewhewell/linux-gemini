@@ -158,6 +158,8 @@ struct panfrost_device {
 	struct panfrost_features features;
 	const struct panfrost_compatible *comp;
 	DECLARE_BITMAP(is_suspended, PANFROST_COMP_BIT_MAX);
+	/* MT6797 first-event diagnostics; deliberately not cleared by reset. */
+	unsigned long mt6797_diag_seen;
 
 	spinlock_t as_lock;
 	unsigned long as_alloc_mask;

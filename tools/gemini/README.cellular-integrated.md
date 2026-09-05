@@ -89,3 +89,31 @@ only a vector-release token, not HS1. Attach and packet data require their
 own observed results; no SIM or subscription change is implied. Device
 access remains exclusively with the root-designated hardware owner.
 Battery NTC is physically disconnected and neither faked nor a power blocker.
+
+## Reset admission follow-up
+
+The cold owner now requires exclusive AO then PD reset controls (compact IDs
+3 then 2) before any mapping or write. Its power callback pulses AO assert/
+deassert then PD assert/deassert, after the state machine has freshly
+verified cold reset-held state and cleared/verified CCIF, before PMIC/power.
+A fresh recovery-watchdog check precedes the first pulse. Errors stop the
+transaction and never publish reset completion; partial reset failure is
+fatal, not an invitation to release another reset during cleanup.
+
+This is the active vendor branch: `eccci/mt6797/ccci_config.h:52` defines
+`ENABLE_CLDMA_AP_SIDE`; line 89 leaves `FEATURE_CLK_CG_CONTROL` disabled.
+`modem_cldma.c:2154–2200` resets AP CLDMA before power/vector release and
+uses the AP-always-on branch. `cldma_platform.c:69–98` gives AO then PD
+SET/CLR ordering. This does not claim an undocumented CCF clock gate.
+
+Fresh AP UL/SO, L2 TX/RX IRQ and IP_BUSY reads must all be clear after the
+reset pulse. The snapshot is logged, not substituted. The reset-completed
+bit is only set after those checks. Reset-core bulk acquisition unwinds
+already-acquired controls if the second acquisition fails; ordinary devres
+release drops ownership without asserting hardware. Actual reset callback
+and actual reset-core bulk-get error paths are executed by
+`test-cellular-reset-admission.py`.
+
+The reset-completed bit still needs propagation into the mapping lease and
+consumer's fresh ownership checks before replacing historical activity
+admission. All nodes remain disabled during that integration.

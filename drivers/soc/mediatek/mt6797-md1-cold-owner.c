@@ -23,6 +23,7 @@
 #include <linux/ktime.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
+#include <linux/reset.h>
 #include <linux/mediatek-wdt.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -215,6 +216,8 @@ static const struct mt6797_md1_cold_owner_resource mt6797_md1_cold_resources[] =
 
 struct mt6797_md1_cold_owner_backend {
 	struct device *dev;
+	struct reset_control_bulk_data cldma_resets[2];
+	bool cldma_reset_completed;
 	void __iomem *base[MT6797_MD1_RES_COUNT];
 	struct regmap *pmic;
 	struct regmap *spm;
@@ -613,6 +616,40 @@ static int mt6797_md1_cold_ccif_verify(void *context,
 	return 0;
 }
 
+static int mt6797_md1_cold_cldma_reset(struct mt6797_md1_cold_owner_backend *backend)
+{
+	struct mt6797_md1_cold_owner_cldma state;
+	int ret;
+	unsigned int i;
+
+	backend->cldma_reset_completed = false;
+	ret = mtk_wdt_require_boot_recovery(backend->dev);
+	if (ret)
+		return ret;
+	/* Vendor md_cldma_hw_reset: AO pulse, then PD pulse, before power_on. */
+	for (i = 0; i < ARRAY_SIZE(backend->cldma_resets); i++) {
+		ret = reset_control_assert(backend->cldma_resets[i].rstc);
+		if (ret)
+			return ret;
+		ret = reset_control_deassert(backend->cldma_resets[i].rstc);
+		if (ret)
+			return ret;
+	}
+	/* MT6797 vendor ENABLE_CLDMA_AP_SIDE uses the always-on AP engine. */
+	ret = mt6797_md1_cold_cldma_registers_observe(backend, &state);
+	if (ret)
+		return ret;
+	dev_info(backend->dev,
+		 "AP CLDMA reset snapshot: coda=%#x ul=%#x so=%#x txirq=%#x rxirq=%#x busy=%#x\n",
+		 state.coda_version, state.ul_status, state.so_status,
+		 state.l2_tx_status, state.l2_rx_status, state.ip_busy);
+	if (state.ul_status || state.so_status || state.l2_tx_status ||
+	    state.l2_rx_status || state.ip_busy)
+		return -EUCLEAN;
+	backend->cldma_reset_completed = true;
+	return 0;
+}
+
 static int mt6797_md1_cold_power_on(void *context)
 {
 	struct mt6797_md1_cold_owner_backend *backend = context;
@@ -620,6 +657,9 @@ static int mt6797_md1_cold_power_on(void *context)
 	u32 value;
 	int ret;
 
+	ret = mt6797_md1_cold_cldma_reset(backend);
+	if (ret)
+		return ret;
 	ret = mt6797_md1_pmic_snapshot(backend->pmic, &backend->pmic_snapshot);
 	if (ret)
 		return ret;
@@ -1437,6 +1477,13 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	if (!backend || !owner)
 		return -ENOMEM;
 	backend->dev = &pdev->dev;
+	backend->cldma_resets[0].id = "cldma-ao";
+	backend->cldma_resets[1].id = "cldma-pdn";
+	ret = devm_reset_control_bulk_get_exclusive(&pdev->dev,
+			ARRAY_SIZE(backend->cldma_resets), backend->cldma_resets);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+			"exclusive AP CLDMA reset ownership unavailable\n");
 	for (i = 0; i < MT6797_MD1_RES_COUNT; i++) {
 		ret = mt6797_md1_cold_map_resource(pdev, i, &backend->base[i]);
 		if (ret)

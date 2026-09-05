@@ -72,6 +72,7 @@ config MTK_MT6797_MD1_COLD_OWNER_CORE
 config MTK_MT6797_MD1_COLD_OWNER
 	tristate "MT6797 MD1 gated CCF boot-vector candidate"
 	depends on OF && ARM64
+	depends on RESET_CONTROLLER
 	depends on MEDIATEK_WATCHDOG=y
 	depends on MTK_MT6797_MD1=n
 	depends on MTK_MT6797_MD1_CLOCKED_OBSERVER=n

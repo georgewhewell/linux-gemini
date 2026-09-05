@@ -89,6 +89,10 @@ static void mtk_ccci_runtime_v2_minimal(struct kunit *test)
 					MTK_CCCI_RUNTIME_AP_SIZE, &runtime_len);
 	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_EXPECT_GT(test, runtime_len, (size_t)0);
+	/* Vendor wire stream includes all 64 slots, not only 25 named IDs. */
+	KUNIT_EXPECT_EQ(test, runtime_len, (size_t)(64 * 8 + 16 + 8 + 4));
+	KUNIT_EXPECT_EQ(test, runtime[runtime_len - 8], (u8)63);
+	KUNIT_EXPECT_EQ(test, get_unaligned_le32(runtime + runtime_len - 4), 0U);
 	KUNIT_EXPECT_LE(test, runtime_len, (size_t)MTK_CCCI_RUNTIME_AP_SIZE);
 	KUNIT_EXPECT_EQ(test, runtime[0], (u8)MTK_CCCI_RT_BOOT_INFO);
 	KUNIT_EXPECT_EQ(test, get_unaligned_le32(runtime + 4), 16U);

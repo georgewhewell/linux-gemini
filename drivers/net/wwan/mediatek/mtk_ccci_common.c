@@ -138,7 +138,11 @@ int mtk_ccci_net_rx_link(u16 channel)
 }
 EXPORT_SYMBOL_GPL(mtk_ccci_net_rx_link);
 
-static const u8 mtk_ccci_ap_features[MTK_CCCI_RT_FEATURE_COUNT] = {
+/* The query and runtime stream have 64 wire slots, not just the currently
+ * named feature IDs. Unnamed slots remain NOT_EXIST on the AP side; required
+ * unknown features must fail negotiation rather than be silently ignored.
+ */
+static const u8 mtk_ccci_ap_features[MTK_CCCI_FEATURE_COUNT] = {
 	[MTK_CCCI_RT_BOOT_INFO] =
 		MTK_CCCI_FEATURE_MUST_SUPPORT,
 	[MTK_CCCI_RT_EXCEPTION_SHM] =
@@ -267,7 +271,7 @@ int mtk_ccci_runtime_v2_build(const void *query, size_t query_len,
 	    le32_to_cpu(modem->tail_pattern) != MTK_CCCI_MD_FEATURE_PATTERN)
 		return -EBADMSG;
 
-	for (id = 0; id < MTK_CCCI_RT_FEATURE_COUNT; id++) {
+	for (id = 0; id < MTK_CCCI_FEATURE_COUNT; id++) {
 		u8 ap = mtk_ccci_feature(mtk_ccci_ap_features[id], 0);
 		const void *data = NULL;
 		u32 len = 0;

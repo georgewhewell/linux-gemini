@@ -118,12 +118,18 @@ before reserving the one-shot mapping lease, and returned with the mappings.
 It identifies this supplier's sole reset epoch, not a renewable capability.
 The consumer requires that bit and GO/completed observation, then captures
 fresh UL/SO, L2 IRQ, IP_BUSY and all fourteen queue-head words immediately
-before its first CLDMA write. Any nonzero field is rejected with the raw
-snapshot retained. This intentionally strict zero-head admission is not a
+before its first CLDMA write. Any nonzero queue, IRQ or head field is rejected
+with the raw snapshot retained. IP_BUSY is logged but is not a post-GO AP
+ownership predicate: the running modem can assert this wake indication before
+AP descriptors exist. The supplier's pre-power reset check still requires it
+to be zero, and the consumer does not prematurely acknowledge it. See
+`README.cellular-post-go-ip-busy.md` for the vendor lifecycle evidence.
+This intentionally strict zero-head admission is not a
 claim that every possible bootloader configuration resets identically: a
 rejected snapshot requires examination, not bypassing the check.
 
-Tests execute all nineteen fresh reads with each field independently dirty,
-and prove a clean reset lease can succeed without circular pre-ring queue
+Tests execute all nineteen fresh reads, reject each of the eighteen AP
+queue/IRQ/head fields independently with both observed IP_BUSY states, and
+prove a clean reset lease can succeed without circular pre-ring queue
 activity. No reset epoch admits a second consumer after release or failure.
 All nodes remain disabled; host/QEMU validation still is not a live handshake.

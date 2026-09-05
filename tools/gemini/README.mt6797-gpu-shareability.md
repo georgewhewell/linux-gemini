@@ -1,6 +1,13 @@
 # MT6797 legacy GPU MMU shareability experiment
 
-Status: source-supported hypothesis, not a demonstrated hardware fix. The first
+Status: tested hypothesis that did not fix rendering. R7 candidate
+`3f441aef15aae346078a5ddd513ee1ff23db43997e45d9e85fbcee4d7574253d`
+ran this quirk and still failed the first draw with the same shareability fault,
+zero job IRQ progress, and no verified pixels. Exact rescue was restored and
+the candidate is consumed/no-retry. See the hardware-gate queue's R7 result.
+This code must not be promoted as a validated platform fix.
+
+Original motivation: the first
 real Mesa draw on the one-boot GPU candidate reported GPU_SHAREABILITY_FAULT
 (GPU fault status 0x00ff0388) and stuck AS_ACTIVE. Initial no-job preflight had
 passed. No hardware operation is performed by this patch or its test.
@@ -55,6 +62,7 @@ bits, old and experimental MEMATTR values, rejection of coherent/unknown quirk
 combinations, and the format/platform gates. It is not a GPU simulator.
 
 The complete Panfrost object and io-pgtable-arm object cross-compile with GCC
-12.2 using the previous GPU kernel configuration. Full-image integration and a
-real Panfrost draw/readback followed by runtime suspend and another successful
-draw are still required. Preserve exact rescue and bounded recovery ownership.
+12.2 using the previous GPU kernel configuration. Full-image R7 testing failed
+as recorded above. A real draw/readback followed by runtime suspend and another
+successful draw remain unproven; another identical trial is not justified.
+Preserve exact rescue and bounded recovery ownership.

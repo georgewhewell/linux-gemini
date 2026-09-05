@@ -35,7 +35,7 @@ require_equal "$("$FDTGET" -t x "$dtb" "$zone" thermal-sensors)" \
 	"thermal provider"
 require_equal "$("$FDTGET" "$dtb" /thermal@1100b000 status)" okay \
 	"thermal controller status"
-require_equal "$("$FDTGET" "$dtb" /adc@11001000 status)" okay \
+require_equal "$("$FDTGET" "$dtb" /adc@11001000 status)" disabled \
 	"AUXADC status"
 
 if [ -n "$("$FDTGET" -l "$dtb" "$zone")" ]; then

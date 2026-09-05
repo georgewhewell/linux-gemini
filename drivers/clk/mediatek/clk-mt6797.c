@@ -10,7 +10,7 @@
 #include "clk-gate.h"
 #include "clk-mtk.h"
 #include "clk-pll.h"
-#include "reset.h"
+#include "clk-mt6797-reset.h"
 
 #include <dt-bindings/clock/mt6797-clk.h>
 
@@ -538,18 +538,6 @@ static const struct mtk_gate infra_clks[] = {
 
 static const struct mtk_fixed_factor infra_fixed_divs[] = {
 	FACTOR(CLK_INFRA_13M, "clk13m", "clk26m", 1, 2),
-};
-
-static u16 infra_rst_ofs[] = {
-	0x120,
-	0x130,
-	0x140,
-};
-
-static const struct mtk_clk_rst_desc infra_rst_desc = {
-	.version = MTK_RST_SET_CLR,
-	.rst_bank_ofs = infra_rst_ofs,
-	.rst_bank_nr = ARRAY_SIZE(infra_rst_ofs),
 };
 
 static struct clk_hw_onecell_data *infra_clk_data;

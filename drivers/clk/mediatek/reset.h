@@ -6,6 +6,8 @@
 #ifndef __DRV_CLK_MTK_RESET_H
 #define __DRV_CLK_MTK_RESET_H
 
+#include <linux/bitops.h>
+#include <linux/errno.h>
 #include <linux/reset-controller.h>
 #include <linux/types.h>
 
@@ -58,6 +60,32 @@ struct mtk_clk_rst_data {
 	struct reset_controller_dev rcdev;
 	const struct mtk_clk_rst_desc *desc;
 };
+
+static inline int
+mtk_reset_xlate_index(const struct mtk_clk_rst_desc *desc,
+		      unsigned int index)
+{
+	if (!desc->rst_idx_map || index >= desc->rst_idx_map_nr)
+		return -EINVAL;
+
+	return desc->rst_idx_map[index];
+}
+
+static inline int
+mtk_reset_set_clr_reg(const struct mtk_clk_rst_desc *desc,
+		      unsigned long id, bool deassert,
+		      unsigned int *reg, unsigned int *mask)
+{
+	unsigned int bank = id / RST_NR_PER_BANK;
+
+	if (bank >= desc->rst_bank_nr)
+		return -EINVAL;
+
+	*reg = desc->rst_bank_ofs[bank] + (deassert ? 0x4 : 0);
+	*mask = BIT(id % RST_NR_PER_BANK);
+
+	return 0;
+}
 
 /**
  * mtk_register_reset_controller - Register mediatek clock reset controller with device

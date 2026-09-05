@@ -55,12 +55,14 @@ static int mtk_reset_update_set_clr(struct reset_controller_dev *rcdev,
 				    unsigned long id, bool deassert)
 {
 	struct mtk_clk_rst_data *data = to_mtk_clk_rst_data(rcdev);
-	unsigned int deassert_ofs = deassert ? 0x4 : 0;
+	unsigned int mask, reg;
+	int ret;
 
-	return regmap_write(data->regmap,
-			    data->desc->rst_bank_ofs[id / RST_NR_PER_BANK] +
-			    deassert_ofs,
-			    BIT(id % RST_NR_PER_BANK));
+	ret = mtk_reset_set_clr_reg(data->desc, id, deassert, &reg, &mask);
+	if (ret)
+		return ret;
+
+	return regmap_write(data->regmap, reg, mask);
 }
 
 static int mtk_reset_assert_set_clr(struct reset_controller_dev *rcdev,
@@ -103,11 +105,10 @@ static int reset_xlate(struct reset_controller_dev *rcdev,
 {
 	struct mtk_clk_rst_data *data = to_mtk_clk_rst_data(rcdev);
 
-	if (reset_spec->args[0] >= rcdev->nr_resets ||
-	    reset_spec->args[0] >= data->desc->rst_idx_map_nr)
+	if (reset_spec->args[0] >= rcdev->nr_resets)
 		return -EINVAL;
 
-	return data->desc->rst_idx_map[reset_spec->args[0]];
+	return mtk_reset_xlate_index(data->desc, reset_spec->args[0]);
 }
 
 int mtk_register_reset_controller_with_dev(struct device *dev,

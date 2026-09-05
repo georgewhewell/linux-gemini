@@ -164,6 +164,9 @@ struct panfrost_device {
 	spinlock_t as_lock;
 	unsigned long as_alloc_mask;
 	unsigned long as_faulty_mask;
+	/* Protected by as_lock; cleared only after a successful GPU reset. */
+	unsigned long as_configured_mask;
+	unsigned long as_enable_failed_mask;
 	struct list_head as_lru_list;
 
 	struct panfrost_job_slot *js;

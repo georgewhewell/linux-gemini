@@ -94,6 +94,14 @@ config MTK_MT6797_MD1_COLD_OWNER
 	  while reset remains proved asserted. The CCCI owner finalizes region 13 at
 	  HS1. Any post-release failure remains latched until a full platform reset.
 
+config MTK_MT6797_MD1_FS_PROVIDER
+	bool "MT6797 MD1 opt-in read-only filesystem bootstrap authority"
+	depends on MTK_MT6797_MD1_COLD_OWNER=y
+	help
+	  Root-only registration of an already-open read-only ext4 directory for
+	  genuine cached modem disk statistics and one-shot cold-start admission.
+	  Inert unless its independent enable module parameter is supplied.
+
 config MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 cold owner"
 	depends on KUNIT=y

@@ -21,6 +21,7 @@
 #include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/ktime.h>
+#include <linux/soc/mediatek/mt6797-md1-fs-provider.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/reset.h>
@@ -1540,6 +1541,7 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	struct mt6797_md1_cold_owner_backend *backend;
 	struct mt6797_md1_cold_owner *owner;
 	bool mpu_started = false;
+	bool fs_claimed = false;
 	unsigned int i;
 	int ret;
 
@@ -1556,6 +1558,10 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	if (atomic_read(&mt6797_md1_cold_owner_fatal_latch))
 		return dev_err_probe(&pdev->dev, -EUCLEAN,
 			"MD1 candidate was previously attempted; reset/reboot required\n");
+	ret = mt6797_md1_fs_provider_require(&pdev->dev);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+			"waiting for scoped read-only MD1 filesystem authority\n");
 	if (!mt6797_md1_lk_handoff_image_loaded())
 		return dev_err_probe(&pdev->dev, -EPROBE_DEFER,
 			"waiting for verified LK image-load evidence\n");
@@ -1624,6 +1630,10 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 		if (ret)
 			return dev_err_probe(&pdev->dev, ret,
 				"recovery watchdog required before firmware writes\n");
+		ret = mt6797_md1_fs_provider_claim(&pdev->dev);
+		if (ret)
+			return ret;
+		fs_claimed = true;
 		ret = mt6797_md1_firmware_load(&pdev->dev, &firmware_names, &layout,
 						&plan,
 						mt6797_md1_cold_firmware_verify, backend,
@@ -1647,6 +1657,11 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret,
 			"recovery watchdog required before MD1/EMI writes\n");
+	if (!fs_claimed) {
+		ret = mt6797_md1_fs_provider_claim(&pdev->dev);
+		if (ret)
+			return ret;
+	}
 	ret = mt6797_md1_cold_apply_initial_mpu(&pdev->dev, &plan);
 	if (ret)
 		goto out_fatal;

@@ -20,6 +20,7 @@
 #include <linux/skbuff.h>
 #include <linux/soc/mediatek/mt6797-md1-cldma.h>
 #include <linux/soc/mediatek/mt6797-md1-cold-owner.h>
+#include <linux/soc/mediatek/mt6797-md1-fs-provider.h>
 #include <linux/soc/mediatek/mt6797-md1-hs.h>
 #include <linux/soc/mediatek/mt6797-md1-lk-handoff.h>
 #include <linux/soc/mediatek/mt6797-md1-mpu-remap-plan.h>
@@ -30,6 +31,7 @@
 #include "mtk_ccci_common.h"
 #include "mtk_mt6797_ccci_diag.h"
 #include "mtk_mt6797_ccci_rpc.h"
+#include "mtk_mt6797_ccci_fs.h"
 
 #define MT6797_CCCI_QUEUE_COUNT		7U
 #define MT6797_CCCI_RING_SIZE		16U
@@ -128,6 +130,7 @@ struct mt6797_ccci {
 	spinlock_t tx_stop_lock;
 	struct mt6797_rpc_eint sim_eint[2];
 	atomic_t rpc_logs;
+	atomic_t fs_logs;
 	struct net_device *napi_dev;
 	struct napi_struct napi;
 	struct mt6797_md1_hs hs;
@@ -866,6 +869,41 @@ static int mt6797_ccci_rpc_rx(struct mt6797_ccci *ccci,
 	return ret;
 }
 
+static int mt6797_ccci_fs_rx(struct mt6797_ccci *ccci,
+			   struct sk_buff *skb, unsigned int q)
+{
+	struct mt6797_md1_fs_stats stats;
+	u8 bytes[MT6797_FS_REPLY_SIZE];
+	struct sk_buff *reply;
+	s32 status;
+	int ret;
+
+	if (!mt6797_md1_fs_provider_enabled())
+		return -EOPNOTSUPP;
+	if (q != 1 || atomic_read(&ccci->failed))
+		return -ESHUTDOWN;
+	ret = mt6797_md1_fs_provider_stats(&stats);
+	ret = mt6797_fs_disk_reply(skb->data, skb->len, ret ? NULL : &stats,
+				  bytes, sizeof(bytes), &status);
+	if (ret)
+		return ret;
+	reply = alloc_skb(sizeof(bytes), GFP_ATOMIC);
+	if (!reply)
+		return -ENOMEM;
+	skb_put_data(reply, bytes, sizeof(bytes));
+	/* TX serializes publish against STOP and owns successful replies until
+	 * reclaim. The received buffer remains owned by dispatch in all cases.
+	 */
+	ret = mt6797_ccci_tx(ccci, 1, reply, MT6797_FS_TX);
+	if (ret)
+		kfree_skb(reply);
+	if (atomic_add_unless(&ccci->fs_logs, 1, 16))
+		dev_info(ccci->dev,
+			 "CCCI FS op=0x100e reply_channel=15 status=%d tx_result=%d bytes=120\n",
+			 status, ret);
+	return ret;
+}
+
 static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 				    struct sk_buff *skb, unsigned int q)
 {
@@ -904,6 +942,15 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 	}
 	if (frame.channel == MT6797_RPC_RX) {
 		ret = mt6797_ccci_rpc_rx(ccci, skb, q);
+		if (ret && !atomic_read(&ccci->ready))
+			mt6797_ccci_diag_rx_save(&ccci->diag, skb->data, skb->len, q,
+				MT6797_CCCI_DIAG_BEFORE_READY, 0, frame.channel);
+		if (ret == -ENOMEM || ret == -EIO || ret == -EBUSY)
+			mt6797_ccci_quiesce(ccci, ret);
+		goto drop;
+	}
+	if (frame.channel == MT6797_FS_RX) {
+		ret = mt6797_ccci_fs_rx(ccci, skb, q);
 		if (ret && !atomic_read(&ccci->ready))
 			mt6797_ccci_diag_rx_save(&ccci->diag, skb->data, skb->len, q,
 				MT6797_CCCI_DIAG_BEFORE_READY, 0, frame.channel);
@@ -1421,6 +1468,7 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	spin_lock_init(&ccci->diag.lock);
 	spin_lock_init(&ccci->tx_stop_lock);
 	atomic_set(&ccci->rpc_logs, 0);
+	atomic_set(&ccci->fs_logs, 0);
 	atomic_set(&ccci->tx_mask_owned, 0);
 	atomic_set(&ccci->rx_mask_owned, 0);
 	mt6797_ccci_read_sim_eint(ccci);

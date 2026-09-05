@@ -765,7 +765,12 @@ bounded transaction, with the original T3 userspace/test script to isolate
 the kernel change. T4 is now consumed: START_MMU readback confirmed, but the
 first render still failed with the same shareability fault and pixel mismatch.
 Four thermal interfaces passed separately. Exact rescue restored at 03:27:53;
-final health collection remains with the owner. See `README.gpu-start-mmu.md`.
+the original transaction terminated at 03:29:15 with run-scoped pstore saved,
+USB/RJ45 healthy, no failed units and exact p22/p30/p31 readbacks. Recovered
+Stage A boot is `37c27252-9c71-43b3-bdcb-cf5addde4150`; both locks are free.
+Pstore SHA256 is
+`bd49fa01f0755504476255e26efc2fbd7037bf806ad4bbdcb15b3371c09c5261`.
+See `README.gpu-start-mmu.md` and the T4 handoff `RESULT.md`.
 The separate
 Panfrost-only Mesa build and enhanced failed-pixel diagnostic are not silently
 substituted. DT is unchanged; the fixed harness checksum and early recovery

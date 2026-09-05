@@ -34,10 +34,12 @@ thermal zone and its cooling policy remain unchanged. No ABB channel or
 duplicate A53 thermometers are invented. Userspace must not bypass the
 driver with arbitrary MMIO bank writes.
 
-The base DT leaves thermal and AUXADC disabled. Existing thermal overlays
-enable them; a GPU-only image can therefore have no zone by construction.
+The base DT leaves thermal and AUXADC disabled. Thermal overlays enable only
+the thermal controller; its driver owns indirect AUXADC sampling and its clock.
+The standalone AUXADC driver must remain disabled. A GPU-only image can
+therefore have no zone by construction.
 Check the exact assembled DT/config before treating missing sysfs as a bug.
-The new sensor-only overlay enables the existing thermal/AUXADC nodes and
+The new sensor-only overlay enables the existing thermal controller and
 one aggregate zone, with no CPU clock/CSPM, cpufreq, Hall, trips or cooling
 changes. Required configs are `CONFIG_MTK_THERMAL`, `CONFIG_MTK_SOC_THERMAL`,
 `CONFIG_THERMAL_OF`, `CONFIG_HWMON`, and the existing clock/NVMEM providers.

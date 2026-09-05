@@ -66,7 +66,8 @@
 };
 
 &auxadc {
-	status = "okay";
+	/* Thermal owns indirect AUXADC sampling and its clock. */
+	status = "disabled";
 };
 
 &thermal {

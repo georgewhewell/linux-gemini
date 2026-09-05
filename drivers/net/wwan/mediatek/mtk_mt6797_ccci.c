@@ -1110,15 +1110,26 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	ret = mt6797_md1_cldma_lk_carveout_validate(&layout);
 	if (ret)
 		return ret;
-	if (smem_res->start != layout.ap_md_smem_base ||
-	    resource_size(smem_res) != layout.ap_md_smem_size)
-		return -ERANGE;
 	ret = mt6797_md1_lk_handoff_plan_get(&plan);
 	if (ret)
 		return ret;
+	if (layout.ap_md_smem_base < plan.smem_offset_ap_to_md)
+		return -ERANGE;
 	md_smem = layout.ap_md_smem_base - plan.smem_offset_ap_to_md;
 	if (md_smem > U32_MAX)
 		return -ERANGE;
+	/*
+	 * LK deletes the pre-boot dynamic reservation nodes and installs its
+	 * live CCCI mblocks, leaving memory-region phandles dangling. The
+	 * handoff provider publishes this layout only after validating those
+	 * live reservations, their bounds, no-map attributes and overlaps.
+	 * Do not resolve a pre-LK phandle or invent a replacement reservation.
+	 */
+	*smem_res = (struct resource) {
+		.start = layout.ap_md_smem_base,
+		.end = layout.ap_md_smem_base + layout.ap_md_smem_size - 1,
+		.flags = IORESOURCE_MEM,
+	};
 	ccci->runtime_config.smem_md_addr = md_smem;
 	ccci->runtime_config.smem_size = SZ_1M;
 	ccci->runtime_config.random_seed = get_random_u32();
@@ -1170,7 +1181,6 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 		.frag_len = MTK_CCCI_NET_RX_SIZE,
 		.headroom_len = MTK_CCCI_HEADER_SIZE,
 	};
-	struct device_node *memory_node;
 	struct mt6797_ccci *ccci;
 	struct resource smem_res;
 	int ret;
@@ -1208,13 +1218,6 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 	mt6797_md1_hs_init(&ccci->hs);
-	memory_node = of_parse_phandle(pdev->dev.of_node, "memory-region", 0);
-	if (!memory_node)
-		return -EINVAL;
-	ret = of_address_to_resource(memory_node, 0, &smem_res);
-	of_node_put(memory_node);
-	if (ret)
-		return ret;
 	ret = mt6797_ccci_validate_handoff(ccci, &smem_res);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret,

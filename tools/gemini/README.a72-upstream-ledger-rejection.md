@@ -55,3 +55,27 @@ and ledger header/record bytes with upstream preparation. Do not erase an
 unknown retained record, disable integrity checks, or claim an A72 hardware
 failure from this rejection. Any successor should preserve this boundary's
 evidence while retaining the complete CPU8/CPU9 workload protocol.
+
+## Upstream precedent and offline checker
+
+The upstream `2026-08-28-mainline-a72-cpu8-admission-candidate` experiment
+documents a live `DBGC/start=130/size=130` stale header and an exact two-word
+initialization to logical-empty. Its `initialize-transition-ledger.sh` pins
+that device's prior prefix hash and Gemian identity. It must not be run on
+our unknown state. This precedent strengthens the preparation hypothesis;
+it does not establish that our retained words are also 130.
+
+The old upstream Python decoder caps stages at 9, whereas our selected kernel
+accepts stage 10. Use the actual-code offline checker for our source:
+
+```
+HOSTCC=<native-gcc> python3 tools/gemini/check-a72-transition-ledger.py \
+    /path/to/linux-gemini-a72-upstream-oneboot [saved-slot.bin]
+```
+
+It compiles the selected kernel's admission/CRC/record functions and headers,
+checks 12 raw/empty/stale/corrupt/stage/generation fixtures, and optionally
+classifies an exact 84-byte prefix or 4096-byte saved slot. Output includes the
+capture hash, header and exact admission errno. Native write/sync callbacks
+abort: this tool cannot initialize or clear retained RAM. Passing this check
+does not prove the record stays unchanged across reboot or CPU admission.

@@ -22,7 +22,8 @@
 #define MT6797_MD1_CLDMA_LK_MD_BASE 0xb4000000ULL
 #define MT6797_MD1_CLDMA_LK_MD_SIZE 0x08000000U
 #define MT6797_MD1_CLDMA_LK_SMEM_BASE 0x88000000ULL
-#define MT6797_MD1_CLDMA_LK_SMEM_SIZE 0x00600000U
+/* AP <-> MD1 slice, not the enclosing 6 MiB LK CCCI mblock. */
+#define MT6797_MD1_CLDMA_LK_AP_MD1_SMEM_SIZE 0x00200000U
 
 static const struct mt6797_md1_cldma_region mt6797_md1_cldma_regions[] = {
 	[MT6797_MD1_CLDMA_AP_AO] = { 0x10014000, 0x1e00 },
@@ -108,7 +109,7 @@ int mt6797_md1_cldma_lk_carveout_validate(
 	if (layout->md_base != MT6797_MD1_CLDMA_LK_MD_BASE ||
 	    layout->md_size != MT6797_MD1_CLDMA_LK_MD_SIZE ||
 	    layout->ap_md_smem_base != MT6797_MD1_CLDMA_LK_SMEM_BASE ||
-	    layout->ap_md_smem_size != MT6797_MD1_CLDMA_LK_SMEM_SIZE)
+	    layout->ap_md_smem_size != MT6797_MD1_CLDMA_LK_AP_MD1_SMEM_SIZE)
 		return -ERANGE;
 	return 0;
 }

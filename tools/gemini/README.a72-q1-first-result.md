@@ -44,7 +44,23 @@ See `owner/manual-accepted-closed.json` and `owner/manual-accepted-archive`
 under the run directory. Root independently checked the raw partition hashes,
 RJ45 boot identity, watchdog tuple, pstore hash and absent original processes.
 The failed automatic receipt remains preserved. Manual recovery closure does
-not qualify retention; no A72 CPU transition occurred.
+not qualify retention; no A72 CPU transition occurred. The fixed final capture
+did not query systemd failed units; do not infer that additional health check.
+
+Saved pstore gives a concrete storage-dependency lead: PMIC-wrapper probe
+failed with -EINVAL at 0.777285s, before eMMC repeatedly deferred through
+11.269642s. Independent source/carrier review found Q1's wrapper reset ID64
+incompatible with the kernel's compact reset IDs0/1. Separately, the enabled
+DVFSP-handoff node lacks its required SCP attestation resource; its probe
+failed at 1.218630s and left I2C6 deferred. These are separate dependency
+paths, not proof of the exact silent capture substep.
+
+A corrected reset mapping alone is not a hardware-ready successor: it would
+permit wrapper initialization earlier than the observed Linux watchdog probe,
+and this Q1 kernel lineage lacks the later integrated wrapper watchdog guard.
+Any successor must reconcile that write boundary as well as validate the
+compiled carrier against its actual kernel providers. Keep consumed Q1
+artifacts unchanged and review a distinct successor before another boot.
 
 Host-only follow-up capture diagnostics are isolated at `8372060` in
 `repo-a72-retention-capture-diagnostics`, not applied to the running owner.

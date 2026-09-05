@@ -36,5 +36,25 @@ This proves the reviewed fixed-profile one-boot render/autosuspend/render
 workload, not sustained-load stability, general DVFS, system suspend, display
 integration or a deployed default configuration. Root authorized a guarded
 same-boot pass marker only after saved evidence review. Original execution18065
-and the sole owner still retain supervised exact-rescue responsibility; final
-rescue/pstore/hash/network/process closure is pending at this note.
+ended exit1. Owner reports exact rescue boot
+`853ec2cf-303b-4540-925b-e69c239efdde` through USB/RJ45, all three hashes,
+CPUs0–7, no failed units, processes gone and locks free.
+
+## Harness result and recovery-boundary anomaly
+
+Do not call the harness result PASS: the guarded marker was published at393.48
+uptime and the verified petter108 stopped immediately afterward. The harness
+observed the marker but rejected the now-missing `/proc/108`. Its terminal
+observation_failed result is distinct from the saved successful renderer
+workload. Future publication must allow the existing validator to acknowledge
+acceptance before a planned stop, within the same original deadline; this does
+not authorize repeating T9 or extending a lease.
+
+Post-reset pstore retains the GPU diagnostics, the controlled watchdog stop at
+393.527486, and one final line at424.546011:
+`Unable to handle kernel paging request at virtual address 001fa0215eaeafdf`.
+Root read this saved tail. No task, PC, stack or further fault detail survives.
+The line was absent from the saved pre-stop dmesg. Its timing is approximately
+31 seconds after the stop, near watchdog reset; timing alone does not establish
+cause or prove harmlessness. Record this as an unresolved recovery-boundary
+anomaly, not as a failed pixel test or proof of whole-boot stability.

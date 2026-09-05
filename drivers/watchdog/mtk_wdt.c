@@ -96,7 +96,7 @@ struct mtk_wdt_data {
 	unsigned int restart_priority;
 };
 
-int mtk_wdt_require_boot_running(struct device *consumer)
+static int mtk_wdt_require_boot_state(struct device *consumer, bool recovery)
 {
 	struct platform_device *pdev;
 	struct mtk_wdt_dev *mtk_wdt;
@@ -132,6 +132,19 @@ int mtk_wdt_require_boot_running(struct device *consumer)
 	}
 	if (!watchdog_hw_running(&mtk_wdt->wdt_dev))
 		ret = -EACCES;
+	if (!ret && recovery) {
+		u32 mode = readl(mtk_wdt->wdt_base + WDT_MODE);
+		u32 length = readl(mtk_wdt->wdt_base + WDT_LENGTH);
+		u32 mask = WDT_MODE_EN | WDT_MODE_AUTO_START |
+			   WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN;
+
+		/* Readback-only equivalent of the reviewed MD1 boot guard. */
+		if ((mode & mask) != (WDT_MODE_EN | WDT_MODE_AUTO_START) ||
+		    READ_ONCE(mtk_wdt->wdt_dev.timeout) != WDT_MAX_TIMEOUT ||
+		    (length & GENMASK(15, 5)) !=
+		    WDT_LENGTH_TIMEOUT(WDT_MAX_TIMEOUT << 6))
+			ret = -EUCLEAN;
+	}
 
 out_unlock_device:
 	device_unlock(&pdev->dev);
@@ -140,7 +153,17 @@ out_put_node:
 	of_node_put(np);
 	return ret;
 }
+int mtk_wdt_require_boot_running(struct device *consumer)
+{
+	return mtk_wdt_require_boot_state(consumer, false);
+}
 EXPORT_SYMBOL_GPL(mtk_wdt_require_boot_running);
+
+int mtk_wdt_require_boot_recovery(struct device *consumer)
+{
+	return mtk_wdt_require_boot_state(consumer, true);
+}
+EXPORT_SYMBOL_GPL(mtk_wdt_require_boot_recovery);
 
 static const struct mtk_wdt_data mt2712_data = {
 	.toprgu_sw_rst_num = MT2712_TOPRGU_SW_RST_NUM,

@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config MTK_CCCI_COMMON
+	bool
+	help
+	  Internal wire-format and runtime-negotiation helpers for MediaTek CCCI
+	  modems. The helpers perform no I/O and own no modem hardware.
+
+config MTK_MT6797_CCCI
+	bool "MediaTek MT6797 integrated modem CCCI transport"
+	depends on ARM64 && OF
+	depends on WWAN=y
+	depends on MTK_MT6797_MD1_COLD_OWNER=y
+	depends on MTK_MT6797_MD1_LK_HANDOFF_PROBE=y
+	select MTK_CCCI_COMMON
+	select MTK_MT6797_MD1_CLDMA_CORE
+	select MTK_MT6797_MD1_HS_CORE
+	help
+	  Own the AP-side CLDMA rings and CCCI handshake for the integrated MT6797
+	  MD1 modem. The driver requires an LK-attested shared-memory layout and a
+	  positive post-vector activity token from the separate lifecycle owner.
+	  It finalizes the vendor stage-two region-13 protection before the HS1
+	  runtime reply and latches duplicate/invalid handshake, WDT and bounded
+	  handshake-timeout failures until platform reset. After HS2 it exposes the
+	  UART2 control channel as a standard WWAN AT port and CCMNI contexts as WWAN
+	  raw-IP links. It remains additionally gated by a read-only module parameter.
+
+config MTK_CCCI_KUNIT_TEST
+	bool "KUnit tests for MediaTek CCCI helpers"
+	depends on KUNIT=y
+	select MTK_CCCI_COMMON
+	help
+	  Exercise CCCI framing, MT6797 CCMNI channel mapping and bounded HS1 v2
+	  runtime-feature negotiation without modem hardware. The tests reject
+	  malformed feature queries and modem requirements which this driver
+	  cannot safely satisfy.

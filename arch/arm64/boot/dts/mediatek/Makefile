@@ -396,3 +396,8 @@ DTC_FLAGS_mt7988a-bananapi-bpi-r4-2g5 := -@
 DTC_FLAGS_mt7988a-bananapi-bpi-r4-pro-4e := -@
 DTC_FLAGS_mt7988a-bananapi-bpi-r4-pro-8x := -@
 DTC_FLAGS_mt8395-radxa-nio-12l := -@
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-cellular.dtbo
+mt6797-gemini-pda-cellular-test-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-cellular.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-cellular-test.dtb

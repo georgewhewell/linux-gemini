@@ -15,3 +15,4 @@ obj-$(CONFIG_RPMSG_WWAN_CTRL) += rpmsg_wwan_ctrl.o
 obj-$(CONFIG_IOSM) += iosm/
 obj-$(CONFIG_MTK_T7XX) += t7xx/
 obj-y += mediatek/mt6797/
+obj-$(CONFIG_MTK_CCCI_COMMON) += mediatek/

@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: GPL-2.0-only
+obj-$(CONFIG_MTK_MT6797_MD1_BOOT_STATUS_OBSERVE) += mt6797-md1-boot-status-observe.o
+obj-$(CONFIG_MTK_MT6797_MD1_BOOT_STATUS_OBSERVE_KUNIT_TEST) += mt6797-md1-boot-status-observe-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_FIRMWARE_PREFLIGHT) += mt6797-md1-firmware.o
+obj-$(CONFIG_MTK_MT6797_MD1_FIRMWARE_PREFLIGHT_KUNIT_TEST) += mt6797-md1-firmware-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_MPU_REMAP_PLAN) += mt6797-md1-mpu-remap-plan.o
+obj-$(CONFIG_MTK_MT6797_MD1_MPU_REMAP_PLAN_KUNIT_TEST) += mt6797-md1-mpu-remap-plan-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_LK_HANDOFF) += mt6797-md1-lk-handoff.o
+obj-$(CONFIG_MTK_MT6797_MD1_LK_HANDOFF_KUNIT_TEST) += mt6797-md1-lk-handoff-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_LK_HANDOFF_PROBE) += mt6797-md1-lk-handoff-probe.o
+mt6797-md1-prerelease-driver-y := mt6797-md1-prerelease-core.o \
+	mt6797-md1-prepower.o mt6797-md1-prerelease.o
+obj-$(CONFIG_MTK_MT6797_MD1_PRERELEASE) += mt6797-md1-prerelease-driver.o
+obj-$(CONFIG_MTK_MT6797_MD1_PRERELEASE_KUNIT_TEST) += mt6797-md1-prerelease-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_COLD_OWNER_CORE) += mt6797-md1-cold-owner-core.o
+mt6797-md1-cold-owner-driver-y := mt6797-md1-cold-owner.o \
+	mt6797-md1-firmware-loader.o
+obj-$(CONFIG_MTK_MT6797_MD1_COLD_OWNER) += mt6797-md1-cold-owner-driver.o
+obj-$(CONFIG_MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST) += mt6797-md1-cold-owner-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_WDT_GATE_CORE) += mt6797-md1-wdt-gate-core.o
+obj-$(CONFIG_MTK_MT6797_MD1_WDT_GATE_KUNIT_TEST) += mt6797-md1-wdt-gate-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_HS_CORE) += mt6797-md1-hs-core.o
+obj-$(CONFIG_MTK_MT6797_MD1_HS_KUNIT_TEST) += mt6797-md1-hs-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_CLDMA_CORE) += mt6797-md1-cldma-core.o
+obj-$(CONFIG_MTK_MT6797_MD1_CLDMA_KUNIT_TEST) += mt6797-md1-cldma-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_CLDMA_PREPARE) += mt6797-md1-cldma-prepare.o
+obj-$(CONFIG_MTK_MT6797_MD1_BRINGUP_FENCE) += mt6797-md1-bringup-fence.o
+obj-$(CONFIG_MTK_MT6797_MD1_BRINGUP_FENCE_KUNIT_TEST) += mt6797-md1-bringup-fence-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_EMI_MPU_CORE) += mt6797-md1-emi-mpu-core.o
+obj-$(CONFIG_MTK_MT6797_MD1_EMI_MPU) += mt6797-md1-emi-mpu.o
+obj-$(CONFIG_MTK_MT6797_MD1_EMI_MPU_KUNIT_TEST) += mt6797-md1-emi-mpu-kunit-test.o
+mt6797-md1-bringup-backend-driver-y := mt6797-md1-bringup-backend-core.o \
+	mt6797-md1-bringup-backend.o
+obj-$(CONFIG_MTK_MT6797_MD1_BRINGUP_BACKEND) += mt6797-md1-bringup-backend-driver.o
+obj-$(CONFIG_MTK_MT6797_MD1_BRINGUP_BACKEND_KUNIT_TEST) += mt6797-md1-bringup-backend-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_REMAP_ATTEST_CORE) += mt6797-md1-remap-attest-core.o
+obj-$(CONFIG_MTK_MT6797_MD1_REMAP_ATTEST_KUNIT_TEST) += mt6797-md1-remap-attest-kunit-test.o
+obj-$(CONFIG_MTK_MT6797_MD1_REMAP_OBSERVE_CORE) += mt6797-md1-remap-observe-core.o
+obj-$(CONFIG_MTK_MT6797_MD1_REMAP_OBSERVE) += mt6797-md1-remap-observe.o
+obj-$(CONFIG_MTK_MT6797_MD1_REMAP_OBSERVE_KUNIT_TEST) += mt6797-md1-remap-observe-kunit-test.o

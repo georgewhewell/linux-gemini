@@ -896,4 +896,6 @@ config MTK_SOCINFO
 	  information about the SoC to the userspace including the
 	  manufacturer name, marketing name and soc name.
 
+source "drivers/soc/mediatek/Kconfig.cellular"
+
 endmenu

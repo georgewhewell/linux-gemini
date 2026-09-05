@@ -16520,6 +16520,19 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/remoteproc/mediatek,mt6797-md1.yaml
 F:	drivers/net/wwan/mediatek/mt6797/
 
+MEDIATEK MT6797 CCCI WWAN DRIVER
+M:	George Whewell <georgerw@gmail.com>
+L:	linux-mediatek@lists.infradead.org
+L:	netdev@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/net/mediatek,mt6797-ccci.yaml
+F:	Documentation/networking/device_drivers/wwan/mt6797-ccci.rst
+F:	arch/arm64/boot/dts/mediatek/mt6797-gemini-pda-cellular.dtso
+F:	drivers/net/wwan/mediatek/mtk_ccci*
+F:	drivers/net/wwan/mediatek/mtk_mt6797_ccci.c
+F:	drivers/soc/mediatek/mt6797-md1-cldma*
+F:	include/linux/soc/mediatek/mt6797-md1-cldma.h
+
 MEDIATEK USB3 DRD IP DRIVER
 M:	Chunfeng Yun <chunfeng.yun@mediatek.com>
 L:	linux-usb@vger.kernel.org

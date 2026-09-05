@@ -140,6 +140,9 @@ struct mt6797_ccci {
 	u8 *runtime;
 	atomic_t tx_pending;
 	atomic_t rx_pending;
+	/* Mask ownership survives repolls independently of pending work. */
+	atomic_t tx_mask_owned;
+	atomic_t rx_mask_owned;
 	atomic_t failed;
 	atomic_t ready;
 	atomic_t at_open;
@@ -1049,10 +1052,18 @@ static void mt6797_ccci_tx_poll(struct mt6797_ccci *ccci, unsigned int q)
 static int mt6797_ccci_poll(struct napi_struct *napi, int budget)
 {
 	struct mt6797_ccci *ccci = container_of(napi, struct mt6797_ccci, napi);
-	u32 tx = atomic_xchg(&ccci->tx_pending, 0);
-	u32 rx = atomic_xchg(&ccci->rx_pending, 0);
+	u32 tx, rx, tx_rearm, rx_rearm;
+	unsigned long flags;
 	unsigned int q;
 	int done = 0;
+
+	/* No gap between consuming pending bits and taking their mask ownership. */
+	spin_lock_irqsave(&ccci->tx_stop_lock, flags);
+	tx = atomic_xchg(&ccci->tx_pending, 0);
+	rx = atomic_xchg(&ccci->rx_pending, 0);
+	atomic_or(tx, &ccci->tx_mask_owned);
+	atomic_or(rx, &ccci->rx_mask_owned);
+	spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
 
 	for (q = 0; q < MT6797_CCCI_QUEUE_COUNT; q++) {
 		if (tx & BIT(q))
@@ -1072,7 +1083,8 @@ static int mt6797_ccci_poll(struct napi_struct *napi, int budget)
 		}
 	}
 	if (atomic_read(&ccci->failed)) {
-		napi_complete_done(napi, 0);
+		if (budget)
+			napi_complete_done(napi, 0);
 		return 0;
 	}
 	if (done >= budget)
@@ -1080,9 +1092,30 @@ static int mt6797_ccci_poll(struct napi_struct *napi, int budget)
 	if (done < budget && (atomic_read(&ccci->tx_pending) ||
 			      atomic_read(&ccci->rx_pending)))
 		return budget;
-	if (done < budget && napi_complete_done(napi, done)) {
-		writel(tx, ccci->pdn + CLDMA_L2_TX_MASK_CLEAR);
-		writel(rx, ccci->ao + CLDMA_L2_RX_MASK_CLEAR);
+	if (done < budget) {
+		/* Complete can release NAPI and flush GRO (which can enter TX).
+		 * Detach old ownership first; never clear a new poll's ownership
+		 * afterward, and never hold tx_stop_lock across this callback.
+		 */
+		tx_rearm = atomic_xchg(&ccci->tx_mask_owned, 0);
+		rx_rearm = atomic_xchg(&ccci->rx_mask_owned, 0);
+		if (!napi_complete_done(napi, done)) {
+			/* Includes deferred completion which has already released SCHED. */
+			atomic_or(tx_rearm, &ccci->tx_mask_owned);
+			atomic_or(rx_rearm, &ccci->rx_mask_owned);
+			return done;
+		}
+		spin_lock_irqsave(&ccci->tx_stop_lock, flags);
+		if (!atomic_read(&ccci->failed)) {
+			/* A newer IRQ/poll may already own some of these same bits. */
+			tx_rearm &= ~(atomic_read(&ccci->tx_mask_owned) |
+				      atomic_read(&ccci->tx_pending));
+			rx_rearm &= ~(atomic_read(&ccci->rx_mask_owned) |
+				      atomic_read(&ccci->rx_pending));
+			writel(tx_rearm, ccci->pdn + CLDMA_L2_TX_MASK_CLEAR);
+			writel(rx_rearm, ccci->ao + CLDMA_L2_RX_MASK_CLEAR);
+		}
+		spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
 	}
 	return done;
 }
@@ -1092,6 +1125,7 @@ static irqreturn_t mt6797_ccci_cldma_irq(int irq, void *data)
 	struct mt6797_ccci *ccci = data;
 	struct mt6797_md1_cldma_irq_pending pending;
 	u32 tx_status, tx_mask, rx_status, rx_mask;
+	unsigned long flags;
 
 	tx_status = readl(ccci->pdn + CLDMA_L2_TX_STATUS);
 	tx_mask = readl(ccci->pdn + CLDMA_L2_TX_MASK);
@@ -1108,6 +1142,12 @@ static irqreturn_t mt6797_ccci_cldma_irq(int irq, void *data)
 		mt6797_ccci_quiesce(ccci, -EIO);
 		return IRQ_HANDLED;
 	}
+	/* Serialize mask+pending publication against completion rearm and STOP. */
+	spin_lock_irqsave(&ccci->tx_stop_lock, flags);
+	if (atomic_read(&ccci->failed)) {
+		spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
+		return IRQ_HANDLED;
+	}
 	if (pending.tx_done) {
 		writel(pending.tx_done, ccci->pdn + CLDMA_L2_TX_MASK_SET);
 		atomic_or(pending.tx_done, &ccci->tx_pending);
@@ -1116,6 +1156,7 @@ static irqreturn_t mt6797_ccci_cldma_irq(int irq, void *data)
 		writel(pending.rx_done, ccci->ao + CLDMA_L2_RX_MASK_SET);
 		atomic_or(pending.rx_done, &ccci->rx_pending);
 	}
+	spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
 	napi_schedule_irqoff(&ccci->napi);
 	return IRQ_HANDLED;
 }
@@ -1376,6 +1417,8 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	spin_lock_init(&ccci->diag.lock);
 	spin_lock_init(&ccci->tx_stop_lock);
 	atomic_set(&ccci->rpc_logs, 0);
+	atomic_set(&ccci->tx_mask_owned, 0);
+	atomic_set(&ccci->rx_mask_owned, 0);
 	mt6797_ccci_read_sim_eint(ccci);
 	atomic_set(&ccci->failed, 0);
 	atomic_set(&ccci->ready, 0);

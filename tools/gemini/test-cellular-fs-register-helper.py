@@ -57,6 +57,8 @@ static int fake_open(const char *path,int flags,...){int fd;
  else if(!strcmp(path,"/sys/dev/block/179:6/uevent"))fd=2;
  else if(!strcmp(path,"/sys/dev/block/179:6/size"))fd=3;
  else {assert(!strcmp(path,"/dev/mt6797-md1-fs-provider"));fd=6;}
+ if((mode==17&&fd==1)||(mode==18&&fd==2)||(mode==19&&fd==3)||(mode==20&&fd==6)){
+  errno=ENOENT;return -1;}
  opened[fd]++;return fd;}
 static int fake_close(int fd){assert(fd>0&&fd<8&&closed[fd]<opened[fd]);closed[fd]++;return 0;}
 static ssize_t fake_read(int fd,void *out,size_t n){
@@ -111,13 +113,19 @@ int main(void){
  assert(partition_identity("PARTN=6\nPARTNAME=nvdata\nPARTNAME=nvdata\n","65536\n")<0);
  assert(partition_identity("PARTN=7\nPARTNAME=nvdata\n","65536\n")<0);
  assert(partition_identity("PARTN=6\nPARTNAME=nvdata","65536\n")<0);
- for(mode=0;mode<=16;mode++){
+ for(mode=0;mode<=20;mode++){
   registered=super_reads=0;memset(opened,0,sizeof(opened));memset(closed,0,sizeof(closed));
   int ret=register_nvdata("/run/private/nvdata");
   assert((mode==0&&!ret)||(mode!=0&&ret<0));
   assert(registered==((mode==0||mode==13)?1:0));
   for(unsigned i=0;i<8;i++)assert(opened[i]==closed[i]);
   assert(super_reads<=1);
+  if(mode==17)assert(!strcmp(failure_stage,"nvdata-block-open"));
+  if(mode==18)assert(!strcmp(failure_stage,"nvdata-sysfs-uevent"));
+  if(mode==19)assert(!strcmp(failure_stage,"nvdata-sysfs-size"));
+  if(mode==20)assert(!strcmp(failure_stage,"provider-device-open"));
+  if(mode==7)assert(!strcmp(failure_stage,"nvdata-md-directory-open"));
+  if(mode==13)assert(!strcmp(failure_stage,"provider-register-once"));
  }
  for(mode=0;mode<=16;mode++){
   registered=super_reads=0;memset(opened,0,sizeof(opened));memset(closed,0,sizeof(closed));

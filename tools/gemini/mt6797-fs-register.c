@@ -23,6 +23,7 @@
 
 #define NVDATA_BYTES UINT64_C(33554432)
 #define NVDATA_SECTORS "65536\n"
+static const char *failure_stage = "arguments";
 
 static uint16_t get16(const unsigned char *p)
 {
@@ -124,9 +125,11 @@ static int register_nvdata(const char *mountpoint)
 	int block = -1, root = -1, md = -1, provider = -1;
 	int ret;
 
+	failure_stage = "nvdata-block-open";
 	block = open("/dev/mmcblk0p6", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
 	if (block < 0)
 		return -errno;
+	failure_stage = "nvdata-block-stat";
 	if (fstat(block, &block_stat)) {
 		ret = -errno;
 		goto out;
@@ -136,26 +139,32 @@ static int register_nvdata(const char *mountpoint)
 		goto out;
 	snprintf(path, sizeof(path), "/sys/dev/block/%u:%u/uevent",
 		 major(block_stat.st_rdev), minor(block_stat.st_rdev));
+	failure_stage = "nvdata-sysfs-uevent";
 	ret = read_small(path, uevent, sizeof(uevent));
 	if (ret)
 		goto out;
 	snprintf(path, sizeof(path), "/sys/dev/block/%u:%u/size",
 		 major(block_stat.st_rdev), minor(block_stat.st_rdev));
+	failure_stage = "nvdata-sysfs-size";
 	ret = read_small(path, sectors, sizeof(sectors));
 	if (ret)
 		goto out;
+	failure_stage = "nvdata-partition-identity";
 	ret = partition_identity(uevent, sectors);
 	if (ret)
 		goto out;
+	failure_stage = "nvdata-block-size";
 	if (ioctl(block, BLKGETSIZE64, &bytes)) {
 		ret = -errno;
 		goto out;
 	}
 	/* Only the ext4 superblock, not directory entries or provision contents. */
+	failure_stage = "nvdata-superblock-read";
 	if (pread(block, super, sizeof(super), 1024) != sizeof(super)) {
 		ret = -EIO;
 		goto out;
 	}
+	failure_stage = "nvdata-superblock-validation";
 	ret = clean_ext4(super, bytes);
 	if (ret)
 		goto out;
@@ -164,24 +173,29 @@ static int register_nvdata(const char *mountpoint)
 	 */
 	if (!mountpoint)
 		goto out;
+	failure_stage = "nvdata-mount-root-open";
 	root = no_symlink_dir(AT_FDCWD, mountpoint, 0);
 	if (root < 0) {
 		ret = root;
 		goto out;
 	}
+	failure_stage = "nvdata-mount-root-stat";
 	if (fstat(root, &root_stat) || fstatfs(root, &fs) || fstatvfs(root, &vfs)) {
 		ret = -errno;
 		goto out;
 	}
+	failure_stage = "nvdata-mount-root-validation";
 	ret = -EROFS;
 	if (root_stat.st_dev != block_stat.st_rdev || root_stat.st_ino != 2 ||
 	    fs.f_type != EXT4_SUPER_MAGIC || !(vfs.f_flag & ST_RDONLY))
 		goto out;
+	failure_stage = "nvdata-md-directory-open";
 	md = no_symlink_dir(root, "md", RESOLVE_BENEATH | RESOLVE_NO_XDEV);
 	if (md < 0) {
 		ret = md;
 		goto out;
 	}
+	failure_stage = "nvdata-md-directory-stat";
 	if (fstat(md, &md_stat)) {
 		ret = -errno;
 		goto out;
@@ -189,6 +203,7 @@ static int register_nvdata(const char *mountpoint)
 	ret = -ENODEV;
 	if (!S_ISDIR(md_stat.st_mode) || md_stat.st_dev != block_stat.st_rdev)
 		goto out;
+	failure_stage = "provider-device-open";
 	provider = open("/dev/mt6797-md1-fs-provider", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
 	if (provider < 0) {
 		ret = -errno;
@@ -196,6 +211,7 @@ static int register_nvdata(const char *mountpoint)
 	}
 	registration.directory_fd = md;
 	/* One call only. An interrupted result is ambiguous: never retry GO. */
+	failure_stage = "provider-register-once";
 	ret = ioctl(provider, MT6797_MD1_FS_REGISTER, &registration) ? -errno : 0;
 out:
 	if (provider >= 0)
@@ -218,7 +234,8 @@ int main(int argc, char **argv)
 	}
 	ret = register_nvdata(argv[1][0] == '/' ? argv[1] : NULL);
 	if (ret) {
-		fprintf(stderr, "MD1 FS authority registration failed: %s; no retry\n", strerror(-ret));
+		fprintf(stderr, "MD1 FS authority failed stage=%s error=%s; no retry\n",
+			failure_stage, strerror(-ret));
 		return 1;
 	}
 	puts(argv[1][0] == '/' ? "MD1 FS authority published once; this is not an HS2/AT result" :

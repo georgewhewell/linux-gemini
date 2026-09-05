@@ -61,7 +61,7 @@ static void writel(u32 v, void *p) { *(u32 *)p=v; }
 static int regmap_write(void *m, unsigned r, unsigned v) {
  (void)m; writes++; if(r==0xfbc) ldo_on=v!=0; return event(); }
 static int regulator_set_voltage(struct regulator *r,int lo,int hi) {
- assert(!r->enabled && lo==846700 && hi==850000 && ldo_on); return event(); }
+ (void)r; assert(lo==846700 && hi==850000 && ldo_on); return event(); }
 static int regulator_enable(struct regulator *r) {
  int ret=event(); r->enabled=1; return ret; }
 static int regulator_disable(struct regulator *r) {
@@ -83,6 +83,8 @@ static int poll(struct scp_domain *d) {
  } return ret; }
 #define readx_poll_timeout(fn,d,tmp,cond,delay,timeout) poll(d)
 #define dev_err(...) do {} while(0)
+static void scpsys_gpuldo_report(struct scp *s,const char *stage,int ret) {
+ (void)s;(void)stage; assert(ret<0); }
 '''
 names = ["scpsys_gpuldo_domain", "scpsys_gpuldo_all_off", "scpsys_gpuldo_write",
          "scpsys_gpuldo_supply_on", "scpsys_gpuldo_supply_off",
@@ -118,6 +120,11 @@ int main(void) {
  assert(rail.enabled && ldo_on && !supply_cuts);
  calls=0; assert(!scpsys_power_off(&domain.genpd)); off_events=calls;
  assert(!rail.enabled && !ldo_on && supply_cuts==1 && clocks_off==1);
+ fresh(true); rail.enabled=1; scp.gpuldo.supply_vote=true;
+ assert(!scpsys_power_on(&domain.genpd));
+ assert(calls==on_events-1 && rail.enabled && scp.gpuldo.supply_vote);
+ assert(!scpsys_power_off(&domain.genpd));
+ assert(!rail.enabled && !scp.gpuldo.supply_vote && supply_cuts==1);
  for(n=1;n<=on_events;n++) {
   fresh(true); fail_at=n; assert(scpsys_power_on(&domain.genpd)<0);
   assert(scp.gpuldo.failed && !supply_cuts);
@@ -131,6 +138,13 @@ int main(void) {
   before=calls; assert(scpsys_power_off(&domain.genpd)==-EPERM && calls==before);
   /* Only final fbc-write failure may have made the LDO disable effective. */
   if(n<off_events) assert(ldo_on);
+ }
+ /* Every ON failure site also retains an initially adopted reference. */
+ for(n=1;n<on_events;n++) {
+  fresh(true); rail.enabled=1; scp.gpuldo.supply_vote=true; fail_at=n;
+  assert(scpsys_power_on(&domain.genpd)<0 && scp.gpuldo.failed);
+  assert(rail.enabled && scp.gpuldo.supply_vote && !supply_cuts);
+  before=calls; assert(scpsys_power_off(&domain.genpd)==-EPERM && calls==before);
  }
  /* Generic mode still performs the original regulator unwind on clock error. */
  fresh(false); fail_at=2; assert(scpsys_power_on(&domain.genpd)<0);

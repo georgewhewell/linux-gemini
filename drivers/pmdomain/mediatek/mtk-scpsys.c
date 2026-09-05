@@ -178,6 +178,8 @@ struct scp {
 	struct scp_ctrl_reg ctrl_reg;
 	bool bus_prot_reg_update;
 	bool gpuldo_mode;
+	bool gpuldo_acquired;
+	bool gpuldo_reported;
 	struct mutex gpuldo_lock;
 	struct mt6797_gpuldo_owner gpuldo;
 	struct device_node *gpuldo_gpu;
@@ -273,6 +275,18 @@ static int scpsys_gpuldo_all_off(void *ctx)
 	return !((a | b) & MT6797_GPULDO_DOMAIN_MASK);
 }
 
+static void scpsys_gpuldo_report(struct scp *scp, const char *stage, int ret)
+{
+	if (scp->gpuldo_reported)
+		return;
+	scp->gpuldo_reported = true;
+	dev_err(scp->dev,
+		"GPULDO_FIRST_FAILURE stage=%s error=%d status=%08x/%08x acquired=%u vote=%u\n",
+		stage, ret, readl(scp->base + scp->ctrl_reg.pwr_sta_offs),
+		readl(scp->base + scp->ctrl_reg.pwr_sta2nd_offs),
+		scp->gpuldo_acquired, scp->gpuldo.supply_vote);
+}
+
 static int scpsys_gpuldo_write(void *ctx, unsigned int reg, unsigned int value)
 {
 	struct scp *scp = ctx;
@@ -288,7 +302,10 @@ static int scpsys_gpuldo_supply_on(void *ctx)
 
 	/* Existing G3 single-OPP interval; not an inferred internal LDO voltage. */
 	ret = regulator_set_voltage(supply, 846700, 850000);
-	return ret ? ret : regulator_enable(supply);
+	/* Exclusive acquisition already accounts for an inherited enabled rail. */
+	if (!ret && !scp->gpuldo.supply_vote)
+		ret = regulator_enable(supply);
+	return ret;
 }
 
 static int scpsys_gpuldo_supply_off(void *ctx)
@@ -528,6 +545,8 @@ err_regulator:
 
 	dev_err(scp->dev, "Failed to power on domain %s at %s: %d\n",
 		genpd->name, stage, ret);
+	if (scpsys_gpuldo_domain(scpd))
+		scpsys_gpuldo_report(scp, stage, ret);
 	if (shared_bus_protection)
 		mutex_unlock(&scp->bus_prot_lock);
 
@@ -599,6 +618,8 @@ static int scpsys_power_off_raw(struct generic_pm_domain *genpd)
 out:
 	dev_err(scp->dev, "Failed to power off domain %s at %s: %d\n",
 		genpd->name, stage, ret);
+	if (scpsys_gpuldo_domain(scpd))
+		scpsys_gpuldo_report(scp, stage, ret);
 	if (shared_bus_protection)
 		mutex_unlock(&scp->bus_prot_lock);
 
@@ -828,10 +849,10 @@ static struct scp *init_scp(struct platform_device *pdev,
 		struct scp_domain *scpd = &scp->domains[i];
 		const struct scp_domain_data *data = &scp_domain_data[i];
 
+		/* Acquire the adopted vote only after all fallible prerequisites. */
 		if (scp->gpuldo_mode && i == MT6797_POWER_DOMAIN_MFG_ASYNC)
-			scpd->supply = devm_regulator_get_exclusive(&pdev->dev, data->name);
-		else
-			scpd->supply = devm_regulator_get_optional(&pdev->dev, data->name);
+			continue;
+		scpd->supply = devm_regulator_get_optional(&pdev->dev, data->name);
 		if (IS_ERR(scpd->supply)) {
 			if (PTR_ERR(scpd->supply) == -ENODEV &&
 			    !(scp->gpuldo_mode && i == MT6797_POWER_DOMAIN_MFG_ASYNC))
@@ -875,11 +896,33 @@ static struct scp *init_scp(struct platform_device *pdev,
 	}
 
 	if (scp->gpuldo_mode) {
+		struct scp_domain *async = &scp->domains[MT6797_POWER_DOMAIN_MFG_ASYNC];
+
+		i = scpsys_gpuldo_all_off(scp);
+		if (i != 1) {
+			scpsys_gpuldo_report(scp, "pre-acquire domains", -EBUSY);
+			return ERR_PTR(-EBUSY);
+		}
+		scp->gpuldo_gpu = of_find_compatible_node(NULL, NULL, "mediatek,mt6797-mali");
+		if (!scp->gpuldo_gpu)
+			return ERR_PTR(-ENODEV);
+		async->supply = devm_regulator_get_exclusive_state(&pdev->dev,
+				async->data->name, &scp->gpuldo.supply_vote);
+		if (IS_ERR(async->supply)) {
+			i = PTR_ERR(async->supply);
+			of_node_put(scp->gpuldo_gpu);
+			scpsys_gpuldo_report(scp, "exclusive acquisition", i);
+			return ERR_PTR(i);
+		}
+		scp->gpuldo_acquired = true;
+		/*
+		 * Commit boundary: retain this non-removable provider even on error.
+		 * No ERR_PTR/devres put may discard an adopted outstanding vote.
+		 * Admission still rechecks domains and physical rail before writes.
+		 */
 		i = mt6797_gpuldo_admit(&scp->gpuldo, &scpsys_gpuldo_ops, scp);
 		if (i)
-			return ERR_PTR(i);
-		/* Static non-removable provider retains this validated node identity. */
-		scp->gpuldo_gpu = of_find_compatible_node(NULL, NULL, "mediatek,mt6797-mali");
+			scpsys_gpuldo_report(scp, "post-acquire admission", i);
 	}
 	return scp;
 }
@@ -1610,10 +1653,13 @@ static int scpsys_probe(struct platform_device *pdev)
 			soc->bus_prot_reg_update);
 	if (IS_ERR(scp))
 		return PTR_ERR(scp);
+	if (scp->gpuldo_mode && scp->gpuldo.failed)
+		return 0; /* Retained, unregistered and unpublished until reboot. */
 
 	ret = mtk_register_power_domains(pdev, scp, soc->num_domains);
 	if (ret && scp->gpuldo_mode) {
 		mt6797_gpuldo_fail(&scp->gpuldo, ret);
+		scpsys_gpuldo_report(scp, "domain registration", ret);
 		/* Success retains devres backing non-removable domains. */
 		return 0;
 	}
@@ -1626,8 +1672,10 @@ static int scpsys_probe(struct platform_device *pdev)
 		if (ret && IS_ENABLED(CONFIG_PM))
 			dev_err(&pdev->dev, "Failed to add subdomain: %d\n",
 				ret);
-		if (ret && scp->gpuldo_mode)
+		if (ret && scp->gpuldo_mode) {
 			mt6797_gpuldo_fail(&scp->gpuldo, ret);
+			scpsys_gpuldo_report(scp, "subdomain registration", ret);
+		}
 	}
 	if (scp->gpuldo_mode && !scp->gpuldo.failed)
 		smp_store_release(&gpuldo_provider, scp);

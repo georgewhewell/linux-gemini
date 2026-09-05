@@ -52,9 +52,10 @@ Runtime admission independently requires:
   property, no second DT supply reference, and exclusive regulator acquisition.
 - Unique GPU13040000/4000 and exactly the existing single238MHz OPP with
   microvolt interval846700/846700/850000.
-- All six MFG status bits clear in BOTH status registers, plus external rail
-  disabled. Inherited-on or ambiguous state refuses; it is never powered down
-  automatically to manufacture admission.
+- All six MFG status bits clear in BOTH status registers, plus an authoritative
+  adopted external-rail vote (strict exclusive acquisition). Inherited-on is
+  retained, not cycled. Unknown status and contradictory subsequent readback
+  refuse; no domain state is inferred from the external rail.
 - Successful genpd initialization, OF provider registration and all hierarchy
   edges before provider-ready publication. Any registration error retains
   non-removable objects, latches failure and does not publish usable admission.
@@ -64,9 +65,11 @@ Runtime admission independently requires:
 ## Sequence, locks and failure lifetime
 
 The outermost async domain sets fd8=88888888, fe4=8, fc0/fc4=0f0f0f0f,
-fc8=0f once while all GPU domains and VGPU are off. It then writes fbc=1ff,
-sets the existing external846700–850000uV interval and enables VGPU before
-clock/domain power-on. A normal later resume does not repeat fixed setup.
+fc8=0f once while all GPU domains are off. It then writes fbc=1ff and sets
+the existing external846700–850000uV interval. If strict acquisition adopted
+an enabled rail, its one framework vote is reused without another enable;
+otherwise one regulator_enable follows. A normal later resume does not repeat
+fixed setup. The inherited vote is distinct from active GPU-domain lifecycle.
 
 Panfrost's per-device compatible copy removes regulator ownership and its
 duplicate system-sleep clock gate. Its existing runtime callbacks now balance
@@ -91,13 +94,42 @@ Linux consumer. This does not prove an unknown firmware agent is inactive.
 
 The existing provider is built in, has no remove callback, and suppresses bind
 attributes. No initialized owner backing is released on a registration error.
-Before registration, admission does not write GPULDO or enable VGPU. The
-managed exclusive regulator resource uses regulator_put, not an automatic
-disable action; later transition failures do not run probe devres cleanup.
+All allocations, ordinary supplies, clocks and DT prerequisites now precede
+the strict exclusive get. Before registration, admission does not write
+GPULDO or enable VGPU. The managed exclusive resource uses regulator_put,
+not an automatic disable action. After a successful strict get, admission
+failure retains the failed provider and handle, skips registration/publication,
+and returns probe success so devres cannot put an outstanding inherited vote.
+The same retention applies to later transition/registration failures.
 Recovery is the independently supervised exact rescue boot, not an attempted
-runtime restoration of unknown register values. The initial physical-state
-gate may reject an inherited-on device; no observer-only boot is justified by
-this source alone, and no takeover has been implemented.
+runtime restoration of unknown register values. No observer-only boot or
+hardware execution is authorized by this source change.
+
+## T8 inherited-rail correction (host implementation only)
+
+Source3606f6b T8 returned scpsys -EBUSY and warned in regulator_put before
+Panfrost could bind. Exact core2502–2522 adopts enabled hardware into both
+use_count and consumer enable_count; put warns on that outstanding vote.
+That warning proves an imported enable reference, not GPU domains or PGOOD.
+The log cannot distinguish which of the two admission predicates refused.
+
+Vendor `mt_gpufreq.c:2712–2782`, called by `rt5735.c:874`, enables the
+external rail before Mali init. Saved vendor log shows VGPU_EN=1 at1.514016,
+before Mali platform clocks at1.546560. Platform init708–714 then writes
+setup without a rail-off check; power-on's voltage_enable_set(1) returns
+early for already-enabled state (`mt_gpufreq.c:1036`). The old off-only
+rail guard was stronger than that sequence. All-six-domain quiescence and
+the fixed voltage, sole-consumer and DT guards remain unchanged.
+
+The new `regulator_get_exclusive_state()` / devm API returns the imported
+vote from the same core sample and rejects negative is_enabled results.
+Legacy APIs retain their original behavior, including error-as-OFF handling.
+Strict upstream-enable failure restores the prior child use_count before
+destroying the handle; output is unchanged on all errors. Devres storage
+allocation occurs before acquisition. Never infer the vote from a second
+is_enabled read, add an unconditional enable to an imported1, or retry an
+ambiguous disable. `GPULDO_FIRST_FAILURE` logs the first stage/error, both
+raw status words, and acquisition/vote state before terminal retention.
 
 ## Verification
 
@@ -109,6 +141,12 @@ Host suites execute the actual source functions, not copied expected logic:
   combinations,12 on/5 off failure sites, shared-child failures, ordinary unwind.
 - `test-gpuldo-registration.py`: all six GPU-domain init failures, provider
   failure, each five hierarchy-edge failures; no publication or unsafe free.
+- `test-gpuldo-acquire.py`: actual init_scp body, every fallible prerequisite,
+  inherited0/1, contradictory/error post-get samples, retained failed objects,
+  first-error raw status capture and no transition during acquisition.
+- `tools/gemini/test-regulator-exclusive-state.py`: actual core get, destroy,
+  enable, disable, put and devres bodies; inherited0/1, initial read error,
+  upstream success/failures, allocations, legacy behavior and balanced counts.
 - `test-gpuldo-provider.py`: actual provider and Panfrost init,17 ownership and
   malformed-provider/name/index/flag paths; no control path before admission.
 - `test-gpuldo-pm.py`: actual runtime/system callbacks, four resume and two

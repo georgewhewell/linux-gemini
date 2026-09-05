@@ -71,6 +71,8 @@ static ssize_t fake_pread(int fd,void *out,size_t n,off_t off){
  if(mode==4)b[96]=4;
  if(mode==5)b[56]=0;
  if(mode==14)return 1023;
+ if(mode==15)b[0xe8]=1;
+ if(mode==16)b[0x66]=1;
  return n;}
 static int fake_fstat(int fd,struct stat *st){memset(st,0,sizeof(*st));
  if(fd==1){st->st_mode=S_IFBLK;st->st_rdev=makedev(179,6);}
@@ -108,7 +110,7 @@ int main(void){
  assert(partition_identity("PARTN=6\nPARTNAME=nvdata\nPARTNAME=nvdata\n","65536\n")<0);
  assert(partition_identity("PARTN=7\nPARTNAME=nvdata\n","65536\n")<0);
  assert(partition_identity("PARTN=6\nPARTNAME=nvdata","65536\n")<0);
- for(mode=0;mode<=14;mode++){
+ for(mode=0;mode<=16;mode++){
   registered=super_reads=0;memset(opened,0,sizeof(opened));memset(closed,0,sizeof(closed));
   int ret=register_nvdata("/run/private/nvdata");
   assert((mode==0&&!ret)||(mode!=0&&ret<0));

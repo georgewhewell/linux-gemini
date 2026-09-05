@@ -118,3 +118,19 @@ preparation, after root reviews that same-boot capture. The readback must
 preserve every byte except the two zeroed header words and pass admission
 before the original CPU token is used. Unknown state remains a refusal.
 This is authorization and host-test evidence, not a CPU runtime result.
+
+The successor reached SSH on boot
+`4ed487f6-c236-4af7-a8d5-df60fdadf8b3`. Its first exact 4096-byte snapshot
+(`ledger-before.slot`, SHA256
+`45a28dce2af652cb2f8af31afe9c7075acb3003a52869cc0a5eac7976298d6f7`)
+begins with ASCII `<<<RAM_RW>>>`, not DBGC. Root independently ran the actual
+C classifier: header words `[1379679292, 1381977409, 1044266583]`, admission
+`-74`, stale-text eligibility false. No preparation or CPU token was used;
+the owner captured evidence and began exact recovery.
+
+Some historical package research calls that string a console circular-wrap
+marker, but that attribution has not been established in the selected
+kernel's pstore implementation or the inspected vendor/LK source. It is not
+permission to initialize this slot. The captured bytes now replace the
+earlier stale-DBGC hypothesis for this boot; marker provenance and retained
+slot ownership need evidence before selecting a successor preparation policy.

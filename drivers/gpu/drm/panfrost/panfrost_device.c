@@ -266,7 +266,8 @@ int panfrost_device_init(struct panfrost_device *pfdev)
 	}
 
 	/* OPP will handle regulators */
-	if (!pfdev->pfdevfreq.opp_of_table_added) {
+	if (!pfdev->pfdevfreq.opp_of_table_added &&
+	    !pfdev->mt6797_gpuldo_domain_supply) {
 		err = panfrost_regulator_init(pfdev);
 		if (err)
 			goto out_devfreq;
@@ -459,10 +460,13 @@ static int panfrost_device_runtime_resume(struct device *dev)
 	struct panfrost_device *pfdev = dev_get_drvdata(dev);
 	int ret;
 
-	if (pfdev->comp->pm_features & BIT(GPU_PM_RT)) {
-		ret = reset_control_deassert(pfdev->rstc);
-		if (ret)
-			return ret;
+	if ((pfdev->comp->pm_features & BIT(GPU_PM_RT)) ||
+	    pfdev->mt6797_gpuldo_domain_supply) {
+		if (pfdev->comp->pm_features & BIT(GPU_PM_RT)) {
+			ret = reset_control_deassert(pfdev->rstc);
+			if (ret)
+				return ret;
+		}
 
 		ret = clk_enable(pfdev->clock);
 		if (ret)
@@ -493,10 +497,12 @@ err_devfreq:
 	panfrost_gpu_suspend_irq(pfdev);
 	panfrost_gpu_power_off(pfdev);
 err_reset:
-	if (pfdev->comp->pm_features & BIT(GPU_PM_RT) && pfdev->bus_clock)
+	if (((pfdev->comp->pm_features & BIT(GPU_PM_RT)) ||
+	     pfdev->mt6797_gpuldo_domain_supply) && pfdev->bus_clock)
 		clk_disable(pfdev->bus_clock);
 err_bus_clk:
-	if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
+	if ((pfdev->comp->pm_features & BIT(GPU_PM_RT)) ||
+	    pfdev->mt6797_gpuldo_domain_supply)
 		clk_disable(pfdev->clock);
 err_clk:
 	if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
@@ -535,12 +541,14 @@ static int panfrost_device_runtime_suspend(struct device *dev)
 	if (!pfdev->comp->vendor_power_off)
 		panfrost_gpu_power_off(pfdev);
 
-	if (pfdev->comp->pm_features & BIT(GPU_PM_RT)) {
+	if ((pfdev->comp->pm_features & BIT(GPU_PM_RT)) ||
+	    pfdev->mt6797_gpuldo_domain_supply) {
 		if (pfdev->bus_clock)
 			clk_disable(pfdev->bus_clock);
 
 		clk_disable(pfdev->clock);
-		reset_control_assert(pfdev->rstc);
+		if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
+			reset_control_assert(pfdev->rstc);
 	}
 
 	return 0;

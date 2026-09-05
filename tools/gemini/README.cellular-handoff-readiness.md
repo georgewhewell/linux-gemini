@@ -1,8 +1,9 @@
 # MT6797 cold-owner to CCCI readiness
 
-Based on the full transport source lineage `9b501ccd5`, not the integration
-tree's separate control-RX-only owner. No default enables, firmware loading,
-radio commands, SIM operations or hardware transactions are added.
+Originally based on the full transport source lineage `9b501ccd5`; that full
+transport and its subsequent reset/lease fixes are now in this integration
+tree. No default enables, firmware loading, radio commands, SIM operations or
+hardware transactions are added by this source change.
 
 ## Fixed race and lifetime
 
@@ -81,3 +82,20 @@ before AT response or SIM visibility is claimed. Raw-IP service requires a
 usable subscription and is separate from transport bring-up. No new boot is
 scheduled by this source change; use the sole hardware owner and existing
 bounded rollback workflow after the remaining ownership review.
+
+## C1 artifact acceptance review
+
+The separately enabled C1 package `repo-cellular-oneboot@88fa7da` pins kernel
+source `0adbe79a26f783`. Its hardware target is HS1 runtime enqueue, HS2, and
+one plain AT/OK exchange, not network attachment or packet data. The inherited
+GPU success marker and no-radio observation policy were corrected to
+`cellular_oneboot=pass` and `allow-platform` in the cellular manifest only.
+The shared harness and GPU profiles were not changed.
+
+The host validator checks saved evidence, exact candidate boot identity,
+ordered handshake logs, exact OK and absence of terminal failures, then
+fsyncs a hash receipt before optional publication through the hardware owner's
+transport. Missing files, symlinks, rejected watchdog state and wrong expected
+boot cannot publish. Root independently reran the actual host validator and
+device acceptance-tail tests successfully. These are acceptance-protocol
+tests, not evidence that the modem has booted on hardware.

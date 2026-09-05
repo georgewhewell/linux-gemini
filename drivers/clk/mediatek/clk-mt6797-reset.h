@@ -15,6 +15,8 @@ static u16 infra_rst_ofs[] = {
 static u16 infra_rst_idx_map[] = {
 	[MT6797_INFRA_THERM_CTRL_RST] = 0 * RST_NR_PER_BANK,
 	[MT6797_INFRA_PMIC_WRAP_RST] = 1 * RST_NR_PER_BANK,
+	[MT6797_INFRA_CLDMA_RST] = 0 * RST_NR_PER_BANK + 13,
+	[MT6797_INFRA_CLDMA_AO_RST] = 1 * RST_NR_PER_BANK + 4,
 };
 
 static const struct mtk_clk_rst_desc infra_rst_desc = {

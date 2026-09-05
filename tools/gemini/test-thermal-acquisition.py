@@ -44,7 +44,7 @@ struct kunit_suite { const char *name; struct kunit_case *test_cases; };
  struct kunit t={0}; unsigned count=0; \
  for (struct kunit_case *c=(suite).test_cases; c->run_case; c++) { \
   c->run_case(&t); printf("PASS %s\n",c->name); count++; \
- } assert(count==6); return 0; }
+ } assert(count==EXPECTED_CASES); return 0; }
 '''
 suites = {
     "reset": (
@@ -65,6 +65,7 @@ with tempfile.TemporaryDirectory(prefix="gemini-acquisition-") as tmp:
         source.write_text(shim + "\n".join(read(path) for path in files))
         executable = tmp / name
         subprocess.run([os.environ.get("CC", "cc"), "-std=gnu11", "-Wall",
+                        f"-DEXPECTED_CASES={8 if name == 'reset' else 6}",
                         "-Wextra", "-Werror", "-Wno-sign-compare",
                         str(source), "-o", str(executable)], check=True)
         subprocess.run([str(executable)], check=True, timeout=10)

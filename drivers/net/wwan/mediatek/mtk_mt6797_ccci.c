@@ -214,6 +214,9 @@ static void mt6797_ccci_quiesce(struct mt6797_ccci *ccci, int reason)
 	if (atomic_xchg(&ccci->failed, 1))
 		return;
 
+	if (reason != -ESHUTDOWN)
+		dev_err(ccci->dev, "MT6797_CCCI_TERMINAL_FAILURE reason=%d\n", reason);
+
 	mt6797_ccci_frontend_ready(ccci, false);
 	writel(MT6797_CCCI_ACTIVE_IRQS, ccci->pdn + CLDMA_L2_TX_MASK_SET);
 	writel(MT6797_CCCI_ACTIVE_IRQS, ccci->ao + CLDMA_L2_RX_MASK_SET);

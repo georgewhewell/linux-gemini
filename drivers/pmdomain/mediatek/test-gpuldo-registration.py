@@ -52,6 +52,8 @@ static int pm_genpd_add_subdomain(struct generic_pm_domain *a,struct generic_pm_
 static const void *of_device_get_match_data(struct device *d) { (void)d; return &soc; }
 static struct scp *init_scp(struct platform_device *p,void *d,int n,const int *r,bool b) {
  (void)p;(void)d;(void)n;(void)r;(void)b; return &state; }
+static void scpsys_gpuldo_report(struct scp *s,const char *stage,int ret) {
+ (void)s;(void)stage; assert(ret<0); }
 '''
 main=r'''
 static void fresh(bool mode) {
@@ -63,6 +65,8 @@ static void fresh(bool mode) {
 int main(void) {
  struct platform_device p={0};
  fresh(true); assert(!scpsys_probe(&p)); assert(publish==1 && edge_calls==5 && init_calls==6);
+ fresh(true); state.gpuldo.failed=true; state.gpuldo.supply_vote=true;
+ assert(!scpsys_probe(&p)); assert(!init_calls&&!provider_calls&&!edge_calls&&!publish);
  for(int i=1;i<=6;i++) {
   fresh(true); init_fail=i; assert(!scpsys_probe(&p));
   assert(state.gpuldo.failed && !provider_calls && !publish && !edge_calls);

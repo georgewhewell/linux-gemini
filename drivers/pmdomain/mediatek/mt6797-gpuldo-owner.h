@@ -13,6 +13,8 @@ struct mt6797_gpuldo_owner {
 	bool configured;
 	bool active;
 	bool failed;
+	/* One framework vote, possibly adopted before the first GPU activation. */
+	bool supply_vote;
 };
 
 struct mt6797_gpuldo_ops {
@@ -41,7 +43,7 @@ static inline int mt6797_gpuldo_admit(struct mt6797_gpuldo_owner *owner,
 	if (ret != 1)
 		return mt6797_gpuldo_fail(owner, ret < 0 ? ret : -EBUSY);
 	ret = ops->supply_is_enabled(ctx);
-	if (ret != 0)
+	if (ret < 0 || ret != owner->supply_vote)
 		return mt6797_gpuldo_fail(owner, ret < 0 ? ret : -EBUSY);
 	owner->admitted = true;
 	return 0;
@@ -60,12 +62,12 @@ static inline int mt6797_gpuldo_enable(struct mt6797_gpuldo_owner *owner,
 
 	if (!owner->admitted || owner->failed || owner->active)
 		return -EPERM;
-	/* Recheck physical state before each new supply activation. */
+	/* Recheck physical state against the authoritative adopted/owned vote. */
 	ret = ops->all_domains_off(ctx);
 	if (ret != 1)
 		return mt6797_gpuldo_fail(owner, ret < 0 ? ret : -EBUSY);
 	ret = ops->supply_is_enabled(ctx);
-	if (ret != 0)
+	if (ret < 0 || ret != owner->supply_vote)
 		return mt6797_gpuldo_fail(owner, ret < 0 ? ret : -EBUSY);
 	if (!owner->configured) {
 		for (i = 0; i < sizeof(setup) / sizeof(setup[0]); ++i) {
@@ -81,6 +83,7 @@ static inline int mt6797_gpuldo_enable(struct mt6797_gpuldo_owner *owner,
 	ret = ops->supply_enable(ctx);
 	if (ret)
 		return mt6797_gpuldo_fail(owner, ret);
+	owner->supply_vote = true;
 	owner->active = true;
 	return 0;
 }
@@ -99,6 +102,7 @@ static inline int mt6797_gpuldo_disable(struct mt6797_gpuldo_owner *owner,
 	ret = ops->supply_disable(ctx);
 	if (ret)
 		return mt6797_gpuldo_fail(owner, ret);
+	owner->supply_vote = false;
 	ret = ops->supply_is_enabled(ctx);
 	if (ret != 0)
 		return mt6797_gpuldo_fail(owner, ret < 0 ? ret : -EBUSY);

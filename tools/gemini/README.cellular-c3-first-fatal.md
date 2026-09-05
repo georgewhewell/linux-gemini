@@ -77,3 +77,15 @@ AP/MD1→MD1/MD3 adjacency, exclusion of AP/MD3, and permissions/ownership befor
 publishing a separate advertised MPU extent. Test expected values must be
 literal vendor-derived fixtures rather than copying implementation constants.
 No speculative memory expansion or feature-version change is included here.
+
+## Offline decoding
+
+`python3 tools/gemini/check-cellular-first-fatal.py <attributed-dmesg>` checks
+exact hex-block lengths and contiguous offsets, rejects duplicate first-fatal
+summaries and truncated runtime records, and reports finalized reply header,
+advertised runtime/MPU ranges and runtime feature record lengths. It uses no
+hardware interface. The caller must establish boot attribution from the
+transaction receipt; diagnostic completeness is not protocol acceptance.
+`test-cellular-first-fatal-decoder.py` exercises independent wire fixtures,
+corruption/truncation and early failures without payload. These host-only
+tools do not change C4's pinned kernel source or authorize execution.

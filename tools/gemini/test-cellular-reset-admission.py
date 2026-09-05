@@ -126,23 +126,42 @@ clean = r'''
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 typedef uint32_t u32;
-#define dev_info(...) do {} while (0)
 struct mt6797_ccci { unsigned char *ao, *pdn; void *dev; };
-static unsigned calls, inject;
-static u32 readl(void *address) { (void)address; return ++calls == inject ? 1 : 0; }
+static unsigned calls, inject, wake, logged_busy, logs;
+static void *busy_addr;
+static u32 readl(void *address)
+{
+ ++calls;
+ if (address == busy_addr) { assert(calls==5); return wake; }
+ return calls == inject ? 1 : 0;
+}
+static void dev_info(void *dev, const char *format, u32 ul, u32 so,
+ u32 txirq, u32 rxirq, u32 busy, u32 heads)
+{
+ (void)dev; (void)ul; (void)so; (void)txirq; (void)rxirq; (void)heads;
+ assert(strstr(format,"IP_BUSY observed-only after MD1 GO"));
+ logged_busy=busy; logs++;
+}
 ''' + defines + "\n" + function(transport, "mt6797_ccci_clean_reset_check") + r'''
 int main(void)
 {
  unsigned char ao[0x1e00],pdn[0x1e00];
  struct mt6797_ccci ccci={ao,pdn,0};
- assert(!mt6797_ccci_clean_reset_check(&ccci));
- assert(calls == 19);
- for (inject=1; inject<=19; inject++) {
-  calls=0;
-  assert(mt6797_ccci_clean_reset_check(&ccci)==-EUCLEAN && calls==19);
+ busy_addr=pdn+0x04b4;
+ for (wake=0; wake<=1; wake++) {
+  inject=calls=logs=0;
+  assert(!mt6797_ccci_clean_reset_check(&ccci));
+  assert(calls==19 && logs==1 && logged_busy==wake);
+  for (inject=1; inject<=19; inject++) {
+   if (inject==5) continue; /* IP_BUSY is independently MD-driven after GO. */
+   calls=logs=0;
+   assert(mt6797_ccci_clean_reset_check(&ccci)==-EUCLEAN && calls==19);
+   assert(logs==1 && logged_busy==wake);
+  }
  }
- puts("PASS actual pre-ring snapshot: every queue/IRQ/busy/head read rejects nonzero state");
+ puts("PASS actual POST-GO snapshot: busy0/1 observed, all18 AP queue/IRQ/head reads still reject activity; no writes");
 }
 '''
 with tempfile.TemporaryDirectory(prefix="gemini-cellular-clean-") as directory:
@@ -153,3 +172,10 @@ with tempfile.TemporaryDirectory(prefix="gemini-cellular-clean-") as directory:
     subprocess.run([str(path / "clean")], check=True, timeout=5)
 start = function(transport, "mt6797_ccci_start")
 assert start.index("mt6797_ccci_clean_reset_check(") < start.index("writel(")
+check = function(transport, "mt6797_ccci_clean_reset_check")
+assert "writel(" not in check
+probe = function(transport, "mt6797_ccci_probe")
+assert probe.index("mt6797_ccci_validate_handoff(") < probe.index("mt6797_md1_cold_owner_acquire_cldma(")
+assert probe.index("mt6797_md1_cold_owner_acquire_cldma(") < probe.index("if (!mapping.reset_completed)") < probe.index("mt6797_ccci_start(")
+handoff = function(transport, "mt6797_ccci_validate_handoff")
+assert "evidence.token != MT6797_MD1_POST_VECTOR_GO" in handoff and "!evidence.passive_complete" in handoff

@@ -50,3 +50,17 @@ host decoder also confirms the separate unfixed version1/1MiB MPU extent.
 GCC12 AArch64 common.o compile passed, output
 `/tmp/gemini-ccci-wire64-build-jnpWu19w` (handle10770 exit0).
 No active/consumed C4 artifact or hardware was modified by this source work.
+
+## C4 recovery closure
+
+Original execution62117 closed at 05:22:07 on 2026-09-05 after the single
+installed test returned no-HS2; no AT or acceptance publication was attempted.
+The archive in that handoff has SHA256
+`c436ffe1add814ac577a57f21b9b54501a060ec53a4d8080ed7ef48305c7c213`.
+Pstore SHA256
+`6fb0d8667bb5e0e8c074f6be49091407385fc616c57b5142049d1f8a4a39e9d3`
+is attributable to C4, including its 168.670 recovery marker. Rescue boot
+`766d69fd-6d18-4c09-8c80-728c02346b34` passed exact p22/p30/p31 readbacks,
+USB/RJ45 health, CPUs0-7 and no failed units. Both locks were free and no
+writer/supervisor remained. Full chronology and hashes are in `RESULT.md`.
+The corrected wire64 code has not yet been exercised on hardware.

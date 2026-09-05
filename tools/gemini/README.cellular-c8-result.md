@@ -19,7 +19,23 @@ vendor operation, backing semantics and safe provider are the next source
 investigation. Owner-restricted raw evidence is not reproduced here.
 
 The additional exchanges and newly reached FS request are hardware progress,
-not cellular attachment/data or overall handshake success. At this document
-boundary the original transaction is still owned; full evidence and exact
-accepted-rescue/pstore/hash/network/lock closure remain required. No retry
-or filesystem/provisioning mutation is authorized by this result.
+not cellular attachment/data or overall handshake success. The single installed
+test returned no-HS2; no AT, host validator or success marker ran.
+Complete selected RAM archive SHA256
+98db8587ec4e048a9213a68cf0c4f01beee85b27b22156ee554b957eb082486a
+was saved before petter stop at139.67 uptime. Live DT SHA256
+f34b3aa47fd6e392daf14cca6eaa37aee8ce46d9cec8ecc10902c03406e5da47.
+
+Recovery fully closed at07:13:49 with exact accepted rescue boot
+671e5fa7-d61d-477d-bfc5-f0465df05182 on USB and RJ45, all three partition
+hashes matching, no failed units, and all transaction processes/locks released.
+Attributed pstore SHA256
+f72c12919fd75ef5226c860eb00002648c10e6616ca93d343d1f05ac24c30c67
+matches the harness archive and contains the139.712286 candidate marker.
+The image is consumed. No retry or filesystem/provisioning mutation is
+authorized by this result.
+
+Accepted rescue's independently captured watchdog baseline is mtk-wdt,
+inactive, NOWAYOUT0, timeout31, no FD owner/service, and systemd runtime
+watchdog disabled. Do not impose the experimental C/R active-NOWAYOUT
+petter contract on this accepted rescue. No watchdog setting was changed.

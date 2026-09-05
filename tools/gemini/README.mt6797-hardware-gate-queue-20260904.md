@@ -747,6 +747,26 @@ which exempts only the exact healthy zero-fault submit diagnostic from the
 error classifier. Twelve actual classifier fixtures and the verified-rescue
 early-exit fixtures pass. DT, Mesa and thermal policy are unchanged from T2.
 
+### GPU T4: vendor pre-job MMU synchronization
+
+Source `e5e16d9750b6a650e55594509778dc6e43645833`, integrated as
+`dd9618686e080`, adds START_MMU only for actual MT6797 legacy-format jobs.
+Root independently reran the 512-by-three actual configuration tests.
+It preserves T3 address-space initialization and attributes; causality is
+unproven. See `README.gpu-start-mmu.md`.
+
+Package `17fd016ef7b23d8fdbc716282facb81675872fa9` in
+`repo-gpu-start-mmu-thermal-t4` builds bundle
+`/nix/store/ss9rg97kasjahvvbxw7snhzch23f56jj-gemini-gpu-oneboot-p22-bundle`.
+Candidate SHA256 (independently checked):
+`a1a14c4ba890ae088af5971a8b73d1fd9718288ed92350e59c2ca9effe9ced13`.
+Root authorized the sole hardware owner to admit and execute one complete
+bounded transaction, with the original T3 userspace/test script to isolate
+the kernel change. No T4 runtime result is yet recorded here. The separate
+Panfrost-only Mesa build and enhanced failed-pixel diagnostic are not silently
+substituted. DT is unchanged; the fixed harness checksum and early recovery
+exit are retained.
+
 ### GPU/G2/G3 historical candidates
 
 - `2a0b903405328fc085c7b9239467dfc6275dc465bbeee82fb8f1e765c698553f`

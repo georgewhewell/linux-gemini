@@ -63,4 +63,33 @@ is attributable to C4, including its 168.670 recovery marker. Rescue boot
 `766d69fd-6d18-4c09-8c80-728c02346b34` passed exact p22/p30/p31 readbacks,
 USB/RJ45 health, CPUs0-7 and no failed units. Both locks were free and no
 writer/supervisor remained. Full chronology and hashes are in `RESULT.md`.
-The corrected wire64 code has not yet been exercised on hardware.
+At C4 closure, the corrected wire64 code had not yet been exercised.
+
+## C5 hardware result: changed failure boundary, not HS2
+
+C5 consumed candidate
+`aba81399f07efdc89c96e03cda117dc9d70a9fcfb1ad0934786e3c4b3512db18`
+once, using source `67ac10f8c60db237eac7d22ebb7daac6b6f4a4cc`.
+Boot `8a5db888-5752-4d8a-8245-1e4e1bebd65e` accepted HS1 at 7.637182
+and queued the 636-byte runtime representation. First-fatal evidence has
+runtime_len636, reply_finalized1 and Q0 submitted1/reclaimed1/used0.
+The unchanged modem query and expanded record count are independently
+decodable from `handoff/cellular-c5-mOUB7Pe9/dmesg-first-event.txt`.
+
+The fatal source changed from C4's modem watchdog at 23.639153 to the AP
+handshake timer at 37.891790, with a later queue-1 RX interrupt. This is
+measured progress past the previous failure boundary, not proof that the
+modem semantically accepted every runtime field. No HS2 or AT occurred.
+Queue status alone cannot establish the channel or request contents. The
+next change captures bounded pre-ready drops; see README.cellular-preready-rx.md.
+No unsupported service response or MPU permission expansion follows from C5.
+
+Original execution19991 closed at 05:33:55 on 2026-09-05 after the single
+installed test returned no-HS2. Full RAM archive SHA256:
+`bb0f6d9ed0f6da03b1d0a85586c8208549ba86161f6ae36a7fb2fb530d1df90a`.
+Pstore SHA256:
+`c3daef42b77f6188a2871502c3153ef7af92ee77011a2b256836778f945ecaa5`,
+attributed to C5 and its 167.577 recovery marker. Rescue boot
+`c2e16ed7-941b-46cb-bfb2-1a08ecd1a9df` passed exact p22/p30/p31 hashes,
+USB/RJ45, CPUs0–7 and no failed units. Locks were released and the original
+supervisor/writer were gone. C5 is consumed, not a retry candidate.

@@ -1,0 +1,18 @@
+# Default-off first-job GPULDO observation
+
+Exact source baseline: T6 e23f25eddde3135efc707ca10a8cfa99c22bdd83. Host-only implementation and object validation; no image build or hardware authorization.
+
+`panfrost.mt6797_gpuldo_diag` is immutable0400 and defaults false. Disabled mode performs no DT lookup, mapping or read. Enabled mode requires MT6797 vendor initialization, Gemini+MT6797 root compatibles, a unique available `mediatek,mt6797-infracfg` generic syscon node, and exact resource10001000/1000. Nodes declaring clocks/resets are refused. The shared `device_node_to_regmap` path deliberately uses check_res=false: unlike syscon_node_to_regmap it does not acquire clocks or deassert reset on new-map creation. There is no private/arbitrary MMIO mapping or fallback address.
+
+First real job, after its successful existing runtime-PM acquisition and before AS allocation/enable, claims a separate per-device atomic bit. It reads only offsetsfc0/fc4/fc8 once, in that order, outside job_lock/as_lock. Job-lock/as-lock lockdep assertions and might_sleep document/check the execution context. Exactly three calls, no loop, retries, extra power transitions or writes. Failed reads are status-qualified and values zeroed; never interpret an error as measured zero. Lookup failure is recorded unavailable and does not change probe/job success or trigger fallback. The one-shot bit is not reset by GPU recovery, power cycling, read failure or further submits.
+
+The offsets are physically10001fc0/10001fc4/10001fc8, not10000fxx. Read precedent is vendor r12p1 MT6797 `mtk_config_platform.c:508–510`. Other GPULDO controls fbc/fd8/fe4 are deliberately excluded: this audit did not establish their read semantics. No interpretation of voltage, enable state, SRAM protection or causality is built into the diagnostic. Values show current pre-AS codes only; they do not prove which boot stage set them. Three extra reads and logging can perturb timing and must be recorded as the diagnostic delta.
+
+Host tests:
+
+- `python3 drivers/gpu/drm/panfrost/test-gpuldo-diag.py`: actual C functions with strict DT/resource/map/read/PM mocks. Disabled, wrong platform, missing/duplicate/unavailable/non-syscon nodes, failed resource, wrong base/size, clocks/resets and lookup errors cause zero reads. All8 read-failure subsets still cause only the exact three calls; error values initialized/qualified.100 repeated calls and32 concurrent claims do not rearm. Source checks enforce immutable parameter, no writes, pre-AS placement outside job lock.
+- With HOSTCC set to the GCC12 path below: existing PTE/concurrency, first-fault, pristine-AS tests PASS. Actual START_MMU/job test updated only with diagnostic/lock mocks and call assertions:512 combinations x3 first/reuse/reset still emit identical job configurations and retain all power/busy/AS error paths. Failed PM acquisition causes zero diagnostic calls.
+- ARM64 object-only compile PASS, handle54667 exit0, output `/tmp/gemini-gpuldo-diag-build-WwiZ3CeT/{config.log,build.log}`. CONFIG_DRM_PANFROST=y, CONFIG_PROVE_LOCKING=y, CONFIG_LOCKDEP=y. Objects panfrost_gpu.o and panfrost_job.o. This is compile-time lockdep coverage, not runtime validation.
+- HOSTCC `/nix/store/061ybr50r1m2jnvih4vvpgmgwb37df3r-gcc-wrapper-12.2.0/bin/gcc`; cross compiler `/nix/store/2j8rr9fqjqpj4fwb062l1pkbvy51lsf9-aarch64-unknown-linux-gnu-stage-final-gcc-wrapper-12.2.0/bin/aarch64-unknown-linux-gnu-`; make4.4.1. Fresh outdir copied prior lockdep configuration then olddefconfig. No reused source-dependent generated files.
+
+Package identity, opt-in parameter selection, image review and any actual transaction remain separate future steps. No public push.

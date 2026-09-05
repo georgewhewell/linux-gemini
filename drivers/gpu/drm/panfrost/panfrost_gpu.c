@@ -11,6 +11,7 @@
 #include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
 #include <linux/nvmem-consumer.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
 #include <linux/pm_runtime.h>
@@ -28,6 +29,90 @@
 #include "panfrost_gpu.h"
 #include "panfrost_perfcnt.h"
 #include "panfrost_regs.h"
+
+/* Default-off GPULDO observation: no control writes or power transitions. */
+static bool mt6797_gpuldo_diag;
+module_param_named(mt6797_gpuldo_diag, mt6797_gpuldo_diag, bool, 0400);
+MODULE_PARM_DESC(mt6797_gpuldo_diag,
+	"Restricted MT6797 debug: read three GPULDO words once before first AS enable");
+
+static void panfrost_mt6797_gpuldo_prepare(struct panfrost_device *pfdev)
+{
+	struct device_node *np, *duplicate;
+	struct resource res;
+
+	if (!mt6797_gpuldo_diag ||
+	    pfdev->comp->vendor_init != panfrost_gpu_mt6797_init)
+		return;
+
+	pfdev->mt6797_gpuldo_status = -ENODEV;
+	if (!of_machine_is_compatible("planet,gemini-pda") ||
+	    !of_machine_is_compatible("mediatek,mt6797"))
+		return;
+
+	np = of_find_compatible_node(NULL, NULL, "mediatek,mt6797-infracfg");
+	if (!np)
+		return;
+	/* of_find_compatible_node drops its starting reference. */
+	duplicate = of_find_compatible_node(of_node_get(np), NULL,
+					    "mediatek,mt6797-infracfg");
+	if (duplicate) {
+		of_node_put(duplicate);
+		goto out;
+	}
+	if (!of_device_is_available(np) ||
+	    !of_device_is_compatible(np, "syscon") ||
+	    of_address_to_resource(np, 0, &res) ||
+	    res.start != 0x10001000 || resource_size(&res) != 0x1000 ||
+	    of_find_property(np, "clocks", NULL) ||
+	    of_find_property(np, "resets", NULL))
+		goto out;
+
+	/* Generic shared syscon only, with no resources to enable/deassert. */
+	pfdev->mt6797_gpuldo_map = device_node_to_regmap(np);
+	if (IS_ERR(pfdev->mt6797_gpuldo_map)) {
+		pfdev->mt6797_gpuldo_status = PTR_ERR(pfdev->mt6797_gpuldo_map);
+		pfdev->mt6797_gpuldo_map = NULL;
+	} else {
+		pfdev->mt6797_gpuldo_status = 0;
+	}
+out:
+	of_node_put(np);
+}
+
+void panfrost_gpu_mt6797_gpuldo_diag(struct panfrost_device *pfdev)
+{
+	unsigned int v0 = 0, v1 = 0, v2 = 0;
+	int r0, r1, r2;
+
+	if (!mt6797_gpuldo_diag ||
+	    pfdev->comp->vendor_init != panfrost_gpu_mt6797_init ||
+	    test_and_set_bit(0, &pfdev->mt6797_gpuldo_seen))
+		return;
+	if (!pfdev->mt6797_gpuldo_map) {
+		dev_info(pfdev->base.dev, "MT6797_GPULDO stage=pre-as unavailable=%d\n",
+			 pfdev->mt6797_gpuldo_status);
+		return;
+	}
+	lockdep_assert_not_held(&pfdev->as_lock);
+	might_sleep();
+	/* Caller owns a successful job PM reference, outside job_lock/as_lock.
+	 * Vendor debug show reads these words. Other LDO controls are excluded.
+	 * Each status qualifies its value: an error is not a measured zero.
+	 */
+	r0 = regmap_read(pfdev->mt6797_gpuldo_map, 0xfc0, &v0);
+	r1 = regmap_read(pfdev->mt6797_gpuldo_map, 0xfc4, &v1);
+	r2 = regmap_read(pfdev->mt6797_gpuldo_map, 0xfc8, &v2);
+	if (r0)
+		v0 = 0;
+	if (r1)
+		v1 = 0;
+	if (r2)
+		v2 = 0;
+	dev_info(pfdev->base.dev,
+		 "MT6797_GPULDO stage=pre-as fc0_rc=%d fc0=%08x fc4_rc=%d fc4=%08x fc8_rc=%d fc8=%08x\n",
+		 r0, v0, r1, v1, r2, v2);
+}
 
 /* MT6797_DIAG_BEGIN: bounded read-only observations, not a recovery policy. */
 enum panfrost_mt6797_diag_event {
@@ -379,6 +464,7 @@ set_supported_hw:
 
 int panfrost_gpu_mt6797_init(struct panfrost_device *pfdev)
 {
+	panfrost_mt6797_gpuldo_prepare(pfdev);
 	pfdev->mfgcfg = syscon_regmap_lookup_by_phandle(pfdev->base.dev->of_node,
 							"mediatek,mfgcfg");
 	if (IS_ERR(pfdev->mfgcfg))

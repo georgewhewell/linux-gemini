@@ -212,6 +212,10 @@ static int panfrost_job_hw_submit(struct panfrost_job *job, int js)
 	if (ret < 0)
 		goto err_hwsubmit;
 
+	/* Already powered by this real job; before any AS enable/flush. */
+	lockdep_assert_not_held(&pfdev->js->job_lock);
+	panfrost_gpu_mt6797_gpuldo_diag(pfdev);
+
 	if (WARN_ON(job_read(pfdev, JS_COMMAND_NEXT(js)))) {
 		ret = -EINVAL;
 		goto err_hwsubmit;

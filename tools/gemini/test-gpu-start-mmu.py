@@ -34,11 +34,14 @@ struct io_pgtable { int fmt; };
 struct panfrost_mmu { struct io_pgtable *pgtbl_ops; };
 struct panfrost_device;
 struct panfrost_compatible { int (*vendor_init)(struct panfrost_device *); };
+struct mock_job_state { int job_lock; } mock_js;
+#define lockdep_assert_not_held(lock) assert(!*(lock))
 struct panfrost_device {
  struct { void *dev; } base;
  struct panfrost_compatible *comp;
  unsigned features, issues;
  int pfdevfreq;
+ struct mock_job_state *js;
 };
 struct panfrost_job {
  struct panfrost_device *pfdev;
@@ -57,9 +60,11 @@ static unsigned panfrost_get_job_chain_flag(struct panfrost_job *job)
         (job->seqno & 1) ? JS_CONFIG_JOB_CHAIN_FLAG : 0;
 }
 static int pm_error, as_result, next_command, writes, config_writes, config;
-static int phase;
+static int phase, gpuldo_calls;
 static int pm_runtime_get_sync(void *dev)
 { assert(dev); phase = 1; return pm_error; }
+static void panfrost_gpu_mt6797_gpuldo_diag(struct panfrost_device *dev)
+{ assert(dev && phase == 1 && pm_error >= 0 && !dev->js->job_lock); gpuldo_calls++; }
 static u32 job_read(struct panfrost_device *dev, unsigned reg)
 { (void)dev; assert(phase == 1 && reg == JS_COMMAND_NEXT(1)); return next_command; }
 static int panfrost_mmu_as_get(struct panfrost_device *dev, struct panfrost_mmu *mmu)
@@ -80,11 +85,11 @@ static void panfrost_job_write_affinity(struct panfrost_device *d, unsigned requ
 '''
 tests = r'''
 static void clear(void)
-{ pm_error = next_command = writes = config_writes = config = phase = 0; }
+{ pm_error = next_command = writes = config_writes = config = phase = gpuldo_calls = 0; }
 int main(void)
 {
  struct panfrost_compatible comp;
- struct panfrost_device dev = { .base.dev = &comp, .comp = &comp };
+ struct panfrost_device dev = { .base.dev = &comp, .comp = &comp, .js = &mock_js };
  struct io_pgtable table;
  struct panfrost_mmu mmu = { &table };
  struct panfrost_job job = { .pfdev = &dev, .mmu = &mmu, .jc = 0xa00e480 };
@@ -113,16 +118,20 @@ int main(void)
    clear(); assert(!panfrost_job_hw_submit(&job, 1));
    assert(config_writes == 1 && (unsigned)config == expected);
    assert(writes == (flush ? 4 : 3));
+   assert(gpuldo_calls == 1);
   }
   cases++;
  }
  clear(); as_result = 0; pm_error = -EIO;
  assert(panfrost_job_hw_submit(&job, 1) == -EIO && !writes);
+ assert(gpuldo_calls == 0);
  clear(); next_command = 1;
  assert(panfrost_job_hw_submit(&job, 1) == -EINVAL && !writes);
+ assert(gpuldo_calls == 1);
  for (int error = 1; error <= 3; error++) {
   clear(); as_result = error == 1 ? -ETIMEDOUT : error == 2 ? -EBUSY : -EIO;
   assert(panfrost_job_hw_submit(&job, 1) == as_result && !writes);
+  assert(gpuldo_calls == 1);
  }
  assert(cases == 512);
  printf("PASS actual job pre-submit/config: %u combinations x3 first/reuse/reset calls; power/busy/AS errors write no job registers\n", cases);

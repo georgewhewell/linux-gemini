@@ -739,7 +739,8 @@ transaction after fresh admission. It is now consumed: setup reached submit,
 but GPU shareability faults and a pixel mismatch failed the first render.
 No second render was dispatched. Thermal interfaces passed separately.
 See `README.gpu-pristine-as.md` and workspace handoff
-`gpu-thermal-t3-gcstVt3C`; exact rescue restored, final health collection pending.
+`gpu-thermal-t3-gcstVt3C`; exact rescue restored and final health/readbacks
+closed at 03:08:53. USB and RJ45 are healthy; transaction locks are free.
 Use its new `nix/gpu-oneboot-test.sh` (SHA256
 `967db8a05a74534686dc83541b1b319bd41598c576cf5c4e975e623822c320e5`),
 which exempts only the exact healthy zero-fault submit diagnostic from the

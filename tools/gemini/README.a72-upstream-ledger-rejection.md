@@ -79,3 +79,23 @@ classifies an exact 84-byte prefix or 4096-byte saved slot. Output includes the
 capture hash, header and exact admission errno. Native write/sync callbacks
 abort: this tool cannot initialize or clear retained RAM. Passing this check
 does not prove the record stays unchanged across reboot or CPU admission.
+
+## Live rescue layout verified after T3
+
+Read-only collection on rescue boot `344393d0-5bf3-4917-8951-a8de58a066dc`
+confirms the active ramoops module parameters and live DT match the upstream
+layout: base `0x44410000`, size `0xe0000`, record/console/ftrace/pmsg sizes
+`0x1000/0x10000/0x1000/0x20000`, memory type zero. A layout-conflict claim is
+therefore unsupported. The live DT SHA256 is
+`0b65c19394fdd9da631ac57f3fc6e7f0beb2d20ee8d20598a766c221422c3bbf`.
+Evidence is in `handoff/gpu-thermal-t3-gcstVt3C/rescue-live.dtb` and
+`rescue-ledger-readonly-inventory.txt`.
+
+The rescue exposes neither `/dev/mem` nor a raw retained-record interface.
+No device node or module was added, and no retained bytes were changed.
+The next source task is a default-off fixed-slot snapshot with separately
+reviewed, explicit compare-before-write preparation of recognized stale
+conventional pstore records only. Unknown or corrupt transition records must
+remain rejected. The intent is evidence capture and, only when justified,
+preparation followed by the complete CPU workload in the same boot—not a
+separate observer-only boot or automatic reset-on-error behavior.

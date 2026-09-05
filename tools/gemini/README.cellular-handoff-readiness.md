@@ -43,7 +43,7 @@ pre-transaction deferral is preserved. Transport shutdown now uses its
 idempotent remove/quiesce sequence; this does not claim hardware DMA stopped
 until the existing stop-status checks establish that result.
 
-## Admission deliberately unchanged
+## Historical handoff admission and subsequent reset proof
 
 The original handoff-only patch required GO, completed passive observation, positive CLDMA register
 activity and validated LK layout/remap before touching rings. GO is not HS1,
@@ -72,7 +72,7 @@ handshake and data validation remain outstanding.
 C functions with pthread wait and device-link test adapters. It covers ready
 before probe, pending result, timeout, allocation failure, observer error,
 32 publication/wakeup races and shutdown versus late publication. Additional
-source checks cover work-drain ordering and unchanged admission. These are
+source checks cover work-drain ordering and current reset-lease admission. These are
 not in-kernel device-core, IRQ, NAPI or real MMIO tests.
 
 Both modified driver translation units are cross-compiled. Hardware still
@@ -81,7 +81,7 @@ clock/reset/idle state, IRQ polarity, bounded ring startup and real HS1/HS2
 before AT response or SIM visibility is claimed. Raw-IP service requires a
 usable subscription and is separate from transport bring-up. No new boot is
 scheduled by this source change; use the sole hardware owner and existing
-bounded rollback workflow after the remaining ownership review.
+bounded rollback workflow after artifact review.
 
 ## C1 artifact acceptance review
 

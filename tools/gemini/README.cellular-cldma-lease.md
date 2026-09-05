@@ -48,6 +48,10 @@ reservation, absence of transport reservation, devres/link order and a single
 worker scheduling site. The existing actual handoff tests still pass. These
 are not live device-core, hardware DMA or MMIO tests.
 
-Both changed ARM64 translation units are cross-compiled independently. A
-separate reviewed follow-up must still establish reset/clock admission and
-fresh idle/head/IRQ state before replacing the preserved activity gate.
+Both changed ARM64 translation units were cross-compiled independently. At
+the lease-only revision, reset/clock admission and fresh idle/head/IRQ state
+were still required. The current integrated follow-up supplies those checks
+and replaces circular pre-ring activity admission; see
+`README.cellular-integrated.md`. This historical source gap is not a current
+battery, SIM or firmware-download blocker. Live handshake/data results remain
+separate from source ownership tests.

@@ -101,9 +101,11 @@ The implementation is divided into four ownership layers:
    Unknown channels are counted and dropped; they are never surfaced through a
    generic private character device.
 4. The WWAN frontend exposes UART2 as ``WWAN_PORT_AT`` and CCMNI sessions as
-   point-to-point ``ARPHRD_NONE`` links.  Link identifiers map directly to
-   firmware PDP contexts, so standard WWAN rtnetlink creates and removes
-   additional contexts.
+   point-to-point ``ARPHRD_NONE`` links. Link identifiers select the vendor
+   CCMNI channel groups; standard WWAN rtnetlink creates and removes these
+   links. Their association with AT PDP context identifiers needs firmware/
+   session-control evidence; numeric equality is not established by this
+   transport's channel map.
 
 Failure model
 -------------

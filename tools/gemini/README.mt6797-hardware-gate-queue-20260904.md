@@ -697,8 +697,8 @@ Its tail contains a truncated DABT at uptime 406.213 after the petter stopped;
 without a PC/stack the cause is unknown, not a clean-watchdog-path proof.
 Result: `/mnt/Home/src/nixos-gemini/handoff/gpu-thermal-t2-GrhqeH41/RESULT.md`.
 
-The complete upstream A72 derivative also builds, but awaits its later hardware
-review/run. Source `400b1abd630326a6b52de881cb7aa70599bd416f`; candidate
+The complete upstream A72 derivative built and was consumed exactly once.
+Source `400b1abd630326a6b52de881cb7aa70599bd416f`; candidate
 `fa148df6c9d547c53321165d6369ec5682aaacddd4c0abc2d1cc522aac87a099`.
 Bundle: `/nix/store/kr14qsmrvszcrar2rs9lc4xbn93w4mg7-gemini-a72-upstream-oneboot-p22-bundle`.
 Exact upstream topology/thermal input `fe24e244...` is reproducible with
@@ -709,6 +709,38 @@ RAM workload requires rootfs), and a thermal zone enabled by absent status
 must not be rejected or given a new property solely to satisfy a checker.
 The one-shot upstream CPU8/CPU9/down-restore and checked-RAM protocol remains
 intact. Do not reuse the old ca094 execution helpers.
+
+The run reached Linux/SSH and passed pristine pretrigger admission, but CPU8
+returned `-EBADMSG` before the binder attempted physical effects. Derivation
+completed (stage 15); CPU9, CPU_OFF and the RAM workload never ran. No retry.
+The saved RAM evidence, not retained pstore, establishes this failure: the
+pstore console belongs to the preceding rescue boot. The transition-ledger
+profile intentionally skips ramoops registration. Ledger admission is the
+leading source-level rejection hypothesis, not yet a proven raw-header cause.
+Exact rescue and all three partition readbacks passed; USB/RJ45 recovered.
+Evidence: `handoff/a72-upstream-oneboot-h2C8RrjU/RESULT.md` in the workspace.
+
+### GPU T3: reset-pristine address-space activation
+
+Source `3efe6a44cc60d3fa4afff49ab40aacd3c1efbaa6` is integrated as
+`30a4017ed05a5`. Actual MMU failure/ownership and diagnostic tests pass.
+It configures a reset-pristine MT6797 legacy AS before requesting memory
+flushes; reuse still flushes, and failed activation blocks acquisition until
+successful reset. This addresses the source boundary observed in T2, not a
+hardware-proven render fix. See `README.gpu-pristine-as.md`.
+
+Package `ac1e2161bcf9b5106cc8362d947d4045bddc9e6e` in
+`repo-gpu-pristine-thermal-t3` builds bundle
+`/nix/store/j9dx4kqyldhhcb73ljyf92lkgim89nl9-gemini-gpu-oneboot-p22-bundle`.
+Candidate SHA256:
+`d5783d87d297d944fa680697b1c79ac9a4df26213374c9914c6d0e54072b7ac1`.
+Root handed this exact candidate to the sole hardware owner for one bounded
+transaction after fresh admission. Runtime outcome is pending, not PASS.
+Use its new `nix/gpu-oneboot-test.sh` (SHA256
+`967db8a05a74534686dc83541b1b319bd41598c576cf5c4e975e623822c320e5`),
+which exempts only the exact healthy zero-fault submit diagnostic from the
+error classifier. Twelve actual classifier fixtures and the verified-rescue
+early-exit fixtures pass. DT, Mesa and thermal policy are unchanged from T2.
 
 ### GPU/G2/G3 historical candidates
 

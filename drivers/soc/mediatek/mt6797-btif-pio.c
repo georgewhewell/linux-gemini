@@ -606,12 +606,12 @@ int mt6797_btif_pio_irq(const struct mt6797_btif_pio_lease *lease)
 		rx[count++] = pio->io.read8(pio->io.context, MT6797_BTIF_RBR);
 		iir = pio->io.read32(pio->io.context, MT6797_BTIF_IIR);
 	}
-	if (iir & (MT6797_BTIF_IIR_RX | MT6797_BTIF_IIR_RX_TIMEOUT)) {
-		mt6797_btif_pio_fence_locked(pio);
-		ret = -EOVERFLOW;
-		goto out_unlock;
-	}
-
+	/*
+	 * The vendor receiver delivers 256-byte chunks while RX remains pending.
+	 * A full software batch is not a hardware FIFO overrun. Deliver this
+	 * batch and let the level IRQ retrigger for the remainder, bounding each
+	 * threaded invocation without discarding a partial STP frame.
+	 */
 	receive = pio->receive;
 	receive_context = pio->receive_context;
 	if (count && !receive) {
@@ -996,19 +996,31 @@ static void mt6797_btif_pio_test_rx_fragmentation(struct kunit *test)
 	mt6797_btif_pio_test_stop(ctx);
 }
 
-static void mt6797_btif_pio_test_rx_overflow_fences(struct kunit *test)
+static void mt6797_btif_pio_test_rx_budget_preserves_frame(struct kunit *test)
 {
 	struct mt6797_btif_pio_test_context *ctx;
-	unsigned int index;
-	u8 byte = 0;
+	u8 payload[MT6797_BTIF_PIO_TEST_RX_SIZE - MTK_STP_HEADER_SIZE -
+		   MTK_STP_TRAILER_SIZE];
+	size_t frame_length;
 
 	ctx = mt6797_btif_pio_test_start(test);
-	for (index = 0; index < ARRAY_SIZE(ctx->bus->rx); index++)
-		ctx->bus->rx[index] = index;
-	ctx->bus->rx_length = ARRAY_SIZE(ctx->bus->rx);
-	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_irq(ctx->pio_lease), -EOVERFLOW);
-	KUNIT_EXPECT_EQ(test, mt6797_btif_pio_transmit((void *)ctx->pio_lease,
-								  &byte, sizeof(byte)), -ESHUTDOWN);
+	memset(payload, 0x5a, sizeof(payload));
+	KUNIT_ASSERT_EQ(test, mtk_stp_encode(MTK_STP_MODE_FULL, MTK_STP_WMT, 0, 7,
+		payload, sizeof(payload), ctx->bus->rx, sizeof(ctx->bus->rx),
+		&frame_length), 0);
+	ctx->bus->rx_length = frame_length;
+	KUNIT_ASSERT_GT(test, frame_length, (size_t)MT6797_BTIF_PIO_RX_BUDGET);
+	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_irq(ctx->pio_lease), 0);
+	KUNIT_EXPECT_EQ(test, ctx->bus->rx_position,
+			(size_t)MT6797_BTIF_PIO_RX_BUDGET);
+	KUNIT_EXPECT_EQ(test, ctx->endpoint->receive_count, 0U);
+	KUNIT_EXPECT_NE(test, ctx->bus->regs[MT6797_BTIF_IER / sizeof(u32)] &
+			MT6797_BTIF_IER_RX, 0U);
+	KUNIT_ASSERT_EQ(test, mt6797_btif_pio_irq(ctx->pio_lease), 0);
+	KUNIT_EXPECT_EQ(test, ctx->bus->rx_position, frame_length);
+	KUNIT_EXPECT_EQ(test, ctx->endpoint->receive_count, 1U);
+	KUNIT_EXPECT_EQ(test, ctx->endpoint->payload_length, sizeof(payload));
+	KUNIT_EXPECT_MEMEQ(test, ctx->endpoint->payload, payload, sizeof(payload));
 	mt6797_btif_pio_test_stop(ctx);
 }
 
@@ -1217,7 +1229,7 @@ static struct kunit_case mt6797_btif_pio_test_cases[] = {
 	KUNIT_CASE(mt6797_btif_pio_test_partial_tx),
 	KUNIT_CASE(mt6797_btif_pio_test_backpressure_and_timeout),
 	KUNIT_CASE(mt6797_btif_pio_test_rx_fragmentation),
-	KUNIT_CASE(mt6797_btif_pio_test_rx_overflow_fences),
+	KUNIT_CASE(mt6797_btif_pio_test_rx_budget_preserves_frame),
 	KUNIT_CASE(mt6797_btif_pio_test_quiesce_close_and_lease_exclusion),
 	KUNIT_CASE(mt6797_btif_pio_test_mandatory_handoff_is_single_owner),
 	KUNIT_CASE(mt6797_btif_pio_test_clocked_qualification_leaves_loopback_off),

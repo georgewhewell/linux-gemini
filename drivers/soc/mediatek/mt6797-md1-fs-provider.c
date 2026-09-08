@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Opt-in, boot-lifetime MD1 Z-drive authority: confined read-only metadata,
- * directory enumeration and file reads below one retained directory.
+/* Opt-in, boot-lifetime MD1 filesystem authority. Legacy Z is read-only
+ * ext4 or bounded tmpfs; atomic Z/X/Y mode retains three distinct tmpfs roots.
  */
 #include <linux/capability.h>
 #include <linux/compat.h>
@@ -33,7 +33,9 @@ MODULE_PARM_DESC(enable_volatile, "Allow experimental bounded writable tmpfs bac
 
 static DEFINE_SPINLOCK(provider_lock);
 static struct mt6797_fs_state provider_state;
-static struct file *provider_file;
+static struct file *provider_file; /* Z, including legacy registration */
+static struct file *provider_extra[2]; /* X, Y; NULL in legacy mode */
+static struct mt6797_md1_fs_stats provider_extra_stats[2];
 static bool provider_volatile;
 static struct device *provider_cold;
 static struct mt6797_md1_fs_stats provider_stats;
@@ -71,6 +73,35 @@ static bool mt6797_fs_accessible(struct file *file)
 	return mt6797_fs_backing_matches(file, READ_ONCE(provider_volatile));
 }
 
+/* Called under provider_lock. Three-root mode remains all-or-nothing even
+ * when a backing mount changes before cold ownership is consumed.
+ */
+static bool mt6797_fs_roots_accessible(void)
+{
+	int i;
+
+	if (!mt6797_fs_accessible(provider_file))
+		return false;
+	for (i = 0; i < 2; i++)
+		if (provider_extra[i] && !mt6797_fs_accessible(provider_extra[i]))
+			return false;
+	return true;
+}
+
+static struct file *mt6797_fs_drive_file(u8 drive)
+{
+	switch (drive) {
+	case 'Z':
+		return provider_file;
+	case 'X':
+		return provider_extra[0];
+	case 'Y':
+		return provider_extra[1];
+	default:
+		return NULL;
+	}
+}
+
 int mt6797_md1_fs_provider_require(struct device *cold)
 {
 	unsigned long flags;
@@ -80,7 +111,7 @@ int mt6797_md1_fs_provider_require(struct device *cold)
 		return 0;
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = mt6797_fs_require(&provider_state);
-	if (!ret && (provider_cold != cold || !mt6797_fs_accessible(provider_file)))
+	if (!ret && (provider_cold != cold || !mt6797_fs_roots_accessible()))
 		ret = -EPERM;
 	spin_unlock_irqrestore(&provider_lock, flags);
 	return ret;
@@ -94,38 +125,45 @@ int mt6797_md1_fs_provider_claim(struct device *cold)
 	if (!enable)
 		return 0;
 	spin_lock_irqsave(&provider_lock, flags);
-	ret = provider_cold == cold && mt6797_fs_accessible(provider_file) ?
+	ret = provider_cold == cold && mt6797_fs_roots_accessible() ?
 		mt6797_fs_claim(&provider_state) : -EPERM;
 	spin_unlock_irqrestore(&provider_lock, flags);
 	return ret;
 }
 
-int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *stats)
+int mt6797_md1_fs_provider_stats_drive(u8 drive, struct mt6797_md1_fs_stats *stats)
 {
 	unsigned long flags;
 	int ret = -ENODEV;
 
 	spin_lock_irqsave(&provider_lock, flags);
 	if (provider_state.stage == MT6797_FS_CONSUMED &&
-	    mt6797_fs_accessible(provider_file)) {
-		*stats = provider_stats;
+	    mt6797_fs_accessible(mt6797_fs_drive_file(drive))) {
+		*stats = drive == 'Z' ? provider_stats :
+			provider_extra_stats[drive == 'X' ? 0 : 1];
 		ret = 0;
 	}
 	spin_unlock_irqrestore(&provider_lock, flags);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_stats_drive);
+
+int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *stats)
+{
+	return mt6797_md1_fs_provider_stats_drive('Z', stats);
+}
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_stats);
 
-/* The retained, consumed, still read-only root; NULL if none is owned. */
-static struct file *mt6797_fs_root_get(void)
+/* A retained, consumed root with its backing policy intact; NULL if absent. */
+static struct file *mt6797_fs_root_get(u8 drive)
 {
 	struct file *file = NULL;
 	unsigned long flags;
 
 	spin_lock_irqsave(&provider_lock, flags);
 	if (provider_state.stage == MT6797_FS_CONSUMED &&
-	    mt6797_fs_accessible(provider_file))
-		file = get_file(provider_file);
+	    mt6797_fs_accessible(mt6797_fs_drive_file(drive)))
+		file = get_file(mt6797_fs_drive_file(drive));
 	spin_unlock_irqrestore(&provider_lock, flags);
 	return file;
 }
@@ -208,7 +246,7 @@ static int mt6797_fs_stat(const struct file *root, struct dentry *dentry,
 	return 0;
 }
 
-int mt6797_md1_fs_provider_getattr(const char *path,
+int mt6797_md1_fs_provider_getattr_drive(u8 drive, const char *path,
 				   struct mt6797_md1_fs_attr *attr)
 {
 	struct dentry *dentry;
@@ -218,7 +256,7 @@ int mt6797_md1_fs_provider_getattr(const char *path,
 	might_sleep();
 	if (!attr)
 		return -EINVAL;
-	root = mt6797_fs_root_get();
+	root = mt6797_fs_root_get(drive);
 	if (!root)
 		return -ENODEV;
 	dentry = mt6797_fs_walk(root, path);
@@ -232,9 +270,15 @@ put_root:
 	fput(root);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_getattr_drive);
+
+int mt6797_md1_fs_provider_getattr(const char *path, struct mt6797_md1_fs_attr *attr)
+{
+	return mt6797_md1_fs_provider_getattr_drive('Z', path, attr);
+}
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_getattr);
 
-struct file *mt6797_md1_fs_provider_open(const char *path, bool directory)
+struct file *mt6797_md1_fs_provider_open_drive(u8 drive, const char *path, bool directory)
 {
 	struct dentry *dentry;
 	struct file *root, *file;
@@ -242,7 +286,7 @@ struct file *mt6797_md1_fs_provider_open(const char *path, bool directory)
 	int flags = O_RDONLY | O_LARGEFILE;
 
 	might_sleep();
-	root = mt6797_fs_root_get();
+	root = mt6797_fs_root_get(drive);
 	if (!root)
 		return ERR_PTR(-ENODEV);
 	dentry = mt6797_fs_walk(root, path);
@@ -270,13 +314,19 @@ put_root:
 	fput(root);
 	return file;
 }
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open_drive);
+
+struct file *mt6797_md1_fs_provider_open(const char *path, bool directory)
+{
+	return mt6797_md1_fs_provider_open_drive('Z', path, directory);
+}
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open);
 
 /* Only a retained tmpfs root can reach creation or truncation. Parent lookup
  * never follows symlinks or mountpoints; final lookup uses that exact mount.
  * O_TRUNC is deliberately not passed to name lookup or dentry_open.
  */
-struct file *mt6797_md1_fs_provider_open_ram(const char *path, bool writable,
+struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive, const char *path, bool writable,
 					  bool create, bool truncate)
 {
 	struct file *root, *file;
@@ -289,7 +339,7 @@ struct file *mt6797_md1_fs_provider_open_ram(const char *path, bool writable,
 	might_sleep();
 	if (!path || strnlen(path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX)
 		return ERR_PTR(-ENAMETOOLONG);
-	root = mt6797_fs_root_get();
+	root = mt6797_fs_root_get(drive);
 	if (!root)
 		return ERR_PTR(-ENODEV);
 	file = ERR_PTR(-EROFS);
@@ -375,6 +425,12 @@ free_copy:
 put_root:
 	fput(root);
 	return file;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open_ram_drive);
+
+struct file *mt6797_md1_fs_provider_open_ram(const char *path, bool writable, bool create, bool truncate)
+{
+	return mt6797_md1_fs_provider_open_ram_drive('Z', path, writable, create, truncate);
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open_ram);
 
@@ -506,14 +562,18 @@ EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_close);
 static int mt6797_fs_cancel_registration(void)
 {
 	struct device *cold = NULL;
-	struct file *file = NULL;
+	struct file *file = NULL, *extra[2] = {};
 	unsigned long flags;
-	int ret;
+	int i, ret;
 
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = mt6797_fs_cancel(&provider_state);
 	if (!ret) {
 		file = provider_file;
+		for (i = 0; i < 2; i++) {
+			extra[i] = provider_extra[i];
+			provider_extra[i] = NULL;
+		}
 		cold = provider_cold;
 		provider_file = NULL;
 		provider_cold = NULL;
@@ -521,6 +581,9 @@ static int mt6797_fs_cancel_registration(void)
 	spin_unlock_irqrestore(&provider_lock, flags);
 	if (file)
 		fput(file);
+	for (i = 0; i < 2; i++)
+		if (extra[i])
+			fput(extra[i]);
 	put_device(cold);
 	return ret;
 }
@@ -547,15 +610,52 @@ static struct device *mt6797_fs_find_cold(void)
 	return pdev ? &pdev->dev : ERR_PTR(-ENODEV);
 }
 
-static int mt6797_fs_register_fd(int fd, bool ram)
+static int mt6797_fs_validate_root(struct file *file, bool ram,
+				   struct mt6797_md1_fs_stats *stats)
 {
-	struct mt6797_md1_fs_stats stats;
-	struct device *cold = NULL;
-	struct file *file = NULL;
 	struct kstatfs fs;
-	unsigned long flags;
 	int ret;
 
+	ret = -ENOTDIR;
+	if (!d_is_dir(file->f_path.dentry))
+		return ret;
+	ret = -EROFS;
+	if (!mt6797_fs_backing_matches(file, ram) || (file->f_mode & FMODE_WRITE))
+		return ret;
+	/* Local ext4 only: no unbounded network statfs or arbitrary backing type. */
+	ret = -EINVAL;
+	if (file_inode(file)->i_sb->s_magic != (ram ? TMPFS_MAGIC : EXT4_SUPER_MAGIC))
+		return ret;
+	ret = vfs_statfs(&file->f_path, &fs);
+	if (ret)
+		return ret;
+	ret = -EINVAL;
+	if (fs.f_type != (ram ? TMPFS_MAGIC : EXT4_SUPER_MAGIC))
+		return ret;
+	/* Require finite tmpfs limits: at most 64 MiB and 4096 inodes. */
+	if (ram && (fs.f_bsize <= 0 || !fs.f_blocks ||
+		    fs.f_blocks > (64ULL * 1024 * 1024) / fs.f_bsize ||
+		    !fs.f_files || fs.f_files > 4096)) {
+		ret = -EFBIG;
+		return ret;
+	}
+	ret = mt6797_fs_stats_convert(&fs, stats);
+	if (ret)
+		return ret;
+	return 0;
+}
+
+static int mt6797_fs_register_fds(const int *fds, unsigned int count, bool ram)
+{
+	struct mt6797_md1_fs_stats stats[3];
+	struct file *files[3] = {};
+	struct device *cold = NULL;
+	unsigned long flags;
+	unsigned int i, j;
+	int ret;
+
+	if (count != 1 && (count != 3 || !ram))
+		return -EINVAL;
 	if (ram && !enable_volatile)
 		return -EPERM;
 	spin_lock_irqsave(&provider_lock, flags);
@@ -563,36 +663,23 @@ static int mt6797_fs_register_fd(int fd, bool ram)
 	spin_unlock_irqrestore(&provider_lock, flags);
 	if (ret)
 		return ret;
-	file = fget(fd);
-	ret = -EBADF;
-	if (!file)
-		goto fail;
-	ret = -ENOTDIR;
-	if (!d_is_dir(file->f_path.dentry))
-		goto fail;
-	ret = -EROFS;
-	if (!mt6797_fs_backing_matches(file, ram) || (file->f_mode & FMODE_WRITE))
-		goto fail;
-	/* Local ext4 only: no unbounded network statfs or arbitrary backing type. */
-	ret = -EINVAL;
-	if (file_inode(file)->i_sb->s_magic != (ram ? TMPFS_MAGIC : EXT4_SUPER_MAGIC))
-		goto fail;
-	ret = vfs_statfs(&file->f_path, &fs);
-	if (ret)
-		goto fail;
-	ret = -EINVAL;
-	if (fs.f_type != (ram ? TMPFS_MAGIC : EXT4_SUPER_MAGIC))
-		goto fail;
-	/* Require finite tmpfs limits: at most 64 MiB and 4096 inodes. */
-	if (ram && (fs.f_bsize <= 0 || !fs.f_blocks ||
-		    fs.f_blocks > (64ULL * 1024 * 1024) / fs.f_bsize ||
-		    !fs.f_files || fs.f_files > 4096)) {
-		ret = -EFBIG;
-		goto fail;
+	for (i = 0; i < count; i++) {
+		files[i] = fget(fds[i]);
+		ret = -EBADF;
+		if (!files[i])
+			goto fail;
+		ret = mt6797_fs_validate_root(files[i], ram, &stats[i]);
+		if (ret)
+			goto fail;
+		/* Separate superblocks prevent aliases and ancestor roots from
+		 * sharing authority or exhausting another drive's quota.
+		 */
+		for (j = 0; j < i; j++) {
+			ret = -EXDEV;
+			if (file_inode(files[i])->i_sb == file_inode(files[j])->i_sb)
+				goto fail;
+		}
 	}
-	ret = mt6797_fs_stats_convert(&fs, &stats);
-	if (ret)
-		goto fail;
 	cold = mt6797_fs_find_cold();
 	if (IS_ERR(cold)) {
 		ret = PTR_ERR(cold);
@@ -602,13 +689,23 @@ static int mt6797_fs_register_fd(int fd, bool ram)
 	/* Keep a separate local target reference across cancellation/reprobe. */
 	get_device(cold);
 	spin_lock_irqsave(&provider_lock, flags);
-	ret = mt6797_fs_backing_matches(file, ram) ? mt6797_fs_publish(&provider_state) : -EROFS;
+	ret = 0;
+	for (i = 0; i < count; i++)
+		if (!mt6797_fs_backing_matches(files[i], ram))
+			ret = -EROFS;
+	if (!ret)
+		ret = mt6797_fs_publish(&provider_state);
 	if (!ret) {
 		provider_volatile = ram;
-		provider_file = file;
+		provider_file = files[0];
+		provider_stats = stats[0];
 		provider_cold = cold;
-		provider_stats = stats;
-		file = NULL;
+		for (i = 1; i < count; i++) {
+			provider_extra[i - 1] = files[i];
+			provider_extra_stats[i - 1] = stats[i];
+		}
+		for (i = 0; i < count; i++)
+			files[i] = NULL;
 	}
 	spin_unlock_irqrestore(&provider_lock, flags);
 	if (ret) {
@@ -631,21 +728,35 @@ static int mt6797_fs_register_fd(int fd, bool ram)
 	 */
 	return 0;
 fail:
-	if (file)
-		fput(file);
+	for (i = 0; i < count; i++)
+		if (files[i])
+			fput(files[i]);
 	put_device(cold);
 	mt6797_fs_cancel_registration();
 	return ret;
 }
 
+static int mt6797_fs_register_fd(int fd, bool ram)
+{
+	return mt6797_fs_register_fds(&fd, 1, ram);
+}
+
 static long mt6797_fs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct mt6797_md1_fs_registration registration;
+	struct mt6797_md1_fs_ram_roots roots;
 
 	if (!enable || !ns_capable(&init_user_ns, CAP_SYS_ADMIN))
 		return -EPERM;
 	if (cmd == MT6797_MD1_FS_CANCEL)
 		return mt6797_fs_cancel_registration();
+	if (cmd == MT6797_MD1_FS_REGISTER_RAM_ROOTS) {
+		if (copy_from_user(&roots, (void __user *)arg, sizeof(roots)))
+			return -EFAULT;
+		if (roots.version != 1 || roots.flags || roots.reserved)
+			return -EINVAL;
+		return mt6797_fs_register_fds(roots.directory_fd, 3, true);
+	}
 	if (cmd != MT6797_MD1_FS_REGISTER && cmd != MT6797_MD1_FS_REGISTER_RAM)
 		return -ENOTTY;
 	if (copy_from_user(&registration, (void __user *)arg, sizeof(registration)))

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Opt-in, boot-lifetime MD1 Z-drive metadata authority. Never reads file data. */
+/* Opt-in, boot-lifetime MD1 Z-drive authority: confined read-only metadata,
+ * directory enumeration and file reads below one retained directory.
+ */
 #include <linux/capability.h>
 #include <linux/compat.h>
 #include <linux/file.h>
@@ -9,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/mount.h>
 #include <linux/namei.h>
+#include <linux/sched.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -88,61 +91,271 @@ int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *stats)
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_stats);
 
-int mt6797_md1_fs_provider_getattr(const char *name, unsigned int *mode)
+/* The retained, consumed, still read-only root; NULL if none is owned. */
+static struct file *mt6797_fs_root_get(void)
 {
 	struct file *file = NULL;
-	struct dentry *child;
-	struct path path;
-	struct kstat stat;
-	struct qstr qname;
 	unsigned long flags;
-	size_t length;
-	int ret;
 
-	might_sleep();
-	if (!name || !mode)
-		return -EINVAL;
-	length = strnlen(name, 256);
-	if (!length || length == 256 || !strcmp(name, ".") ||
-	    !strcmp(name, "..") || strpbrk(name, "/\\:"))
-		return -EACCES;
 	spin_lock_irqsave(&provider_lock, flags);
 	if (provider_state.stage == MT6797_FS_CONSUMED &&
 	    mt6797_fs_readonly(provider_file))
 		file = get_file(provider_file);
 	spin_unlock_irqrestore(&provider_lock, flags);
-	if (!file)
-		return -ENODEV;
-	qname = (struct qstr)QSTR_INIT(name, length);
-	child = lookup_one_positive_unlocked(mnt_idmap(file->f_path.mnt),
-					    &qname, file->f_path.dentry);
-	if (IS_ERR(child)) {
-		ret = PTR_ERR(child);
-		goto put_file;
-	}
-	/* lookup_one never traverses a mount or follows a symlink. Reject even
-	 * covered mountpoints and non-file objects rather than stat their backing.
-	 */
+	return file;
+}
+
+/* One component below @base. lookup_one never traverses a mount or follows a
+ * symlink; covered mountpoints, special inodes and other superblocks are
+ * refused rather than resolved.
+ */
+static struct dentry *mt6797_fs_walk_component(const struct file *root,
+					       struct dentry *base,
+					       const char *name, size_t len)
+{
+	struct qstr qname = QSTR_INIT(name, len);
+	struct dentry *child;
+
+	if (!d_is_dir(base))
+		return ERR_PTR(-ENOTDIR);
+	child = lookup_one_positive_unlocked(mnt_idmap(root->f_path.mnt),
+					     &qname, base);
+	if (IS_ERR(child))
+		return child;
 	if (d_mountpoint(child) || d_is_symlink(child) ||
 	    (!d_is_reg(child) && !d_is_dir(child)) ||
-	    child->d_sb != file_inode(file)->i_sb || !mt6797_fs_readonly(file)) {
-		ret = -EACCES;
-		goto put_child;
+	    child->d_sb != file_inode(root)->i_sb) {
+		dput(child);
+		return ERR_PTR(-EACCES);
 	}
-	path.mnt = file->f_path.mnt;
-	path.dentry = child;
-	ret = vfs_getattr(&path, &stat, STATX_MODE, AT_STATX_DONT_SYNC);
-	if (!ret && !mt6797_fs_readonly(file))
-		ret = -EACCES;
-	if (!ret)
-		*mode = stat.mode;
-put_child:
-	dput(child);
-put_file:
-	fput(file);
+	return child;
+}
+
+/* @path is slash separated and relative to the root; "" is the root itself.
+ * Absolute paths, trailing separators, empty, dot and dot-dot components are
+ * refused before any lookup.
+ * Returns a referenced dentry on the root's superblock.
+ */
+static struct dentry *mt6797_fs_walk(const struct file *root, const char *path)
+{
+	struct dentry *base, *child;
+	const char *end;
+	size_t len;
+
+	if (!path || strnlen(path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX)
+		return ERR_PTR(-ENAMETOOLONG);
+	base = dget(root->f_path.dentry);
+	while (*path) {
+		end = strchrnul(path, '/');
+		len = end - path;
+		if (!len || len > NAME_MAX || (*end && !end[1]) ||
+		    (len <= 2 && !strncmp(path, "..", len))) {
+			dput(base);
+			return ERR_PTR(-EINVAL);
+		}
+		child = mt6797_fs_walk_component(root, base, path, len);
+		dput(base);
+		if (IS_ERR(child))
+			return child;
+		base = child;
+		path = *end ? end + 1 : end;
+	}
+	return base;
+}
+
+static int mt6797_fs_stat(const struct file *root, struct dentry *dentry,
+			  struct mt6797_md1_fs_attr *attr)
+{
+	struct path path = { .mnt = root->f_path.mnt, .dentry = dentry };
+	struct kstat stat;
+	int ret;
+
+	ret = vfs_getattr(&path, &stat, STATX_MODE | STATX_SIZE | STATX_ATIME |
+			  STATX_MTIME, AT_STATX_DONT_SYNC);
+	if (ret)
+		return ret;
+	if (!mt6797_fs_readonly((struct file *)root))
+		return -EACCES;
+	attr->mode = stat.mode;
+	attr->size = stat.size;
+	attr->atime = stat.atime.tv_sec;
+	attr->mtime = stat.mtime.tv_sec;
+	return 0;
+}
+
+int mt6797_md1_fs_provider_getattr(const char *path,
+				   struct mt6797_md1_fs_attr *attr)
+{
+	struct dentry *dentry;
+	struct file *root;
+	int ret;
+
+	might_sleep();
+	if (!attr)
+		return -EINVAL;
+	root = mt6797_fs_root_get();
+	if (!root)
+		return -ENODEV;
+	dentry = mt6797_fs_walk(root, path);
+	if (IS_ERR(dentry)) {
+		ret = PTR_ERR(dentry);
+		goto put_root;
+	}
+	ret = mt6797_fs_stat(root, dentry, attr);
+	dput(dentry);
+put_root:
+	fput(root);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_getattr);
+
+struct file *mt6797_md1_fs_provider_open(const char *path, bool directory)
+{
+	struct dentry *dentry;
+	struct file *root, *file;
+	struct path target;
+	int flags = O_RDONLY | O_LARGEFILE;
+
+	might_sleep();
+	root = mt6797_fs_root_get();
+	if (!root)
+		return ERR_PTR(-ENODEV);
+	dentry = mt6797_fs_walk(root, path);
+	if (IS_ERR(dentry)) {
+		file = ERR_CAST(dentry);
+		goto put_root;
+	}
+	if (directory != d_is_dir(dentry)) {
+		file = ERR_PTR(directory ? -ENOTDIR : -EISDIR);
+		goto put_dentry;
+	}
+	if (directory)
+		flags |= O_DIRECTORY;
+	target.mnt = root->f_path.mnt;
+	target.dentry = dentry;
+	/* The new file takes its own mount and dentry references. */
+	file = dentry_open(&target, flags, current_cred());
+	if (!IS_ERR(file) && !mt6797_fs_readonly(file)) {
+		fput(file);
+		file = ERR_PTR(-EACCES);
+	}
+put_dentry:
+	dput(dentry);
+put_root:
+	fput(root);
+	return file;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open);
+
+int mt6797_md1_fs_provider_fstat(struct file *file,
+				 struct mt6797_md1_fs_attr *attr)
+{
+	might_sleep();
+	if (!file || !attr || !mt6797_fs_readonly(file))
+		return -EACCES;
+	return mt6797_fs_stat(file, file->f_path.dentry, attr);
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_fstat);
+
+ssize_t mt6797_md1_fs_provider_read(struct file *file, void *buf,
+				    size_t count, loff_t *pos)
+{
+	might_sleep();
+	if (!file || !mt6797_fs_readonly(file))
+		return -EACCES;
+	return kernel_read(file, buf, count, pos);
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_read);
+
+loff_t mt6797_md1_fs_provider_llseek(struct file *file, loff_t offset,
+				     int whence)
+{
+	might_sleep();
+	if (!file || !mt6797_fs_readonly(file))
+		return -EACCES;
+	if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END)
+		return -EINVAL;
+	return vfs_llseek(file, offset, whence);
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_llseek);
+
+struct mt6797_fs_dir_walk {
+	struct dir_context ctx;
+	struct mt6797_md1_fs_entry *entry;
+	bool found;
+};
+
+static bool mt6797_fs_dir_actor(struct dir_context *ctx, const char *name,
+				int len, loff_t pos, u64 ino, unsigned int type)
+{
+	struct mt6797_fs_dir_walk *walk =
+		container_of(ctx, struct mt6797_fs_dir_walk, ctx);
+
+	/* A refused emission is re-presented by the next iterate_dir; accept
+	 * the wanted entry so the position moves past it, refuse the one after.
+	 */
+	if (walk->found)
+		return false;
+	if ((len == 1 && name[0] == '.') ||
+	    (len == 2 && name[0] == '.' && name[1] == '.') ||
+	    len < 1 || len > NAME_MAX)
+		return true;
+	memcpy(walk->entry->name, name, len);
+	walk->entry->name[len] = 0;
+	walk->found = true;
+	return true;
+}
+
+/* Next regular file or directory entry of an open directory, with its
+ * metadata. Symlinks, special inodes and covered mountpoints are skipped.
+ * Returns -ENOENT once the directory is exhausted.
+ */
+int mt6797_md1_fs_provider_next_entry(struct file *dir,
+				      struct mt6797_md1_fs_entry *entry)
+{
+	struct mt6797_fs_dir_walk walk = {
+		.ctx.actor = mt6797_fs_dir_actor,
+		.entry = entry,
+	};
+	struct dentry *child;
+	int ret;
+
+	might_sleep();
+	if (!dir || !entry)
+		return -EINVAL;
+	for (;;) {
+		if (!mt6797_fs_readonly(dir))
+			return -EACCES;
+		walk.found = false;
+		walk.ctx.pos = dir->f_pos;
+		ret = iterate_dir(dir, &walk.ctx);
+		if (ret)
+			return ret;
+		if (!walk.found)
+			return -ENOENT;
+		child = mt6797_fs_walk_component(dir, dir->f_path.dentry,
+						 entry->name, strlen(entry->name));
+		if (IS_ERR(child)) {
+			if (PTR_ERR(child) == -ENOENT || PTR_ERR(child) == -EACCES) {
+				cond_resched();
+				continue;
+			}
+			return PTR_ERR(child);
+		}
+		ret = mt6797_fs_stat(dir, child, &entry->attr);
+		dput(child);
+		return ret;
+	}
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_next_entry);
+
+void mt6797_md1_fs_provider_close(struct file *file)
+{
+	might_sleep();
+	if (!IS_ERR_OR_NULL(file))
+		fput(file);
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_close);
 
 static int mt6797_fs_cancel_registration(void)
 {

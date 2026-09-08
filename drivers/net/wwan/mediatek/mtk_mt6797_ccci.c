@@ -131,9 +131,10 @@ struct mt6797_ccci {
 	struct mt6797_rpc_eint sim_eint[2];
 	atomic_t rpc_logs;
 	atomic_t fs_logs;
-	atomic_t fs_attr_pending;
-	unsigned long fs_attr_indices;
-	struct workqueue_struct *fs_attr_wq;
+	atomic_t fs_pending;
+	unsigned long fs_indices;
+	struct workqueue_struct *fs_wq;
+	struct mt6797_fs_service fs_service; /* fs_wq worker only */
 	struct net_device *napi_dev;
 	struct napi_struct napi;
 	struct mt6797_md1_hs hs;
@@ -444,7 +445,8 @@ static int mt6797_ccci_tx(struct mt6797_ccci *ccci, unsigned int q,
 	mtk_ccci_header_init(header, channel,
 			     mt6797_ccci_next_sequence(ccci, channel), skb->len);
 	header->reserved = reserved;
-	if (channel == MT6797_RPC_TX)
+	/* RPC echoes the request's data0; FS carries the vendor fragment flag. */
+	if (channel == MT6797_RPC_TX || channel == MT6797_FS_TX)
 		header->data0 = data0;
 	if (!q && channel == MTK_CCCI_CONTROL_TX)
 		mt6797_ccci_diag_final_reply(&ccci->diag, skb->data, skb->len);
@@ -473,10 +475,9 @@ static int mt6797_ccci_tx(struct mt6797_ccci *ccci, unsigned int q,
 	/* A new modem request may reuse this slot as soon as its reply is
 	 * published. Release here, before RESUME, not after the worker returns.
 	 */
-	if (channel == MT6797_FS_TX && skb->len == MT6797_FS_ATTR_REPLY_SIZE &&
-	    mt6797_rpc_read(skb->data + 16) == (0xffff0000U | MT6797_FS_GETATTRIBUTES) &&
-	    le32_to_cpu(reserved) < 5)
-		clear_bit(le32_to_cpu(reserved), &ccci->fs_attr_indices);
+	if (channel == MT6797_FS_TX && !(le32_to_cpu(data0) & 0x80000000U) &&
+	    le32_to_cpu(reserved) < MT6797_FS_INDEX_COUNT)
+		clear_bit(le32_to_cpu(reserved), &ccci->fs_indices);
 	writel(BIT(q), ccci->pdn + CLDMA_UL_RESUME_CMD);
 	readl(ccci->pdn + CLDMA_UL_RESUME_CMD);
 	spin_unlock(&ccci->tx_stop_lock);
@@ -879,10 +880,12 @@ static int mt6797_ccci_rpc_rx(struct mt6797_ccci *ccci,
 	return ret;
 }
 
-struct mt6797_ccci_fs_attr_work {
+struct mt6797_ccci_fs_work {
 	struct work_struct work;
 	struct mt6797_ccci *ccci;
-	struct mt6797_fs_attr_request request;
+	u32 index;
+	size_t len;
+	u8 frame[];
 };
 
 static inline bool mt6797_ccci_fs_index_busy(struct mt6797_ccci *ccci, u32 index)
@@ -894,7 +897,7 @@ static inline bool mt6797_ccci_fs_index_busy(struct mt6797_ccci *ccci, u32 index
 	 * whole successful publish+index-release transaction, not its midpoint.
 	 */
 	spin_lock_irqsave(&ccci->tx_stop_lock, flags);
-	busy = test_bit(index, &ccci->fs_attr_indices);
+	busy = test_bit(index, &ccci->fs_indices);
 	spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
 	return busy;
 }
@@ -907,143 +910,146 @@ static int mt6797_ccci_fs_index_claim(struct mt6797_ccci *ccci, u32 index)
 	spin_lock_irqsave(&ccci->tx_stop_lock, flags);
 	if (atomic_read(&ccci->failed) || atomic_read(&ccci->teardown))
 		ret = -ESHUTDOWN;
-	else if (test_and_set_bit(index, &ccci->fs_attr_indices))
+	else if (test_and_set_bit(index, &ccci->fs_indices))
 		ret = -EALREADY;
 	spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
 	return ret;
 }
 
-static void mt6797_ccci_fs_attr_work(struct work_struct *work)
+/* Every frame of one reply is queued in order; only the final frame releases
+ * the request index, inside TX after publication.
+ */
+static int mt6797_ccci_fs_send(struct mt6797_ccci *ccci,
+			       const struct mt6797_fs_reply *reply, size_t *sent)
 {
-	struct mt6797_ccci_fs_attr_work *job =
-		container_of(work, struct mt6797_ccci_fs_attr_work, work);
+	unsigned int frames = mt6797_fs_reply_frames(reply), n;
+	struct sk_buff *skb;
+	int len, ret = 0;
+
+	*sent = 0;
+	for (n = 0; n < frames && !ret; n++) {
+		skb = alloc_skb(MT6797_FS_PREFIX + MT6797_FS_FRAGMENT, GFP_KERNEL);
+		if (!skb)
+			return -ENOMEM;
+		len = mt6797_fs_reply_frame(reply, n, skb_tail_pointer(skb),
+					    MT6797_FS_PREFIX + MT6797_FS_FRAGMENT);
+		if (len < 0) {
+			kfree_skb(skb);
+			return len;
+		}
+		skb_put(skb, len);
+		/* On success TX owns the frame through reclaim. */
+		ret = mt6797_ccci_tx(ccci, 1, skb, MT6797_FS_TX);
+		if (ret)
+			kfree_skb(skb);
+		else
+			*sent += len;
+	}
+	return ret;
+}
+
+static void mt6797_ccci_fs_work(struct work_struct *work)
+{
+	struct mt6797_ccci_fs_work *job =
+		container_of(work, struct mt6797_ccci_fs_work, work);
 	struct mt6797_ccci *ccci = job->ccci;
-	struct sk_buff *reply;
-	u8 bytes[MT6797_FS_ATTR_REPLY_SIZE];
-	unsigned int mode = 0;
-	s32 status;
+	struct mt6797_fs_reply reply = { .capacity = MT6797_FS_REPLY_MAX };
+	size_t sent = 0;
+	s32 status = 0;
 	int ret;
 	bool index_released = false;
 
 	if (atomic_read(&ccci->failed) || atomic_read(&ccci->teardown))
 		goto done;
-	ret = mt6797_md1_fs_provider_getattr(job->request.name, &mode);
-	status = mt6797_fs_attr_result(ret, mode);
-	if (atomic_read(&ccci->failed) || atomic_read(&ccci->teardown))
-		goto done;
-	mt6797_fs_attr_reply(job->request.index, status, bytes);
-	reply = alloc_skb(sizeof(bytes), GFP_KERNEL);
-	if (!reply) {
+	reply.payload = kmalloc(reply.capacity, GFP_KERNEL);
+	if (!reply.payload) {
 		mt6797_ccci_quiesce(ccci, -ENOMEM);
 		goto done;
 	}
-	skb_put_data(reply, bytes, sizeof(bytes));
-	ret = mt6797_ccci_tx(ccci, 1, reply, MT6797_FS_TX);
-	index_released = !ret;
-	if (ret)
-		kfree_skb(reply);
-	if (atomic_add_unless(&ccci->fs_logs, 1, 16))
+	ret = mt6797_fs_service_request(&ccci->fs_service, job->frame, job->len,
+					&reply, &status);
+	if (!ret && !atomic_read(&ccci->failed) && !atomic_read(&ccci->teardown)) {
+		ret = mt6797_ccci_fs_send(ccci, &reply, &sent);
+		index_released = !ret;
+	}
+	if (atomic_add_unless(&ccci->fs_logs, 1, 128))
 		dev_info(ccci->dev,
-			 "CCCI FS op=0x1010 reply_channel=15 status=%d tx_result=%d bytes=32\n",
-			 status, ret);
-	if (ret && ret != -ESHUTDOWN)
+			 "CCCI FS op=0x%x reply_channel=15 status=%d tx_result=%d bytes=%zu\n",
+			 mt6797_fs_read32(job->frame + 16), status, ret, sent);
+	if (ret == -ENOMEM || ret == -EIO || ret == -EBUSY)
 		mt6797_ccci_quiesce(ccci, ret);
+	kfree(reply.payload);
 done:
 	if (!index_released)
-		clear_bit(job->request.index, &ccci->fs_attr_indices);
-	atomic_dec(&ccci->fs_attr_pending);
+		clear_bit(job->index, &ccci->fs_indices);
+	atomic_dec(&ccci->fs_pending);
 	kfree(job);
 }
 
-static void mt6797_ccci_fs_attr_destroy(void *data)
+static void mt6797_ccci_fs_destroy(void *data)
 {
 	struct mt6797_ccci *ccci = data;
-	struct workqueue_struct *wq = xchg(&ccci->fs_attr_wq, NULL);
+	struct workqueue_struct *wq = xchg(&ccci->fs_wq, NULL);
 
-	if (wq)
+	if (wq) {
 		destroy_workqueue(wq);
+		/* No worker can run any more; drop every retained handle. */
+		mt6797_fs_service_release(&ccci->fs_service);
+	}
 }
 
-static int mt6797_ccci_fs_attr_queue(struct mt6797_ccci *ccci,
-				   const struct sk_buff *skb)
-{
-	struct mt6797_fs_attr_request request;
-	struct mt6797_ccci_fs_attr_work *job;
-	int ret;
-
-	ret = mt6797_fs_attr_parse(skb->data, skb->len, &request);
-	if (ret)
-		return ret;
-	if (atomic_read(&ccci->teardown) || !ccci->fs_attr_wq)
-		return -ESHUTDOWN;
-	ret = mt6797_ccci_fs_index_claim(ccci, request.index);
-	if (ret)
-		return ret;
-	/* Five active request indices plus one published callback finishing. */
-	if (atomic_inc_return(&ccci->fs_attr_pending) > 6) {
-		atomic_dec(&ccci->fs_attr_pending);
-		clear_bit(request.index, &ccci->fs_attr_indices);
-		return -ENOSPC;
-	}
-	job = kmalloc(sizeof(*job), GFP_ATOMIC);
-	if (!job) {
-		atomic_dec(&ccci->fs_attr_pending);
-		clear_bit(request.index, &ccci->fs_attr_indices);
-		return -ENOMEM;
-	}
-	job->ccci = ccci;
-	job->request = request;
-	INIT_WORK(&job->work, mt6797_ccci_fs_attr_work);
-	/* Only NAPI queues work. Teardown disables NAPI before destroying wq;
-	 * each fresh job is immutable; at most five active indices plus one
-	 * already-published callback finishing can hold allocated jobs.
-	 */
-	queue_work(ccci->fs_attr_wq, &job->work);
-	return 0;
-}
-
+/* NAPI admission: header sanity, supported operation, one active request per
+ * index, bounded jobs. Unsupported or malformed frames stay captured; the
+ * service parses the immutable copy in process context.
+ */
 static int mt6797_ccci_fs_rx(struct mt6797_ccci *ccci,
 			   struct sk_buff *skb, unsigned int q)
 {
-	struct mt6797_md1_fs_stats stats;
-	u8 bytes[MT6797_FS_REPLY_SIZE];
-	struct sk_buff *reply;
-	s32 status;
+	struct mt6797_ccci_fs_work *job;
+	u32 index;
 	int ret;
 
 	if (!mt6797_md1_fs_provider_enabled())
 		return -EOPNOTSUPP;
 	if (q != 1 || atomic_read(&ccci->failed))
 		return -ESHUTDOWN;
-	/* All FS operations share the request indices. A synchronous disk-info
-	 * reply must not overwrite an outstanding asynchronous attribute request.
-	 */
-	if (skb->len >= 16 && mt6797_rpc_read(skb->data + 12) < 5 &&
-	    mt6797_ccci_fs_index_busy(ccci, mt6797_rpc_read(skb->data + 12)))
-		return -EALREADY;
-	if (skb->len >= 20 &&
-	    mt6797_rpc_read(skb->data + 16) == MT6797_FS_GETATTRIBUTES)
-		return mt6797_ccci_fs_attr_queue(ccci, skb);
-	ret = mt6797_md1_fs_provider_stats(&stats);
-	ret = mt6797_fs_disk_reply(skb->data, skb->len, ret ? NULL : &stats,
-				  bytes, sizeof(bytes), &status);
+	if (skb->len < 24 || skb->len > MT6797_FS_REQUEST_MAX ||
+	    mt6797_fs_read32(skb->data) ||
+	    mt6797_fs_read32(skb->data + 4) != skb->len)
+		return -EPROTO;
+	index = mt6797_fs_read32(skb->data + 12);
+	if (index >= MT6797_FS_INDEX_COUNT)
+		return -EPROTO;
+	if (!mt6797_fs_service_supports(mt6797_fs_read32(skb->data + 16)))
+		return -EOPNOTSUPP;
+	if (atomic_read(&ccci->teardown) || !ccci->fs_wq)
+		return -ESHUTDOWN;
+	ret = mt6797_ccci_fs_index_claim(ccci, index);
 	if (ret)
 		return ret;
-	reply = alloc_skb(sizeof(bytes), GFP_ATOMIC);
-	if (!reply)
+	/* Five active request indices plus one published callback finishing. */
+	if (atomic_inc_return(&ccci->fs_pending) > 6) {
+		atomic_dec(&ccci->fs_pending);
+		clear_bit(index, &ccci->fs_indices);
+		return -ENOSPC;
+	}
+	job = kmalloc(struct_size(job, frame, skb->len), GFP_ATOMIC);
+	if (!job) {
+		atomic_dec(&ccci->fs_pending);
+		clear_bit(index, &ccci->fs_indices);
 		return -ENOMEM;
-	skb_put_data(reply, bytes, sizeof(bytes));
-	/* TX serializes publish against STOP and owns successful replies until
-	 * reclaim. The received buffer remains owned by dispatch in all cases.
+	}
+	job->ccci = ccci;
+	job->index = index;
+	job->len = skb->len;
+	memcpy(job->frame, skb->data, skb->len);
+	INIT_WORK(&job->work, mt6797_ccci_fs_work);
+	/* Only NAPI queues work. Teardown disables NAPI before destroying wq;
+	 * each fresh job is immutable; at most five active indices plus one
+	 * already-published callback finishing can hold allocated jobs.
 	 */
-	ret = mt6797_ccci_tx(ccci, 1, reply, MT6797_FS_TX);
-	if (ret)
-		kfree_skb(reply);
-	if (atomic_add_unless(&ccci->fs_logs, 1, 16))
-		dev_info(ccci->dev,
-			 "CCCI FS op=0x100e reply_channel=15 status=%d tx_result=%d bytes=120\n",
-			 status, ret);
-	return ret;
+	queue_work(ccci->fs_wq, &job->work);
+	return 0;
 }
 
 static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
@@ -1611,7 +1617,7 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	spin_lock_init(&ccci->tx_stop_lock);
 	atomic_set(&ccci->rpc_logs, 0);
 	atomic_set(&ccci->fs_logs, 0);
-	atomic_set(&ccci->fs_attr_pending, 0);
+	atomic_set(&ccci->fs_pending, 0);
 	atomic_set(&ccci->tx_mask_owned, 0);
 	atomic_set(&ccci->rx_mask_owned, 0);
 	mt6797_ccci_read_sim_eint(ccci);
@@ -1700,10 +1706,10 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	ret = mt6797_md1_hs_arm(&ccci->hs, true);
 	if (ret)
 		return ret;
-	ccci->fs_attr_wq = alloc_ordered_workqueue("mt6797-fs-attr", 0);
-	if (!ccci->fs_attr_wq)
+	ccci->fs_wq = alloc_ordered_workqueue("mt6797-fs", 0);
+	if (!ccci->fs_wq)
 		return -ENOMEM;
-	ret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_fs_attr_destroy, ccci);
+	ret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_fs_destroy, ccci);
 	if (ret)
 		return ret;
 	napi_enable(&ccci->napi);
@@ -1731,7 +1737,7 @@ static void mt6797_ccci_remove(struct platform_device *pdev)
 	napi_disable(&ccci->napi);
 	/* STOP serializes against any worker TX before draining metadata work. */
 	mt6797_ccci_quiesce(ccci, -ESHUTDOWN);
-	mt6797_ccci_fs_attr_destroy(ccci);
+	mt6797_ccci_fs_destroy(ccci);
 	cancel_delayed_work_sync(&ccci->handshake_timeout_work);
 	cancel_work_sync(&ccci->hs1_work);
 	kfree_skb(xchg(&ccci->hs1_skb, NULL));

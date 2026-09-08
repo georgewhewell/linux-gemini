@@ -30,11 +30,18 @@ shim=r'''
 #include <stdlib.h>
 #include <string.h>
 #include <sched.h>
-typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef int32_t s32;
+#include <stddef.h>
+typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef int32_t s32; typedef uint64_t u64; typedef int64_t s64;
 typedef uint32_t __le32; typedef uint16_t __be16; typedef uintptr_t dma_addr_t;
+#include <time.h>
+#define min_t(t,a,b) ((t)(a)<(t)(b)?(t)(a):(t)(b))
 #define BIT(n) (1U<<(n))
 #define U16_MAX UINT16_MAX
 #define GFP_ATOMIC 0
+#define EPROTO 71
+#define EOPNOTSUPP 95
+#define struct_size(p,m,n) (sizeof(*(p))+(n))
+#define atomic_inc_return(p) (++*(p))
 #define DMA_TO_DEVICE 1
 #define MT6797_CCCI_QUEUE_COUNT 7
 #define MT6797_CCCI_CHANNEL_COUNT 256
@@ -53,6 +60,7 @@ typedef uint32_t __le32; typedef uint16_t __be16; typedef uintptr_t dma_addr_t;
 #define MT6797_CCCI_DIAG_BAD_CHANNEL 2
 #define MT6797_CCCI_DIAG_BEFORE_READY 3
 #define MT6797_CCCI_DIAG_BAD_SEQUENCE 4
+#define container_of(p,t,m) ((t *)((char *)(p)-offsetof(t,m)))
 #define atomic_read(p) __atomic_load_n(p,__ATOMIC_SEQ_CST)
 #define atomic_xchg(p,v) __atomic_exchange_n(p,v,__ATOMIC_SEQ_CST)
 #define atomic_dec(p) ((void)__atomic_sub_fetch(p,1,__ATOMIC_SEQ_CST))
@@ -72,32 +80,38 @@ typedef uint32_t __le32; typedef uint16_t __be16; typedef uintptr_t dma_addr_t;
 struct mtk_ccci_header {__le32 data0,data1,status,reserved;};
 struct mtk_ccci_frame {u32 data0,data1,reserved;u16 channel,sequence;bool assert_bit;};
 struct sk_buff {u8 *data;size_t len;};
-struct mt6797_md1_fs_stats {u32 block_size,blocks,free_blocks;};
 '''
 adapter=r'''
 struct mt6797_ccci_slot {void *gpd;struct sk_buff *skb;dma_addr_t skb_dma;bool mapped;};
 struct mt6797_ccci_queue {struct mt6797_ccci_slot tx[16];unsigned tx_head,tx_tail,tx_used;pthread_mutex_t tx_lock;};
-struct mt6797_ccci {int failed,ready,rpc_logs,fs_logs,hs,diag;unsigned long fs_attr_indices;void *dev;char *ao,*pdn;
+struct workqueue_struct {int jobs;};
+struct mt6797_ccci {int failed,ready,rpc_logs,fs_logs,hs,diag,teardown,fs_pending;unsigned long fs_indices;void *dev;char *ao,*pdn;
+ struct workqueue_struct *fs_wq;struct mt6797_fs_service fs_service;
  struct mt6797_ccci_queue queue[7];pthread_mutex_t tx_stop_lock;struct mt6797_rpc_eint sim_eint[2];
  int tx_sequence[256],rx_sequence[256];};
 struct mt6797_ccci_link;
-static struct mt6797_ccci c;static char ao[4096],pdn[4096];static u8 desc[7][16][16];
+static struct mt6797_ccci c;static char ao[4096],pdn[4096];static u8 desc[7][16][16];static struct workqueue_struct wq;
 static int mode,allocs,frees,maps,unmaps,publishes,resumes,stops,captures,controls;
 static pthread_t stopper;static bool stopper_started;
 static __thread bool stop_locked;
 static inline bool mt6797_ccci_fs_index_busy(struct mt6797_ccci *,u32);
 static int rx_started,rx_busy;
 static bool test_bit(unsigned i,unsigned long *p){return (*p&(1UL<<i))!=0;}
-static void clear_bit(unsigned i,unsigned long *p){assert(stop_locked);*p&=~(1UL<<i);}
-/* Async work is exercised by its own actual worker suite, not this synchronous
- * legacy RPC/disk fixture. Any accidental call here is a test failure.
+static void clear_bit(unsigned i,unsigned long *p){*p&=~(1UL<<i);}
+static bool test_and_set_bit(unsigned i,unsigned long *p){assert(stop_locked);bool was=(*p&(1UL<<i))!=0;*p|=1UL<<i;return was;}
+/* The FS worker itself is exercised by its own actual suite; this fixture
+ * checks admission, capture and the TX index-release contract only.
  */
-static int mt6797_ccci_fs_attr_queue(struct mt6797_ccci *p,const struct sk_buff *s)
-{(void)p;(void)s;assert(!"unexpected async dispatch in synchronous fixture");return -EOPNOTSUPP;}
+static int jobs,job_allocs;
+static void *kmalloc(size_t n,int flags){(void)flags;assert(!stop_locked);job_allocs++;return malloc(n);}
+static void kfree(void *p){free(p);}
+#define INIT_WORK(w,f) ((w)->fn=(f))
+static void mt6797_ccci_fs_work(struct work_struct *w){(void)w;assert(!"worker never runs in this fixture");}
+static bool queue_work(struct workqueue_struct *w,struct work_struct *job){assert(w==&wq&&!stop_locked);jobs++;
+ struct mt6797_ccci_fs_work *j=container_of(job,struct mt6797_ccci_fs_work,work);assert(j->len==44&&mt6797_fs_read32(j->frame+16)==0x100e);kfree(j);return true;}
 static bool fs_enabled=true;
 static bool mt6797_md1_fs_provider_enabled(void){return fs_enabled;}
-static int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *s)
-{*s=(struct mt6797_md1_fs_stats){4096,12345,6789};return 0;}
+bool mt6797_fs_service_supports(u32 op){return op==0x100e||op==0x1001;}
 static void lock(pthread_mutex_t *p){assert(!pthread_mutex_lock(p));if(p==&c.tx_stop_lock)stop_locked=true;}
 static void unlock(pthread_mutex_t *p){if(p==&c.tx_stop_lock)stop_locked=false;assert(!pthread_mutex_unlock(p));}
 #define spin_lock(p) lock(p)
@@ -150,7 +164,7 @@ static void reset(int m){memset(&c,0,sizeof(c));c.ao=ao;c.pdn=pdn;c.dev=&c;
  assert(!pthread_mutex_init(&c.tx_stop_lock,NULL));
  for(unsigned q=0;q<7;q++){assert(!pthread_mutex_init(&c.queue[q].tx_lock,NULL));for(unsigned i=0;i<16;i++)c.queue[q].tx[i].gpd=desc[q][i];}
  memset(c.rx_sequence,0xff,sizeof(c.rx_sequence));c.sim_eint[0].present=true;c.sim_eint[0].valid=127;c.sim_eint[0].value[6]=1;
- c.tx_sequence[33]=5;c.tx_sequence[15]=9;fs_enabled=true;mode=m;allocs=frees=maps=unmaps=publishes=resumes=stops=captures=controls=0;stopper_started=false;}
+ c.tx_sequence[33]=5;c.tx_sequence[15]=9;c.fs_wq=&wq;fs_enabled=true;mode=m;allocs=frees=maps=unmaps=publishes=resumes=stops=captures=controls=jobs=job_allocs=0;stopper_started=false;}
 static void clean(void){if(stopper_started)assert(!pthread_join(stopper,NULL));
  for(unsigned q=0;q<7;q++){for(unsigned i=0;i<16;i++)if(c.queue[q].tx[i].skb)kfree_skb(c.queue[q].tx[i].skb);
  assert(!pthread_mutex_destroy(&c.queue[q].tx_lock));}assert(!pthread_mutex_destroy(&c.tx_stop_lock));}
@@ -179,47 +193,52 @@ int main(void){
  assert(captures==1&&!maps&&!publishes&&frees==1);clean();
  reset(0);req=request();req->len=15;mt6797_ccci_dispatch_rx(&c,req,1);assert(captures==1&&!maps);clean();
  reset(0);c.failed=1;req=request();assert(mt6797_ccci_rpc_rx(&c,req,1)==-ESHUTDOWN&&!maps);kfree_skb(req);clean();
- /* The actual pre-ready FS dispatch uses the existing TX ownership contract. */
+ /* The actual pre-ready FS dispatch admits one immutable job per request index. */
  reset(0);mt6797_ccci_dispatch_rx(&c,fs_request(),1);
- assert(!c.ready&&publishes==1&&resumes==1&&frees==1&&!captures);
- sent=c.queue[1].tx[0].skb;assert(sent&&sent->len==120);
- assert(!mt6797_rpc_read(sent->data)&&mt6797_rpc_read(sent->data+4)==120);
- assert(mt6797_rpc_read(sent->data+8)==0x8009000f&&mt6797_rpc_read(sent->data+12)==4);
- assert(mt6797_rpc_read(sent->data+100)==6789&&c.tx_sequence[33]==5);clean();assert(allocs==frees);
- for(int m=1;m<=5;m++){reset(m);req=fs_request();int ret=mt6797_ccci_fs_rx(&c,req,1);
-  assert(ret<0&&!publishes&&!resumes&&!c.queue[1].tx_used&&!c.queue[1].tx[0].mapped&&!c.queue[1].tx[0].skb);
-  assert(c.tx_sequence[15]==9);assert(unmaps==(m>=3));kfree_skb(req);clean();assert(allocs==frees);}
- reset(6);req=fs_request();assert(!mt6797_ccci_fs_rx(&c,req,1));kfree_skb(req);clean();
- assert(publishes==1&&resumes==1&&stops==2&&allocs==frees);
+ assert(!c.ready&&jobs==1&&job_allocs==1&&!publishes&&!maps&&frees==1&&!captures&&c.fs_indices==(1UL<<4)&&c.fs_pending==1);clean();
  for(unsigned q=0;q<7;q++)if(q!=1){reset(0);mt6797_ccci_dispatch_rx(&c,fs_request(),q);
-  assert(captures==1&&!maps&&!publishes&&frees==1);clean();}
- reset(0);fs_enabled=false;mt6797_ccci_dispatch_rx(&c,fs_request(),1);assert(captures==1&&!maps);clean();
- reset(0);req=fs_request();mt6797_rpc_write(req->data+16,0x1001);mt6797_ccci_dispatch_rx(&c,req,1);
- assert(captures==1&&!maps&&!publishes&&frees==1);clean();
+  assert(captures==1&&!jobs&&!maps&&!publishes&&frees==1&&!c.fs_indices);clean();}
+ reset(0);fs_enabled=false;mt6797_ccci_dispatch_rx(&c,fs_request(),1);assert(captures==1&&!jobs);clean();
+ reset(0);req=fs_request();mt6797_rpc_write(req->data+16,0x1010);mt6797_ccci_dispatch_rx(&c,req,1);
+ assert(captures==1&&!jobs&&!job_allocs&&frees==1&&!c.fs_indices);clean();
  reset(0);req=fs_request();mt6797_rpc_write(req->data,1);mt6797_ccci_dispatch_rx(&c,req,1);
- assert(captures==1&&!maps&&!publishes&&frees==1);clean();
- reset(0);c.fs_attr_indices=1UL<<4;mt6797_ccci_dispatch_rx(&c,fs_request(),1);
- assert(captures==1&&!maps&&!publishes&&c.fs_attr_indices==(1UL<<4));clean();
- for(int m=0;m<=7;m++)if(m!=1){
-   reset(0);u8 bytes[32];mt6797_fs_attr_reply(4,-9,bytes);
-   req=alloc_skb(32,GFP_ATOMIC);skb_put_data(req,bytes,32);c.fs_attr_indices=1UL<<4;mode=m;
+ assert(captures==1&&!jobs&&frees==1);clean();
+ reset(0);req=fs_request();mt6797_rpc_write(req->data,0x80000000U);mt6797_ccci_dispatch_rx(&c,req,1);
+ assert(captures==1&&!jobs&&frees==1);clean();
+ reset(0);req=fs_request();mt6797_rpc_write(req->data+12,5);mt6797_ccci_dispatch_rx(&c,req,1);
+ assert(captures==1&&!jobs&&frees==1);clean();
+ reset(0);c.fs_indices=1UL<<4;mt6797_ccci_dispatch_rx(&c,fs_request(),1);
+ assert(captures==1&&!jobs&&c.fs_indices==(1UL<<4)&&!c.fs_pending);clean();
+ reset(0);c.failed=1;req=fs_request();assert(mt6797_ccci_fs_rx(&c,req,1)==-ESHUTDOWN&&!jobs);kfree_skb(req);clean();
+ reset(0);c.teardown=1;req=fs_request();assert(mt6797_ccci_fs_rx(&c,req,1)==-ESHUTDOWN&&!jobs&&!c.fs_indices);kfree_skb(req);clean();
+ reset(0);c.fs_pending=6;req=fs_request();assert(mt6797_ccci_fs_rx(&c,req,1)==-ENOSPC&&!jobs&&!c.fs_indices&&c.fs_pending==6);kfree_skb(req);clean();
+ /* TX releases the FS index only when publishing a final (non-fragment) frame. */
+ for(int m=0;m<=7;m++)if(m!=1)for(int fragment=0;fragment<2;fragment++){
+   reset(0);u8 bytes[3584];struct mt6797_fs_reply fsr;u8 payload[8192];mt6797_fs_reply_init(&fsr,payload,sizeof(payload),4,0x1010);
+   if(fragment){static u8 big[7000];assert(!mt6797_fs_reply_add(&fsr,big,sizeof(big)));}
+   else assert(!mt6797_fs_reply_add_u32(&fsr,(u32)-9));
+   int n=mt6797_fs_reply_frame(&fsr,0,bytes,sizeof(bytes));assert(n==(fragment?0xd94:32));
+   req=alloc_skb(n,GFP_ATOMIC);skb_put_data(req,bytes,n);c.fs_indices=1UL<<4;mode=m;
    int ret=mt6797_ccci_tx(&c,1,req,15);
-   if(ret){assert(c.fs_attr_indices==(1UL<<4));kfree_skb(req);}
-   else {assert(!c.fs_attr_indices&&mt6797_rpc_read(req->data+8)==0x8009000f&&mt6797_rpc_read(req->data+12)==4);}
-   clean();assert(allocs==frees);if(m==7)assert(rx_busy==0);
+   if(ret){assert(c.fs_indices==(1UL<<4));kfree_skb(req);}
+   else {assert(c.fs_indices==(fragment?(1UL<<4):0)&&mt6797_rpc_read(req->data+8)==0x8009000f&&mt6797_rpc_read(req->data+12)==4);
+     assert(mt6797_rpc_read(req->data)==(fragment?0x80000000U:0));}
+   clean();assert(allocs==frees);if(m==7)assert(rx_busy==(fragment?1:0));
  }
- puts("PASS actual pre-ready RPC/FS dispatch/TX/STOP: 40/120/32-byte replies, FS index collision capture and successful publish-only index release, independent sequence, DMA ownership unwind, concurrent publish-before-STOP");
+ puts("PASS actual pre-ready RPC/FS dispatch/TX/STOP: 40-byte RPC replies, FS admission/capture/index collision, publish-only final-frame index release with fragment retention, independent sequence, DMA ownership unwind, concurrent publish-before-STOP");
 }
 '''
 parts=[shim,(root/'drivers/net/wwan/mediatek/mtk_mt6797_ccci_rpc.h').read_text(),
-       (root/'drivers/net/wwan/mediatek/mtk_mt6797_ccci_fs.h').read_text(),adapter,
+       (root/'include/linux/soc/mediatek/mt6797-md1-fs-provider.h').read_text().split('#if IS_ENABLED')[0].split('struct device;')[1],
+       (root/'drivers/net/wwan/mediatek/mtk_mt6797_ccci_fs.h').read_text(),
+       'struct work_struct {void (*fn)(struct work_struct *);};\n'+source[source.index('struct mt6797_ccci_fs_work {'):source.index('static inline bool mt6797_ccci_fs_index_busy(')],adapter,
        function(common,'mtk_ccci_header_init('),function(common,'mtk_ccci_header_decode('),
        function(source,'mt6797_ccci_quiesce_from('),function(source,'mt6797_ccci_quiesce('),
        function(source,'mt6797_ccci_tx('),function(source,'mt6797_ccci_rpc_rx('),
-       function(source,'mt6797_ccci_fs_index_busy('),
+       function(source,'mt6797_ccci_fs_index_busy('),function(source,'mt6797_ccci_fs_index_claim('),
        function(source,'mt6797_ccci_fs_rx('),dispatch,tests]
 with tempfile.TemporaryDirectory(prefix='gemini-rpc-transport-') as d:
     p=Path(d);(p/'test.c').write_text('\n'.join(parts))
-    subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror',
+    subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror','-Wno-unused-function',
                     '-pthread',str(p/'test.c'),'-o',str(p/'test')],check=True)
     subprocess.run([str(p/'test')],check=True,timeout=10)

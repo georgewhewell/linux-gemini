@@ -109,7 +109,7 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	struct mt6797_wifi *wifi;
 	struct resource *resource;
 	void __iomem *base;
-	u32 rxinf;
+	u32 rxinf_before, rxinf_after;
 	int ret;
 
 	wifi = devm_kzalloc(dev, sizeof(*wifi), GFP_KERNEL);
@@ -181,10 +181,12 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to establish persistent WLAN HIF\n");
-	ret = mt6797_wifi_hif_runtime_read_rxinf(&wifi->hif_irq, &rxinf);
+	ret = mt6797_wifi_hif_runtime_configure_rxinf(&wifi->hif_irq,
+		&rxinf_before, &rxinf_after);
 	if (ret)
 		goto stop_runtime;
-	dev_info(dev, "HIF client register 0x800c0068=%#010x (read only)\n", rxinf);
+	dev_info(dev, "HIF RX group1 register before=%#010x after=%#010x\n",
+		rxinf_before, rxinf_after);
 
 	platform_set_drvdata(pdev, wifi);
 #if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the production startup register query with transport/event faults.
+"""Exercise production RX group configuration with transport/event faults.
 No hardware register semantics or IRQ concurrency are emulated.
 """
 from pathlib import Path
@@ -19,6 +19,8 @@ program = r'''
 #include <errno.h>
 typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32;
 #define MT6797_WIFI_MCR_WTDR1 0x34
+#define BIT(n) (1U << (n))
+#define lockdep_assert_held(m) assert((m)->held)
 #define msecs_to_jiffies(n) (n)
 struct mutex { bool held; };
 static void mutex_lock(struct mutex *m) { assert(!m->held); m->held=true; }
@@ -33,7 +35,8 @@ static struct mt6797_wifi_hif_irq irq;
 static struct mt6797_wifi_hif_event_copy response;
 static int status_error,arm_error,send_error,take_error,failure;
 static unsigned sent,disarmed,waited;
-static bool timeout;
+static bool timeout, no_write_effect, stale_readback;
+static unsigned timeout_at, fail_send_at, set_count;
 static u32 get_unaligned_le32(const void *p) {
  const u8 *b=p; return (u32)b[0]|(u32)b[1]<<8|(u32)b[2]<<16|(u32)b[3]<<24;
 }
@@ -42,8 +45,9 @@ static int mt6797_wifi_hif_runtime_status(struct mt6797_wifi_hif_irq *i) {
  assert(i==&irq && i->lifecycle_lock.held); return status_error;
 }
 static int mt6797_wifi_command_init(u8 *p,size_t cap,size_t payload,u8 id,bool set,u8 seq) {
- assert(cap==16 && payload==8 && id==0xc0 && !set && seq==0xf0);
- memset(p,0,16); p[0]=16; p[3]=0x80; p[4]=id; p[5]=0xa0; p[7]=seq; return 0;
+ assert(cap==16 && payload==8 && id==0xc0 && set==(seq==0xf1));
+ assert(seq==0xf0 || seq==0xf1 || seq==0xf2);
+ memset(p,0,16); p[0]=16; p[3]=0x80; p[4]=id; p[5]=0xa0; p[6]=set; p[7]=seq; return 0;
 }
 static int mt6797_wifi_hif_wait_event_arm(struct mt6797_wifi_hif_wait_event *w,u8 id,const u8 *m,size_t n) {
  assert(irq.lifecycle_lock.held && !w->armed && id==5 && !m && !n);
@@ -51,16 +55,28 @@ static int mt6797_wifi_hif_wait_event_arm(struct mt6797_wifi_hif_wait_event *w,u
  w->armed=true; return 0;
 }
 static int mt6797_wifi_hif_runtime_send(struct mt6797_wifi_hif_irq *i,u32 addr,const u8 *p,size_t n) {
- const u8 expected[16]={16,0,0,0x80,0xc0,0xa0,0,0xf0,0x68,0,0x0c,0x80,0,0,0,0};
- assert(i==&irq && i->lifecycle_lock.held && i->wait_event.armed);
- assert(addr==0x34 && n==16 && !memcmp(p,expected,16)); sent++; return send_error;
+ assert(i==&irq && i->lifecycle_lock.held && addr==0x34 && n==16);
+ assert(p[0]==16 && !p[1] && !p[2] && p[3]==0x80 && p[4]==0xc0 && p[5]==0xa0);
+ assert(get_unaligned_le32(p+8)==0x800c0068);
+ sent++;
+ if(p[6]) {
+  assert(p[6]==1 && p[7]==0xf1 && !i->wait_event.armed);
+  assert(get_unaligned_le32(p+12)==(get_unaligned_le32(response.payload+4)|1U));
+  set_count++;
+  if(!no_write_effect) memcpy(response.payload+4,p+12,4);
+ } else {
+  assert(i->wait_event.armed && !get_unaligned_le32(p+12));
+  if(p[7]==0xf2 && !stale_readback) response.sequence=0xf2;
+ }
+ if(fail_send_at==sent) return -EIO;
+ return send_error;
 }
 static unsigned long wait_for_completion_timeout(struct completion *c,unsigned long ticks) {
  assert(c==&irq.wait_event.completion && irq.wait_event.armed && ticks==1000);
- waited++; return !timeout;
+ waited++; return !timeout && waited!=timeout_at;
 }
 static int mt6797_wifi_hif_wait_event_take(struct mt6797_wifi_hif_wait_event *w,struct mt6797_wifi_hif_event_copy *e) {
- assert(w->armed); *e=response; return take_error;
+ assert(w->armed); *e=response; w->armed=false; return take_error;
 }
 static void mt6797_wifi_hif_runtime_fail(struct mt6797_wifi_hif_irq *i,int reason) {
  assert(i==&irq && i->lifecycle_lock.held && reason<0); failure=reason;
@@ -72,13 +88,15 @@ program += src[src.index('int mt6797_wifi_hif_runtime_read_rxinf('):src.index('i
 program += r'''
 static void setup(void) {
  memset(&irq,0,sizeof(irq)); memset(&response,0,sizeof(response));
- status_error=arm_error=send_error=take_error=failure=0; sent=disarmed=waited=0; timeout=false;
+ status_error=arm_error=send_error=take_error=failure=0; sent=disarmed=waited=set_count=0; timeout=no_write_effect=stale_readback=false; timeout_at=fail_send_at=0;
  response.id=5; response.sequence=0xf0; response.packet_length=16; response.payload_length=8;
  put_unaligned_le32(0x800c0068,response.payload); put_unaligned_le32(0x12345678,response.payload+4);
 }
 static void run(int error) {
  u32 value=0xdeadbeef;
- assert(mt6797_wifi_hif_runtime_read_rxinf(&irq,&value)==error);
+ mutex_lock(&irq.lifecycle_lock);
+ assert(mt6797_wifi_hif_runtime_read_rxinf(&irq,0xf0,&value)==error);
+ mutex_unlock(&irq.lifecycle_lock);
  assert(value==(error?0:0x12345678)); assert(!irq.lifecycle_lock.held && !irq.wait_event.armed);
 }
 int main(void) {
@@ -101,8 +119,33 @@ int main(void) {
   }
   run(-EPROTO); assert(failure==-EPROTO && disarmed==1);
  }
- assert(mt6797_wifi_hif_runtime_read_rxinf(NULL,NULL)==-EINVAL);
- puts("PASS: production RXINF query: read-only command, lifecycle ownership, exact reply matching, timeout/error fencing and waiter cleanup");
+ u32 before,after;
+ setup();
+ assert(!mt6797_wifi_hif_runtime_configure_rxinf(&irq,&before,&after));
+ assert(before==0x12345678 && after==0x12345679 && sent==3 && set_count==1 && waited==2 && !failure);
+ assert(!irq.lifecycle_lock.held && !irq.wait_event.armed);
+ setup(); put_unaligned_le32(0x12345679,response.payload+4);
+ assert(!mt6797_wifi_hif_runtime_configure_rxinf(&irq,&before,&after));
+ assert(before==0x12345679 && after==before && sent==1 && !set_count);
+ for(unsigned bad=0;bad<6;bad++) {
+  setup();
+  switch(bad) {
+   case 0: timeout_at=1; break;
+   case 1: fail_send_at=2; break;
+   case 2: fail_send_at=3; break;
+   case 3: timeout_at=2; break;
+   case 4: no_write_effect=true; break;
+   case 5: stale_readback=true; break;
+  }
+  assert(mt6797_wifi_hif_runtime_configure_rxinf(&irq,&before,&after)<0);
+  assert(failure<0 && !irq.lifecycle_lock.held && !irq.wait_event.armed);
+  assert(set_count==(bad!=0));
+ }
+ setup(); response.payload[0]++;
+ assert(mt6797_wifi_hif_runtime_configure_rxinf(&irq,&before,&after)==-EPROTO && !set_count);
+ assert(mt6797_wifi_hif_runtime_configure_rxinf(NULL,&before,&after)==-EINVAL);
+ assert(mt6797_wifi_hif_runtime_configure_rxinf(&irq,&before,&before)==-EINVAL);
+ puts("PASS: production RXINF read/modify/readback: group1 only, other bits preserved, distinct sequences, existing enable, malformed/stale/timeout/error fencing, no consumer after ambiguous write");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-rxinf-') as temporary:

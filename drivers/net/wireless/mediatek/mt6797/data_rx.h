@@ -6,8 +6,9 @@
 
 /* Borrowed input bytes; caller must copy before returning from the RX sink. */
 struct mt6797_wifi_data_rx {
-	const u8 *ethernet;
-	size_t length;
+	u8 ethernet[14];
+	const u8 *payload;
+	size_t length; /* Ethernet header plus borrowed payload. */
 	u64 pn;
 	u8 transmitter[6];
 	u8 bss_index;
@@ -19,7 +20,7 @@ struct mt6797_wifi_data_rx {
 	bool eapol;
 };
 
-/* Decode only complete, translated infrastructure data MPDUs. AP/WTBL/key
+/* Decode complete translated or native infrastructure data MPDUs. AP/WTBL/key
  * ownership and controlled-port policy are enforced by the connection owner.
  */
 int mt6797_wifi_data_rx_decode(const u8 *packet, size_t available,

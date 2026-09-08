@@ -132,7 +132,7 @@ static void mt6797_wifi_rx_descriptor_test(struct kunit *test)
 	int ret;
 
 	put_unaligned_le16(sizeof(packet), packet);
-	put_unaligned_le16(0xf << 9, packet + 2);
+	put_unaligned_le16(0x4000 | (0xf << 9), packet + 2);
 	packet[5] = 6;
 	packet[6] = BIT(7) | ETH_HLEN;
 	packet[8] = 31;
@@ -172,24 +172,26 @@ static void mt6797_wifi_rx_bounds_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EMSGSIZE);
 
 	put_unaligned_le16(32, packet);
+	put_unaligned_le16(0x4000, packet + 2);
 	packet[6] = BIT(7) | ETH_HLEN;
 	put_unaligned_le16(BIT(1), packet + 10);
 	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
 	KUNIT_EXPECT_EQ(test, ret, -EBADMSG);
 
 	put_unaligned_le16(16, packet);
-	put_unaligned_le16(BIT(12), packet + 2);
+	put_unaligned_le16(0x4000 | BIT(12), packet + 2);
 	put_unaligned_le16(0, packet + 10);
 	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
 	KUNIT_EXPECT_EQ(test, ret, -EPROTO);
 
 	put_unaligned_le16(32, packet);
-	put_unaligned_le16(0, packet + 2);
+	put_unaligned_le16(0x4000, packet + 2);
 	packet[6] = 17;
 	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
 	KUNIT_EXPECT_EQ(test, ret, -EPROTO);
 
 	packet[6] = 14;
+	put_unaligned_le16(0, packet + 2);
 	ret = mt6797_wifi_rx_parse(packet, sizeof(packet), &frame);
 	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
 }

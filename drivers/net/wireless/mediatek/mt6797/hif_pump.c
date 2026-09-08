@@ -66,6 +66,7 @@ int mt6797_wifi_hif_pump_dispatch(
 		deliver = true;
 		break;
 	case MT6797_WIFI_RX_IEEE80211:
+	case MT6797_WIFI_RX_NATIVE_DATA:
 		if (check_add_overflow(stats->ieee80211_frames, 1ULL, &typed))
 			return -EOVERFLOW;
 		stats->ieee80211_frames = typed;
@@ -76,6 +77,8 @@ int mt6797_wifi_hif_pump_dispatch(
 		if (check_add_overflow(stats->ethernet_frames, 1ULL, &typed))
 			return -EOVERFLOW;
 		stats->ethernet_frames = typed;
+		if (ops && ops->deliver_frame)
+			ret = ops->deliver_frame(ops->context, frame);
 		break;
 	default:
 		return -EPROTO;
@@ -165,8 +168,22 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 			if (ops->expired(ops->context))
 				return -ETIMEDOUT;
 			ret = mt6797_wifi_rx_parse(packet, lengths[port], &frame);
-			if (ret)
-				return ret;
+			if (ret) {
+				if (ops->reject_packet)
+					ops->reject_packet(ops->context, packet,
+						lengths[port], ret);
+				/* This complete FIFO item has already been drained.
+				 * Bad air frames and unsupported hardware reports do
+				 * not invalidate the command transport or live keys.
+				 */
+				if (ret != -EBADMSG && ret != -EOPNOTSUPP)
+					return ret;
+				if (check_add_overflow(stats->rx_dropped, 1ULL,
+						       &stats->rx_dropped))
+					return -EOVERFLOW;
+				packets++;
+				continue;
+			}
 			ret = mt6797_wifi_hif_pump_dispatch(ops, stats, &frame);
 			if (ret)
 				return ret;

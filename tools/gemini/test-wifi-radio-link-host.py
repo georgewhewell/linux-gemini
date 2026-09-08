@@ -71,7 +71,8 @@ for name in ['IEEE80211_FCTL_VERS', 'IEEE80211_FCTL_FTYPE', 'IEEE80211_FCTL_STYP
              'IEEE80211_STYPE_DEAUTH', 'IEEE80211_STYPE_DISASSOC']:
     program += re.search(r'^#define\s+' + name + r'\s+[^\n]+', ieee, re.M)[0] + '\n'
 program += '''
-static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
+static unsigned data_calls;
+static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; data_calls++; return 0; }
 '''
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
              'mt6797_radio_link_frame', 'mt6797_radio_disconnect']:
@@ -96,6 +97,10 @@ static void check(const u8 *p,size_t length,bool translated,unsigned header,bool
 }
 int main(void) {
  u8 p[26];
+ struct mt6797_wifi_rx_view data_view={.kind=MT6797_WIFI_RX_ETHERNET};
+ assert(!mt6797_radio_link_frame(&r,&data_view) && data_calls==1);
+ data_view.kind=MT6797_WIFI_RX_NATIVE_DATA;
+ assert(!mt6797_radio_link_frame(&r,&data_view) && data_calls==2);
  frame(p,0xc0); check(p,26,false,24,true);
  frame(p,0xa0); check(p,26,false,24,true);
  for(unsigned type=0;type<2;type++) {

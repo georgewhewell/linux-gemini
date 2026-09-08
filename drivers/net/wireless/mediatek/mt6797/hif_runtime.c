@@ -255,6 +255,18 @@ static int mt6797_wifi_hif_runtime_program(void *context)
 	return ret ?: (value == MT6797_WIFI_WHIER_DEFAULT ? 0 : -EIO);
 }
 
+static void mt6797_wifi_hif_runtime_reject_packet(
+	void *context, const u8 *packet, size_t length, int error)
+{
+	struct mt6797_wifi_hif_irq *irq = context;
+
+	/* The first four bytes contain length/type, including for reports whose
+	 * remaining layout is not an RX descriptor. Do not dump their contents.
+	 */
+	dev_warn_ratelimited(irq->dev, "RX rejected error=%d available=%zu type=%#x\n",
+		error, length, length >= 4 ? get_unaligned_le16(packet + 2) : 0);
+}
+
 static int mt6797_wifi_hif_runtime_clear_status(void *context);
 
 static void mt6797_wifi_hif_runtime_publish(
@@ -918,6 +930,7 @@ static int mt6797_wifi_hif_runtime_clear_status(void *context)
 		.read_packet = mt6797_wifi_hif_runtime_pump_packet,
 		.deliver_event = mt6797_wifi_hif_runtime_pump_event,
 		.deliver_frame = mt6797_wifi_hif_runtime_pump_frame,
+		.reject_packet = mt6797_wifi_hif_runtime_reject_packet,
 		.expired = mt6797_wifi_hif_runtime_pump_expired,
 		.allow_empty_status = true,
 		.context = irq,
@@ -969,6 +982,7 @@ static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
 			.read_packet = mt6797_wifi_hif_runtime_pump_packet,
 			.deliver_event = mt6797_wifi_hif_runtime_pump_event,
 			.deliver_frame = mt6797_wifi_hif_runtime_pump_frame,
+			.reject_packet = mt6797_wifi_hif_runtime_reject_packet,
 			.expired = mt6797_wifi_hif_runtime_pump_expired,
 			.context = irq,
 		};

@@ -18,6 +18,8 @@
 #define MT6797_WIFI_RX_PACKET_TYPE_MASK		0xe00fU
 #define MT6797_WIFI_RX_PACKET_TYPE_EVENT		0xe000U
 #define MT6797_WIFI_RX_PACKET_TYPE_SW_FRAME	0xe001U
+#define MT6797_WIFI_RX_PACKET_TYPE_DATA		0x4000U
+#define MT6797_WIFI_RX_HW_TYPE_MASK		0xe000U
 #define MT6797_WIFI_RX_GROUPS_MASK		GENMASK(12, 9)
 #define MT6797_WIFI_RX_GROUPS_SHIFT		9
 #define MT6797_WIFI_RX_HEADER_LENGTH_MASK	GENMASK(5, 0)
@@ -149,6 +151,12 @@ int mt6797_wifi_rx_parse(const u8 *packet, size_t available,
 		frame->sequence = event.sequence;
 		return 0;
 	}
+	/* Other hardware reports have different layouts, not an RX descriptor. */
+	if ((packet_type & MT6797_WIFI_RX_HW_TYPE_MASK) !=
+	    MT6797_WIFI_RX_PACKET_TYPE_DATA &&
+	    (packet_type & MT6797_WIFI_RX_PACKET_TYPE_MASK) !=
+	    MT6797_WIFI_RX_PACKET_TYPE_SW_FRAME)
+		return -EOPNOTSUPP;
 	if (available < MT6797_WIFI_RX_DESCRIPTOR_LENGTH)
 		return -EMSGSIZE;
 
@@ -193,8 +201,13 @@ int mt6797_wifi_rx_parse(const u8 *packet, size_t available,
 		frame->kind = MT6797_WIFI_RX_IEEE80211;
 		return 0;
 	}
-	if (!frame->header_translated)
-		return -EOPNOTSUPP;
+	if (!frame->header_translated) {
+		frame->kind = MT6797_WIFI_RX_NATIVE_DATA;
+		return 0;
+	}
+	if ((packet_type & MT6797_WIFI_RX_HW_TYPE_MASK) !=
+	    MT6797_WIFI_RX_PACKET_TYPE_DATA)
+		return -EPROTO;
 	if (frame->payload_length < ETH_HLEN)
 		return -EPROTO;
 	frame->kind = MT6797_WIFI_RX_ETHERNET;

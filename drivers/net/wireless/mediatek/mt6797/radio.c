@@ -355,8 +355,15 @@ static int mt6797_radio_data_frame(struct mt6797_wifi_radio *radio,
 	int ret;
 
 	ret = mt6797_wifi_data_rx_decode(view->packet, view->packet_length, &data);
-	if (ret)
+	if (ret) {
+		/* Only descriptor metadata: no addresses, payloads or key material. */
+		if (view->packet && view->packet_length >= MT6797_WIFI_RX_DESCRIPTOR_LENGTH)
+			dev_warn_ratelimited(wiphy_dev(radio->wdev.wiphy),
+				"RX data rejected error=%d type=%#x header=%u status=%#x\n",
+				ret, get_unaligned_le16(view->packet + 2),
+				view->header_length, get_unaligned_le16(view->packet + 10));
 		goto drop;
+	}
 	if (data.length > radio->netdev->mtu + ETH_HLEN + VLAN_HLEN)
 		goto drop;
 	skb = netdev_alloc_skb_ip_align(radio->netdev, data.length);
@@ -389,7 +396,8 @@ static int mt6797_radio_data_frame(struct mt6797_wifi_radio *radio,
 		goto reject;
 	if (data.protected && mt6797_wifi_data_rx_replay(&key->rx_pn[data.tid], data.pn))
 		goto reject;
-	skb_put_data(skb, data.ethernet, data.length);
+	skb_put_data(skb, data.ethernet, ETH_HLEN);
+	skb_put_data(skb, data.payload, data.length - ETH_HLEN);
 	skb->protocol = eth_type_trans(skb, radio->netdev);
 	skb->ip_summed = CHECKSUM_NONE;
 	spin_unlock_irqrestore(&radio->lock, flags);
@@ -414,7 +422,8 @@ static int mt6797_radio_link_frame(void *context,
 	unsigned long flags;
 	u16 control;
 
-	if (view->kind == MT6797_WIFI_RX_ETHERNET)
+	if (view->kind == MT6797_WIFI_RX_ETHERNET ||
+	    view->kind == MT6797_WIFI_RX_NATIVE_DATA)
 		return mt6797_radio_data_frame(radio, view);
 	if (view->kind != MT6797_WIFI_RX_IEEE80211 || view->header_translated ||
 	    view->header_length != 24 || !frame || view->payload_length < 26)

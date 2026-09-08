@@ -43,6 +43,10 @@ int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *stats);
 int mt6797_md1_fs_provider_getattr(const char *path,
 				   struct mt6797_md1_fs_attr *attr);
 struct file *mt6797_md1_fs_provider_open(const char *path, bool directory);
+struct file *mt6797_md1_fs_provider_open_ram(const char *path, bool writable,
+					  bool create, bool truncate);
+ssize_t mt6797_md1_fs_provider_write(struct file *file, const void *buf,
+				     size_t count, loff_t *pos);
 int mt6797_md1_fs_provider_fstat(struct file *file,
 				 struct mt6797_md1_fs_attr *attr);
 ssize_t mt6797_md1_fs_provider_read(struct file *file, void *buf,
@@ -69,6 +73,16 @@ static inline struct file *mt6797_md1_fs_provider_open(const char *path,
 						       bool directory)
 {
 	return ERR_PTR(-ENODEV);
+}
+static inline struct file *mt6797_md1_fs_provider_open_ram(const char *path,
+				bool writable, bool create, bool truncate)
+{
+	return ERR_PTR(-ENODEV);
+}
+static inline ssize_t mt6797_md1_fs_provider_write(struct file *file,
+				const void *buf, size_t count, loff_t *pos)
+{
+	return -ENODEV;
 }
 static inline int mt6797_md1_fs_provider_fstat(struct file *file,
 					       struct mt6797_md1_fs_attr *attr)

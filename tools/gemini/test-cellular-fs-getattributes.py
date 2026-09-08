@@ -35,6 +35,7 @@ shim = r'''
 #include <string.h>
 typedef uint8_t u8; typedef uint32_t u32; typedef int32_t s32; typedef uint64_t u64; typedef int64_t s64;
 typedef int64_t loff_t; typedef long ssize_t;
+#define TMPFS_MAGIC 0x01021994
 #define MNT_READONLY 1
 #define SB_RDONLY 1
 #define MT6797_FS_CONSUMED 3
@@ -52,6 +53,9 @@ typedef int64_t loff_t; typedef long ssize_t;
 #define STATX_MTIME 0x40
 #define AT_STATX_DONT_SYNC 0x4000
 #define O_RDONLY 0
+#define O_RDWR 2
+#define FMODE_WRITE 2
+#define GFP_KERNEL 0
 #define O_LARGEFILE 0100000
 #define O_DIRECTORY 0200000
 #define SEEK_SET 0
@@ -59,7 +63,7 @@ typedef int64_t loff_t; typedef long ssize_t;
 #define SEEK_END 2
 #define container_of(p,t,m) ((t *)((char *)(p)-offsetof(t,m)))
 struct timespec64 {s64 tv_sec; long tv_nsec;};
-struct super_block {int s_flags;};
+struct super_block {int s_flags;int s_magic;};
 struct inode {struct super_block *i_sb;};
 struct dentry {struct super_block *d_sb; const char *name; int kind; int refs; bool mounted; struct dentry *parent; const char *data; u64 size;};
 struct vfsmount {int mnt_flags;};
@@ -74,6 +78,7 @@ static struct {int stage;} provider_state;
 static struct super_block sb, other;
 static struct vfsmount mount;
 static struct file backing, *provider_file;
+static bool provider_volatile;
 static struct dentry rootd = {&sb, "", 2, 1, false, NULL, NULL, 4096};
 static struct dentry nvram = {&sb, "NVRAM", 2, 0, false, &rootd, NULL, 4096};
 static struct dentry filea = {&sb, "a.bin", 1, 0, false, &nvram, "alphaomega", 10};
@@ -117,7 +122,7 @@ static int vfs_getattr(struct path *p,struct kstat *s,int mask,int flags){
 static struct file *dentry_open(const struct path *p,int flags,const void *cred){
  assert(!locked&&!cred&&p->mnt==&mount&&p->dentry->refs>0);opens++;
  if(fail_open)return ERR_PTR(-ENOMEM);
- struct file *f=calloc(1,sizeof(*f));f->f_path=*p;f->inode.i_sb=p->dentry->d_sb;f->refs=1;f->flags=flags;p->dentry->refs++;
+ struct file *f=calloc(1,sizeof(*f));f->f_path=*p;f->inode.i_sb=p->dentry->d_sb;f->refs=1;f->flags=flags;f->f_mode=(flags&O_RDWR)?FMODE_WRITE:0;p->dentry->refs++;
  if(drop_ro_after_open)sb.s_flags=0;
  return f;
 }
@@ -141,7 +146,30 @@ static int iterate_dir(struct file *f,struct dir_context *ctx){
   if(!ctx->actor(ctx,d->name,(int)strlen(d->name),pos,pos,d->kind==2?DT_DIR:d->kind==1?DT_REG:DT_LNK))goto out;}
 out: ctx->pos=pos;f->f_pos=pos;return 0;
 }
+
+static bool parent_locked;static int writers,creates,truncates,writes,fail_create,fail_truncate,fail_want,fail_copy;
+static char ram_bytes[64];static struct inode parent_inode;
+#define kfree(p) free(p)
+static char *kstrdup(const char *s,int flags){(void)flags;return fail_copy?NULL:strdup(s);}
+static struct inode *d_inode(struct dentry *d){assert(d->kind==2);parent_inode.i_sb=d->d_sb;return &parent_inode;}
+static void inode_lock(struct inode *i){assert(i==&parent_inode&&!parent_locked);parent_locked=true;}
+static void inode_unlock(struct inode *i){assert(i==&parent_inode&&parent_locked);parent_locked=false;}
+static bool d_is_negative(struct dentry *d){return d->kind==0;}
+static int mnt_want_write(struct vfsmount *m){assert(m==&mount);if(fail_want)return -EROFS;writers++;return 0;}
+static void mnt_drop_write(struct vfsmount *m){assert(m==&mount&&writers==1);writers--;}
+static struct dentry *lookup_one(void *id,struct qstr *q,struct dentry *base){assert(parent_locked&&writers==1);return lookup_one_positive_unlocked(id,q,base);}
+static int vfs_create(void *id,struct dentry *d,unsigned mode,void *delegated){
+ assert(!id&&!delegated&&mode==0600&&parent_locked&&writers==1&&d==&filea&&d->kind==0&&sb.s_magic==TMPFS_MAGIC);
+ creates++;if(fail_create)return -ENOSPC;d->kind=1;d->size=0;d->data=ram_bytes;return 0;}
+static int vfs_truncate(const struct path *p,loff_t size){
+ assert(!parent_locked&&writers==1&&p->mnt==&mount&&p->dentry==&filea&&size==0);truncates++;
+ if(fail_truncate)return -EIO;p->dentry->size=0;return 0;}
+static ssize_t kernel_write(struct file *f,const void *data,size_t n,loff_t *pos){
+ assert(f->f_mode&FMODE_WRITE);assert(f->f_path.dentry==&filea&&filea.data==ram_bytes);writes++;
+ if(*pos>=64)return -ENOSPC;if(n>(size_t)(64-*pos))n=64-*pos;
+ memcpy(ram_bytes+*pos,data,n);*pos+=n;if((u64)*pos>filea.size)filea.size=*pos;return n;}
 static void reset(void){
+ parent_locked=false;writers=creates=truncates=writes=fail_create=fail_truncate=fail_want=fail_copy=0;provider_volatile=false;filea.kind=1;filea.data="alphaomega";filea.size=10;
  lookups=stats=sleeps=opens=reads=iterations=rescheds=drop_ro_after_lookup=drop_ro_after_open=fail_stat=fail_open=0;locked=false;
  sb.s_flags=1;other.s_flags=1;mount.mnt_flags=1;provider_state.stage=3;
  for(unsigned i=0;i<sizeof(all)/sizeof(*all);i++)all[i]->refs=0;
@@ -209,17 +237,50 @@ int main(void){
  reset();fail_open=1;f=mt6797_md1_fs_provider_open("NVRAM",true);assert(PTR_ERR(f)==-ENOMEM);quiescent();
  reset();mt6797_md1_fs_provider_close(NULL);mt6797_md1_fs_provider_close(ERR_PTR(-ENOENT));quiescent();
  reset();assert(mt6797_md1_fs_provider_next_entry(NULL,&entry)==-EINVAL&&mt6797_md1_fs_provider_read(NULL,buf,1,NULL)==-EACCES&&mt6797_md1_fs_provider_llseek(NULL,0,0)==-EACCES);
+
+ /* Actual RAM provider create/write/readback, truncate and honest full errors. */
+ reset();assert(PTR_ERR(mt6797_md1_fs_provider_open_ram("NVRAM/a.bin",true,true,false))==-EROFS&&!creates);quiescent();
+ reset();provider_volatile=true;sb.s_magic=TMPFS_MAGIC;sb.s_flags=0;mount.mnt_flags=0;filea.kind=0;
+ f=mt6797_md1_fs_provider_open_ram("NVRAM/a.bin",true,true,false);
+ assert(!IS_ERR(f)&&creates==1&&!writers&&!parent_locked);
+ loff_t pos=0;assert(mt6797_md1_fs_provider_write(f,"hello",5,&pos)==5&&pos==5);
+ struct file *reader=mt6797_md1_fs_provider_open("NVRAM/a.bin",false);assert(!IS_ERR(reader));
+ pos=0;memset(buf,0,sizeof(buf));assert(mt6797_md1_fs_provider_read(reader,buf,5,&pos)==5&&!memcmp(buf,"hello",5));
+ assert(mt6797_md1_fs_provider_write(reader,"x",1,&pos)==-EROFS);
+ mt6797_md1_fs_provider_close(reader);
+ pos=62;assert(mt6797_md1_fs_provider_write(f,"abcd",4,&pos)==2&&pos==64);
+ assert(mt6797_md1_fs_provider_write(f,"x",1,&pos)==-ENOSPC);
+ pos=16*1024*1024;assert(mt6797_md1_fs_provider_write(f,"x",1,&pos)==-EFBIG);
+ mt6797_md1_fs_provider_close(f);quiescent();
+ f=mt6797_md1_fs_provider_open_ram("NVRAM/a.bin",true,false,true);
+ assert(!IS_ERR(f)&&truncates==1&&filea.size==0&&!writers&&!parent_locked);
+ mt6797_md1_fs_provider_close(f);quiescent();
+ const char *ram_bad[]={"/NVRAM/a.bin","NVRAM/../a.bin","NVRAM//a.bin","NVRAM/.","NVRAM/..","NVRAM/","NVRAM/link","NVRAM/mnt","NVRAM/foreign","NVRAM/sock"};
+ for(unsigned i=0;i<sizeof(ram_bad)/sizeof(*ram_bad);i++){
+   int before=creates;f=mt6797_md1_fs_provider_open_ram(ram_bad[i],true,true,true);
+   assert(IS_ERR(f)&&creates==before&&!writers&&!parent_locked);quiescent();
+ }
+ for(int failure=0;failure<4;failure++){
+   filea.kind=0;fail_create=failure==0;fail_open=failure==1;fail_copy=failure==2;fail_want=failure==3;
+   f=mt6797_md1_fs_provider_open_ram("NVRAM/a.bin",true,true,false);
+   assert(IS_ERR(f)&&!writers&&!parent_locked);quiescent();
+ }
+ fail_create=fail_open=fail_copy=fail_want=0;filea.kind=1;fail_truncate=1;
+ f=mt6797_md1_fs_provider_open_ram("NVRAM/a.bin",true,false,true);
+ assert(PTR_ERR(f)==-EIO&&!writers&&!parent_locked);quiescent();
+ sb.s_magic=0xef53;assert(IS_ERR(mt6797_md1_fs_provider_open_ram("NVRAM/a.bin",true,true,true)));quiescent();
+ puts("PASS actual RAM VFS: create/write/readback/truncate, read-only handle refusal, partial/full writes, file bound, traversal/link/mount/foreign/special refusal, failure refs and write-lock cleanup");
  puts("PASS actual provider VFS layer: confined multi-component walk, dot/dot-dot/absolute/symlink/mountpoint/special/foreign refusals, RO rechecks, open flags, read/seek/fstat, entry enumeration skipping refused children, complete reference cleanup");
 }
 '''
-parts = [shim, provider, function('mt6797_fs_readonly'), function('mt6797_fs_root_get'),
+parts = [shim, provider, function('mt6797_fs_readonly'), function('mt6797_fs_tmpfs_writable'), function('mt6797_fs_backing_matches'), function('mt6797_fs_accessible'), function('mt6797_fs_root_get'),
          function('mt6797_fs_walk_component'), function('mt6797_fs_walk'), function('mt6797_fs_stat'),
          function('mt6797_md1_fs_provider_getattr'), function('mt6797_md1_fs_provider_open'),
-         function('mt6797_md1_fs_provider_fstat'), function('mt6797_md1_fs_provider_read'),
+         function('mt6797_md1_fs_provider_open_ram'), function('mt6797_md1_fs_provider_write'), function('mt6797_md1_fs_provider_fstat'), function('mt6797_md1_fs_provider_read'),
          function('mt6797_md1_fs_provider_llseek'), walk_struct, function('mt6797_fs_dir_actor'),
          function('mt6797_md1_fs_provider_next_entry'), function('mt6797_md1_fs_provider_close'), tests]
 with tempfile.TemporaryDirectory(prefix='gemini-fs-getattr-') as directory:
     path = Path(directory)
     (path / 'test.c').write_text('\n'.join(parts))
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-parameter', str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-parameter', '-Wno-misleading-indentation', str(path / 'test.c'), '-o', str(path / 'test')], check=True)
     subprocess.run([str(path / 'test')], check=True)

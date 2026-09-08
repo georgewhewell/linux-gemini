@@ -87,7 +87,7 @@ adapter=r'''
 struct mt6797_ccci_slot {void *gpd;struct sk_buff *skb;dma_addr_t skb_dma;bool mapped;};
 struct mt6797_ccci_queue {struct mt6797_ccci_slot tx[16];unsigned tx_head,tx_tail,tx_used;pthread_mutex_t tx_lock;};
 struct workqueue_struct {int jobs;};
-struct mt6797_ccci {int failed,ready,rpc_logs,fs_logs,hs,diag,teardown,fs_pending;unsigned long fs_indices,rpc_indices;int rpc_pending,rx_rejected;bool rf_clock_present;struct mt6797_rpc_clkbuf_values rf_clock;void *dev;char *ao,*pdn;
+struct mt6797_ccci {struct mt6797_ccci_fs_work *fs_partial[MT6797_FS_INDEX_COUNT];int failed,ready,rpc_logs,fs_logs,hs,diag,teardown,fs_pending;unsigned long fs_indices,rpc_indices;int rpc_pending,rx_rejected;bool rf_clock_present;struct mt6797_rpc_clkbuf_values rf_clock;void *dev;char *ao,*pdn;
  struct workqueue_struct *fs_wq,*rpc_wq;struct mt6797_fs_service fs_service;
  struct mt6797_ccci_queue queue[7];pthread_mutex_t tx_stop_lock;struct mt6797_rpc_eint sim_eint[2];
  int tx_sequence[256],rx_sequence[256];};
@@ -174,7 +174,7 @@ static void reset(int m){memset(&c,0,sizeof(c));c.ao=ao;c.pdn=pdn;c.dev=&c;
  for(unsigned q=0;q<7;q++){assert(!pthread_mutex_init(&c.queue[q].tx_lock,NULL));for(unsigned i=0;i<16;i++)c.queue[q].tx[i].gpd=desc[q][i];}
  memset(c.rx_sequence,0xff,sizeof(c.rx_sequence));c.sim_eint[0].present=true;c.sim_eint[0].valid=127;c.sim_eint[0].value[6]=1;
  c.tx_sequence[33]=5;c.tx_sequence[15]=9;c.fs_wq=&wq;c.rpc_wq=&rpcwq;hold_rpc=false;queued_rpc=0;rf_calls=0;rf_afc=0;fs_enabled=true;mode=m;allocs=frees=maps=unmaps=publishes=resumes=stops=captures=controls=jobs=job_allocs=0;stopper_started=false;}
-static void clean(void){if(stopper_started)assert(!pthread_join(stopper,NULL));
+static void clean(void){for(unsigned i=0;i<5;i++){kfree(c.fs_partial[i]);c.fs_partial[i]=NULL;}if(stopper_started)assert(!pthread_join(stopper,NULL));
  for(unsigned q=0;q<7;q++){for(unsigned i=0;i<16;i++)if(c.queue[q].tx[i].skb)kfree_skb(c.queue[q].tx[i].skb);
  assert(!pthread_mutex_destroy(&c.queue[q].tx_lock));}assert(!pthread_mutex_destroy(&c.tx_stop_lock));}
 static struct sk_buff *request(void){int save=mode;mode=0;struct sk_buff *s=alloc_skb(68,0);mode=save;
@@ -254,7 +254,7 @@ int main(void){
  reset(0);req=fs_request();mt6797_rpc_write(req->data,1);mt6797_ccci_dispatch_rx(&c,req,1);
  assert(captures==1&&!jobs&&frees==1);clean();
  reset(0);req=fs_request();mt6797_rpc_write(req->data,0x80000000U);mt6797_ccci_dispatch_rx(&c,req,1);
- assert(captures==1&&!jobs&&frees==1);clean();
+ assert(!captures&&!jobs&&frees==1&&c.fs_partial[4]&&c.fs_pending==1&&c.fs_indices==(1UL<<4));clean();
  reset(0);req=fs_request();mt6797_rpc_write(req->data+12,5);mt6797_ccci_dispatch_rx(&c,req,1);
  assert(captures==1&&!jobs&&frees==1);clean();
  reset(0);c.fs_indices=1UL<<4;mt6797_ccci_dispatch_rx(&c,fs_request(),1);

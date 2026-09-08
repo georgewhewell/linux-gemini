@@ -66,7 +66,8 @@ struct file;
 '''
 fs_diag = (root / 'drivers/net/wwan/mediatek/mtk_mt6797_ccci_fs_diag.h').read_text()
 adapters = r'''
-struct mt6797_ccci {struct mt6797_fs_diag fs_diag;atomic_int failed,ready,teardown,fs_pending,fs_logs;unsigned long fs_indices;struct workqueue_struct *fs_wq;struct mt6797_fs_service fs_service;};
+struct mt6797_ccci_fs_work;
+struct mt6797_ccci {struct mt6797_ccci_fs_work *fs_partial[MT6797_FS_INDEX_COUNT];struct mt6797_fs_diag fs_diag;atomic_int failed,ready,teardown,fs_pending,fs_logs;unsigned long fs_indices;struct workqueue_struct *fs_wq;struct mt6797_fs_service fs_service;};
 static struct mt6797_ccci c;
 static struct workqueue_struct wq;
 static atomic_int allocations,freed;
@@ -95,7 +96,8 @@ void mt6797_fs_service_release(struct mt6797_fs_service *s){assert(s==&c.fs_serv
 /* Deterministic service adapter: scenario selects reply size or refusal. */
 int mt6797_fs_service_request(struct mt6797_fs_service *s,const u8 *data,size_t len,struct mt6797_fs_reply *reply,s32 *status){
  assert(s==&c.fs_service&&reply->capacity==MT6797_FS_REPLY_MAX&&reply->payload);requests++;
- struct mt6797_fs_request req;assert(!mt6797_fs_request_parse(data,len,&req)&&req.op==0x1001);
+ struct mt6797_fs_request req;assert(!mt6797_fs_request_parse(data,len,&req)&&req.op==(scenario==12?0x1004:0x1001));
+ if(scenario==12){assert(req.argc==3&&req.len[1]==3972&&mt6797_fs_read32(req.arg[2])==3972);for(unsigned i=0;i<3972;i++)assert(req.arg[1][i]==(u8)i);}
  if(scenario==7)return -EOPNOTSUPP;
  if(reentered&&requests==2)assert(c.fs_indices==1);
  if(scenario==2)atomic_store(&c.failed,1);
@@ -112,7 +114,7 @@ static int mt6797_ccci_tx(struct mt6797_ccci *p,unsigned q,struct sk_buff *s,uns
  assert(p==&c&&q==1&&channel==15&&s->len>=24&&mt6797_fs_read32(s->data+4)==s->len);txs++;
  if(scenario==5){atomic_store(&p->failed,1);return -ESHUTDOWN;}
  if(scenario==6)return -EBUSY;
- assert(!atomic_load(&p->failed));assert(mt6797_fs_read32(s->data+16)==0xffff1001U);
+ assert(!atomic_load(&p->failed));assert(mt6797_fs_read32(s->data+16)==(scenario==12?0xffff1004U:0xffff1001U));
  u32 data0=mt6797_fs_read32(s->data);u32 index=mt6797_fs_read32(s->data+12);
  if(scenario==3){assert((txs<3)==((data0&0x80000000U)!=0));if(txs<3)assert(s->len==0xd94&&test_bit(index,&p->fs_indices));}
  else assert(!data0&&s->len==32&&(s32)mt6797_fs_read32(s->data+28)==(scenario==8?-9:1));
@@ -188,6 +190,78 @@ int main(void){
  atomic_store(&c.teardown,1);mt6797_ccci_fs_destroy(&c);
  assert(!requests&&!txs&&!atomic_load(&c.fs_pending)&&atomic_load(&freed)==5&&!c.fs_indices);
 
+ /* Synthetic WRITE of 3972 bytes produces the observed 3476 + 560 frames.
+  * Five indices interleave; no partial request may reach the service. */
+ { u8 complete[4016]={0};
+   mt6797_fs_write32(complete+4,sizeof(complete));mt6797_fs_write32(complete+8,14);
+   mt6797_fs_write32(complete+16,0x1004);mt6797_fs_write32(complete+20,3);
+   mt6797_fs_write32(complete+24,4);mt6797_fs_write32(complete+28,1);
+   mt6797_fs_write32(complete+32,3972);for(unsigned i=0;i<3972;i++)complete[36+i]=(u8)i;
+   mt6797_fs_write32(complete+4008,4);mt6797_fs_write32(complete+4012,3972);
+   struct sk_buff first={.len=3476},last={.len=560};
+   memcpy(first.data,complete,3476);mt6797_fs_write32(first.data,MT6797_FS_MORE);mt6797_fs_write32(first.data+4,first.len);
+   memcpy(last.data,complete,20);memcpy(last.data+20,complete+3476,540);mt6797_fs_write32(last.data+4,last.len);
+   reset(12);
+   for(unsigned i=0;i<5;i++){mt6797_fs_write32(first.data+12,i);assert(!mt6797_ccci_fs_rx(&c,&first,1));}
+   assert(!wq.count&&!requests&&c.fs_indices==31&&atomic_load(&c.fs_pending)==5);
+   for(unsigned i=5;i-->0;){mt6797_fs_write32(last.data+12,i);assert(!mt6797_ccci_fs_rx(&c,&last,1));assert(!c.fs_partial[i]);}
+   assert(wq.count==5&&!requests);memset(first.data,0,sizeof(first.data));memset(last.data,0,sizeof(last.data));
+   mt6797_ccci_fs_destroy(&c);assert(requests==5&&txs==5&&!c.fs_indices&&!atomic_load(&c.fs_pending));
+   release_owned();assert(atomic_load(&allocations)==atomic_load(&freed));
+
+   /* Partial allocation failure and teardown never run the service. */
+   memcpy(first.data,complete,3476);mt6797_fs_write32(first.data,MT6797_FS_MORE);mt6797_fs_write32(first.data+4,first.len);
+   reset(12);fail_kmalloc_at=1;assert(mt6797_ccci_fs_rx(&c,&first,1)==-ENOMEM);assert(!c.fs_indices&&!atomic_load(&c.fs_pending));
+   reset(12);assert(!mt6797_ccci_fs_rx(&c,&first,1));atomic_store(&c.teardown,1);
+   mt6797_ccci_fs_destroy(&c);mt6797_ccci_fs_destroy(&c);
+   assert(!requests&&!txs&&!c.fs_indices&&!atomic_load(&c.fs_pending)&&released==1&&atomic_load(&allocations)==atomic_load(&freed));
+
+   /* A changed op cannot splice a new operation into a partial request. */
+   reset(12);assert(!mt6797_ccci_fs_rx(&c,&first,1));
+   memcpy(last.data,complete,20);memcpy(last.data+20,complete+3476,540);mt6797_fs_write32(last.data+4,last.len);mt6797_fs_write32(last.data+16,0x1005);
+   assert(mt6797_ccci_fs_rx(&c,&last,1)==-EPROTO&&quiesced==1);
+   assert(!requests&&!c.fs_partial[0]&&!c.fs_indices&&!atomic_load(&c.fs_pending));
+   mt6797_ccci_fs_destroy(&c);assert(atomic_load(&allocations)==atomic_load(&freed));
+
+   /* Actual append codec: every legal split, including cuts inside lengths,
+    * exact capacity, overflow, wrong identity and malformed final stream. */
+   u8 assembled[MT6797_FS_REQUEST_MAX];
+   for(unsigned cut=560;cut<=3476;cut++){
+     size_t used=0;struct sk_buff a={.len=cut},b={.len=sizeof(complete)-cut+20};
+     memcpy(a.data,complete,cut);mt6797_fs_write32(a.data,MT6797_FS_MORE);mt6797_fs_write32(a.data+4,a.len);
+     memcpy(b.data,complete,20);memcpy(b.data+20,complete+cut,sizeof(complete)-cut);mt6797_fs_write32(b.data+4,b.len);
+     assert(!mt6797_fs_request_append(assembled,&used,a.data,a.len));assert(mt6797_fs_request_append(assembled,&used,b.data,b.len)==1);
+     assert(used==sizeof(complete)&&!memcmp(assembled,complete,used));
+   }
+   for(unsigned field=0;field<5;field++){
+     size_t used=0;assert(!mt6797_fs_request_append(assembled,&used,first.data,first.len));
+     memcpy(last.data,complete,20);mt6797_fs_write32(last.data+4,last.len);
+     mt6797_fs_write32(last.data+4*field,field==0?1:99);
+     assert(mt6797_fs_request_append(assembled,&used,last.data,last.len)<0);
+   }
+   /* Full vendor argument-stream capacity, five frames; one-byte tail. */
+   { u8 full[MT6797_FS_REQUEST_MAX]={0};size_t used=0,offset=20;
+     mt6797_fs_write32(full+4,sizeof(full));mt6797_fs_write32(full+8,14);mt6797_fs_write32(full+16,0x1004);
+     mt6797_fs_write32(full+20,1);mt6797_fs_write32(full+24,sizeof(full)-28);
+     while(offset<sizeof(full)){
+       size_t remaining=sizeof(full)-offset,amount=remaining>3456?3456:remaining;
+       if(amount==remaining&&amount>1)amount--;
+       struct sk_buff f={.len=20+amount};memcpy(f.data,full,20);memcpy(f.data+20,full+offset,amount);offset+=amount;
+       mt6797_fs_write32(f.data,offset<sizeof(full)?MT6797_FS_MORE:0);mt6797_fs_write32(f.data+4,f.len);
+       mt6797_fs_write32(f.data+8,14|0x81230000U); /* transport sequence is not request identity */
+       assert(mt6797_fs_request_append(assembled,&used,f.data,f.len)==(offset==sizeof(full)));
+     }
+     assert(used==sizeof(full));mt6797_fs_write32(assembled+8,14);assert(!memcmp(assembled,full,sizeof(full)));
+   }
+   size_t used=0;assert(!mt6797_fs_request_append(assembled,&used,first.data,first.len));
+   while(used+3456<=sizeof(assembled))assert(!mt6797_fs_request_append(assembled,&used,first.data,first.len));
+   size_t before=used;assert(mt6797_fs_request_append(assembled,&used,first.data,first.len)==-EMSGSIZE&&used==before);
+   for(size_t short_len=0;short_len<24;short_len++){used=0;assert(mt6797_fs_request_append(assembled,&used,first.data,short_len)<0&&!used);}
+   used=0;assert(!mt6797_fs_request_append(assembled,&used,first.data,first.len));
+   memcpy(last.data,complete,20);memset(last.data+20,0,540);mt6797_fs_write32(last.data+4,last.len);
+   assert(mt6797_fs_request_append(assembled,&used,last.data,last.len)<0);
+ }
+
  /* Diagnostics identify logical drives without retaining paths or content. */
  { u8 p[8]={'X',0,':',0,'a',0,0,0};
    for(unsigned i=0;i<6;i++)assert(!mt6797_fs_diag_drive(p,i));
@@ -261,7 +335,7 @@ int main(void){
  assert(atomic_load(&allocations)==atomic_load(&freed));
  puts("PASS live FS snapshot: chronological detached copy, no ring mutation/freeze, in-flight/frozen rows, actual sysfs formatter bounded to one page and allocation failure");
  puts("PASS FS metadata: last 16 after 140 operations, chronological wrap, immutable freeze during request, compact shape and malformed request");
- puts("PASS actual FS admission/worker/send/destroy: immutable RX copy, C11 frame end to end, three-frame fragmentation with final-frame index release, allocation and TX ownership failures, STOP before/during service/before publish, refusals without claims, drain-once with service release, 32 concurrent admissions bounded to five");
+ puts("PASS RX reassembly: observed-size WRITE, five interleaved indices, immutable buffers, every split boundary, malformed/overflow/identity refusal, allocation failure and partial teardown; actual FS admission/worker/send/destroy: immutable RX copy, C11 frame end to end, three-frame fragmentation with final-frame index release, allocation and TX ownership failures, STOP before/during service/before publish, refusals without claims, drain-once with service release, 32 concurrent admissions bounded to five");
 }
 '''
 assert 'DEVICE_ATTR(fs_recent, 0400, fs_recent_show, NULL)' in source

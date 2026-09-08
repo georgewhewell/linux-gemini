@@ -14,7 +14,8 @@
 #define MT6797_FS_PREFIX 20U /* header plus operation word, repeated per fragment */
 #define MT6797_FS_FRAGMENT 0xd80U /* vendor CCCI_MTU: payload bytes per frame */
 #define MT6797_FS_FRAME_MAX 3584U /* vendor SKB_4K, also the local RX buffer */
-#define MT6797_FS_REQUEST_MAX MT6797_FS_FRAME_MAX
+#define MT6797_FS_REQUEST_MAX (MT6797_FS_PREFIX + 0x4000U)
+#define MT6797_FS_MORE 0x80000000U
 #define MT6797_FS_READ_MAX 16356U /* vendor 0x4000 buffer minus its 0x1c prefix */
 #define MT6797_FS_REPLY_MAX 16448U
 #define MT6797_FS_HANDLES 129U /* vendor FS_FILE_MAX; slot 0 is never issued */
@@ -161,6 +162,47 @@ static inline int mt6797_fs_request_parse(const u8 *data, size_t len,
 		cursor += padded;
 	}
 	return cursor == len ? 0 : -EPROTO;
+}
+
+/* NAPI-owned assembly buffer. Each continuation repeats only the 20-byte
+ * header/op prefix; argc and argument bytes belong to the combined stream.
+ * No service effects occur here. A negative return invalidates the assembly.
+ * Return 0 for more fragments, 1 for a complete, strictly parsed request.
+ */
+static inline int mt6797_fs_request_append(u8 *buffer, size_t *used,
+					   const u8 *frame, size_t len)
+{
+	struct mt6797_fs_request request;
+	size_t skip = *used ? MT6797_FS_PREFIX : 0;
+	u32 data0;
+	int ret;
+
+	if (len < (skip ? MT6797_FS_PREFIX + 1 : 24) ||
+	    len > MT6797_FS_PREFIX + MT6797_FS_FRAGMENT)
+		return -EMSGSIZE;
+	data0 = mt6797_fs_read32(frame);
+	if ((data0 & ~MT6797_FS_MORE) ||
+	    mt6797_fs_read32(frame + 4) != len ||
+	    (mt6797_fs_read32(frame + 8) & 0xffff) != MT6797_FS_RX ||
+	    mt6797_fs_read32(frame + 12) >= MT6797_FS_INDEX_COUNT)
+		return -EPROTO;
+	if (*used && (mt6797_fs_read32(buffer + 12) !=
+		     mt6797_fs_read32(frame + 12) ||
+		     mt6797_fs_read32(buffer + 16) !=
+		     mt6797_fs_read32(frame + 16)))
+		return -EPROTO;
+	if (*used > MT6797_FS_REQUEST_MAX ||
+	    len - skip > MT6797_FS_REQUEST_MAX - *used)
+		return -EMSGSIZE;
+	memcpy(buffer + *used, frame + skip, len - skip);
+	*used += len - skip;
+	if (data0 & MT6797_FS_MORE)
+		return 0;
+	/* Internal canonical header describes the complete argument stream. */
+	mt6797_fs_write32(buffer, 0);
+	mt6797_fs_write32(buffer + 4, *used);
+	ret = mt6797_fs_request_parse(buffer, *used, &request);
+	return ret ?: 1;
 }
 
 static inline void mt6797_fs_reply_init(struct mt6797_fs_reply *reply,

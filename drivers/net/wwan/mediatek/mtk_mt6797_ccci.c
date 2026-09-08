@@ -120,6 +120,8 @@ struct mt6797_ccci_link {
 	u8 tx_queue;
 };
 
+struct mt6797_ccci_fs_work;
+
 struct mt6797_ccci {
 	struct mt6797_ccci_diag diag;
 	struct device *dev;
@@ -143,6 +145,8 @@ struct mt6797_ccci {
 	struct mt6797_rx_rejected rx_rejected;
 	atomic_t fs_pending;
 	unsigned long fs_indices;
+	/* Sole NAPI producer; drained only after NAPI is disabled. */
+	struct mt6797_ccci_fs_work *fs_partial[MT6797_FS_INDEX_COUNT];
 	struct workqueue_struct *fs_wq;
 	struct mt6797_fs_service fs_service; /* fs_wq worker only */
 	struct net_device *napi_dev;
@@ -1170,7 +1174,17 @@ static void mt6797_ccci_fs_destroy(void *data)
 {
 	struct mt6797_ccci *ccci = data;
 	struct workqueue_struct *wq = xchg(&ccci->fs_wq, NULL);
+	unsigned int i;
 
+	/* Partial jobs were never queued, but own their index and pending slot. */
+	for (i = 0; i < MT6797_FS_INDEX_COUNT; i++) {
+		if (!ccci->fs_partial[i])
+			continue;
+		kfree(ccci->fs_partial[i]);
+		ccci->fs_partial[i] = NULL;
+		clear_bit(i, &ccci->fs_indices);
+		atomic_dec(&ccci->fs_pending);
+	}
 	if (wq) {
 		destroy_workqueue(wq);
 		/* No worker can run any more; drop every retained handle. */
@@ -1178,58 +1192,91 @@ static void mt6797_ccci_fs_destroy(void *data)
 	}
 }
 
-/* NAPI admission: header sanity, supported operation, one active request per
- * index, bounded jobs. Unsupported or malformed frames stay captured; the
- * service parses the immutable copy in process context.
+/* A partial request owns the same bounded job and index as a queued request.
+ * Only the single NAPI instance accesses fs_partial; workers see immutable
+ * completed buffers. No filesystem operation is run before final validation.
  */
 static int mt6797_ccci_fs_rx(struct mt6797_ccci *ccci,
 			   struct sk_buff *skb, unsigned int q)
 {
 	struct mt6797_ccci_fs_work *job;
-	u32 index;
+	u32 index, more;
 	int ret;
 
 	if (!mt6797_md1_fs_provider_enabled())
 		return -EOPNOTSUPP;
-	if (q != 1 || atomic_read(&ccci->failed))
+	if (q != 1 || atomic_read(&ccci->failed) ||
+	    atomic_read(&ccci->teardown) || !ccci->fs_wq)
 		return -ESHUTDOWN;
-	if (skb->len < 24 || skb->len > MT6797_FS_REQUEST_MAX ||
-	    mt6797_fs_read32(skb->data) ||
-	    mt6797_fs_read32(skb->data + 4) != skb->len)
+	if (skb->len < MT6797_FS_PREFIX + 1 ||
+	    skb->len > MT6797_FS_FRAME_MAX ||
+	    (mt6797_fs_read32(skb->data) & ~MT6797_FS_MORE) ||
+	    mt6797_fs_read32(skb->data + 4) != skb->len ||
+	    (mt6797_fs_read32(skb->data + 8) & 0xffff) != MT6797_FS_RX)
 		return -EPROTO;
 	index = mt6797_fs_read32(skb->data + 12);
 	if (index >= MT6797_FS_INDEX_COUNT)
 		return -EPROTO;
+	more = mt6797_fs_read32(skb->data) & MT6797_FS_MORE;
+	job = ccci->fs_partial[index];
+	if (job)
+		goto append;
+	if (skb->len < 24)
+		return -EPROTO;
 	if (!mt6797_fs_service_supports(mt6797_fs_read32(skb->data + 16)))
 		return -EOPNOTSUPP;
-	if (atomic_read(&ccci->teardown) || !ccci->fs_wq)
-		return -ESHUTDOWN;
 	ret = mt6797_ccci_fs_index_claim(ccci, index);
 	if (ret)
 		return ret;
-	/* Five active request indices plus one published callback finishing. */
+	/* Five live requests plus one published callback finishing. Partial
+	 * buffers count against this limit and cannot grow beyond 0x4014 bytes.
+	 */
 	if (atomic_inc_return(&ccci->fs_pending) > 6) {
-		atomic_dec(&ccci->fs_pending);
-		clear_bit(index, &ccci->fs_indices);
-		return -ENOSPC;
+		ret = -ENOSPC;
+		goto release;
 	}
-	job = kmalloc(struct_size(job, frame, skb->len), GFP_ATOMIC);
+	job = kmalloc(struct_size(job, frame,
+			more ? MT6797_FS_REQUEST_MAX : skb->len), GFP_ATOMIC);
 	if (!job) {
-		atomic_dec(&ccci->fs_pending);
-		clear_bit(index, &ccci->fs_indices);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto release;
 	}
 	job->ccci = ccci;
 	job->index = index;
+	job->len = 0;
+	if (more)
+		goto append;
+	/* Preserve the existing complete-frame path. The worker strictly
+	 * parses its immutable copy before any provider call.
+	 */
 	job->len = skb->len;
 	memcpy(job->frame, skb->data, skb->len);
+	goto queue;
+append:
+	ret = mt6797_fs_request_append(job->frame, &job->len,
+				       skb->data, skb->len);
+	if (ret < 0) {
+		ccci->fs_partial[index] = NULL;
+		kfree(job);
+		/* An invalid stream cannot safely be restarted at its next tail. */
+		mt6797_ccci_quiesce(ccci, ret);
+		goto release;
+	}
+	if (!ret) {
+		ccci->fs_partial[index] = job;
+		return 0;
+	}
+	ccci->fs_partial[index] = NULL;
+	dev_info_ratelimited(ccci->dev, "CCCI FS reassembled op=0x%x bytes=%zu\n",
+			     mt6797_fs_read32(job->frame + 16), job->len);
+queue:
 	INIT_WORK(&job->work, mt6797_ccci_fs_work);
-	/* Only NAPI queues work. Teardown disables NAPI before destroying wq;
-	 * each fresh job is immutable; at most five active indices plus one
-	 * already-published callback finishing can hold allocated jobs.
-	 */
 	queue_work(ccci->fs_wq, &job->work);
 	return 0;
+release:
+	atomic_dec(&ccci->fs_pending);
+	clear_bit(index, &ccci->fs_indices);
+	return ret;
 }
 
 static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,

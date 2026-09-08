@@ -2,10 +2,10 @@
 """Read-only format primitives for the installed Android25 NVRAM backup.
 
 No device access, extraction, pathname publication or implicit authority.
-Raw block reconstruction and feature-dependent AllMap group selection must
-validate their own inputs before these primitives can support RESTORE.
+Feature-dependent AllMap group selection and source authority remain
+mandatory before reconstructed bytes can support RESTORE.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import struct
 
 MAX_BYTES = 16 * 1024 * 1024
@@ -96,3 +96,76 @@ def decode_record(data: bytes, allfile_size: int) -> Record:
     if end <= 0:
         raise FormatError("record name empty or unterminated")
     return Record(opaque, offset, length, name_field[:end])
+
+
+ERASE_BYTES = 0x20000
+MAP_MAGIC = 0xaabbccdd
+
+
+@dataclass(frozen=True)
+class Backup:
+    # Avoid accidentally printing provisioning bytes in logs or tracebacks.
+    allmap: bytes = field(repr=False)
+    allfile: bytes = field(repr=False)
+    map_block: int
+    header_block: int
+    data_blocks: tuple[int, ...]
+
+
+def reconstruct(raw: bytes, *, layout_version: int = 0) -> Backup:
+    """Reconstruct installed eMMC AllMap/AllFile, then verify the checksum.
+
+    Immutable input is required; this routine performs no I/O. Source identity,
+    feature/group selection, record validation and publication remain separate
+    mandatory gates. Geometry is the installed 128-KiB erase size, two log,
+    two reserved and one DM block. Only vendor layout versions 0/1 are known.
+    """
+    if not isinstance(raw, bytes):
+        raise TypeError("backup input must be immutable bytes")
+    if type(layout_version) is not int or layout_version not in (0, 1):
+        raise FormatError("unsupported backup layout")
+    if not raw or len(raw) > MAX_BYTES or len(raw) % ERASE_BYTES:
+        raise FormatError("invalid backup geometry")
+    total = len(raw) // ERASE_BYTES
+    usable = total - (4 if layout_version == 0 else 0)
+    map_bytes = usable - 1  # DM block, libnvram.so 6ec2.
+    if map_bytes < 3 or 3 * map_bytes + 4 > ERASE_BYTES:
+        raise FormatError("invalid backup geometry")
+
+    # 6f2e..6ff0: newest candidate in physical order, three equal map copies
+    # followed by magic. Invalid candidates are skipped. Once selected, a
+    # corrupt payload must fail, not silently fall back to an older backup.
+    selected = None
+    for index in range(map_bytes - 1, -1, -1):
+        start = index * ERASE_BYTES
+        bitmap = raw[start:start + map_bytes]
+        if (bitmap == raw[start + map_bytes:start + 2 * map_bytes]
+                and bitmap == raw[start + 2 * map_bytes:start + 3 * map_bytes]
+                and struct.unpack_from('<I', raw, start + 3 * map_bytes)[0]
+                == MAP_MAGIC):
+            selected = (index, bitmap)
+            break
+    if selected is None:
+        raise FormatError("no valid redundant block map")
+    map_block, bitmap = selected
+    available = [i for i in range(map_block) if bitmap[i] == 0]
+    # 713a selects the first zero for the header; 72f0 selects a subsequent
+    # zero for data. Require both, including for an empty AllFile.
+    if len(available) < 2:
+        raise FormatError("backup has no header or data block")
+    header_block = available[0]
+    start = header_block * ERASE_BYTES
+    map_size, file_size = struct.unpack_from('<II', raw, start)
+    if not 12 <= map_size <= ERASE_BYTES - 12:
+        raise FormatError("map exceeds header block")
+    if file_size > MAX_BYTES:
+        raise FormatError("backup data exceeds size limit")
+    needed = (file_size + ERASE_BYTES - 1) // ERASE_BYTES
+    if needed > len(available) - 1:
+        raise FormatError("insufficient backup data blocks")
+    data_blocks = tuple(available[1:1 + needed])
+    allmap = raw[start + 12:start + 12 + map_size]
+    allfile = b''.join(raw[i * ERASE_BYTES:(i + 1) * ERASE_BYTES]
+                       for i in data_blocks)[:file_size]
+    verify_checksum(allmap, allfile)
+    return Backup(allmap, allfile, map_block, header_block, data_blocks)

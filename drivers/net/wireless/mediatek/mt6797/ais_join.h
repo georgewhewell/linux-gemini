@@ -35,6 +35,16 @@ struct mt6797_wifi_ais_join_params {
 	bool short_slot;
 };
 
+/* Parse peer IEs into the negotiated rate/PHY/protection fields only.
+ * Other params, including the caller-selected band, remain unchanged.
+ * Unsupported mandatory rates/selectors reject the join before any TX.
+ */
+int mt6797_wifi_ais_join_rates_parse(const u8 *ies, size_t length,
+	u16 capability, struct mt6797_wifi_ais_join_params *params);
+int mt6797_wifi_ais_join_rates_ies_build(
+	const struct mt6797_wifi_ais_join_params *params,
+	u8 *ies, size_t capacity, size_t *length);
+
 /* BSS update precedes STA state3; entry to state3 requires its activation event.
  * State1->state2 is local only, as in vendor cnmStaRecChangeState().
  */

@@ -23,6 +23,16 @@ protocol = (driver / 'protocol.c').read_text()
 for name in ['MT6797_WIFI_COMMAND_PQ_ID', 'MT6797_WIFI_COMMAND_PACKET_TYPE']:
     program += re.search(r'^#define\s+' + name + r'\s+[^\n]+', protocol, re.M)[0] + '\n'
 program += protocol[protocol.index('int mt6797_wifi_command_init('):protocol.index('int mt6797_wifi_basic_config_build(')]
+ieee = (common['root'] / 'include/linux/ieee80211.h').read_text()
+for name in ['WLAN_ERP_USE_PROTECTION', 'WLAN_ERP_BARKER_PREAMBLE',
+             'WLAN_CAPABILITY_SHORT_PREAMBLE', 'WLAN_CAPABILITY_SHORT_SLOT_TIME']:
+    program += re.search(r'^#define\s+' + name + r'\s+[^\n]+', ieee, re.M)[0] + '\n'
+program += '#define ARRAY_SIZE(a) (sizeof(a)/sizeof(*(a)))\n#define min(a,b) ((a)<(b)?(a):(b))\n'
+definitions = (vendor.parent / 'nic/wlan_def.h').read_text()
+for line in definitions.splitlines():
+    if re.match(r'#define (TX_MODE_(CCK|OFDM)|PHY_RATE_(1M|2M|5_5M|11M|6M|9M|12M|18M|24M|36M|48M|54M)|RATE_CCK_\w+_LONG|RATE_OFDM_\w+)\s', line):
+        program += line + '\n'
+program += re.search(r'typedef enum _ENUM_SW_RATE_INDEX_T \{.*?\}.*?;', definitions, re.S)[0] + '\n'
 program += source('ais_join.h') + source('ais_join.c')
 program += r'''
 static struct mt6797_wifi_ais_join_params join={
@@ -98,9 +108,68 @@ static void reject(const struct mt6797_wifi_ais_join_params *p) {
  assert(mt6797_wifi_ais_join_sta_build(&bss,&sta,p,0,command,sizeof(command),&owner)==-EINVAL);
  assert(!owner.generation && !memcmp(command,unchanged,sizeof(command)));
 }
+static void rates_test(void) {
+ const u8 values[]={2,4,11,22,12,18,24,36,48,72,96,108};
+ const unsigned indices[]={RATE_1M_SW_INDEX,RATE_2M_SW_INDEX,RATE_5_5M_SW_INDEX,
+  RATE_11M_SW_INDEX,RATE_6M_SW_INDEX,RATE_9M_SW_INDEX,RATE_12M_SW_INDEX,
+  RATE_18M_SW_INDEX,RATE_24M_SW_INDEX,RATE_36M_SW_INDEX,RATE_48M_SW_INDEX,RATE_54M_SW_INDEX};
+ const u16 codes[]={RATE_CCK_1M_LONG,RATE_CCK_2M_LONG,RATE_CCK_5_5M_LONG,
+  RATE_CCK_11M_LONG,RATE_OFDM_6M,RATE_OFDM_9M,RATE_OFDM_12M,RATE_OFDM_18M,
+  RATE_OFDM_24M,RATE_OFDM_36M,RATE_OFDM_48M,RATE_OFDM_54M};
+ for(unsigned i=0;i<12;i++) {
+  u8 peer[]={1,1,values[i]|0x80};
+  struct mt6797_wifi_ais_join_params p=join;
+  assert(!mt6797_wifi_ais_join_rates_parse(peer,sizeof(peer),0x420,&p));
+  assert(p.operational_rates==(1U<<indices[i]) && p.basic_rates==p.operational_rates);
+  assert(p.desired_rates==p.operational_rates && p.default_rate==codes[i]);
+  assert(p.ssid_length==join.ssid_length && !memcmp(p.ssid,join.ssid,32));
+  golden(&p);
+ }
+ /* Exhaustively round-trip all nonempty subsets of the supported rate set. */
+ for(unsigned subset=1;subset<4096;subset++) {
+  struct mt6797_wifi_ais_join_params p=join, parsed=join;
+  p.desired_rates=0;
+  for(unsigned i=0;i<12;i++) if(subset&(1U<<i)) p.desired_rates|=1U<<indices[i];
+  p.basic_rates=p.desired_rates;
+  u8 stream[16], shortbuf[16]; size_t len;
+  assert(!mt6797_wifi_ais_join_rates_ies_build(&p,stream,sizeof(stream),&len));
+  assert(len<=16 && stream[1]<=8);
+  assert(!mt6797_wifi_ais_join_rates_parse(stream,len,0,&parsed));
+  assert(parsed.operational_rates==p.desired_rates && parsed.basic_rates==p.basic_rates);
+  for(size_t cap=0;cap<len;cap++) {
+   size_t n=99; memset(shortbuf,0xa5,sizeof(shortbuf));
+   assert(mt6797_wifi_ais_join_rates_ies_build(&p,shortbuf,cap,&n)==-EMSGSIZE);
+   assert(!n); for(unsigned i=0;i<sizeof(shortbuf);i++) assert(shortbuf[i]==0xa5);
+  }
+ }
+ const u8 erp[]={1,1,0x82,42,1,6};
+ struct mt6797_wifi_ais_join_params p=join;
+ assert(!mt6797_wifi_ais_join_rates_parse(erp,sizeof(erp),0x420,&p));
+ assert(p.erp_protection && !p.short_preamble && p.short_slot);
+ const u8 bad[][10]={{1,2,0x82},{1,0},{50,1,0x82},{1,1,0x82,1,1,0x84},
+  {1,1,0x82,42,0},{1,1,0xff},{1,1,2},{1,2,0x82,0xac}};
+ const size_t lengths[]={3,2,3,6,5,3,3,4};
+ const int errors[]={-EPROTO,-EPROTO,-EPROTO,-EPROTO,-EPROTO,
+  -EOPNOTSUPP,-EOPNOTSUPP,-EOPNOTSUPP};
+ for(unsigned i=0;i<8;i++) {
+  p=join;
+  assert(mt6797_wifi_ais_join_rates_parse(bad[i],lengths[i],0,&p)==errors[i]);
+  assert(!memcmp(&p,&join,sizeof(p)));
+ }
+ const u8 five[]={1,4,2,0x8c,0x98,0xb0};
+ p=join; p.channel.band=2; p.channel.primary=36;
+ assert(!mt6797_wifi_ais_join_rates_parse(five,sizeof(five),0,&p));
+ assert(p.operational_rates==0x540 && p.default_rate==RATE_OFDM_6M);
+ assert(p.phy_types==8 && p.basic_phy==3 && p.short_slot && !p.short_preamble);
+ golden(&p);
+ const u8 bad_five[]={1,2,0x82,0x8c};
+ assert(mt6797_wifi_ais_join_rates_parse(bad_five,sizeof(bad_five),0,&p)==-EOPNOTSUPP);
+ puts("PASS: all vendor legacy rate codes/indices, 4095 rate subsets, supported/extended IE packing, ERP/Barker handling, unsupported mandatory rates and 5GHz filtering");
+}
 int main(void) {
  const uint16_t endian=1; assert(*(const u8 *)&endian==1);
  assoc_main();
+ rates_test();
  golden(&join);
  join.security=MT6797_WIFI_AIS_SECURITY_WPA2_PSK_CCMP;
  golden(&join);

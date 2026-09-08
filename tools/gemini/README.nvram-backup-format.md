@@ -49,8 +49,9 @@ them accidentally. There is no device reader or extraction CLI.
 
 The reverse scan requires three equal map copies followed by0xaabbccdd,
 then selects the first zero map byte before the map block for the header.
-AllMap must fit in that one block after the12-byte prefix; AllFile is assembled
-from subsequent zero-marked blocks before the selected map. Only the recorded
+The writer permits AllMap plus its12-byte prefix to span at most two erase
+blocks, using the next zero-marked block for a continuation. AllFile is assembled
+from zero-marked blocks after the complete map and before the selected map. Only the recorded
 length is retained, and checksum verification precedes return. Unsupported
 geometry, invalid lengths, insufficient blocks and corruption fail without
 returning a partial backup. An invalid candidate map is skipped as in stock;
@@ -70,3 +71,24 @@ after payload failure, invalid geometry/map/data lengths, out-of-range blocks
 and checksum failure. This is format qualification using synthetic bytes;
 no live backup or modem RESTORE has been qualified. Group/record validation
 and confined publication remain necessary even after reconstruction succeeds.
+
+
+## Writer-side two-block map correction
+
+The installed libfile_op.so SHA256
+bc44372fc6cb950d427955e66c0579353c4ccb845fb78db11851ae58e8de19d2
+exports FileOp_BackupToBinRegion_All at3654. It rounds map.size+12 up to
+write-page size at3856..386a and rejects only sizes above twice the erase
+size at386e/3872. It writes the first erase block at3ace, finds the next
+zero-marked block at3b02..3b14, and writes the remainder at3b50..3b60.
+Data follows this last map block. This explains the live143132-byte AllMap;
+the earlier one-block assumption came from the incomplete single-file reader.
+
+Synthetic tests now include one-block capacity, the first byte beyond it,
+143132 bytes, exactly two-block capacity, a gap between map blocks, and
+insufficient subsequent data authority. A guarded read of the original5MiB
+p19 backup passed reconstruction and checksum with mapblock33, headerblock0,
+AllMap143132 bytes, AllFile1947576 bytes, and15 data blocks. Only numerical
+metadata was reported; no payload was persisted or published. Source hashes
+were checked before/after and on the host. This proves raw reconstruction
+for that captured source identity, not complete record selection or RESTORE.

@@ -113,6 +113,31 @@ class ReconstructionTests(unittest.TestCase):
             raw, allmap, data = self.fixture(file_size=size)
             self.assertEqual(reconstruct(bytes(raw)).allfile, data)
 
+    def test_two_block_map_with_gap(self):
+        # Header in0 and2, block1 excluded; data in3. Map block4.
+        raw, _, _ = self.fixture(file_size=4)
+        for map_size in (ERASE_BYTES-12, ERASE_BYTES-11, 143132,
+                         2*ERASE_BYTES-12):
+            image = raw.copy()
+            allmap = struct.pack('<III', 4, 0, 0) + bytes(map_size-12)
+            header = struct.pack('<III', map_size, 4, 0) + allmap
+            image[:ERASE_BYTES] = header[:ERASE_BYTES]
+            second = header[ERASE_BYTES:]
+            image[2*ERASE_BYTES:2*ERASE_BYTES+len(second)] = second
+            bitmap = bytes([0, 1, 0, 0, 1])
+            image[4*ERASE_BYTES:4*ERASE_BYTES+19] = bitmap*3 + struct.pack('<I', MAP_MAGIC)
+            data_block = 3 if second else 2
+            image[data_block*ERASE_BYTES:data_block*ERASE_BYTES+4] = bytes(4)
+            result = reconstruct(bytes(image))
+            self.assertEqual(result.allmap, allmap)
+            self.assertEqual(result.allfile, bytes(4))
+            self.assertEqual(result.data_blocks, (data_block,))
+        # Two map blocks leave no data authority when only two zeros exist.
+        bitmap = bytes([0, 1, 0, 1, 1])
+        image[4*ERASE_BYTES:4*ERASE_BYTES+19] = bitmap*3 + struct.pack('<I', MAP_MAGIC)
+        with self.assertRaises(FormatError):
+            reconstruct(bytes(image))
+
     def test_header_can_follow_excluded_blocks(self):
         raw, allmap, data = self.fixture(file_size=4)
         header = bytes(raw[:ERASE_BYTES])
@@ -148,7 +173,7 @@ class ReconstructionTests(unittest.TestCase):
 
     def test_lengths_corruption_and_geometry(self):
         original, _, _ = self.fixture()
-        for map_size, file_size in [(11, 0), (ERASE_BYTES-11, 0),
+        for map_size, file_size in [(11, 0), (2*ERASE_BYTES-11, 0),
                                     (0xffffffff, 1), (12, MAX_BYTES+1),
                                     (12, 2*ERASE_BYTES+1)]:
             raw = original.copy()

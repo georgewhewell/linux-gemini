@@ -152,6 +152,38 @@ static void mt6797_fs_vfs_operations(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_stats_drive('Z', &closed), 0);
 	KUNIT_EXPECT_GT(test, closed.free_blocks, unlinked.free_blocks);
 	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_mutate_drive('Z', "dir", MT6797_MD1_FS_RMDIR), 0);
+	/* All seven flag combinations on a directory containing a file and a
+	 * nonempty subdirectory. DIR without FILE cannot remove the latter.
+	 */
+	for (i = 4; i <= 28; i += 4) {
+		char tree[32], sub[40], leaf[48];
+		int expected = i == 4 ? 1 : i == 16 ? 0 : i == 20 ? 2 : i == 28 ? 4 : -ENOTEMPTY;
+
+		snprintf(tree, sizeof(tree), "delete%d", i);
+		snprintf(sub, sizeof(sub), "%s/sub", tree);
+		KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_mutate_drive('X', tree, MT6797_MD1_FS_MKDIR), 0);
+		KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_mutate_drive('X', sub, MT6797_MD1_FS_MKDIR), 0);
+		for (int j = 0; j < 2; j++) {
+			snprintf(leaf, sizeof(leaf), "%s/file", j ? sub : tree);
+			fput(f->files[2]);
+			f->files[2] = mt6797_md1_fs_provider_open_ram_drive('X', leaf, true, true, false);
+			KUNIT_ASSERT_FALSE(test, IS_ERR(f->files[2]));
+		}
+		KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_xdelete_drive('X', tree, i), expected);
+		KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_getattr_drive('X', tree, &attr), i == 28 ? -ENOENT : 0);
+		if (i == 4 || i == 20) {
+			snprintf(leaf, sizeof(leaf), "%s/file", tree);
+			KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_getattr_drive('X', leaf, &attr), -ENOENT);
+			snprintf(leaf, sizeof(leaf), "%s/file", sub);
+			KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_getattr_drive('X', leaf, &attr), i == 20 ? -ENOENT : 0);
+		}
+	}
+	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_xdelete_drive('X', "", 28), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_xdelete_drive('X', "delete16", 0), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_xdelete_drive('X', "delete16", 32), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_xdelete_drive('X', "delete16/file", 28), -ENOTDIR);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_xdelete_drive('X', "../escape", 28), -EINVAL);
+
 }
 
 static struct kunit_case mt6797_fs_vfs_cases[] = {

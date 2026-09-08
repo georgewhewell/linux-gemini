@@ -162,6 +162,15 @@ static int mt6797_md1_fs_provider_rename_drive(u8 old_drive,const char *old_path
  strcpy(rename_old_path,old_path);strcpy(rename_new_path,new_path);return rename_error;
 }
 
+static int xdelete_calls,xdelete_result;
+static u32 xdelete_flags;
+static u8 xdelete_drive;
+static char xdelete_path[1025];
+static int mt6797_md1_fs_provider_xdelete_drive(u8 drive,const char *path,u32 flags){
+ if(!ram_enabled)return -EROFS;
+ xdelete_calls++;xdelete_flags=flags;xdelete_drive=drive;strcpy(xdelete_path,path);return xdelete_result;
+}
+
 '''
 tests = r'''
 static u8 frame[3584], payload[MT6797_FS_REPLY_MAX];
@@ -421,6 +430,25 @@ int main(void) {
    }
    rename_error=0;ram_enabled=roots_enabled=false;
    puts("PASS actual RENAME service: two independent paths, all drive pairs, argument/path refusal, errno and signed reply");
+ }
+
+ { ram_enabled=roots_enabled=true;
+   for(u32 flags=4;flags<=28;flags+=4)for(unsigned d=0;d<3;d++){
+     char name[]="Z:\\tree";name[0]="ZXY"[d];xdelete_result=7;int before=xdelete_calls;
+     assert(!run_path(MT6797_FS_XDELETE,name,flags,1)&&status==7&&arg_s32(0)==7&&reply.argc==1);
+     assert(xdelete_calls==before+1&&xdelete_flags==flags&&xdelete_drive==name[0]&&!strcmp(xdelete_path,"tree"));
+   }
+   u32 invalid[]={0,1,2,3,32,0x1d,0x1001c,0xffffffff};
+   for(unsigned i=0;i<sizeof(invalid)/sizeof(*invalid);i++){
+     int before=xdelete_calls;assert(!run_path(MT6797_FS_XDELETE,"Z:\\tree",invalid[i],1)&&status==-2&&xdelete_calls==before);
+   }
+   int errors[]={-ENOENT,-EACCES,-ENOTDIR,-ENOTEMPTY,-E2BIG};int results[]={-9,-16,-2,-18,-18};
+   for(unsigned i=0;i<sizeof(errors)/sizeof(*errors);i++){xdelete_result=errors[i];assert(!run_path(MT6797_FS_XDELETE,"Z:\\tree",28,1)&&status==results[i]);}
+   int before=xdelete_calls;
+   assert(!run_path(MT6797_FS_XDELETE,"Z:\\tree",0,0)&&status==-2&&xdelete_calls==before);
+   assert(!run_path(MT6797_FS_XDELETE,"Z:\\..\\escape",28,1)&&status==-16&&xdelete_calls==before);
+   ram_enabled=roots_enabled=false;
+   puts("PASS actual XDELETE service: seven flag combinations, all drives, deletion count, errors and malformed request refusal");
  }
  { u32 unsupported[] = {MT6797_FS_GETFOLDERSIZE, MT6797_FS_COUNT, MT6797_FS_GETDRIVE, 0x101d, 0x101e, 0x101f, 0x1020, 0x1023, 0x1000, 0x1024, 0};
    for (unsigned i = 0; i < sizeof(unsupported) / sizeof(*unsupported); i++) { assert(!mt6797_fs_service_supports(unsupported[i]));

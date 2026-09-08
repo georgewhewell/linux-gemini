@@ -42,6 +42,7 @@ struct mt6797_radio_connection {
 	bool pairwise_attempted;
 	bool authorized;
 	bool control_port_no_encrypt;
+	bool pairwise_reply_plaintext;
 	u8 ies[MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH];
 	bool cancel;
 	bool connected;
@@ -343,6 +344,34 @@ static int mt6797_radio_link_event(void *context,
 	return ret;
 }
 
+/* Classify only structurally complete WPA2-CCMP pairwise key messages. This
+ * does not authenticate EAPOL; the supplicant still verifies its MIC and RSN.
+ * Offsets include the four-byte 802.1X header, but no Ethernet header.
+ */
+static unsigned int mt6797_radio_eapol_pairwise_message(const u8 *payload,
+	size_t length)
+{
+	u16 body_length, key_data_length, info;
+
+	if (!payload || length < 99 || (payload[0] != 1 && payload[0] != 2) ||
+	    payload[1] != 3 || payload[4] != 2)
+		return 0;
+	body_length = get_unaligned_be16(payload + 2);
+	key_data_length = get_unaligned_be16(payload + 97);
+	if (body_length != 95U + key_data_length || 4U + body_length > length)
+		return 0;
+	info = get_unaligned_be16(payload + 5);
+	/* Descriptor version2, pairwise, MIC; no reserved/error/request/SMK bits. */
+	if ((info & 0x010f) != 0x010a || (info & 0xec30))
+		return 0;
+	if (info & 0x0080)
+		return 3;
+	/* Some APs omit Secure on M3 and therefore on M4. M2 carries RSN data. */
+	if (!(info & 0x1040) && !key_data_length)
+		return 4;
+	return 0;
+}
+
 static int mt6797_radio_data_frame(struct mt6797_wifi_radio *radio,
 	const struct mt6797_wifi_rx_view *view)
 {
@@ -405,6 +434,20 @@ static int mt6797_radio_data_frame(struct mt6797_wifi_radio *radio,
 		goto reject;
 	if (data.protected && mt6797_wifi_data_rx_replay(&key->rx_pn[data.tid], data.pn))
 		goto reject;
+	/* GEN3 secSetKeyCmdAction: reply to plaintext M3 with plaintext M4,
+	 * even if the supplicant installs PTK/GTK before queuing its reply.
+	 * Keep the choice for retransmitted M4; a later M3 replaces it.
+	 */
+	if (data.eapol) {
+		unsigned int message = mt6797_radio_eapol_pairwise_message(
+			data.payload, data.length - ETH_HLEN);
+
+		if (message == 3)
+			connection->pairwise_reply_plaintext = !data.protected;
+		dev_info_ratelimited(wiphy_dev(radio->wdev.wiphy),
+			"EAPOL RX pairwise_message=%u protected=%u length=%zu\n",
+			message, data.protected, data.length - ETH_HLEN);
+	}
 	skb_put_data(skb, data.ethernet, ETH_HLEN);
 	skb_put_data(skb, data.payload, data.length - ETH_HLEN);
 	skb->protocol = eth_type_trans(skb, radio->netdev);
@@ -1045,13 +1088,22 @@ static int mt6797_radio_tx_packet(struct mt6797_wifi_radio *radio, struct sk_buf
 	}
 	secure = connection->join.negotiated.security != MT6797_WIFI_AIS_SECURITY_OPEN;
 	if (ether_type == ETH_P_PAE) {
+		unsigned int message = mt6797_radio_eapol_pairwise_message(
+			skb->data + ETH_HLEN, skb->len - ETH_HLEN);
+		bool plaintext_reply = message == 4 && connection->pairwise_reply_plaintext;
+
 		if (!ether_addr_equal(skb->data, connection->bss->bssid)) {
 			ret = -EINVAL;
 			goto unlock;
 		}
 		params.traffic = MT6797_WIFI_TX_EAPOL;
-		params.protected = secure && !connection->control_port_no_encrypt &&
+		params.protected = secure && !connection->control_port_no_encrypt && !plaintext_reply &&
 			connection->pairwise_key.installed && connection->pairwise_ready;
+		if (message == 4)
+			dev_info_ratelimited(wiphy_dev(radio->wdev.wiphy),
+				"EAPOL pairwise reply protected=%u no_encrypt=%u plaintext_m3=%u\n",
+				params.protected, connection->control_port_no_encrypt,
+				connection->pairwise_reply_plaintext);
 	} else {
 		if (!connection->authorized || (secure &&
 		    (!connection->pairwise_key.installed || !connection->pairwise_ready))) {

@@ -105,6 +105,12 @@
 				memory-region-names = "md-shared";
 				status = "disabled";
 
+				rf-clock {
+					/* Compiled Gemian board config; vendor 0.9mA override. */
+					mediatek,configuration = <2 0 1 1>;
+					mediatek,driving = <1 1 1 1>;
+				};
+
 				/* Known-good Gemian DT metadata, not AP IRQ/pin ownership. */
 				sim-eint-1 {
 					mediatek,eint-number = <0>;

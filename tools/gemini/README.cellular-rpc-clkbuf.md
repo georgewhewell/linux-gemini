@@ -28,8 +28,8 @@ Reference: `gemini-vendor-kernel-3.18` commit
   `is_clk_buf_from_pmic()` therefore returns false without touching PMIC
   debug registers. The PMIC branch's zero result is **not** this configuration.
 * `arch/arm64/boot/dts/mt6797.dtsi` supplies RF configuration `<2 0 1 1>`
-  and driving `<2 2 2 2>`. The effective board DT still needs explicit
-  verification before using these as the runtime provider's metadata.
+  and driving `<2 2 2 2>`. The known-good compiled Gemian DT independently confirms this exact
+  configuration and driving array (see verification below).
 * The driver's enabled `TEST_SUGGEST_RF_DRIVING_CURR_BEFORE_MP` overrides
   all returned RF driving values to `CLK_BUF_DRIVING_CURR_0_9MA`, enum1.
   Reporting the DT's enum2 would not reproduce this vendor build.
@@ -58,15 +58,53 @@ returned state produces vendor `FS_FUNC_FAIL=-5`, never success. Invalid
 count returns the vendor sentinel with initialized unused bytes and no
 provider call. Structurally malformed packets never invoke the provider.
 
-The header is not yet connected to CCCI RX. A bounded worker and a real
-clock provider are required; NAPI cannot call a sleeping regmap provider.
-The implementation must account for the two RPC request slots, teardown,
-fatal state, failed TX after AFC publication, and first-update semantics.
-It must also retain AFC for future suspend integration. Wire success alone
-must not be used as evidence of a complete clock service or radio attach.
+CCCI now routes EINT and RF-clock requests through an ordered RPC queue.
+Admission reserves one of two request indices under the TX/STOP lock, copies
+at most2072 bytes, and permits at most three allocations (two live slots plus
+one published callback finishing). TX releases the index inside descriptor
+publication before RESUME, matching the existing FS publication contract.
+Teardown disables NAPI, stops transport, then drains RPC before supplier lease
+cleanup. Workers allocate the response before AFC effects, stop on fatal or
+teardown, and latch terminal transport failure if a reply cannot be published.
+There is no in-boot retry after an uncertain publication.
+
+The new cold-owner API holds the existing evidence/lease mutex throughout the
+SPM operation, verifies the exclusive live CLDMA consumer, checks the actual
+MDBSI_CON modem-on command (low bits6), and performs the first AFC write and
+readback at0x414. Later requests retain their latest word without repeating
+that write; unexpected register drift or any register error latches fatal.
+The clock reply combines actual software command bits with the immutable
+board policy. The API never prints the AFC value. This is AP command-latch
+verification, not proof of RF clock arrival or modem attachment.
+
+A new `rf-clock` metadata child carries configuration2,0,1,1 and the actual
+vendor driving override1,1,1,1. The loader requires both exact four-element
+arrays and valid enum values before publishing them. The binding documents
+the child. Missing metadata cannot produce a successful provider response.
+The compiled known-good `blobs/Gemian-Image.gz-dtb` hash is
+`b53d191dc41d3f7364b0fa62b4bc920b1d013a1942b2e6b06727263fc56fcf4d`;
+its DT at8299080 hashes to
+`9e26929563f7682d1f7545d6007f0092c7e085a4edbd6e7be0ac8eaa5159b2f9`.
+The enabled `/soc/rf_clock_buffer@0` confirms quantity4/config2,0,1,1 and
+DT driving2,2,2,2; source evidence above establishes the runtime override.
+
+This integration has not been packaged or booted yet. Suspend must still
+acquire explicit clock ownership and apply the retained latest AFC before
+suspend can be qualified. There is no new suspend or flight-mode transition
+implemented here. Radio attachment and the cause of SIM-busy remain unproven.
 
 `test-cellular-rpc-clkbuf.py` compiles the actual codec with a counted
 provider. It compares a literal56-byte response, all65535 invalid counts,
 every input truncation and insufficient output capacity, malformed length,
 overflow, trailing bytes, semantic error shapes, both slots, provider
 failure and invalid returned values. No frame payload is from provisioning.
+
+`test-cellular-rpc-clock-provider.py` executes the actual cold-owner API with
+lease and register adapters: every I/O failure, first-only write, latest
+retention, invalid consumer/state, unexpected command/register drift,
+readback mismatch and fatal interrupt injection. The transport suite executes
+actual worker/admission/TX/STOP code with deferred requests, both live slots,
+duplicate refusal, immutable copies, allocation/DMA/provider failure, and
+teardown drain. `test-cellular-rpc-clock-metadata.py` executes the actual DT
+loader with missing/disabled nodes, bad array counts, read errors and every
+invalid enum position.

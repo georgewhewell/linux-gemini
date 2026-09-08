@@ -31,6 +31,7 @@
 #include "mtk_ccci_common.h"
 #include "mtk_mt6797_ccci_diag.h"
 #include "mtk_mt6797_ccci_rpc.h"
+#include "mtk_mt6797_ccci_rpc_clkbuf.h"
 #include "mtk_mt6797_ccci_fs.h"
 #include "mtk_mt6797_ccci_fs_diag.h"
 #include "mtk_mt6797_ccci_rx_rejected.h"
@@ -132,6 +133,11 @@ struct mt6797_ccci {
 	spinlock_t tx_stop_lock;
 	struct mt6797_rpc_eint sim_eint[2];
 	atomic_t rpc_logs;
+	atomic_t rpc_pending;
+	unsigned long rpc_indices;
+	struct workqueue_struct *rpc_wq;
+	bool rf_clock_present;
+	struct mt6797_rpc_clkbuf_values rf_clock;
 	atomic_t fs_logs;
 	struct mt6797_fs_diag fs_diag;
 	struct mt6797_rx_rejected rx_rejected;
@@ -502,6 +508,8 @@ static int mt6797_ccci_tx(struct mt6797_ccci *ccci, unsigned int q,
 	if (channel == MT6797_FS_TX && !(le32_to_cpu(data0) & 0x80000000U) &&
 	    le32_to_cpu(reserved) < MT6797_FS_INDEX_COUNT)
 		clear_bit(le32_to_cpu(reserved), &ccci->fs_indices);
+	if (channel == MT6797_RPC_TX && le32_to_cpu(reserved) < 2)
+		clear_bit(le32_to_cpu(reserved), &ccci->rpc_indices);
 	writel(BIT(q), ccci->pdn + CLDMA_UL_RESUME_CMD);
 	readl(ccci->pdn + CLDMA_UL_RESUME_CMD);
 	spin_unlock(&ccci->tx_stop_lock);
@@ -875,32 +883,144 @@ static int mt6797_ccci_control_rx(struct mt6797_ccci *ccci,
 	return ret;
 }
 
+static int mt6797_ccci_rf_clock(void *context, u32 afc,
+			       struct mt6797_rpc_clkbuf_values *values)
+{
+	struct mt6797_ccci *ccci = context;
+	int ret;
+
+	if (!ccci->rf_clock_present)
+		return -EOPNOTSUPP;
+	if (atomic_read(&ccci->failed) || atomic_read(&ccci->teardown))
+		return -ESHUTDOWN;
+	*values = ccci->rf_clock;
+	ret = mt6797_md1_cold_owner_rf_clock(ccci->dev, afc, values->software);
+	if (ret && ret != -EOPNOTSUPP)
+		mt6797_ccci_quiesce(ccci, ret);
+	return ret;
+}
+
+struct mt6797_ccci_rpc_work {
+	struct work_struct work;
+	struct mt6797_ccci *ccci;
+	u32 index;
+	size_t len;
+	u8 frame[];
+};
+
+static void mt6797_ccci_rpc_work(struct work_struct *work)
+{
+	struct mt6797_ccci_rpc_work *job =
+		container_of(work, struct mt6797_ccci_rpc_work, work);
+	struct mt6797_ccci *ccci = job->ccci;
+	u8 bytes[MT6797_RPC_CLKBUF_REPLY_SIZE];
+	struct sk_buff *reply = NULL;
+	size_t size = MT6797_RPC_REPLY_SIZE;
+	u32 op = mt6797_rpc_read(job->frame + 16);
+	s32 status = 0;
+	int ret = -ESHUTDOWN;
+	bool published = false;
+
+	if (atomic_read(&ccci->failed) || atomic_read(&ccci->teardown))
+		goto done;
+	/* Allocate the response before a provider can change hardware state. */
+	reply = alloc_skb(sizeof(bytes), GFP_KERNEL);
+	if (!reply) {
+		ret = -ENOMEM;
+		goto failed;
+	}
+	if (op == MT6797_RPC_CLKBUF)
+		ret = mt6797_rpc_clkbuf_reply(job->frame, job->len,
+			mt6797_ccci_rf_clock, ccci, bytes, sizeof(bytes), &size, &status);
+	else
+		ret = mt6797_rpc_eint_reply(job->frame, job->len, ccci->sim_eint,
+			bytes, sizeof(bytes), &status);
+	if (ret)
+		goto failed;
+	skb_put_data(reply, bytes, size);
+	ret = mt6797_ccci_tx(ccci, 1, reply, MT6797_RPC_TX);
+	if (!ret) {
+		published = true;
+		reply = NULL; /* TX owns reply and released the slot during publication. */
+	}
+	if (atomic_add_unless(&ccci->rpc_logs, 1, 16) || op == MT6797_RPC_CLKBUF)
+		dev_info_ratelimited(ccci->dev,
+			 "CCCI RPC op=0x%x reply_channel=33 status=%d tx_result=%d bytes=%zu\n",
+			 op, status, ret, size);
+failed:
+	if (ret) {
+		mt6797_rx_rejected_record(&ccci->rx_rejected, MT6797_RPC_RX, 1,
+			job->frame, job->len, ret);
+		/* Do not replay AFC effects after an uncertain response publication. */
+		mt6797_ccci_quiesce(ccci, ret);
+	}
+done:
+	kfree_skb(reply);
+	if (!published)
+		clear_bit(job->index, &ccci->rpc_indices);
+	atomic_dec(&ccci->rpc_pending);
+	kfree(job);
+}
+
+static void mt6797_ccci_rpc_destroy(void *data)
+{
+	struct mt6797_ccci *ccci = data;
+	struct workqueue_struct *wq = xchg(&ccci->rpc_wq, NULL);
+
+	if (wq)
+		destroy_workqueue(wq);
+}
+
 static int mt6797_ccci_rpc_rx(struct mt6797_ccci *ccci,
 			    struct sk_buff *skb, unsigned int q)
 {
-	u8 bytes[MT6797_RPC_REPLY_SIZE];
-	struct sk_buff *reply;
-	s32 status;
-	int ret;
+	struct mt6797_ccci_rpc_work *job;
+	unsigned long flags;
+	u32 index, op;
+	int ret = 0;
 
-	if (q != 1 || atomic_read(&ccci->failed))
+	if (q != 1 || atomic_read(&ccci->failed) ||
+	    atomic_read(&ccci->teardown) || !ccci->rpc_wq)
 		return -ESHUTDOWN;
-	ret = mt6797_rpc_eint_reply(skb->data, skb->len, ccci->sim_eint,
-				  bytes, sizeof(bytes), &status);
+	if (skb->len < 24 || skb->len > 2072 ||
+	    mt6797_rpc_read(skb->data + 4) != skb->len ||
+	    (mt6797_rpc_read(skb->data + 8) & 0xffff) != MT6797_RPC_RX)
+		return -EPROTO;
+	index = mt6797_rpc_read(skb->data + 12);
+	op = mt6797_rpc_read(skb->data + 16);
+	if (index >= 2)
+		return -EPROTO;
+	if (op != MT6797_RPC_EINT && op != MT6797_RPC_CLKBUF)
+		return -EOPNOTSUPP;
+	spin_lock_irqsave(&ccci->tx_stop_lock, flags);
+	if (atomic_read(&ccci->failed) || atomic_read(&ccci->teardown))
+		ret = -ESHUTDOWN;
+	else if (test_and_set_bit(index, &ccci->rpc_indices))
+		ret = -EALREADY;
+	spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
 	if (ret)
 		return ret;
-	reply = alloc_skb(sizeof(bytes), GFP_ATOMIC);
-	if (!reply)
-		return -ENOMEM;
-	skb_put_data(reply, bytes, sizeof(bytes));
-	/* On success TX owns reply through reclaim; on failure we still own it. */
-	ret = mt6797_ccci_tx(ccci, 1, reply, MT6797_RPC_TX);
-	if (ret)
-		kfree_skb(reply);
-	if (atomic_add_unless(&ccci->rpc_logs, 1, 16))
-		dev_info(ccci->dev,
-			 "CCCI RPC op=0x4005 reply_channel=33 status=%d tx_result=%d bytes=40\n",
-			 status, ret);
+	/* Two live slots plus one already-published callback finishing. */
+	if (atomic_inc_return(&ccci->rpc_pending) > 3) {
+		ret = -ENOSPC;
+		goto release;
+	}
+	job = kmalloc(struct_size(job, frame, skb->len), GFP_ATOMIC);
+	if (!job) {
+		ret = -ENOMEM;
+		goto release;
+	}
+	job->ccci = ccci;
+	job->index = index;
+	job->len = skb->len;
+	memcpy(job->frame, skb->data, skb->len);
+	INIT_WORK(&job->work, mt6797_ccci_rpc_work);
+	/* Only NAPI queues; teardown disables NAPI before draining this queue. */
+	queue_work(ccci->rpc_wq, &job->work);
+	return 0;
+release:
+	atomic_dec(&ccci->rpc_pending);
+	clear_bit(index, &ccci->rpc_indices);
 	return ret;
 }
 
@@ -1617,6 +1737,33 @@ static int mt6797_ccci_validate_resources(struct platform_device *pdev)
 	return mt6797_md1_cldma_resources_validate(&resources);
 }
 
+static void mt6797_ccci_read_rf_clock(struct mt6797_ccci *ccci)
+{
+	struct device_node *node;
+	u32 config[4], driving[4];
+	unsigned int i;
+
+	node = of_get_child_by_name(ccci->dev->of_node, "rf-clock");
+	if (!node)
+		return;
+	if (!of_device_is_available(node) ||
+	    of_property_count_u32_elems(node, "mediatek,configuration") != 4 ||
+	    of_property_count_u32_elems(node, "mediatek,driving") != 4 ||
+	    of_property_read_u32_array(node, "mediatek,configuration", config, 4) ||
+	    of_property_read_u32_array(node, "mediatek,driving", driving, 4))
+		goto out;
+	for (i = 0; i < 4; i++)
+		if (config[i] > 2 || driving[i] > 3)
+			goto out;
+	for (i = 0; i < 4; i++) {
+		ccci->rf_clock.configuration[i] = config[i];
+		ccci->rf_clock.driving[i] = driving[i];
+	}
+	ccci->rf_clock_present = true;
+out:
+	of_node_put(node);
+}
+
 static void mt6797_ccci_read_sim_eint(struct mt6797_ccci *ccci)
 {
 	static const char * const nodes[] = { "sim-eint-1", "sim-eint-2" };
@@ -1677,6 +1824,8 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	spin_lock_init(&ccci->rx_rejected.lock);
 	spin_lock_init(&ccci->tx_stop_lock);
 	atomic_set(&ccci->rpc_logs, 0);
+	atomic_set(&ccci->rpc_pending, 0);
+	mt6797_ccci_read_rf_clock(ccci);
 	atomic_set(&ccci->fs_logs, 0);
 	atomic_set(&ccci->fs_pending, 0);
 	atomic_set(&ccci->tx_mask_owned, 0);
@@ -1773,6 +1922,12 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	ret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_fs_destroy, ccci);
 	if (ret)
 		return ret;
+	ccci->rpc_wq = alloc_ordered_workqueue("mt6797-rpc", 0);
+	if (!ccci->rpc_wq)
+		return -ENOMEM;
+	ret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_rpc_destroy, ccci);
+	if (ret)
+		return ret;
 	napi_enable(&ccci->napi);
 	ret = mt6797_ccci_start(ccci);
 	if (ret) {
@@ -1798,6 +1953,7 @@ static void mt6797_ccci_remove(struct platform_device *pdev)
 	napi_disable(&ccci->napi);
 	/* STOP serializes against any worker TX before draining metadata work. */
 	mt6797_ccci_quiesce(ccci, -ESHUTDOWN);
+	mt6797_ccci_rpc_destroy(ccci);
 	mt6797_ccci_fs_destroy(ccci);
 	cancel_delayed_work_sync(&ccci->handshake_timeout_work);
 	cancel_work_sync(&ccci->hs1_work);

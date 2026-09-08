@@ -10,11 +10,11 @@
 #define MT6797_FS_DIAG_COUNT 16U
 struct mt6797_fs_diag_entry {
 	u64 sequence;
-	u32 op, flags, requested, open_flags;
+	u32 op, flags, requested, open_flags, move_flags;
 	u8 drive0, drive1;
 	s32 parse_error, status, result;
 	size_t sent;
-	bool compact, open_valid, done;
+	bool compact, open_valid, move_valid, done;
 };
 struct mt6797_fs_diag {
 	spinlock_t lock;
@@ -23,6 +23,31 @@ struct mt6797_fs_diag {
 	unsigned int head, count;
 	struct mt6797_fs_diag_entry entry[MT6797_FS_DIAG_COUNT];
 };
+
+/* Detached chronological copy; reading never freezes or changes the ring. */
+struct mt6797_fs_diag_snapshot {
+	bool frozen;
+	u64 total;
+	unsigned int count;
+	struct mt6797_fs_diag_entry entry[MT6797_FS_DIAG_COUNT];
+};
+
+static inline void mt6797_fs_diag_snapshot(struct mt6797_fs_diag *d,
+					  struct mt6797_fs_diag_snapshot *out)
+{
+	unsigned long flags;
+	unsigned int i;
+
+	memset(out, 0, sizeof(*out));
+	spin_lock_irqsave(&d->lock, flags);
+	out->frozen = d->frozen;
+	out->total = d->total;
+	out->count = d->count;
+	for (i = 0; i < d->count; i++)
+		out->entry[i] = d->entry[(d->head + MT6797_FS_DIAG_COUNT -
+					 d->count + i) % MT6797_FS_DIAG_COUNT];
+	spin_unlock_irqrestore(&d->lock, flags);
+}
 
 /* Extract only a UTF-16LE ASCII letter followed by colon, never the path. */
 static inline u8 mt6797_fs_diag_drive(const u8 *arg, u32 len)
@@ -58,6 +83,10 @@ static inline u64 mt6797_fs_diag_begin(struct mt6797_fs_diag *d,
 		    request.argc >= 2 && request.len[1] == 4) {
 			e.open_valid = true;
 			e.open_flags = mt6797_fs_read32(request.arg[1]);
+		}
+		if (request.op == MT6797_FS_MOVE && request.argc == 3 && request.len[2] == 4) {
+			e.move_valid = true;
+			e.move_flags = mt6797_fs_read32(request.arg[2]);
 		}
 		if (request.op == MT6797_FS_COMPACT_READ && request.argc == 2 &&
 		    request.len[1] == 40) {

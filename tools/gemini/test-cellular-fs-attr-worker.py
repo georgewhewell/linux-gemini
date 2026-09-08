@@ -26,6 +26,7 @@ shim = r'''
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -65,7 +66,7 @@ struct file;
 '''
 fs_diag = (root / 'drivers/net/wwan/mediatek/mtk_mt6797_ccci_fs_diag.h').read_text()
 adapters = r'''
-struct mt6797_ccci {struct mt6797_fs_diag fs_diag;atomic_int failed,teardown,fs_pending,fs_logs;unsigned long fs_indices;struct workqueue_struct *fs_wq;struct mt6797_fs_service fs_service;};
+struct mt6797_ccci {struct mt6797_fs_diag fs_diag;atomic_int failed,ready,teardown,fs_pending,fs_logs;unsigned long fs_indices;struct workqueue_struct *fs_wq;struct mt6797_fs_service fs_service;};
 static struct mt6797_ccci c;
 static struct workqueue_struct wq;
 static atomic_int allocations,freed;
@@ -78,6 +79,15 @@ static struct sk_buff request(void);
 static int mt6797_ccci_fs_rx(struct mt6797_ccci *,struct sk_buff *,unsigned);
 static void *kmalloc(size_t n,int flags){(void)flags;kmallocs++;if(fail_kmalloc_at&&kmallocs==fail_kmalloc_at)return NULL;atomic_fetch_add(&allocations,1);return malloc(n);}
 static void kfree(void *p){if(p)atomic_fetch_add(&freed,1);free(p);}
+#define PAGE_SIZE 4096
+struct device {int unused;};struct device_attribute {int unused;};
+static struct mt6797_ccci *dev_get_drvdata(struct device *d){(void)d;return &c;}
+static void *kzalloc(size_t n,int flags){void *p=kmalloc(n,flags);if(p)memset(p,0,n);return p;}
+static int sysfs_emit_at(char *buf,int at,const char *fmt,...){
+ assert(at>=0&&at<PAGE_SIZE);va_list ap;va_start(ap,fmt);int n=vsnprintf(buf+at,PAGE_SIZE-at,fmt,ap);va_end(ap);
+ assert(n>=0&&n<PAGE_SIZE-at);return n;
+}
+#define sysfs_emit(buf,...) sysfs_emit_at(buf,0,__VA_ARGS__)
 static bool queue_work(struct workqueue_struct *w,struct work_struct *job){assert(w==&wq);pthread_mutex_lock(&w->lock);assert(w->count<16);w->jobs[w->count++]=job;pthread_mutex_unlock(&w->lock);return true;}
 static void destroy_workqueue(struct workqueue_struct *w){assert(w==&wq);for(unsigned i=0;i<w->count;i++)w->jobs[i]->fn(w->jobs[i]);w->count=0;}
 static bool mt6797_md1_fs_provider_enabled(void){return scenario!=9;}
@@ -188,13 +198,14 @@ int main(void){
    p[0]='9';assert(!mt6797_fs_diag_drive(p,8));
    assert(!mt6797_fs_diag_drive(p,7));
  }
- { struct mt6797_fs_diag d={0};u8 f[48]={0};
+ { struct mt6797_fs_diag d={0};u8 f[56]={0};
    mt6797_fs_write32(f+4,sizeof(f));mt6797_fs_write32(f+8,14);
-   mt6797_fs_write32(f+16,MT6797_FS_MOVE);mt6797_fs_write32(f+20,2);
+   mt6797_fs_write32(f+16,MT6797_FS_MOVE);mt6797_fs_write32(f+20,3);
    mt6797_fs_write32(f+24,8);memcpy(f+28,"X\0:\0a\0\0\0",8);
    mt6797_fs_write32(f+36,8);memcpy(f+40,"Z\0:\0b\0\0\0",8);
+   mt6797_fs_write32(f+48,4);mt6797_fs_write32(f+52,0x10002);
    assert(mt6797_fs_diag_begin(&d,f,sizeof(f))==1);
-   assert(d.entry[0].drive0=='X'&&d.entry[0].drive1=='Z');
+   assert(d.entry[0].drive0=='X'&&d.entry[0].drive1=='Z'&&d.entry[0].move_valid&&d.entry[0].move_flags==0x10002);
    memset(f,0,sizeof(f));assert(d.entry[0].drive0=='X'&&d.entry[0].drive1=='Z');
  }
  /* Requests beyond the old printk cap remain visible, in chronological order. */
@@ -208,6 +219,10 @@ int main(void){
      struct mt6797_fs_diag_entry *e=&d.entry[(d.head+16-d.count+i)%16];
      assert(e->sequence==125+i&&e->op==0x1001&&e->done&&e->status==-9&&e->result==-EIO&&e->sent==56&&!e->compact&&e->open_valid&&e->open_flags==0x900);
    }
+   struct mt6797_fs_diag_snapshot snap;
+   struct mt6797_fs_diag unchanged=d;mt6797_fs_diag_snapshot(&d,&snap);
+   assert(!memcmp(&d,&unchanged,sizeof(d))&&!snap.frozen&&snap.total==140&&snap.count==16);
+   for(unsigned i=0;i<16;i++)assert(snap.entry[i].sequence==125+i&&snap.entry[i].done);
    /* Freeze in-flight: completion and future requests cannot rewrite evidence. */
    u64 seq=mt6797_fs_diag_begin(&d,s.data,s.len);assert(seq==141);
    mt6797_fs_diag_freeze(&d);struct mt6797_fs_diag before=d;
@@ -215,6 +230,8 @@ int main(void){
    assert(!mt6797_fs_diag_begin(&d,s.data,s.len));
    mt6797_fs_diag_freeze(&d);assert(!memcmp(&d,&before,sizeof(d)));
    assert(!d.entry[(d.head+15)%16].done);
+   assert(snap.total==140&&snap.entry[15].done); /* detached from later begin/freeze */
+   mt6797_fs_diag_snapshot(&d,&snap);assert(snap.frozen&&snap.total==141&&!snap.entry[15].done);
  }
  { struct mt6797_fs_diag d={0};u8 frame[76]={0};
    mt6797_fs_write32(frame+4,sizeof(frame));mt6797_fs_write32(frame+8,14);
@@ -229,10 +246,26 @@ int main(void){
    assert(mt6797_fs_diag_begin(&d,frame,1)==2);
    assert(d.entry[1].parse_error==-EMSGSIZE&&!d.entry[1].compact&&!d.entry[1].op&&!d.entry[1].open_valid);
  }
+ /* Execute actual sysfs show, including maximal-width rows and allocation failure. */
+ reset(0);char page[4096];
+ assert(fs_recent_show(NULL,NULL,page)>0&&strstr(page,"total=0 count=0 frozen=0 pending=0"));
+ for(unsigned i=0;i<16;i++){
+  c.fs_diag.entry[i]=(struct mt6797_fs_diag_entry){.sequence=UINT64_MAX-i,.op=UINT32_MAX,.flags=UINT32_MAX,.requested=UINT32_MAX,.open_flags=UINT32_MAX,.move_flags=UINT32_MAX,.drive0=255,.drive1=255,.parse_error=INT32_MIN,.status=INT32_MIN,.result=INT32_MIN,.sent=SIZE_MAX,.compact=true,.open_valid=true,.move_valid=true,.done=true};
+ }
+ c.fs_diag.total=UINT64_MAX;c.fs_diag.count=16;
+ struct mt6797_fs_diag saved=c.fs_diag;ssize_t n=fs_recent_show(NULL,NULL,page);
+ assert(n>0&&n<4096&&page[n-1]=='\n'&&!memcmp(&saved,&c.fs_diag,sizeof(saved)));
+ unsigned rows=0;for(char *q=page;*q;q++)if(*q=='\n')rows++;assert(rows==17);
+ assert(strstr(page,"mv=1 mf=ffffffff")&&strstr(page,"d0=255 d1=255"));
+ fail_kmalloc_at=kmallocs+1;assert(fs_recent_show(NULL,NULL,page)==-ENOMEM);
+ assert(atomic_load(&allocations)==atomic_load(&freed));
+ puts("PASS live FS snapshot: chronological detached copy, no ring mutation/freeze, in-flight/frozen rows, actual sysfs formatter bounded to one page and allocation failure");
  puts("PASS FS metadata: last 16 after 140 operations, chronological wrap, immutable freeze during request, compact shape and malformed request");
  puts("PASS actual FS admission/worker/send/destroy: immutable RX copy, C11 frame end to end, three-frame fragmentation with final-frame index release, allocation and TX ownership failures, STOP before/during service/before publish, refusals without claims, drain-once with service release, 32 concurrent admissions bounded to five");
 }
 '''
+assert 'DEVICE_ATTR(fs_recent, 0400, fs_recent_show, NULL)' in source
+assert '.dev_groups = mt6797_ccci_groups' in source
 remove = function(source, 'mt6797_ccci_remove')
 assert remove.index('napi_disable') < remove.index('mt6797_ccci_fs_destroy')
 assert remove.index('mt6797_ccci_quiesce') < remove.index('mt6797_ccci_fs_destroy')
@@ -242,6 +275,6 @@ with tempfile.TemporaryDirectory(prefix='gemini-fs-worker-') as directory:
     (path / 'test.c').write_text(shim + provider + codec + fs_diag + adapters + structure + function(service_source, 'mt6797_fs_service_supports') +
                                  function(source, 'mt6797_ccci_fs_index_busy') + function(source, 'mt6797_ccci_fs_index_claim') +
                                  function(source, 'mt6797_ccci_fs_send') + function(source, 'mt6797_ccci_fs_work') +
-                                 function(source, 'mt6797_ccci_fs_destroy') + function(source, 'mt6797_ccci_fs_rx') + tests)
+                                 function(source, 'mt6797_ccci_fs_destroy') + function(source, 'mt6797_ccci_fs_rx') + function(source, 'fs_recent_show') + tests)
     subprocess.run([os.environ.get('CC','cc'), '-std=gnu11','-Wall','-Wextra','-Werror','-Wno-unused-function','-pthread',str(path/'test.c'),'-o',str(path/'test')],check=True)
     subprocess.run([str(path/'test')],check=True,timeout=10)

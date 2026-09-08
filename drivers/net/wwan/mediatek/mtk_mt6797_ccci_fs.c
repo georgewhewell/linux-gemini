@@ -123,9 +123,9 @@ static u32 mt6797_fs_dos_stamp(s64 seconds)
 	return mt6797_fs_dos_time(&tm);
 }
 
-/* OPEN/OPENHINT: FS_READ_ONLY maps to O_RDONLY; every other flag combination
- * asked the vendor daemon for O_RDWR, which a read-only backing refuses with
- * EROFS and therefore the general-failure code.
+/* OPEN/OPENHINT: FS_READ_ONLY selects O_RDONLY, otherwise O_RDWR.
+ * Creation/truncation/write access requires the separately registered RAM
+ * backend. The legacy read-only backend still refuses these with EROFS.
  */
 static s32 mt6797_fs_open(struct mt6797_fs_service *service,
 			  const struct mt6797_fs_request *request, char *path)
@@ -144,12 +144,17 @@ static s32 mt6797_fs_open(struct mt6797_fs_service *service,
 	if (service->open_count >= MT6797_FS_HANDLES - 1)
 		return MT6797_FS_TOO_MANY_FILES;
 	if (!(flags & MT6797_FS_OPEN_READ_ONLY) ||
-	    (flags & (MT6797_FS_OPEN_CREATE | MT6797_FS_OPEN_CREATE_ALWAYS)))
-		return MT6797_FS_GENERAL_FAILURE;
-	ret = mt6797_md1_fs_provider_getattr(path, &attr);
-	if (ret)
-		return mt6797_fs_status(ret);
-	file = mt6797_md1_fs_provider_open(path, S_ISDIR(attr.mode));
+	    (flags & (MT6797_FS_OPEN_CREATE | MT6797_FS_OPEN_CREATE_ALWAYS))) {
+		file = mt6797_md1_fs_provider_open_ram(path,
+			!(flags & MT6797_FS_OPEN_READ_ONLY),
+			flags & (MT6797_FS_OPEN_CREATE | MT6797_FS_OPEN_CREATE_ALWAYS),
+			flags & MT6797_FS_OPEN_CREATE_ALWAYS);
+	} else {
+		ret = mt6797_md1_fs_provider_getattr(path, &attr);
+		if (ret)
+			return mt6797_fs_status(ret);
+		file = mt6797_md1_fs_provider_open(path, S_ISDIR(attr.mode));
+	}
 	if (IS_ERR(file))
 		return mt6797_fs_status(PTR_ERR(file));
 	slot = mt6797_fs_handle_alloc(service);
@@ -558,20 +563,35 @@ static s32 mt6797_fs_refuse_write(const struct mt6797_fs_request *request,
 	return MT6797_FS_GENERAL_FAILURE;
 }
 
+
 static int mt6797_fs_write(struct mt6797_fs_service *service,
-			   const struct mt6797_fs_request *request,
-			   struct mt6797_fs_reply *reply, s32 *status)
+			 const struct mt6797_fs_request *request,
+			 struct mt6797_fs_reply *reply, s32 *status)
 {
-	u32 index;
+	struct mt6797_fs_handle *handle;
+	u32 index, length, count = 0;
+	ssize_t written;
 	int ret;
 
-	/* write(2) on the daemon's O_RDONLY descriptor: EBADF, general failure. */
 	*status = MT6797_FS_PARAM_ERROR;
-	if (request->argc == 3 && mt6797_fs_arg_u32(request, 0, &index))
-		*status = mt6797_fs_handle_get(service, index, false) ?
-			MT6797_FS_GENERAL_FAILURE : MT6797_FS_INVALID_FILE_HANDLE;
+	if (request->argc != 3 || !mt6797_fs_arg_u32(request, 0, &index) ||
+	    !mt6797_fs_arg_u32(request, 2, &length) || length > request->len[1])
+		goto reply;
+	handle = mt6797_fs_handle_get(service, index, false);
+	*status = MT6797_FS_INVALID_FILE_HANDLE;
+	if (!handle)
+		goto reply;
+	written = mt6797_md1_fs_provider_write(handle->file, request->arg[1],
+					     length, &handle->file->f_pos);
+	if (written < 0)
+		*status = mt6797_fs_status(written);
+	else {
+		*status = MT6797_FS_NO_ERROR;
+		count = written;
+	}
+reply:
 	ret = mt6797_fs_reply_add_u32(reply, (u32)*status);
-	return ret ? ret : mt6797_fs_reply_add_u32(reply, 0);
+	return ret ? ret : mt6797_fs_reply_add_u32(reply, count);
 }
 
 static int mt6797_fs_diskinfo_reply(const struct mt6797_fs_request *request,

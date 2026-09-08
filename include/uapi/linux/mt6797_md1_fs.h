@@ -14,6 +14,10 @@ struct mt6797_md1_fs_registration {
 };
 
 #define MT6797_MD1_FS_REGISTER _IOW('M', 0xf0, struct mt6797_md1_fs_registration)
+/* Explicit experimental mode; requires enable_volatile and bounded tmpfs.
+ * This never grants write authority to the ext4 backing accepted by REGISTER.
+ */
+#define MT6797_MD1_FS_REGISTER_RAM _IOW('M', 0xf2, struct mt6797_md1_fs_registration)
 #define MT6797_MD1_FS_CANCEL _IO('M', 0xf1)
 
 #endif

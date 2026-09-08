@@ -27,9 +27,14 @@ static bool enable;
 module_param(enable, bool, 0400);
 MODULE_PARM_DESC(enable, "Require explicit read-only MD1 filesystem authority before cold boot");
 
+static bool enable_volatile;
+module_param(enable_volatile, bool, 0400);
+MODULE_PARM_DESC(enable_volatile, "Allow experimental bounded writable tmpfs backing only");
+
 static DEFINE_SPINLOCK(provider_lock);
 static struct mt6797_fs_state provider_state;
 static struct file *provider_file;
+static bool provider_volatile;
 static struct device *provider_cold;
 static struct mt6797_md1_fs_stats provider_stats;
 
@@ -46,6 +51,26 @@ static bool mt6797_fs_readonly(struct file *file)
 		(READ_ONCE(file_inode(file)->i_sb->s_flags) & SB_RDONLY);
 }
 
+/* RAM policy is separate from readonly(), so no existing disk write refusal
+ * is weakened. These checks have no VFS callbacks and may run under lock.
+ */
+static bool mt6797_fs_tmpfs_writable(struct file *file)
+{
+	return file && file_inode(file)->i_sb->s_magic == TMPFS_MAGIC &&
+		!(READ_ONCE(file->f_path.mnt->mnt_flags) & MNT_READONLY) &&
+		!(READ_ONCE(file_inode(file)->i_sb->s_flags) & SB_RDONLY);
+}
+
+static bool mt6797_fs_backing_matches(struct file *file, bool ram)
+{
+	return ram ? mt6797_fs_tmpfs_writable(file) : mt6797_fs_readonly(file);
+}
+
+static bool mt6797_fs_accessible(struct file *file)
+{
+	return mt6797_fs_backing_matches(file, READ_ONCE(provider_volatile));
+}
+
 int mt6797_md1_fs_provider_require(struct device *cold)
 {
 	unsigned long flags;
@@ -55,7 +80,7 @@ int mt6797_md1_fs_provider_require(struct device *cold)
 		return 0;
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = mt6797_fs_require(&provider_state);
-	if (!ret && (provider_cold != cold || !mt6797_fs_readonly(provider_file)))
+	if (!ret && (provider_cold != cold || !mt6797_fs_accessible(provider_file)))
 		ret = -EPERM;
 	spin_unlock_irqrestore(&provider_lock, flags);
 	return ret;
@@ -69,7 +94,7 @@ int mt6797_md1_fs_provider_claim(struct device *cold)
 	if (!enable)
 		return 0;
 	spin_lock_irqsave(&provider_lock, flags);
-	ret = provider_cold == cold && mt6797_fs_readonly(provider_file) ?
+	ret = provider_cold == cold && mt6797_fs_accessible(provider_file) ?
 		mt6797_fs_claim(&provider_state) : -EPERM;
 	spin_unlock_irqrestore(&provider_lock, flags);
 	return ret;
@@ -82,7 +107,7 @@ int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *stats)
 
 	spin_lock_irqsave(&provider_lock, flags);
 	if (provider_state.stage == MT6797_FS_CONSUMED &&
-	    mt6797_fs_readonly(provider_file)) {
+	    mt6797_fs_accessible(provider_file)) {
 		*stats = provider_stats;
 		ret = 0;
 	}
@@ -99,7 +124,7 @@ static struct file *mt6797_fs_root_get(void)
 
 	spin_lock_irqsave(&provider_lock, flags);
 	if (provider_state.stage == MT6797_FS_CONSUMED &&
-	    mt6797_fs_readonly(provider_file))
+	    mt6797_fs_accessible(provider_file))
 		file = get_file(provider_file);
 	spin_unlock_irqrestore(&provider_lock, flags);
 	return file;
@@ -174,7 +199,7 @@ static int mt6797_fs_stat(const struct file *root, struct dentry *dentry,
 			  STATX_MTIME, AT_STATX_DONT_SYNC);
 	if (ret)
 		return ret;
-	if (!mt6797_fs_readonly((struct file *)root))
+	if (!mt6797_fs_accessible((struct file *)root))
 		return -EACCES;
 	attr->mode = stat.mode;
 	attr->size = stat.size;
@@ -235,7 +260,7 @@ struct file *mt6797_md1_fs_provider_open(const char *path, bool directory)
 	target.dentry = dentry;
 	/* The new file takes its own mount and dentry references. */
 	file = dentry_open(&target, flags, current_cred());
-	if (!IS_ERR(file) && !mt6797_fs_readonly(file)) {
+	if (!IS_ERR(file) && !mt6797_fs_accessible(file)) {
 		fput(file);
 		file = ERR_PTR(-EACCES);
 	}
@@ -247,11 +272,132 @@ put_root:
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open);
 
+/* Only a retained tmpfs root can reach creation or truncation. Parent lookup
+ * never follows symlinks or mountpoints; final lookup uses that exact mount.
+ * O_TRUNC is deliberately not passed to name lookup or dentry_open.
+ */
+struct file *mt6797_md1_fs_provider_open_ram(const char *path, bool writable,
+					  bool create, bool truncate)
+{
+	struct file *root, *file;
+	struct dentry *parent, *child;
+	struct path target;
+	struct qstr name;
+	char *copy, *leaf, *slash;
+	int ret;
+
+	might_sleep();
+	if (!path || strnlen(path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX)
+		return ERR_PTR(-ENAMETOOLONG);
+	root = mt6797_fs_root_get();
+	if (!root)
+		return ERR_PTR(-ENODEV);
+	file = ERR_PTR(-EROFS);
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(root))
+		goto put_root;
+	copy = kstrdup(path, GFP_KERNEL);
+	if (!copy) {
+		file = ERR_PTR(-ENOMEM);
+		goto put_root;
+	}
+	slash = strrchr(copy, '/');
+	leaf = slash ? slash + 1 : copy;
+	name = (struct qstr)QSTR_INIT(leaf, strlen(leaf));
+	if (!name.len || name.len > NAME_MAX || path[0] == '/' ||
+	    (name.len <= 2 && !strncmp(leaf, "..", name.len))) {
+		file = ERR_PTR(-EINVAL);
+		goto free_copy;
+	}
+	if (slash)
+		*slash = '\0';
+	parent = mt6797_fs_walk(root, slash ? copy : "");
+	if (IS_ERR(parent)) {
+		file = ERR_CAST(parent);
+		goto free_copy;
+	}
+	if (!d_is_dir(parent)) {
+		file = ERR_PTR(-ENOTDIR);
+		goto put_parent;
+	}
+	ret = mnt_want_write(root->f_path.mnt);
+	if (ret) {
+		file = ERR_PTR(ret);
+		goto put_parent;
+	}
+	inode_lock(d_inode(parent));
+	child = lookup_one(mnt_idmap(root->f_path.mnt), &name, parent);
+	if (IS_ERR(child)) {
+		file = ERR_CAST(child);
+		goto unlock;
+	}
+	file = ERR_PTR(-EACCES);
+	if (!mt6797_fs_tmpfs_writable(root) || d_mountpoint(child) ||
+	    d_is_symlink(child) || child->d_sb != file_inode(root)->i_sb)
+		goto put_child;
+	if (d_is_negative(child)) {
+		file = ERR_PTR(-ENOENT);
+		if (!create)
+			goto put_child;
+		ret = vfs_create(mnt_idmap(root->f_path.mnt), child, 0600, NULL);
+		if (ret) {
+			file = ERR_PTR(ret);
+			goto put_child;
+		}
+	}
+	file = ERR_PTR(-EISDIR);
+	if (!d_is_reg(child))
+		goto put_child;
+	target.mnt = root->f_path.mnt;
+	target.dentry = child;
+	file = dentry_open(&target, (writable ? O_RDWR : O_RDONLY) | O_LARGEFILE,
+			    current_cred());
+	/* Retain child across truncate, which takes its own inode locks. */
+	inode_unlock(d_inode(parent));
+	if (!IS_ERR(file) && truncate) {
+		ret = vfs_truncate(&target, 0);
+		if (ret) {
+			fput(file);
+			file = ERR_PTR(ret);
+		}
+	}
+	dput(child);
+	goto drop_write;
+put_child:
+	dput(child);
+unlock:
+	inode_unlock(d_inode(parent));
+drop_write:
+	mnt_drop_write(root->f_path.mnt);
+put_parent:
+	dput(parent);
+free_copy:
+	kfree(copy);
+put_root:
+	fput(root);
+	return file;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open_ram);
+
+ssize_t mt6797_md1_fs_provider_write(struct file *file, const void *buf,
+				     size_t count, loff_t *pos)
+{
+	might_sleep();
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(file) ||
+	    !(file->f_mode & FMODE_WRITE))
+		return -EROFS;
+	/* Per-file bound in addition to the registered tmpfs byte/inode quota. */
+	if (!pos || *pos < 0 || *pos > 16 * 1024 * 1024 ||
+	    count > 16ULL * 1024 * 1024 - (u64)*pos)
+		return -EFBIG;
+	return kernel_write(file, buf, count, pos);
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_write);
+
 int mt6797_md1_fs_provider_fstat(struct file *file,
 				 struct mt6797_md1_fs_attr *attr)
 {
 	might_sleep();
-	if (!file || !attr || !mt6797_fs_readonly(file))
+	if (!file || !attr || !mt6797_fs_accessible(file))
 		return -EACCES;
 	return mt6797_fs_stat(file, file->f_path.dentry, attr);
 }
@@ -261,7 +407,7 @@ ssize_t mt6797_md1_fs_provider_read(struct file *file, void *buf,
 				    size_t count, loff_t *pos)
 {
 	might_sleep();
-	if (!file || !mt6797_fs_readonly(file))
+	if (!file || !mt6797_fs_accessible(file))
 		return -EACCES;
 	return kernel_read(file, buf, count, pos);
 }
@@ -271,7 +417,7 @@ loff_t mt6797_md1_fs_provider_llseek(struct file *file, loff_t offset,
 				     int whence)
 {
 	might_sleep();
-	if (!file || !mt6797_fs_readonly(file))
+	if (!file || !mt6797_fs_accessible(file))
 		return -EACCES;
 	if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END)
 		return -EINVAL;
@@ -324,7 +470,7 @@ int mt6797_md1_fs_provider_next_entry(struct file *dir,
 	if (!dir || !entry)
 		return -EINVAL;
 	for (;;) {
-		if (!mt6797_fs_readonly(dir))
+		if (!mt6797_fs_accessible(dir))
 			return -EACCES;
 		walk.found = false;
 		walk.ctx.pos = dir->f_pos;
@@ -401,7 +547,7 @@ static struct device *mt6797_fs_find_cold(void)
 	return pdev ? &pdev->dev : ERR_PTR(-ENODEV);
 }
 
-static int mt6797_fs_register_fd(int fd)
+static int mt6797_fs_register_fd(int fd, bool ram)
 {
 	struct mt6797_md1_fs_stats stats;
 	struct device *cold = NULL;
@@ -410,6 +556,8 @@ static int mt6797_fs_register_fd(int fd)
 	unsigned long flags;
 	int ret;
 
+	if (ram && !enable_volatile)
+		return -EPERM;
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = mt6797_fs_begin(&provider_state);
 	spin_unlock_irqrestore(&provider_lock, flags);
@@ -423,18 +571,25 @@ static int mt6797_fs_register_fd(int fd)
 	if (!d_is_dir(file->f_path.dentry))
 		goto fail;
 	ret = -EROFS;
-	if (!mt6797_fs_readonly(file) || (file->f_mode & FMODE_WRITE))
+	if (!mt6797_fs_backing_matches(file, ram) || (file->f_mode & FMODE_WRITE))
 		goto fail;
 	/* Local ext4 only: no unbounded network statfs or arbitrary backing type. */
 	ret = -EINVAL;
-	if (file_inode(file)->i_sb->s_magic != EXT4_SUPER_MAGIC)
+	if (file_inode(file)->i_sb->s_magic != (ram ? TMPFS_MAGIC : EXT4_SUPER_MAGIC))
 		goto fail;
 	ret = vfs_statfs(&file->f_path, &fs);
 	if (ret)
 		goto fail;
 	ret = -EINVAL;
-	if (fs.f_type != EXT4_SUPER_MAGIC)
+	if (fs.f_type != (ram ? TMPFS_MAGIC : EXT4_SUPER_MAGIC))
 		goto fail;
+	/* Require finite tmpfs limits: at most 64 MiB and 4096 inodes. */
+	if (ram && (fs.f_bsize <= 0 || !fs.f_blocks ||
+		    fs.f_blocks > (64ULL * 1024 * 1024) / fs.f_bsize ||
+		    !fs.f_files || fs.f_files > 4096)) {
+		ret = -EFBIG;
+		goto fail;
+	}
 	ret = mt6797_fs_stats_convert(&fs, &stats);
 	if (ret)
 		goto fail;
@@ -447,8 +602,9 @@ static int mt6797_fs_register_fd(int fd)
 	/* Keep a separate local target reference across cancellation/reprobe. */
 	get_device(cold);
 	spin_lock_irqsave(&provider_lock, flags);
-	ret = mt6797_fs_readonly(file) ? mt6797_fs_publish(&provider_state) : -EROFS;
+	ret = mt6797_fs_backing_matches(file, ram) ? mt6797_fs_publish(&provider_state) : -EROFS;
 	if (!ret) {
+		provider_volatile = ram;
 		provider_file = file;
 		provider_cold = cold;
 		provider_stats = stats;
@@ -490,13 +646,14 @@ static long mt6797_fs_ioctl(struct file *file, unsigned int cmd, unsigned long a
 		return -EPERM;
 	if (cmd == MT6797_MD1_FS_CANCEL)
 		return mt6797_fs_cancel_registration();
-	if (cmd != MT6797_MD1_FS_REGISTER)
+	if (cmd != MT6797_MD1_FS_REGISTER && cmd != MT6797_MD1_FS_REGISTER_RAM)
 		return -ENOTTY;
 	if (copy_from_user(&registration, (void __user *)arg, sizeof(registration)))
 		return -EFAULT;
 	if (registration.version != 1 || registration.flags || registration.reserved)
 		return -EINVAL;
-	return mt6797_fs_register_fd(registration.directory_fd);
+	return mt6797_fs_register_fd(registration.directory_fd,
+				    cmd == MT6797_MD1_FS_REGISTER_RAM);
 }
 
 static const struct file_operations mt6797_fs_fops = {

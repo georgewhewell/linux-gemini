@@ -42,7 +42,7 @@ typedef int64_t loff_t; typedef long ssize_t;
 #define S_ISDIR(m) (((m) & 0170000) == 0040000)
 #define min_t(t, a, b) ((t)(a) < (t)(b) ? (t)(a) : (t)(b))
 static void cond_resched(void) {}
-struct file { int node; loff_t f_pos; int cursor; bool directory; };
+struct file { int node; loff_t f_pos; int cursor; bool directory, writable; };
 struct timezone { int tz_minuteswest, tz_dsttime; };
 static struct timezone sys_tz;
 static int allocations, frees;
@@ -77,6 +77,18 @@ static struct file *mt6797_md1_fs_provider_open(const char *path, bool directory
  int n = find(path); struct file *f; if (!provider_available) return ERR_PTR(-ENODEV); if (n < 0) return ERR_PTR(-ENOENT);
  if (directory != S_ISDIR(nodes[n].mode)) return ERR_PTR(directory ? -ENOTDIR : -EISDIR);
  f = calloc(1, sizeof(*f)); f->node = n; f->directory = directory; open_files++; return f; }
+
+static bool ram_enabled;static int ram_create_count,ram_truncate_count;static char ram_data[64];
+static struct file *mt6797_md1_fs_provider_open_ram(const char *path,bool writable,bool create,bool truncate){
+ if(!ram_enabled)return ERR_PTR(-EROFS);
+ assert(!strcmp(path,"big.bin"));if(create)ram_create_count++;
+ if(truncate){nodes[7].size=0;ram_truncate_count++;}
+ nodes[7].data=ram_data;struct file *f=mt6797_md1_fs_provider_open(path,false);f->writable=writable;return f;}
+static ssize_t mt6797_md1_fs_provider_write(struct file *f,const void *data,size_t count,loff_t *pos){
+ if(!ram_enabled||!f->writable)return -EROFS;
+ assert(f->node==7&&pos==&f->f_pos);if(*pos>=64)return -ENOSPC;
+ if(count>(size_t)(64-*pos))count=64-*pos;
+ memcpy(ram_data+*pos,data,count);*pos+=count;if((u64)*pos>nodes[7].size)nodes[7].size=*pos;return count;}
 static int mt6797_md1_fs_provider_fstat(struct file *f, struct mt6797_md1_fs_attr *a) { if (fstat_error) return fstat_error; fill(f->node, a); return 0; }
 static ssize_t mt6797_md1_fs_provider_read(struct file *f, void *buf, size_t count, loff_t *pos) {
  if (read_error) return read_error;
@@ -383,6 +395,27 @@ int main(void) {
  assert(!run_path(MT6797_FS_OPEN, "Z:\\ro.txt", 0x100, true) && status == 1 && !findfirst("Z:\\*", 0, 0, 260) && status == 2);
  assert(!run_u32(MT6797_FS_SHUTDOWN, 0, 0, 0, 0) && status == 0 && reply.argc == 0 && reply.len == 4 && !open_files);
  assert(!run_path(MT6797_FS_OPEN, "Z:\\ro.txt", 0x100, true) && status == 1); mt6797_fs_service_release(&svc); assert(!open_files && !svc.open_count);
+
+ /* Captured C17 OPEN flag words, with real service-level write/count/readback. */
+ ram_enabled=true;nodes[7].size=0;
+ assert(!run_path(MT6797_FS_OPEN,"Z:\\big.bin",0x20010400,true)&&status==1&&ram_create_count==1);
+ {u8 h[4],length[4];mt6797_fs_write32(h,1);mt6797_fs_write32(length,5);
+  const void *args[3]={h,"hello",length};u32 lens[3]={4,5,4};
+  assert(!run(0,MT6797_FS_WRITE,3,args,lens)&&status==0&&reply.argc==2&&arg_s32(1)==5);
+  mt6797_fs_write32(length,6);assert(!run(0,MT6797_FS_WRITE,3,args,lens)&&status==-2&&arg_s32(1)==0);
+  assert(!run_u32(MT6797_FS_SEEK,3,1,0,0)&&status==0);
+  assert(!run_u32(MT6797_FS_READ,2,1,5,0)&&status==0&&arg_s32(1)==5);
+  assert(arg(2,&d)==5&&!memcmp(d,"hello",5));
+  assert(!run_u32(MT6797_FS_SEEK,3,1,62,0)&&status==62);
+  mt6797_fs_write32(length,5);assert(!run(0,MT6797_FS_WRITE,3,args,lens)&&status==0&&arg_s32(1)==2);
+  assert(!run(0,MT6797_FS_WRITE,3,args,lens)&&status==-18&&arg_s32(1)==0);
+ }
+ assert(!run_u32(MT6797_FS_CLOSE,1,1,0,0)&&status==0&&!open_files);
+ assert(!run_path(MT6797_FS_OPEN,"Z:\\big.bin",0x10400,true)&&status==1&&ram_create_count==2);
+ assert(!run_u32(MT6797_FS_CLOSE,1,1,0,0)&&status==0);
+ assert(!run_path(MT6797_FS_OPEN,"Z:\\big.bin",0x20000,true)&&status==1&&ram_truncate_count==1&&nodes[7].size==0);
+ mt6797_fs_service_release(&svc);assert(!open_files&&!svc.open_count);ram_enabled=false;
+ puts("PASS actual RAM service: captured CREATE flags, write count, malformed length, seek/readback, partial/full writes, truncate and handle cleanup");
  assert(allocations == frees);
  puts("PASS actual FS service: C8/C10/C11 literal frames, every answered vendor op, error mapping, UTF-16/path/pattern rules, handles 1..128, 0xd80 fragmentation, read-only refusals, leak-free");
  return 0;

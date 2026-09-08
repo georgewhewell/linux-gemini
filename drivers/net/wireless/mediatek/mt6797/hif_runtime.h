@@ -13,6 +13,7 @@
 #include "hif.h"
 #include "hif_pump.h"
 #include "scan.h"
+#include "tx_credit.h"
 
 struct device;
 struct mt6797_wifi_ahb_hif;
@@ -110,6 +111,9 @@ struct mt6797_wifi_hif_irq {
 	spinlock_t terminal_lock;
 	/* Lock order: lifecycle_lock -> terminal_lock -> sink_lock. */
 	spinlock_t sink_lock;
+	spinlock_t tx_credit_lock;
+	struct mt6797_wifi_tx_credit tx_credit;
+	struct completion tx_credit_completion;
 	struct work_struct terminal_work;
 	irqreturn_t (*capability_thread)(void *context);
 	void *capability_context;
@@ -126,6 +130,14 @@ struct mt6797_wifi_hif_irq {
 	int mode;
 	int terminal_reason;
 };
+
+/* lifecycle_lock held. Nonblocking credit admission: -EAGAIN means no write.
+ * Do not refund an ambiguous AHB failure; this helper fences the runtime.
+ * An -EAGAIN result arms tx_credit_completion under the credit lock so a
+ * later release cannot be lost before the caller waits/retries its deadline.
+ */
+int mt6797_wifi_hif_runtime_send(struct mt6797_wifi_hif_irq *irq,
+	u32 address, const u8 *packet, size_t length);
 
 int mt6797_wifi_hif_runtime_transaction_start(
 	const struct mt6797_wifi_hif_runtime_ops *ops,

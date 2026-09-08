@@ -9,6 +9,7 @@
 #include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
+#include <linux/unaligned.h>
 
 #include <linux/soc/mediatek/mt6797-consys-wifi.h>
 
@@ -666,11 +667,55 @@ static int mt6797_wifi_hif_runtime_pump_status(void *context, u32 *status)
 	return mt6797_wifi_hif_reg_read(irq, MT6797_WIFI_MCR_WHISR, status);
 }
 
+int mt6797_wifi_hif_runtime_send(struct mt6797_wifi_hif_irq *irq,
+	u32 address, const u8 *packet, size_t length)
+{
+	unsigned long flags;
+	unsigned int queue;
+	u16 wire_length;
+	int ret;
+
+	if (!irq || !packet || length < MT6797_WIFI_COMMAND_HEADER_LENGTH ||
+	    length > MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH)
+		return -EINVAL;
+	lockdep_assert_held(&irq->lifecycle_lock);
+	wire_length = get_unaligned_le16(packet);
+	if (wire_length < MT6797_WIFI_COMMAND_HEADER_LENGTH || wire_length > length ||
+	    length - wire_length > 3)
+		return -EINVAL;
+	/* GEN3 uses WTDR1 for both LMAC and MCU; the descriptor selects queue. */
+	if (address != MT6797_WIFI_MCR_WTDR1)
+		return -EINVAL;
+	if (get_unaligned_le16(packet + 2) == 0x8000 ||
+	    (length >= MT6797_WIFI_TX_DESCRIPTOR_LENGTH && packet[3] == 0x88))
+		queue = MT6797_WIFI_TX_CREDIT_CPU;
+	else if (length >= MT6797_WIFI_TX_DESCRIPTOR_LENGTH &&
+		 packet[3] == (4U << 3))
+		queue = MT6797_WIFI_TX_CREDIT_DATA;
+	else
+		return -EINVAL;
+	ret = mt6797_wifi_hif_runtime_status(irq);
+	if (ret)
+		return ret;
+	spin_lock_irqsave(&irq->tx_credit_lock, flags);
+	ret = mt6797_wifi_tx_credit_acquire(&irq->tx_credit, queue, wire_length);
+	if (ret == -EAGAIN)
+		reinit_completion(&irq->tx_credit_completion);
+	spin_unlock_irqrestore(&irq->tx_credit_lock, flags);
+	if (ret)
+		return ret;
+	ret = mt6797_wifi_ahb_cmd53_write(irq->hif, address, packet, length);
+	if (ret)
+		mt6797_wifi_hif_runtime_fail(irq, ret);
+	return ret;
+}
+
 static int mt6797_wifi_hif_runtime_pump_tx(
 	void *context, u16 released[MT6797_WIFI_HIF_TX_QUEUES])
 {
 	struct mt6797_wifi_hif_irq *irq = context;
 	unsigned int register_index;
+	unsigned long flags;
 	u32 value;
 	int ret;
 
@@ -685,7 +730,12 @@ static int mt6797_wifi_hif_runtime_pump_tx(
 		released[register_index * 2] = value;
 		released[register_index * 2 + 1] = value >> 16;
 	}
-	return 0;
+	spin_lock_irqsave(&irq->tx_credit_lock, flags);
+	ret = mt6797_wifi_tx_credit_release(&irq->tx_credit, released);
+	if (!ret)
+		complete(&irq->tx_credit_completion);
+	spin_unlock_irqrestore(&irq->tx_credit_lock, flags);
+	return ret;
 }
 
 static int mt6797_wifi_hif_runtime_pump_lengths(void *context,
@@ -968,6 +1018,9 @@ int mt6797_wifi_hif_irq_init(struct mt6797_wifi_hif_irq *irq,
 	mutex_init(&irq->lifecycle_lock);
 	spin_lock_init(&irq->sink_lock);
 	spin_lock_init(&irq->terminal_lock);
+	spin_lock_init(&irq->tx_credit_lock);
+	init_completion(&irq->tx_credit_completion);
+	mt6797_wifi_tx_credit_init(&irq->tx_credit);
 	INIT_WORK(&irq->terminal_work, mt6797_wifi_hif_terminal_work);
 	mt6797_wifi_hif_wait_event_init(&irq->wait_event);
 	irq->mode = MT6797_WIFI_HIF_IRQ_QUIESCENT;

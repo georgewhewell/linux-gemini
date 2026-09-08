@@ -38,6 +38,7 @@ struct completion { bool done; };
 static void complete(struct completion *c) { c->done=true; }
 struct mutex { int held; };
 struct work_struct { int dummy; };
+struct sk_buff_head { unsigned length; };
 #define ETH_ALEN 6
 #define U8_MAX UINT8_MAX
 #define DECLARE_BITMAP(name,bits) unsigned long name[((bits)+63)/64]
@@ -71,7 +72,7 @@ for name in ['protocol.h', 'scan.h', 'rx_metadata.h', 'scan_target.h', 'scan_hif
              'ais_resources.h', 'ais_protocol.h', 'ais_runtime.h', 'ais_auth.h',
              'ais_key.h', 'ais_mgmt_tx.h', 'ais_assoc.h', 'ais_join.h', 'ais_hif.h', 'capability.h']:
     program += re.sub(r'^#include .*\n', '', (driver / name).read_text(), flags=re.M)
-program += radio[radio.index('struct mt6797_radio_key {'):radio.index('static int mt6797_radio_event(')]
+program += radio[radio.index('struct mt6797_radio_key {'):radio.index('#define MT6797_RADIO_TX_QUEUE_LIMIT')]
 ieee = (root / 'include/linux/ieee80211.h').read_text()
 for name in ['IEEE80211_FCTL_VERS', 'IEEE80211_FCTL_FTYPE', 'IEEE80211_FCTL_STYPE',
              'IEEE80211_FCTL_TODS', 'IEEE80211_FCTL_FROMDS', 'IEEE80211_FCTL_MOREFRAGS',
@@ -183,6 +184,11 @@ program += '''
 int mt6797_wifi_ais_ccmp_ready_match(const struct mt6797_wifi_ais_sta_pending *p, const struct mt6797_wifi_event_view *e, enum mt6797_wifi_ais_event_disposition *d) { (void)p; (void)e; *d=MT6797_WIFI_AIS_EVENT_IGNORED; return 0; }
 '''
 program += '''
+static void netif_carrier_on(struct net_device *d) { (void)d; }
+static void netif_carrier_off(struct net_device *d) { (void)d; }
+static void netif_stop_queue(struct net_device *d) { (void)d; }
+static void netif_wake_queue(struct net_device *d) { (void)d; }
+static void mt6797_radio_purge_tx(struct mt6797_wifi_radio *r) { (void)r; }
 static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
 '''
 for name in ['mt6797_radio_link_event', 'mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',

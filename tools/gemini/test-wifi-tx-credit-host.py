@@ -82,10 +82,11 @@ int main(void) {
  puts("PASS: credit admission 128-byte boundaries, exhausted queues, split done/FFA in both orders, partial dual-queue refunds, unknown completions, overflow and 100000 randomized budget invariants");
 }
 '''
-with tempfile.TemporaryDirectory(prefix='gemini-tx-credit-') as temporary:
-    path = Path(temporary)
-    (path / 'test.c').write_text(program)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g',
-                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
-                    str(path / 'test.c'), '-o', str(path / 'test')], check=True)
-    subprocess.run([str(path / 'test')], check=True)
+if __name__ == '__main__':
+    with tempfile.TemporaryDirectory(prefix='gemini-tx-credit-') as temporary:
+        path = Path(temporary)
+        (path / 'test.c').write_text(program)
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g',
+                        '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                        str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+        subprocess.run([str(path / 'test')], check=True)

@@ -16,6 +16,7 @@ program = program.replace('struct net_device { u8 dev_addr[6]; };',
 program += re.sub(r'^#include .*\n', '', (driver / 'data_rx.h').read_text(), flags=re.M)
 program += r'''
 #define dev_warn_ratelimited(...) do {} while(0)
+#define BIT(n) (1U << (n))
 #define ETH_HLEN 14
 #define VLAN_HLEN 4
 #define CHECKSUM_NONE 0

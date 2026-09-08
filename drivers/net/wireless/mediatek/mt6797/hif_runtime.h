@@ -197,6 +197,7 @@ mt6797_wifi_hif_irq_mode(const struct mt6797_wifi_hif_irq *irq);
 
 int mt6797_wifi_hif_runtime_start(struct mt6797_wifi_hif_irq *irq,
 				   struct mt6797_wifi_boot *boot);
+int mt6797_wifi_hif_runtime_read_rxinf(struct mt6797_wifi_hif_irq *irq, u32 *value);
 int mt6797_wifi_hif_runtime_stop(struct mt6797_wifi_hif_irq *irq);
 
 #endif /* __MT6797_WIFI_HIF_RUNTIME_H */

@@ -357,11 +357,20 @@ static int mt6797_radio_data_frame(struct mt6797_wifi_radio *radio,
 	ret = mt6797_wifi_data_rx_decode(view->packet, view->packet_length, &data);
 	if (ret) {
 		/* Only descriptor metadata: no addresses, payloads or key material. */
-		if (view->packet && view->packet_length >= MT6797_WIFI_RX_DESCRIPTOR_LENGTH)
+		if (view->packet && view->packet_length >= MT6797_WIFI_RX_DESCRIPTOR_LENGTH) {
+			u16 type = get_unaligned_le16(view->packet + 2);
+			u16 control = 0;
+			bool has_control = (type & BIT(12)) && view->packet_length >= 32;
+
+			/* Group4 is first when present, including on translated RX. */
+			if (has_control)
+				control = get_unaligned_le16(view->packet + 16);
 			dev_warn_ratelimited(wiphy_dev(radio->wdev.wiphy),
-				"RX data rejected error=%d type=%#x header=%u status=%#x\n",
-				ret, get_unaligned_le16(view->packet + 2),
-				view->header_length, get_unaligned_le16(view->packet + 10));
+				"RX data rejected error=%d type=%#x header=%u status=%#x cipher=%u group4=%u control=%#x\n",
+				ret, type, view->header_length,
+				get_unaligned_le16(view->packet + 10),
+				view->packet[9] >> 4, has_control, control);
+		}
 		goto drop;
 	}
 	if (data.length > radio->netdev->mtu + ETH_HLEN + VLAN_HLEN)

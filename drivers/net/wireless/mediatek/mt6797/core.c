@@ -109,6 +109,7 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	struct mt6797_wifi *wifi;
 	struct resource *resource;
 	void __iomem *base;
+	u32 rxinf;
 	int ret;
 
 	wifi = devm_kzalloc(dev, sizeof(*wifi), GFP_KERNEL);
@@ -180,6 +181,10 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to establish persistent WLAN HIF\n");
+	ret = mt6797_wifi_hif_runtime_read_rxinf(&wifi->hif_irq, &rxinf);
+	if (ret)
+		goto stop_runtime;
+	dev_info(dev, "HIF client register 0x800c0068=%#010x (read only)\n", rxinf);
 
 	platform_set_drvdata(pdev, wifi);
 #if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
@@ -207,12 +212,10 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 		 wifi->irq, MT6797_WIFI_HIF_RX_BUDGET);
 	return 0;
 
-#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION) || IS_ENABLED(CONFIG_MTK_MT6797_WIFI_RADIO)
 stop_runtime:
 	mt6797_wifi_hif_runtime_stop(&wifi->hif_irq);
 	return dev_err_probe(dev, ret,
-		"failed to register WLAN consumer\n");
-#endif
+		"failed WLAN runtime initialization\n");
 }
 
 static void mt6797_wifi_remove(struct platform_device *pdev)

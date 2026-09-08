@@ -11,6 +11,7 @@ cpu_root=${CPU_ROOT:-/sys/devices/system/cpu}
 cpufreq_root=${CPUFREQ_ROOT:-$cpu_root/cpufreq}
 dt_root=${DT_ROOT:-/sys/firmware/devicetree/base}
 driver_root=${DRIVER_ROOT:-/sys/bus/platform/drivers/mt6797-a72-preflight}
+regulator_root=${REGULATOR_ROOT:-/sys/class/regulator}
 regulator_summary=${REGULATOR_SUMMARY:-/sys/kernel/debug/regulator/regulator_summary}
 clock_summary=${CLOCK_SUMMARY:-/sys/kernel/debug/clk/clk_summary}
 cmdline_path=${CMDLINE_PATH:-/proc/cmdline}
@@ -132,6 +133,36 @@ regulator_voltage_mv()
 	' "$regulator_summary"
 }
 
+# Resolve exactly one provider attached to the expected DT node. Names alone
+# do not establish rail identity, and the descriptor names are not DT aliases.
+resolve_regulator()
+{
+	expected_node=$(readlink -f "$dt_root/$1") || return 1
+	expected_name=$2
+	[ -d "$expected_node" ] || return 1
+	seen=0
+	for entry in "$regulator_root"/regulator.*; do
+		[ -e "$entry/of_node" ] || continue
+		actual_node=$(readlink -f "$entry/of_node") || return 1
+		[ "$actual_node" = "$expected_node" ] || continue
+		seen=$((seen + 1))
+		actual_name=$(read_trimmed "$entry/name") || return 1
+		[ "$actual_name" = "$expected_name" ] || return 1
+	done
+	[ "$seen" = 1 ] || return 1
+	printf '%s\n' "$expected_name"
+}
+
+check_supply()
+{
+	supply="$dt_root/a72-power/$1"
+	provider="$dt_root/$2/phandle"
+	[ -r "$supply" ] && [ -r "$provider" ] || return 1
+	[ "$(wc -c < "$supply")" -eq 4 ] || return 1
+	[ "$(wc -c < "$provider")" -eq 4 ] || return 1
+	cmp -s "$supply" "$provider"
+}
+
 [ -r "$cpu_root/online" ] || fail "missing CPU online mask"
 cpulist_contains 8 "$cpu_root/online" && fail "CPU8 is online"
 cpulist_contains 9 "$cpu_root/online" && fail "CPU9 is online"
@@ -215,6 +246,10 @@ fi
 if ! sram_selector=$(extract_field "$preflight_line" sram-selector); then
 	fail "missing or duplicate preflight field: sram-selector"
 fi
+if ! mp2_contract=$(extract_field "$preflight_line" mp2-clock-contract); then
+	fail "missing or duplicate preflight field: mp2-clock-contract"
+fi
+[ "$mp2_contract" = cold-clk26m-v1 ] || fail "unexpected MP2 clock contract"
 if ! mp2_field=$(extract_field "$preflight_line" mp2); then
 	fail "missing or duplicate preflight field: mp2"
 fi
@@ -256,21 +291,28 @@ case "$sram_voltages" in
 *" $sram_uv "*) ;;
 *) fail "secure SRAM voltage is not a supported selector value: $sram_uv" ;;
 esac
-[ "$mp2_hz" -ge 2000000000 ] && [ "$mp2_hz" -le 2500000000 ] ||
-	fail "MP2 clock is outside the observed 2.0-2.5GHz window: $mp2_hz"
+[ "$mp2_hz" = 26000000 ] || fail "MP2 cold reference path is not 26MHz: $mp2_hz"
 [ "$pwrap_reset" = "0" ] || fail "PWRAP reset is asserted"
 printf '%s\n' "$spm_mp2" | grep -Eq '^0x[0-9a-fA-F]{8}$' ||
 	fail "SPM MP2 snapshot is malformed"
 printf '%s\n' "$spm_buck_iso" | grep -Eq '^0x[0-9a-fA-F]{8}$' ||
 	fail "SPM buck-isolation snapshot is malformed"
 
-if ! little_mv=$(regulator_voltage_mv vproc-little); then
+bucka_node=i2c@1100e000/regulator@68/regulators/BUCKA
+buckb_node=i2c@1100e000/regulator@68/regulators/BUCKB
+check_supply vproc-big-supply "$buckb_node" || fail "A72 VPROC supply identity mismatch"
+check_supply sram-big-supply regulator-sram-big || fail "A72 SRAM supply identity mismatch"
+little_name=$(resolve_regulator "$bucka_node" DA921x-BUCKA) || fail "BUCKA provider identity mismatch"
+big_name=$(resolve_regulator "$buckb_node" DA921x-BUCKB) || fail "BUCKB provider identity mismatch"
+sram_name=$(resolve_regulator regulator-sram-big mt6797-bigidvfs-sram) || fail "SRAM provider identity mismatch"
+
+if ! little_mv=$(regulator_voltage_mv "$little_name"); then
 	fail "DA9214 BUCKA is absent from regulator summary"
 fi
-if ! vproc_mv=$(regulator_voltage_mv vproc-big); then
+if ! vproc_mv=$(regulator_voltage_mv "$big_name"); then
 	fail "BUCKB is absent from regulator summary"
 fi
-if ! sram_mv=$(regulator_voltage_mv vsram-big); then
+if ! sram_mv=$(regulator_voltage_mv "$sram_name"); then
 	fail "secure SRAM is absent from regulator summary"
 fi
 require_unsigned "BUCKA summary voltage" "$little_mv"
@@ -293,7 +335,7 @@ fi
 require_unsigned "MP2 path clock" "$mp2_path_hz"
 require_unsigned "MP2 ARMPLL clock" "$mp2_pll_hz"
 [ "$mp2_path_hz" = "$mp2_hz" ] || fail "MP2 driver and clock summary disagree"
-[ "$mp2_pll_hz" = "$mp2_path_hz" ] || fail "MP2 path is not sourced at ARMPLL rate"
+[ "$mp2_pll_hz" = 0 ] || fail "MP2 PLL is already programmed before CPU_ON"
 
 resource_pattern='mt6797-a72|resource-preflight|DA9214|bigidvfs|vproc-big|vsram-big'
 error_pattern='fail|error|timeout|rollback|uncertain|invalid|mismatch|fenced|EUCLEAN'

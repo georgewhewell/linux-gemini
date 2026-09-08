@@ -131,35 +131,103 @@ static const struct irq_domain_ops mt6397_irq_domain_ops = {
 	.map = mt6397_irq_domain_map,
 };
 
+static int mt6397_irq_restore_masks(struct mt6397_chip *chip)
+{
+	unsigned int i;
+	int ret, first_error = 0;
+
+	for (i = 0; i < chip->num_irq_regs; i++) {
+		ret = regmap_write(chip->regmap, chip->int_con[i],
+				   chip->irq_masks_cur[i]);
+		if (ret) {
+			dev_err(chip->dev, "Failed to restore IRQ bank %u: %d\n", i, ret);
+			if (!first_error)
+				first_error = ret;
+		}
+	}
+
+	return first_error;
+}
+
+static int mt6397_irq_disable_wake(struct mt6397_chip *chip)
+{
+	int ret;
+
+	if (!chip->irq_wake_enabled)
+		return 0;
+
+	ret = disable_irq_wake(chip->irq);
+	if (ret)
+		dev_err(chip->dev, "Failed to disable IRQ wake: %d\n", ret);
+	else
+		chip->irq_wake_enabled = false;
+
+	return ret;
+}
+
+static void mt6397_irq_release_wake(void *data)
+{
+	struct mt6397_chip *chip = data;
+
+	mutex_lock(&chip->irqlock);
+	mt6397_irq_disable_wake(chip);
+	mutex_unlock(&chip->irqlock);
+}
+
 int mt6397_irq_suspend(struct device *dev)
 {
 	struct mt6397_chip *chip = dev_get_drvdata(dev);
 	unsigned int i;
+	int ret;
 
 	/* Only the legacy IRQ controller switches interrupt masks for sleep. */
 	if (!chip->num_irq_regs)
 		return 0;
 
-	for (i = 0; i < chip->num_irq_regs; i++)
-		regmap_write(chip->regmap, chip->int_con[i], chip->wake_mask[i]);
-	enable_irq_wake(chip->irq);
+	mutex_lock(&chip->irqlock);
+	if (chip->irq_wake_enabled) {
+		ret = -EBUSY;
+		goto out;
+	}
 
-	return 0;
+	for (i = 0; i < chip->num_irq_regs; i++) {
+		ret = regmap_write(chip->regmap, chip->int_con[i], chip->wake_mask[i]);
+		if (ret) {
+			dev_err(dev, "Failed to set wake mask for IRQ bank %u: %d\n", i, ret);
+			goto restore;
+		}
+	}
+
+	ret = enable_irq_wake(chip->irq);
+	if (ret) {
+		dev_err(dev, "Failed to enable IRQ wake: %d\n", ret);
+		goto restore;
+	}
+	chip->irq_wake_enabled = true;
+	goto out;
+
+restore:
+	/* A failed suspend callback is not resumed by the PM core. */
+	mt6397_irq_restore_masks(chip);
+out:
+	mutex_unlock(&chip->irqlock);
+	return ret;
 }
 
 int mt6397_irq_resume(struct device *dev)
 {
 	struct mt6397_chip *chip = dev_get_drvdata(dev);
-	unsigned int i;
+	int ret, wake_ret;
 
 	if (!chip->num_irq_regs)
 		return 0;
 
-	for (i = 0; i < chip->num_irq_regs; i++)
-		regmap_write(chip->regmap, chip->int_con[i], chip->irq_masks_cur[i]);
-	disable_irq_wake(chip->irq);
+	mutex_lock(&chip->irqlock);
+	ret = mt6397_irq_restore_masks(chip);
+	wake_ret = mt6397_irq_disable_wake(chip);
+	mutex_unlock(&chip->irqlock);
 
-	return 0;
+	return ret ? ret : wake_ret;
 }
 
 void mt6397_irq_domain_exit(struct irq_domain *domain)
@@ -260,5 +328,5 @@ int mt6397_irq_init(struct mt6397_chip *chip)
 		return ret;
 	}
 
-	return 0;
+	return devm_add_action_or_reset(chip->dev, mt6397_irq_release_wake, chip);
 }

@@ -509,24 +509,28 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 	bool cpu4_online;
 	bool faulted;
 	bool transaction_active;
-	int affinity;
 	int ret;
 
 	preflight = hlist_entry(node, struct mt6797_a72_preflight, online_node);
-	if (cpu == MT6797_A72_FIRST_CPU + 1 &&
-	    cpumask_test_cpu(cpu, &preflight->cpu_mask)) {
+	if (!cpumask_test_cpu(cpu, &preflight->cpu_mask))
+		return 0;
+	/*
+	 * This AP callback executing on the checked, online target proves it
+	 * is alive. Do not query PSCI AFFINITY_INFO here or from another CPU:
+	 * MT6797 firmware uses it to finish power-off, waiting for target WFI.
+	 * A self-query can therefore wait forever inside the secure monitor.
+	 */
+	if (raw_smp_processor_id() != cpu || !cpu_online(cpu)) {
+		preflight->faulted = true;
+		return -EPERM;
+	}
+	if (cpu == MT6797_A72_FIRST_CPU + 1) {
 		ret = mt6797_a72_validate_cpu9_boot(cpu,
 				cpu_online(MT6797_A72_FIRST_CPU),
 				preflight->faulted);
 		if (!ret)
 			ret = mt6797_a72_validate_cpu8_identity(read_cpuid_id());
-		if (!ret) {
-			dev_info(preflight->dev, "A72_M10 CPU%u before-affinity-info\n", cpu);
-			affinity = psci_ops.affinity_info(preflight->mpidrs[1], 0);
-			dev_info(preflight->dev, "A72_M10 CPU%u after-affinity-info ret=%d\n", cpu, affinity);
-			if (affinity != PSCI_0_2_AFFINITY_LEVEL_ON)
-				ret = affinity < 0 ? affinity : -EIO;
-		}
+
 		if (ret)
 			preflight->faulted = true;
 		else
@@ -547,13 +551,6 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 	if (ret)
 		goto disarm;
 
-	dev_info(preflight->dev, "A72_M10 CPU%u before-affinity-info\n", cpu);
-	affinity = psci_ops.affinity_info(preflight->mpidrs[0], 0);
-	dev_info(preflight->dev, "A72_M10 CPU%u after-affinity-info ret=%d\n", cpu, affinity);
-	if (affinity != PSCI_0_2_AFFINITY_LEVEL_ON) {
-		ret = affinity < 0 ? affinity : -EIO;
-		goto disarm;
-	}
 
 	ret = mt6797_a72_transaction_commit(&preflight->transaction);
 disarm:

@@ -142,6 +142,56 @@ rollback:
 	return primary_ret;
 }
 
+/*
+ * The MT6797 vendor BigSRAMLDOSet service writes calibration and control bits,
+ * not just a voltage selector.  Once called, there is no proven inverse here.
+ * Its zero return is not completion evidence; verify both full words twice.
+ */
+int mt6797_sram_first_start(const struct mt6797_sram_first_io *io,
+			  void *context, struct mt6797_sram_first_state *state)
+{
+	unsigned int i;
+	int ret;
+
+	if (!io || !io->set_voltage || !io->settle || !io->read_sample || !state)
+		return -EINVAL;
+	if (state->attempted || state->ready || state->faulted)
+		return -EUCLEAN;
+
+	/* Even an unsupported/error return may follow a dispatched effect. */
+	state->attempted = true;
+	ret = io->set_voltage(context, 110000);
+	if (ret)
+		goto fault;
+	io->settle(context, 240);
+	for (i = 0; i < ARRAY_SIZE(state->samples); i++) {
+		ret = io->read_sample(context, &state->samples[i]);
+		if (ret)
+			goto fault;
+	}
+
+	if (state->samples[0].control != state->samples[1].control ||
+	    state->samples[0].calibration != state->samples[1].calibration) {
+		ret = -EAGAIN;
+		goto fault;
+	}
+	/* Upper control bits may be set (observed upstream: 0x4008fb). */
+	if ((state->samples[0].control & 0xfff) != 0x8fb ||
+	    !state->samples[0].calibration ||
+	    (state->samples[0].calibration & 0xffff0000)) {
+		ret = -EIO;
+		goto fault;
+	}
+	state->ready = true;
+	state->error = 0;
+	return 0;
+
+fault:
+	state->error = ret;
+	state->faulted = true;
+	return -EUCLEAN;
+}
+
 static int mt6797_bigidvfs_sram_get_voltage_sel(struct regulator_dev *rdev)
 {
 	struct mt6797_bigidvfs_sram *sram = rdev_get_drvdata(rdev);

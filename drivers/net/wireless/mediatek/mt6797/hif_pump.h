@@ -34,6 +34,8 @@ struct mt6797_wifi_hif_pump_ops {
 	int (*deliver_frame)(void *context,
 			     const struct mt6797_wifi_rx_view *frame);
 	bool (*expired)(void *context);
+	/* Only startup, before opening interrupt gates, may find no status. */
+	bool allow_empty_status;
 	void *context;
 };
 

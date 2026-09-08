@@ -254,32 +254,7 @@ static int mt6797_wifi_hif_runtime_program(void *context)
 	return ret ?: (value == MT6797_WIFI_WHIER_DEFAULT ? 0 : -EIO);
 }
 
-static int mt6797_wifi_hif_runtime_clear_status(void *context)
-{
-	struct mt6797_wifi_hif_irq *irq = context;
-	u32 released;
-	u32 status;
-	unsigned int queue;
-	int ret;
-
-	ret = mt6797_wifi_hif_reg_read(irq, MT6797_WIFI_MCR_WHISR, &status);
-	if (ret)
-		return ret;
-	if (status & (MT6797_WIFI_WHISR_RX0_DONE |
-		      MT6797_WIFI_WHISR_RX1_DONE |
-		      MT6797_WIFI_WHISR_ABNORMAL |
-		      MT6797_WIFI_WHISR_D2H_SW))
-		return -EUCLEAN;
-	if (!(status & MT6797_WIFI_WHISR_TX_DONE))
-		return 0;
-	for (queue = 0; queue < 8; queue++) {
-		ret = mt6797_wifi_hif_reg_read(irq,
-			MT6797_WIFI_MCR_WTQCR0 + queue * sizeof(u32), &released);
-		if (ret)
-			return ret;
-	}
-	return 0;
-}
+static int mt6797_wifi_hif_runtime_clear_status(void *context);
 
 static void mt6797_wifi_hif_runtime_publish(
 	void *context, enum mt6797_wifi_hif_irq_mode mode)
@@ -881,6 +856,39 @@ static int mt6797_wifi_hif_runtime_pump_frame(
 	void *context, const struct mt6797_wifi_rx_view *frame)
 {
 	return mt6797_wifi_hif_runtime_sink_frame(context, frame);
+}
+
+static int mt6797_wifi_hif_runtime_clear_status(void *context)
+{
+	struct mt6797_wifi_hif_irq *irq = context;
+	struct mt6797_wifi_hif_pump_ops ops = {
+		.read_status = mt6797_wifi_hif_runtime_pump_status,
+		.read_tx_released = mt6797_wifi_hif_runtime_pump_tx,
+		.read_lengths = mt6797_wifi_hif_runtime_pump_lengths,
+		.read_packet = mt6797_wifi_hif_runtime_pump_packet,
+		.deliver_event = mt6797_wifi_hif_runtime_pump_event,
+		.deliver_frame = mt6797_wifi_hif_runtime_pump_frame,
+		.expired = mt6797_wifi_hif_runtime_pump_expired,
+		.allow_empty_status = true,
+		.context = irq,
+	};
+	int ret;
+
+	/*
+	 * Firmware can queue RX before the host opens its interrupt gates.
+	 * Consume it with the ordinary bounded parser while Linux IRQ and the
+	 * wrapper remain masked; do not discard read-clear RX indications.
+	 */
+	memset(irq->rx_buffer[0], 0, MT6797_WIFI_EVENT_HEADER_LENGTH);
+	memset(irq->rx_buffer[1], 0, MT6797_WIFI_EVENT_HEADER_LENGTH);
+	irq->pump_deadline = ktime_add_ns(ktime_get(),
+		MT6797_WIFI_HIF_PUMP_TIMEOUT_NS);
+	ret = mt6797_wifi_hif_pump_run(&ops, &irq->pump_stats,
+				     &irq->acknowledged_status);
+	dev_info(irq->dev, "HIF startup result=%d status=%#x rx=%llu events=%llu rx0_header=%8ph rx1_header=%8ph\n",
+		 ret, irq->acknowledged_status, irq->pump_stats.rx_packets,
+		 irq->pump_stats.events, irq->rx_buffer[0], irq->rx_buffer[1]);
+	return ret;
 }
 
 static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)

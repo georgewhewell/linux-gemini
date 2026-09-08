@@ -113,7 +113,7 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 		return -ETIMEDOUT;
 	*acknowledged_status = status;
 	if (!status)
-		return -ENODATA;
+		return ops->allow_empty_status ? 0 : -ENODATA;
 	if (status & ~MT6797_WIFI_WHIER_DEFAULT)
 		return -EPROTO;
 	if (status & (MT6797_WIFI_WHISR_ABNORMAL |

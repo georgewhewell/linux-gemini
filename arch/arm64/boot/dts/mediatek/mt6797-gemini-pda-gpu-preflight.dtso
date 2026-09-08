@@ -15,7 +15,9 @@
 
 / {
 	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
 
+&{/} {
 	/*
 	 * G3 admits one selector step above the inherited 843750 uV state and
 	 * one clock rate only.  A later gate must qualify every other OPP.

@@ -8,7 +8,6 @@
 #define __MFD_MT6397_CORE_H__
 
 #include <linux/mutex.h>
-#include <linux/notifier.h>
 
 enum chip_id {
 	MT6323_CHIP_ID = 0x23,
@@ -63,7 +62,6 @@ enum mt6397_irq_numbers {
 struct mt6397_chip {
 	struct device *dev;
 	struct regmap *regmap;
-	struct notifier_block pm_nb;
 	int irq;
 	struct irq_domain *irq_domain;
 	struct mutex irqlock;
@@ -80,5 +78,7 @@ struct mt6397_chip {
 void mt6397_irq_domain_exit(struct irq_domain *domain);
 int mt6358_irq_init(struct mt6397_chip *chip);
 int mt6397_irq_init(struct mt6397_chip *chip);
+int mt6397_irq_suspend(struct device *dev);
+int mt6397_irq_resume(struct device *dev);
 
 #endif /* __MFD_MT6397_CORE_H__ */

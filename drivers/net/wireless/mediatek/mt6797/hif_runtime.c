@@ -438,8 +438,9 @@ static void mt6797_wifi_hif_terminal_work(struct work_struct *work)
 	dev_err(irq->dev, "terminal TX credits: available=%llu\n", credit.available);
 	for (queue = 0; queue < MT6797_WIFI_TX_CREDIT_QUEUES; queue++)
 		dev_err(irq->dev,
-			"terminal TX queue=%u limit=%u free=%u done=%u released=%llu\n",
+			"terminal TX queue=%u limit=%u free=%u done=%u preused=%llu released=%llu\n",
 			queue, credit.limit[queue], credit.free[queue], credit.done[queue],
+			credit.preused[queue],
 			READ_ONCE(irq->pump_stats.tx_released[queue]));
 	mutex_unlock(&irq->lifecycle_lock);
 	dev_err(irq->dev,
@@ -1091,31 +1092,26 @@ mt6797_wifi_hif_irq_mode(const struct mt6797_wifi_hif_irq *irq)
 		MT6797_WIFI_HIF_IRQ_TERMINAL;
 }
 
-/* Probe-time only, before registering any command consumer. The exact GEN3
- * firmware references the 0x800c0000 HIF client block. Offset 0x68 is RXINF on
- * mt7603; observe it here without assuming its MT6797 bit assignments.
- */
-int mt6797_wifi_hif_runtime_read_rxinf(struct mt6797_wifi_hif_irq *irq, u32 *value)
+static int mt6797_wifi_hif_runtime_read_rxinf(struct mt6797_wifi_hif_irq *irq,
+	u8 sequence, u32 *value)
 {
 	struct mt6797_wifi_hif_event_copy event;
 	u8 command[16];
 	int ret;
 
-	if (!irq || !value)
-		return -EINVAL;
+	lockdep_assert_held(&irq->lifecycle_lock);
 	*value = 0;
-	mutex_lock(&irq->lifecycle_lock);
 	ret = mt6797_wifi_hif_runtime_status(irq);
 	if (ret)
-		goto unlock;
+		goto out;
 	/* GEN3 CMD_ID_ACCESS_REG, query, private startup sequence. */
-	ret = mt6797_wifi_command_init(command, sizeof(command), 8, 0xc0, false, 0xf0);
+	ret = mt6797_wifi_command_init(command, sizeof(command), 8, 0xc0, false, sequence);
 	if (ret)
-		goto unlock;
+		goto out;
 	put_unaligned_le32(0x800c0068, command + 8);
 	ret = mt6797_wifi_hif_wait_event_arm(&irq->wait_event, 0x05, NULL, 0);
 	if (ret)
-		goto unlock;
+		goto out;
 	ret = mt6797_wifi_hif_runtime_send(irq, MT6797_WIFI_MCR_WTDR1,
 		command, sizeof(command));
 	if (ret)
@@ -1131,7 +1127,7 @@ int mt6797_wifi_hif_runtime_read_rxinf(struct mt6797_wifi_hif_irq *irq, u32 *val
 	ret = event.error;
 	if (ret)
 		goto fail;
-	if (event.id != 0x05 || event.sequence != 0xf0 ||
+	if (event.id != 0x05 || event.sequence != sequence ||
 	    event.packet_length != 16 || event.payload_length != 8 ||
 	    get_unaligned_le32(event.payload) != 0x800c0068) {
 		ret = -EPROTO;
@@ -1143,6 +1139,59 @@ fail:
 	mt6797_wifi_hif_runtime_fail(irq, ret);
 disarm:
 	mt6797_wifi_hif_wait_event_disarm(&irq->wait_event);
+out:
+	return ret;
+}
+
+/* Probe-time only, before registering any command consumer. The exact GEN3
+ * firmware exposes this HIF client register through CMD_ACCESS_REG; M18 read
+ * zero while CCMP RX omitted group1. Test the mt7603 RXINF group1 bit while
+ * preserving every other bit. Readback qualifies the write; actual group1
+ * descriptors must still be present before the data decoder accepts CCMP.
+ */
+int mt6797_wifi_hif_runtime_configure_rxinf(struct mt6797_wifi_hif_irq *irq,
+	u32 *before, u32 *after)
+{
+	u8 command[16];
+	u32 requested;
+	int ret;
+
+	if (!irq || !before || !after || before == after)
+		return -EINVAL;
+	*before = 0;
+	*after = 0;
+	mutex_lock(&irq->lifecycle_lock);
+	ret = mt6797_wifi_hif_runtime_read_rxinf(irq, 0xf0, before);
+	if (ret)
+		goto unlock;
+	requested = *before | BIT(0); /* RX status group1: packet number. */
+	if (requested == *before) {
+		*after = *before;
+		goto unlock;
+	}
+	/* A SET has no required ACK in GEN3. A subsequent query of the same
+	 * register, on the same firmware command queue, verifies completion.
+	 */
+	ret = mt6797_wifi_command_init(command, sizeof(command), 8, 0xc0, true, 0xf1);
+	if (ret)
+		goto unlock;
+	put_unaligned_le32(0x800c0068, command + 8);
+	put_unaligned_le32(requested, command + 12);
+	ret = mt6797_wifi_hif_runtime_send(irq, MT6797_WIFI_MCR_WTDR1,
+		command, sizeof(command));
+	if (ret)
+		goto fail;
+	ret = mt6797_wifi_hif_runtime_read_rxinf(irq, 0xf2, after);
+	if (ret)
+		goto fail;
+	if (*after != requested) {
+		ret = -EIO;
+		goto fail;
+	}
+	goto unlock;
+fail:
+	/* Never expose a consumer after an ambiguous configuration attempt. */
+	mt6797_wifi_hif_runtime_fail(irq, ret);
 unlock:
 	mutex_unlock(&irq->lifecycle_lock);
 	return ret;

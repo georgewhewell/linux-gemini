@@ -68,9 +68,9 @@ int main(void) {
  irq.tx_credit_completion.done=true;
  assert(mt6797_wifi_hif_runtime_send(&irq,MT6797_WIFI_MCR_WTDR1,command,16)==-EAGAIN);
  assert(writes==13 && !irq.tx_credit_completion.done && !failures);
- registers[14]=13; assert(!pump() && irq.tx_credit_completion.done && !irq.tx_credit.free[15]);
+ registers[14]=13; assert(!pump() && irq.tx_credit_completion.done && irq.tx_credit.free[15]==13 && irq.tx_credit.preused[15]==13);
  memset(registers,0,sizeof(registers)); registers[15]=13;
- assert(!pump() && irq.tx_credit.free[15]==13);
+ assert(!pump() && irq.tx_credit.free[15]==13 && !irq.tx_credit.preused[15]);
  assert(!mt6797_wifi_hif_runtime_send(&irq,MT6797_WIFI_MCR_WTDR1,data,44));
  assert(irq.tx_credit.free[4]==12 && irq.tx_credit.free[15]==13);
  data[3]=0x88;
@@ -90,7 +90,7 @@ int main(void) {
   registers[14]=registers[15]=1; read_error=fail;
   assert(pump()==-EIO && irq.tx_credit.free[15]==12 && !irq.tx_credit_completion.done);
  }
- puts("PASS: real HIF credit send/release: exhaustion before write, loss-free wake arming, split FFA/CPU refund, FIFO classification, packet bounds, ambiguous-write fencing and all partial register-read failures");
+ puts("PASS: real HIF credit send/release: exhaustion before write, loss-free wake arming, early FFA reuse/delayed CPU completion, FIFO classification, packet bounds, ambiguous-write fencing and all partial register-read failures");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-hif-credit-') as temporary:

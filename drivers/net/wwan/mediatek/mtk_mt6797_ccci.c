@@ -33,6 +33,7 @@
 #include "mtk_mt6797_ccci_rpc.h"
 #include "mtk_mt6797_ccci_fs.h"
 #include "mtk_mt6797_ccci_fs_diag.h"
+#include "mtk_mt6797_ccci_rx_rejected.h"
 
 #define MT6797_CCCI_QUEUE_COUNT		7U
 #define MT6797_CCCI_RING_SIZE		16U
@@ -133,6 +134,7 @@ struct mt6797_ccci {
 	atomic_t rpc_logs;
 	atomic_t fs_logs;
 	struct mt6797_fs_diag fs_diag;
+	struct mt6797_rx_rejected rx_rejected;
 	atomic_t fs_pending;
 	unsigned long fs_indices;
 	struct workqueue_struct *fs_wq;
@@ -1138,6 +1140,9 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 	}
 	if (frame.channel == MT6797_RPC_RX) {
 		ret = mt6797_ccci_rpc_rx(ccci, skb, q);
+		if (ret)
+			mt6797_rx_rejected_record(&ccci->rx_rejected, frame.channel,
+				q, skb->data, skb->len, ret);
 		if (ret && !atomic_read(&ccci->ready))
 			mt6797_ccci_diag_rx_save(&ccci->diag, skb->data, skb->len, q,
 				MT6797_CCCI_DIAG_BEFORE_READY, 0, frame.channel);
@@ -1147,6 +1152,9 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 	}
 	if (frame.channel == MT6797_FS_RX) {
 		ret = mt6797_ccci_fs_rx(ccci, skb, q);
+		if (ret)
+			mt6797_rx_rejected_record(&ccci->rx_rejected, frame.channel,
+				q, skb->data, skb->len, ret);
 		if (ret && !atomic_read(&ccci->ready))
 			mt6797_ccci_diag_rx_save(&ccci->diag, skb->data, skb->len, q,
 				MT6797_CCCI_DIAG_BEFORE_READY, 0, frame.channel);
@@ -1158,6 +1166,12 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 		diag_drop = MT6797_CCCI_DIAG_BEFORE_READY;
 		goto drop;
 	}
+	if_id = mtk_ccci_net_rx_link(frame.channel);
+	if (frame.channel != MTK_CCCI_UART2_RX && if_id < 0) {
+		mt6797_rx_rejected_record(&ccci->rx_rejected, frame.channel,
+			q, skb->data, skb->len, -EOPNOTSUPP);
+		goto drop;
+	}
 	if (frame.data1 != skb->len || skb->len <= MTK_CCCI_HEADER_SIZE)
 		goto drop;
 	if (frame.channel == MTK_CCCI_UART2_RX) {
@@ -1167,9 +1181,6 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 		wwan_port_rx(ccci->at_port, skb);
 		return;
 	}
-	if_id = mtk_ccci_net_rx_link(frame.channel);
-	if (if_id < 0)
-		goto drop;
 	skb_pull(skb, MTK_CCCI_HEADER_SIZE);
 	version = skb->data[0] >> 4;
 	if (version == 4)
@@ -1663,6 +1674,7 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	ccci->dev = &pdev->dev;
 	spin_lock_init(&ccci->diag.lock);
 	spin_lock_init(&ccci->fs_diag.lock);
+	spin_lock_init(&ccci->rx_rejected.lock);
 	spin_lock_init(&ccci->tx_stop_lock);
 	atomic_set(&ccci->rpc_logs, 0);
 	atomic_set(&ccci->fs_logs, 0);
@@ -1826,8 +1838,36 @@ static ssize_t fs_recent_show(struct device *dev, struct device_attribute *attr,
 	return length;
 }
 static DEVICE_ATTR(fs_recent, 0400, fs_recent_show, NULL);
+static ssize_t rx_rejected_show(struct device *dev, struct device_attribute *attr,
+				char *buf)
+{
+	struct mt6797_ccci *ccci = dev_get_drvdata(dev);
+	struct mt6797_rx_rejected_snapshot *snapshot;
+	ssize_t length;
+	unsigned int i;
+
+	(void)attr;
+	snapshot = kzalloc(sizeof(*snapshot), GFP_KERNEL);
+	if (!snapshot)
+		return -ENOMEM;
+	mt6797_rx_rejected_snapshot(&ccci->rx_rejected, snapshot);
+	length = sysfs_emit(buf, "total=%llu count=%u\n",
+		(unsigned long long)snapshot->total, snapshot->count);
+	for (i = 0; i < snapshot->count; i++) {
+		const struct mt6797_rx_rejected_entry *e = &snapshot->entry[i];
+
+		length += sysfs_emit_at(buf, length,
+			"seq=%llu channel=%u queue=%u op_valid=%u op=%x bytes=%zu error=%d\n",
+			(unsigned long long)e->sequence, e->channel, e->queue,
+			e->op_valid, e->op, e->bytes, e->error);
+	}
+	kfree(snapshot);
+	return length;
+}
+static DEVICE_ATTR(rx_rejected, 0400, rx_rejected_show, NULL);
 static struct attribute *mt6797_ccci_attrs[] = {
 	&dev_attr_fs_recent.attr,
+	&dev_attr_rx_rejected.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(mt6797_ccci);

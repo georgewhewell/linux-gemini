@@ -199,8 +199,9 @@ static int mt6797_radio_scan(struct wiphy *wiphy,
 	unsigned int index;
 	int ret = 0;
 
-	/* The existing firmware codec supports passive scans without extra IEs. */
-	if (request->n_ssids || request->ie_len || request->flags)
+	/* iw adds COLOCATED_6GHZ by default; this wiphy has no 6 GHz band. */
+	if (request->n_ssids || request->ie_len ||
+	    (request->flags & ~NL80211_SCAN_FLAG_COLOCATED_6GHZ))
 		return -EOPNOTSUPP;
 	if (!request->n_channels)
 		return -EINVAL;

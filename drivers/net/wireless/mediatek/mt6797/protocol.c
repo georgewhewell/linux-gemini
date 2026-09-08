@@ -86,9 +86,9 @@ int mt6797_wifi_event_parse(const u8 *packet, size_t available,
 	    packet_length > MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH ||
 	    packet_length > available)
 		return -EMSGSIZE;
-	if (get_unaligned_le16(packet + 2) != MT6797_WIFI_EVENT_PACKET_TYPE ||
-	    packet[6] || packet[7])
+	if (get_unaligned_le16(packet + 2) != MT6797_WIFI_EVENT_PACKET_TYPE)
 		return -EPROTO;
+	/* GEN3 firmware uses the reserved header bytes; they are not MBZ. */
 
 	event->payload = packet + MT6797_WIFI_EVENT_HEADER_LENGTH;
 	event->payload_length = packet_length -

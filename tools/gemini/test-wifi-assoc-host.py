@@ -215,11 +215,16 @@ int main(void) {
  puts("PASS: association request bytes and management TX path, ownership, capacities, IE validation, 65536 AIDs, rejection, address/type matching, truncation/fragmentation and 10000 malformed IE streams");
 }
 '''
-with tempfile.TemporaryDirectory(prefix='gemini-assoc-') as temporary:
-    path = Path(temporary)
-    (path / 'test.c').write_text(program)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g',
-                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
-                    '-ffunction-sections', '-Wl,--gc-sections',
-                    str(path / 'test.c'), '-o', str(path / 'test')], check=True)
-    subprocess.run([str(path / 'test')], check=True)
+def run_program(program):
+    with tempfile.TemporaryDirectory(prefix='gemini-assoc-') as temporary:
+        path = Path(temporary)
+        (path / 'test.c').write_text(program)
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g',
+                        '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                        '-ffunction-sections', '-Wl,--gc-sections',
+                        str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+        subprocess.run([str(path / 'test')], check=True)
+
+
+if __name__ == "__main__":
+    run_program(program)

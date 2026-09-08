@@ -1,0 +1,53 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef __MT6797_WIFI_AIS_JOIN_H
+#define __MT6797_WIFI_AIS_JOIN_H
+
+#include "ais_protocol.h"
+
+#define MT6797_WIFI_AIS_BSS_INFO_LENGTH 96U
+
+enum mt6797_wifi_ais_security {
+	MT6797_WIFI_AIS_SECURITY_OPEN,
+	MT6797_WIFI_AIS_SECURITY_WPA2_PSK_CCMP,
+};
+
+/* Negotiated 20 MHz non-HT parameters, matching the current radio capability.
+ * Rate sets use GEN3 software indices (including holes at bits 4 and 5),
+ * not positions in cfg80211's rate array. Regulatory admission is owner policy.
+ */
+struct mt6797_wifi_ais_join_params {
+	struct mt6797_wifi_ais_channel channel;
+	u8 ssid[32];
+	u8 ssid_length;
+	u8 phy_types;
+	u8 basic_phy;
+	u8 rcpi;
+	u8 disconnect_threshold;
+	u16 association_id;
+	u16 listen_interval;
+	u16 operational_rates;
+	u16 desired_rates;
+	u16 basic_rates;
+	u16 default_rate;
+	enum mt6797_wifi_ais_security security;
+	bool erp_protection;
+	bool short_preamble;
+	bool short_slot;
+};
+
+/* BSS update precedes STA state3; entry to state3 requires its activation event.
+ * State1->state2 is local only, as in vendor cnmStaRecChangeState().
+ */
+int mt6797_wifi_ais_join_bss_build(
+	const struct mt6797_wifi_ais_bss_handle *bss,
+	const struct mt6797_wifi_ais_sta_handle *sta,
+	const struct mt6797_wifi_ais_join_params *params, u8 sequence,
+	u8 *command, size_t capacity);
+int mt6797_wifi_ais_join_sta_build(
+	const struct mt6797_wifi_ais_bss_handle *bss,
+	const struct mt6797_wifi_ais_sta_handle *sta,
+	const struct mt6797_wifi_ais_join_params *params, u8 sequence,
+	u8 *command, size_t capacity,
+	struct mt6797_wifi_ais_sta_pending *pending);
+
+#endif

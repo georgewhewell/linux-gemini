@@ -20,12 +20,12 @@ ccci=(root/'drivers/net/wwan/mediatek/mtk_mt6797_ccci.c').read_text()
 def timer_tail(s):
     start=s.index('\tret = mt6797_md1_hs_arm(')
     tail=s[start:s.index('\nstatic void mt6797_ccci_remove(',start)]
-    # GETATTR adds a process-context workqueue before enabling NAPI. Exclude
-    # only that exact independently-tested allocation block, not timer logic.
-    allocation='''\tccci->fs_attr_wq = alloc_ordered_workqueue("mt6797-fs-attr", 0);
-\tif (!ccci->fs_attr_wq)
+    # The FS service adds a process-context workqueue before enabling NAPI.
+    # Exclude only that exact independently-tested allocation block, not timer logic.
+    allocation='''\tccci->fs_wq = alloc_ordered_workqueue("mt6797-fs", 0);
+\tif (!ccci->fs_wq)
 \t\treturn -ENOMEM;
-\tret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_fs_attr_destroy, ccci);
+\tret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_fs_destroy, ccci);
 \tif (ret)
 \t\treturn ret;
 '''

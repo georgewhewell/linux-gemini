@@ -19,13 +19,26 @@ shim = r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-typedef uint8_t u8; typedef uint32_t u32; typedef int32_t s32;
+typedef uint8_t u8; typedef uint32_t u32; typedef int32_t s32; typedef uint64_t u64; typedef int64_t s64;
 #define U32_MAX UINT32_MAX
 #define EPROBE_DEFER 517
+#define min_t(t,a,b) ((t)(a)<(t)(b)?(t)(a):(t)(b))
+#include <time.h>
 struct kstatfs {int64_t f_bsize; uint64_t f_blocks,f_bfree; int64_t f_frsize;};
 struct mt6797_md1_fs_stats {u32 block_size,blocks,free_blocks;};
 '''
 tests = r'''
+/* Literal disk-info reply built exactly as the service does: status then info. */
+static int disk_reply(const u8 *data,size_t len,const struct mt6797_md1_fs_stats *stats,u8 *out,size_t capacity,s32 *status){
+ struct mt6797_fs_request request;struct mt6797_fs_reply reply;u8 info[84],payload[128];int ret;
+ if(!data||!out||!status||capacity<120)return -EMSGSIZE;
+ ret=mt6797_fs_request_parse(data,len,&request);if(ret)return ret;
+ if(request.op!=0x100e)return -EOPNOTSUPP;
+ *status=mt6797_fs_diskinfo(&request,stats,info);
+ mt6797_fs_reply_init(&reply,payload,sizeof(payload),request.index,request.op);
+ assert(!mt6797_fs_reply_add_u32(&reply,(u32)*status)&&!mt6797_fs_reply_add(&reply,info,84));
+ assert(mt6797_fs_reply_frames(&reply)==1&&mt6797_fs_reply_frame(&reply,0,out,capacity)==120);
+ return 0;}
 static const u8 request[44]={
  0,0,0,0,44,0,0,0,14,0,0,128,0,0,0,0,14,16,0,0,2,0,0,0,
  8,0,0,0,'Z',0,':',0,'\\',0,0,0,4,0,0,0,3,0,0,0};
@@ -44,7 +57,7 @@ static void *cancel_thread(void *unused) {
 int main(void) {
  struct mt6797_md1_fs_stats stats={4096,12345,6789}, converted;
  u8 in[48],out[120],expected[120]={0};s32 status;
- assert(!mt6797_fs_disk_reply(request,44,&stats,out,120,&status)&&status==0);
+ assert(!disk_reply(request,44,&stats,out,120,&status)&&status==0);
  /* Literal vendor layout: two args, status4 + FS_DiskInfo84. Real free blocks,
   * not the historical daemon's fixed512 value. No unspecified stack bytes.
   */
@@ -53,29 +66,31 @@ int main(void) {
  expected[85]=2;expected[88]=8;expected[92]=0x39;expected[93]=0x30;
  expected[100]=0x85;expected[101]=0x1a;
  assert(!memcmp(out,expected,120));
- for(unsigned n=0;n<44;n++)assert(mt6797_fs_disk_reply(request,n,&stats,out,120,&status)<0);
- for(unsigned n=0;n<120;n++)assert(mt6797_fs_disk_reply(request,44,&stats,out,n,&status)==-EMSGSIZE);
- const unsigned offsets[]={0,4,8,12,20,24,36};
+ for(unsigned n=0;n<44;n++)assert(disk_reply(request,n,&stats,out,120,&status)<0);
+ for(unsigned n=0;n<120;n++)assert(disk_reply(request,44,&stats,out,n,&status)==-EMSGSIZE);
+ const unsigned offsets[]={0,4,8,12,20,24};
  for(unsigned i=0;i<sizeof(offsets)/sizeof(offsets[0]);i++){
   memcpy(in,request,44);mt6797_rpc_write(in+offsets[i],UINT32_MAX);
-  assert(mt6797_fs_disk_reply(in,44,&stats,out,120,&status)<0);
+  assert(disk_reply(in,44,&stats,out,120,&status)<0);
  }
  memcpy(in,request,44);mt6797_rpc_write(in+16,0x1001);
- assert(mt6797_fs_disk_reply(in,44,&stats,out,120,&status)==-EOPNOTSUPP);
+ assert(disk_reply(in,44,&stats,out,120,&status)==-EOPNOTSUPP);
+ memcpy(in,request,44);mt6797_rpc_write(in+36,2);
+ assert(!disk_reply(in,44,&stats,out,120,&status)&&status==-2);
  memcpy(in,request,44);in[28]='X';
- assert(!mt6797_fs_disk_reply(in,44,&stats,out,120,&status)&&status==-4);
+ assert(!disk_reply(in,44,&stats,out,120,&status)&&status==-4);
  for(unsigned n=0;n<8;n++){
   memcpy(in,request,44);mt6797_rpc_write(in+40,n);
-  assert(!mt6797_fs_disk_reply(in,44,&stats,out,120,&status));
+  assert(!disk_reply(in,44,&stats,out,120,&status));
   assert(status==((n>0&&n<4)?0:-12));
   if(!status){assert(mt6797_rpc_read(out+92)==((n&1)?12345:0));
    assert(mt6797_rpc_read(out+100)==((n&2)?6789:0));}
  }
- assert(!mt6797_fs_disk_reply(request,44,NULL,out,120,&status)&&status==-1);
+ assert(!disk_reply(request,44,NULL,out,120,&status)&&status==-1);
  assert(mt6797_rpc_read(out+28)==UINT32_MAX);
  for(unsigned i=36;i<120;i++)assert(out[i]==0);
  for(unsigned i=0;i<5;i++){memcpy(in,request,44);mt6797_rpc_write(in+12,i);
-  assert(!mt6797_fs_disk_reply(in,44,&stats,out,120,&status));assert(mt6797_rpc_read(out+12)==i);}
+  assert(!disk_reply(in,44,&stats,out,120,&status));assert(mt6797_rpc_read(out+12)==i);}
  struct kstatfs fs={4096,12345,6789,4096};
  assert(!mt6797_fs_stats_convert(&fs,&converted)&&!memcmp(&stats,&converted,sizeof(stats)));
  const struct kstatfs bad[]={
@@ -107,12 +122,13 @@ int main(void) {
   assert((!claimed&&cancelled==-EBUSY&&shared.stage==MT6797_FS_CONSUMED)||
          (claimed==-EALREADY&&!cancelled&&shared.stage==MT6797_FS_CANCELLED));
  }
- puts("PASS actual FS codec/state: literal44/120-byte contract, real stats, flags/errors, malformed bounds, single authority, 256 claim/cancel races");
+ puts("PASS actual FS disk-info codec/state: literal44/120-byte contract, real stats, flags/errors, malformed bounds, single authority, 256 claim/cancel races");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-fs-provider-') as d:
     p=Path(d)
     (p/'test.c').write_text(shim+rpc+state+codec+tests)
-    subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror',
+    # -Wno-unused-function: the shared codec header carries every FS helper.
+    subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror','-Wno-unused-function',
                     '-pthread',str(p/'test.c'),'-o',str(p/'test')],check=True)
     subprocess.run([str(p/'test')],check=True,timeout=10)

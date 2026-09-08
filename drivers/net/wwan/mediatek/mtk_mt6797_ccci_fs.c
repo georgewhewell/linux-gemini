@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* MediaTek MT6797 MD1 read-only NVRAM filesystem service.
+/* MediaTek MT6797 MD1 filesystem service.
  *
- * Serves the modem's boot-time walk of drive Z: from the retained read-only
- * nvdata "/md" authority. Every operation follows the installed Android25
- * ccci_fsd daemon's wire shapes and result codes; writes are answered with
- * the code the daemon produces on a read-only backing, never faked.
+ * Installed Android25 ccci_fsd wire shapes and result codes, backed by
+ * retained read-only authority or opt-in bounded volatile Z/X/Y roots.
+ * Successful writes and namespace mutations reflect actual provider effects.
  */
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -549,9 +548,24 @@ static s32 mt6797_fs_getclustersize(const struct mt6797_fs_request *request)
 		(s32)stats.block_size;
 }
 
-/* Write-class operations: after the same path checks, the daemon's
- * mkdir/rmdir/rename/unlink on a read-only backing fails with EROFS, which
- * its inline errno mapping reports as FS_GENERAL_FAILURE.
+static s32 mt6797_fs_mutate(const struct mt6797_fs_request *request,
+			    char *path, enum mt6797_md1_fs_mutation operation)
+{
+	u8 drive;
+	s32 status;
+
+	if (request->argc != 1)
+		return MT6797_FS_PARAM_ERROR;
+	status = mt6797_fs_arg_path(request, 0, path,
+				    MT6797_MD1_FS_PATH_MAX + 1, &drive);
+	if (status)
+		return status;
+	return mt6797_fs_status(mt6797_md1_fs_provider_mutate_drive(drive, path,
+								 operation));
+}
+
+/* Remaining write-class operations are not implemented. Validate their
+ * paths and return the vendor general failure, never a synthetic success.
  */
 static s32 mt6797_fs_refuse_write(const struct mt6797_fs_request *request,
 				  unsigned int paths, char *path)
@@ -712,8 +726,14 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 		*status = mt6797_fs_getclustersize(&request);
 		break;
 	case MT6797_FS_CREATEDIR:
+		*status = mt6797_fs_mutate(&request, path, MT6797_MD1_FS_MKDIR);
+		break;
 	case MT6797_FS_REMOVEDIR:
+		*status = mt6797_fs_mutate(&request, path, MT6797_MD1_FS_RMDIR);
+		break;
 	case MT6797_FS_DELETE:
+		*status = mt6797_fs_mutate(&request, path, MT6797_MD1_FS_UNLINK);
+		break;
 	case MT6797_FS_RESTORE:
 	case MT6797_FS_XDELETE:
 		*status = mt6797_fs_refuse_write(&request, 1, path);

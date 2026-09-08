@@ -143,6 +143,16 @@ static int mt6797_md1_fs_provider_stats_drive(u8 drive,struct mt6797_md1_fs_stat
  if(!provider_available||!roots_enabled||(drive!='X'&&drive!='Y'))return -ENODEV;
  *s=(struct mt6797_md1_fs_stats){4096,drive=='X'?2048:3192,drive=='X'?700:900};return 0;
 }
+static int mutation_calls, mutation_error;
+static u8 mutation_drive;
+static enum mt6797_md1_fs_mutation mutation_op;
+static char mutation_path[1025];
+static int mt6797_md1_fs_provider_mutate_drive(u8 drive,const char *path,enum mt6797_md1_fs_mutation op){
+ if(!ram_enabled)return -EROFS;
+ mutation_calls++;mutation_drive=drive;mutation_op=op;strcpy(mutation_path,path);
+ return mutation_error;
+}
+
 '''
 tests = r'''
 static u8 frame[3584], payload[MT6797_FS_REPLY_MAX];
@@ -360,6 +370,26 @@ int main(void) {
    u32 n = utf16("Z:\\a", pathbuf); u8 second[64]; u32 m = utf16("Z:\\b", second); u8 fl[4] = {0}; const void *a[3] = {pathbuf, second, fl}; u32 l[3] = {n, m, 4};
    assert(!run(0, MT6797_FS_RENAME, 2, a, l) && status == -18 && !run(0, MT6797_FS_MOVE, 3, a, l) && status == -18 && !run(0, MT6797_FS_RENAME, 1, a, l) && status == -2);
    u32 x = utf16("X:\\b", second); l[1] = x; assert(!run(0, MT6797_FS_RENAME, 2, a, l) && status == -19); }
+
+ { u32 ops[] = {MT6797_FS_CREATEDIR, MT6797_FS_REMOVEDIR, MT6797_FS_DELETE};
+   int errors[] = {0, -ENOENT, -EACCES, -EEXIST, -ENOTEMPTY, -ENOTDIR, -EISDIR, -EROFS, -ENOSPC};
+   int expected[] = {0, -9, -16, -18, -18, -18, -18, -18, -18};
+   ram_enabled=true; roots_enabled=true;
+   for(unsigned i=0;i<3;i++) for(unsigned d=0;d<3;d++) {
+     char name[]="Z:\\NVRAM\\new"; name[0]="ZXY"[d];
+     for(unsigned e=0;e<sizeof(errors)/sizeof(*errors);e++) {
+       mutation_error=errors[e];int before=mutation_calls;
+       assert(!run_path(ops[i],name,0,0)&&status==expected[e]&&reply.argc==1&&arg_s32(0)==expected[e]);
+       assert(mutation_calls==before+1&&mutation_drive==name[0]&&(unsigned)mutation_op==i&&!strcmp(mutation_path,"NVRAM/new"));
+     }
+     int before=mutation_calls;
+     assert(!run_path(ops[i],name,0,1)&&status==-2&&mutation_calls==before);
+     assert(!run_u32(ops[i],0,0,0,0)&&status==-2&&mutation_calls==before);
+     assert(!run_path(ops[i],"Z:\\..\\escape",0,0)&&status==-16&&mutation_calls==before);
+   }
+   ram_enabled=false; roots_enabled=false; mutation_error=0;
+   puts("PASS actual namespace service: Z/X/Y routing, exact argument counts, confinement refusals, provider failures and signed replies");
+ }
  { u32 unsupported[] = {MT6797_FS_GETFOLDERSIZE, MT6797_FS_COUNT, MT6797_FS_GETDRIVE, 0x101d, 0x101e, 0x101f, 0x1020, 0x1023, 0x1000, 0x1024, 0};
    for (unsigned i = 0; i < sizeof(unsupported) / sizeof(*unsupported); i++) { assert(!mt6797_fs_service_supports(unsupported[i]));
      assert(run_u32(unsupported[i], 1, 0, 0, 0) == -EOPNOTSUPP && status == 12345); } }

@@ -428,6 +428,107 @@ put_root:
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open_ram_drive);
 
+/* Namespace operations never target the root itself and never recurse. Keep
+ * the parent locked from final-component lookup through the VFS operation.
+ * Legacy read-only authorities cannot reach any mutation callback.
+ */
+int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
+				      enum mt6797_md1_fs_mutation operation)
+{
+	struct file *root;
+	struct dentry *parent, *child;
+	struct qstr name;
+	char *copy, *leaf, *slash;
+	int ret;
+
+	might_sleep();
+	if (operation != MT6797_MD1_FS_MKDIR &&
+	    operation != MT6797_MD1_FS_RMDIR &&
+	    operation != MT6797_MD1_FS_UNLINK)
+		return -EINVAL;
+	if (!path || strnlen(path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX)
+		return -ENAMETOOLONG;
+	root = mt6797_fs_root_get(drive);
+	if (!root)
+		return -ENODEV;
+	ret = -EROFS;
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(root))
+		goto put_root;
+	copy = kstrdup(path, GFP_KERNEL);
+	if (!copy) {
+		ret = -ENOMEM;
+		goto put_root;
+	}
+	slash = strrchr(copy, '/');
+	leaf = slash ? slash + 1 : copy;
+	name = (struct qstr)QSTR_INIT(leaf, strlen(leaf));
+	ret = -EINVAL;
+	if (!name.len || name.len > NAME_MAX || path[0] == '/' ||
+	    (name.len <= 2 && !strncmp(leaf, "..", name.len)))
+		goto free_copy;
+	if (slash)
+		*slash = '\0';
+	parent = mt6797_fs_walk(root, slash ? copy : "");
+	if (IS_ERR(parent)) {
+		ret = PTR_ERR(parent);
+		goto free_copy;
+	}
+	ret = -ENOTDIR;
+	if (!d_is_dir(parent))
+		goto put_parent;
+	ret = mnt_want_write(root->f_path.mnt);
+	if (ret)
+		goto put_parent;
+	inode_lock(d_inode(parent));
+	child = lookup_one(mnt_idmap(root->f_path.mnt), &name, parent);
+	if (IS_ERR(child)) {
+		ret = PTR_ERR(child);
+		goto unlock;
+	}
+	ret = -EACCES;
+	if (!mt6797_fs_tmpfs_writable(root) || d_mountpoint(child) ||
+	    d_is_symlink(child) || child->d_sb != file_inode(root)->i_sb)
+		goto put_child;
+	if (operation == MT6797_MD1_FS_MKDIR) {
+		ret = -EEXIST;
+		if (!d_is_negative(child))
+			goto put_child;
+		/* This kernel's vfs_mkdir consumes the input dentry even on
+		 * error; only its successful returned reference is ours.
+		 */
+		child = vfs_mkdir(mnt_idmap(root->f_path.mnt), d_inode(parent),
+				  child, 0770, NULL);
+		if (IS_ERR(child)) {
+			ret = PTR_ERR(child);
+			goto unlock;
+		}
+		ret = 0;
+	} else if (d_is_negative(child)) {
+		ret = -ENOENT;
+	} else if (operation == MT6797_MD1_FS_RMDIR) {
+		ret = d_is_dir(child) ?
+			vfs_rmdir(mnt_idmap(root->f_path.mnt), d_inode(parent), child, NULL) :
+			-ENOTDIR;
+	} else {
+		ret = d_is_reg(child) ?
+			vfs_unlink(mnt_idmap(root->f_path.mnt), d_inode(parent), child, NULL) :
+			d_is_dir(child) ? -EISDIR : -EACCES;
+	}
+put_child:
+	dput(child);
+unlock:
+	inode_unlock(d_inode(parent));
+	mnt_drop_write(root->f_path.mnt);
+put_parent:
+	dput(parent);
+free_copy:
+	kfree(copy);
+put_root:
+	fput(root);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_mutate_drive);
+
 struct file *mt6797_md1_fs_provider_open_ram(const char *path, bool writable, bool create, bool truncate)
 {
 	return mt6797_md1_fs_provider_open_ram_drive('Z', path, writable, create, truncate);

@@ -15,6 +15,7 @@ enum mt6797_wifi_rx_kind {
 	MT6797_WIFI_RX_EVENT,
 	MT6797_WIFI_RX_IEEE80211,
 	MT6797_WIFI_RX_ETHERNET,
+	MT6797_WIFI_RX_NATIVE_DATA,
 };
 
 enum mt6797_wifi_tx_traffic {

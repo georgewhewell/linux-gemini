@@ -15,6 +15,7 @@ program = program.replace('struct net_device { u8 dev_addr[6]; };',
     'struct net_device { u8 dev_addr[6]; unsigned mtu,rx_packets,rx_bytes,rx_dropped; };')
 program += re.sub(r'^#include .*\n', '', (driver / 'data_rx.h').read_text(), flags=re.M)
 program += r'''
+#define dev_warn_ratelimited(...) do {} while(0)
 #define ETH_HLEN 14
 #define VLAN_HLEN 4
 #define CHECKSUM_NONE 0
@@ -28,10 +29,10 @@ static unsigned delivered,freed;
 static struct sk_buff *netdev_alloc_skb_ip_align(struct net_device *dev,size_t length) {
  (void)dev; assert(length<=1600); return allocation_failure?NULL:calloc(1,sizeof(struct sk_buff));
 }
-static void skb_put_data(struct sk_buff *skb,const u8 *p,size_t n) { memcpy(skb->data,p,n); skb->length=n; }
+static void skb_put_data(struct sk_buff *skb,const u8 *p,size_t n) { memcpy(skb->data+skb->length,p,n); skb->length+=n; }
 static unsigned eth_type_trans(struct sk_buff *skb,struct net_device *dev) { (void)dev; return (unsigned)skb->data[12]<<8|skb->data[13]; }
 static void netif_rx(struct sk_buff *skb) {
- assert(skb->length==input.length && !memcmp(skb->data,input.ethernet,input.length));
+ assert(skb->length==input.length && !memcmp(skb->data,input.ethernet,ETH_HLEN) && !memcmp(skb->data+ETH_HLEN,input.payload,input.length-ETH_HLEN));
  assert(skb->ip_summed==CHECKSUM_NONE); delivered++; free(skb);
 }
 static void dev_kfree_skb_any(struct sk_buff *skb) { freed++; free(skb); }
@@ -55,13 +56,14 @@ static void setup(void) {
  c.join.negotiated.security=MT6797_WIFI_AIS_SECURITY_WPA2_PSK_CCMP;
  c.ais.runtime.sta.pairwise.index=3; c.ais.runtime.sta.ap_bmc_group.index=4;
  c.pairwise_key.installed=c.group_key.installed=true; c.group_key.index=1;
- input.ethernet=ethernet; input.length=sizeof(ethernet); memcpy(input.transmitter,bss.bssid,6);
+ memcpy(input.ethernet,ethernet,ETH_HLEN); input.payload=ethernet+ETH_HLEN; input.length=sizeof(ethernet); memcpy(input.transmitter,bss.bssid,6);
  input.wlan_index=3; input.protected=true; input.pn=1;
  decode_error=0; allocation_failure=false; delivered=freed=0;
  dev.rx_packets=dev.rx_bytes=dev.rx_dropped=0;
 }
 static void rx(bool accept) {
  unsigned before=delivered, drops=dev.rx_dropped;
+ memcpy(input.ethernet,ethernet,ETH_HLEN);
  struct mt6797_wifi_rx_view view={0};
  assert(!mt6797_radio_data_frame(&r,&view));
  assert(!r.lock && delivered==before+accept && dev.rx_dropped==drops+!accept);

@@ -13,6 +13,7 @@ struct mt6797_wifi_hif_pump_stats {
 	u64 interrupts;
 	u64 tx_released[MT6797_WIFI_HIF_TX_QUEUES];
 	u64 rx_packets;
+	u64 rx_dropped;
 	u64 events;
 	u64 ieee80211_frames;
 	u64 ethernet_frames;
@@ -33,6 +34,8 @@ struct mt6797_wifi_hif_pump_ops {
 	/* Called synchronously; frame and its payload must not be retained. */
 	int (*deliver_frame)(void *context,
 			     const struct mt6797_wifi_rx_view *frame);
+	/* Diagnostic only; never log payloads or hardware report address fields. */
+	void (*reject_packet)(void *context, const u8 *packet, size_t length, int error);
 	bool (*expired)(void *context);
 	/* Only startup, before opening interrupt gates, may find no status. */
 	bool allow_empty_status;

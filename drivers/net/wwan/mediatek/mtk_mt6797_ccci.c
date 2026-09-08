@@ -256,10 +256,10 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 		const struct mt6797_fs_diag_entry *e = &ccci->fs_diag.entry[slot];
 
 		dev_err(ccci->dev,
-			"CCCI_FS_RECENT seq=%llu op=%x parse=%d compact=%u flags=%x requested=%u open_valid=%u open_flags=%x drive0=%u drive1=%u done=%u status=%d result=%d sent=%zu\n",
+			"CCCI_FS_RECENT seq=%llu op=%x parse=%d compact=%u flags=%x requested=%u open_valid=%u open_flags=%x move_valid=%u move_flags=%x drive0=%u drive1=%u done=%u status=%d result=%d sent=%zu\n",
 			(unsigned long long)e->sequence, e->op, e->parse_error,
 			e->compact, e->flags, e->requested, e->open_valid, e->open_flags,
-			e->drive0, e->drive1,
+			e->move_valid, e->move_flags, e->drive0, e->drive1,
 			e->done, e->status,
 			e->result, e->sent);
 	}
@@ -1793,6 +1793,45 @@ static void mt6797_ccci_remove(struct platform_device *pdev)
 	mt6797_ccci_quiesce(ccci, -ESHUTDOWN);
 }
 
+/* Read-only numeric evidence for responsive but stalled modem initialization.
+ * No MMIO, queue changes, path strings, file data or modem addresses.
+ */
+static ssize_t fs_recent_show(struct device *dev, struct device_attribute *attr,
+			      char *buf)
+{
+	struct mt6797_ccci *ccci = dev_get_drvdata(dev);
+	struct mt6797_fs_diag_snapshot *snapshot;
+	ssize_t length;
+	unsigned int i;
+
+	(void)attr;
+	snapshot = kzalloc(sizeof(*snapshot), GFP_KERNEL);
+	if (!snapshot)
+		return -ENOMEM;
+	mt6797_fs_diag_snapshot(&ccci->fs_diag, snapshot);
+	length = sysfs_emit(buf, "total=%llu count=%u frozen=%u pending=%d ready=%d failed=%d\n",
+		(unsigned long long)snapshot->total, snapshot->count, snapshot->frozen,
+		atomic_read(&ccci->fs_pending), atomic_read(&ccci->ready), atomic_read(&ccci->failed));
+	for (i = 0; i < snapshot->count; i++) {
+		const struct mt6797_fs_diag_entry *e = &snapshot->entry[i];
+
+		length += sysfs_emit_at(buf, length,
+			"seq=%llu op=%x parse=%d compact=%u flags=%x req=%u ov=%u of=%x mv=%u mf=%x d0=%u d1=%u done=%u status=%d result=%d sent=%zu\n",
+			(unsigned long long)e->sequence, e->op, e->parse_error,
+			e->compact, e->flags, e->requested, e->open_valid, e->open_flags,
+			e->move_valid, e->move_flags, e->drive0, e->drive1, e->done,
+			e->status, e->result, e->sent);
+	}
+	kfree(snapshot);
+	return length;
+}
+static DEVICE_ATTR(fs_recent, 0400, fs_recent_show, NULL);
+static struct attribute *mt6797_ccci_attrs[] = {
+	&dev_attr_fs_recent.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(mt6797_ccci);
+
 static const struct of_device_id mt6797_ccci_of_match[] = {
 	{ .compatible = "mediatek,mt6797-ccci" },
 	{}
@@ -1807,6 +1846,7 @@ static struct platform_driver mt6797_ccci_driver = {
 		.name = "mt6797-ccci",
 		.of_match_table = mt6797_ccci_of_match,
 		.suppress_bind_attrs = true,
+		.dev_groups = mt6797_ccci_groups,
 	},
 };
 module_platform_driver(mt6797_ccci_driver);

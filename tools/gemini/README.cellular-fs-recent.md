@@ -36,3 +36,30 @@ adds open_valid/open_flags for shape-valid OPEN/OPENHINT and COMPACT_READ.
 These are numeric flags only. No access policy changes. Host tests check the
 literal C11 OPEN0x900 and composite read0x100 flags; short malformed inputs do
 not set open_valid. No next-revision hardware result yet.
+
+
+## Read-only live snapshot after CI3 radio stalls
+
+The modem can remain AT-responsive with SIM busy without entering FIRST_FATAL.
+A root-only `fs_recent` attribute on the CCCI platform device now provides a
+chronological snapshot of the existing 16-entry numeric ring. Reading copies
+under its IRQ-safe lock, then formats after releasing it; it does not freeze,
+clear, or otherwise change the ring, touch MMIO, or submit modem work. The
+snapshot is detached from subsequent completions and preserves the current
+in-flight row. Ready/failed/pending are separate atomic samples, not a promise
+that all transport fields were sampled in the same instant as the ring.
+
+The driver core adds/removes the device attribute group with driver binding.
+Mode 0400 permits root reads; there is no store callback. It contains operation,
+result and count metadata, ASCII drive numbers and numeric open/MOVE flags.
+It never contains path strings, file data, file handles or modem addresses.
+MOVE flags are captured only for exactly three parsed arguments with a
+four-byte final flag argument; the validity bit distinguishes absent metadata.
+They are also included in the existing fatal printout.
+
+Host tests execute the actual snapshot and sysfs formatter. They check ring
+wrap order, detached/in-flight/frozen copies, absence of ring mutation, output
+fitting one sysfs page for sixteen maximum-width entries, allocation failure,
+and the existing worker/admission/freezing cases. An ARM64 W=1 compile checks
+kernel APIs. This diagnostic is not yet packaged or hardware-qualified; CI3
+continues using its pinned earlier kernel until a new candidate is built.

@@ -1,48 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Planet Computers Gemini PDA MicroSD (MSDC1) 3.0 V activation overlay.
+ * Gemini MSDC1: polled card presence, 4-bit legacy SD at 25 MHz / 3.0 V.
+ * Hardware testing on 2026-09-03 found GPIO67 unchanged with and without a
+ * card. Vendor insertion uses a separate device, so GPIO67 is not a valid
+ * generic cd-gpios input. Polling enumerated the SDABC 29.1 GiB card.
  *
- * This is deliberately opt-in.  The base Gemini DT leaves MMC1 disabled.
- * Applying this overlay enables a 4-bit, 25 MHz legacy-SD path suitable for
- * mounting a card, but does not advertise SD high-speed or UHS.  It
- * constrains both card power (VMCH) and signalling power (VMC) to 3.0 V and
- * sets no-1-8-v, preventing the VMC 1.8 V level-switch path until its pad
- * settings and tuning contract are recovered on mainline.
- *
- * Vendor MT6797 evidence, all from the Gemini 3.18 source:
- *
- * - arch/arm64/boot/dts/aeon6797_6m_n.dts:748-771 enables MMC1 as a
- *   4-bit MSDC_SD host, names GPIO67 as card-detect and gives CD_HIGH.
- * - The same file:775-783 assigns the insertion switch to EINT6, GPIO67.
- * - drivers/mmc/host/mediatek/mt6797/msdc_io.c:296-312 makes VMCH the
- *   MMC1 card rail and VMC the I/O rail, both at 3.0 V.
- * - The same file:199-220 changes only VMC to 1.8 V for UHS.  No UHS
- *   capability is therefore present here.
- *
- * Mainline evidence:
- *
- * - mt6797.dtsi:831-839 describes the compatible controller at 0x11240000.
- * - include/dt-bindings/pinctrl/mt6797-pinfunc.h:388-389 and :709-742 map
- *   GPIO67's GPIO and EINT6 functions and GPIO129..134 to MSDC1 signals.
- * - Documentation/devicetree/bindings/mmc/mtk-sd.yaml:168-179 requires the
- *   two pin states and both supplies.  mtk-sd.c:2163-2191 sequences them.
- * - mmc-controller-common.yaml:44-62 defines normal active-low card-detect
- *   polarity, while the vendor CD_HIGH contract makes this active-high GPIO.
- *   core/slot-gpio.c:105-139,163-209 acquires cd-gpios as an input and maps
- *   that GPIO to its insertion IRQ.  The mainline pin state must therefore
- *   select GPIO67's GPIO function, not its separate EINT function.
- * - drivers/regulator/mt6351-regulator.c:112-114,140-143,285-288,322-323
- *   establishes VMCH's 3.0/3.3 V choices and VMC's selectable voltages.
- *
- * The current MT6797 pinctrl descriptor has no pull, input-enable, or drive
- * field maps (pinctrl-mt6797.c:23-44), so this overlay supplies mux only and
- * deliberately leaves the vendor's drive strengths and UHS tuning untouched.
+ * Keep the established GPIO129..134 MSDC1 mux and MT6351 VMCH/VMC 3.0 V
+ * supplies. No high-speed/UHS modes or 1.8 V switching are advertised.
+ * Explicit aliases keep the eMMC and removable controller numbering stable;
+ * callers must still verify controller lineage before accessing a block node.
  */
 
 /dts-v1/;
 /plugin/;
 
-#include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/pinctrl/mt6797-pinfunc.h>
 
 &mt6351regulator {
@@ -76,29 +47,25 @@
 		};
 	};
 
-	microsd_cd_pin: microsd-cd-pin {
-		/*
-		 * Vendor calls the insertion switch EINT6 / GPIO67.  The mainline
-		 * MMC core owns its IRQ through cd-gpios, so expose it as GPIO67.
-		 */
-		pins-cd {
-			pinmux = <MT6797_GPIO67__FUNC_GPIO67>;
-		};
-	};
 };
 
 &mmc1 {
 	pinctrl-names = "default", "state_uhs";
-	pinctrl-0 = <&microsd_mmc1_pins &microsd_cd_pin>;
+	pinctrl-0 = <&microsd_mmc1_pins>;
 	/* No electrical UHS transition is permitted; retain the 3.0 V state. */
-	pinctrl-1 = <&microsd_mmc1_pins &microsd_cd_pin>;
+	pinctrl-1 = <&microsd_mmc1_pins>;
 
 	bus-width = <4>;
 	/* Legacy SD default speed: below the unmodelled high-speed pad contract. */
 	max-frequency = <25000000>;
-	cd-gpios = <&pio 67 GPIO_ACTIVE_HIGH>;
+	broken-cd;
 	no-1-8-v;
 	vmmc-supply = <&mt6351_vmch_reg>;
 	vqmmc-supply = <&mt6351_vmc_reg>;
 	status = "okay";
+};
+
+&{/aliases} {
+	mmc0 = "/mmc@11230000";
+	mmc1 = "/mmc@11240000";
 };

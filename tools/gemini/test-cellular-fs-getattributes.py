@@ -77,7 +77,7 @@ enum {DT_REG = 8, DT_DIR = 4, DT_LNK = 10};
 static struct {int stage;} provider_state;
 static struct super_block sb, other;
 static struct vfsmount mount;
-static struct file backing, *provider_file;
+static struct file backing, *provider_file, *provider_extra[2];
 static bool provider_volatile;
 static struct dentry rootd = {&sb, "", 2, 1, false, NULL, NULL, 4096};
 static struct dentry nvram = {&sb, "NVRAM", 2, 0, false, &rootd, NULL, 4096};
@@ -183,6 +183,15 @@ static void quiescent(void){assert(backing.refs==1&&!locked);
 tests = r'''
 int main(void){
  struct mt6797_md1_fs_attr attr;struct mt6797_md1_fs_entry entry;struct file *f;u8 buf[16];
+ reset();assert(mt6797_md1_fs_provider_getattr_drive('X',"NVRAM/a.bin",&attr)==-ENODEV&&!lookups);quiescent();
+ assert(IS_ERR(mt6797_md1_fs_provider_open_drive('Y',"NVRAM/a.bin",false))&&!lookups);quiescent();
+ struct file xroot;
+ reset();xroot=backing;xroot.f_path.dentry=&nvram;provider_extra[0]=&xroot;
+ assert(!mt6797_md1_fs_provider_getattr_drive('X',"a.bin",&attr)&&attr.size==10);
+ assert(mt6797_md1_fs_provider_getattr_drive('Z',"a.bin",&attr)==-ENOENT);
+ assert(mt6797_md1_fs_provider_getattr_drive('X',"../top.txt",&attr)==-EINVAL);
+ f=mt6797_md1_fs_provider_open_drive('X',"a.bin",false);assert(!IS_ERR(f));mt6797_md1_fs_provider_close(f);
+ assert(xroot.refs==1);provider_extra[0]=NULL;quiescent();
  reset();assert(!mt6797_md1_fs_provider_getattr("NVRAM/a.bin",&attr)&&attr.mode==0100644&&attr.size==10&&attr.atime==1010&&attr.mtime==2010);
  assert(lookups==2&&stats==1&&sleeps==1);quiescent();
  reset();assert(!mt6797_md1_fs_provider_getattr("",&attr)&&attr.mode==0040755&&!lookups&&stats==1);quiescent();
@@ -273,10 +282,10 @@ int main(void){
  puts("PASS actual provider VFS layer: confined multi-component walk, dot/dot-dot/absolute/symlink/mountpoint/special/foreign refusals, RO rechecks, open flags, read/seek/fstat, entry enumeration skipping refused children, complete reference cleanup");
 }
 '''
-parts = [shim, provider, function('mt6797_fs_readonly'), function('mt6797_fs_tmpfs_writable'), function('mt6797_fs_backing_matches'), function('mt6797_fs_accessible'), function('mt6797_fs_root_get'),
+parts = [shim, provider, function('mt6797_fs_readonly'), function('mt6797_fs_tmpfs_writable'), function('mt6797_fs_backing_matches'), function('mt6797_fs_accessible'), function('mt6797_fs_drive_file'), function('mt6797_fs_root_get'),
          function('mt6797_fs_walk_component'), function('mt6797_fs_walk'), function('mt6797_fs_stat'),
-         function('mt6797_md1_fs_provider_getattr'), function('mt6797_md1_fs_provider_open'),
-         function('mt6797_md1_fs_provider_open_ram'), function('mt6797_md1_fs_provider_write'), function('mt6797_md1_fs_provider_fstat'), function('mt6797_md1_fs_provider_read'),
+         function('mt6797_md1_fs_provider_getattr_drive'), function('mt6797_md1_fs_provider_getattr'), function('mt6797_md1_fs_provider_open_drive'), function('mt6797_md1_fs_provider_open'),
+         function('mt6797_md1_fs_provider_open_ram_drive'), function('mt6797_md1_fs_provider_open_ram'), function('mt6797_md1_fs_provider_write'), function('mt6797_md1_fs_provider_fstat'), function('mt6797_md1_fs_provider_read'),
          function('mt6797_md1_fs_provider_llseek'), walk_struct, function('mt6797_fs_dir_actor'),
          function('mt6797_md1_fs_provider_next_entry'), function('mt6797_md1_fs_provider_close'), tests]
 with tempfile.TemporaryDirectory(prefix='gemini-fs-getattr-') as directory:

@@ -33,6 +33,15 @@ struct mt6797_md1_fs_entry {
 };
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_MD1_FS_PROVIDER)
+/* Explicit ASCII drive; only registered Z/X/Y roots are addressable. Paths
+ * remain relative and undergo the same confinement checks as the legacy API.
+ */
+int mt6797_md1_fs_provider_stats_drive(u8 drive, struct mt6797_md1_fs_stats *stats);
+int mt6797_md1_fs_provider_getattr_drive(u8 drive, const char *path,
+				       struct mt6797_md1_fs_attr *attr);
+struct file *mt6797_md1_fs_provider_open_drive(u8 drive, const char *path, bool directory);
+struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive, const char *path,
+					bool writable, bool create, bool truncate);
 bool mt6797_md1_fs_provider_enabled(void);
 int mt6797_md1_fs_provider_require(struct device *cold);
 int mt6797_md1_fs_provider_claim(struct device *cold);
@@ -57,6 +66,24 @@ int mt6797_md1_fs_provider_next_entry(struct file *dir,
 				      struct mt6797_md1_fs_entry *entry);
 void mt6797_md1_fs_provider_close(struct file *file);
 #else
+static inline int mt6797_md1_fs_provider_stats_drive(u8 drive, struct mt6797_md1_fs_stats *stats)
+{
+	return -ENODEV;
+}
+static inline int mt6797_md1_fs_provider_getattr_drive(u8 drive, const char *path,
+				       struct mt6797_md1_fs_attr *attr)
+{
+	return -ENODEV;
+}
+static inline struct file *mt6797_md1_fs_provider_open_drive(u8 drive, const char *path, bool directory)
+{
+	return ERR_PTR(-ENODEV);
+}
+static inline struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive, const char *path,
+					bool writable, bool create, bool truncate)
+{
+	return ERR_PTR(-ENODEV);
+}
 static inline bool mt6797_md1_fs_provider_enabled(void) { return false; }
 static inline int mt6797_md1_fs_provider_require(struct device *cold) { return 0; }
 static inline int mt6797_md1_fs_provider_claim(struct device *cold) { return 0; }

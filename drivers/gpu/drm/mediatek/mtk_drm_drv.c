@@ -416,6 +416,15 @@ static bool mtk_drm_get_all_drm_priv(struct device *dev)
 		if (!of_id)
 			continue;
 
+		/* device_add() probes before adding this device to its parent's
+		 * child list. A synchronously bound master cannot find itself via
+		 * device_find_child() yet; its private data is already available.
+		 */
+		if (node == phandle) {
+			temp_drm_priv = drm_priv;
+			goto found;
+		}
+
 		pdev = of_find_device_by_node(node);
 		if (!pdev)
 			continue;
@@ -430,6 +439,7 @@ static bool mtk_drm_get_all_drm_priv(struct device *dev)
 		if (!temp_drm_priv)
 			continue;
 
+found:
 		if (temp_drm_priv->data->main_len)
 			all_drm_priv[CRTC_MAIN] = temp_drm_priv;
 		else if (temp_drm_priv->data->ext_len)

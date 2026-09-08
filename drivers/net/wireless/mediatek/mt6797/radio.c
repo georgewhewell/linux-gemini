@@ -6,6 +6,7 @@
 #include <linux/unaligned.h>
 #include <net/cfg80211.h>
 #include "ais_hif.h"
+#include "ais_key.h"
 #include "capability.h"
 #include "hif.h"
 #include "hif_regs.h"
@@ -15,11 +16,27 @@
 #include "scan.h"
 #include "scan_hif.h"
 
+struct mt6797_radio_key {
+	u8 material[MT6797_WIFI_AIS_CCMP_KEY_LENGTH];
+	u8 receive_sequence[6];
+	u8 index;
+	bool installed;
+};
+
 struct mt6797_radio_connection {
 	struct cfg80211_bss *bss;
 	struct mt6797_wifi_scan_hif scan;
 	struct mt6797_wifi_ais_hif ais;
 	struct mt6797_wifi_ais_hif_join_request join;
+	struct mt6797_radio_key pairwise_key;
+	struct mt6797_radio_key group_key;
+	struct mt6797_wifi_ais_sta_pending key_pending;
+	struct completion key_completion;
+	int key_error;
+	bool key_waiting;
+	bool pairwise_ready;
+	bool pairwise_attempted;
+	bool authorized;
 	u8 ies[MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH];
 	bool cancel;
 	bool connected;
@@ -35,6 +52,7 @@ struct mt6797_wifi_radio {
 	struct mt6797_wifi_runtime_config *config;
 	struct mt6797_wifi_capability capability;
 	struct mt6797_radio_connection *connection;
+	struct mutex connection_lock; /* Worker and key callbacks own connection lifetime. */
 	struct work_struct connection_work;
 	struct work_struct scan_work;
 	spinlock_t lock;
@@ -271,9 +289,38 @@ static void mt6797_radio_link_abort(void *context, int reason)
 	if (radio->connection) {
 		radio->connection->cancel = true;
 		radio->connection->reason = WLAN_REASON_UNSPECIFIED;
+		if (radio->connection->key_waiting) {
+			radio->connection->key_error = reason < 0 ? reason : -EIO;
+			complete(&radio->connection->key_completion);
+		}
 		queue_work(system_long_wq, &radio->connection_work);
 	}
 	spin_unlock_irqrestore(&radio->lock, flags);
+}
+
+/* Unsolicited firmware key readiness has no key ID or transaction cookie. */
+static int mt6797_radio_link_event(void *context,
+	const struct mt6797_wifi_event_view *event)
+{
+	struct mt6797_wifi_radio *radio = context;
+	struct mt6797_radio_connection *connection;
+	enum mt6797_wifi_ais_event_disposition disposition;
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&radio->lock, flags);
+	connection = radio->connection;
+	if (connection && connection->key_waiting) {
+		ret = mt6797_wifi_ais_ccmp_ready_match(&connection->key_pending, event, &disposition);
+		if (ret || disposition == MT6797_WIFI_AIS_EVENT_COMPLETE) {
+			connection->key_waiting = false;
+			connection->key_error = ret;
+			connection->pairwise_ready = !ret;
+			complete(&connection->key_completion);
+		}
+	}
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return ret;
 }
 
 static int mt6797_radio_link_frame(void *context,
@@ -315,7 +362,7 @@ static int mt6797_radio_link_frame(void *context,
 static void mt6797_radio_connection_work(struct work_struct *work)
 {
 	struct mt6797_wifi_radio *radio = container_of(work, struct mt6797_wifi_radio, connection_work);
-	struct mt6797_radio_connection *connection = radio->connection;
+	struct mt6797_radio_connection *connection;
 	struct mt6797_wifi_scan_hif_result scan_result;
 	struct mt6797_wifi_scan_hif_request scan = {};
 	struct mt6797_wifi_ais_hif_request start = {};
@@ -323,7 +370,8 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 	struct mt6797_wifi_ais_hif_auth_result auth_result;
 	struct mt6797_wifi_ais_join_params negotiated;
 	struct mt6797_wifi_hif_runtime_sink sink = {
-		.frame = mt6797_radio_link_frame, .abort = mt6797_radio_link_abort, .context = radio,
+		.event = mt6797_radio_link_event, .frame = mt6797_radio_link_frame,
+		.abort = mt6797_radio_link_abort, .context = radio,
 	};
 	unsigned long flags;
 	unsigned int sequence;
@@ -333,12 +381,14 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 	u16 status = WLAN_STATUS_UNSPECIFIED_FAILURE;
 	int ret = -ECANCELED;
 
+	mutex_lock(&radio->connection_lock);
+	connection = radio->connection;
 	if (!connection)
-		return;
+		goto unlock;
 	if (mt6797_radio_connection_cancelled(radio))
 		goto cleanup;
 	if (connection->connected)
-		return;
+		goto unlock;
 	sequence = radio->command_sequence + 1;
 	if (sequence > 245)
 		sequence = 3;
@@ -396,6 +446,7 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 	spin_lock_irqsave(&radio->lock, flags);
 	if (!connection->cancel && !radio->stopping)
 		connection->connected = true;
+	connection->authorized = connection->join.negotiated.security == MT6797_WIFI_AIS_SECURITY_OPEN;
 	connected = connection->connected;
 	spin_unlock_irqrestore(&radio->lock, flags);
 	if (!connected)
@@ -406,7 +457,7 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 		connection->ais.join.response + MT6797_WIFI_AIS_ASSOC_RESPONSE_FIXED_LENGTH,
 		connection->ais.join.response_length - MT6797_WIFI_AIS_ASSOC_RESPONSE_FIXED_LENGTH,
 		WLAN_STATUS_SUCCESS, GFP_KERNEL);
-	return;
+	goto unlock;
 
 cleanup:
 	if (connection->link_attached) {
@@ -442,7 +493,9 @@ cleanup:
 	radio->connection = NULL;
 	spin_unlock_irqrestore(&radio->lock, flags);
 	cfg80211_put_bss(radio->wdev.wiphy, connection->bss);
-	kfree(connection);
+	kfree_sensitive(connection);
+unlock:
+	mutex_unlock(&radio->connection_lock);
 }
 
 static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
@@ -504,6 +557,7 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	connection = kzalloc(sizeof(*connection), GFP_KERNEL);
 	if (!connection)
 		return -ENOMEM;
+	init_completion(&connection->key_completion);
 	connection->bss = cfg80211_get_bss(wiphy, sme->channel, sme->bssid,
 		sme->ssid, sme->ssid_len, IEEE80211_BSS_TYPE_ESS,
 		secure ? IEEE80211_PRIVACY_ON : IEEE80211_PRIVACY_OFF);
@@ -580,11 +634,237 @@ static int mt6797_radio_disconnect(struct wiphy *wiphy, struct net_device *netde
 	return 0;
 }
 
+/* connection_lock owns the station and serializes key operations with teardown. */
+static int mt6797_radio_key_connection(struct mt6797_wifi_radio *radio,
+	bool pairwise, const u8 *mac)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+
+	if (mt6797_radio_connection_cancelled(radio) || !connection->connected ||
+	    !connection->link_attached)
+		return -ENOTCONN;
+	if (connection->join.negotiated.security != MT6797_WIFI_AIS_SECURITY_WPA2_PSK_CCMP)
+		return -EOPNOTSUPP;
+	if (pairwise ? !mac || !ether_addr_equal(mac, connection->bss->bssid) :
+	    mac && !is_broadcast_ether_addr(mac))
+		return -EINVAL;
+	return 0;
+}
+
+static int mt6797_radio_key_send(struct mt6797_wifi_radio *radio,
+	const struct mt6797_wifi_ais_key_params *params)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	struct mt6797_wifi_ais_runtime *runtime = &connection->ais.runtime;
+	u8 command[MT6797_WIFI_AIS_KEY_COMMAND_LENGTH] = {};
+	bool wait_ready = params->pairwise && !params->remove;
+	unsigned long flags;
+	int ret;
+
+	mutex_lock(&radio->irq->lifecycle_lock);
+	if (mt6797_wifi_hif_irq_mode(radio->irq) != MT6797_WIFI_HIF_IRQ_RUNTIME ||
+	    mt6797_radio_connection_cancelled(radio)) {
+		ret = -ENOTCONN;
+		goto out;
+	}
+	if (++radio->command_sequence > 255)
+		radio->command_sequence = 3;
+	ret = mt6797_wifi_ais_ccmp_key_build(&runtime->bss, &runtime->sta,
+		params, radio->command_sequence, command, sizeof(command));
+	if (ret)
+		goto out;
+	if (wait_ready) {
+		ret = mt6797_wifi_ais_sta_pending_init(&runtime->bss, &runtime->sta,
+			radio->command_sequence, &connection->key_pending);
+		if (ret)
+			goto out;
+		reinit_completion(&connection->key_completion);
+		spin_lock_irqsave(&radio->lock, flags);
+		connection->key_error = 0;
+		connection->pairwise_ready = false;
+		connection->key_waiting = true;
+		connection->pairwise_attempted = true;
+		spin_unlock_irqrestore(&radio->lock, flags);
+	}
+	ret = mt6797_wifi_ahb_cmd53_write(radio->irq->hif, MT6797_WIFI_MCR_WTDR1,
+		command, sizeof(command));
+	/* No secret command buffer is retained while waiting for the IRQ. */
+	memzero_explicit(command, sizeof(command));
+	if (!ret && wait_ready &&
+	    !wait_for_completion_timeout(&connection->key_completion, msecs_to_jiffies(1000)))
+		ret = -ETIMEDOUT;
+	spin_lock_irqsave(&radio->lock, flags);
+	connection->key_waiting = false;
+	if (!ret && wait_ready)
+		ret = connection->key_error ?: (connection->pairwise_ready ? 0 : -EIO);
+	if (!ret && (connection->cancel || radio->stopping))
+		ret = -ECANCELED;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	/* A possibly consumed command cannot be retried in this firmware lifetime. */
+	if (ret)
+		mt6797_wifi_hif_runtime_fail(radio->irq, ret);
+out:
+	memzero_explicit(command, sizeof(command));
+	mutex_unlock(&radio->irq->lifecycle_lock);
+	return ret;
+}
+
+static int mt6797_radio_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
+	int link_id, u8 index, bool pairwise, const u8 *mac, struct key_params *params)
+{
+	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	struct mt6797_radio_key *key;
+	struct mt6797_wifi_ais_key_params request = {
+		.index = index, .pairwise = pairwise,
+	};
+	int ret;
+
+	if (wdev != &radio->wdev || link_id != -1 || index > 3 || (pairwise && index) ||
+	    !params || params->cipher != WLAN_CIPHER_SUITE_CCMP ||
+	    params->mode != NL80211_KEY_RX_TX || params->vlan_id || !params->key ||
+	    params->key_len != MT6797_WIFI_AIS_CCMP_KEY_LENGTH ||
+	    (params->seq_len != 0 && params->seq_len != 6) ||
+	    (params->seq_len && !params->seq))
+		return -EINVAL;
+	mutex_lock(&radio->connection_lock);
+	ret = mt6797_radio_key_connection(radio, pairwise, mac);
+	if (ret)
+		goto out;
+	key = pairwise ? &radio->connection->pairwise_key : &radio->connection->group_key;
+	/* A handshake retransmission must not reset firmware packet counters. */
+	if (key->installed && !memcmp(key->material, params->key, sizeof(key->material))) {
+		ret = key->index == index ? 0 : -EOPNOTSUPP;
+		goto out;
+	}
+	/* Firmware readiness cannot distinguish a delayed PTK event from a rekey. */
+	if (pairwise && radio->connection->pairwise_attempted) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	request.material = params->key;
+	request.material_length = params->key_len;
+	if (params->seq_len)
+		memcpy(request.rsc, params->seq, params->seq_len);
+	ret = mt6797_radio_key_send(radio, &request);
+	if (!ret) {
+		memzero_explicit(key, sizeof(*key));
+		memcpy(key->material, params->key, sizeof(key->material));
+		if (params->seq_len)
+			memcpy(key->receive_sequence, params->seq, params->seq_len);
+		key->index = index;
+		key->installed = true;
+	}
+out:
+	mutex_unlock(&radio->connection_lock);
+	return ret;
+}
+
+static int mt6797_radio_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
+	int link_id, u8 index, bool pairwise, const u8 *mac)
+{
+	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	struct mt6797_radio_key *key;
+	struct mt6797_wifi_ais_key_params request = {
+		.index = index, .pairwise = pairwise, .remove = true,
+	};
+	unsigned long flags;
+	int ret;
+
+	if (wdev != &radio->wdev || link_id != -1 || index > 3 || (pairwise && index))
+		return -EINVAL;
+	mutex_lock(&radio->connection_lock);
+	ret = mt6797_radio_key_connection(radio, pairwise, mac);
+	if (ret)
+		goto out;
+	key = pairwise ? &radio->connection->pairwise_key : &radio->connection->group_key;
+	if (!key->installed || key->index != index) {
+		ret = -ENOENT; /* An old GTK ID must not delete the replacement's slot. */
+		goto out;
+	}
+	ret = mt6797_radio_key_send(radio, &request);
+	if (!ret) {
+		memzero_explicit(key, sizeof(*key));
+		spin_lock_irqsave(&radio->lock, flags);
+		radio->connection->authorized = false;
+		if (pairwise)
+			radio->connection->pairwise_ready = false;
+		spin_unlock_irqrestore(&radio->lock, flags);
+	}
+out:
+	mutex_unlock(&radio->connection_lock);
+	return ret;
+}
+
+static int mt6797_radio_set_default_key(struct wiphy *wiphy, struct net_device *netdev,
+	int link_id, u8 index, bool unicast, bool multicast)
+{
+	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	int ret;
+
+	/* Infrastructure CCMP TX always uses the AP's pairwise WTBL entry. */
+	if (netdev != radio->netdev || link_id != -1 || unicast || !multicast || index > 3)
+		return -EOPNOTSUPP;
+	mutex_lock(&radio->connection_lock);
+	ret = mt6797_radio_key_connection(radio, false, NULL);
+	if (!ret && (!radio->connection->group_key.installed ||
+	    radio->connection->group_key.index != index))
+		ret = -ENOENT;
+	mutex_unlock(&radio->connection_lock);
+	return ret;
+}
+
+static int mt6797_radio_change_station(struct wiphy *wiphy, struct wireless_dev *wdev,
+	const u8 *mac, struct station_parameters *params)
+{
+	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	struct mt6797_radio_connection *connection;
+	unsigned long flags;
+	bool authorize;
+	int ret;
+
+	if (wdev != &radio->wdev || !mac || !params)
+		return -EINVAL;
+	ret = cfg80211_check_station_change(wiphy, params, CFG80211_STA_AP_STA);
+	if (ret)
+		return ret;
+	mutex_lock(&radio->connection_lock);
+	connection = radio->connection;
+	if (mt6797_radio_connection_cancelled(radio) || !connection->connected) {
+		ret = -ENOTCONN;
+		goto out;
+	}
+	if (!ether_addr_equal(mac, connection->bss->bssid)) {
+		ret = -ENOENT;
+		goto out;
+	}
+	if (!(params->sta_flags_mask & BIT(NL80211_STA_FLAG_AUTHORIZED)))
+		goto out;
+	authorize = params->sta_flags_set & BIT(NL80211_STA_FLAG_AUTHORIZED);
+	spin_lock_irqsave(&radio->lock, flags);
+	if (connection->cancel || radio->stopping)
+		ret = -ENOTCONN;
+	else if (authorize && connection->join.negotiated.security != MT6797_WIFI_AIS_SECURITY_OPEN &&
+		 (!connection->pairwise_key.installed || !connection->pairwise_ready ||
+		  !connection->group_key.installed))
+		ret = -ENOKEY;
+	else
+		connection->authorized = authorize;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	/* Data queues remain stopped until the protected TX/RX path is available. */
+out:
+	mutex_unlock(&radio->connection_lock);
+	return ret;
+}
+
 static const struct cfg80211_ops mt6797_radio_ops = {
 	.scan = mt6797_radio_scan,
 	.abort_scan = mt6797_radio_abort_scan,
 	.connect = mt6797_radio_connect,
 	.disconnect = mt6797_radio_disconnect,
+	.add_key = mt6797_radio_add_key,
+	.del_key = mt6797_radio_del_key,
+	.set_default_key = mt6797_radio_set_default_key,
+	.change_station = mt6797_radio_change_station,
 };
 
 static int mt6797_radio_open(struct net_device *netdev)
@@ -646,6 +926,7 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 		return ERR_PTR(-ENOMEM);
 	radio = wiphy_priv(wiphy);
 	radio->irq = irq;
+	mutex_init(&radio->connection_lock);
 	radio->config = config;
 	radio->capability = *capability;
 	radio->wdev.wiphy = wiphy;

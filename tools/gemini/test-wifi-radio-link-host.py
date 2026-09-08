@@ -31,6 +31,9 @@ program = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
+struct completion { bool done; };
+static void complete(struct completion *c) { c->done=true; }
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
@@ -45,6 +48,7 @@ struct net_device { u8 dev_addr[6]; };
 struct cfg80211_bss { u8 bssid[6]; };
 struct mt6797_radio_connection {
  struct cfg80211_bss *bss; bool cancel,peer_disconnect; u16 reason;
+ bool key_waiting; int key_error; struct completion key_completion;
 };
 struct mt6797_wifi_radio {
  int lock,connection_work; bool stopping;

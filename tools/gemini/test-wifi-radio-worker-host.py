@@ -35,6 +35,8 @@ program = r'''
 typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64;
 typedef int32_t s32; typedef int64_t s64; typedef int64_t ktime_t; typedef int spinlock_t;
 struct completion { bool done; };
+static void complete(struct completion *c) { c->done=true; }
+struct mutex { int held; };
 struct work_struct { int dummy; };
 #define ETH_ALEN 6
 #define U8_MAX UINT8_MAX
@@ -47,8 +49,8 @@ struct work_struct { int dummy; };
 #define min_t(t,a,b) ((t)(a)<(t)(b)?(t)(a):(t)(b))
 #define spin_lock_irqsave(l,f) do { assert(!*(l)); *(l)=1; (f)=0; } while(0)
 #define spin_unlock_irqrestore(l,f) do { (void)(f); assert(*(l)); *(l)=0; } while(0)
-static void mutex_lock(int *l) { assert(!*l); *l=1; }
-static void mutex_unlock(int *l) { assert(*l); *l=0; }
+static void mutex_lock(void *p) { int *l=p; assert(!*l); *l=1; }
+static void mutex_unlock(void *p) { int *l=p; assert(*l); *l=0; }
 static ktime_t ktime_get(void) { return 100; }
 static s64 ktime_ms_delta(ktime_t a,ktime_t b) { return a-b; }
 static s64 ktime_to_ms(ktime_t t) { return t; }
@@ -67,9 +69,9 @@ struct ieee80211_rate { int dummy; };
 '''
 for name in ['protocol.h', 'scan.h', 'rx_metadata.h', 'scan_target.h', 'scan_hif.h',
              'ais_resources.h', 'ais_protocol.h', 'ais_runtime.h', 'ais_auth.h',
-             'ais_mgmt_tx.h', 'ais_assoc.h', 'ais_join.h', 'ais_hif.h', 'capability.h']:
+             'ais_key.h', 'ais_mgmt_tx.h', 'ais_assoc.h', 'ais_join.h', 'ais_hif.h', 'capability.h']:
     program += re.sub(r'^#include .*\n', '', (driver / name).read_text(), flags=re.M)
-program += radio[radio.index('struct mt6797_radio_connection {'):radio.index('static int mt6797_radio_event(')]
+program += radio[radio.index('struct mt6797_radio_key {'):radio.index('static int mt6797_radio_event(')]
 ieee = (root / 'include/linux/ieee80211.h').read_text()
 for name in ['IEEE80211_FCTL_VERS', 'IEEE80211_FCTL_FTYPE', 'IEEE80211_FCTL_STYPE',
              'IEEE80211_FCTL_TODS', 'IEEE80211_FCTL_FROMDS', 'IEEE80211_FCTL_MOREFRAGS',
@@ -175,9 +177,12 @@ static void cfg80211_disconnected(struct net_device *netdev,u16 reason,
 static void cfg80211_put_bss(struct wiphy *wiphy,struct cfg80211_bss *bss) {
  (void)wiphy; assert(bss); test.puts++;
 }
-static void kfree(void *p) { assert(!test.radio->connection); test.frees++; free(p); }
+static void kfree_sensitive(void *p) { assert(!test.radio->connection); test.frees++; free(p); }
 '''
-for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
+program += '''
+int mt6797_wifi_ais_ccmp_ready_match(const struct mt6797_wifi_ais_sta_pending *p, const struct mt6797_wifi_event_view *e, enum mt6797_wifi_ais_event_disposition *d) { (void)p; (void)e; *d=MT6797_WIFI_AIS_EVENT_IGNORED; return 0; }
+'''
+for name in ['mt6797_radio_link_event', 'mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
              'mt6797_radio_link_frame', 'mt6797_radio_connection_work']:
     program += function(name)
 program += r'''
@@ -231,10 +236,11 @@ int main(void) {
  puts("PASS: production connection worker stage failures/cancellations, grant expiry, callback ordering, command reservation, retained connection, cleanup and exactly-once BSS/free ownership");
 }
 '''
-with tempfile.TemporaryDirectory(prefix='gemini-radio-worker-') as temporary:
-    path = Path(temporary)
-    (path / 'test.c').write_text(program)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g',
-                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
-                    str(path / 'test.c'), '-o', str(path / 'test')], check=True)
-    subprocess.run([str(path / 'test')], check=True)
+if __name__ == '__main__':
+    with tempfile.TemporaryDirectory(prefix='gemini-radio-worker-') as temporary:
+        path = Path(temporary)
+        (path / 'test.c').write_text(program)
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g',
+                        '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                        str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+        subprocess.run([str(path / 'test')], check=True)

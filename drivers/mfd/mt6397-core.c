@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/regmap.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/mt6323/core.h>
@@ -490,10 +491,16 @@ static const struct platform_device_id mt6397_id[] = {
 };
 MODULE_DEVICE_TABLE(platform, mt6397_id);
 
+static const struct dev_pm_ops mt6397_pm_ops = {
+	.suspend = mt6397_irq_suspend,
+	.resume = mt6397_irq_resume,
+};
+
 static struct platform_driver mt6397_driver = {
 	.probe = mt6397_probe,
 	.driver = {
 		.name = "mt6397",
+		.pm = pm_sleep_ptr(&mt6397_pm_ops),
 		.of_match_table = mt6397_of_match,
 	},
 	.id_table = mt6397_id,

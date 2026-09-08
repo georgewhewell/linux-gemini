@@ -7,8 +7,8 @@
 #include <linux/irqdomain.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/regmap.h>
-#include <linux/suspend.h>
 #include <linux/mfd/mt6323/core.h>
 #include <linux/mfd/mt6323/registers.h>
 #include <linux/mfd/mt6328/core.h>
@@ -131,33 +131,35 @@ static const struct irq_domain_ops mt6397_irq_domain_ops = {
 	.map = mt6397_irq_domain_map,
 };
 
-static int mt6397_irq_pm_notifier(struct notifier_block *notifier,
-				  unsigned long pm_event, void *unused)
+int mt6397_irq_suspend(struct device *dev)
 {
-	struct mt6397_chip *chip =
-		container_of(notifier, struct mt6397_chip, pm_nb);
+	struct mt6397_chip *chip = dev_get_drvdata(dev);
 	unsigned int i;
 
-	switch (pm_event) {
-	case PM_SUSPEND_PREPARE:
-		for (i = 0; i < chip->num_irq_regs; i++)
-			regmap_write(chip->regmap, chip->int_con[i],
-				     chip->wake_mask[i]);
-		enable_irq_wake(chip->irq);
-		break;
+	/* Only the legacy IRQ controller switches interrupt masks for sleep. */
+	if (!chip->num_irq_regs)
+		return 0;
 
-	case PM_POST_SUSPEND:
-		for (i = 0; i < chip->num_irq_regs; i++)
-			regmap_write(chip->regmap, chip->int_con[i],
-				     chip->irq_masks_cur[i]);
-		disable_irq_wake(chip->irq);
-		break;
+	for (i = 0; i < chip->num_irq_regs; i++)
+		regmap_write(chip->regmap, chip->int_con[i], chip->wake_mask[i]);
+	enable_irq_wake(chip->irq);
 
-	default:
-		break;
-	}
+	return 0;
+}
 
-	return NOTIFY_DONE;
+int mt6397_irq_resume(struct device *dev)
+{
+	struct mt6397_chip *chip = dev_get_drvdata(dev);
+	unsigned int i;
+
+	if (!chip->num_irq_regs)
+		return 0;
+
+	for (i = 0; i < chip->num_irq_regs; i++)
+		regmap_write(chip->regmap, chip->int_con[i], chip->irq_masks_cur[i]);
+	disable_irq_wake(chip->irq);
+
+	return 0;
 }
 
 void mt6397_irq_domain_exit(struct irq_domain *domain)
@@ -170,11 +172,6 @@ void mt6397_irq_domain_exit(struct irq_domain *domain)
 		if (virq)
 			irq_dispose_mapping(virq);
 	}
-}
-
-static void mt6397_irq_unregister_pm_notifier(void *data)
-{
-	unregister_pm_notifier(data);
 }
 
 int mt6397_irq_init(struct mt6397_chip *chip)
@@ -247,7 +244,6 @@ int mt6397_irq_init(struct mt6397_chip *chip)
 					     "Failed to mask interrupt bank %u\n", i);
 	}
 
-	chip->pm_nb.notifier_call = mt6397_irq_pm_notifier;
 	info.size = chip->num_irq_regs * 16;
 	info.hwirq_max = chip->num_irq_regs * 16;
 	chip->irq_domain = devm_irq_domain_instantiate(chip->dev, &info);
@@ -264,11 +260,5 @@ int mt6397_irq_init(struct mt6397_chip *chip)
 		return ret;
 	}
 
-	ret = register_pm_notifier(&chip->pm_nb);
-	if (ret)
-		return ret;
-
-	return devm_add_action_or_reset(chip->dev,
-					mt6397_irq_unregister_pm_notifier,
-					&chip->pm_nb);
+	return 0;
 }

@@ -230,6 +230,9 @@ struct mt6797_md1_cold_owner_backend {
 	struct work_struct passive_observe_work;
 	struct mt6797_md1_post_vector_evidence passive_evidence;
 	bool cldma_leased;
+	bool rf_afc_applied;
+	u32 rf_afc_first;
+	u32 rf_afc_latest;
 };
 
 static bool enable_experimental_md1_cold_owner;
@@ -408,6 +411,81 @@ unlock:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_acquire_cldma);
+
+/* The CLDMA consumer holds the supplier lifetime. Serialize the complete
+ * first AFC publication against lease release and supplier shutdown. The
+ * fatal latch can be set from IRQ; recheck around every possible write.
+ */
+int mt6797_md1_cold_owner_rf_clock(struct device *consumer, u32 afc, u8 sw[4])
+{
+	struct mt6797_md1_cold_owner_backend *backend;
+	unsigned int command, value;
+	int ret = -ESHUTDOWN;
+
+	if (!consumer || !sw)
+		return -EINVAL;
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	backend = mt6797_md1_handoff_backend;
+	if (mt6797_md1_handoff_status || !backend ||
+	    consumer != mt6797_md1_cldma_consumer || !backend->cldma_leased ||
+	    atomic_read(&mt6797_md1_cold_owner_fatal_latch))
+		goto out;
+	/* Existing prepower owner publishes modem-on CON=0/NFC=1/AUD=1. */
+	ret = regmap_read(backend->spm, 0x404, &command);
+	if (ret)
+		goto fatal;
+	if ((command & 7) != 6) {
+		ret = -EUCLEAN;
+		goto fatal;
+	}
+	ret = regmap_read(backend->spm, 0x414, &value);
+	if (ret)
+		goto fatal;
+	if (atomic_read(&mt6797_md1_cold_owner_fatal_latch)) {
+		ret = -ESHUTDOWN;
+		goto out;
+	}
+	if (!backend->rf_afc_applied) {
+		/* Vendor clk_buf_save_afc_val: first update writes full BSI_EN_SR.
+		 * Never print this modem-supplied calibration word.
+		 */
+		ret = regmap_write(backend->spm, 0x414, afc);
+		if (ret)
+			goto fatal;
+		ret = regmap_read(backend->spm, 0x414, &value);
+		if (ret)
+			goto fatal;
+		if (value != afc) {
+			ret = -EIO;
+			goto fatal;
+		}
+		backend->rf_afc_first = afc;
+		backend->rf_afc_applied = true;
+	} else if (value != backend->rf_afc_first) {
+		ret = -EUCLEAN;
+		goto fatal;
+	}
+	if (atomic_read(&mt6797_md1_cold_owner_fatal_latch)) {
+		ret = -ESHUTDOWN;
+		goto out;
+	}
+	/* Retain every later AFC update without repeating the initial write.
+	 * Future suspend ownership must apply this latest value explicitly.
+	 */
+	backend->rf_afc_latest = afc;
+	sw[0] = 1; /* vendor modem-on baseband software state */
+	sw[1] = command & 1;
+	sw[2] = (command >> 1) & 1;
+	sw[3] = (command >> 2) & 1;
+	ret = 0;
+	goto out;
+fatal:
+	atomic_set(&mt6797_md1_cold_owner_fatal_latch, 1);
+out:
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_rf_clock);
 
 static void mt6797_md1_handoff_finish(int error)
 {

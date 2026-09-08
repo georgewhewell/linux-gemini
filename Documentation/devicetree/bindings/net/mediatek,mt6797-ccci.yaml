@@ -63,6 +63,29 @@ properties:
     items:
       - const: md-shared
 
+  rf-clock:
+    type: object
+    description: RF clock policy queried by the modem; AFC updates require the cold-owner lease.
+    additionalProperties: false
+    properties:
+      mediatek,configuration:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        minItems: 4
+        maxItems: 4
+        items:
+          enum: [0, 1, 2]
+        description: Per-buffer disabled, software, or hardware control policy.
+      mediatek,driving:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        minItems: 4
+        maxItems: 4
+        items:
+          enum: [0, 1, 2, 3]
+        description: Per-buffer drive selection, 0.4, 0.9, 1.4, or 1.9 mA.
+    required:
+      - mediatek,configuration
+      - mediatek,driving
+
 patternProperties:
   '^sim-eint-[12]$':
     type: object

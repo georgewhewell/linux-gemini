@@ -41,6 +41,7 @@ struct mt6797_radio_connection {
 	bool pairwise_ready;
 	bool pairwise_attempted;
 	bool authorized;
+	bool control_port_no_encrypt;
 	u8 ies[MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH];
 	bool cancel;
 	bool connected;
@@ -58,6 +59,8 @@ struct mt6797_wifi_radio {
 	struct mt6797_radio_connection *connection;
 	struct mutex connection_lock; /* Worker and key callbacks own connection lifetime. */
 	struct work_struct connection_work;
+	struct work_struct tx_work;
+	struct sk_buff_head tx_queue;
 	struct work_struct scan_work;
 	spinlock_t lock;
 	struct completion scan_done;
@@ -75,6 +78,19 @@ struct mt6797_wifi_radio {
 	bool abort_scan;
 	bool stopping;
 };
+
+#define MT6797_RADIO_TX_QUEUE_LIMIT 64U
+#define MT6797_RADIO_TX_WAKE_THRESHOLD 32U
+
+static void mt6797_radio_purge_tx(struct mt6797_wifi_radio *radio)
+{
+	struct sk_buff *skb;
+
+	while ((skb = skb_dequeue(&radio->tx_queue))) {
+		DEV_STATS_INC(radio->netdev, tx_dropped);
+		dev_kfree_skb_any(skb);
+	}
+}
 
 static int mt6797_radio_event(void *context,
 			    const struct mt6797_wifi_event_view *event)
@@ -192,7 +208,7 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 		spin_unlock_irqrestore(&radio->lock, flags);
 		if (ret)
 			break;
-		ret = mt6797_wifi_ahb_cmd53_write(radio->irq->hif,
+		ret = mt6797_wifi_hif_runtime_send(radio->irq,
 			MT6797_WIFI_MCR_WTDR1, command, sizeof(command));
 		sent = !ret;
 		if (!ret && !wait_for_completion_timeout(&radio->scan_done,
@@ -210,7 +226,7 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 
 			spin_unlock_irqrestore(&radio->lock, flags);
 			if (!cancel_ret)
-				mt6797_wifi_ahb_cmd53_write(radio->irq->hif,
+				mt6797_wifi_hif_runtime_send(radio->irq,
 					MT6797_WIFI_MCR_WTDR1, command,
 					MT6797_WIFI_SCAN_CANCEL_LENGTH);
 		} else {
@@ -505,6 +521,7 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 	ret = mt6797_wifi_ais_hif_associate(&connection->ais, &connection->join, &negotiated);
 	if (ret || mt6797_radio_connection_cancelled(radio))
 		goto cleanup;
+	connection->join.negotiated = negotiated;
 	mutex_lock(&radio->irq->lifecycle_lock);
 	ret = mt6797_wifi_hif_runtime_sink_attach(radio->irq, &sink);
 	connection->link_attached = !ret;
@@ -519,7 +536,8 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 	spin_unlock_irqrestore(&radio->lock, flags);
 	if (!connected)
 		goto cleanup;
-	/* Association is now real; data queues stay stopped until TX/key support. */
+	netif_carrier_on(radio->netdev);
+	netif_wake_queue(radio->netdev);
 	cfg80211_connect_result(radio->netdev, connection->bss->bssid,
 		connection->join.association.ies, connection->join.association.ies_length,
 		connection->ais.join.response + MT6797_WIFI_AIS_ASSOC_RESPONSE_FIXED_LENGTH,
@@ -528,6 +546,12 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 	goto unlock;
 
 cleanup:
+	spin_lock_irqsave(&radio->lock, flags);
+	connection->cancel = true;
+	netif_stop_queue(radio->netdev);
+	netif_carrier_off(radio->netdev);
+	spin_unlock_irqrestore(&radio->lock, flags);
+	mt6797_radio_purge_tx(radio);
 	if (connection->link_attached) {
 		mutex_lock(&radio->irq->lifecycle_lock);
 		mt6797_wifi_hif_runtime_sink_detach(radio->irq, radio);
@@ -581,7 +605,9 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	bool have_rsn = false;
 
 	if (!sme->ssid || !sme->ssid_len || sme->ssid_len > 32 || sme->ie_len > 1024 ||
-	    (sme->ie_len && !sme->ie) || sme->key_len || sme->pbss || sme->prev_bssid ||
+	    (sme->ie_len && !sme->ie) ||
+	    (sme->crypto.control_port_ethertype && sme->crypto.control_port_ethertype != htons(ETH_P_PAE)) ||
+	    sme->key_len || sme->pbss || sme->prev_bssid ||
 	    sme->mfp != NL80211_MFP_NO || sme->want_1x ||
 	    (sme->flags & ~(ASSOC_REQ_DISABLE_HT | ASSOC_REQ_DISABLE_VHT |
 		ASSOC_REQ_DISABLE_HE | ASSOC_REQ_DISABLE_EHT | ASSOC_REQ_DISABLE_UHR)) ||
@@ -626,6 +652,7 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	if (!connection)
 		return -ENOMEM;
 	init_completion(&connection->key_completion);
+	connection->control_port_no_encrypt = sme->crypto.control_port_no_encrypt;
 	connection->bss = cfg80211_get_bss(wiphy, sme->channel, sme->bssid,
 		sme->ssid, sme->ssid_len, IEEE80211_BSS_TYPE_ESS,
 		secure ? IEEE80211_PRIVACY_ON : IEEE80211_PRIVACY_OFF);
@@ -754,7 +781,7 @@ static int mt6797_radio_key_send(struct mt6797_wifi_radio *radio,
 		connection->pairwise_attempted = true;
 		spin_unlock_irqrestore(&radio->lock, flags);
 	}
-	ret = mt6797_wifi_ahb_cmd53_write(radio->irq->hif, MT6797_WIFI_MCR_WTDR1,
+	ret = mt6797_wifi_hif_runtime_send(radio->irq, MT6797_WIFI_MCR_WTDR1,
 		command, sizeof(command));
 	/* No secret command buffer is retained while waiting for the IRQ. */
 	memzero_explicit(command, sizeof(command));
@@ -932,7 +959,6 @@ static int mt6797_radio_change_station(struct wiphy *wiphy, struct wireless_dev 
 	else
 		connection->authorized = authorize;
 	spin_unlock_irqrestore(&radio->lock, flags);
-	/* Data queues remain stopped until the protected TX/RX path is available. */
 out:
 	mutex_unlock(&radio->connection_lock);
 	return ret;
@@ -970,13 +996,154 @@ static int mt6797_radio_stop(struct net_device *netdev)
 	mt6797_radio_disconnect(radio->wdev.wiphy, netdev, WLAN_REASON_DEAUTH_LEAVING);
 	flush_work(&radio->scan_work);
 	flush_work(&radio->connection_work);
+	flush_work(&radio->tx_work);
+	mt6797_radio_purge_tx(radio);
 	return 0;
+}
+
+static int mt6797_radio_tx_packet(struct mt6797_wifi_radio *radio, struct sk_buff *skb)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	struct mt6797_wifi_tx_params params = {};
+	unsigned long flags;
+	ktime_t deadline;
+	size_t length;
+	u16 ether_type;
+	u8 *packet;
+	bool secure;
+	int ret;
+
+	if (skb_linearize(skb))
+		return -ENOMEM;
+	if (skb->len < ETH_HLEN || skb->len > radio->netdev->mtu + ETH_HLEN)
+		return -EMSGSIZE;
+	ether_type = get_unaligned_be16(skb->data + 12);
+	if (ether_type < ETH_P_802_3_MIN || ether_type == ETH_P_8021Q || ether_type == ETH_P_8021AD)
+		return -EOPNOTSUPP;
+	spin_lock_irqsave(&radio->lock, flags);
+	if (!connection || !connection->connected || connection->cancel || radio->stopping ||
+	    !ether_addr_equal(skb->data + ETH_ALEN, radio->netdev->dev_addr)) {
+		ret = -ENOTCONN;
+		goto unlock;
+	}
+	secure = connection->join.negotiated.security != MT6797_WIFI_AIS_SECURITY_OPEN;
+	if (ether_type == ETH_P_PAE) {
+		if (!ether_addr_equal(skb->data, connection->bss->bssid)) {
+			ret = -EINVAL;
+			goto unlock;
+		}
+		params.traffic = MT6797_WIFI_TX_EAPOL;
+		params.protected = secure && !connection->control_port_no_encrypt &&
+			connection->pairwise_key.installed && connection->pairwise_ready;
+	} else {
+		if (!connection->authorized || (secure &&
+		    (!connection->pairwise_key.installed || !connection->pairwise_ready))) {
+			ret = -EACCES;
+			goto unlock;
+		}
+		params.traffic = ether_type == ETH_P_ARP ? MT6797_WIFI_TX_ARP : MT6797_WIFI_TX_DATA;
+		params.protected = secure;
+	}
+	/* Even multicast Ethernet travels to this AP over the pairwise link. */
+	params.wlan_index = connection->ais.runtime.sta.pairwise.index;
+	params.own_mac_index = connection->ais.runtime.bss.own_mac_index;
+	if (params.traffic != MT6797_WIFI_TX_DATA)
+		params.fixed_rate = connection->join.negotiated.default_rate;
+	ret = 0;
+unlock:
+	spin_unlock_irqrestore(&radio->lock, flags);
+	if (ret)
+		return ret;
+	packet = kmalloc(MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH, GFP_KERNEL);
+	if (!packet)
+		return -ENOMEM;
+	ret = mt6797_wifi_tx_build(packet, MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH,
+		skb->data, skb->len, &params, &length);
+	if (ret)
+		goto free_packet;
+	deadline = ktime_add_ms(ktime_get(), 1000);
+	mutex_lock(&radio->irq->lifecycle_lock);
+	for (;;) {
+		if (mt6797_radio_connection_cancelled(radio)) {
+			ret = -ECANCELED;
+			break;
+		}
+		if (ktime_compare(ktime_get(), deadline) >= 0) {
+			ret = -ETIMEDOUT;
+			mt6797_wifi_hif_runtime_fail(radio->irq, ret);
+			break;
+		}
+		ret = mt6797_wifi_hif_runtime_send(radio->irq, MT6797_WIFI_MCR_WTDR1, packet, length);
+		if (ret != -EAGAIN)
+			break;
+		/* Short bounded waits also notice disconnect/terminal without an IRQ. */
+		wait_for_completion_timeout(&radio->irq->tx_credit_completion, msecs_to_jiffies(50));
+	}
+	mutex_unlock(&radio->irq->lifecycle_lock);
+free_packet:
+	kfree_sensitive(packet); /* May contain EAPOL handshake material. */
+	return ret;
+}
+
+static void mt6797_radio_tx_work(struct work_struct *work)
+{
+	struct mt6797_wifi_radio *radio = container_of(work, struct mt6797_wifi_radio, tx_work);
+	struct sk_buff *skb;
+	unsigned long flags;
+	int ret;
+
+	for (;;) {
+		/* Drop the mutex between packets so keys/disconnect are not starved. */
+		mutex_lock(&radio->connection_lock);
+		skb = skb_dequeue(&radio->tx_queue);
+		if (!skb) {
+			mutex_unlock(&radio->connection_lock);
+			break;
+		}
+		ret = mt6797_radio_tx_packet(radio, skb);
+		if (ret) {
+			DEV_STATS_INC(radio->netdev, tx_dropped);
+		} else {
+			DEV_STATS_INC(radio->netdev, tx_packets);
+			DEV_STATS_ADD(radio->netdev, tx_bytes, skb->len);
+		}
+		dev_kfree_skb_any(skb);
+		spin_lock_irqsave(&radio->lock, flags);
+		if (!radio->stopping && radio->connection && radio->connection->connected &&
+		    !radio->connection->cancel && skb_queue_len(&radio->tx_queue) < MT6797_RADIO_TX_WAKE_THRESHOLD)
+			netif_wake_queue(radio->netdev);
+		spin_unlock_irqrestore(&radio->lock, flags);
+		mutex_unlock(&radio->connection_lock);
+	}
 }
 
 static netdev_tx_t mt6797_radio_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
-	/* Carrier and queue remain off until association and data TX are implemented. */
-	dev_kfree_skb(skb);
+	struct mt6797_wifi_radio *radio = wiphy_priv(netdev->ieee80211_ptr->wiphy);
+	unsigned long flags;
+
+	if (!pskb_may_pull(skb, ETH_HLEN))
+		goto drop;
+	spin_lock_irqsave(&radio->lock, flags);
+	if (radio->stopping || !radio->connection || !radio->connection->connected ||
+	    radio->connection->cancel || (!radio->connection->authorized &&
+	    get_unaligned_be16(skb->data + 12) != ETH_P_PAE)) {
+		spin_unlock_irqrestore(&radio->lock, flags);
+		goto drop;
+	}
+	if (skb_queue_len(&radio->tx_queue) >= MT6797_RADIO_TX_QUEUE_LIMIT) {
+		netif_stop_queue(netdev);
+		spin_unlock_irqrestore(&radio->lock, flags);
+		return NETDEV_TX_BUSY;
+	}
+	skb_queue_tail(&radio->tx_queue, skb);
+	if (skb_queue_len(&radio->tx_queue) >= MT6797_RADIO_TX_QUEUE_LIMIT)
+		netif_stop_queue(netdev);
+	queue_work(system_long_wq, &radio->tx_work);
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return NETDEV_TX_OK;
+drop:
+	dev_kfree_skb_any(skb);
 	DEV_STATS_INC(netdev, tx_dropped);
 	return NETDEV_TX_OK;
 }
@@ -1018,6 +1185,8 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 	init_completion(&radio->scan_done);
 	INIT_WORK(&radio->scan_work, mt6797_radio_scan_work);
 	INIT_WORK(&radio->connection_work, mt6797_radio_connection_work);
+	INIT_WORK(&radio->tx_work, mt6797_radio_tx_work);
+	skb_queue_head_init(&radio->tx_queue);
 	set_wiphy_dev(wiphy, dev);
 	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
 	wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
@@ -1096,6 +1265,8 @@ void mt6797_wifi_radio_unregister(struct mt6797_wifi_radio *radio)
 	flush_work(&radio->scan_work);
 	queue_work(system_long_wq, &radio->connection_work);
 	flush_work(&radio->connection_work);
+	flush_work(&radio->tx_work);
+	mt6797_radio_purge_tx(radio);
 	unregister_netdev(radio->netdev);
 	wiphy_unregister(radio->wdev.wiphy);
 	free_netdev(radio->netdev);

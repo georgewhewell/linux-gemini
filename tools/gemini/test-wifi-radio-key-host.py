@@ -68,7 +68,7 @@ static int offer(int kind) {
  if(kind==3) e.payload_length=7;
  return mt6797_radio_link_event(&r,&e);
 }
-static int mt6797_wifi_ahb_cmd53_write(void *hif,u32 address,const u8 *command,size_t length) {
+static int mt6797_wifi_hif_runtime_send(struct mt6797_wifi_hif_irq *hif,u32 address,const u8 *command,size_t length) {
  (void)hif; (void)command;
  assert(r.connection_lock.held && irq.lifecycle_lock && address==MT6797_WIFI_MCR_WTDR1 && length==72);
  writes++;

@@ -35,7 +35,7 @@ static int mt6797_wifi_ais_hif_real_send(void *context, u32 address,
 {
 	struct mt6797_wifi_ais_hif *ais = context;
 
-	return mt6797_wifi_ahb_cmd53_write(ais->irq->hif, address, packet,
+	return mt6797_wifi_hif_runtime_send(ais->irq, address, packet,
 					   length);
 }
 

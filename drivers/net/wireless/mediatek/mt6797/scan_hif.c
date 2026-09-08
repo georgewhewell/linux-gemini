@@ -26,7 +26,7 @@ static int mt6797_wifi_scan_hif_real_send(void *context, u32 address,
 {
 	struct mt6797_wifi_scan_hif *scan = context;
 
-	return mt6797_wifi_ahb_cmd53_write(scan->irq->hif, address, packet,
+	return mt6797_wifi_hif_runtime_send(scan->irq, address, packet,
 					  length);
 }
 

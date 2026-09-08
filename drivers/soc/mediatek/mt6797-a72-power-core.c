@@ -19,24 +19,24 @@
  * those fields remain firmware-owned and are excluded here.
  */
 static const struct mt6797_a72_step mt6797_a72_power_steps[] = {
-	{ MT6797_A72_TRANSACTION_GUARD_ENTER },
+	{ .action = MT6797_A72_TRANSACTION_GUARD_ENTER },
 	{
 		.action = MT6797_A72_SPM_UPDATE,
 		.reg = MT6797_A72_SPM_MP2_PWR_CON,
 		.mask = MT6797_A72_MP2_PWR_RST_B,
 		.value = MT6797_A72_MP2_PWR_RST_B,
 	},
-	{ MT6797_A72_IDVFS_READ_FENCE },
-	{ MT6797_A72_PWRAP_RESET_ASSERT },
-	{ MT6797_A72_VPROC_ENABLE },
+	{ .action = MT6797_A72_IDVFS_READ_FENCE },
+	{ .action = MT6797_A72_PWRAP_RESET_ASSERT },
+	{ .action = MT6797_A72_VPROC_ENABLE },
 	{ MT6797_A72_DELAY_US, .value = 1000 },
 	{
 		.action = MT6797_A72_SPM_UPDATE,
 		.reg = MT6797_A72_SPM_EXT_BUCK_ISO,
 		.mask = MT6797_A72_BIG_BUCK_ISO,
 	},
-	{ MT6797_A72_PWRAP_RESET_DEASSERT },
-	{ MT6797_A72_TRANSACTION_GUARD_EXIT },
+	{ .action = MT6797_A72_PWRAP_RESET_DEASSERT },
+	{ .action = MT6797_A72_TRANSACTION_GUARD_EXIT },
 	{ MT6797_A72_DELAY_US, .value = 240 },
 	{ MT6797_A72_VSRAM_SET_UV, .value = MT6797_A72_SRAM_BOOT_UV },
 	{ MT6797_A72_DELAY_US, .value = 240 },
@@ -91,6 +91,8 @@ int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
 	    state->pwrap_reset_asserted < 0 ||
 	    state->pwrap_reset_asserted > 1)
 		return -EUCLEAN;
+	if (!(state->ext_buck_iso & MT6797_A72_BIG_BUCK_ISO))
+		return -EBUSY;
 	if (state->pwrap_reset_asserted)
 		return -EBUSY;
 	if (state->vproc_uv < MT6797_A72_VPROC_MIN_UV ||
@@ -103,11 +105,10 @@ int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
 		return -EOPNOTSUPP;
 
 	/*
-	 * The deployed firmware implements only voltage selection for the MP2
-	 * SRAM LDO.  It has neither an enable-state getter nor a state-changing
-	 * enable/disable service, and the pinned vendor CPU_ON path changes only
-	 * its selector.  Admission consequently requires exact voltage rollback,
-	 * supplied by the transaction backend, but must not infer an enable bit.
+	 * Keep the ordinary regulator backend's selector-zero refusal until a
+	 * dedicated first-start SRAM operation replaces it.  The setter also
+	 * changes calibration/control state; nominal voltage is not a complete
+	 * inverse.  Independently require the guard and read-fence backends.
 	 */
 	if ((capabilities & MT6797_A72_REQUIRED_CAPS) !=
 	    MT6797_A72_REQUIRED_CAPS)
@@ -177,12 +178,25 @@ static bool mt6797_a72_states_equal(const struct mt6797_a72_state *first,
 	       first->a72_online == second->a72_online;
 }
 
+/* There is no proven electrical inverse after attempting isolation clear. */
+static int
+mt6797_a72_transaction_retain_fault(struct mt6797_a72_transaction *transaction)
+{
+	transaction->faulted = true;
+	transaction->active = false;
+	transaction->ops->retain_fault(transaction->context);
+	return -EUCLEAN;
+}
+
 static int
 mt6797_a72_transaction_rollback(struct mt6797_a72_transaction *transaction)
 {
 	struct mt6797_a72_state observed;
 	int ret = 0;
 	int step_ret;
+
+	if (transaction->isolation_attempted)
+		return mt6797_a72_transaction_retain_fault(transaction);
 
 	while (transaction->applied) {
 		transaction->applied--;
@@ -217,7 +231,7 @@ int mt6797_a72_transaction_begin(struct mt6797_a72_transaction *transaction,
 	int ret;
 
 	if (!transaction || !ops || !ops->snapshot || !ops->apply ||
-	    !ops->verify || !ops->rollback)
+	    !ops->verify || !ops->rollback || !ops->retain_fault)
 		return -EINVAL;
 	if (transaction->active || transaction->faulted)
 		return -EUCLEAN;
@@ -242,6 +256,9 @@ int mt6797_a72_transaction_begin(struct mt6797_a72_transaction *transaction,
 	for (transaction->applied = 0;
 	     transaction->applied < plan->count;) {
 		step = &plan->steps[transaction->applied];
+		if (step->action == MT6797_A72_SPM_UPDATE &&
+		    step->reg == MT6797_A72_SPM_EXT_BUCK_ISO)
+			transaction->isolation_attempted = true;
 		/* A failed operation may already have changed hardware. */
 		transaction->applied++;
 		ret = ops->apply(context, step);

@@ -71,9 +71,11 @@ struct mt6797_a72_backend_ops {
 	int (*snapshot)(void *context, struct mt6797_a72_state *state);
 	int (*apply)(void *context, const struct mt6797_a72_step *step);
 	int (*verify)(void *context, const struct mt6797_a72_step *step);
-	/* Undo one step. Exit steps must re-enter their rollback guard. */
+	/* Undo a step only before the isolation-clear attempt. */
 	int (*rollback)(void *context, const struct mt6797_a72_step *step,
 			const struct mt6797_a72_state *initial);
+	/* Release software locks only; retain providers and all electrical state. */
+	void (*retain_fault)(void *context);
 };
 
 struct mt6797_a72_transaction {
@@ -82,6 +84,8 @@ struct mt6797_a72_transaction {
 	struct mt6797_a72_state initial;
 	const struct mt6797_a72_plan *plan;
 	unsigned int applied;
+	/* Latched before dispatch: a failed isolation write may have taken effect. */
+	bool isolation_attempted;
 	bool active;
 	bool faulted;
 };
@@ -96,7 +100,7 @@ int mt6797_a72_validate_cpu9_boot(unsigned int cpu, bool cpu8_online,
 				  bool faulted);
 int mt6797_a72_validate_cpu8_identity(u32 midr);
 int mt6797_a72_validate_removal(bool online, bool active, bool armed, bool guarded, bool faulted);
-/* A successful begin remains reversible until CPU_ON is verified and committed. */
+/* After isolation is attempted, any failure/abort retains state until reset. */
 int mt6797_a72_transaction_begin(struct mt6797_a72_transaction *transaction,
 				  const struct mt6797_a72_plan *plan,
 				  const struct mt6797_a72_backend_ops *ops,

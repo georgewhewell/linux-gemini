@@ -3,7 +3,7 @@
  * Transactional MT6797 Cortex-A72 resource preparation.
  *
  * CPU core power and CPU_ON remain owned by PSCI firmware. This driver owns
- * only the vendor-evidenced, reversible Linux resource sequence immediately
+ * the vendor-evidenced Linux resource sequence immediately
  * before a standard PSCI CPU_ON call.
  */
 
@@ -287,8 +287,9 @@ mt6797_a72_rollback(void *context, const struct mt6797_a72_step *step,
 		mutex_unlock(&preflight->operation_lock);
 		return 0;
 	case MT6797_A72_SPM_UPDATE:
-		value = step->reg == MT6797_A72_SPM_MP2_PWR_CON ?
-			initial->mp2_pwr_con : initial->ext_buck_iso;
+		if (step->reg != MT6797_A72_SPM_MP2_PWR_CON)
+			return -EOPNOTSUPP;
+		value = initial->mp2_pwr_con;
 		return regmap_update_bits(preflight->spm, step->reg,
 					  step->mask, value);
 	case MT6797_A72_IDVFS_READ_FENCE:
@@ -306,17 +307,10 @@ mt6797_a72_rollback(void *context, const struct mt6797_a72_step *step,
 			return regulator_disable(preflight->vproc_big);
 		return initial->vproc_enabled && !ret ? -EUCLEAN : 0;
 	case MT6797_A72_PWRAP_RESET_DEASSERT:
-		return reset_control_assert(preflight->pwrap_reset);
 	case MT6797_A72_TRANSACTION_GUARD_EXIT:
-		if (preflight->guarded)
-			return -EUCLEAN;
-		mutex_lock(&preflight->operation_lock);
-		preflight->guarded = true;
-		return 0;
 	case MT6797_A72_VSRAM_SET_UV:
-		return regulator_set_voltage(preflight->sram_big,
-					     initial->vsram_uv,
-					     initial->vsram_uv);
+		/* These steps can only be reached after isolation was attempted. */
+		return -EOPNOTSUPP;
 	case MT6797_A72_NR_ACTIONS:
 		return -EINVAL;
 	}
@@ -324,11 +318,24 @@ mt6797_a72_rollback(void *context, const struct mt6797_a72_step *step,
 	return -EINVAL;
 }
 
+/* Called in the transaction's task context, never from another CPU. */
+static void mt6797_a72_retain_fault(void *context)
+{
+	struct mt6797_a72_preflight *preflight = context;
+
+	preflight->faulted = true;
+	if (preflight->guarded) {
+		preflight->guarded = false;
+		mutex_unlock(&preflight->operation_lock);
+	}
+}
+
 static const struct mt6797_a72_backend_ops mt6797_a72_live_ops = {
 	.snapshot = mt6797_a72_snapshot,
 	.apply = mt6797_a72_apply,
 	.verify = mt6797_a72_verify,
 	.rollback = mt6797_a72_rollback,
+	.retain_fault = mt6797_a72_retain_fault,
 };
 
 static int mt6797_a72_preflight_parse_cpus(struct device *dev,

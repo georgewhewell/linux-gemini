@@ -35,3 +35,13 @@ or hardware test of RAM mode exists. It must use a bounded private tmpfs seeded
 from the independently verified ro,noload nvdata/md, preserve metadata-only
 logging, and never copy data back to persistent storage in this experiment.
 Successful volatile testing would still leave production persistence to qualify.
+
+Userspace follow-up: mt6797-fs-register now supports --check-mount (all source
+validation, no ioctl) and --ram SOURCE_MOUNT RAM_MOUNT. The latter validates the
+same RO nvdata root/md, then a root-owned0700 tmpfs mount root (inode1), writable
+and<=64MiB/4096inodes, and a same-filesystem no-symlink md child. It registers
+that child once with REGISTER_RAM; EINTR is never retried. Tests cover each
+rejection and descriptor cleanup. The legacy helper mode is preserved.
+C18 packaging adds bounded tmpfs mounting and cp -a seeding (no copy-back), with
+copy errors suppressed to a generic failure marker and single-run latch. It
+still requires full bundle and hardware validation before any success claim.

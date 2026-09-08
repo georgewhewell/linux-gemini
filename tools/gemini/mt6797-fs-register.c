@@ -113,7 +113,7 @@ static int no_symlink_dir(int dirfd, const char *path, uint64_t resolve)
 	return fd < 0 ? -errno : fd;
 }
 
-static int register_nvdata(const char *mountpoint)
+static int nvdata_authority(const char *mountpoint, int publish, const char *ramdir)
 {
 	struct mt6797_md1_fs_registration registration = { .version = 1 };
 	struct stat block_stat, root_stat, md_stat;
@@ -123,6 +123,7 @@ static int register_nvdata(const char *mountpoint)
 	char path[128], uevent[1024], sectors[64];
 	uint64_t bytes;
 	int block = -1, root = -1, md = -1, provider = -1;
+	int ram = -1, ram_md = -1;
 	int ret;
 
 	failure_stage = "nvdata-block-open";
@@ -203,17 +204,52 @@ static int register_nvdata(const char *mountpoint)
 	ret = -ENODEV;
 	if (!S_ISDIR(md_stat.st_mode) || md_stat.st_dev != block_stat.st_rdev)
 		goto out;
+	if (!publish) {
+		ret = 0;
+		goto out;
+	}
+	if (ramdir) {
+		failure_stage = "ram-root-open";
+		ram = no_symlink_dir(AT_FDCWD, ramdir, 0);
+		if (ram < 0) { ret = ram; goto out; }
+		failure_stage = "ram-root-stat";
+		if (fstat(ram, &root_stat) || fstatfs(ram, &fs) || fstatvfs(ram, &vfs)) {
+			ret = -errno; goto out;
+		}
+		failure_stage = "ram-root-validation";
+		ret = -EINVAL;
+		if (!S_ISDIR(root_stat.st_mode) || root_stat.st_uid ||
+		    (root_stat.st_mode & 0777) != 0700 || root_stat.st_ino != 1 ||
+		    root_stat.st_dev == block_stat.st_rdev || fs.f_type != TMPFS_MAGIC ||
+		    (vfs.f_flag & ST_RDONLY) || fs.f_bsize <= 0 || !fs.f_blocks ||
+		    fs.f_blocks > (UINT64_C(64) * 1024 * 1024) / fs.f_bsize ||
+		    !fs.f_files || fs.f_files > 4096)
+			goto out;
+		failure_stage = "ram-md-open";
+		ram_md = no_symlink_dir(ram, "md", RESOLVE_BENEATH | RESOLVE_NO_XDEV);
+		if (ram_md < 0) { ret = ram_md; goto out; }
+		failure_stage = "ram-md-stat";
+		if (fstat(ram_md, &md_stat)) { ret = -errno; goto out; }
+		ret = -EINVAL;
+		if (!S_ISDIR(md_stat.st_mode) || md_stat.st_dev != root_stat.st_dev)
+			goto out;
+	}
 	failure_stage = "provider-device-open";
 	provider = open("/dev/mt6797-md1-fs-provider", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
 	if (provider < 0) {
 		ret = -errno;
 		goto out;
 	}
-	registration.directory_fd = md;
+	registration.directory_fd = ramdir ? ram_md : md;
 	/* One call only. An interrupted result is ambiguous: never retry GO. */
 	failure_stage = "provider-register-once";
-	ret = ioctl(provider, MT6797_MD1_FS_REGISTER, &registration) ? -errno : 0;
+	ret = ioctl(provider, ramdir ? MT6797_MD1_FS_REGISTER_RAM :
+		    MT6797_MD1_FS_REGISTER, &registration) ? -errno : 0;
 out:
+	if (ram_md >= 0)
+		close(ram_md);
+	if (ram >= 0)
+		close(ram);
 	if (provider >= 0)
 		close(provider);
 	if (md >= 0)
@@ -224,21 +260,39 @@ out:
 	return ret;
 }
 
+static int register_nvdata(const char *mountpoint)
+{
+	return nvdata_authority(mountpoint, 1, NULL);
+}
+
 int main(int argc, char **argv)
 {
-	int ret;
+	int ret, published = 0;
 
-	if (argc != 2 || (argv[1][0] != '/' && strcmp(argv[1], "--check-device")) || geteuid()) {
-		fprintf(stderr, "usage (root only): mt6797-fs-register --check-device | /absolute/verified-ro-nvdata-mount\n");
-		return 2;
-	}
-	ret = register_nvdata(argv[1][0] == '/' ? argv[1] : NULL);
+	if (geteuid())
+		goto usage;
+	if (argc == 2 && !strcmp(argv[1], "--check-device"))
+		ret = register_nvdata(NULL);
+	else if (argc == 2 && argv[1][0] == '/') {
+		ret = register_nvdata(argv[1]);
+		published = 1;
+	} else if (argc == 3 && !strcmp(argv[1], "--check-mount") && argv[2][0] == '/')
+		ret = nvdata_authority(argv[2], 0, NULL);
+	else if (argc == 4 && !strcmp(argv[1], "--ram") &&
+		 argv[2][0] == '/' && argv[3][0] == '/') {
+		ret = nvdata_authority(argv[2], 1, argv[3]);
+		published = 1;
+	} else
+		goto usage;
 	if (ret) {
 		fprintf(stderr, "MD1 FS authority failed stage=%s error=%s; no retry\n",
 			failure_stage, strerror(-ret));
 		return 1;
 	}
-	puts(argv[1][0] == '/' ? "MD1 FS authority published once; this is not an HS2/AT result" :
-	     "MD1 nvdata metadata precheck passed; no mount or provider registration");
+	puts(published ? "MD1 FS authority published once; this is not an HS2/AT result" :
+	     "MD1 nvdata metadata precheck passed; no provider registration");
 	return 0;
+usage:
+	fprintf(stderr, "usage (root only): mt6797-fs-register --check-device | /absolute/ro-mount | --check-mount /absolute/ro-mount | --ram /absolute/ro-mount /absolute/ram-mount\n");
+	return 2;
 }

@@ -63,3 +63,19 @@ fitting one sysfs page for sixteen maximum-width entries, allocation failure,
 and the existing worker/admission/freezing cases. An ARM64 W=1 compile checks
 kernel APIs. This diagnostic is not yet packaged or hardware-qualified; CI3
 continues using its pinned earlier kernel until a new candidate is built.
+
+
+The separate root-only `rx_rejected` attribute covers RPC/FS requests refused
+before worker admission and post-HS2 channels the transport does not handle.
+These previously could disappear without reaching the FS worker ring. It
+retains sixteen chronological numeric rows (channel, queue, byte count, error,
+and an operation word only for RPC/FS when at least20bytes are present).
+Header-only unhandled channels are recorded before data-payload validation.
+No request is newly answered or admitted; rejection behavior remains intact.
+
+Its IRQ-safe ring and detached snapshot are independent of the FS worker ring,
+so a NAPI rejection cannot displace an in-flight worker's completion slot.
+Host tests execute capture, concurrent snapshots and the actual sysfs formatter,
+with truncated and unknown-channel operation fields, wrap order, immutable
+copies, full-width output bounds and allocation failure. Wiring checks verify
+both RPC/FS rejection paths and header-only unhandled-channel ordering.

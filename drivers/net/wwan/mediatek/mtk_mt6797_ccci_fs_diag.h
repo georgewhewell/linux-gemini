@@ -9,10 +9,10 @@
 #define MT6797_FS_DIAG_COUNT 16U
 struct mt6797_fs_diag_entry {
 	u64 sequence;
-	u32 op, flags, requested;
+	u32 op, flags, requested, open_flags;
 	s32 parse_error, status, result;
 	size_t sent;
-	bool compact, done;
+	bool compact, open_valid, done;
 };
 struct mt6797_fs_diag {
 	spinlock_t lock;
@@ -33,9 +33,16 @@ static inline u64 mt6797_fs_diag_begin(struct mt6797_fs_diag *d,
 	e.parse_error = mt6797_fs_request_parse(frame, len, &request);
 	if (!e.parse_error) {
 		e.op = request.op;
+		if ((request.op == MT6797_FS_OPEN || request.op == MT6797_FS_OPENHINT) &&
+		    request.argc >= 2 && request.len[1] == 4) {
+			e.open_valid = true;
+			e.open_flags = mt6797_fs_read32(request.arg[1]);
+		}
 		if (request.op == MT6797_FS_COMPACT_READ && request.argc == 2 &&
 		    request.len[1] == 40) {
 			e.compact = true;
+			e.open_valid = true;
+			e.open_flags = mt6797_fs_read32(request.arg[1] + 12);
 			e.flags = mt6797_fs_read32(request.arg[1]);
 			e.requested = mt6797_fs_read32(request.arg[1] + 32);
 		}

@@ -8,6 +8,7 @@
  */
 
 #include <linux/arm-smccc.h>
+#include <linux/soc/mediatek/mt6797-sram.h>
 #include <linux/clk.h>
 #include <linux/cpu.h>
 #include <linux/cpuhotplug.h>
@@ -67,12 +68,15 @@ struct mt6797_a72_preflight {
 	struct mt6797_a72_transaction transaction;
 	/* Excludes every Linux-owned operation during the PWRAP reset window. */
 	struct mutex operation_lock;
+	struct mt6797_sram_sample sram_boot;
 	u32 fence_value;
 	bool guarded;
 	bool faulted;
 	bool cpu8_available;
 	bool cpu9_available;
 	bool cpu8_armed;
+	bool vproc_vote_owned;
+	bool vproc_vote_added;
 	bool overlay_nb_registered;
 };
 
@@ -142,6 +146,7 @@ static int mt6797_a72_secure_read(u32 address, u32 *value)
 static int mt6797_a72_snapshot(void *context, struct mt6797_a72_state *state)
 {
 	struct mt6797_a72_preflight *preflight = context;
+	struct mt6797_sram_sample sample;
 	int ret;
 
 	if (preflight->faulted)
@@ -158,17 +163,20 @@ static int mt6797_a72_snapshot(void *context, struct mt6797_a72_state *state)
 	state->vproc_enabled = regulator_is_enabled(preflight->vproc_big);
 	if (state->vproc_enabled < 0)
 		return state->vproc_enabled;
+	if (!!state->vproc_enabled != preflight->vproc_vote_owned)
+		return -EUCLEAN;
 	state->vproc_uv = regulator_get_voltage(preflight->vproc_big);
 	if (state->vproc_uv < 0)
 		return state->vproc_uv;
 	state->vsram_uv = regulator_get_voltage(preflight->sram_big);
 	if (state->vsram_uv < 0)
 		return state->vsram_uv;
-	ret = mt6797_a72_secure_read(MT6797_A72_SRAM_SELECTOR_REG,
-				     &state->vsram_selector);
+	ret = mt6797_sram_read_boot_sample(preflight->dev, preflight->sram_big, &sample);
 	if (ret)
 		return ret;
-	state->vsram_selector &= 0xf;
+	state->vsram_control = sample.control;
+	state->vsram_calibration = sample.calibration;
+	state->vsram_selector = sample.control & 0xf;
 	state->pwrap_reset_asserted =
 		reset_control_status(preflight->pwrap_reset);
 	if (state->pwrap_reset_asserted < 0)
@@ -204,9 +212,14 @@ mt6797_a72_apply(void *context, const struct mt6797_a72_step *step)
 	case MT6797_A72_PWRAP_RESET_ASSERT:
 		return reset_control_assert(preflight->pwrap_reset);
 	case MT6797_A72_VPROC_ENABLE:
-		ret = regulator_is_enabled(preflight->vproc_big);
-		return ret < 0 ? ret : ret ? 0 :
-			regulator_enable(preflight->vproc_big);
+		if (preflight->vproc_vote_owned)
+			return 0;
+		ret = regulator_enable(preflight->vproc_big);
+		if (!ret) {
+			preflight->vproc_vote_owned = true;
+			preflight->vproc_vote_added = true;
+		}
+		return ret;
 	case MT6797_A72_DELAY_US:
 		usleep_range(step->value, step->value + 50);
 		return 0;
@@ -219,8 +232,8 @@ mt6797_a72_apply(void *context, const struct mt6797_a72_step *step)
 		mutex_unlock(&preflight->operation_lock);
 		return 0;
 	case MT6797_A72_VSRAM_SET_UV:
-		return regulator_set_voltage(preflight->sram_big, step->value,
-					     step->value);
+		return mt6797_sram_prepare_cpu8(preflight->dev, preflight->sram_big,
+					      MT6797_A72_FIRST_CPU, &preflight->sram_boot);
 	case MT6797_A72_NR_ACTIONS:
 		return -EINVAL;
 	}
@@ -232,6 +245,7 @@ static int
 mt6797_a72_verify(void *context, const struct mt6797_a72_step *step)
 {
 	struct mt6797_a72_preflight *preflight = context;
+	struct mt6797_sram_sample sample;
 	u32 value;
 	int ret;
 
@@ -258,12 +272,12 @@ mt6797_a72_verify(void *context, const struct mt6797_a72_step *step)
 	case MT6797_A72_TRANSACTION_GUARD_EXIT:
 		return preflight->guarded ? -EUCLEAN : 0;
 	case MT6797_A72_VSRAM_SET_UV:
-		ret = regulator_get_voltage(preflight->sram_big);
-		if (ret < 0 || ret != step->value)
-			return ret < 0 ? ret : -EIO;
-		ret = mt6797_a72_secure_read(MT6797_A72_SRAM_SELECTOR_REG, &value);
-		return ret ?: ((value & 0xf) == MT6797_A72_SRAM_BOOT_SELECTOR ?
-				0 : -EIO);
+		ret = mt6797_sram_read_boot_sample(preflight->dev, preflight->sram_big,
+						 &sample);
+		if (ret)
+			return ret;
+		return sample.control == preflight->sram_boot.control &&
+		       sample.calibration == preflight->sram_boot.calibration ? 0 : -EIO;
 	case MT6797_A72_NR_ACTIONS:
 		return -EINVAL;
 	}
@@ -300,12 +314,15 @@ mt6797_a72_rollback(void *context, const struct mt6797_a72_step *step,
 			reset_control_assert(preflight->pwrap_reset) :
 			reset_control_deassert(preflight->pwrap_reset);
 	case MT6797_A72_VPROC_ENABLE:
-		ret = regulator_is_enabled(preflight->vproc_big);
-		if (ret < 0)
-			return ret;
-		if (!initial->vproc_enabled && ret)
-			return regulator_disable(preflight->vproc_big);
-		return initial->vproc_enabled && !ret ? -EUCLEAN : 0;
+		/* A failed enable has no consumer vote; never disable it by readback. */
+		if (!preflight->vproc_vote_added)
+			return 0;
+		ret = regulator_disable(preflight->vproc_big);
+		if (!ret) {
+			preflight->vproc_vote_added = false;
+			preflight->vproc_vote_owned = false;
+		}
+		return ret;
 	case MT6797_A72_PWRAP_RESET_DEASSERT:
 	case MT6797_A72_TRANSACTION_GUARD_EXIT:
 	case MT6797_A72_VSRAM_SET_UV:
@@ -660,6 +677,7 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	struct mt6797_a72_plan plan;
 	u32 mp2_power;
 	u32 buck_iso;
+	struct mt6797_sram_sample sram_sample;
 	u32 sram_selector;
 	int vproc_enabled;
 	int vproc_uv;
@@ -699,7 +717,8 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret,
 				     "A72 CPU is already online; refusing preflight\n");
 
-	preflight->vproc_big = devm_regulator_get_exclusive(dev, "vproc-big");
+	preflight->vproc_big = devm_regulator_get_exclusive_state(dev, "vproc-big",
+						 &preflight->vproc_vote_owned);
 	if (IS_ERR(preflight->vproc_big))
 		return dev_err_probe(dev, PTR_ERR(preflight->vproc_big),
 				     "failed to get big-cluster regulator\n");
@@ -749,12 +768,10 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	    sram_uv > MT6797_A72_SRAM_MAX_UV)
 		return dev_err_probe(dev, -ERANGE,
 				     "big-cluster SRAM observation is out of range\n");
-	ret = mt6797_a72_secure_read(MT6797_A72_SRAM_SELECTOR_REG,
-				     &sram_selector);
+	ret = mt6797_sram_read_boot_sample(dev, preflight->sram_big, &sram_sample);
 	if (ret)
-		return dev_err_probe(dev, ret,
-				     "failed to read big-cluster SRAM selector\n");
-	sram_selector &= 0xf;
+		return dev_err_probe(dev, ret, "failed to read stable SRAM full state\n");
+	sram_selector = sram_sample.control & 0xf;
 
 	ret = mt6797_cpuclk_check_mp2_boot(dev, preflight->mp2_clk);
 	if (ret)
@@ -794,6 +811,10 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	state.vproc_uv = vproc_uv;
 	state.vsram_uv = sram_uv;
 	state.vsram_selector = sram_selector;
+	state.vsram_control = sram_sample.control;
+	state.vsram_calibration = sram_sample.calibration;
+	dev_info(dev, "SRAM cold admission sample: control=0x%08x calibration=0x%08x spm-buck-iso=0x%08x\n",
+		 sram_sample.control, sram_sample.calibration, buck_iso);
 	transaction_ret = mt6797_a72_validate_admission(&state,
 							MT6797_A72_REQUIRED_CAPS);
 	if (transaction_ret)
@@ -838,10 +859,11 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, preflight);
 	dev_info(dev,
-		 "CPU%u/%u resource-preflight-v2: offline=1 mode=%s vproc=%duV vproc-enabled=%d sram=%duV sram-selector=%u sram-contract=voltage-only mp2-clock-contract=cold-clk26m-v1 mp2=%luHz pwrap-reset=%d spm-mp2=0x%08x spm-buck-iso=0x%08x plan-steps=%u transaction=ready\n",
+		 "CPU%u/%u resource-preflight-v2: offline=1 mode=%s vproc=%duV vproc-enabled=%d sram=%duV sram-selector=%u sram-control=0x%08x sram-calibration=0x%08x sram-contract=one-shot-first-cpu8-v1 mp2-clock-contract=cold-clk26m-v1 mp2=%luHz pwrap-reset=%d spm-mp2=0x%08x spm-buck-iso=0x%08x plan-steps=%u transaction=ready\n",
 		 preflight->cpus[0], preflight->cpus[1],
 		 preflight->cpu8_available ? "cpu8-admission" : "provider-only",
-		 vproc_uv, vproc_enabled, sram_uv, sram_selector, mp2_rate,
+		 vproc_uv, vproc_enabled, sram_uv, sram_selector,
+		 sram_sample.control, sram_sample.calibration, mp2_rate,
 		 pwrap_reset_asserted, mp2_power, buck_iso, plan.count);
 	if (preflight->cpu8_available)
 		dev_info(dev,

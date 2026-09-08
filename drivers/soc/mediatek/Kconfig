@@ -257,8 +257,8 @@ config MTK_MT6797_A72_POWER
 	  Verify and transactionally prepare the external processor regulator,
 	  TOPRGU reset, SPM isolation, standard MP2 clock and secure SRAM voltage
 	  selector before PSCI CPU_ON. The DT-disabled gate permits only CPU8,
-	  requires CPU4 online, verifies every reversible step, and rolls back a
-	  failed bring-up. The built-in owner cannot be unbound, and it rejects
+	  requires CPU4 online, and verifies first-start SRAM initialization.
+	  Failures after isolation is attempted retain power until reset. The built-in owner cannot be unbound, and it rejects
 	  removal of an activation overlay. CPU core power remains owned by PSCI
 	  firmware.
 

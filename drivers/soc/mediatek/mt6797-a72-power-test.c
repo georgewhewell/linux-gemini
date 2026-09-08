@@ -32,8 +32,8 @@ static struct mt6797_a72_fake mt6797_a72_new_fake(void)
 			.vproc_enabled = 0,
 			.pwrap_reset_asserted = 0,
 			.vproc_uv = 900000,
-			.vsram_uv = 900000,
-			.vsram_selector = 3,
+			.vsram_uv = 1050000,
+			.vsram_selector = 0,
 		},
 		.fail_apply_at = -1,
 		.fail_verify_at = -1,
@@ -82,6 +82,8 @@ static void mt6797_a72_fake_apply_step(struct mt6797_a72_fake *fake,
 	case MT6797_A72_VSRAM_SET_UV:
 		fake->state.vsram_uv = step->value;
 		fake->state.vsram_selector = 11;
+		fake->state.vsram_control = 0x4008fb;
+		fake->state.vsram_calibration = 0x8967;
 		break;
 	case MT6797_A72_IDVFS_READ_FENCE:
 	case MT6797_A72_DELAY_US:
@@ -266,15 +268,27 @@ static void mt6797_a72_admission_fences_online_cpu_test(struct kunit *test)
 		-EBUSY);
 }
 
-static void mt6797_a72_admission_rejects_unrestorable_selector_test(struct kunit *test)
+static void mt6797_a72_admission_requires_full_cold_sram_test(struct kunit *test)
 {
 	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
-	int ret;
 
+	KUNIT_EXPECT_EQ(test, mt6797_a72_validate_admission(&fake.state,
+		MT6797_A72_REQUIRED_CAPS), 0);
+	fake.state.vsram_control = BIT(8);
+	KUNIT_EXPECT_EQ(test, mt6797_a72_validate_admission(&fake.state,
+		MT6797_A72_REQUIRED_CAPS), -EBUSY);
+	fake.state.vsram_control = 0;
+	fake.state.vsram_calibration = 1;
+	KUNIT_EXPECT_EQ(test, mt6797_a72_validate_admission(&fake.state,
+		MT6797_A72_REQUIRED_CAPS), -EBUSY);
+	fake.state.vsram_calibration = 0;
+	fake.state.vsram_selector = 9;
+	KUNIT_EXPECT_EQ(test, mt6797_a72_validate_admission(&fake.state,
+		MT6797_A72_REQUIRED_CAPS), -EBUSY);
 	fake.state.vsram_selector = 0;
-	ret = mt6797_a72_validate_admission(&fake.state,
-					    MT6797_A72_REQUIRED_CAPS);
-	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
+	fake.state.vsram_uv = 900000;
+	KUNIT_EXPECT_EQ(test, mt6797_a72_validate_admission(&fake.state,
+		MT6797_A72_REQUIRED_CAPS), -EUCLEAN);
 }
 
 static void mt6797_a72_cpu8_boot_admission_test(struct kunit *test)
@@ -427,6 +441,8 @@ static void mt6797_a72_all_step_failures_test(struct kunit *test)
 			KUNIT_EXPECT_EQ(test, fake.state.vproc_enabled, expected.state.vproc_enabled);
 			KUNIT_EXPECT_EQ(test, fake.state.vsram_uv, expected.state.vsram_uv);
 			KUNIT_EXPECT_EQ(test, fake.state.vsram_selector, expected.state.vsram_selector);
+			KUNIT_EXPECT_EQ(test, fake.state.vsram_control, expected.state.vsram_control);
+			KUNIT_EXPECT_EQ(test, fake.state.vsram_calibration, expected.state.vsram_calibration);
 		}
 	}
 }
@@ -502,7 +518,7 @@ static struct kunit_case mt6797_a72_power_test_cases[] = {
 	KUNIT_CASE(mt6797_a72_plan_matches_vendor_boundary_test),
 	KUNIT_CASE(mt6797_a72_admission_requires_live_backends_test),
 	KUNIT_CASE(mt6797_a72_admission_fences_online_cpu_test),
-	KUNIT_CASE(mt6797_a72_admission_rejects_unrestorable_selector_test),
+	KUNIT_CASE(mt6797_a72_admission_requires_full_cold_sram_test),
 	KUNIT_CASE(mt6797_a72_cpu8_boot_admission_test),
 	KUNIT_CASE(mt6797_a72_cpu9_boot_admission_test),
 	KUNIT_CASE(mt6797_a72_cpu8_identity_test),

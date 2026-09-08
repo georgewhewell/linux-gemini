@@ -2,6 +2,17 @@
 /* MediaTek MT6797 BigiDVFS secure SRAM regulator. */
 
 #include <linux/arm-smccc.h>
+#include <linux/atomic.h>
+#include <linux/cpu.h>
+#include <linux/cpuhplock.h>
+#include <linux/delay.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
+#include <linux/psci.h>
+#include <uapi/linux/psci.h>
+#include <asm/smp_plat.h>
+
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -10,11 +21,13 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
 
+#include "internal.h"
 #include "mt6797-bigidvfs-sram.h"
 
 #define MT6797_BIGIDVFS_FID_SRAM_SET	0xc20003bfUL
 #define MT6797_BIGIDVFS_FID_READ		0xc200035fUL
 #define MT6797_BIGIDVFS_SRAM_SELECTOR	0x102222b0U
+#define MT6797_BIGIDVFS_SRAM_CALIBRATION	0x102222b4U
 #define MT6797_BIGIDVFS_SRAM_VSEL_MASK	0xf
 
 struct mt6797_bigidvfs_sram {
@@ -22,7 +35,14 @@ struct mt6797_bigidvfs_sram {
 	/* Serialize every read/set/read transaction issued by this provider. */
 	struct mutex lock;
 	bool faulted;
+	struct mt6797_sram_first_state first;
 };
+
+/* One physical LDO. Built-in first-start API cannot be reset by reprobe. */
+static DEFINE_MUTEX(mt6797_sram_boot_lock);
+static atomic_t mt6797_sram_boot_attempted = ATOMIC_INIT(0);
+static struct platform_driver mt6797_bigidvfs_sram_driver;
+static const struct regulator_desc mt6797_bigidvfs_sram_desc;
 
 static const unsigned int mt6797_bigidvfs_sram_voltages[] = {
 	1050000, 600000, 700000, 900000,
@@ -31,16 +51,17 @@ static const unsigned int mt6797_bigidvfs_sram_voltages[] = {
 	1125000, 1150000, 1175000, 1200000,
 };
 
-static int mt6797_bigidvfs_sram_secure_read(unsigned int *selector)
+static int mt6797_bigidvfs_sram_secure_read_word(u32 address, u32 *value)
 {
 	struct arm_smccc_res result;
 	u32 raw;
 
-	if (!selector)
+	if (!value || (address != MT6797_BIGIDVFS_SRAM_SELECTOR &&
+		       address != MT6797_BIGIDVFS_SRAM_CALIBRATION))
 		return -EINVAL;
 
 	arm_smccc_smc(MT6797_BIGIDVFS_FID_READ,
-		      MT6797_BIGIDVFS_SRAM_SELECTOR, 0, 0, 0, 0, 0, 0,
+		      address, 0, 0, 0, 0, 0, 0,
 		      &result);
 	raw = result.a0;
 	if (raw == U32_MAX)
@@ -48,8 +69,22 @@ static int mt6797_bigidvfs_sram_secure_read(unsigned int *selector)
 	if (result.a0 >> 32)
 		return result.a0 == SMCCC_RET_NOT_SUPPORTED ? -EOPNOTSUPP : -EIO;
 
-	*selector = raw & MT6797_BIGIDVFS_SRAM_VSEL_MASK;
+	*value = raw;
 	return 0;
+}
+
+static int mt6797_bigidvfs_sram_secure_read(unsigned int *selector)
+{
+	u32 value;
+	int ret;
+
+	if (!selector)
+		return -EINVAL;
+	ret = mt6797_bigidvfs_sram_secure_read_word(MT6797_BIGIDVFS_SRAM_SELECTOR,
+						 &value);
+	if (!ret)
+		*selector = value & MT6797_BIGIDVFS_SRAM_VSEL_MASK;
+	return ret;
 }
 
 static int mt6797_bigidvfs_sram_secure_set(unsigned int firmware_uv_div10)
@@ -192,6 +227,164 @@ fault:
 	return -EUCLEAN;
 }
 
+#if IS_BUILTIN(CONFIG_REGULATOR_MT6797_BIGIDVFS_SRAM)
+static int mt6797_sram_read_sample(void *context, struct mt6797_sram_sample *sample)
+{
+	int ret;
+
+	ret = mt6797_bigidvfs_sram_secure_read_word(MT6797_BIGIDVFS_SRAM_SELECTOR,
+						 &sample->control);
+	if (ret)
+		return ret;
+	return mt6797_bigidvfs_sram_secure_read_word(MT6797_BIGIDVFS_SRAM_CALIBRATION,
+						  &sample->calibration);
+}
+
+static void mt6797_sram_settle(void *context, unsigned int usec)
+{
+	usleep_range(usec, usec + 50);
+}
+
+static const struct mt6797_sram_first_io mt6797_sram_boot_io = {
+	.set_voltage = mt6797_bigidvfs_sram_io_set,
+	.settle = mt6797_sram_settle,
+	.read_sample = mt6797_sram_read_sample,
+};
+
+/* Returns with supplier device and SRAM locks held, in that order. */
+static int mt6797_sram_lock_consumer(struct device *consumer,
+		struct regulator *supply, struct mt6797_bigidvfs_sram **result)
+{
+	struct regulator_dev *rdev;
+	struct mt6797_bigidvfs_sram *sram;
+	struct device_node *node;
+	struct device *provider;
+	int ret = -ENODEV;
+
+	if (!consumer || IS_ERR_OR_NULL(supply) || supply->dev != consumer ||
+	    !of_device_is_compatible(consumer->of_node, "mediatek,mt6797-a72-power"))
+		return -EINVAL;
+	rdev = supply->rdev;
+	if (rdev->desc != &mt6797_bigidvfs_sram_desc || !rdev->exclusive ||
+	    rdev->open_count != 1)
+		return -EPERM;
+	node = of_parse_phandle(consumer->of_node, "sram-big-supply", 0);
+	if (!node)
+		return -EINVAL;
+	if (node != rdev->dev.of_node) {
+		of_node_put(node);
+		return -ENODEV;
+	}
+	of_node_put(node);
+	provider = rdev->dev.parent;
+	if (!provider)
+		return -ENODEV;
+	device_lock(provider);
+	if (provider->driver != &mt6797_bigidvfs_sram_driver.driver)
+		goto unlock_device;
+	sram = dev_get_drvdata(provider);
+	if (!sram || sram != rdev_get_drvdata(rdev) || sram->dev != provider)
+		goto unlock_device;
+	mutex_lock(&sram->lock);
+	if (sram->faulted) {
+		mutex_unlock(&sram->lock);
+		ret = -EUCLEAN;
+		goto unlock_device;
+	}
+	mutex_lock(&mt6797_sram_boot_lock);
+	*result = sram;
+	return 0;
+
+unlock_device:
+	device_unlock(provider);
+	return ret;
+}
+
+static void mt6797_sram_unlock_consumer(struct mt6797_bigidvfs_sram *sram)
+{
+	mutex_unlock(&mt6797_sram_boot_lock);
+	mutex_unlock(&sram->lock);
+	device_unlock(sram->dev);
+}
+
+int mt6797_sram_read_boot_sample(struct device *consumer, struct regulator *supply,
+			       struct mt6797_sram_sample *sample)
+{
+	struct mt6797_bigidvfs_sram *sram;
+	struct mt6797_sram_sample first, second;
+	int ret;
+
+	if (!sample)
+		return -EINVAL;
+	ret = mt6797_sram_lock_consumer(consumer, supply, &sram);
+	if (ret)
+		return ret;
+	ret = mt6797_sram_read_sample(sram, &first);
+	if (!ret)
+		ret = mt6797_sram_read_sample(sram, &second);
+	if (!ret && (first.control != second.control ||
+		     first.calibration != second.calibration))
+		ret = -EAGAIN;
+	if (!ret)
+		*sample = first;
+	mt6797_sram_unlock_consumer(sram);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_sram_read_boot_sample);
+
+int mt6797_sram_prepare_cpu8(struct device *consumer, struct regulator *supply,
+			   unsigned int cpu, struct mt6797_sram_sample *sample)
+{
+	struct mt6797_bigidvfs_sram *sram;
+	struct regmap *spm;
+	u32 isolation;
+	unsigned int i;
+	int ret;
+
+	if (!sample || cpu != 8)
+		return -EINVAL;
+	lockdep_assert_cpus_held();
+	if (nr_cpu_ids <= 9 || !cpu_online(4) || cpu_online(8) || cpu_online(9))
+		return -EBUSY;
+	if (!psci_ops.affinity_info)
+		return -EOPNOTSUPP;
+	for (i = 8; i <= 9; i++) {
+		ret = psci_ops.affinity_info(cpu_logical_map(i), 0);
+		if (ret != PSCI_0_2_AFFINITY_LEVEL_OFF)
+			return ret < 0 ? ret : -EBUSY;
+	}
+	ret = mt6797_sram_lock_consumer(consumer, supply, &sram);
+	if (ret)
+		return ret;
+	spm = syscon_regmap_lookup_by_phandle(consumer->of_node, "mediatek,spm");
+	if (IS_ERR(spm)) {
+		ret = PTR_ERR(spm);
+		goto out;
+	}
+	ret = regmap_read(spm, 0x290, &isolation);
+	if (ret)
+		goto out;
+	if (isolation & BIT(1)) {
+		ret = -EBUSY;
+		goto out;
+	}
+	/* Persist across provider reprobe; ordinary setters are now excluded. */
+	if (atomic_cmpxchg(&mt6797_sram_boot_attempted, 0, 1)) {
+		ret = -EUCLEAN;
+		goto out;
+	}
+	ret = mt6797_sram_first_start(&mt6797_sram_boot_io, sram, &sram->first);
+	if (ret)
+		sram->faulted = true;
+	else
+		*sample = sram->first.samples[1];
+out:
+	mt6797_sram_unlock_consumer(sram);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_sram_prepare_cpu8);
+#endif
+
 static int mt6797_bigidvfs_sram_get_voltage_sel(struct regulator_dev *rdev)
 {
 	struct mt6797_bigidvfs_sram *sram = rdev_get_drvdata(rdev);
@@ -199,12 +392,14 @@ static int mt6797_bigidvfs_sram_get_voltage_sel(struct regulator_dev *rdev)
 	int ret;
 
 	mutex_lock(&sram->lock);
+	mutex_lock(&mt6797_sram_boot_lock);
 	if (sram->faulted) {
 		ret = -EUCLEAN;
 		goto out_unlock;
 	}
 	ret = mt6797_bigidvfs_sram_secure_read(&selector);
 out_unlock:
+	mutex_unlock(&mt6797_sram_boot_lock);
 	mutex_unlock(&sram->lock);
 	if (ret)
 		return ret;
@@ -222,7 +417,8 @@ static int mt6797_sram_set_voltage_sel(struct regulator_dev *rdev,
 	int ret;
 
 	mutex_lock(&sram->lock);
-	if (sram->faulted) {
+	mutex_lock(&mt6797_sram_boot_lock);
+	if (sram->faulted || atomic_read(&mt6797_sram_boot_attempted)) {
 		ret = -EUCLEAN;
 		goto out_unlock;
 	}
@@ -230,6 +426,7 @@ static int mt6797_sram_set_voltage_sel(struct regulator_dev *rdev,
 	if (ret == -EUCLEAN)
 		sram->faulted = true;
 out_unlock:
+	mutex_unlock(&mt6797_sram_boot_lock);
 	mutex_unlock(&sram->lock);
 
 	return ret;
@@ -324,6 +521,7 @@ static struct platform_driver mt6797_bigidvfs_sram_driver = {
 	.driver = {
 		.name = "mt6797-bigidvfs-sram",
 		.of_match_table = mt6797_bigidvfs_sram_of_match,
+		.suppress_bind_attrs = true,
 	},
 };
 module_platform_driver(mt6797_bigidvfs_sram_driver);

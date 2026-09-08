@@ -270,10 +270,13 @@ fi
 [ "$preflight_mode" = "$expected_mode" ] ||
 	fail "preflight mode is $preflight_mode, expected $expected_mode"
 [ "$transaction" = "ready" ] || fail "transaction backend is not ready"
-[ "$sram_contract" = "voltage-only" ] || fail "unexpected SRAM contract"
+[ "$sram_contract" = "one-shot-first-cpu8-v1" ] || fail "unexpected SRAM contract"
 require_unsigned "SRAM selector" "$sram_selector"
-[ "$sram_selector" -ge 1 ] && [ "$sram_selector" -le 15 ] ||
-	fail "secure SRAM selector cannot be restored: $sram_selector"
+[ "$sram_selector" = 0 ] || fail "SRAM is not in first-start state"
+sram_control=$(extract_field "$preflight_line" sram-control) || fail "missing SRAM control"
+sram_calibration=$(extract_field "$preflight_line" sram-calibration) || fail "missing SRAM calibration"
+[ "$sram_control" = 0x00000000 ] && [ "$sram_calibration" = 0x00000000 ] ||
+	fail "SRAM full cold state does not match"
 
 vproc_uv=${vproc_field%uV}
 sram_uv=${sram_field%uV}

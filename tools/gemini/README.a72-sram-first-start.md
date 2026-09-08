@@ -9,17 +9,21 @@ are allowed, including the upstream-observed0x4008fb. Every error after dispatch
 latches fault, preserves the original error and refuses another operation. There
 is exactly one setter dispatch and no inverse/retry callback in this interface.
 
-This helper is deliberately not exported or connected to live SMC callbacks yet.
-The caller integration must prove exclusive provider ownership, CPU8 target,
-both big cores offline and the isolation boundary crossed, under serialized
-provider lifetime/locking. It must keep attempt state for the provider lifetime,
-block competing ordinary setters, and arrange independently supervised reset on
-fault. The host tests establish operation semantics, not those caller contracts.
+The built-in provider API now connects this operation to the A72 power driver.
+It verifies the exclusive consumer handle, exact descriptor/driver/DT supply,
+CPU8 target, CPU4 online, both A72s offline in Linux and PSCI, and actual SPM
+external isolation clear. Supplier/device and provider locks protect the call;
+a global LDO lock serializes ordinary operations even across duplicate provider
+instances. A built-in boot latch survives reprobe and excludes all later ordinary
+setters. Sysfs bind/unbind is suppressed. The ordinary regulator interface keeps
+its selector-zero refusal.
 
-The initial-state contract also needs an attributable pair of complete cold
-register samples from our phone. M7 retained only the low voltage selector;
-nominal1050mV is insufficient proof of calibration/control state. No cold-state
-admission check was relaxed in this change. No firmware or device actions occur.
+Admission now requires a stable, full zero control/calibration sample and the
+corresponding nominal1050mV reading. The sample is logged before admission, so a
+different cold state is attributable. This cold contract matches upstream's
+retained vendor first-cycle evidence; it is not yet verified on our phone.
+Successful first-start is followed by another full-pair verification in the power
+plan. The plan retains power on any failure after isolation was attempted.
 
 Source evidence: MT6797 vendor import BigSRAMLDOSet and retained ixoo analysis:
 https://github.com/freedomtan/atf-1.0-x20/blob/cd0343dab7bf6a8175352f4565f811000ec955ab/plat/mt6797/drivers/idvfs/mt_idvfs_api.c#L339

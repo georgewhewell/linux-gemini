@@ -100,16 +100,12 @@ int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
 	    state->vsram_uv < MT6797_A72_SRAM_MIN_UV ||
 	    state->vsram_uv > MT6797_A72_SRAM_MAX_UV)
 		return -ERANGE;
-	/* Selector 0 reads as 1.05 V but cannot be recreated by the set FID. */
-	if (!state->vsram_selector || state->vsram_selector > 15)
-		return -EOPNOTSUPP;
+	/* First-start only: full cold sample, not equivalent nominal voltage. */
+	if (state->vsram_selector || state->vsram_control || state->vsram_calibration)
+		return -EBUSY;
+	if (state->vsram_uv != 1050000)
+		return -EUCLEAN;
 
-	/*
-	 * Keep the ordinary regulator backend's selector-zero refusal until a
-	 * dedicated first-start SRAM operation replaces it.  The setter also
-	 * changes calibration/control state; nominal voltage is not a complete
-	 * inverse.  Independently require the guard and read-fence backends.
-	 */
 	if ((capabilities & MT6797_A72_REQUIRED_CAPS) !=
 	    MT6797_A72_REQUIRED_CAPS)
 		return -EOPNOTSUPP;
@@ -174,6 +170,8 @@ static bool mt6797_a72_states_equal(const struct mt6797_a72_state *first,
 	       first->vproc_uv == second->vproc_uv &&
 	       first->vsram_uv == second->vsram_uv &&
 	       first->vsram_selector == second->vsram_selector &&
+	       first->vsram_control == second->vsram_control &&
+	       first->vsram_calibration == second->vsram_calibration &&
 	       first->transaction_guarded == second->transaction_guarded &&
 	       first->a72_online == second->a72_online;
 }

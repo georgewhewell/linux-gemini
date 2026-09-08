@@ -367,7 +367,15 @@ asmlinkage notrace void secondary_start_kernel(void)
 	 * as the root irqchip has already been detected and initialized we can
 	 * unmask IRQ and FIQ at the same time.
 	 */
+	if (IS_ENABLED(CONFIG_ARM64_MT6797_A72_CAPABILITY_PROFILE) &&
+	    (cpu == 8 || cpu == 9))
+		pr_info("A72_M10 CPU%u before-daif-restore daif=%lx\n",
+			cpu, read_sysreg(daif));
 	local_daif_restore(DAIF_PROCCTX);
+	if (IS_ENABLED(CONFIG_ARM64_MT6797_A72_CAPABILITY_PROFILE) &&
+	    (cpu == 8 || cpu == 9))
+		pr_info("A72_M10 CPU%u after-daif-restore daif=%lx\n",
+			cpu, read_sysreg(daif));
 
 	/*
 	 * OK, it's off to the idle thread for us

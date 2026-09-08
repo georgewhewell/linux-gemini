@@ -521,7 +521,9 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 		if (!ret)
 			ret = mt6797_a72_validate_cpu8_identity(read_cpuid_id());
 		if (!ret) {
+			dev_info(preflight->dev, "A72_M10 CPU%u before-affinity-info\n", cpu);
 			affinity = psci_ops.affinity_info(preflight->mpidrs[1], 0);
+			dev_info(preflight->dev, "A72_M10 CPU%u after-affinity-info ret=%d\n", cpu, affinity);
 			if (affinity != PSCI_0_2_AFFINITY_LEVEL_ON)
 				ret = affinity < 0 ? affinity : -EIO;
 		}
@@ -545,7 +547,9 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 	if (ret)
 		goto disarm;
 
+	dev_info(preflight->dev, "A72_M10 CPU%u before-affinity-info\n", cpu);
 	affinity = psci_ops.affinity_info(preflight->mpidrs[0], 0);
+	dev_info(preflight->dev, "A72_M10 CPU%u after-affinity-info ret=%d\n", cpu, affinity);
 	if (affinity != PSCI_0_2_AFFINITY_LEVEL_ON) {
 		ret = affinity < 0 ? affinity : -EIO;
 		goto disarm;

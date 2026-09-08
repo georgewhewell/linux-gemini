@@ -32,7 +32,16 @@ struct mt6797_md1_fs_entry {
 	struct mt6797_md1_fs_attr attr;
 };
 
+enum mt6797_md1_fs_mutation {
+	MT6797_MD1_FS_MKDIR,
+	MT6797_MD1_FS_RMDIR,
+	MT6797_MD1_FS_UNLINK,
+};
+
 #if IS_ENABLED(CONFIG_MTK_MT6797_MD1_FS_PROVIDER)
+/* Process-context namespace mutations, restricted to consumed RAM roots. */
+int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
+				      enum mt6797_md1_fs_mutation operation);
 /* Explicit ASCII drive; only registered Z/X/Y roots are addressable. Paths
  * remain relative and undergo the same confinement checks as the legacy API.
  */
@@ -66,6 +75,11 @@ int mt6797_md1_fs_provider_next_entry(struct file *dir,
 				      struct mt6797_md1_fs_entry *entry);
 void mt6797_md1_fs_provider_close(struct file *file);
 #else
+static inline int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
+				      enum mt6797_md1_fs_mutation operation)
+{
+	return -ENODEV;
+}
 static inline int mt6797_md1_fs_provider_stats_drive(u8 drive, struct mt6797_md1_fs_stats *stats)
 {
 	return -ENODEV;

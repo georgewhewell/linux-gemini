@@ -15,6 +15,11 @@ driver = root / 'drivers/net/wireless/mediatek/mt6797'
 def source(name):
     return re.sub(r'^#include .*\n', '', (driver / name).read_text(), flags=re.M)
 
+# Fixed-rate mode uses zero for descriptor, one for register. Import vendor macro.
+vendor = Path('/home/grw/src/gemini-linux-kernel-3.18/drivers/misc/mediatek/connectivity/wlan/gen3/include/nic/nic_tx.h').read_text()
+rate_macro = re.search(r'#define HAL_MAC_TX_DESC_SET_FIXED_RATE_MODE_TO_DESC[^\n]*\\\n[^\n]*', vendor)[0]
+rate_mask = re.search(r'^#define TX_DESC_FIXED_RATE_MODE[^\n]*', vendor, re.M)[0]
+
 program = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -53,6 +58,7 @@ static void put_unaligned_le32(u32 v,void *p) {
  u8 *b=p; for(unsigned i=0;i<4;i++) b[i]=v>>(8*i);
 }
 '''
+program += rate_mask + '\n' + rate_macro + '\n'
 # Import the actual kernel's wire constants; do not duplicate their values.
 ieee = (root / 'include/linux/ieee80211.h').read_text()
 names = ['IEEE80211_STYPE_ASSOC_REQ', 'IEEE80211_STYPE_ASSOC_RESP',
@@ -131,6 +137,9 @@ int main(void) {
  assert(transfer==((n+28+3)&~3UL));
  assert(packet[4]==sta.pairwise.index && packet[20]==lease.pid);
  assert(packet[8]==0 && !memcmp(packet+28,f,n));
+ struct { u8 ucAntID; } vendor_rate={.ucAntID=1};
+ HAL_MAC_TX_DESC_SET_FIXED_RATE_MODE_TO_DESC(&vendor_rate);
+ assert(packet[24]==vendor_rate.ucAntID);
  assert(!mt6797_wifi_ais_mgmt_pid_release(&tx_owner,&lease));
  assert(!mt6797_wifi_ais_mgmt_pid_close(&tx_owner));
  struct mt6797_wifi_ais_assoc_pending saved=pending;

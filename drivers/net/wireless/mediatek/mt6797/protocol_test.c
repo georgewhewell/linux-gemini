@@ -250,7 +250,7 @@ static void mt6797_wifi_tx_eapol_test(struct kunit *test)
 static void mt6797_wifi_tx_bounds_test(struct kunit *test)
 {
 	u8 payload[ETH_HLEN] = {};
-	u8 packet[MT6797_WIFI_TX_DESCRIPTOR_LENGTH + ETH_HLEN];
+	u8 packet[ALIGN(MT6797_WIFI_TX_DESCRIPTOR_LENGTH + ETH_HLEN, 4)];
 	struct mt6797_wifi_tx_params params = {
 		.traffic = MT6797_WIFI_TX_EAPOL,
 		.fixed_rate = 0x4b,
@@ -263,7 +263,7 @@ static void mt6797_wifi_tx_bounds_test(struct kunit *test)
 				   sizeof(payload), &params, &transfer_length);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 	put_unaligned_be16(ETH_P_PAE, payload + 12);
-	params.fixed_rate = 0;
+	params.fixed_rate = 0x4000;
 	ret = mt6797_wifi_tx_build(packet, sizeof(packet), payload,
 				   sizeof(payload), &params, &transfer_length);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);

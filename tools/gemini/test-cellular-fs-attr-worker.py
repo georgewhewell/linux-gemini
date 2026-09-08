@@ -187,7 +187,7 @@ int main(void){
    assert(d.total==140&&d.count==16);
    for(unsigned i=0;i<16;i++){
      struct mt6797_fs_diag_entry *e=&d.entry[(d.head+16-d.count+i)%16];
-     assert(e->sequence==125+i&&e->op==0x1001&&e->done&&e->status==-9&&e->result==-EIO&&e->sent==56&&!e->compact);
+     assert(e->sequence==125+i&&e->op==0x1001&&e->done&&e->status==-9&&e->result==-EIO&&e->sent==56&&!e->compact&&e->open_valid&&e->open_flags==0x900);
    }
    /* Freeze in-flight: completion and future requests cannot rewrite evidence. */
    u64 seq=mt6797_fs_diag_begin(&d,s.data,s.len);assert(seq==141);
@@ -202,13 +202,13 @@ int main(void){
    mt6797_fs_write32(frame+16,MT6797_FS_COMPACT_READ);mt6797_fs_write32(frame+20,2);
    mt6797_fs_write32(frame+24,4);memcpy(frame+28,"x\0\0\0",4);
    mt6797_fs_write32(frame+32,40);mt6797_fs_write32(frame+36,0x13);
-   mt6797_fs_write32(frame+68,16384);
+   mt6797_fs_write32(frame+68,16384);mt6797_fs_write32(frame+48,0x100);
    assert(mt6797_fs_diag_begin(&d,frame,sizeof(frame))==1);
-   assert(d.entry[0].compact&&d.entry[0].flags==0x13&&d.entry[0].requested==16384);
+   assert(d.entry[0].compact&&d.entry[0].flags==0x13&&d.entry[0].requested==16384&&d.entry[0].open_valid&&d.entry[0].open_flags==0x100);
    /* Request bytes are not retained; changing them cannot affect the ring. */
    memset(frame,255,sizeof(frame));assert(d.entry[0].flags==0x13);
    assert(mt6797_fs_diag_begin(&d,frame,1)==2);
-   assert(d.entry[1].parse_error==-EMSGSIZE&&!d.entry[1].compact&&!d.entry[1].op);
+   assert(d.entry[1].parse_error==-EMSGSIZE&&!d.entry[1].compact&&!d.entry[1].op&&!d.entry[1].open_valid);
  }
  puts("PASS FS metadata: last 16 after 140 operations, chronological wrap, immutable freeze during request, compact shape and malformed request");
  puts("PASS actual FS admission/worker/send/destroy: immutable RX copy, C11 frame end to end, three-frame fragmentation with final-frame index release, allocation and TX ownership failures, STOP before/during service/before publish, refusals without claims, drain-once with service release, 32 concurrent admissions bounded to five");

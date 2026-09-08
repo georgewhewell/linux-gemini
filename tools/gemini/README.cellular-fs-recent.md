@@ -28,3 +28,11 @@ Tests execute the actual header and FS worker:140 requests/last16 chronology,
 freeze between begin/end, immutable post-freeze writes, compact numeric shape,
 malformed short input, and existing allocation/TX/STOP/concurrent admission
 cases. ARM64 W=1 compile passes. Hardware result remains pending.
+
+C16 hardware captured1132 requests, pending0; final two OPEN operations returned
+vendor-18 with successful32-byte replies. All prior retained reads completed.
+To distinguish write-intent OPEN from other general failures, the next revision
+adds open_valid/open_flags for shape-valid OPEN/OPENHINT and COMPACT_READ.
+These are numeric flags only. No access policy changes. Host tests check the
+literal C11 OPEN0x900 and composite read0x100 flags; short malformed inputs do
+not set open_valid. No next-revision hardware result yet.

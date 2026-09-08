@@ -256,9 +256,10 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 		const struct mt6797_fs_diag_entry *e = &ccci->fs_diag.entry[slot];
 
 		dev_err(ccci->dev,
-			"CCCI_FS_RECENT seq=%llu op=%x parse=%d compact=%u flags=%x requested=%u done=%u status=%d result=%d sent=%zu\n",
+			"CCCI_FS_RECENT seq=%llu op=%x parse=%d compact=%u flags=%x requested=%u open_valid=%u open_flags=%x done=%u status=%d result=%d sent=%zu\n",
 			(unsigned long long)e->sequence, e->op, e->parse_error,
-			e->compact, e->flags, e->requested, e->done, e->status,
+			e->compact, e->flags, e->requested, e->open_valid, e->open_flags,
+			e->done, e->status,
 			e->result, e->sent);
 	}
 	if (d->descriptor_valid)

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* GEN3 nicUpdateBss/cnmStaSendUpdateCmd layouts; explicit little-endian writes. */
 #include <linux/errno.h>
+#include <linux/ieee80211.h>
+#include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 
@@ -8,6 +10,140 @@
 
 #define MT6797_JOIN_LEGACY_RATES 0x3fcfU
 #define MT6797_JOIN_CCK_RATES 0x000fU
+
+/* GEN3 wlan_def.h software-index and long-preamble hardware encodings. */
+static const struct {
+	u8 rate;
+	u8 index;
+	u8 hardware;
+} mt6797_join_rates[] = {
+	{ 2, 0, 0x00 }, { 4, 1, 0x01 }, { 11, 2, 0x02 }, { 22, 3, 0x03 },
+	{ 12, 6, 0x4b }, { 18, 7, 0x4f }, { 24, 8, 0x4a }, { 36, 9, 0x4e },
+	{ 48, 10, 0x49 }, { 72, 11, 0x4d }, { 96, 12, 0x48 }, { 108, 13, 0x4c },
+};
+
+int mt6797_wifi_ais_join_rates_parse(const u8 *ies, size_t length,
+	u16 capability, struct mt6797_wifi_ais_join_params *params)
+{
+	u16 operational = 0, basic = 0, allowed;
+	bool rates = false, extended = false, erp = false, protect = false;
+	bool barker = false;
+	u8 id, count, index, value;
+	size_t offset = 0, j;
+	u16 default_rate = 0;
+
+	if (!params || !ies || !length ||
+	    length > MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH)
+		return -EINVAL;
+	if (params->channel.band == MT6797_WIFI_AIS_BAND_2GHZ)
+		allowed = MT6797_JOIN_LEGACY_RATES;
+	else if (params->channel.band == MT6797_WIFI_AIS_BAND_5GHZ)
+		allowed = MT6797_JOIN_LEGACY_RATES & ~MT6797_JOIN_CCK_RATES;
+	else
+		return -EINVAL;
+	while (offset < length) {
+		if (length - offset < 2)
+			return -EPROTO;
+		id = ies[offset];
+		count = ies[offset + 1];
+		if (count > length - offset - 2)
+			return -EPROTO;
+		if (id == WLAN_EID_ERP_INFO) {
+			if (erp || count != 1)
+				return -EPROTO;
+			erp = true;
+			protect = ies[offset + 2] & WLAN_ERP_USE_PROTECTION;
+			barker = ies[offset + 2] & WLAN_ERP_BARKER_PREAMBLE;
+		}
+		if (id == WLAN_EID_SUPP_RATES || id == WLAN_EID_EXT_SUPP_RATES) {
+			if (!count || (id == WLAN_EID_SUPP_RATES && (rates || count > 8)) ||
+			    (id == WLAN_EID_EXT_SUPP_RATES && extended))
+				return -EPROTO;
+			if (id == WLAN_EID_SUPP_RATES)
+				rates = true;
+			else
+				extended = true;
+			for (j = 0; j < count; j++) {
+				value = ies[offset + 2 + j];
+				for (index = 0; index < ARRAY_SIZE(mt6797_join_rates); index++)
+					if ((value & 0x7f) == mt6797_join_rates[index].rate &&
+					    (allowed & (1U << mt6797_join_rates[index].index)))
+						break;
+				if (index == ARRAY_SIZE(mt6797_join_rates)) {
+					if (value & 0x80)
+						return -EOPNOTSUPP;
+					continue;
+				}
+				operational |= 1U << mt6797_join_rates[index].index;
+				if (value & 0x80)
+					basic |= 1U << mt6797_join_rates[index].index;
+			}
+		}
+		offset += count + 2;
+	}
+	if (!rates)
+		return -EPROTO;
+	if (!operational || !basic)
+		return -EOPNOTSUPP;
+	/* Match vendor nicTxUpdateBssDefaultRate: lowest software basic-rate index. */
+	for (index = 0; index < ARRAY_SIZE(mt6797_join_rates); index++)
+		if (basic & (1U << mt6797_join_rates[index].index)) {
+			default_rate = mt6797_join_rates[index].hardware;
+			break;
+		}
+	params->operational_rates = operational;
+	params->desired_rates = operational;
+	params->basic_rates = basic;
+	params->default_rate = default_rate;
+	params->erp_protection = params->channel.band == MT6797_WIFI_AIS_BAND_2GHZ && protect;
+	params->short_preamble = params->channel.band == MT6797_WIFI_AIS_BAND_2GHZ &&
+		!barker && (capability & WLAN_CAPABILITY_SHORT_PREAMBLE);
+	params->short_slot = params->channel.band == MT6797_WIFI_AIS_BAND_5GHZ ||
+		(capability & WLAN_CAPABILITY_SHORT_SLOT_TIME);
+	if (params->channel.band == MT6797_WIFI_AIS_BAND_5GHZ) {
+		params->phy_types = 8;
+		params->basic_phy = 3;
+	} else {
+		params->phy_types = (operational & MT6797_JOIN_CCK_RATES ? 1 : 0) |
+			(operational & ~MT6797_JOIN_CCK_RATES ? 2 : 0);
+		params->basic_phy = operational & ~MT6797_JOIN_CCK_RATES ? 1 : 0;
+	}
+	return 0;
+}
+
+int mt6797_wifi_ais_join_rates_ies_build(
+	const struct mt6797_wifi_ais_join_params *params,
+	u8 *ies, size_t capacity, size_t *length)
+{
+	u8 values[ARRAY_SIZE(mt6797_join_rates)];
+	unsigned int index, count = 0, first;
+	size_t total;
+
+	if (length)
+		*length = 0;
+	if (!params || !ies || !length || !params->desired_rates ||
+	    params->desired_rates & ~MT6797_JOIN_LEGACY_RATES ||
+	    !params->basic_rates || params->basic_rates & ~params->desired_rates)
+		return -EINVAL;
+	for (index = 0; index < ARRAY_SIZE(mt6797_join_rates); index++)
+		if (params->desired_rates & (1U << mt6797_join_rates[index].index))
+			values[count++] = mt6797_join_rates[index].rate |
+				(params->basic_rates & (1U << mt6797_join_rates[index].index) ? 0x80 : 0);
+	first = min(count, 8U);
+	total = count + 2 + (count > first ? 2 : 0);
+	if (capacity < total)
+		return -EMSGSIZE;
+	ies[0] = WLAN_EID_SUPP_RATES;
+	ies[1] = first;
+	memcpy(ies + 2, values, first);
+	if (count > first) {
+		ies[first + 2] = WLAN_EID_EXT_SUPP_RATES;
+		ies[first + 3] = count - first;
+		memcpy(ies + first + 4, values + first, count - first);
+	}
+	*length = total;
+	return 0;
+}
 
 static bool mt6797_join_params_valid(const struct mt6797_wifi_ais_join_params *p)
 {

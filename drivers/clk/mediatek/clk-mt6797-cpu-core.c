@@ -83,6 +83,7 @@ bool mt6797_cpuclk_snapshots_equal(const struct mt6797_cpuclk_snapshot *first,
 static bool mt6797_cpuclk_divider_valid(u8 divider)
 {
 	switch (divider) {
+	case 0:
 	case 8:
 	case 9:
 	case 10:
@@ -157,6 +158,20 @@ int mt6797_cpuclk_decode_state(enum mt6797_cpuclk_domain domain,
 	if (!mt6797_cpuclk_divider_valid(state->divider))
 		return -ERANGE;
 
+	/*
+	 * The offline MP2 path uses clk26m with an uninitialized, unselected
+	 * PLL. Secure PSCI owns initial PLL/mux programming during CPU_ON.
+	 * Preserve the zero PLL observation; it is not a synthesized rate.
+	 * Admit only the complete cold tuple observed on Gemini, not arbitrary
+	 * malformed PLL state or a zero-rate PLL selected by the mux.
+	 */
+	if (domain == MT6797_CPUCLK_MP2 &&
+	    state->source == MT6797_CPUCLK_CLK26M && !state->divider &&
+	    !snapshot->mp2_armpll_con0 && !snapshot->mp2_armpll_con1) {
+		state->armpll_rate = 0;
+		return 0;
+	}
+
 	ret = mt6797_cpuclk_decode_armpll(domain, snapshot, clk26m_rate,
 					  &state->armpll_rate);
 	if (ret)
@@ -170,6 +185,7 @@ unsigned long mt6797_cpuclk_apply_divider(unsigned long parent_rate, u8 divider)
 	u8 numerator, denominator;
 
 	switch (divider) {
+	case 0:
 	case 8:
 	case 16:
 	case 24:

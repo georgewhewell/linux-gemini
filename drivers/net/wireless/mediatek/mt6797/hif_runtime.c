@@ -4,6 +4,7 @@
 #include <linux/device.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/ktime.h>
 #include <linux/overflow.h>
@@ -419,6 +420,9 @@ static void mt6797_wifi_hif_terminal_work(struct work_struct *work)
 {
 	struct mt6797_wifi_hif_irq *irq =
 		container_of(work, struct mt6797_wifi_hif_irq, terminal_work);
+	struct mt6797_wifi_tx_credit credit;
+	unsigned long flags;
+	unsigned int queue;
 	int ret;
 
 	mutex_lock(&irq->lifecycle_lock);
@@ -427,6 +431,16 @@ static void mt6797_wifi_hif_terminal_work(struct work_struct *work)
 		return;
 	}
 	ret = __mt6797_wifi_hif_runtime_stop(irq, true);
+	spin_lock_irqsave(&irq->tx_credit_lock, flags);
+	credit = irq->tx_credit;
+	spin_unlock_irqrestore(&irq->tx_credit_lock, flags);
+	/* Software counters only: no further HIF accesses after a terminal fault. */
+	dev_err(irq->dev, "terminal TX credits: available=%llu\n", credit.available);
+	for (queue = 0; queue < MT6797_WIFI_TX_CREDIT_QUEUES; queue++)
+		dev_err(irq->dev,
+			"terminal TX queue=%u limit=%u free=%u done=%u released=%llu\n",
+			queue, credit.limit[queue], credit.free[queue], credit.done[queue],
+			READ_ONCE(irq->pump_stats.tx_released[queue]));
 	mutex_unlock(&irq->lifecycle_lock);
 	dev_err(irq->dev,
 		"runtime HIF fault %d; WLAN fenced and stopped%s\n",
@@ -1075,6 +1089,63 @@ mt6797_wifi_hif_irq_mode(const struct mt6797_wifi_hif_irq *irq)
 {
 	return irq ? READ_ONCE(irq->mode) :
 		MT6797_WIFI_HIF_IRQ_TERMINAL;
+}
+
+/* Probe-time only, before registering any command consumer. The exact GEN3
+ * firmware references the 0x800c0000 HIF client block. Offset 0x68 is RXINF on
+ * mt7603; observe it here without assuming its MT6797 bit assignments.
+ */
+int mt6797_wifi_hif_runtime_read_rxinf(struct mt6797_wifi_hif_irq *irq, u32 *value)
+{
+	struct mt6797_wifi_hif_event_copy event;
+	u8 command[16];
+	int ret;
+
+	if (!irq || !value)
+		return -EINVAL;
+	*value = 0;
+	mutex_lock(&irq->lifecycle_lock);
+	ret = mt6797_wifi_hif_runtime_status(irq);
+	if (ret)
+		goto unlock;
+	/* GEN3 CMD_ID_ACCESS_REG, query, private startup sequence. */
+	ret = mt6797_wifi_command_init(command, sizeof(command), 8, 0xc0, false, 0xf0);
+	if (ret)
+		goto unlock;
+	put_unaligned_le32(0x800c0068, command + 8);
+	ret = mt6797_wifi_hif_wait_event_arm(&irq->wait_event, 0x05, NULL, 0);
+	if (ret)
+		goto unlock;
+	ret = mt6797_wifi_hif_runtime_send(irq, MT6797_WIFI_MCR_WTDR1,
+		command, sizeof(command));
+	if (ret)
+		goto disarm;
+	if (!wait_for_completion_timeout(&irq->wait_event.completion,
+		msecs_to_jiffies(1000))) {
+		ret = -ETIMEDOUT;
+		goto fail;
+	}
+	ret = mt6797_wifi_hif_wait_event_take(&irq->wait_event, &event);
+	if (ret)
+		goto fail;
+	ret = event.error;
+	if (ret)
+		goto fail;
+	if (event.id != 0x05 || event.sequence != 0xf0 ||
+	    event.packet_length != 16 || event.payload_length != 8 ||
+	    get_unaligned_le32(event.payload) != 0x800c0068) {
+		ret = -EPROTO;
+		goto fail;
+	}
+	*value = get_unaligned_le32(event.payload + 4);
+	goto disarm;
+fail:
+	mt6797_wifi_hif_runtime_fail(irq, ret);
+disarm:
+	mt6797_wifi_hif_wait_event_disarm(&irq->wait_event);
+unlock:
+	mutex_unlock(&irq->lifecycle_lock);
+	return ret;
 }
 
 int mt6797_wifi_hif_runtime_start(struct mt6797_wifi_hif_irq *irq,

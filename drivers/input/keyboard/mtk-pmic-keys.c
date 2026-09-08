@@ -171,8 +171,8 @@ enum mtk_pmic_keys_lp_mode {
 	LP_TWOKEY,
 };
 
-static void mtk_pmic_keys_lp_reset_setup(struct mtk_pmic_keys *keys,
-					 const struct mtk_pmic_regs *regs)
+static int mtk_pmic_keys_lp_reset_setup(struct mtk_pmic_keys *keys,
+					const struct mtk_pmic_regs *regs)
 {
 	const struct mtk_pmic_keys_regs *kregs_home, *kregs_pwr;
 	u32 long_press_mode, long_press_debounce;
@@ -214,7 +214,7 @@ static void mtk_pmic_keys_lp_reset_setup(struct mtk_pmic_keys *keys,
 		break;
 	}
 
-	regmap_update_bits(keys->regmap, regs->pmic_rst_reg, mask, value);
+	return regmap_update_bits(keys->regmap, regs->pmic_rst_reg, mask, value);
 }
 
 static irqreturn_t mtk_pmic_keys_irq_handler_thread(int irq, void *data)
@@ -422,14 +422,17 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 		index++;
 	}
 
+	error = mtk_pmic_keys_lp_reset_setup(keys, mtk_pmic_regs);
+	if (error)
+		return dev_err_probe(&pdev->dev, error,
+				     "Failed to configure long-press reset\n");
+
 	error = input_register_device(input_dev);
 	if (error) {
 		dev_err(&pdev->dev,
 			"register input device failed (%d)\n", error);
 		return error;
 	}
-
-	mtk_pmic_keys_lp_reset_setup(keys, mtk_pmic_regs);
 
 	platform_set_drvdata(pdev, keys);
 

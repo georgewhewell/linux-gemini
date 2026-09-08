@@ -20,6 +20,7 @@ program = program.replace('struct mt6797_wifi_hif_irq { int lifecycle_lock; bool
 program = program.replace('static ktime_t ktime_get(void) { return 100; }',
  'static ktime_t test_time; static ktime_t ktime_get(void) { return test_time; }')
 program += r'''
+#define dev_info_ratelimited(...) do {} while(0)
 #define ETH_HLEN 14
 #define ETH_P_IP 0x0800
 #define ETH_P_ARP 0x0806
@@ -83,6 +84,7 @@ static int mt6797_wifi_hif_runtime_send(struct mt6797_wifi_hif_irq *i,u32 addres
 }
 '''
 program += re.sub(r'^#include .*\n', '', (driver / 'protocol.c').read_text(), flags=re.M)
+program += base['function']('mt6797_radio_eapol_pairwise_message')
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_purge_tx',
              'mt6797_radio_tx_packet', 'mt6797_radio_tx_work', 'mt6797_radio_xmit']:
     program += base['function'](name)
@@ -101,6 +103,13 @@ static struct sk_buff *packet(u16 ether_type) {
  memcpy(skb->data,bss.bssid,6); memcpy(skb->data+6,dev.dev_addr,6);
  skb->data[12]=ether_type>>8; skb->data[13]=ether_type; return skb;
 }
+static struct sk_buff *eapol(u16 info,unsigned data_length) {
+ struct sk_buff *skb=packet(ETH_P_PAE); u8 *p=skb->data+14;
+ skb->len=113+data_length; p[0]=2; p[1]=3;
+ p[2]=(95+data_length)>>8; p[3]=95+data_length; p[4]=2;
+ p[5]=info>>8; p[6]=info; p[97]=data_length>>8; p[98]=data_length;
+ return skb;
+}
 static void submit(u16 ether_type) { assert(mt6797_radio_xmit(packet(ether_type),&dev)==NETDEV_TX_OK); }
 static void run(void) {
  mt6797_radio_tx_work(&r.tx_work);
@@ -116,6 +125,37 @@ int main(void) {
  assert(captured[11]==0x80 && !get_unaligned_le16(captured+26)); /* 1 Mbps default. */
  setup(); c.control_port_no_encrypt=true; submit(ETH_P_PAE); run(); assert(sends==1 && !(captured[6]&0x80));
  setup(); submit(ETH_P_PAE); run(); assert(sends==1 && (captured[6]&0x80));
+ /* PTK may be ready before a plaintext M3's M4 is queued. Only that
+  * pairwise reply may bypass encryption; group replies and data may not. */
+ setup(); c.pairwise_reply_plaintext=true;
+ assert(!mt6797_radio_xmit(eapol(0x030a,0),&dev)); run(); assert(sends==1 && !(captured[6]&0x80));
+ assert(c.pairwise_reply_plaintext);
+ assert(!mt6797_radio_xmit(eapol(0x030a,0),&dev)); run(); assert(sends==2 && !(captured[6]&0x80));
+ setup(); c.pairwise_reply_plaintext=true;
+ assert(!mt6797_radio_xmit(eapol(0x010a,0),&dev)); run(); assert(!(captured[6]&0x80)); /* AP omitted Secure. */
+ setup(); c.pairwise_reply_plaintext=true;
+ assert(!mt6797_radio_xmit(eapol(0x0302,0),&dev)); run(); assert(captured[6]&0x80); /* Group reply. */
+ setup(); c.pairwise_reply_plaintext=true;
+ assert(!mt6797_radio_xmit(eapol(0x010a,22),&dev)); run(); assert(captured[6]&0x80); /* M2 with RSN. */
+ setup(); c.pairwise_reply_plaintext=true; submit(ETH_P_IP); run(); assert(captured[6]&0x80);
+ setup(); assert(!mt6797_radio_xmit(eapol(0x030a,0),&dev)); run(); assert(captured[6]&0x80); /* Protected M3. */
+ setup(); c.control_port_no_encrypt=true;
+ assert(!mt6797_radio_xmit(eapol(0x030a,0),&dev)); run(); assert(!(captured[6]&0x80));
+ setup(); struct sk_buff *key=eapol(0x13ca,0); u8 *body=key->data+14;
+ assert(mt6797_radio_eapol_pairwise_message(body,99)==3);
+ for(unsigned length=0;length<99;length++) assert(!mt6797_radio_eapol_pairwise_message(body,length));
+ for(unsigned bit=0;bit<16;bit++) {
+  if(!(0xec30U&(1U<<bit))) continue;
+  unsigned info=0x13caU|(1U<<bit); body[5]=info>>8; body[6]=info;
+  assert(!mt6797_radio_eapol_pairwise_message(body,99));
+ }
+ body[5]=0x13; body[6]=0xca;
+ body[0]=3; assert(!mt6797_radio_eapol_pairwise_message(body,99)); body[0]=2;
+ body[1]=0; assert(!mt6797_radio_eapol_pairwise_message(body,99)); body[1]=3;
+ body[4]=254; assert(!mt6797_radio_eapol_pairwise_message(body,99)); body[4]=2;
+ body[98]=1; assert(!mt6797_radio_eapol_pairwise_message(body,99)); body[98]=0;
+ body[3]=96; assert(!mt6797_radio_eapol_pairwise_message(body,99));
+ free(key);
  setup(); c.join.negotiated.security=MT6797_WIFI_AIS_SECURITY_OPEN; submit(ETH_P_IP); run(); assert(sends==1 && !(captured[6]&0x80));
  setup(); struct sk_buff *skb=packet(ETH_P_IP); memset(skb->data,255,6);
  assert(!mt6797_radio_xmit(skb,&dev)); run(); assert(sends==1 && captured[4]==3 && (captured[6]&0x80));
@@ -135,7 +175,7 @@ int main(void) {
  run(); assert(sends==64 && freed==64 && !dev.stopped);
  setup(); submit(ETH_P_IP); submit(ETH_P_PAE); c.cancel=true;
  mt6797_radio_purge_tx(&r); assert(freed==2 && dev.tx_dropped==2); run(); assert(!sends);
- puts("PASS: production TX queue/worker/codec: port/key/encryption policy, AP EAPOL, multicast via PTK, fixed 1Mbps, credit retries/deadline/cancellation, queue backpressure and teardown ownership");
+ puts("PASS: production TX queue/worker/codec: port/key/encryption policy, plaintext-M3 reply and retransmit policy, bounded EAPOL classifier, AP EAPOL, multicast via PTK, fixed 1Mbps, credit retries/deadline/cancellation, queue backpressure and teardown ownership");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-radio-tx-') as temporary:

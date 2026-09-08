@@ -16,12 +16,14 @@ program = program.replace('struct net_device { u8 dev_addr[6]; };',
 program += re.sub(r'^#include .*\n', '', (driver / 'data_rx.h').read_text(), flags=re.M)
 program += r'''
 #define dev_warn_ratelimited(...) do {} while(0)
+#define dev_info_ratelimited(...) do {} while(0)
 #define BIT(n) (1U << (n))
 #define ETH_HLEN 14
 #define VLAN_HLEN 4
 #define CHECKSUM_NONE 0
 #define DEV_STATS_INC(d,n) ((d)->n++)
 #define DEV_STATS_ADD(d,n,v) ((d)->n+=(v))
+static u16 get_unaligned_be16(const void *p) { const u8 *b=p; return (u16)b[0]<<8|b[1]; }
 struct sk_buff { u8 data[1600]; size_t length; unsigned protocol,ip_summed; };
 static struct mt6797_wifi_data_rx input;
 static int decode_error;
@@ -43,6 +45,7 @@ int mt6797_wifi_data_rx_decode(const u8 *packet,size_t available,struct mt6797_w
 '''
 src = (driver / 'data_rx.c').read_text()
 program += src[src.index('int mt6797_wifi_data_rx_replay('):src.index('int mt6797_wifi_data_rx_decode(')]
+program += base['function']('mt6797_radio_eapol_pairwise_message')
 program += base['function']('mt6797_radio_data_frame')
 program += r'''
 static struct mt6797_wifi_radio r;
@@ -103,10 +106,22 @@ int main(void) {
  rx(true); assert(c.group_key.rx_pn[0]==1 && !c.pairwise_key.rx_pn[0]);
  input.pn=2; c.group_key.updating=true; rx(false); assert(c.group_key.rx_pn[0]==1);
  c.group_key.updating=false; input.eapol=true; rx(false);
+ /* Only an accepted AP M3 may change the reply protection choice. */
+ u8 key[99]={2,3,0,95,2,0x13,0xca};
+ setup(); input.eapol=true; input.protected=false; ethernet[12]=0x88; ethernet[13]=0x8e;
+ input.payload=key; input.length=14+sizeof(key);
+ rx(true); assert(c.pairwise_reply_plaintext);
+ input.protected=true; rx(true); assert(!c.pairwise_reply_plaintext);
+ input.protected=false; ethernet[7]^=1;
+ rx(false); assert(!c.pairwise_reply_plaintext);
+ ethernet[7]^=1; key[4]=254;
+ rx(true); assert(!c.pairwise_reply_plaintext);
+ key[4]=2; input.multicast=true; input.wlan_index=4; input.key_index=1;
+ rx(false); assert(!c.pairwise_reply_plaintext);
  setup(); allocation_failure=true; rx(false); assert(!c.pairwise_key.rx_pn[0]);
  setup(); decode_error=-EPROTO; rx(false); assert(!freed);
  setup(); input.length=1600; rx(false); assert(!freed);
- puts("PASS: production RX delivery policy: AP/BSS/WTBL/destination ownership, closed-port EAPOL, plaintext rejection, key-transition gating, per-TID/group replay, allocation and delivery accounting");
+ puts("PASS: production RX delivery policy: AP/BSS/WTBL/destination ownership, closed-port EAPOL, accepted-M3 protection tracking, plaintext rejection, key-transition gating, per-TID/group replay, allocation and delivery accounting");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-radio-data-') as temporary:

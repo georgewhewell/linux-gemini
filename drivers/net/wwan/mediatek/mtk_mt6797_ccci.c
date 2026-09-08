@@ -968,8 +968,30 @@ static void mt6797_ccci_fs_work(struct work_struct *work)
 	}
 	ret = mt6797_fs_service_request(&ccci->fs_service, job->frame, job->len,
 					&reply, &status);
+	if (ret) {
+		struct mt6797_fs_request request;
+		int parsed = mt6797_fs_request_parse(job->frame, job->len, &request);
+
+		dev_info_ratelimited(ccci->dev,
+			"CCCI FS service_error=%d parse_error=%d request_bytes=%zu\n",
+			ret, parsed, job->len);
+		/* Numeric shape only: never log path or NVRAM file contents. */
+		if (!parsed && request.op == MT6797_FS_COMPACT_READ &&
+		    request.argc == 2 && request.len[1] == 40)
+			dev_info_ratelimited(ccci->dev,
+				"CCCI FS compact_flags=%x open_flags=%x offset=%d whence=%u read_length=%u\n",
+				mt6797_fs_read32(request.arg[1]),
+				mt6797_fs_read32(request.arg[1] + 12),
+				(s32)mt6797_fs_read32(request.arg[1] + 20),
+				mt6797_fs_read32(request.arg[1] + 24),
+				mt6797_fs_read32(request.arg[1] + 32));
+	}
 	if (!ret && !atomic_read(&ccci->failed) && !atomic_read(&ccci->teardown)) {
 		ret = mt6797_ccci_fs_send(ccci, &reply, &sent);
+		if (ret)
+			dev_info_ratelimited(ccci->dev,
+				"CCCI FS send_error=%d reply_bytes=%zu frames=%u sent=%zu\n",
+				ret, reply.len, mt6797_fs_reply_frames(&reply), sent);
 		index_released = !ret;
 	}
 	if (atomic_add_unless(&ccci->fs_logs, 1, 128))

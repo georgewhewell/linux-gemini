@@ -1,0 +1,93 @@
+{
+  "patches": [
+    {
+      "file": "0423-arm64-add-dormant-late-CPU-expected-pair-schema.patch",
+      "sha256": "2fbcf582bb25c3c395f334d639c29177ee1115878b75213ba44831adcda14d8a"
+    },
+    {
+      "file": "0424-arm64-validate-late-CPU-expectation-before-online.patch",
+      "sha256": "d6f23ecc11851778c5b2c4dcd8da7f6fc1a050f7ca811e58e48e5be9a6845e78"
+    },
+    {
+      "file": "0425-arm64-keep-late-CPU-expectation-check-runtime-safe.patch",
+      "sha256": "98c7531caa5c4d7782311b822fbda4397e064809329ffd4616659d64d315844b"
+    },
+    {
+      "file": "0426-arm64-move-late-CPU-prepare-workspaces-off-stack.patch",
+      "sha256": "304abfa7f493a1ed1d1e8f7057dbc5c4f5316fa3591fd8237d1216042aab1223"
+    },
+    {
+      "file": "0427-arm64-capture-late-CPU-system-policy-evidence.patch",
+      "sha256": "09eba2910e52fc31533e276365ebd98faa7db51567257237000ec9355dc1bc5e"
+    },
+    {
+      "file": "0428-arm64-finalize-late-CPU-pure-plan-identities.patch",
+      "sha256": "909529101d5eb1fe4e4944021dafbd75f40c1fb8d677931636075b5d6676bef2"
+    },
+    {
+      "file": "0429-arm64-commit-late-CPU-capabilities-monotonically.patch",
+      "sha256": "8317cfe7a81e6d2090677f9bf8dd081a9bd66e3ee6815cc505a2d8259bb817c0"
+    },
+    {
+      "file": "0430-arm64-separate-late-CPU-expected-planning-input.patch",
+      "sha256": "97066162598f49243735c3105e73c32dc3ca91ff72a2fe959f704b927f40ed3d"
+    },
+    {
+      "file": "0431-arm64-preflight-late-CPU-strict-verification.patch",
+      "sha256": "2ba89e453587194d6352b1d3126a36ba5e7893e743653f65f9403c8e7e992949"
+    },
+    {
+      "file": "0432-arm64-plan-late-CPU-conservative-system-policy.patch",
+      "sha256": "048b0df4faebbecb3e34ac2b27f7f0757e0124e207e4edaf7e119e130aa65978"
+    },
+    {
+      "file": "0433-arm64-bind-Gemini-late-CPU-expected-pair.patch",
+      "sha256": "3415384c7799fb6d2e45d24d7cdef991c790d031cb4ec0760a79dbe01a203705"
+    },
+    {
+      "file": "0434-arm64-finalize-Gemini-late-CPU-profile.patch",
+      "sha256": "3a5ce1a8e57c9b1c1c2564b8f7e65ad9d354efc5c4373c6f3ecac397f6f7a3fa"
+    },
+    {
+      "file": "0435-arm64-keep-late-CPU-preflight-build-safe-when-disabled.patch",
+      "sha256": "f07cd67cfa5bc9da16bd77b38150f096b4623dc3aa765c49542a45954884e3eb"
+    },
+    {
+      "file": "0437-arm64-drop-stale-Gemini-late-CPU-plan-blocker.patch",
+      "sha256": "99bf57192fe7e142151a1404b372b275cd1024014472e61730746a00ded6d53f"
+    },
+    {
+      "file": "0438-arm64-report-Gemini-late-CPU-plan-predicates.patch",
+      "sha256": "45c7db03b022325f93d2bac62df6ec13b352878c1c80a083418ed291c56fbd1c"
+    },
+    {
+      "file": "0439-arm64-report-Gemini-late-CPU-plan-values.patch",
+      "sha256": "570f4d9275abb42b9f59efe1fa4a8b99d09ff885329ae1c1a3df3426907855ef"
+    },
+    {
+      "file": "0440-arm64-repair-Gemini-late-CPU-plan-expectations.patch",
+      "sha256": "b629ff9589748131a72928942c23f25765054cea4be977c2623956b6d84726cc"
+    },
+    {
+      "file": "0441-arm64-complete-Gemini-late-CPU-classified-universe.patch",
+      "sha256": "0181805c1f2b0a123729dd4c4b8158eb5148f9fac8f6a19592bdfb32f4a981c8"
+    },
+    {
+      "file": "0459-arm64-bind-Gemini-A72-r0p1-expected-MIDR.patch",
+      "sha256": "35de4baa584485221af8bf087dc973c77fd0588d90418318bc4c5969da76748f"
+    },
+    {
+      "file": "0460-arm64-accept-Cortex-A72-revisions-in-expected-policy.patch",
+      "sha256": "f442d81292cc20c9ac3e0de3286a2fe2a0a5b9c7c98613f54e81f24cefdc92b5"
+    },
+    {
+      "file": "0461-arm64-report-Gemini-A72-effect-plan-stage.patch",
+      "sha256": "1b85cb0a141eeb9fc4f1fd2ac6ae5a496fd0148c9703a16faf79475b422f50c2"
+    },
+    {
+      "file": "0462-arm64-match-late-CPU-expected-pair-by-model.patch",
+      "sha256": "704247a558d6d061ab902a86fcdbf12aed99450d45a60de4cc4b568ec994026b"
+    }
+  ],
+  "upstream": "ixoo/gemini-pda-mainline"
+}

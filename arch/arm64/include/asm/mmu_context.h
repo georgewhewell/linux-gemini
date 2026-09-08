@@ -284,6 +284,7 @@ task_cpu_possible_mask(struct task_struct *p)
 
 const struct cpumask *task_cpu_fallback_mask(struct task_struct *p);
 
+bool arm64_late_cpu_asid_compatible(void);
 void verify_cpu_asid_bits(void);
 void post_ttbr_update_workaround(void);
 

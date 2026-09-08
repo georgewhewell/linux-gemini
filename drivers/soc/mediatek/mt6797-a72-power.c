@@ -8,6 +8,7 @@
  */
 
 #include <linux/arm-smccc.h>
+#include <asm/late_cpu_profile.h>
 #include <linux/soc/mediatek/mt6797-sram.h>
 #include <linux/clk.h>
 #include <linux/cpu.h>
@@ -444,6 +445,9 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 		return -EUCLEAN;
 	if (preflight->admission_ret)
 		return preflight->admission_ret;
+
+	if (!arm64_get_late_cpu_ready_token())
+		return -EAGAIN;
 
 	/* Recheck immediately before any Linux-owned rail/reset mutation. */
 	ret = mt6797_cpuclk_check_mp2_boot(preflight->dev, preflight->mp2_clk);

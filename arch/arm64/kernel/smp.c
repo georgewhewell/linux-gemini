@@ -270,6 +270,7 @@ asmlinkage notrace void secondary_start_kernel(void)
 	struct mm_struct *mm = &init_mm;
 	const struct cpu_operations *ops;
 	unsigned int cpu = smp_processor_id();
+	int expectation_ret;
 
 	/*
 	 * All kernel threads share the same mm context; grab a
@@ -290,6 +291,14 @@ asmlinkage notrace void secondary_start_kernel(void)
 	rcutree_report_cpu_starting(cpu);
 	trace_hardirqs_off();
 
+	expectation_ret = arm64_validate_late_cpu_preflight(cpu);
+	if (expectation_ret) {
+		pr_crit("CPU%u: late target preflight mismatch: %d\n",
+			cpu, expectation_ret);
+		update_cpu_boot_status(CPU_STUCK_IN_KERNEL);
+		cpu_park_loop();
+	}
+
 	/*
 	 * If the system has established the capabilities, make sure
 	 * this CPU ticks all of those. If it doesn't, the CPU will
@@ -305,6 +314,13 @@ asmlinkage notrace void secondary_start_kernel(void)
 	 * Log the CPU info before it is marked online and might get read.
 	 */
 	cpuinfo_store_cpu();
+	expectation_ret = arm64_validate_late_cpu_expected_target(cpu);
+	if (expectation_ret) {
+		pr_crit("CPU%u: late target expectation mismatch: %d\n",
+			cpu, expectation_ret);
+		update_cpu_boot_status(CPU_STUCK_IN_KERNEL);
+		cpu_park_loop();
+	}
 	store_cpu_topology(cpu);
 
 	/*
@@ -563,6 +579,7 @@ void __init smp_cpus_done(unsigned int max_cpus)
 	pr_info("SMP: Total of %d processors activated.\n", num_online_cpus());
 	hyp_mode_check();
 	arm64_collect_late_cpu_runtime_identity();
+	arm64_collect_late_cpu_runtime_system_policy();
 	arm64_seal_late_cpu_runtime_evidence();
 	arm64_prepare_late_cpu_profile();
 	setup_system_features();

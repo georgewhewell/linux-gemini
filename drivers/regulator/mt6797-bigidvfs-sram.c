@@ -8,6 +8,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/driver.h>
+#include <linux/regulator/of_regulator.h>
 
 #include "mt6797-bigidvfs-sram.h"
 
@@ -246,6 +247,11 @@ static int mt6797_bigidvfs_sram_probe(struct platform_device *pdev)
 	config.dev = &pdev->dev;
 	config.driver_data = sram;
 	config.of_node = pdev->dev.of_node;
+	config.init_data = of_get_regulator_init_data(&pdev->dev,
+				pdev->dev.of_node, &mt6797_bigidvfs_sram_desc);
+	if (!config.init_data)
+		return -ENOMEM;
+
 	rdev = devm_regulator_register(&pdev->dev,
 				       &mt6797_bigidvfs_sram_desc, &config);
 	if (IS_ERR(rdev))

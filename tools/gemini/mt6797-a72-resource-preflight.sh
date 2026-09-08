@@ -134,7 +134,7 @@ regulator_voltage_mv()
 }
 
 # Resolve exactly one provider attached to the expected DT node. Names alone
-# do not establish rail identity, and the descriptor names are not DT aliases.
+# do not establish rail identity; DT constraints supply the published names.
 resolve_regulator()
 {
 	expected_node=$(readlink -f "$dt_root/$1") || return 1
@@ -302,9 +302,9 @@ bucka_node=i2c@1100e000/regulator@68/regulators/BUCKA
 buckb_node=i2c@1100e000/regulator@68/regulators/BUCKB
 check_supply vproc-big-supply "$buckb_node" || fail "A72 VPROC supply identity mismatch"
 check_supply sram-big-supply regulator-sram-big || fail "A72 SRAM supply identity mismatch"
-little_name=$(resolve_regulator "$bucka_node" DA921x-BUCKA) || fail "BUCKA provider identity mismatch"
-big_name=$(resolve_regulator "$buckb_node" DA921x-BUCKB) || fail "BUCKB provider identity mismatch"
-sram_name=$(resolve_regulator regulator-sram-big mt6797-bigidvfs-sram) || fail "SRAM provider identity mismatch"
+little_name=$(resolve_regulator "$bucka_node" vproc-little) || fail "BUCKA provider identity mismatch"
+big_name=$(resolve_regulator "$buckb_node" vproc-big) || fail "BUCKB provider identity mismatch"
+sram_name=$(resolve_regulator regulator-sram-big vsram-big) || fail "SRAM provider identity mismatch"
 
 if ! little_mv=$(regulator_voltage_mv "$little_name"); then
 	fail "DA9214 BUCKA is absent from regulator summary"

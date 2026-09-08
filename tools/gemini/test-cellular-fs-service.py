@@ -171,6 +171,17 @@ static int mt6797_md1_fs_provider_xdelete_drive(u8 drive,const char *path,u32 fl
  xdelete_calls++;xdelete_flags=flags;xdelete_drive=drive;strcpy(xdelete_path,path);return xdelete_result;
 }
 
+static int copy_calls,copy_error,copy_after_mutation,copy_after_xdelete;
+static u8 copy_old_drive,copy_new_drive;
+static char copy_old_path[1025],copy_new_path[1025];
+static int mt6797_md1_fs_provider_copy_drive(u8 old_drive,const char *old_path,u8 new_drive,const char *new_path){
+ if(!ram_enabled)return -EROFS;
+ copy_calls++;copy_old_drive=old_drive;copy_new_drive=new_drive;
+ strcpy(copy_old_path,old_path);strcpy(copy_new_path,new_path);
+ copy_after_mutation=mutation_calls;copy_after_xdelete=xdelete_calls;
+ return copy_error;
+}
+
 '''
 tests = r'''
 static u8 frame[3584], payload[MT6797_FS_REPLY_MAX];
@@ -385,7 +396,7 @@ int main(void) {
  { u32 writes[] = {MT6797_FS_CREATEDIR, MT6797_FS_REMOVEDIR, MT6797_FS_DELETE, MT6797_FS_RESTORE, MT6797_FS_XDELETE};
    for (unsigned i = 0; i < 5; i++) { assert(!run_path(writes[i], "Z:\\NVRAM\\new", 4, i == 4) && status == -18 && reply.argc == 1);
      assert(!run_path(writes[i], "X:\\new", 4, i == 4) && status == -19); assert(!run_path(writes[i], "Z:\\..\\new", 4, i == 4) && status == -16); }
-   u32 n = utf16("Z:\\a", pathbuf); u8 second[64]; u32 m = utf16("Z:\\b", second); u8 fl[4] = {0}; const void *a[3] = {pathbuf, second, fl}; u32 l[3] = {n, m, 4};
+   u32 n = utf16("Z:\\a", pathbuf); u8 second[64]; u32 m = utf16("Z:\\b", second); u8 fl[4] = {1}; const void *a[3] = {pathbuf, second, fl}; u32 l[3] = {n, m, 4};
    assert(!run(0, MT6797_FS_RENAME, 2, a, l) && status == -18 && !run(0, MT6797_FS_MOVE, 3, a, l) && status == -18 && !run(0, MT6797_FS_RENAME, 1, a, l) && status == -2);
    u32 x = utf16("X:\\b", second); l[1] = x; assert(!run(0, MT6797_FS_RENAME, 2, a, l) && status == -19); }
 
@@ -449,6 +460,70 @@ int main(void) {
    assert(!run_path(MT6797_FS_XDELETE,"Z:\\..\\escape",28,1)&&status==-16&&xdelete_calls==before);
    ram_enabled=roots_enabled=false;
    puts("PASS actual XDELETE service: seven flag combinations, all drives, deletion count, errors and malformed request refusal");
+ }
+
+ { ram_enabled=roots_enabled=true;mutation_error=0;xdelete_result=7;
+   u8 second[1024],fl[4];const void *args[]={pathbuf,second,fl};u32 lens[]={0,0,4};
+   u32 valid[]={1,2,3,0x10001,0x10002,0x10003};
+   for(unsigned d=0;d<3;d++)for(unsigned e=0;e<3;e++)for(unsigned i=0;i<6;i++){
+     char old[]="Z:\\missing-source",new[]="Z:\\missing-destination";old[0]="ZXY"[d];new[0]="ZXY"[e];
+     lens[0]=utf16(old,pathbuf);lens[1]=utf16(new,second);mt6797_fs_write32(fl,valid[i]);
+     int before=copy_calls,deleted=mutation_calls+ xdelete_calls;copy_error=0;
+     assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==((valid[i]&1)?0:-18)&&reply.argc==1&&arg_s32(0)==status);
+     assert(copy_calls==before+!!(valid[i]&1)&&mutation_calls+xdelete_calls==deleted);
+     if(valid[i]&1)assert(copy_old_drive==old[0]&&copy_new_drive==new[0]&&!strcmp(copy_old_path,"missing-source")&&!strcmp(copy_new_path,"missing-destination"));
+   }
+   lens[0]=utf16("Z:\\big.bin",pathbuf);lens[1]=utf16("Z:\\NVRAM\\MD_A.bin",second);
+   for(unsigned i=0;i<6;i++){
+     mt6797_fs_write32(fl,valid[i]);int before=copy_calls,deleted=mutation_calls;
+     assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==((valid[i]&1)||(valid[i]&0x10000)?0:-18));
+     assert(copy_calls==before+!!(valid[i]&1)&&mutation_calls==deleted+!!(valid[i]&0x10000));
+     if(valid[i]&0x10000)assert(mutation_drive=='Z'&&mutation_op==MT6797_MD1_FS_UNLINK&&!strcmp(mutation_path,"NVRAM/MD_A.bin"));
+     if(valid[i]&1)assert(copy_after_mutation==mutation_calls);
+   }
+   lens[1]=utf16("Z:\\NVRAM",second);
+   for(unsigned i=3;i<6;i++){
+     mt6797_fs_write32(fl,valid[i]);int before=xdelete_calls;
+     assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==((valid[i]&1)?0:7)&&arg_s32(0)==status);
+     assert(xdelete_calls==before+1&&xdelete_drive=='Z'&&xdelete_flags==28&&!strcmp(xdelete_path,"NVRAM"));
+     if(valid[i]&1)assert(copy_after_xdelete==xdelete_calls);
+   }
+   int before=copy_calls,deleted=mutation_calls+xdelete_calls;
+   /* Source and destination read-only checks return the installed -45. */
+   lens[0]=utf16("Z:\\ro.txt",pathbuf);lens[1]=utf16("Z:\\missing-destination",second);mt6797_fs_write32(fl,3);
+   assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-45);
+   lens[0]=utf16("Z:\\big.bin",pathbuf);lens[1]=utf16("Z:\\ro.txt",second);mt6797_fs_write32(fl,0x10001);
+   assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-45);
+   const char *old[]={"Z:\\NVRAM\\MD_A.bin","Z:\\NVRAM\\.\\MD_A.bin","Z:\\big.bin","Z:\\big.bin"};
+   const char *new[]={"Z:\\NVRAM","Z:/NVRAM//MD_A.bin","Z:\\","X:\\"};
+   for(unsigned i=0;i<4;i++){
+     lens[0]=utf16(old[i],pathbuf);lens[1]=utf16(new[i],second);
+     assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-2);
+   }
+   assert(copy_calls==before&&mutation_calls+xdelete_calls==deleted);
+   lens[0]=utf16("Z:\\big.bin",pathbuf);lens[1]=utf16("Z:\\NVRAM",second);
+   xdelete_result=-ENOSPC;assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-18&&copy_calls==before);xdelete_result=7;
+   lens[1]=utf16("Z:\\NVRAM\\MD_A.bin",second);mutation_error=-EACCES;
+   assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-16&&copy_calls==before);mutation_error=0;
+   /* Copy failure follows successful deletion and is never hidden. */
+   copy_error=-ENOENT;assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-9&&copy_calls==before+1&&copy_after_mutation==mutation_calls);copy_error=0;
+   before=copy_calls;deleted=mutation_calls+xdelete_calls;
+   /* Metadata failures stop before effects, unlike the stock log-and-continue. */
+   provider_available=false;mt6797_fs_write32(fl,3);
+   assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-18);
+   mt6797_fs_write32(fl,0x10001);
+   assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-18);provider_available=true;
+   u32 invalid[]={0,4,0x10000,0x10004,0x20001,0xffffffff};
+   for(unsigned i=0;i<sizeof(invalid)/sizeof(*invalid);i++){
+     mt6797_fs_write32(fl,invalid[i]);assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-2);
+   }
+   mt6797_fs_write32(fl,1);
+   assert(!run(0,MT6797_FS_MOVE,2,args,lens)&&status==-2);
+   lens[2]=3;assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-2);lens[2]=4;
+   lens[1]=utf16("Z:\\..\\bad",second);assert(!run(0,MT6797_FS_MOVE,3,args,lens)&&status==-16);
+   assert(copy_calls==before&&mutation_calls+xdelete_calls==deleted);
+   ram_enabled=roots_enabled=false;
+   puts("PASS actual MOVE service: six flags/all drive pairs, KILL no source unlink, ordered overwrite/count, read-only -45, ancestor/root/alias guards, malformed input and effect failures");
  }
  { u32 unsupported[] = {MT6797_FS_GETFOLDERSIZE, MT6797_FS_COUNT, MT6797_FS_GETDRIVE, 0x101d, 0x101e, 0x101f, 0x1020, 0x1023, 0x1000, 0x1024, 0};
    for (unsigned i = 0; i < sizeof(unsupported) / sizeof(*unsupported); i++) { assert(!mt6797_fs_service_supports(unsupported[i]));

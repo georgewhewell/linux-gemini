@@ -604,6 +604,72 @@ static s32 mt6797_fs_xdelete(const struct mt6797_fs_request *request, char *path
 	return ret >= 0 ? ret : mt6797_fs_status(ret);
 }
 
+/* Installed MOVE is copy plus optional destination deletion. Its KILL bit
+ * checks source attributes but never unlinks the source (ccci_fsd c47c).
+ * OVERWRITE can delete a destination even without COPY; retain its count.
+ * Each provider operation rechecks the consumed RAM authority. This is not
+ * an atomic transaction: a subsequent copy failure can leave no destination.
+ */
+static s32 mt6797_fs_move(const struct mt6797_fs_request *request, char *path)
+{
+	char *new_path = path + MT6797_MD1_FS_PATH_MAX + 1;
+	struct mt6797_md1_fs_attr attr;
+	u8 old_drive, new_drive;
+	u32 flags;
+	s32 status = MT6797_FS_GENERAL_FAILURE;
+	size_t length;
+	int ret;
+
+	if (request->argc != 3 || !mt6797_fs_arg_u32(request, 2, &flags) ||
+	    !(flags & 3) || (flags & ~0x10003U))
+		return MT6797_FS_PARAM_ERROR;
+	ret = mt6797_fs_arg_path(request, 0, path,
+				 MT6797_MD1_FS_PATH_MAX + 1, &old_drive);
+	if (ret)
+		return ret;
+	ret = mt6797_fs_arg_path(request, 1, new_path,
+				 MT6797_MD1_FS_PATH_MAX + 1, &new_drive);
+	if (ret)
+		return ret;
+	if (old_drive == new_drive && !strcmp(path, new_path))
+		return MT6797_FS_PARAM_ERROR;
+	if (flags & 2) {
+		ret = mt6797_md1_fs_provider_getattr_drive(old_drive, path, &attr);
+		if (ret && ret != -ENOENT)
+			return mt6797_fs_status(ret);
+		if (!ret && (mt6797_fs_attributes(attr.mode) & MT6797_FS_ATTR_READ_ONLY))
+			return MT6797_FS_READ_ONLY_ERROR;
+	}
+	if (flags & 0x10000) {
+		/* Paths are canonical and provider traversal forbids symlink and
+		 * mount aliases. Reject a root or ancestor before any deletion.
+		 */
+		length = strlen(new_path);
+		if (!length || (old_drive == new_drive &&
+		    !strncmp(path, new_path, length) && path[length] == '/'))
+			return MT6797_FS_PARAM_ERROR;
+		ret = mt6797_md1_fs_provider_getattr_drive(new_drive, new_path, &attr);
+		if (ret && ret != -ENOENT)
+			return mt6797_fs_status(ret);
+		if (!ret) {
+			if (mt6797_fs_attributes(attr.mode) & MT6797_FS_ATTR_READ_ONLY)
+				return MT6797_FS_READ_ONLY_ERROR;
+			if (S_ISDIR(attr.mode))
+				ret = mt6797_md1_fs_provider_xdelete_drive(new_drive, new_path, 0x1c);
+			else
+				ret = mt6797_md1_fs_provider_mutate_drive(new_drive, new_path,
+								 MT6797_MD1_FS_UNLINK);
+			if (ret < 0)
+				return mt6797_fs_status(ret);
+			status = ret;
+		}
+	}
+	if (flags & 1)
+		return mt6797_fs_status(mt6797_md1_fs_provider_copy_drive(old_drive, path,
+								new_drive, new_path));
+	return status;
+}
+
 /* Remaining write-class operations are not implemented. Validate their
  * paths and return the vendor general failure, never a synthetic success.
  */
@@ -784,7 +850,7 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 		*status = mt6797_fs_rename(&request, path);
 		break;
 	case MT6797_FS_MOVE:
-		*status = mt6797_fs_refuse_write(&request, 2, path);
+		*status = mt6797_fs_move(&request, path);
 		break;
 	default:
 		ret = -EOPNOTSUPP;

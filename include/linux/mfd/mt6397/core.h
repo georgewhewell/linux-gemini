@@ -77,6 +77,7 @@ struct mt6397_chip {
 	void *irq_data;
 };
 
+void mt6397_irq_domain_exit(struct irq_domain *domain);
 int mt6358_irq_init(struct mt6397_chip *chip);
 int mt6397_irq_init(struct mt6397_chip *chip);
 

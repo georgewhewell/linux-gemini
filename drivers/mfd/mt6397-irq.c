@@ -160,8 +160,26 @@ static int mt6397_irq_pm_notifier(struct notifier_block *notifier,
 	return NOTIFY_DONE;
 }
 
+void mt6397_irq_domain_exit(struct irq_domain *domain)
+{
+	unsigned int hwirq, virq;
+
+	/* Children and the managed parent IRQ have already been released. */
+	for (hwirq = 0; hwirq < domain->revmap_size; hwirq++) {
+		virq = irq_find_mapping(domain, hwirq);
+		if (virq)
+			irq_dispose_mapping(virq);
+	}
+}
+
 int mt6397_irq_init(struct mt6397_chip *chip)
 {
+	struct irq_domain_info info = {
+		.fwnode = dev_fwnode(chip->dev),
+		.ops = &mt6397_irq_domain_ops,
+		.host_data = chip,
+		.exit = mt6397_irq_domain_exit,
+	};
 	unsigned int i;
 	int ret;
 
@@ -225,13 +243,12 @@ int mt6397_irq_init(struct mt6397_chip *chip)
 	}
 
 	chip->pm_nb.notifier_call = mt6397_irq_pm_notifier;
-	chip->irq_domain = irq_domain_create_linear(dev_fwnode(chip->dev),
-						    chip->num_irq_regs * 16,
-						    &mt6397_irq_domain_ops, chip);
-	if (!chip->irq_domain) {
-		dev_err(chip->dev, "could not create irq domain\n");
-		return -ENOMEM;
-	}
+	info.size = chip->num_irq_regs * 16;
+	info.hwirq_max = chip->num_irq_regs * 16;
+	chip->irq_domain = devm_irq_domain_instantiate(chip->dev, &info);
+	if (IS_ERR(chip->irq_domain))
+		return dev_err_probe(chip->dev, PTR_ERR(chip->irq_domain),
+				     "Could not create IRQ domain\n");
 
 	ret = devm_request_threaded_irq(chip->dev, chip->irq, NULL,
 					mt6397_irq_thread, IRQF_ONESHOT,
@@ -239,7 +256,6 @@ int mt6397_irq_init(struct mt6397_chip *chip)
 	if (ret) {
 		dev_err(chip->dev, "failed to register irq=%d; err: %d\n",
 			chip->irq, ret);
-		irq_domain_remove(chip->irq_domain);
 		return ret;
 	}
 

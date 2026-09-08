@@ -824,6 +824,140 @@ int mt6797_md1_fs_provider_next_entry(struct file *dir,
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_next_entry);
 
+/* Iterative post-order traversal: bounded by the registered inode budget and
+ * the maximum number of nonempty components in a provider path. Errors can
+ * follow partial deletion; return the error, never an invented full count.
+ */
+int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *name, u32 flags)
+{
+	struct delete_frame {
+		struct file *dir;
+		unsigned int length;
+	};
+	const unsigned int frames = MT6797_MD1_FS_PATH_MAX / 2 + 1;
+	struct delete_frame *stack;
+	struct mt6797_md1_fs_entry *entry;
+	struct file *root;
+	char *path;
+	unsigned int depth = 0, visited = 0, length, base;
+	int ret, deleted = 0;
+
+	might_sleep();
+	if (!flags || (flags & ~0x1cU))
+		return -EINVAL;
+	if (!name || strnlen(name, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX)
+		return -ENAMETOOLONG;
+	/* Contents of a RAM root may be selected; the retained root itself may
+	 * never be removed, even after its children have been deleted.
+	 */
+	if (!*name && (flags & 0x18) == 0x18)
+		return -EINVAL;
+	root = mt6797_fs_root_get(drive);
+	if (!root)
+		return -ENODEV;
+	ret = -EROFS;
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(root)) {
+		fput(root);
+		return ret;
+	}
+	fput(root);
+	stack = kcalloc(frames, sizeof(*stack), GFP_KERNEL);
+	entry = kmalloc(sizeof(*entry), GFP_KERNEL);
+	path = kmalloc(MT6797_MD1_FS_PATH_MAX + 1, GFP_KERNEL);
+	ret = -ENOMEM;
+	if (!stack || !entry || !path)
+		goto free_memory;
+	strcpy(path, name);
+	stack[0].length = strlen(path);
+	stack[0].dir = mt6797_md1_fs_provider_open_drive(drive, path, true);
+	if (IS_ERR(stack[0].dir)) {
+		ret = PTR_ERR(stack[0].dir);
+		stack[0].dir = NULL;
+		goto free_memory;
+	}
+	for (;;) {
+		ret = mt6797_md1_fs_provider_next_entry(stack[depth].dir, entry);
+		if (ret == -ENOENT) {
+			fput(stack[depth].dir);
+			stack[depth].dir = NULL;
+			if ((flags & 8) && (depth || (flags & 16))) {
+				ret = mt6797_md1_fs_provider_mutate_drive(drive, path,
+								MT6797_MD1_FS_RMDIR);
+				if (ret)
+					goto close_dirs;
+				deleted++;
+			}
+			if (!depth) {
+				ret = deleted;
+				goto close_dirs;
+			}
+			depth--;
+			path[stack[depth].length] = '\0';
+			continue;
+		}
+		if (ret)
+			goto close_dirs;
+		if (++visited > 4096) {
+			ret = -E2BIG;
+			goto close_dirs;
+		}
+		base = stack[depth].length;
+		length = strlen(entry->name);
+		if (base + !!base + length > MT6797_MD1_FS_PATH_MAX) {
+			ret = -ENAMETOOLONG;
+			goto close_dirs;
+		}
+		if (base)
+			path[base] = '/';
+		memcpy(path + base + !!base, entry->name, length + 1);
+		if (S_ISDIR(entry->attr.mode) && (flags & 16)) {
+			if (depth + 1 == frames) {
+				ret = -E2BIG;
+				goto close_dirs;
+			}
+			root = mt6797_md1_fs_provider_open_drive(drive, path, true);
+			if (IS_ERR(root)) {
+				ret = PTR_ERR(root);
+				goto close_dirs;
+			}
+			depth++;
+			stack[depth].dir = root;
+			stack[depth].length = strlen(path);
+		} else {
+			if (S_ISDIR(entry->attr.mode) && (flags & 8))
+				ret = mt6797_md1_fs_provider_mutate_drive(drive, path,
+								MT6797_MD1_FS_RMDIR);
+			else if (S_ISREG(entry->attr.mode) && (flags & 4))
+				ret = mt6797_md1_fs_provider_mutate_drive(drive, path,
+								MT6797_MD1_FS_UNLINK);
+			else {
+				path[base] = '\0';
+				cond_resched();
+				continue;
+			}
+			if (ret)
+				goto close_dirs;
+			deleted++;
+			path[base] = '\0';
+		}
+		cond_resched();
+	}
+close_dirs:
+	for (;;) {
+		if (stack[depth].dir)
+			fput(stack[depth].dir);
+		if (!depth)
+			break;
+		depth--;
+	}
+free_memory:
+	kfree(path);
+	kfree(entry);
+	kfree(stack);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_xdelete_drive);
+
 void mt6797_md1_fs_provider_close(struct file *file)
 {
 	might_sleep();

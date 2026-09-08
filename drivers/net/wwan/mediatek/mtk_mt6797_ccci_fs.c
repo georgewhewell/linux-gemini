@@ -584,6 +584,26 @@ static s32 mt6797_fs_rename(const struct mt6797_fs_request *request, char *path)
 								 new_drive, new_path));
 }
 
+static s32 mt6797_fs_xdelete(const struct mt6797_fs_request *request, char *path)
+{
+	u32 flags;
+	u8 drive;
+	s32 status;
+	int ret;
+
+	if (request->argc != 2 || !mt6797_fs_arg_u32(request, 1, &flags) ||
+	    !flags || (flags & ~0x1cU))
+		return MT6797_FS_PARAM_ERROR;
+	status = mt6797_fs_arg_path(request, 0, path,
+				    MT6797_MD1_FS_PATH_MAX + 1, &drive);
+	if (status)
+		return status;
+	ret = mt6797_md1_fs_provider_xdelete_drive(drive, path, flags);
+	if (ret == -ENOTDIR)
+		return MT6797_FS_PARAM_ERROR;
+	return ret >= 0 ? ret : mt6797_fs_status(ret);
+}
+
 /* Remaining write-class operations are not implemented. Validate their
  * paths and return the vendor general failure, never a synthetic success.
  */
@@ -754,8 +774,10 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 	case MT6797_FS_DELETE:
 		*status = mt6797_fs_mutate(&request, path, MT6797_MD1_FS_UNLINK);
 		break;
-	case MT6797_FS_RESTORE:
 	case MT6797_FS_XDELETE:
+		*status = mt6797_fs_xdelete(&request, path);
+		break;
+	case MT6797_FS_RESTORE:
 		*status = mt6797_fs_refuse_write(&request, 1, path);
 		break;
 	case MT6797_FS_RENAME:

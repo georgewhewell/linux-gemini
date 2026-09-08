@@ -199,7 +199,9 @@ int main(void){
  reset(6);struct sk_buff *req=request();assert(!mt6797_ccci_rpc_rx(&c,req,1));kfree_skb(req);clean();
  assert(publishes==1&&resumes==1&&stops==2&&allocs==frees);
  reset(0);req=request();mt6797_rpc_write(req->data+16,0x4006);mt6797_ccci_dispatch_rx(&c,req,1);
- assert(captures==1&&!maps&&!publishes&&frees==1);clean();
+ assert(!captures&&maps==1&&publishes==1&&frees==1&&!rf_calls);
+ sent=c.queue[1].tx[0].skb;assert(sent->len==32&&mt6797_rpc_read(sent->data+16)==0xffff4006);
+ assert(mt6797_rpc_read(sent->data+20)==1&&(s32)mt6797_rpc_read(sent->data+28)==-1);clean();
  reset(0);req=request();req->len=15;mt6797_ccci_dispatch_rx(&c,req,1);assert(captures==1&&!maps);clean();
  reset(0);c.failed=1;req=request();assert(mt6797_ccci_rpc_rx(&c,req,1)==-ESHUTDOWN&&!maps);kfree_skb(req);clean();
 

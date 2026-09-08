@@ -932,9 +932,12 @@ static void mt6797_ccci_rpc_work(struct work_struct *work)
 	if (op == MT6797_RPC_CLKBUF)
 		ret = mt6797_rpc_clkbuf_reply(job->frame, job->len,
 			mt6797_ccci_rf_clock, ccci, bytes, sizeof(bytes), &size, &status);
-	else
+	else if (op == MT6797_RPC_EINT)
 		ret = mt6797_rpc_eint_reply(job->frame, job->len, ccci->sim_eint,
 			bytes, sizeof(bytes), &status);
+	else
+		ret = mt6797_rpc_unsupported_reply(job->frame, job->len,
+			bytes, sizeof(bytes), &size, &status);
 	if (ret)
 		goto failed;
 	skb_put_data(reply, bytes, size);
@@ -943,10 +946,17 @@ static void mt6797_ccci_rpc_work(struct work_struct *work)
 		published = true;
 		reply = NULL; /* TX owns reply and released the slot during publication. */
 	}
-	if (atomic_add_unless(&ccci->rpc_logs, 1, 16) || op == MT6797_RPC_CLKBUF)
+	/* Separate call sites keep startup EINT chatter from hiding the first
+	 * RF-clock or unsupported-operation result behind its rate limiter.
+	 */
+	if (op != MT6797_RPC_EINT)
 		dev_info_ratelimited(ccci->dev,
 			 "CCCI RPC op=0x%x reply_channel=33 status=%d tx_result=%d bytes=%zu\n",
 			 op, status, ret, size);
+	else if (atomic_add_unless(&ccci->rpc_logs, 1, 16))
+		dev_info(ccci->dev,
+			 "CCCI RPC op=0x4005 reply_channel=33 status=%d tx_result=%d bytes=%zu\n",
+			 status, ret, size);
 failed:
 	if (ret) {
 		mt6797_rx_rejected_record(&ccci->rx_rejected, MT6797_RPC_RX, 1,
@@ -990,8 +1000,8 @@ static int mt6797_ccci_rpc_rx(struct mt6797_ccci *ccci,
 	op = mt6797_rpc_read(skb->data + 16);
 	if (index >= 2)
 		return -EPROTO;
-	if (op != MT6797_RPC_EINT && op != MT6797_RPC_CLKBUF)
-		return -EOPNOTSUPP;
+	if (op & 0xffff0000U)
+		return -EPROTO;
 	spin_lock_irqsave(&ccci->tx_stop_lock, flags);
 	if (atomic_read(&ccci->failed) || atomic_read(&ccci->teardown))
 		ret = -ESHUTDOWN;

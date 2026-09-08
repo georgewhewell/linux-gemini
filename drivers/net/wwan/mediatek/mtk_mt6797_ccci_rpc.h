@@ -125,4 +125,52 @@ respond:
 	*result = status;
 	return 0;
 }
+/* Vendor default RPC case: one FS_NO_OP argument, not a dropped request.
+ * Validate all framing even though an unsupported operation consumes no args.
+ */
+static inline int mt6797_rpc_unsupported_reply(const u8 *data, size_t len,
+		u8 *reply, size_t capacity, size_t *reply_len, s32 *result)
+{
+	u32 argc, op, index, length;
+	size_t cursor = 24, padded;
+	unsigned int i;
+
+	if (!data || !reply || !reply_len || !result || len < 24 || len > 2072 ||
+	    capacity < 32)
+		return -EMSGSIZE;
+	if (mt6797_rpc_read(data + 4) != len ||
+	    (mt6797_rpc_read(data + 8) & 0xffff) != MT6797_RPC_RX)
+		return -EPROTO;
+	index = mt6797_rpc_read(data + 12);
+	op = mt6797_rpc_read(data + 16);
+	argc = mt6797_rpc_read(data + 20);
+	if (index >= 2 || (op & 0xffff0000U) || argc > 6)
+		return -EPROTO;
+	for (i = 0; i < argc; i++) {
+		if (len - cursor < 4)
+			return -EMSGSIZE;
+		length = mt6797_rpc_read(data + cursor);
+		cursor += 4;
+		if (length > 2048)
+			return -EMSGSIZE;
+		padded = (length + 3) & ~3U;
+		if (padded > len - cursor)
+			return -EMSGSIZE;
+		cursor += padded;
+	}
+	if (cursor != len)
+		return -EPROTO;
+	memset(reply, 0, 32);
+	memcpy(reply, data, 4);
+	mt6797_rpc_write(reply + 4, 32);
+	mt6797_rpc_write(reply + 8, MT6797_RPC_TX);
+	mt6797_rpc_write(reply + 12, index);
+	mt6797_rpc_write(reply + 16, op | 0xffff0000U);
+	mt6797_rpc_write(reply + 20, 1);
+	mt6797_rpc_write(reply + 24, 4);
+	mt6797_rpc_write(reply + 28, -1); /* FS_NO_OP */
+	*reply_len = 32;
+	*result = -1;
+	return 0;
+}
 #endif

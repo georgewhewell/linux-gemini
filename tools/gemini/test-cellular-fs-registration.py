@@ -55,6 +55,13 @@ static struct dentry dent;
 static struct file backing;
 static struct kstatfs observed;
 static struct file *provider_file, *provider_extra[2];
+static bool archive_installing;
+struct mt6797_fs_archive {const void *data;u32 count,size;};
+static struct mt6797_fs_archive provider_archive;
+static int archive_frees;
+static void kvfree_sensitive(const void *p,size_t n){if(p){assert(p==(void *)1&&n==156);archive_frees++;}else assert(!n);}
+static int mt6797_fs_register_archive(int fd){(void)fd;return -EOPNOTSUPP;}
+
 static struct file extra_backing[2];
 static struct super_block extra_sb[2];
 static struct vfsmount extra_mount[2];
@@ -107,7 +114,7 @@ static int device_attach(struct device *d){
  assert(!mt6797_md1_fs_provider_require(d));assert(!mt6797_md1_fs_provider_claim(d));return 1;
 }
 static void reset(int m){
- assert(!locked);enable_volatile=false;provider_volatile=false;mode=m;attaches=stats_calls=file_puts=unlock_count=0;
+ assert(!locked);archive_installing=false;provider_archive=(struct mt6797_fs_archive){0};archive_frees=0;enable_volatile=false;provider_volatile=false;mode=m;attaches=stats_calls=file_puts=unlock_count=0;
  mount=(struct vfsmount){MNT_READONLY};sb=(struct super_block){SB_RDONLY,EXT4_SUPER_MAGIC};dent.dir=true;
  backing=(struct file){.f_path={&mount,&dent},.inode={&sb}};target.refs=0;
  observed=(struct kstatfs){4096,12345,6789,4096,EXT4_SUPER_MAGIC,4096};
@@ -130,6 +137,15 @@ static void roots_released(void){
 int main(void){
  assert(mt6797_md1_fs_provider_enabled());
  struct mt6797_md1_fs_stats stats;
+ reset(0);archive_installing=true;
+ assert(mt6797_fs_register_fd(7,false)==-EBUSY&&!backing.refs&&!attaches&&provider_state.stage==MT6797_FS_EMPTY);
+ archive_installing=false;provider_archive=(struct mt6797_fs_archive){(void *)1,1,156};
+ assert(mt6797_fs_register_fd(7,false)==-EINVAL&&!backing.refs&&!attaches);
+ assert(!mt6797_fs_cancel_registration()&&!provider_archive.data&&archive_frees==1);
+ assert(mt6797_fs_register_fd(7,false)==-EALREADY);
+ reset(0);struct mt6797_md1_fs_registration ar={.version=1,.directory_fd=7};
+ assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_ARCHIVE,(unsigned long)&ar)==-EOPNOTSUPP);
+ ar.reserved=1;assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_ARCHIVE,(unsigned long)&ar)==-EINVAL);
  reset(0);assert(!mt6797_fs_register_fd(7,false));
  assert(attaches==1&&stats_calls==1&&backing.refs==1&&target.refs==1);
  assert(!mt6797_md1_fs_provider_stats(&stats)&&stats.free_blocks==6789);

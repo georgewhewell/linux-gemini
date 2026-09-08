@@ -76,3 +76,34 @@ length, forged counts/offsets/sizes, duplicate targets, malformed Unicode,
 path escapes, padding, empty files and unchanged failure outputs. Inclusion
 in the provider translation unit also checks ARM64 compilation; the validator
 is not yet called by a registration path or qualified on the phone.
+
+## Registration lifecycle
+
+`MT6797_MD1_FS_REGISTER_ARCHIVE` is ioctl0xf4 using the existing16-byte
+registration structure: version1, `directory_fd` carrying the archive memfd,
+flags/reserved0. It requires the provider enable flag, initial-user-namespace
+CAP_SYS_ADMIN and enable_volatile. Register it before writable roots; it does
+not trigger cold probe. Older clients may still register roots without one.
+
+Registration requires a readable regular tmpfs file with all four seals,
+size16..16MiB, and a complete read. It validates a private kernel copy, then
+publishes only while the provider remains EMPTY. The input FD reference is
+released after copying; userspace may close its descriptor. The kernel copy
+is not exposed for mutation. An in-flight archive load blocks root registration
+with EBUSY; an installed archive disallows legacy read-only root registration.
+A second archive or late registration fails. Loading failure permits retry
+unless cancellation has made the provider terminal.
+
+CANCEL before consumption detaches and clears the archive, frees its bytes
+with kvfree_sensitive outside the spinlock, and blocks late publication.
+Once roots are consumed, cancellation remains EBUSY and the archive lives for
+this boot. File reads/validation/allocations run without the provider spinlock.
+As with root registration, cancellation immediately after successful publication
+may revoke it before the registering call returns; success is not modem GO.
+
+`test-nvram-archive-registration.py` executes the actual loader with ASan/UBSan
+and instrumented kernel file boundaries. Existing registration regressions also
+cover ioctl routing, root ordering and archive cancellation. The real memfd
+seal test is in the producer suite. ARM64 provider compilation passed with
+MEMFD_CREATE enabled. This registration path has not yet been exercised by the
+phone; RESTORE dispatch and archive-to-RAM copy remain unimplemented.

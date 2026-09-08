@@ -32,6 +32,41 @@ snapshots, overflow and tail cases, exactly 16 MiB and refusal beyond it,
 record boundary/overflow cases and malformed names. They do not prove raw
 backup layout, actual backup validity, group selection or phone operation.
 
-Remaining dependencies are raw block reconstruction, the feature-dependent
+Remaining dependencies are the feature-dependent
 AllMap group selector, stock fstab/source identity, and volatile publication.
 RESTORE must continue returning failure until the whole validated path exists.
+
+
+## Raw reconstruction
+
+`reconstruct(raw, layout_version=0)` accepts immutable, whole-erase-block
+input up to16MiB and returns in-memory AllMap/AllFile plus selected block
+indices. It supports the installed128KiB eMMC geometry, log/reserved/DM
+counts2/2/1, and the vendor layout0/1 arithmetic. Layout defaults are an
+explicit installed-library profile, not auto-detection or source identity.
+Returned payload fields are excluded from the object's repr to avoid logging
+them accidentally. There is no device reader or extraction CLI.
+
+The reverse scan requires three equal map copies followed by0xaabbccdd,
+then selects the first zero map byte before the map block for the header.
+AllMap must fit in that one block after the12-byte prefix; AllFile is assembled
+from subsequent zero-marked blocks before the selected map. Only the recorded
+length is retained, and checksum verification precedes return. Unsupported
+geometry, invalid lengths, insufficient blocks and corruption fail without
+returning a partial backup. An invalid candidate map is skipped as in stock;
+a selected map with bad payload does not fall back to an older candidate.
+
+The stock732c..7398 bound reduces to counting available blocks strictly
+before the selected map index k: let N=map length, h=header index, and g=gap
+to first data minus1. The scan counter is k-N+1. The equality test is
+2-N+h+g == k-N+1, or h+g+1 == k (no data before map). The following loop
+counts k-h-g-1 bytes starting at h+g+1. The bounded implementation expresses
+that directly as zero-marked indices in range(header+1, map_block).
+
+Synthetic reconstruction tests cover both layouts, a nonzero header index,
+noncontiguous data blocks, partial/full/empty payloads, excluded tail blocks,
+all three map-copy corruptions, wrong magic, candidate ordering, no fallback
+after payload failure, invalid geometry/map/data lengths, out-of-range blocks
+and checksum failure. This is format qualification using synthetic bytes;
+no live backup or modem RESTORE has been qualified. Group/record validation
+and confined publication remain necessary even after reconstruction succeeds.

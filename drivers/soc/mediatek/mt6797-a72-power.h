@@ -91,6 +91,9 @@ int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
 				  unsigned long capabilities);
 int mt6797_a72_validate_cpu8_boot(unsigned int cpu, bool cpu4_online,
 				  bool transaction_armed, bool faulted);
+/* CPU9 needs no rail transaction: CPU8 online proves the cluster is powered. */
+int mt6797_a72_validate_cpu9_boot(unsigned int cpu, bool cpu8_online,
+				  bool faulted);
 int mt6797_a72_validate_cpu8_identity(u32 midr);
 int mt6797_a72_validate_removal(bool online, bool active, bool armed, bool guarded, bool faulted);
 /* A successful begin remains reversible until CPU_ON is verified and committed. */

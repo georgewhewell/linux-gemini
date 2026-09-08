@@ -39,7 +39,8 @@ static const struct mtk_gate vdec_clks[] = {
 
 static const struct mtk_clk_desc vdec_desc = {
 	.clks = vdec_clks,
-	.num_clks = CLK_VDEC_NR,
+	.num_clks = ARRAY_SIZE(vdec_clks),
+	.num_clk_ids = CLK_VDEC_NR,
 };
 
 static const struct of_device_id of_match_clk_mt6797_vdec[] = {

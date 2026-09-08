@@ -28,7 +28,8 @@ static const struct mtk_gate img_clks[] = {
 
 static const struct mtk_clk_desc img_desc = {
 	.clks = img_clks,
-	.num_clks = CLK_IMG_NR,
+	.num_clks = ARRAY_SIZE(img_clks),
+	.num_clk_ids = CLK_IMG_NR,
 };
 
 static const struct of_device_id of_match_clk_mt6797_img[] = {

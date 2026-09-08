@@ -144,6 +144,17 @@ static void mt6797_wifi_capability_codec_test(struct kunit *test)
 			   sizeof(mac_address));
 	KUNIT_EXPECT_EQ(test, capability.feature_flag0, 0x11223344U);
 	KUNIT_EXPECT_EQ(test, capability.feature_flag1, 0x55667788U);
+	/* Hardware reply header: 7c 00 00 e0 01 01 00 01. */
+	packet[7] = 1;
+	ret = mt6797_wifi_capability_event_parse(packet, sizeof(packet), 1,
+						 &capability);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, capability.product_id, 0x6631U);
+	packet[5] = 2;
+	KUNIT_EXPECT_EQ(test,
+			mt6797_wifi_capability_event_parse(packet, sizeof(packet), 1,
+							   &capability), -EPROTO);
+	packet[5] = 1;
 	packet[4] = 2;
 	KUNIT_EXPECT_EQ(test,
 			mt6797_wifi_capability_event_parse(packet, sizeof(packet), 1,

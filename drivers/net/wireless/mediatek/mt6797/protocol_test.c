@@ -100,9 +100,11 @@ static void mt6797_wifi_event_bounds_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_wifi_event_parse(packet, sizeof(packet),
 						      &event), -EPROTO);
 	packet[2] = 0;
-	packet[6] = 1;
+	/* Vendor WIFI_EVENT_T reserves these bytes without requiring zero. */
+	packet[6] = 0xa5;
+	packet[7] = 0x5a;
 	KUNIT_EXPECT_EQ(test, mt6797_wifi_event_parse(packet, sizeof(packet),
-						      &event), -EPROTO);
+						      &event), 0);
 }
 
 static void mt6797_wifi_rx_event_test(struct kunit *test)

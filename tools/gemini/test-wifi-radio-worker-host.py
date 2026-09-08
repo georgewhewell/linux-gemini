@@ -182,6 +182,9 @@ static void kfree_sensitive(void *p) { assert(!test.radio->connection); test.fre
 program += '''
 int mt6797_wifi_ais_ccmp_ready_match(const struct mt6797_wifi_ais_sta_pending *p, const struct mt6797_wifi_event_view *e, enum mt6797_wifi_ais_event_disposition *d) { (void)p; (void)e; *d=MT6797_WIFI_AIS_EVENT_IGNORED; return 0; }
 '''
+program += '''
+static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
+'''
 for name in ['mt6797_radio_link_event', 'mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
              'mt6797_radio_link_frame', 'mt6797_radio_connection_work']:
     program += function(name)

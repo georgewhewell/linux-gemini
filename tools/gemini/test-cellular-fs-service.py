@@ -365,6 +365,15 @@ int main(void) {
    assert(run(0, MT6797_FS_COMPACT_READ, 1, a, l) == -EINVAL);
    mt6797_fs_write32(control + 32, MT6797_FS_READ_MAX + 1);
    assert(run(0, MT6797_FS_COMPACT_READ, 2, a, l) == -EINVAL);
+   /* C14 captured flags0x13: size-only; unused read length is16384.
+    * Even maximal unused length must cause no allocation/read or rejection. */
+   mt6797_fs_write32(control, 0x13);
+   for (unsigned i=0; i<2; i++) {
+     mt6797_fs_write32(control + 32, i ? 0xffffffffU : 16384);
+     assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == 0);
+     assert(arg_s32(1) == 5000 && arg_s32(2) == 0 && arg(3, &d) == 0);
+     assert(arg(0, &d) == 8 && mt6797_fs_read32(d) == 0x13 && !mt6797_fs_read32(d + 4));
+   }
    assert(svc.open_count == before && open_files == files);
  }
  /* Handle exhaustion at the vendor's 128 usable slots, then CLOSEALL/SHUTDOWN. */

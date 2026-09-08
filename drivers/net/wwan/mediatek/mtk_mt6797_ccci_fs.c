@@ -251,7 +251,7 @@ static int mt6797_fs_compact_read(struct mt6797_fs_service *service,
 	struct mt6797_fs_handle *handle;
 	const u8 *control = request->arg[1];
 	u32 operations = mt6797_fs_read32(control);
-	u32 length = mt6797_fs_read32(control + 32);
+	u32 length = operations & 8 ? mt6797_fs_read32(control + 32) : 0;
 	u32 completed = 0, size = 0, count = 0;
 	u8 result[8], *data;
 	s32 error = MT6797_FS_GENERAL_FAILURE, slot;
@@ -612,7 +612,8 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 		return -EINVAL;
 	if (request.op == MT6797_FS_COMPACT_READ &&
 	    (request.argc != 2 || request.len[1] != 40 ||
-	     mt6797_fs_read32(request.arg[1] + 32) > MT6797_FS_READ_MAX))
+	     ((mt6797_fs_read32(request.arg[1]) & 8) &&
+	      mt6797_fs_read32(request.arg[1] + 32) > MT6797_FS_READ_MAX)))
 		return -EINVAL;
 	if (reply->capacity < MT6797_FS_REPLY_MAX)
 		return -EMSGSIZE;

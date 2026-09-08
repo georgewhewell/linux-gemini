@@ -34,3 +34,6 @@ operation flag bits have no effect, matching the daemon's bit tests.
 Tests cover the observed0x1f/0x700 request shape, offsets, EOF, fragmentation,
 write-intent refusal, missing files, malformed size/argc, fstat/read errors,
 and unchanged handle counts after every failure.
+
+C14 observed flags0x13 (OPEN|SIZE|CLOSE), length16384: the read length
+is unused unless READ bit8 is set. Validate and reserve it only for READ.

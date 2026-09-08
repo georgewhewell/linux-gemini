@@ -195,7 +195,7 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 #endif
 #if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_RADIO)
 	wifi->radio = mt6797_wifi_radio_register(dev, &wifi->hif_irq,
-					       &wifi->capability);
+					       &wifi->runtime_config, &wifi->capability);
 	if (IS_ERR(wifi->radio)) {
 		ret = PTR_ERR(wifi->radio);
 		goto stop_runtime;

@@ -446,7 +446,14 @@ void cpu_startup_entry(enum cpuhp_state state)
 {
 	current->flags |= PF_IDLE;
 	arch_cpu_idle_prepare();
+	if (IS_ENABLED(CONFIG_ARM64_MT6797_A72_CAPABILITY_PROFILE) &&
+	    (smp_processor_id() == 8 || smp_processor_id() == 9))
+		pr_info("A72_M10 CPU%u before-online-idle\n", smp_processor_id());
 	cpuhp_online_idle(state);
+	if (IS_ENABLED(CONFIG_ARM64_MT6797_A72_CAPABILITY_PROFILE) &&
+	    (smp_processor_id() == 8 || smp_processor_id() == 9))
+		pr_info("A72_M10 CPU%u after-online-idle before-idle-loop\n",
+			smp_processor_id());
 	while (1)
 		do_idle();
 }

@@ -292,6 +292,17 @@ static inline void cpuhp_record_rollback_event(
 #endif
 }
 
+/* Candidate-only breadcrumbs retained by ramoops if CPU8 stops responding. */
+static void cpuhp_a72_m10_trace(unsigned int cpu, enum cpuhp_state state,
+			      bool bringup, const char *phase, int result)
+{
+	if (IS_ENABLED(CONFIG_ARM64_MT6797_A72_CAPABILITY_PROFILE) &&
+	    bringup && (cpu == 8 || cpu == 9))
+		pr_info("A72_M10 CPU%u callback=%s state=%u phase=%s ret=%d running-cpu=%u\n",
+			cpu, cpuhp_get_step(state)->name, state, phase, result,
+			raw_smp_processor_id());
+}
+
 /**
  * cpuhp_invoke_callback - Invoke the callbacks for a given state
  * @cpu:	The cpu for which the callback should be invoked
@@ -329,7 +340,9 @@ static int cpuhp_invoke_callback(unsigned int cpu, enum cpuhp_state state,
 		cb = bringup ? step->startup.single : step->teardown.single;
 
 		trace_cpuhp_enter(cpu, st->target, state, cb);
+		cpuhp_a72_m10_trace(cpu, state, bringup, "enter", 0);
 		ret = cb(cpu);
+		cpuhp_a72_m10_trace(cpu, state, bringup, "exit", ret);
 		trace_cpuhp_exit(cpu, st->state, state, ret);
 		cpuhp_record_rollback_event(st, bringup, state, 0, ret);
 		return ret;
@@ -340,7 +353,9 @@ static int cpuhp_invoke_callback(unsigned int cpu, enum cpuhp_state state,
 	if (node) {
 		WARN_ON_ONCE(lastp && *lastp);
 		trace_cpuhp_multi_enter(cpu, st->target, state, cbm, node);
+		cpuhp_a72_m10_trace(cpu, state, bringup, "enter", 0);
 		ret = cbm(cpu, node);
+		cpuhp_a72_m10_trace(cpu, state, bringup, "exit", ret);
 		trace_cpuhp_exit(cpu, st->state, state, ret);
 		cpuhp_record_rollback_event(st, bringup, state, 0, ret);
 		return ret;
@@ -353,7 +368,9 @@ static int cpuhp_invoke_callback(unsigned int cpu, enum cpuhp_state state,
 			break;
 
 		trace_cpuhp_multi_enter(cpu, st->target, state, cbm, node);
+		cpuhp_a72_m10_trace(cpu, state, bringup, "enter", 0);
 		ret = cbm(cpu, node);
+		cpuhp_a72_m10_trace(cpu, state, bringup, "exit", ret);
 		trace_cpuhp_exit(cpu, st->state, state, ret);
 		cpuhp_record_rollback_event(st, bringup, state, cnt, ret);
 		if (ret) {
@@ -379,7 +396,9 @@ err:
 			break;
 
 		trace_cpuhp_multi_enter(cpu, st->target, state, cbm, node);
+		cpuhp_a72_m10_trace(cpu, state, bringup, "rollback-enter", 0);
 		ret = cbm(cpu, node);
+		cpuhp_a72_m10_trace(cpu, state, bringup, "rollback-exit", ret);
 		trace_cpuhp_exit(cpu, st->state, state, ret);
 		cpuhp_record_rollback_event(st, bringup, state, cnt, ret);
 		/*

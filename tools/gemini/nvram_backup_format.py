@@ -149,22 +149,28 @@ def reconstruct(raw: bytes, *, layout_version: int = 0) -> Backup:
         raise FormatError("no valid redundant block map")
     map_block, bitmap = selected
     available = [i for i in range(map_block) if bitmap[i] == 0]
-    # 713a selects the first zero for the header; 72f0 selects a subsequent
-    # zero for data. Require both, including for an empty AllFile.
+    # First zero holds the header. The writer can consume a second zero
+    # for its continuation; at least one further data block is required.
     if len(available) < 2:
         raise FormatError("backup has no header or data block")
     header_block = available[0]
     start = header_block * ERASE_BYTES
     map_size, file_size = struct.unpack_from('<II', raw, start)
-    if not 12 <= map_size <= ERASE_BYTES - 12:
-        raise FormatError("map exceeds header block")
+    if not 12 <= map_size <= 2 * ERASE_BYTES - 12:
+        raise FormatError("map exceeds two header blocks")
     if file_size > MAX_BYTES:
         raise FormatError("backup data exceeds size limit")
+    # FileOp_BackupToBinRegion_All 386e permits two erase blocks;
+    # 3ace/3b60 writes the remainder to the next zero-marked block.
+    # NVM_RestoreFromBinRegion_OneFile lacks this writer-side capability.
+    map_blocks = (map_size + 12 + ERASE_BYTES - 1) // ERASE_BYTES
     needed = (file_size + ERASE_BYTES - 1) // ERASE_BYTES
-    if needed > len(available) - 1:
+    if len(available) <= map_blocks or needed > len(available) - map_blocks:
         raise FormatError("insufficient backup data blocks")
-    data_blocks = tuple(available[1:1 + needed])
-    allmap = raw[start + 12:start + 12 + map_size]
+    data_blocks = tuple(available[map_blocks:map_blocks + needed])
+    header = b''.join(raw[i * ERASE_BYTES:(i + 1) * ERASE_BYTES]
+                      for i in available[:map_blocks])
+    allmap = header[12:12 + map_size]
     allfile = b''.join(raw[i * ERASE_BYTES:(i + 1) * ERASE_BYTES]
                        for i in data_blocks)[:file_size]
     verify_checksum(allmap, allfile)

@@ -56,7 +56,8 @@ def function(name):
     start = source.index("int " + name + "(")
     end = source.index("\n}\n", start) + 3
     return source[start:end]
-body = strip_includes((root / "drivers/regulator/mt6797-bigidvfs-sram.h").read_text())
+body = "struct mt6797_sram_sample { u32 control; u32 calibration; };\n"
+body += strip_includes((root / "drivers/regulator/mt6797-bigidvfs-sram.h").read_text())
 body += function("mt6797_sram_set_transaction")
 body += function("mt6797_sram_first_start")
 body += strip_includes((root / "drivers/regulator/mt6797-bigidvfs-sram-test.c").read_text())

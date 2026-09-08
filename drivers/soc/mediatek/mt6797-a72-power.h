@@ -63,6 +63,8 @@ struct mt6797_a72_state {
 	int vproc_uv;
 	int vsram_uv;
 	u32 vsram_selector;
+	u32 vsram_control;
+	u32 vsram_calibration;
 	bool transaction_guarded;
 	bool a72_online;
 };

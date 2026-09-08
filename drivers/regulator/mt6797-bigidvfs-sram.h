@@ -3,6 +3,7 @@
 #define __MT6797_BIGIDVFS_SRAM_H
 
 #include <linux/types.h>
+#include <linux/soc/mediatek/mt6797-sram.h>
 
 #define MT6797_BIGIDVFS_SRAM_SELECTOR_COUNT	16
 
@@ -16,11 +17,6 @@ int mt6797_sram_set_transaction(const struct mt6797_sram_io *io,
 				unsigned int count, unsigned int selector);
 
 /* First-start backend: full words, not the ordinary voltage-only interface. */
-struct mt6797_sram_sample {
-	u32 control;
-	u32 calibration;
-};
-
 struct mt6797_sram_first_io {
 	int (*set_voltage)(void *context, unsigned int firmware_uv_div10);
 	void (*settle)(void *context, unsigned int usec);

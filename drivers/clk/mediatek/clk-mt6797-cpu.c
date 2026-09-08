@@ -470,17 +470,46 @@ static int mt6797_cpuclk_snapshot(struct mt6797_cpuclk *provider,
 					       snapshot);
 }
 
+/* Report the existing sample/decode failure without taking another sample. */
+static int mt6797_cpuclk_sample_decode(struct mt6797_cpuclk *provider,
+				      enum mt6797_cpuclk_domain domain,
+				      unsigned long reference_rate,
+				      struct mt6797_cpuclk_state *state,
+				      const char *callback)
+{
+	struct mt6797_cpuclk_snapshot snapshot;
+	int ret;
+
+	ret = mt6797_cpuclk_snapshot(provider, &snapshot);
+	if (ret) {
+		dev_info_ratelimited(provider->dev,
+			"CPUCLK_OBSERVE callback=%s domain=%u stage=snapshot status=%d ref_hz=%lu\n",
+			callback, domain, ret, reference_rate);
+		return ret;
+	}
+
+	ret = mt6797_cpuclk_decode_state(domain, &snapshot, reference_rate, state);
+	if (ret)
+		dev_info_ratelimited(provider->dev,
+			"CPUCLK_OBSERVE callback=%s domain=%u stage=decode status=%d ref_hz=%lu mux=%08x div=%08x pll0=%08x pll1=%08x pllcci=%08x mp2con0=%08x mp2con1=%08x\n",
+			callback, domain, ret, reference_rate, snapshot.muxsel,
+			snapshot.clkdiv, snapshot.armpll_con1[MT6797_CPUCLK_MP0],
+			snapshot.armpll_con1[MT6797_CPUCLK_MP1],
+			snapshot.armpll_con1[MT6797_CPUCLK_CCI],
+			snapshot.mp2_armpll_con0, snapshot.mp2_armpll_con1);
+
+	return ret;
+}
+
 static unsigned long mt6797_cpuclk_pll_recalc_rate(struct clk_hw *hw,
 						   unsigned long parent_rate)
 {
 	struct mt6797_cpuclk_pll_hw *pll =
 		container_of(hw, struct mt6797_cpuclk_pll_hw, hw);
-	struct mt6797_cpuclk_snapshot snapshot;
 	struct mt6797_cpuclk_state state;
 
-	if (mt6797_cpuclk_snapshot(pll->provider, &snapshot) ||
-	    mt6797_cpuclk_decode_state(pll->domain, &snapshot, parent_rate,
-				       &state))
+	if (mt6797_cpuclk_sample_decode(pll->provider, pll->domain, parent_rate,
+					&state, "pll-rate"))
 		return 0;
 
 	return state.armpll_rate;
@@ -547,19 +576,21 @@ static u8 mt6797_cpuclk_path_get_parent(struct clk_hw *hw)
 {
 	struct mt6797_cpuclk_path_hw *path =
 		container_of(hw, struct mt6797_cpuclk_path_hw, hw);
-	struct mt6797_cpuclk_snapshot snapshot;
 	struct mt6797_cpuclk_state state;
 	struct clk_hw *clk26m;
 	unsigned long clk26m_rate;
 
 	clk26m = clk_hw_get_parent_by_index(hw, MT6797_CPUCLK_CLK26M);
-	if (!clk26m)
+	if (!clk26m) {
+		dev_info_ratelimited(path->provider->dev,
+			"CPUCLK_OBSERVE callback=get-parent domain=%u stage=reference-parent status=%d\n",
+			path->domain, -ENOENT);
 		return -EINVAL;
+	}
 
 	clk26m_rate = clk_hw_get_rate(clk26m);
-	if (mt6797_cpuclk_snapshot(path->provider, &snapshot) ||
-	    mt6797_cpuclk_decode_state(path->domain, &snapshot, clk26m_rate,
-				       &state))
+	if (mt6797_cpuclk_sample_decode(path->provider, path->domain, clk26m_rate,
+					&state, "get-parent"))
 		return -EINVAL;
 
 	return state.source;
@@ -570,27 +601,33 @@ static unsigned long mt6797_cpuclk_path_recalc_rate(struct clk_hw *hw,
 {
 	struct mt6797_cpuclk_path_hw *path =
 		container_of(hw, struct mt6797_cpuclk_path_hw, hw);
-	struct mt6797_cpuclk_snapshot snapshot;
 	struct mt6797_cpuclk_state state;
 	struct clk_hw *clk26m, *parent;
 	unsigned long clk26m_rate;
 
 	clk26m = clk_hw_get_parent_by_index(hw, MT6797_CPUCLK_CLK26M);
-	if (!clk26m)
+	if (!clk26m) {
+		dev_info_ratelimited(path->provider->dev,
+			"CPUCLK_OBSERVE callback=path-rate domain=%u stage=reference-parent status=%d\n",
+			path->domain, -ENOENT);
 		return 0;
+	}
 
 	clk26m_rate = clk_hw_get_rate(clk26m);
-	if (mt6797_cpuclk_snapshot(path->provider, &snapshot) ||
-	    mt6797_cpuclk_decode_state(path->domain, &snapshot, clk26m_rate,
-				       &state))
+	if (mt6797_cpuclk_sample_decode(path->provider, path->domain, clk26m_rate,
+					&state, "path-rate"))
 		return 0;
 
 	if (state.source == MT6797_CPUCLK_ARMPLL) {
 		parent_rate = state.armpll_rate;
 	} else {
 		parent = clk_hw_get_parent_by_index(hw, state.source);
-		if (!parent)
+		if (!parent) {
+			dev_info_ratelimited(path->provider->dev,
+				"CPUCLK_OBSERVE callback=path-rate domain=%u stage=selected-parent source=%u status=%d\n",
+				path->domain, state.source, -ENOENT);
 			return 0;
+		}
 		parent_rate = clk_hw_get_rate(parent);
 	}
 

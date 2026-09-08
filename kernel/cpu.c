@@ -619,6 +619,23 @@ void cpu_maps_update_done(void)
  * If set, cpu_up and cpu_down will return -EBUSY and do nothing.
  * Should always be manipulated under cpu_add_remove_lock
  */
+#ifdef CONFIG_SMP
+/* Architectures without rollback observers have nothing to publish. The
+ * ARM64 implementations override these defaults and retain their audits.
+ */
+int __weak arch_cpu_up_rollback(unsigned int cpu, enum cpuhp_state state,
+			       int error, const struct cpu_up_rollback_trace *trace)
+{
+	return 0;
+}
+
+int __weak arch_cpu_up_rollback_complete(unsigned int cpu, int error,
+					const struct cpu_up_rollback_trace *trace)
+{
+	return 0;
+}
+#endif
+
 static int cpu_hotplug_disabled;
 
 #ifdef CONFIG_HOTPLUG_CPU

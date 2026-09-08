@@ -247,6 +247,55 @@ arm64_late_cpu_cache_type_state(
 	return effective != sys && raw != sys ?
 		ARM64_LATE_CPU_CAP_PRESENT : ARM64_LATE_CPU_CAP_ABSENT;
 }
+
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_expected_cache_type_state(const struct arm64_cpu_capabilities *cap,
+					 const struct arm64_cpu_capabilities *match,
+	const struct arm64_late_cpu_expected_pair *expected,
+	const struct arm64_late_cpu_system_cap_evidence *system)
+{
+	const u64 required = BIT_ULL(ARM64_LATE_CPU_EXPECT_CTR) |
+		BIT_ULL(ARM64_LATE_CPU_EXPECT_CLIDR);
+	u64 effective;
+	u64 mask;
+	u64 raw;
+	u64 sys;
+
+	if (!cap || cap != match || cap->match_list ||
+	    cap->capability != ARM64_MISMATCHED_CACHE_TYPE ||
+	    cap->type != ARM64_CPUCAP_LOCAL_CPU_ERRATUM ||
+	    cap->matches != has_mismatched_cache_type ||
+	    cap->cpu_enable != cpu_enable_trap_ctr_access || cap->cpus ||
+	    !expected || !system ||
+	    expected->abi != ARM64_LATE_CPU_EXPECTED_PAIR_ABI ||
+	    expected->target_count != ARM64_LATE_CPU_MAX_TARGETS ||
+	    expected->valid & ~ARM64_LATE_CPU_EXPECTED_PAIR_VALID_MASK ||
+	    (expected->valid & required) != required ||
+	    !(system->valid & ARM64_LATE_CPU_SYSTEM_CAP_CTR_VALID) ||
+	    system->valid & ~ARM64_LATE_CPU_SYSTEM_CAP_VALID_MASK)
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	raw = expected->ctr;
+	mask = system->ctr_strict_mask;
+	if (mask != ~GENMASK_ULL(15, 14) ||
+	    (raw | system->ctr_sys_val) & ~GENMASK_ULL(31, 0) ||
+	    !(raw & BIT(31)) || !(system->ctr_sys_val & BIT(31)))
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	effective = raw;
+	if (!(raw & BIT(CTR_EL0_IDC_SHIFT)) &&
+	    (!CLIDR_LOC(expected->clidr_el1) ||
+	     (!CLIDR_LOUIS(expected->clidr_el1) &&
+	      !CLIDR_LOUU(expected->clidr_el1))))
+		effective |= BIT(CTR_EL0_IDC_SHIFT);
+
+	raw &= mask;
+	effective &= mask;
+	sys = system->ctr_sys_val & mask;
+
+	return effective != sys && raw != sys ?
+		ARM64_LATE_CPU_CAP_PRESENT : ARM64_LATE_CPU_CAP_ABSENT;
+}
 #endif
 
 #ifdef CONFIG_ARM64_ERRATUM_4311569

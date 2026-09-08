@@ -284,6 +284,78 @@ struct arm64_late_cpu_register_image {
 	struct arm64_late_cpu_aarch32_register_image aarch32;
 };
 
+#define ARM64_LATE_CPU_EXPECTED_PAIR_ABI	1
+
+enum arm64_late_cpu_expected_pair_field {
+	ARM64_LATE_CPU_EXPECT_SOURCE_IDENTITY,
+	ARM64_LATE_CPU_EXPECT_CAPSULE_IDENTITY,
+	ARM64_LATE_CPU_EXPECT_MPIDR,
+	ARM64_LATE_CPU_EXPECT_MIDR,
+	ARM64_LATE_CPU_EXPECT_REVIDR,
+	ARM64_LATE_CPU_EXPECT_CNTFRQ,
+	ARM64_LATE_CPU_EXPECT_CTR,
+	ARM64_LATE_CPU_EXPECT_DCZID,
+	ARM64_LATE_CPU_EXPECT_CLIDR,
+	ARM64_LATE_CPU_EXPECT_AA64DFR0,
+	ARM64_LATE_CPU_EXPECT_AA64ISAR0,
+	ARM64_LATE_CPU_EXPECT_AA64ISAR1,
+	ARM64_LATE_CPU_EXPECT_AA64MMFR0,
+	ARM64_LATE_CPU_EXPECT_AA64MMFR1,
+	ARM64_LATE_CPU_EXPECT_AA64PFR0,
+	ARM64_LATE_CPU_EXPECT_AA64PFR1,
+	ARM64_LATE_CPU_EXPECT_A32ISAR0,
+	ARM64_LATE_CPU_EXPECT_A32ISAR1,
+	ARM64_LATE_CPU_EXPECT_A32ISAR2,
+	ARM64_LATE_CPU_EXPECT_A32ISAR3,
+	ARM64_LATE_CPU_EXPECT_A32ISAR4,
+	ARM64_LATE_CPU_EXPECT_A32ISAR5,
+	ARM64_LATE_CPU_EXPECT_A32MMFR0,
+	ARM64_LATE_CPU_EXPECT_A32MMFR1,
+	ARM64_LATE_CPU_EXPECT_A32MMFR2,
+	ARM64_LATE_CPU_EXPECT_A32MMFR3,
+	ARM64_LATE_CPU_EXPECT_A32PFR0,
+	ARM64_LATE_CPU_EXPECT_A32PFR1,
+	ARM64_LATE_CPU_EXPECT_FIELD_COUNT,
+};
+
+#define ARM64_LATE_CPU_EXPECTED_PAIR_VALID_MASK				\
+	GENMASK_ULL(ARM64_LATE_CPU_EXPECT_FIELD_COUNT - 1, 0)
+
+/* Prior-cycle expectation; no field is a current-boot observation. */
+struct arm64_late_cpu_expected_pair {
+	u32 abi;
+	u32 target_count;
+	u64 valid;
+	u64 source_identity[ARM64_LATE_CPU_ID_WORDS];
+	u64 capsule_identity[ARM64_LATE_CPU_MAX_TARGETS];
+	u64 mpidr[ARM64_LATE_CPU_MAX_TARGETS];
+	u64 midr;
+	u64 revidr;
+	u64 cntfrq;
+	u64 ctr;
+	u64 dczid;
+	u64 clidr_el1;
+	u64 id_aa64dfr0;
+	u64 id_aa64isar0;
+	u64 id_aa64isar1;
+	u64 id_aa64mmfr0;
+	u64 id_aa64mmfr1;
+	u64 id_aa64pfr0;
+	u64 id_aa64pfr1;
+	u32 id_isar0;
+	u32 id_isar1;
+	u32 id_isar2;
+	u32 id_isar3;
+	u32 id_isar4;
+	u32 id_isar5;
+	u32 id_mmfr0;
+	u32 id_mmfr1;
+	u32 id_mmfr2;
+	u32 id_mmfr3;
+	u32 id_pfr0;
+	u32 id_pfr1;
+};
+
 struct arm64_late_cpu_target_cap_evidence {
 	u32 valid;
 	struct arm64_late_cpu_register_image registers;
@@ -308,10 +380,12 @@ struct arm64_late_cpu_target_cap_evidence {
 #define ARM64_LATE_CPU_SYSTEM_CAP_CTR_VALID	BIT(0)
 #define ARM64_LATE_CPU_SYSTEM_CAP_SSBS_VALID	BIT(1)
 #define ARM64_LATE_CPU_SYSTEM_CAP_EFFECTS_VALID	BIT(2)
+#define ARM64_LATE_CPU_SYSTEM_CAP_EARLY_LOCAL_VALID	BIT(3)
 #define ARM64_LATE_CPU_SYSTEM_CAP_VALID_MASK				\
 	(ARM64_LATE_CPU_SYSTEM_CAP_CTR_VALID |				\
 	 ARM64_LATE_CPU_SYSTEM_CAP_SSBS_VALID |				\
-	 ARM64_LATE_CPU_SYSTEM_CAP_EFFECTS_VALID)
+	 ARM64_LATE_CPU_SYSTEM_CAP_EFFECTS_VALID |			\
+	 ARM64_LATE_CPU_SYSTEM_CAP_EARLY_LOCAL_VALID)
 
 struct arm64_late_cpu_system_cap_evidence {
 	u32 valid;
@@ -323,6 +397,8 @@ struct arm64_late_cpu_system_cap_evidence {
 	u8 bhb_state;
 	u8 bhb_matcher_loop_count;
 	u8 bhb_system_method;
+	u8 gicv5_legacy;
+	u8 ich_hcr_tdir;
 };
 
 enum arm64_late_cpu_binding_origin {
@@ -382,6 +458,7 @@ struct arm64_late_cpu_evidence {
 	/* Non-circular inputs; neither field proves the running image/config. */
 	u64 source_parent_identity[ARM64_LATE_CPU_ID_WORDS];
 	u64 config_input_identity[ARM64_LATE_CPU_ID_WORDS];
+	struct arm64_late_cpu_expected_pair expected_pair;
 	struct arm64_late_cpu_runtime_binding binding;
 	u64 evidence_identity[ARM64_LATE_CPU_ID_WORDS];
 	u32 target_cpu[ARM64_LATE_CPU_MAX_TARGETS];
@@ -426,7 +503,8 @@ struct arm64_late_cpu_plan {
 	u32 expected_compat_hwcap2;
 	u8 local_caps_planned;
 	u8 effects_planned;
-	/* Future complete planner supplies a canonical field-wise identity. */
+	u8 hwcaps_planned;
+	/* Core-owned SHA-256 over named fields, never structure padding. */
 	u64 identity[ARM64_LATE_CPU_ID_WORDS];
 };
 
@@ -485,18 +563,39 @@ struct arm64_late_cpu_profile {
 			     const struct arm64_late_cpu_receipt *receipt);
 };
 
+int arm64_late_cpu_validate_boot_caps(void);
+
 #ifdef CONFIG_ARM64_LATE_CPU_PROFILE
 void __init arm64_activate_late_cpu_profile(const struct arm64_late_cpu_profile *profile);
 void __init arm64_register_late_cpu_target(const struct arm64_late_cpu_profile *profile,
 					   unsigned int cpu);
 void __init arm64_collect_late_cpu_runtime_identity(void);
+void __init arm64_collect_late_cpu_runtime_system_policy(void);
+int __init arm64_late_cpu_collect_system(struct arm64_late_cpu_system_cap_evidence *system);
+int __init
+arm64_late_cpu_collect_policy(struct arm64_late_cpu_target_policy_evidence *policy,
+			      struct arm64_late_cpu_system_cap_evidence *system);
+bool arm64_late_cpu_expected_pair_complete(const struct arm64_late_cpu_plan *plan);
+int arm64_validate_late_cpu_preflight(unsigned int cpu);
+int arm64_validate_late_cpu_expected_target(unsigned int cpu);
 void __init arm64_seal_late_cpu_runtime_evidence(void);
 void __init arm64_prepare_late_cpu_profile(void);
 void __init arm64_commit_late_cpu_profile(void);
+int __init arm64_commit_late_cpu_plan(const struct arm64_late_cpu_plan *plan);
+int __init arm64_commit_late_cpu_mitigations(const struct arm64_late_cpu_effect_plan *effects);
+int __init
+arm64_verify_late_cpu_mitigations(const struct arm64_late_cpu_effect_plan *effects);
+int __init
+arm64_verify_late_cpu_system(const struct arm64_late_cpu_plan *plan,
+			     const struct arm64_late_cpu_receipt *receipt);
+int __init
+arm64_finalize_late_cpu_hwcaps(const struct arm64_late_cpu_plan *plan,
+			       const struct arm64_late_cpu_receipt *receipt);
 int __init arm64_plan_late_cpu_capabilities(struct arm64_late_cpu_plan *draft,
 					    const struct arm64_late_cpu_profile *profile);
 int __init arm64_plan_late_cpu_effects(struct arm64_late_cpu_plan *draft,
 				       const struct arm64_late_cpu_profile *profile);
+int __init arm64_plan_late_cpu_hwcaps(struct arm64_late_cpu_plan *draft);
 enum arm64_late_cpu_cap_state __init
 arm64_late_cpu_midr_all_versions(const struct arm64_cpu_capabilities *cap,
 				 u32 model);
@@ -510,6 +609,10 @@ arm64_late_cpu_static_feature_state(const struct arm64_cpu_capabilities *cap,
 bool __init
 arm64_late_cpu_cap_uses_multi_entry_match(const struct arm64_cpu_capabilities *cap);
 bool __init arm64_late_cpu_target_impl_override_active(void);
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_early_system_cap_state(const struct arm64_cpu_capabilities *cap,
+				      const struct arm64_cpu_capabilities *match,
+				      const struct arm64_late_cpu_system_cap_evidence *system);
 enum arm64_late_cpu_cap_state __init
 arm64_late_cpu_gicv5_legacy_state(
 	const struct arm64_cpu_capabilities *cap,
@@ -525,6 +628,11 @@ arm64_late_cpu_cache_type_state(
 	const struct arm64_cpu_capabilities *cap,
 	const struct arm64_cpu_capabilities *match,
 	const struct arm64_late_cpu_target_cap_evidence *target,
+	const struct arm64_late_cpu_system_cap_evidence *system);
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_expected_cache_type_state(const struct arm64_cpu_capabilities *cap,
+					 const struct arm64_cpu_capabilities *match,
+	const struct arm64_late_cpu_expected_pair *expected,
 	const struct arm64_late_cpu_system_cap_evidence *system);
 enum arm64_late_cpu_cap_state __init
 arm64_late_cpu_a72_spectre_v2_state(
@@ -550,6 +658,22 @@ int __init arm64_late_cpu_a72_bhb_effect(
 	const struct arm64_late_cpu_target_policy_evidence *policy,
 	u8 system_v2_state,
 	struct arm64_late_cpu_target_effect_plan *effects);
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_expected_v2_state(const struct arm64_cpu_capabilities *cap,
+				 const struct arm64_cpu_capabilities *match,
+				 const struct arm64_late_cpu_expected_pair *expected);
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_expected_v4_state(const struct arm64_cpu_capabilities *cap,
+				 const struct arm64_cpu_capabilities *match,
+				 const struct arm64_late_cpu_expected_pair *expected);
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_expected_bhb_state(const struct arm64_cpu_capabilities *cap,
+				  const struct arm64_cpu_capabilities *match,
+				  const struct arm64_late_cpu_expected_pair *expected);
+int __init
+arm64_late_cpu_expected_effects(const struct arm64_late_cpu_expected_pair *expected,
+				const struct arm64_late_cpu_target_policy_evidence *policy,
+				struct arm64_late_cpu_target_effect_plan *effects);
 void __init arm64_verify_late_cpu_profile_system(void);
 void __init arm64_finalize_late_cpu_profile_user(void);
 const struct arm64_late_cpu_ready_token *
@@ -568,6 +692,23 @@ arm64_register_late_cpu_target(const struct arm64_late_cpu_profile *profile,
 
 static inline void __init arm64_collect_late_cpu_runtime_identity(void)
 {
+}
+
+static inline void __init
+arm64_collect_late_cpu_runtime_system_policy(void)
+{
+}
+
+static inline int
+arm64_validate_late_cpu_preflight(unsigned int cpu)
+{
+	return 0;
+}
+
+static inline int
+arm64_validate_late_cpu_expected_target(unsigned int cpu)
+{
+	return 0;
 }
 
 static inline void __init arm64_seal_late_cpu_runtime_evidence(void)

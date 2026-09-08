@@ -60,6 +60,14 @@ static u32 get_cpu_asid_bits(void)
 	return asid;
 }
 
+bool arm64_late_cpu_asid_compatible(void)
+{
+	u32 system_asid_bits = READ_ONCE(asid_bits);
+
+	return system_asid_bits &&
+	       get_cpu_asid_bits() >= system_asid_bits;
+}
+
 /* Check if the current cpu's ASIDBits is compatible with asid_bits */
 void verify_cpu_asid_bits(void)
 {

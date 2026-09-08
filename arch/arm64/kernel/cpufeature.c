@@ -68,6 +68,7 @@
 #include <linux/kstrtox.h>
 #include <linux/sort.h>
 #include <linux/stop_machine.h>
+#include <linux/string.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/minmax.h>
@@ -2399,6 +2400,38 @@ static void cpu_enable_mte(struct arm64_cpu_capabilities const *cap)
 }
 #endif /* CONFIG_ARM64_MTE */
 
+#ifdef CONFIG_ARM64_LATE_CPU_PROFILE
+int __init
+arm64_late_cpu_collect_system(struct arm64_late_cpu_system_cap_evidence *system)
+{
+	u64 pfr1;
+	u64 ssbs;
+
+	if (!system || system_capabilities_finalized() ||
+	    memchr_inv(system, 0, sizeof(*system)))
+		return -EINVAL;
+
+	pfr1 = read_sanitised_ftr_reg(SYS_ID_AA64PFR1_EL1);
+	ssbs = cpuid_feature_extract_unsigned_field(pfr1,
+						    ID_AA64PFR1_EL1_SSBS_SHIFT);
+	if (ssbs > 2)
+		return -ERANGE;
+
+	/* Preserve the exact CTR owner state; SSBS consumers need availability. */
+	system->ctr_sys_val = arm64_ftr_reg_ctrel0.sys_val;
+	system->ctr_strict_mask = arm64_ftr_reg_ctrel0.strict_mask;
+	system->ssbs = !!ssbs;
+	system->gicv5_legacy = cpus_have_cap(ARM64_HAS_GICV5_LEGACY);
+	system->ich_hcr_tdir =
+		cpus_have_cap(ARM64_HAS_ICH_HCR_EL2_TDIR);
+	system->valid = ARM64_LATE_CPU_SYSTEM_CAP_CTR_VALID |
+			ARM64_LATE_CPU_SYSTEM_CAP_SSBS_VALID |
+			ARM64_LATE_CPU_SYSTEM_CAP_EARLY_LOCAL_VALID;
+
+	return 0;
+}
+#endif
+
 static void user_feature_fixup(void)
 {
 	if (cpus_have_cap(ARM64_WORKAROUND_2658417)) {
@@ -2549,6 +2582,40 @@ late_cpu_ich_descriptor_valid(const struct arm64_cpu_capabilities *cap,
 	       cap->type == ARM64_CPUCAP_EARLY_LOCAL_CPU_FEATURE &&
 	       cap->matches == can_trap_icv_dir_el1 && !cap->cpu_enable &&
 	       !cap->cpus;
+}
+
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_early_system_cap_state(const struct arm64_cpu_capabilities *cap,
+				      const struct arm64_cpu_capabilities *match,
+				      const struct arm64_late_cpu_system_cap_evidence *system)
+{
+	bool present;
+
+	if (!system ||
+	    !(system->valid & ARM64_LATE_CPU_SYSTEM_CAP_EARLY_LOCAL_VALID) ||
+	    system->valid & ~ARM64_LATE_CPU_SYSTEM_CAP_VALID_MASK ||
+	    system->gicv5_legacy > 1 || system->ich_hcr_tdir > 1 ||
+	    !cpucap_late_cpu_permitted(cap))
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	switch (cap->capability) {
+	case ARM64_HAS_GICV5_LEGACY:
+		if (!late_cpu_gic_descriptor_valid(cap, match))
+			return ARM64_LATE_CPU_CAP_UNRESOLVED;
+		present = system->gicv5_legacy;
+		break;
+	case ARM64_HAS_ICH_HCR_EL2_TDIR:
+		if (!late_cpu_ich_descriptor_valid(cap, match))
+			return ARM64_LATE_CPU_CAP_UNRESOLVED;
+		present = system->ich_hcr_tdir;
+		break;
+	default:
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+	}
+
+	/* A present system capability still needs target controller evidence. */
+	return present ? ARM64_LATE_CPU_CAP_UNRESOLVED :
+			 ARM64_LATE_CPU_CAP_ABSENT;
 }
 
 static enum arm64_late_cpu_cap_state __init
@@ -4131,18 +4198,28 @@ int __init arm64_plan_late_cpu_effects(struct arm64_late_cpu_plan *draft,
 
 	if (!draft || !profile || !profile->derive_effects ||
 	    !draft->local_caps_planned || draft->effects_planned ||
-	    !late_cpu_effect_plan_empty(&draft->effects))
+	    !late_cpu_effect_plan_empty(&draft->effects)) {
+		pr_info("ARM64_LATE_CPU_EFFECT_PLAN_V1 stage=preconditions ret=%d\n",
+			-EINVAL);
 		return -EINVAL;
+	}
 
 	ret = profile->derive_effects(draft, &effects);
-	if (ret)
+	if (ret) {
+		pr_info("ARM64_LATE_CPU_EFFECT_PLAN_V1 stage=derive ret=%d\n",
+			ret);
 		return ret;
+	}
 	ret = validate_late_cpu_effect_plan(draft, profile, &effects);
-	if (ret)
+	if (ret) {
+		pr_info("ARM64_LATE_CPU_EFFECT_PLAN_V1 stage=validate ret=%d\n",
+			ret);
 		return ret;
+	}
 
 	draft->effects = effects;
 	draft->effects_planned = 1;
+	pr_info("ARM64_LATE_CPU_EFFECT_PLAN_V1 stage=complete ret=0\n");
 	return 0;
 }
 #endif
@@ -4403,6 +4480,448 @@ static const struct arm64_cpu_capabilities compat_elf_hwcaps[] = {
 	{},
 };
 
+#ifdef CONFIG_ARM64_LATE_CPU_PROFILE
+static bool __init
+late_cpu_expected_field_valid(const struct arm64_late_cpu_expected_pair *expected,
+			      enum arm64_late_cpu_expected_pair_field field)
+{
+	return expected && expected->abi == ARM64_LATE_CPU_EXPECTED_PAIR_ABI &&
+	       expected->target_count == ARM64_LATE_CPU_MAX_TARGETS &&
+	       field < ARM64_LATE_CPU_EXPECT_FIELD_COUNT &&
+	       !(expected->valid & ~ARM64_LATE_CPU_EXPECTED_PAIR_VALID_MASK) &&
+	       expected->valid & BIT_ULL(field);
+}
+
+static int __init
+late_cpu_expected_hwcap_register(const struct arm64_late_cpu_expected_pair *expected,
+				 u32 sys_reg, u64 *value)
+{
+	enum arm64_late_cpu_expected_pair_field field;
+	u64 register_value;
+
+	if (!value)
+		return -EINVAL;
+
+	switch (sys_reg) {
+	case SYS_ID_AA64DFR0_EL1:
+		field = ARM64_LATE_CPU_EXPECT_AA64DFR0;
+		register_value = expected ? expected->id_aa64dfr0 : 0;
+		break;
+	case SYS_ID_AA64ISAR0_EL1:
+		field = ARM64_LATE_CPU_EXPECT_AA64ISAR0;
+		register_value = expected ? expected->id_aa64isar0 : 0;
+		break;
+	case SYS_ID_AA64ISAR1_EL1:
+		field = ARM64_LATE_CPU_EXPECT_AA64ISAR1;
+		register_value = expected ? expected->id_aa64isar1 : 0;
+		break;
+	case SYS_ID_AA64MMFR0_EL1:
+		field = ARM64_LATE_CPU_EXPECT_AA64MMFR0;
+		register_value = expected ? expected->id_aa64mmfr0 : 0;
+		break;
+	case SYS_ID_AA64MMFR1_EL1:
+		field = ARM64_LATE_CPU_EXPECT_AA64MMFR1;
+		register_value = expected ? expected->id_aa64mmfr1 : 0;
+		break;
+	case SYS_ID_AA64PFR0_EL1:
+		field = ARM64_LATE_CPU_EXPECT_AA64PFR0;
+		register_value = expected ? expected->id_aa64pfr0 : 0;
+		break;
+	case SYS_ID_AA64PFR1_EL1:
+		field = ARM64_LATE_CPU_EXPECT_AA64PFR1;
+		register_value = expected ? expected->id_aa64pfr1 : 0;
+		break;
+	case SYS_ID_ISAR5_EL1:
+		field = ARM64_LATE_CPU_EXPECT_A32ISAR5;
+		register_value = expected ? expected->id_isar5 : 0;
+		break;
+	default:
+		return -ENOENT;
+	}
+
+	if (!late_cpu_expected_field_valid(expected, field))
+		return -ENOENT;
+	*value = register_value;
+	return 0;
+}
+
+static bool __init
+late_cpu_hwcap_field_visible(const struct arm64_cpu_capabilities *cap)
+{
+	const struct arm64_ftr_reg *reg = get_arm64_ftr_reg(cap->sys_reg);
+
+	return reg &&
+	       cpuid_feature_extract_unsigned_field_width(reg->user_mask,
+							  cap->field_pos,
+						  cap->field_width);
+}
+
+static bool __init
+late_cpu_hwcap_compat_neon(u64 mvfr1)
+{
+	return cpuid_feature_extract_unsigned_field(mvfr1,
+						    MVFR1_EL1_SIMDSP_SHIFT) &&
+	       cpuid_feature_extract_unsigned_field(mvfr1,
+						    MVFR1_EL1_SIMDInt_SHIFT) &&
+	       cpuid_feature_extract_unsigned_field(mvfr1,
+						    MVFR1_EL1_SIMDLS_SHIFT);
+}
+
+static bool __init
+late_cpu_hwcap_match_one(const struct arm64_cpu_capabilities *cap,
+	const struct arm64_late_cpu_expected_pair *expected)
+{
+	bool sve_match = false;
+	bool sme_match = false;
+	u64 value;
+
+#ifdef CONFIG_COMPAT
+	if (cap->matches == compat_has_neon) {
+		if (expected) {
+			if (late_cpu_expected_hwcap_register(expected,
+							     SYS_MVFR1_EL1, &value))
+				return false;
+		} else {
+			value = read_sanitised_ftr_reg(SYS_MVFR1_EL1);
+		}
+		return late_cpu_hwcap_compat_neon(value);
+	}
+#endif
+
+#ifdef CONFIG_ARM64_SVE
+	sve_match = cap->matches == has_sve_feature;
+#endif
+#ifdef CONFIG_ARM64_SME
+	sme_match = cap->matches == has_sme_feature;
+#endif
+
+	if (cap->matches != has_user_cpuid_feature &&
+	    !sve_match && !sme_match)
+		return false;
+	if (!late_cpu_hwcap_field_visible(cap))
+		return false;
+	if (expected) {
+		if (late_cpu_expected_hwcap_register(expected, cap->sys_reg,
+						     &value))
+			return false;
+	} else {
+		value = read_sanitised_ftr_reg(cap->sys_reg);
+	}
+
+	if (sve_match) {
+		u64 pfr0;
+
+		if (expected) {
+			if (late_cpu_expected_hwcap_register(expected,
+							     SYS_ID_AA64PFR0_EL1,
+							 &pfr0))
+				return false;
+		} else {
+			pfr0 = read_sanitised_ftr_reg(SYS_ID_AA64PFR0_EL1);
+		}
+		if (!cpuid_feature_extract_unsigned_field(pfr0,
+							 ID_AA64PFR0_EL1_SVE_SHIFT))
+			return false;
+	} else if (sme_match) {
+		u64 pfr1;
+
+		if (expected) {
+			if (late_cpu_expected_hwcap_register(expected,
+							     SYS_ID_AA64PFR1_EL1,
+							 &pfr1))
+				return false;
+		} else {
+			pfr1 = read_sanitised_ftr_reg(SYS_ID_AA64PFR1_EL1);
+		}
+		if (!cpuid_feature_extract_unsigned_field(pfr1,
+							 ID_AA64PFR1_EL1_SME_SHIFT))
+			return false;
+	}
+
+	return feature_matches(value, cap);
+}
+
+static bool __init
+late_cpu_hwcap_matches(const struct arm64_cpu_capabilities *cap,
+	const struct arm64_late_cpu_expected_pair *expected)
+{
+	const struct arm64_cpu_capabilities *match;
+	int i;
+
+	if (!cap->match_list)
+		return late_cpu_hwcap_match_one(cap, expected);
+	if (cap->matches != cpucap_multi_entry_cap_matches)
+		return false;
+
+	match = cap->match_list;
+	for (i = 0; i < ARM64_NCAPS; i++, match++) {
+		if (!match->matches)
+			return false;
+		if (late_cpu_hwcap_match_one(match, expected))
+			return true;
+	}
+
+	return false;
+}
+
+static bool __init
+late_cpu_hwcap_all_cpus(const struct arm64_cpu_capabilities *cap,
+			const struct arm64_late_cpu_plan *plan)
+{
+	if (!arm64_late_cpu_expected_pair_complete(plan) ||
+	    !late_cpu_hwcap_matches(cap, NULL))
+		return false;
+
+	return late_cpu_hwcap_matches(cap, &plan->evidence.expected_pair);
+}
+
+static bool __init
+late_cpu_all_support_32bit_el0(const struct arm64_late_cpu_plan *plan)
+{
+	const struct arm64_late_cpu_expected_pair *expected;
+	u64 pfr0;
+
+	if (!system_supports_32bit_el0() ||
+	    !arm64_late_cpu_expected_pair_complete(plan))
+		return false;
+	expected = &plan->evidence.expected_pair;
+	if (late_cpu_expected_hwcap_register(expected, SYS_ID_AA64PFR0_EL1,
+					     &pfr0))
+		return false;
+
+	return id_aa64pfr0_32bit_el0(pfr0);
+}
+
+static bool __init
+late_cpu_plan_any_cpu_has_cap(const struct arm64_late_cpu_plan *plan, int cap)
+{
+	return test_bit(cap, plan->early_local_caps) ||
+	       test_bit(cap, plan->target_local_caps);
+}
+
+static int __init
+late_cpu_plan_hwcap_array(const struct arm64_cpu_capabilities *caps,
+			  struct arm64_late_cpu_plan *plan)
+{
+	for (; caps->matches; caps++) {
+		if (!late_cpu_hwcap_all_cpus(caps, plan))
+			continue;
+		switch (caps->hwcap_type) {
+		case CAP_HWCAP:
+			if (caps->hwcap >= MAX_CPU_FEATURES)
+				return -ERANGE;
+			__set_bit(caps->hwcap,
+				  (unsigned long *)plan->expected_elf_hwcap);
+			break;
+#ifdef CONFIG_COMPAT
+		case CAP_COMPAT_HWCAP:
+			plan->expected_compat_hwcap |= (u32)caps->hwcap;
+			break;
+		case CAP_COMPAT_HWCAP2:
+			plan->expected_compat_hwcap2 |= (u32)caps->hwcap;
+			break;
+#endif
+		default:
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
+int __init arm64_plan_late_cpu_hwcaps(struct arm64_late_cpu_plan *plan)
+{
+	int ret;
+
+	if (!plan || !plan->local_caps_planned || !plan->effects_planned ||
+	    plan->hwcaps_planned ||
+	    memchr_inv(plan->expected_elf_hwcap, 0,
+		       sizeof(plan->expected_elf_hwcap)) ||
+	    plan->expected_compat_hwcap || plan->expected_compat_hwcap2)
+		return -EINVAL;
+	if (!arm64_late_cpu_expected_pair_complete(plan))
+		return -EAGAIN;
+
+	BUILD_BUG_ON(sizeof(unsigned long) != sizeof(u64));
+	__set_bit(KERNEL_HWCAP_CPUID,
+		  (unsigned long *)plan->expected_elf_hwcap);
+	ret = late_cpu_plan_hwcap_array(arm64_elf_hwcaps, plan);
+	if (ret)
+		return ret;
+
+#ifdef CONFIG_COMPAT
+	if (late_cpu_all_support_32bit_el0(plan)) {
+		plan->expected_compat_hwcap = COMPAT_ELF_HWCAP_DEFAULT;
+		ret = late_cpu_plan_hwcap_array(compat_elf_hwcaps, plan);
+		if (ret)
+			return ret;
+		if (plan->effects.compat_aes_clear)
+			plan->expected_compat_hwcap2 &= ~COMPAT_HWCAP2_AES;
+	}
+#endif
+	if (late_cpu_plan_any_cpu_has_cap(plan, ARM64_WORKAROUND_2658417)) {
+		__clear_bit(KERNEL_HWCAP_BF16,
+			    (unsigned long *)plan->expected_elf_hwcap);
+		__clear_bit(KERNEL_HWCAP_EBF16,
+			    (unsigned long *)plan->expected_elf_hwcap);
+	}
+	if (late_cpu_plan_any_cpu_has_cap(plan,
+					  ARM64_WORKAROUND_SPECULATIVE_SSBS))
+		__clear_bit(KERNEL_HWCAP_SSBS,
+			    (unsigned long *)plan->expected_elf_hwcap);
+
+	plan->hwcaps_planned = 1;
+	return 0;
+}
+
+static bool __init late_cpu_commit_cap_allowed(unsigned int cap)
+{
+	switch (cap) {
+	case ARM64_MISMATCHED_CACHE_TYPE:
+	case ARM64_SPECTRE_V2:
+	case ARM64_SPECTRE_V4:
+	case ARM64_SPECTRE_BHB:
+	case ARM64_WORKAROUND_1742098:
+	case ARM64_WORKAROUND_SPECULATIVE_AT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+int __init arm64_commit_late_cpu_plan(const struct arm64_late_cpu_plan *plan)
+{
+	DECLARE_BITMAP(expected_caps, ARM64_NCAPS);
+	const struct arm64_cpu_capabilities *descriptor;
+	unsigned int cap;
+	int ret;
+
+	if (!plan || system_capabilities_finalized() ||
+	    cpus_have_cap(ARM64_ALWAYS_SYSTEM) ||
+	    plan->abi != ARM64_LATE_CPU_PLAN_ABI ||
+	    plan->evidence.blocker_mask || !plan->local_caps_planned ||
+	    !plan->effects_planned || !plan->hwcaps_planned ||
+	    !memchr_inv(plan->identity, 0, sizeof(plan->identity)) ||
+	    !bitmap_empty(plan->conflicting_local_caps, ARM64_NCAPS) ||
+	    !bitmap_subset(plan->required_local_caps,
+			   plan->target_local_caps, ARM64_NCAPS) ||
+	    !bitmap_subset(plan->required_local_caps,
+			   plan->canonical_caps, ARM64_NCAPS) ||
+	    bitmap_intersects(plan->required_local_caps,
+			      plan->early_local_caps, ARM64_NCAPS) ||
+	    bitmap_intersects(plan->required_local_caps,
+			      system_cpucaps, ARM64_NCAPS))
+		return -EINVAL;
+
+	for_each_set_bit(cap, plan->required_local_caps, ARM64_NCAPS) {
+		descriptor = cpucap_ptrs[cap];
+		if (!late_cpu_commit_cap_allowed(cap) || !descriptor ||
+		    descriptor->capability != cap ||
+		    !(descriptor->type & SCOPE_LOCAL_CPU) ||
+		    cpucap_late_cpu_permitted(descriptor))
+			return -EINVAL;
+	}
+
+	bitmap_copy(expected_caps, system_cpucaps, ARM64_NCAPS);
+	bitmap_or(expected_caps, expected_caps, plan->required_local_caps,
+		  ARM64_NCAPS);
+	ret = arm64_commit_late_cpu_mitigations(&plan->effects);
+	if (ret)
+		return ret;
+
+	/* No fallible operation may follow the first architecture-state write. */
+	bitmap_or(system_cpucaps, system_cpucaps, plan->required_local_caps,
+		  ARM64_NCAPS);
+	if (!bitmap_equal(system_cpucaps, expected_caps, ARM64_NCAPS))
+		panic("late CPU capability commit changed outside its plan");
+
+	return 0;
+}
+
+int __init
+arm64_verify_late_cpu_system(const struct arm64_late_cpu_plan *plan,
+			     const struct arm64_late_cpu_receipt *receipt)
+{
+	DECLARE_BITMAP(expected_caps, ARM64_NCAPS);
+	DECLARE_BITMAP(live_caps, ARM64_NCAPS);
+	unsigned int cap;
+
+	if (!plan || !receipt || !system_capabilities_finalized() ||
+	    receipt->state != ARM64_LATE_CPU_PROFILE_COMMITTED ||
+	    receipt->blocker_mask || !receipt->commit_complete ||
+	    receipt->strict_caps_verified || receipt->alternatives_finalized ||
+	    receipt->user_hwcaps_finalized ||
+	    !plan->local_caps_planned || !plan->effects_planned ||
+	    !plan->hwcaps_planned ||
+	    !bitmap_empty(plan->conflicting_local_caps, ARM64_NCAPS))
+		return -EINVAL;
+
+	bitmap_or(expected_caps, plan->early_local_caps,
+		  plan->required_local_caps, ARM64_NCAPS);
+	if (!bitmap_subset(expected_caps, plan->compiled_local_caps,
+			   ARM64_NCAPS))
+		return -EINVAL;
+	bitmap_and(live_caps, system_cpucaps, plan->compiled_local_caps,
+		   ARM64_NCAPS);
+	if (!bitmap_equal(live_caps, expected_caps, ARM64_NCAPS))
+		return -EINVAL;
+
+	for_each_set_bit(cap, plan->compiled_local_caps, ARM64_NCAPS)
+		if (alternative_is_applied(cap) !=
+		    test_bit(cap, expected_caps))
+			return -EINVAL;
+
+	return arm64_verify_late_cpu_mitigations(&plan->effects);
+}
+
+int __init
+arm64_finalize_late_cpu_hwcaps(const struct arm64_late_cpu_plan *plan,
+			       const struct arm64_late_cpu_receipt *receipt)
+{
+	const unsigned long *expected;
+
+	if (!plan || !receipt || !system_capabilities_finalized() ||
+	    receipt->state != ARM64_LATE_CPU_PROFILE_SYSTEM_VERIFIED ||
+	    receipt->blocker_mask || !receipt->commit_complete ||
+	    !receipt->strict_caps_verified ||
+	    !receipt->alternatives_finalized ||
+	    receipt->user_hwcaps_finalized || !plan->hwcaps_planned)
+		return -EINVAL;
+
+	BUILD_BUG_ON(sizeof(plan->expected_elf_hwcap) != sizeof(elf_hwcap));
+	BUILD_BUG_ON(sizeof(unsigned long) != sizeof(u64));
+	expected = (const unsigned long *)plan->expected_elf_hwcap;
+	if (!bitmap_subset(expected, elf_hwcap, MAX_CPU_FEATURES))
+		return -EINVAL;
+#ifdef CONFIG_COMPAT
+	if (plan->expected_compat_hwcap & ~compat_elf_hwcap ||
+	    plan->expected_compat_hwcap2 & ~compat_elf_hwcap2 ||
+	    compat_elf_hwcap3)
+		return -EINVAL;
+#else
+	if (plan->expected_compat_hwcap || plan->expected_compat_hwcap2)
+		return -EINVAL;
+#endif
+
+	/* All fallible checks precede this one-way userspace-visible reduction. */
+	bitmap_copy(elf_hwcap, expected, MAX_CPU_FEATURES);
+#ifdef CONFIG_COMPAT
+	compat_elf_hwcap = plan->expected_compat_hwcap;
+	compat_elf_hwcap2 = plan->expected_compat_hwcap2;
+#endif
+	if (!bitmap_equal(elf_hwcap, expected, MAX_CPU_FEATURES))
+		panic("late CPU HWCAP finalization changed outside its plan");
+#ifdef CONFIG_COMPAT
+	if (compat_elf_hwcap != plan->expected_compat_hwcap ||
+	    compat_elf_hwcap2 != plan->expected_compat_hwcap2 ||
+	    compat_elf_hwcap3)
+		panic("late CPU compat HWCAP finalization changed outside its plan");
+#endif
+
+	return 0;
+}
+#endif
+
 static void cap_set_elf_hwcap(const struct arm64_cpu_capabilities *cap)
 {
 	switch (cap->hwcap_type) {
@@ -4576,6 +5095,32 @@ static void __init enable_cpu_capabilities(u16 scope_mask)
 	if (!boot_scope)
 		stop_machine(cpu_enable_non_boot_scope_capabilities,
 			     NULL, cpu_online_mask);
+}
+
+int arm64_late_cpu_validate_boot_caps(void)
+{
+	const struct arm64_cpu_capabilities *caps;
+	bool cpu_has_cap;
+	bool system_has_cap;
+	int i;
+
+	for (i = 0; i < ARM64_NCAPS; i++) {
+		caps = cpucap_ptrs[i];
+		if (!caps || !(caps->type & SCOPE_BOOT_CPU))
+			continue;
+
+		/* Match callbacks perform the same CPU-local discovery as verify. */
+		cpu_has_cap = caps->matches(caps, SCOPE_LOCAL_CPU);
+		system_has_cap = cpus_have_cap(caps->capability);
+		if (system_has_cap) {
+			if (!cpu_has_cap && !cpucap_late_cpu_optional(caps))
+				return -ERANGE;
+		} else if (cpu_has_cap && !cpucap_late_cpu_permitted(caps)) {
+			return -ERANGE;
+		}
+	}
+
+	return 0;
 }
 
 /*

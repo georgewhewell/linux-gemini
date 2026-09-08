@@ -24,6 +24,7 @@
 #include <linux/nospec.h>
 #include <linux/prctl.h>
 #include <linux/sched/task_stack.h>
+#include <linux/string.h>
 
 #include <asm/debug-monitors.h>
 #include <asm/insn.h>
@@ -111,6 +112,108 @@ late_cpu_spectre_descriptor_valid(
 	default:
 		return false;
 	}
+}
+
+static bool __init
+late_cpu_expected_field_valid(const struct arm64_late_cpu_expected_pair *expected,
+			      enum arm64_late_cpu_expected_pair_field field)
+{
+	return expected && expected->abi == ARM64_LATE_CPU_EXPECTED_PAIR_ABI &&
+	       expected->target_count == ARM64_LATE_CPU_MAX_TARGETS &&
+	       field < ARM64_LATE_CPU_EXPECT_FIELD_COUNT &&
+	       !(expected->valid & ~ARM64_LATE_CPU_EXPECTED_PAIR_VALID_MASK) &&
+	       expected->valid & BIT_ULL(field) &&
+	       (expected->midr & MIDR_CPU_MODEL_MASK) == MIDR_CORTEX_A72;
+}
+
+static enum arm64_late_cpu_cap_state __init
+late_cpu_expected_v2_evidence_state(const struct arm64_late_cpu_expected_pair *expected)
+{
+	u64 csv2;
+
+	if (!late_cpu_expected_field_valid(expected,
+					   ARM64_LATE_CPU_EXPECT_AA64PFR0) ||
+	    !late_cpu_expected_field_valid(expected,
+					   ARM64_LATE_CPU_EXPECT_MIDR))
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+	csv2 = cpuid_feature_extract_unsigned_field(expected->id_aa64pfr0,
+						    ID_AA64PFR0_EL1_CSV2_SHIFT);
+	if (csv2 > 3)
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	return csv2 ? ARM64_LATE_CPU_CAP_ABSENT :
+		      ARM64_LATE_CPU_CAP_PRESENT;
+}
+
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_expected_v2_state(const struct arm64_cpu_capabilities *cap,
+				 const struct arm64_cpu_capabilities *match,
+				 const struct arm64_late_cpu_expected_pair *expected)
+{
+	if (!late_cpu_spectre_descriptor_valid(cap, match, ARM64_SPECTRE_V2))
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	return late_cpu_expected_v2_evidence_state(expected);
+}
+
+static enum arm64_late_cpu_cap_state __init
+late_cpu_expected_v4_evidence_state(const struct arm64_late_cpu_expected_pair *expected)
+{
+	u64 ssbs;
+
+	if (!late_cpu_expected_field_valid(expected,
+					   ARM64_LATE_CPU_EXPECT_AA64PFR1) ||
+	    !late_cpu_expected_field_valid(expected,
+					   ARM64_LATE_CPU_EXPECT_MIDR))
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+	ssbs = cpuid_feature_extract_unsigned_field(expected->id_aa64pfr1,
+						    ID_AA64PFR1_EL1_SSBS_SHIFT);
+	if (ssbs > 2)
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	/* Without a current WA2 result, even SSBS==0 remains affected. */
+	return ARM64_LATE_CPU_CAP_PRESENT;
+}
+
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_expected_v4_state(const struct arm64_cpu_capabilities *cap,
+				 const struct arm64_cpu_capabilities *match,
+				 const struct arm64_late_cpu_expected_pair *expected)
+{
+	if (!late_cpu_spectre_descriptor_valid(cap, match, ARM64_SPECTRE_V4))
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	return late_cpu_expected_v4_evidence_state(expected);
+}
+
+static enum arm64_late_cpu_cap_state __init
+late_cpu_expected_bhb_evidence_state(const struct arm64_late_cpu_expected_pair *expected)
+{
+	u64 csv2;
+
+	if (!late_cpu_expected_field_valid(expected,
+					   ARM64_LATE_CPU_EXPECT_AA64PFR0) ||
+	    !late_cpu_expected_field_valid(expected,
+					   ARM64_LATE_CPU_EXPECT_MIDR))
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+	csv2 = cpuid_feature_extract_unsigned_field(expected->id_aa64pfr0,
+						    ID_AA64PFR0_EL1_CSV2_SHIFT);
+	if (csv2 > 3)
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	return csv2 == 3 ? ARM64_LATE_CPU_CAP_ABSENT :
+			 ARM64_LATE_CPU_CAP_PRESENT;
+}
+
+enum arm64_late_cpu_cap_state __init
+arm64_late_cpu_expected_bhb_state(const struct arm64_cpu_capabilities *cap,
+				  const struct arm64_cpu_capabilities *match,
+				  const struct arm64_late_cpu_expected_pair *expected)
+{
+	if (!late_cpu_spectre_descriptor_valid(cap, match, ARM64_SPECTRE_BHB))
+		return ARM64_LATE_CPU_CAP_UNRESOLVED;
+
+	return late_cpu_expected_bhb_evidence_state(expected);
 }
 
 static enum arm64_late_cpu_cap_state __init
@@ -425,6 +528,70 @@ int __init arm64_late_cpu_a72_bhb_effect(
 				ARM64_LATE_CPU_HYP_VECTOR_INDIRECT;
 	}
 	effects->bhb_mitigation_state = ARM64_LATE_CPU_BHB_STATE_MITIGATED;
+
+	return 0;
+}
+
+int __init
+arm64_late_cpu_expected_effects(const struct arm64_late_cpu_expected_pair *expected,
+				const struct arm64_late_cpu_target_policy_evidence *policy,
+				struct arm64_late_cpu_target_effect_plan *effects)
+{
+	enum arm64_late_cpu_cap_state bhb_state;
+	enum arm64_late_cpu_cap_state v2_state;
+	enum arm64_late_cpu_cap_state v4_state;
+	u64 ssbs;
+
+	if (!effects || effects->valid || !late_cpu_policy_valid(policy) ||
+	    arm64_late_cpu_target_impl_override_active())
+		return -EINVAL;
+	v2_state = late_cpu_expected_v2_evidence_state(expected);
+	v4_state = late_cpu_expected_v4_evidence_state(expected);
+	bhb_state = late_cpu_expected_bhb_evidence_state(expected);
+	if (v2_state == ARM64_LATE_CPU_CAP_UNRESOLVED ||
+	    v4_state == ARM64_LATE_CPU_CAP_UNRESOLVED ||
+	    bhb_state == ARM64_LATE_CPU_CAP_UNRESOLVED)
+		return -EAGAIN;
+
+	effects->valid = ARM64_LATE_CPU_TARGET_EFFECT_VALID_MASK;
+	effects->spectre_v2_hyp_vector = ARM64_LATE_CPU_HYP_VECTOR_DIRECT;
+	effects->spectre_v2_conduit = ARM64_LATE_CPU_SMCCC_NONE;
+	effects->spectre_v2_callback = ARM64_LATE_CPU_V2_CALLBACK_NONE;
+	effects->spectre_v2_state =
+		v2_state == ARM64_LATE_CPU_CAP_ABSENT ?
+			ARM64_LATE_CPU_MITIGATION_UNAFFECTED :
+			ARM64_LATE_CPU_MITIGATION_VULNERABLE;
+
+	effects->spectre_v4_policy = policy->spectre_v4_policy;
+	effects->spectre_v4_conduit = ARM64_LATE_CPU_SMCCC_NONE;
+	ssbs = cpuid_feature_extract_unsigned_field(expected->id_aa64pfr1,
+						    ID_AA64PFR1_EL1_SSBS_SHIFT);
+	if (ssbs && !policy->mitigations_off &&
+	    policy->spectre_v4_policy != ARM64_LATE_CPU_V4_POLICY_FORCE_OFF) {
+		effects->spectre_v4_state = ARM64_LATE_CPU_MITIGATION_MITIGATED;
+		effects->spectre_v4_method = ARM64_LATE_CPU_V4_SSBS;
+	} else {
+		effects->spectre_v4_state = ARM64_LATE_CPU_MITIGATION_VULNERABLE;
+		effects->spectre_v4_method = ARM64_LATE_CPU_V4_NONE;
+	}
+
+	effects->bhb_conduit = ARM64_LATE_CPU_SMCCC_NONE;
+	effects->bhb_vector_template = ARM64_LATE_CPU_BHB_VECTOR_NONE;
+	effects->bhb_hyp_vector = effects->spectre_v2_hyp_vector;
+	effects->bhb_v2_non_vulnerable =
+		effects->spectre_v2_state != ARM64_LATE_CPU_MITIGATION_VULNERABLE;
+	if (bhb_state == ARM64_LATE_CPU_CAP_ABSENT) {
+		effects->bhb_method = ARM64_LATE_CPU_BHB_NONE;
+		effects->bhb_mitigation_state =
+			ARM64_LATE_CPU_BHB_STATE_UNAFFECTED;
+	} else if (!effects->bhb_v2_non_vulnerable) {
+		effects->bhb_method = ARM64_LATE_CPU_BHB_NONE;
+		effects->bhb_mitigation_state =
+			ARM64_LATE_CPU_BHB_STATE_VULNERABLE;
+	} else {
+		/* A non-vulnerable v2 path would need the missing BHB IDs. */
+		return -EAGAIN;
+	}
 
 	return 0;
 }
@@ -1397,6 +1564,200 @@ u8 get_spectre_bhb_loop_value(void)
 {
 	return max_bhb_k;
 }
+
+#ifdef CONFIG_ARM64_LATE_CPU_PROFILE
+static int __init
+late_cpu_current_mitigation_state(enum mitigation_state state, u8 *value)
+{
+	switch (state) {
+	case SPECTRE_UNAFFECTED:
+		*value = ARM64_LATE_CPU_MITIGATION_UNAFFECTED;
+		return 0;
+	case SPECTRE_MITIGATED:
+		*value = ARM64_LATE_CPU_MITIGATION_MITIGATED;
+		return 0;
+	case SPECTRE_VULNERABLE:
+		*value = ARM64_LATE_CPU_MITIGATION_VULNERABLE;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+static int __init late_cpu_current_smccc_conduit(u8 *value)
+{
+	switch (arm_smccc_1_1_get_conduit()) {
+	case SMCCC_CONDUIT_NONE:
+		*value = ARM64_LATE_CPU_SMCCC_NONE;
+		return 0;
+	case SMCCC_CONDUIT_SMC:
+		*value = ARM64_LATE_CPU_SMCCC_SMC;
+		return 0;
+	case SMCCC_CONDUIT_HVC:
+		*value = ARM64_LATE_CPU_SMCCC_HVC;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+static int __init late_cpu_current_v4_policy(u8 *value)
+{
+	switch (READ_ONCE(__spectre_v4_policy)) {
+	case SPECTRE_V4_POLICY_MITIGATION_DYNAMIC:
+		*value = ARM64_LATE_CPU_V4_POLICY_DYNAMIC;
+		return 0;
+	case SPECTRE_V4_POLICY_MITIGATION_ENABLED:
+		*value = ARM64_LATE_CPU_V4_POLICY_FORCE_ON;
+		return 0;
+	case SPECTRE_V4_POLICY_MITIGATION_DISABLED:
+		*value = ARM64_LATE_CPU_V4_POLICY_FORCE_OFF;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+int __init
+arm64_late_cpu_collect_policy(struct arm64_late_cpu_target_policy_evidence *policy,
+			      struct arm64_late_cpu_system_cap_evidence *system)
+{
+	unsigned long bhb_methods = READ_ONCE(system_bhb_mitigations);
+	int ret;
+
+	if (!policy || !system || system_capabilities_finalized() ||
+	    memchr_inv(policy, 0, sizeof(*policy)) ||
+	    system->valid != (ARM64_LATE_CPU_SYSTEM_CAP_CTR_VALID |
+			      ARM64_LATE_CPU_SYSTEM_CAP_SSBS_VALID |
+			      ARM64_LATE_CPU_SYSTEM_CAP_EARLY_LOCAL_VALID) ||
+	    bhb_methods & ~GENMASK(BHB_INSN, BHB_LOOP))
+		return -EINVAL;
+
+	ret = late_cpu_current_smccc_conduit(&policy->smccc_conduit);
+	if (ret)
+		return ret;
+	ret = late_cpu_current_v4_policy(&policy->spectre_v4_policy);
+	if (ret)
+		return ret;
+	ret = late_cpu_current_mitigation_state(arm64_get_spectre_v2_state(),
+						&system->spectre_v2_state);
+	if (ret)
+		return ret;
+	ret = late_cpu_current_mitigation_state(arm64_get_spectre_v4_state(),
+						&system->spectre_v4_state);
+	if (ret)
+		return ret;
+	ret = late_cpu_current_mitigation_state(arm64_get_spectre_bhb_state(),
+						&system->bhb_state);
+	if (ret)
+		return ret;
+
+	policy->mitigations_off = cpu_mitigations_off();
+	policy->nospectre_v2 = READ_ONCE(__nospectre_v2);
+	policy->valid = ARM64_LATE_CPU_TARGET_POLICY_VALID_MASK;
+	system->bhb_matcher_loop_count = get_spectre_bhb_loop_value();
+	system->bhb_system_method = bhb_methods;
+	system->valid |= ARM64_LATE_CPU_SYSTEM_CAP_EFFECTS_VALID;
+
+	return 0;
+}
+
+static int __init
+late_cpu_mitigation_state(u8 planned, enum mitigation_state *state)
+{
+	switch (planned) {
+	case ARM64_LATE_CPU_MITIGATION_UNAFFECTED:
+		*state = SPECTRE_UNAFFECTED;
+		return 0;
+	case ARM64_LATE_CPU_MITIGATION_MITIGATED:
+		*state = SPECTRE_MITIGATED;
+		return 0;
+	case ARM64_LATE_CPU_MITIGATION_VULNERABLE:
+		*state = SPECTRE_VULNERABLE;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+int __init arm64_commit_late_cpu_mitigations(const struct arm64_late_cpu_effect_plan *effects)
+{
+	enum mitigation_state v2 = SPECTRE_UNAFFECTED;
+	enum mitigation_state v4 = SPECTRE_UNAFFECTED;
+	enum mitigation_state bhb = SPECTRE_UNAFFECTED;
+	unsigned long current_bhb_methods;
+	u8 current_bhb_loop;
+	int ret;
+
+	if (!effects || system_capabilities_finalized())
+		return -EINVAL;
+	if (effects->spectre_v2.required) {
+		ret = late_cpu_mitigation_state(effects->spectre_v2.mitigation_state, &v2);
+		if (ret || READ_ONCE(spectre_v2_state) > v2)
+			return -EINVAL;
+	}
+	if (effects->spectre_v4.required) {
+		ret = late_cpu_mitigation_state(effects->spectre_v4.mitigation_state, &v4);
+		if (ret || READ_ONCE(spectre_v4_state) > v4)
+			return -EINVAL;
+	}
+	if (effects->bhb.required) {
+		ret = late_cpu_mitigation_state(effects->bhb.mitigation_state, &bhb);
+		current_bhb_methods = READ_ONCE(system_bhb_mitigations);
+		current_bhb_loop = READ_ONCE(max_bhb_k);
+		if (ret || READ_ONCE(spectre_bhb_state) > bhb ||
+		    effects->bhb.system_method & ~GENMASK(BHB_INSN, BHB_LOOP) ||
+		    current_bhb_methods & ~effects->bhb.system_method ||
+		    current_bhb_loop > effects->bhb.matcher_loop_count)
+			return -EINVAL;
+	}
+
+	if (effects->spectre_v2.required)
+		update_mitigation_state(&spectre_v2_state, v2);
+	if (effects->spectre_v4.required)
+		update_mitigation_state(&spectre_v4_state, v4);
+	if (effects->bhb.required) {
+		WRITE_ONCE(max_bhb_k, effects->bhb.matcher_loop_count);
+		WRITE_ONCE(system_bhb_mitigations,
+			   (unsigned long)effects->bhb.system_method);
+		update_mitigation_state(&spectre_bhb_state, bhb);
+	}
+
+	return 0;
+}
+
+int __init
+arm64_verify_late_cpu_mitigations(const struct arm64_late_cpu_effect_plan *effects)
+{
+	enum mitigation_state v2;
+	enum mitigation_state v4;
+	enum mitigation_state bhb;
+	int ret;
+
+	if (!effects || !system_capabilities_finalized())
+		return -EINVAL;
+	if (effects->spectre_v2.required) {
+		ret = late_cpu_mitigation_state(effects->spectre_v2.mitigation_state, &v2);
+		if (ret || READ_ONCE(spectre_v2_state) != v2)
+			return -EINVAL;
+	}
+	if (effects->spectre_v4.required) {
+		ret = late_cpu_mitigation_state(effects->spectre_v4.mitigation_state, &v4);
+		if (ret || READ_ONCE(spectre_v4_state) != v4)
+			return -EINVAL;
+	}
+	if (effects->bhb.required) {
+		ret = late_cpu_mitigation_state(effects->bhb.mitigation_state, &bhb);
+		if (ret || READ_ONCE(spectre_bhb_state) != bhb ||
+		    READ_ONCE(system_bhb_mitigations) !=
+			    effects->bhb.system_method ||
+		    READ_ONCE(max_bhb_k) != effects->bhb.matcher_loop_count)
+			return -EINVAL;
+	}
+
+	return 0;
+}
+#endif
 
 static void this_cpu_set_vectors(enum arm64_bp_harden_el1_vectors slot)
 {

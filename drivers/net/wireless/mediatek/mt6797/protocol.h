@@ -50,6 +50,7 @@ struct mt6797_wifi_tx_params {
 	enum mt6797_wifi_tx_traffic traffic;
 	u16 fixed_rate;
 	u8 wlan_index;
+	u8 own_mac_index;
 	bool protected;
 };
 

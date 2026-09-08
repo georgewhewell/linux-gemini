@@ -214,6 +214,8 @@ int mt6797_wifi_tx_build(u8 *packet, size_t capacity, const u8 *payload,
 
 	if (!packet || !payload || !params || !transfer_length)
 		return -EINVAL;
+	if (params->own_mac_index > 63)
+		return -EINVAL;
 	if (payload_length < ETH_HLEN)
 		return -EMSGSIZE;
 	if (check_add_overflow(payload_length,
@@ -248,8 +250,7 @@ int mt6797_wifi_tx_build(u8 *packet, size_t capacity, const u8 *payload,
 		return -EINVAL;
 	}
 	if (params->traffic != MT6797_WIFI_TX_DATA &&
-	    (!params->fixed_rate ||
-	     params->fixed_rate > MT6797_WIFI_TX_FIXED_RATE_MAX))
+	    params->fixed_rate > MT6797_WIFI_TX_FIXED_RATE_MAX)
 		return -EINVAL;
 
 	memset(packet, 0, aligned_length);
@@ -258,6 +259,7 @@ int mt6797_wifi_tx_build(u8 *packet, size_t capacity, const u8 *payload,
 	packet[3] = queue;
 	packet[4] = params->wlan_index;
 	packet[5] = MT6797_WIFI_TX_HEADER_ETHERNET_LONG;
+	packet[7] = params->own_mac_index << 2;
 	if (params->protected)
 		packet[6] |= MT6797_WIFI_TX_PROTECTED;
 	if (params->traffic == MT6797_WIFI_TX_ARP)

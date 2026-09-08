@@ -8,6 +8,7 @@ mt6797-wifi-y := core.o firmware.o boot.o capability.o protocol.o \
 	runtime_config.o hif_runtime.o hif_pump.o scan.o rx_metadata.o \
 	scan_target.o scan_hif.o ais_resources.o ais_protocol.o ais_runtime.o \
 	ais_hif.o ais_auth.o ais_mgmt_tx.o
+mt6797-wifi-$(CONFIG_MTK_MT6797_WIFI_RADIO) += radio.o
 mt6797-wifi-$(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION) += \
 	open_auth_qualification.o
 mt6797-wifi-$(CONFIG_MTK_MT6797_WIFI_KUNIT_TEST) += firmware_test.o \

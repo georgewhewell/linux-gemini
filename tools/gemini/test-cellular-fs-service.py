@@ -65,6 +65,12 @@ static struct node nodes[] = {
  {"NVRAM/x\xc3\xa9.txt", 0100444, "utf", 3, 1},
  {"ro.txt", 0100444, "readonly", 8, 0},
  {"big.bin", 0100644, big, sizeof(big), 0},
+ {"x/", 0040755, NULL, 0, -1},
+ {"x/common", 0100444, "protect-f", 9, 8},
+ {"y/", 0040755, NULL, 0, -1},
+ {"y/common", 0100444, "protect-s-long", 14, 10},
+ {"x/new", 0100644, NULL, 0, 8},
+ {"y/new", 0100644, NULL, 0, 10},
 };
 #define NODES ((int)(sizeof(nodes) / sizeof(nodes[0])))
 static int open_files, provider_available = 1, fstat_error, read_error;
@@ -78,15 +84,26 @@ static struct file *mt6797_md1_fs_provider_open(const char *path, bool directory
  if (directory != S_ISDIR(nodes[n].mode)) return ERR_PTR(directory ? -ENOTDIR : -EISDIR);
  f = calloc(1, sizeof(*f)); f->node = n; f->directory = directory; open_files++; return f; }
 
-static bool ram_enabled;static int ram_create_count,ram_truncate_count;static char ram_data[64];
+static bool ram_enabled;static int ram_create_count,ram_truncate_count,root_creates[2];static char ram_data[64],root_data[2][64];
 static struct file *mt6797_md1_fs_provider_open_ram(const char *path,bool writable,bool create,bool truncate){
  if(!ram_enabled)return ERR_PTR(-EROFS);
+ int index=!strcmp(path,"x/new")?0:!strcmp(path,"y/new")?1:-1;
+ if(index>=0){
+  if(create)root_creates[index]++;
+  if(truncate)nodes[12+index].size=0;
+  nodes[12+index].data=root_data[index];struct file *f=mt6797_md1_fs_provider_open(path,false);f->writable=writable;return f;
+ }
  assert(!strcmp(path,"big.bin"));if(create)ram_create_count++;
  if(truncate){nodes[7].size=0;ram_truncate_count++;}
  nodes[7].data=ram_data;struct file *f=mt6797_md1_fs_provider_open(path,false);f->writable=writable;return f;}
 static ssize_t mt6797_md1_fs_provider_write(struct file *f,const void *data,size_t count,loff_t *pos){
  if(!ram_enabled||!f->writable)return -EROFS;
- assert(f->node==7&&pos==&f->f_pos);if(*pos>=64)return -ENOSPC;
+ assert(pos==&f->f_pos);
+ if(f->node>=12){
+  assert(f->node<=13&&*pos<64);if(count>(size_t)(64-*pos))count=64-*pos;
+  memcpy(root_data[f->node-12]+*pos,data,count);*pos+=count;if((u64)*pos>nodes[f->node].size)nodes[f->node].size=*pos;return count;
+ }
+ assert(f->node==7);if(*pos>=64)return -ENOSPC;
  if(count>(size_t)(64-*pos))count=64-*pos;
  memcpy(ram_data+*pos,data,count);*pos+=count;if((u64)*pos>nodes[7].size)nodes[7].size=*pos;return count;}
 static int mt6797_md1_fs_provider_fstat(struct file *f, struct mt6797_md1_fs_attr *a) { if (fstat_error) return fstat_error; fill(f->node, a); return 0; }
@@ -106,6 +123,26 @@ static int mt6797_md1_fs_provider_next_entry(struct file *f, struct mt6797_md1_f
   fill(f->cursor, &e->attr); f->cursor++; return 0; } return -ENOENT; }
 static void mt6797_md1_fs_provider_close(struct file *f) { assert(f); open_files--; free(f); }
 static int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *s) { if (!provider_available) return -ENODEV; *s = (struct mt6797_md1_fs_stats){4096, 12345, 6789}; return 0; }
+static bool roots_enabled;
+static int drive_path(u8 drive,const char *path,char *mapped){
+ if(drive=='Z'){strcpy(mapped,path);return 0;}
+ if(!roots_enabled||(drive!='X'&&drive!='Y'))return -ENODEV;
+ snprintf(mapped,2048,"%c/%s",drive=='X'?'x':'y',path);return 0;
+}
+static int mt6797_md1_fs_provider_getattr_drive(u8 drive,const char *path,struct mt6797_md1_fs_attr *a){
+ char mapped[2048];int ret=drive_path(drive,path,mapped);return ret?ret:mt6797_md1_fs_provider_getattr(mapped,a);
+}
+static struct file *mt6797_md1_fs_provider_open_drive(u8 drive,const char *path,bool directory){
+ char mapped[2048];int ret=drive_path(drive,path,mapped);return ret?ERR_PTR(ret):mt6797_md1_fs_provider_open(mapped,directory);
+}
+static struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive,const char *path,bool writable,bool create,bool truncate){
+ char mapped[2048];int ret=drive_path(drive,path,mapped);return ret?ERR_PTR(ret):mt6797_md1_fs_provider_open_ram(mapped,writable,create,truncate);
+}
+static int mt6797_md1_fs_provider_stats_drive(u8 drive,struct mt6797_md1_fs_stats *s){
+ if(drive=='Z')return mt6797_md1_fs_provider_stats(s);
+ if(!provider_available||!roots_enabled||(drive!='X'&&drive!='Y'))return -ENODEV;
+ *s=(struct mt6797_md1_fs_stats){4096,drive=='X'?2048:3192,drive=='X'?700:900};return 0;
+}
 '''
 tests = r'''
 static u8 frame[3584], payload[MT6797_FS_REPLY_MAX];
@@ -389,6 +426,59 @@ int main(void) {
    assert(svc.open_count == before && open_files == files);
  }
  /* Handle exhaustion at the vendor's 128 usable slots, then CLOSEALL/SHUTDOWN. */
+
+ /* Distinct X/Y fixture roots exercise actual service routing, compact OPEN,
+  * returned volume identity/capacity, and directory handles without Z aliases. */
+ roots_enabled=true;
+ { const char *paths[]={"X:\\common","Y:\\common"};
+   const char *data[]={"protect-f","protect-s-long"};
+   for(int i=0;i<2;i++){
+    unsigned before=svc.open_count;
+    assert(!run_path(MT6797_FS_GETATTRIBUTES,paths[i],0,false)&&status==1);
+    assert(!run_path(MT6797_FS_OPEN,paths[i],0x100,true)&&status>0);
+    u32 handle=status;
+    assert(!run_u32(MT6797_FS_READ,2,handle,30,0)&&status==0);
+    assert(arg(2,&d)==strlen(data[i])&&!memcmp(d,data[i],strlen(data[i])));
+    assert(!run_u32(MT6797_FS_CLOSE,1,handle,0,0)&&status==0&&svc.open_count==before);
+    u8 control[40]={0};mt6797_fs_write32(control,31);mt6797_fs_write32(control+12,0x700);mt6797_fs_write32(control+32,206);
+    u32 n=utf16(paths[i],pathbuf);const void *a[]={pathbuf,control};u32 l[]={n,40};
+    assert(!run(0,MT6797_FS_COMPACT_READ,2,a,l)&&status==0);
+    assert(arg_s32(1)==(s32)strlen(data[i])&&arg_s32(2)==(s32)strlen(data[i]));
+    assert(arg(3,&d)==strlen(data[i])&&!memcmp(d,data[i],strlen(data[i]))&&svc.open_count==before);
+    char root[]={i?'Y':'X',':','\\',0};
+    assert(!run_path(MT6797_FS_GETDISKINFO,root,3,true)&&status==0);
+    assert(arg(1,&d)==84&&d[24]==root[0]&&mt6797_fs_read32(d+56)==(i?3192:2048));
+    assert(mt6797_fs_read32(d+64)==(i?900:700));
+    assert(!run_u32(MT6797_FS_GETCLUSTERSIZE,1,root[0],0,0)&&status==4096);
+    char pattern[]={root[0],':','\\','*',0};
+    assert(!findfirst(pattern,0,0,260)&&status>0);handle=status;
+    assert(!run_u32(MT6797_FS_FINDCLOSE,1,handle,0,0)&&status==0&&svc.open_count==before);
+   }
+   assert(!run_path(MT6797_FS_OPEN,"Z:\\common",0x100,true)&&status==-9);
+   assert(!run_path(MT6797_FS_OPEN,"X:\\..\\common",0x100,true)&&status==-16);
+   assert(!run_path(MT6797_FS_OPEN,"W:\\common",0x100,true)&&status==-19);
+ }
+
+ ram_enabled=true;
+ { u32 handles[2];
+   assert(!run_path(MT6797_FS_OPEN,"X:\\new",0x10400,true)&&status>0);handles[0]=status;
+   assert(!run_path(MT6797_FS_OPEN,"Y:\\new",0x10400,true)&&status>0);handles[1]=status;
+   assert(root_creates[0]==1&&root_creates[1]==1&&handles[0]!=handles[1]);
+   for(int i=0;i<2;i++){
+    u8 h[4],count[4];const char *content=i?"ydata":"xdata";
+    mt6797_fs_write32(h,handles[i]);mt6797_fs_write32(count,5);
+    const void *a[]={h,content,count};u32 l[]={4,5,4};
+    assert(!run(0,MT6797_FS_WRITE,3,a,l)&&status==0&&arg_s32(1)==5);
+   }
+   for(int i=0;i<2;i++){
+    assert(!run_u32(MT6797_FS_SEEK,3,handles[i],0,0)&&status==0);
+    assert(!run_u32(MT6797_FS_READ,2,handles[i],5,0)&&status==0);
+    assert(arg(2,&d)==5&&!memcmp(d,i?"ydata":"xdata",5));
+    assert(!run_u32(MT6797_FS_CLOSE,1,handles[i],0,0)&&status==0);
+   }
+ }
+ ram_enabled=false;
+ roots_enabled=false;
  while (svc.open_count < 128) { assert(!run_path(MT6797_FS_OPEN, "Z:\\ro.txt", 0x100, true) && status > 0 && status < 129); }
  assert(!run_path(MT6797_FS_OPEN, "Z:\\ro.txt", 0x100, true) && status == -5 && !findfirst("Z:\\*", 0, 0, 260) && status == -5 && open_files == 128);
  assert(!run_u32(MT6797_FS_CLOSEALL, 0, 0, 0, 0) && status == 0 && reply.argc == 1 && !open_files && !svc.open_count);
@@ -415,6 +505,7 @@ int main(void) {
  assert(!run_u32(MT6797_FS_CLOSE,1,1,0,0)&&status==0);
  assert(!run_path(MT6797_FS_OPEN,"Z:\\big.bin",0x20000,true)&&status==1&&ram_truncate_count==1&&nodes[7].size==0);
  mt6797_fs_service_release(&svc);assert(!open_files&&!svc.open_count);ram_enabled=false;
+ puts("PASS actual Z/X/Y routing: distinct compact reads, metadata, search, disk identity/capacity, simultaneous create/write/readback handles, absent and traversal refusals");
  puts("PASS actual RAM service: captured CREATE flags, write count, malformed length, seek/readback, partial/full writes, truncate and handle cleanup");
  assert(allocations == frees);
  puts("PASS actual FS service: C8/C10/C11 literal frames, every answered vendor op, error mapping, UTF-16/path/pattern rules, handles 1..128, 0xd80 fragmentation, read-only refusals, leak-free");

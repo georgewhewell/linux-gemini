@@ -18,6 +18,7 @@
 #include "hif.h"
 #include "hif_runtime.h"
 #include "runtime_config.h"
+#include "radio.h"
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
 #include "open_auth_qualification.h"
@@ -34,6 +35,9 @@ struct mt6797_wifi {
 	struct mt6797_wifi_capability_session capability_session;
 	struct mt6797_wifi_capability capability;
 	struct mt6797_wifi_runtime_config runtime_config;
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_RADIO)
+	struct mt6797_wifi_radio *radio;
+#endif
 #if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
 	struct mt6797_wifi_open_auth_qualification qualification;
 #endif
@@ -189,17 +193,25 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	if (ret)
 		goto stop_runtime;
 #endif
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_RADIO)
+	wifi->radio = mt6797_wifi_radio_register(dev, &wifi->hif_irq,
+					       &wifi->capability);
+	if (IS_ERR(wifi->radio)) {
+		ret = PTR_ERR(wifi->radio);
+		goto stop_runtime;
+	}
+#endif
 	dev_info(dev,
 		 "WLAN %#06x fw %#06x HIF_EVENT_PUMP_READY irq=%d budget=%u timeout_ms=100\n",
 		 wifi->capability.product_id, wifi->capability.firmware_version,
 		 wifi->irq, MT6797_WIFI_HIF_RX_BUDGET);
 	return 0;
 
-#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION) || IS_ENABLED(CONFIG_MTK_MT6797_WIFI_RADIO)
 stop_runtime:
 	mt6797_wifi_hif_runtime_stop(&wifi->hif_irq);
 	return dev_err_probe(dev, ret,
-		"failed to register open-auth qualification gate\n");
+		"failed to register WLAN consumer\n");
 #endif
 }
 
@@ -208,6 +220,9 @@ static void mt6797_wifi_remove(struct platform_device *pdev)
 	struct mt6797_wifi *wifi = platform_get_drvdata(pdev);
 	int ret;
 
+#if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_RADIO)
+	mt6797_wifi_radio_unregister(wifi->radio);
+#endif
 #if IS_ENABLED(CONFIG_MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION)
 	device_remove_group(&pdev->dev,
 		&mt6797_wifi_open_auth_qualification_group);

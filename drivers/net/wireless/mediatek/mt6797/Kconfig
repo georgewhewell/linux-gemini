@@ -44,9 +44,19 @@ config MTK_MT6797_WIFI
 	  release accounting, and a bounded ordinary-mode RX pump. Valid firmware
 	  events and frame classes are decoded and counted but not yet delivered to
 	  a radio consumer. Any malformed, overflowing, timed-out, or failed pump is
-	  fenced and stopped asynchronously. No wiphy or network device is
-	  registered. The Device Tree node is disabled by default, so enabling this
+	  fenced and stopped asynchronously. The optional cfg80211 station interface
+	  registers a wiphy and network device. The Device Tree node is disabled by default, so enabling this
 	  option alone performs no hardware access.
+
+config MTK_MT6797_WIFI_RADIO
+	bool "MT6797 cfg80211 station interface"
+	depends on MTK_MT6797_WIFI && CFG80211
+	depends on !MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION
+	help
+	  Register a station network interface and expose firmware-backed passive
+	  scanning through cfg80211. Beacon and probe response metadata is reported
+	  to the kernel BSS cache. Association, keys, and data transfer are not yet
+	  implemented; carrier and the transmit queue remain off.
 
 config MTK_MT6797_WIFI_OPEN_AUTH_QUALIFICATION
 	bool "MT6797 one-shot open-auth qualification trigger"

@@ -256,7 +256,7 @@ int main(void) {
  { u8 f[3584]; assert(mt6797_fs_reply_frame(&reply, 0, f, sizeof(f)) == 0xd94 && mt6797_fs_read32(f) == 0x80000000U && mt6797_fs_read32(f + 12) == 0);
    assert(mt6797_fs_reply_frame(&reply, 1, f, sizeof(f)) == 20 + 5024 - 0xd80 && !mt6797_fs_read32(f)); }
  assert(!run_u32(MT6797_FS_READ, 2, 3, MT6797_FS_READ_MAX, 0) && status == 0 && arg_s32(1) == 0);
- { u8 data[8] = "12345678"; u8 h[4], l[4]; mt6797_fs_write32(h, 2); mt6797_fs_write32(l, 8); const void *a[3] = {h, data, l}; u32 ln[3] = {4, 8, 4};
+ { u8 data[8] = {'1','2','3','4','5','6','7','8'}; u8 h[4], l[4]; mt6797_fs_write32(h, 2); mt6797_fs_write32(l, 8); const void *a[3] = {h, data, l}; u32 ln[3] = {4, 8, 4};
    assert(!run(0, MT6797_FS_WRITE, 3, a, ln) && status == -18 && reply.argc == 2 && arg_s32(1) == 0);
    mt6797_fs_write32(h, 9); assert(!run(0, MT6797_FS_WRITE, 3, a, ln) && status == -10);
    assert(!run(0, MT6797_FS_WRITE, 2, a, ln) && status == -2); }

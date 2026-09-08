@@ -228,3 +228,36 @@ def select_record(records: tuple[tuple[int, Record], ...], name: bytes) -> Recor
         if record.name == name:
             return record
     raise FormatError("record not found")
+
+
+MODEM_ROOTS = ((b'/data/nvram/md/', 'Z'),
+               (b'/protect_f/md/', 'X'), (b'/protect_s/md/', 'Y'))
+
+
+def modem_target(name: bytes) -> tuple[str, bytes] | None:
+    """Map an installed MD1 backup name to a confined provider-relative path.
+
+    Non-MD1 records are outside this service and return None. A malformed
+    name inside an approved root is an error, not an alias to normalize.
+    This mapping performs no filesystem access and is not publication.
+    """
+    if not isinstance(name, bytes):
+        raise TypeError("backup name must be immutable bytes")
+    for prefix, drive in MODEM_ROOTS:
+        if name == prefix[:-1]:
+            raise FormatError("backup record targets a root")
+        if not name.startswith(prefix):
+            continue
+        relative = name[len(prefix):]
+        if (not relative or len(relative) > 1024 or b'\\' in relative
+                or b':' in relative or any(c < 32 or c == 127 for c in relative)):
+            raise FormatError("invalid modem backup path")
+        if any(part in (b'', b'.', b'..') or len(part) > 255
+               for part in relative.split(b'/')):
+            raise FormatError("noncanonical modem backup path")
+        try:
+            relative.decode('utf-8', errors='strict')
+        except UnicodeDecodeError:
+            raise FormatError("invalid modem backup path encoding") from None
+        return drive, relative
+    return None

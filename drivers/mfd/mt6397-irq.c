@@ -31,10 +31,15 @@ static void mt6397_irq_sync_unlock(struct irq_data *data)
 {
 	struct mt6397_chip *mt6397 = irq_data_get_irq_chip_data(data);
 	unsigned int i;
+	int ret;
 
-	for (i = 0; i < mt6397->num_irq_regs; i++)
-		regmap_write(mt6397->regmap, mt6397->int_con[i],
-			     mt6397->irq_masks_cur[i]);
+	for (i = 0; i < mt6397->num_irq_regs; i++) {
+		ret = regmap_write(mt6397->regmap, mt6397->int_con[i],
+				   mt6397->irq_masks_cur[i]);
+		if (ret)
+			dev_err_ratelimited(mt6397->dev,
+					    "Failed to set IRQ mask bank %u: %d\n", i, ret);
+	}
 
 	mutex_unlock(&mt6397->irqlock);
 }
@@ -88,7 +93,8 @@ static void mt6397_irq_handle_reg(struct mt6397_chip *mt6397, int reg,
 
 	ret = regmap_read(mt6397->regmap, reg, &status);
 	if (ret) {
-		dev_err(mt6397->dev, "Failed to read irq status: %d\n", ret);
+		dev_err_ratelimited(mt6397->dev, "Failed to read IRQ bank %d: %d\n",
+				    irqbase / 16, ret);
 		return;
 	}
 
@@ -100,7 +106,10 @@ static void mt6397_irq_handle_reg(struct mt6397_chip *mt6397, int reg,
 		}
 	}
 
-	regmap_write(mt6397->regmap, reg, status);
+	ret = regmap_write(mt6397->regmap, reg, status);
+	if (ret)
+		dev_err_ratelimited(mt6397->dev, "Failed to acknowledge IRQ bank %d: %d\n",
+				    irqbase / 16, ret);
 }
 
 static irqreturn_t mt6397_irq_thread(int irq, void *data)

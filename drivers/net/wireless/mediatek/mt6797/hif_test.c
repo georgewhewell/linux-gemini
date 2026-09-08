@@ -107,7 +107,103 @@ static void mt6797_wifi_ahb_cmd53_reject_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 }
 
+struct irq_gate_bus {
+	u8 value;
+	unsigned int calls, fail_at;
+	bool drop_write;
+};
+
+static int irq_gate_read(void *context, u8 *value)
+{
+	struct irq_gate_bus *bus = context;
+
+	if (++bus->calls == bus->fail_at)
+		return -EIO;
+	*value = bus->value;
+	return 0;
+}
+
+static int irq_gate_write(void *context, u8 value)
+{
+	struct irq_gate_bus *bus = context;
+
+	if (!bus->drop_write)
+		bus->value = value;
+	/* A failed write may still have reached hardware. */
+	return ++bus->calls == bus->fail_at ? -EIO : 0;
+}
+
+static void mt6797_wifi_irq_gate_restore_test(struct kunit *test)
+{
+	unsigned int initial;
+
+	for (initial = 0; initial < 256; initial++) {
+		struct irq_gate_bus bus = { .value = initial };
+		struct mt6797_wifi_irq_gate gate = {};
+		struct mt6797_wifi_irq_gate_io io = {
+			.read = irq_gate_read, .write = irq_gate_write, .context = &bus,
+		};
+
+		KUNIT_ASSERT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, true), 0);
+		KUNIT_EXPECT_EQ(test, bus.value, (u8)(initial | 3));
+		KUNIT_EXPECT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, true), -EBUSY);
+		/* Preserve an unrelated field changed after acquisition. */
+		bus.value ^= 0x80;
+		KUNIT_ASSERT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, false), 0);
+		KUNIT_EXPECT_EQ(test, bus.value, (u8)(initial ^ 0x80));
+		KUNIT_EXPECT_FALSE(test, gate.saved);
+		bus.calls = 0;
+		KUNIT_EXPECT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, false), 0);
+		KUNIT_EXPECT_EQ(test, bus.calls, 0U);
+	}
+}
+
+static void mt6797_wifi_irq_gate_failure_test(struct kunit *test)
+{
+	unsigned int failure;
+
+	for (failure = 1; failure <= 3; failure++) {
+		struct irq_gate_bus bus = { .value = 0xa0, .fail_at = failure };
+		struct mt6797_wifi_irq_gate gate = {};
+		struct mt6797_wifi_irq_gate_io io = {
+			.read = irq_gate_read, .write = irq_gate_write, .context = &bus,
+		};
+
+		KUNIT_EXPECT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, true), -EIO);
+		KUNIT_EXPECT_EQ(test, gate.saved, failure != 1);
+		bus.fail_at = 0;
+		KUNIT_ASSERT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, false), 0);
+		KUNIT_EXPECT_EQ(test, bus.value, (u8)0xa0);
+		KUNIT_ASSERT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, true), 0);
+		bus.calls = 0;
+		bus.fail_at = failure;
+		KUNIT_EXPECT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, false), -EIO);
+		KUNIT_EXPECT_TRUE(test, gate.saved);
+		bus.fail_at = 0;
+		KUNIT_ASSERT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, false), 0);
+		KUNIT_EXPECT_EQ(test, bus.value, (u8)0xa0);
+	}
+}
+
+static void mt6797_wifi_irq_gate_readback_test(struct kunit *test)
+{
+	struct irq_gate_bus bus = { .drop_write = true };
+	struct mt6797_wifi_irq_gate gate = {};
+	struct mt6797_wifi_irq_gate_io io = {
+		.read = irq_gate_read, .write = irq_gate_write, .context = &bus,
+	};
+
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, true), -EIO);
+	KUNIT_EXPECT_TRUE(test, gate.saved);
+	bus.drop_write = false;
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_irq_gate_update(&gate, &io, false), 0);
+	KUNIT_EXPECT_FALSE(test, gate.saved);
+}
+
 static struct kunit_case mt6797_wifi_ahb_hif_test_cases[] = {
+	KUNIT_CASE(mt6797_wifi_irq_gate_restore_test),
+	KUNIT_CASE(mt6797_wifi_irq_gate_failure_test),
+	KUNIT_CASE(mt6797_wifi_irq_gate_readback_test),
 	KUNIT_CASE(mt6797_wifi_ahb_cmd52_encode_test),
 	KUNIT_CASE(mt6797_wifi_ahb_cmd52_reject_test),
 	KUNIT_CASE(mt6797_wifi_ahb_cmd53_byte_mode_test),

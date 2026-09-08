@@ -206,6 +206,69 @@ int mt6797_wifi_ahb_cmd53_write(struct mt6797_wifi_ahb_hif *hif, u32 address,
 }
 EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_cmd53_write);
 
+/* SDIO function-0 CCCR: master bit0 and WLAN function-1 bit1. */
+#define MT6797_WIFI_CCCR_IENX 0x04
+#define MT6797_WIFI_CCCR_IRQ_MASK 0x03
+
+int mt6797_wifi_irq_gate_update(struct mt6797_wifi_irq_gate *gate,
+	const struct mt6797_wifi_irq_gate_io *io, bool enable)
+{
+	u8 value, wanted;
+	int ret;
+
+	if (!gate || !io || !io->read || !io->write)
+		return -EINVAL;
+	if (enable && gate->saved)
+		return -EBUSY;
+	if (!enable && !gate->saved)
+		return 0;
+	ret = io->read(io->context, &value);
+	if (ret)
+		return ret;
+	if (enable) {
+		gate->before = value & MT6797_WIFI_CCCR_IRQ_MASK;
+		/* Retain restoration authority even if the write/readback fails. */
+		gate->saved = true;
+	}
+	wanted = (value & ~MT6797_WIFI_CCCR_IRQ_MASK) |
+		(enable ? MT6797_WIFI_CCCR_IRQ_MASK : gate->before);
+	ret = io->write(io->context, wanted);
+	if (ret)
+		return ret;
+	ret = io->read(io->context, &value);
+	if (ret)
+		return ret;
+	if (value != wanted)
+		return -EIO;
+	if (!enable)
+		gate->saved = false;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_irq_gate_update);
+
+static int mt6797_wifi_irq_gate_read(void *context, u8 *value)
+{
+	return mt6797_wifi_ahb_cmd52_read(context, 0, MT6797_WIFI_CCCR_IENX, value);
+}
+
+static int mt6797_wifi_irq_gate_write(void *context, u8 value)
+{
+	return mt6797_wifi_ahb_cmd52_write(context, 0, MT6797_WIFI_CCCR_IENX, value);
+}
+
+int mt6797_wifi_ahb_irq_gate_update(struct mt6797_wifi_ahb_hif *hif,
+	struct mt6797_wifi_irq_gate *gate, bool enable)
+{
+	const struct mt6797_wifi_irq_gate_io io = {
+		.read = mt6797_wifi_irq_gate_read,
+		.write = mt6797_wifi_irq_gate_write,
+		.context = hif,
+	};
+
+	return mt6797_wifi_irq_gate_update(gate, &io, enable);
+}
+EXPORT_SYMBOL_GPL(mt6797_wifi_ahb_irq_gate_update);
+
 void mt6797_wifi_ahb_irq_mask(struct mt6797_wifi_ahb_hif *hif)
 {
 	if (hif && hif->base)

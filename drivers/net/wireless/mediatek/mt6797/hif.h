@@ -10,10 +10,28 @@
 /* 2352-byte vendor RX maximum rounded up to a 512-byte HIF block. */
 #define MT6797_WIFI_AHB_MAX_TRANSFER_SIZE	2560
 
+/* Caller serializes gate ownership while the wrapper IRQ is masked. */
+struct mt6797_wifi_irq_gate {
+	u8 before;
+	bool saved;
+};
+
+struct mt6797_wifi_irq_gate_io {
+	int (*read)(void *context, u8 *value);
+	int (*write)(void *context, u8 value);
+	void *context;
+};
+
+int mt6797_wifi_irq_gate_update(struct mt6797_wifi_irq_gate *gate,
+	const struct mt6797_wifi_irq_gate_io *io, bool enable);
+
 struct mt6797_wifi_ahb_hif {
 	void __iomem *base;
 	struct mutex lock; /* Serializes command and data portal accesses. */
 };
+
+int mt6797_wifi_ahb_irq_gate_update(struct mt6797_wifi_ahb_hif *hif,
+	struct mt6797_wifi_irq_gate *gate, bool enable);
 
 int mt6797_wifi_ahb_hif_init(struct mt6797_wifi_ahb_hif *hif,
 			     void __iomem *base);

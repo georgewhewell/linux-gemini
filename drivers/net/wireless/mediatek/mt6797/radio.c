@@ -2,12 +2,14 @@
 /* cfg80211 station interface and asynchronous, firmware-backed passive scan. */
 #include <linux/etherdevice.h>
 #include <linux/ieee80211.h>
+#include <linux/if_vlan.h>
 #include <linux/workqueue.h>
 #include <linux/unaligned.h>
 #include <net/cfg80211.h>
 #include "ais_hif.h"
 #include "ais_key.h"
 #include "capability.h"
+#include "data_rx.h"
 #include "hif.h"
 #include "hif_regs.h"
 #include "hif_runtime.h"
@@ -19,8 +21,10 @@
 struct mt6797_radio_key {
 	u8 material[MT6797_WIFI_AIS_CCMP_KEY_LENGTH];
 	u8 receive_sequence[6];
+	u64 rx_pn[16];
 	u8 index;
 	bool installed;
+	bool updating;
 };
 
 struct mt6797_radio_connection {
@@ -323,6 +327,68 @@ static int mt6797_radio_link_event(void *context,
 	return ret;
 }
 
+static int mt6797_radio_data_frame(struct mt6797_wifi_radio *radio,
+	const struct mt6797_wifi_rx_view *view)
+{
+	struct mt6797_wifi_data_rx data;
+	struct mt6797_radio_connection *connection;
+	struct mt6797_radio_key *key;
+	struct sk_buff *skb;
+	unsigned long flags;
+	bool secure;
+	int ret;
+
+	ret = mt6797_wifi_data_rx_decode(view->packet, view->packet_length, &data);
+	if (ret)
+		goto drop;
+	if (data.length > radio->netdev->mtu + ETH_HLEN + VLAN_HLEN)
+		goto drop;
+	skb = netdev_alloc_skb_ip_align(radio->netdev, data.length);
+	if (!skb)
+		goto drop;
+	spin_lock_irqsave(&radio->lock, flags);
+	connection = radio->connection;
+	if (!connection || !connection->connected || connection->cancel || radio->stopping ||
+	    !ether_addr_equal(data.transmitter, connection->bss->bssid) ||
+	    data.bss_index != connection->ais.runtime.bss.bss_index ||
+	    (!data.multicast && !ether_addr_equal(data.ethernet, radio->netdev->dev_addr)))
+		goto reject;
+	secure = connection->join.negotiated.security != MT6797_WIFI_AIS_SECURITY_OPEN;
+	key = data.multicast ? &connection->group_key : &connection->pairwise_key;
+	if (data.wlan_index != (data.multicast ? connection->ais.runtime.sta.ap_bmc_group.index :
+	    connection->ais.runtime.sta.pairwise.index))
+		goto reject;
+	if (data.protected) {
+		if (!secure || key->updating || !key->installed || key->index != data.key_index ||
+		    (!data.multicast && !connection->pairwise_ready))
+			goto reject;
+	} else if (secure && !data.eapol) {
+		goto reject;
+	}
+	/* Only AP-originated, individually addressed EAPOL can bypass the port. */
+	if (data.eapol && (data.multicast ||
+	    !ether_addr_equal(data.ethernet + ETH_ALEN, connection->bss->bssid)))
+		goto reject;
+	if (!connection->authorized && !data.eapol)
+		goto reject;
+	if (data.protected && mt6797_wifi_data_rx_replay(&key->rx_pn[data.tid], data.pn))
+		goto reject;
+	skb_put_data(skb, data.ethernet, data.length);
+	skb->protocol = eth_type_trans(skb, radio->netdev);
+	skb->ip_summed = CHECKSUM_NONE;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	DEV_STATS_INC(radio->netdev, rx_packets);
+	DEV_STATS_ADD(radio->netdev, rx_bytes, data.length);
+	netif_rx(skb);
+	return 0;
+reject:
+	spin_unlock_irqrestore(&radio->lock, flags);
+	dev_kfree_skb_any(skb);
+drop:
+	DEV_STATS_INC(radio->netdev, rx_dropped);
+	return 0; /* Bad over-the-air data is not a fatal HIF transport error. */
+}
+
 static int mt6797_radio_link_frame(void *context,
 	const struct mt6797_wifi_rx_view *view)
 {
@@ -332,6 +398,8 @@ static int mt6797_radio_link_frame(void *context,
 	unsigned long flags;
 	u16 control;
 
+	if (view->kind == MT6797_WIFI_RX_ETHERNET)
+		return mt6797_radio_data_frame(radio, view);
 	if (view->kind != MT6797_WIFI_RX_IEEE80211 || view->header_translated ||
 	    view->header_length != 24 || !frame || view->payload_length < 26)
 		return 0;
@@ -717,6 +785,8 @@ static int mt6797_radio_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 	struct mt6797_wifi_ais_key_params request = {
 		.index = index, .pairwise = pairwise,
 	};
+	unsigned long flags;
+	unsigned int tid;
 	int ret;
 
 	if (wdev != &radio->wdev || link_id != -1 || index > 3 || (pairwise && index) ||
@@ -745,15 +815,23 @@ static int mt6797_radio_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 	request.material_length = params->key_len;
 	if (params->seq_len)
 		memcpy(request.rsc, params->seq, params->seq_len);
+	spin_lock_irqsave(&radio->lock, flags);
+	key->updating = true;
+	spin_unlock_irqrestore(&radio->lock, flags);
 	ret = mt6797_radio_key_send(radio, &request);
+	spin_lock_irqsave(&radio->lock, flags);
+	key->updating = false;
 	if (!ret) {
 		memzero_explicit(key, sizeof(*key));
 		memcpy(key->material, params->key, sizeof(key->material));
 		if (params->seq_len)
 			memcpy(key->receive_sequence, params->seq, params->seq_len);
+		for (tid = 0; tid < ARRAY_SIZE(key->rx_pn); tid++)
+			key->rx_pn[tid] = mt6797_wifi_data_rx_pn(key->receive_sequence);
 		key->index = index;
 		key->installed = true;
 	}
+	spin_unlock_irqrestore(&radio->lock, flags);
 out:
 	mutex_unlock(&radio->connection_lock);
 	return ret;
@@ -781,15 +859,19 @@ static int mt6797_radio_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 		ret = -ENOENT; /* An old GTK ID must not delete the replacement's slot. */
 		goto out;
 	}
+	spin_lock_irqsave(&radio->lock, flags);
+	key->updating = true;
+	spin_unlock_irqrestore(&radio->lock, flags);
 	ret = mt6797_radio_key_send(radio, &request);
+	spin_lock_irqsave(&radio->lock, flags);
+	key->updating = false;
 	if (!ret) {
 		memzero_explicit(key, sizeof(*key));
-		spin_lock_irqsave(&radio->lock, flags);
 		radio->connection->authorized = false;
 		if (pairwise)
 			radio->connection->pairwise_ready = false;
-		spin_unlock_irqrestore(&radio->lock, flags);
 	}
+	spin_unlock_irqrestore(&radio->lock, flags);
 out:
 	mutex_unlock(&radio->connection_lock);
 	return ret;

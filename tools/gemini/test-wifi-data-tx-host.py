@@ -56,10 +56,11 @@ int main(void) {
  puts("PASS: Ethernet TX codec all 16384 fixed-rate codes including 1 Mbps, own-MAC bounds, vendor descriptor-rate mode, queues, protection and aligned capacity/padding");
 }
 '''
-with tempfile.TemporaryDirectory(prefix='gemini-data-tx-') as temporary:
-    path = Path(temporary)
-    (path / 'test.c').write_text(program)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g',
-                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
-                    str(path / 'test.c'), '-o', str(path / 'test')], check=True)
-    subprocess.run([str(path / 'test')], check=True)
+if __name__ == '__main__':
+    with tempfile.TemporaryDirectory(prefix='gemini-data-tx-') as temporary:
+        path = Path(temporary)
+        (path / 'test.c').write_text(program)
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g',
+                        '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                        str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+        subprocess.run([str(path / 'test')], check=True)

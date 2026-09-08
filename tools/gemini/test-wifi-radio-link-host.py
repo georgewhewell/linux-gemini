@@ -70,6 +70,9 @@ for name in ['IEEE80211_FCTL_VERS', 'IEEE80211_FCTL_FTYPE', 'IEEE80211_FCTL_STYP
              'IEEE80211_FCTL_PROTECTED', 'IEEE80211_FCTL_ORDER', 'IEEE80211_SCTL_FRAG',
              'IEEE80211_STYPE_DEAUTH', 'IEEE80211_STYPE_DISASSOC']:
     program += re.search(r'^#define\s+' + name + r'\s+[^\n]+', ieee, re.M)[0] + '\n'
+program += '''
+static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
+'''
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
              'mt6797_radio_link_frame', 'mt6797_radio_disconnect']:
     program += function(name)

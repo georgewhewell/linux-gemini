@@ -19,6 +19,8 @@ program = base['program'].split('enum stage {')[0]
 program = program.replace('struct mt6797_wifi_hif_irq { int lifecycle_lock; bool attached; };',
     'struct mt6797_wifi_hif_irq { int lifecycle_lock; void *hif; int mode; };')
 program += r'''
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof(*(a)))
+static u64 mt6797_wifi_data_rx_pn(const u8 p[6]) { u64 n=0; for(unsigned i=0;i<6;i++) n|=(u64)p[i]<<(8*i); return n; }
 #define WLAN_CIPHER_SUITE_CCMP 0x000fac04
 #define NL80211_KEY_RX_TX 0
 #define BIT(n) (1U<<(n))
@@ -131,8 +133,10 @@ int main(void) {
   int mode=action; setup(); action=mode;
   assert(!add(0,true) && writes==1 && c.pairwise_key.installed && c.pairwise_ready && !c.key_waiting);
   assert(r.command_sequence==3 && !terminals);
+  for(unsigned tid=0;tid<16;tid++) assert(c.pairwise_key.rx_pn[tid]==7);
+  c.pairwise_key.rx_pn[0]=19;
   assert(!offer(3)); /* Late malformed/duplicate events do not rewrite a completed result. */
-  assert(!add(0,true) && writes==1); /* Identical installation is not sent again. */
+  assert(!add(0,true) && writes==1 && c.pairwise_key.rx_pn[0]==19); /* Identical installation is not sent again. */
   u8 other[16]={9}; params.key=other;
   assert(add(0,true)==-EOPNOTSUPP && writes==1);
   assert(!del(0,true) && writes==2 && !c.pairwise_ready && !c.pairwise_key.installed);

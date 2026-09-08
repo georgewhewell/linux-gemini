@@ -67,7 +67,7 @@ static struct node nodes[] = {
  {"big.bin", 0100644, big, sizeof(big), 0},
 };
 #define NODES ((int)(sizeof(nodes) / sizeof(nodes[0])))
-static int open_files, provider_available = 1;
+static int open_files, provider_available = 1, fstat_error, read_error;
 static int find(const char *path) { for (int i = 0; i < NODES; i++) if (!strcmp(nodes[i].path, path)) return i; return -1; }
 static void fill(int n, struct mt6797_md1_fs_attr *a) { a->mode = nodes[n].mode; a->size = nodes[n].size; a->atime = 1757260800 + n; a->mtime = 1757347200 + n; }
 static int mt6797_md1_fs_provider_getattr(const char *path, struct mt6797_md1_fs_attr *a) {
@@ -77,8 +77,9 @@ static struct file *mt6797_md1_fs_provider_open(const char *path, bool directory
  int n = find(path); struct file *f; if (!provider_available) return ERR_PTR(-ENODEV); if (n < 0) return ERR_PTR(-ENOENT);
  if (directory != S_ISDIR(nodes[n].mode)) return ERR_PTR(directory ? -ENOTDIR : -EISDIR);
  f = calloc(1, sizeof(*f)); f->node = n; f->directory = directory; open_files++; return f; }
-static int mt6797_md1_fs_provider_fstat(struct file *f, struct mt6797_md1_fs_attr *a) { fill(f->node, a); return 0; }
+static int mt6797_md1_fs_provider_fstat(struct file *f, struct mt6797_md1_fs_attr *a) { if (fstat_error) return fstat_error; fill(f->node, a); return 0; }
 static ssize_t mt6797_md1_fs_provider_read(struct file *f, void *buf, size_t count, loff_t *pos) {
+ if (read_error) return read_error;
  struct node *n = &nodes[f->node]; assert(!f->directory && pos == &f->f_pos);
  if (*pos >= (loff_t)n->size) return 0;
  if (count > n->size - *pos) count = n->size - *pos;
@@ -310,11 +311,62 @@ int main(void) {
    u32 n = utf16("Z:\\a", pathbuf); u8 second[64]; u32 m = utf16("Z:\\b", second); u8 fl[4] = {0}; const void *a[3] = {pathbuf, second, fl}; u32 l[3] = {n, m, 4};
    assert(!run(0, MT6797_FS_RENAME, 2, a, l) && status == -18 && !run(0, MT6797_FS_MOVE, 3, a, l) && status == -18 && !run(0, MT6797_FS_RENAME, 1, a, l) && status == -2);
    u32 x = utf16("X:\\b", second); l[1] = x; assert(!run(0, MT6797_FS_RENAME, 2, a, l) && status == -19); }
- { u32 unsupported[] = {MT6797_FS_GETFOLDERSIZE, MT6797_FS_COUNT, MT6797_FS_GETDRIVE, 0x101d, 0x101e, 0x101f, 0x1020, 0x1022, 0x1023, 0x1000, 0x1024, 0};
+ { u32 unsupported[] = {MT6797_FS_GETFOLDERSIZE, MT6797_FS_COUNT, MT6797_FS_GETDRIVE, 0x101d, 0x101e, 0x101f, 0x1020, 0x1023, 0x1000, 0x1024, 0};
    for (unsigned i = 0; i < sizeof(unsupported) / sizeof(*unsupported); i++) { assert(!mt6797_fs_service_supports(unsupported[i]));
      assert(run_u32(unsupported[i], 1, 0, 0, 0) == -EOPNOTSUPP && status == 12345); } }
  assert(mt6797_fs_service_supports(0x1001) && mt6797_fs_service_supports(0x1021));
  { reply = (struct mt6797_fs_reply){.payload = payload, .capacity = 100}; size_t n = build(0, MT6797_FS_LOCKFAT, 0, NULL, NULL); assert(mt6797_fs_service_request(&svc, frame, n, &reply, &status) == -EMSGSIZE); }
+
+ /* Captured C12 0x1022: composite read control includes modem pointers,
+  * which must be ignored. Exercise offset, EOF, fragmentation and unwind. */
+ { u8 control[40]; memset(control, 0xa5, sizeof(control));
+   u32 n = utf16("Z:\\NVRAM\\MD_A.bin", pathbuf);
+   const void *a[2] = {pathbuf, control}; u32 l[2] = {n, 40};
+   unsigned before = svc.open_count; int files = open_files;
+   mt6797_fs_write32(control, 31); mt6797_fs_write32(control + 12, 0x700);
+   mt6797_fs_write32(control + 20, 5); mt6797_fs_write32(control + 24, 1);
+   mt6797_fs_write32(control + 32, 36);
+   assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == 0 && reply.argc == 4);
+   assert(arg(0, &d) == 8 && mt6797_fs_read32(d) == 31 && !mt6797_fs_read32(d + 4));
+   assert(arg_s32(1) == 10 && arg_s32(2) == 5 && arg(3, &d) == 5 && !memcmp(d, "omega", 5));
+   assert(svc.open_count == before && open_files == files);
+   mt6797_fs_write32(control + 20, 100);
+   assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == 0 && arg_s32(2) == 0 && arg(3, &d) == 0);
+   mt6797_fs_write32(control + 20, 0); mt6797_fs_write32(control + 24, 3);
+   assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == -3);
+   assert(arg(0, &d) == 8 && mt6797_fs_read32(d) == 3 && (s32)mt6797_fs_read32(d + 4) == -2);
+   mt6797_fs_write32(control + 24, 0); mt6797_fs_write32(control + 12, 0x20000);
+   assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == -1);
+   assert(arg(0, &d) == 8 && !mt6797_fs_read32(d) && (s32)mt6797_fs_read32(d + 4) == -18);
+   mt6797_fs_write32(control + 12, 0x100);
+   l[0] = utf16("Z:\\missing", pathbuf);
+   assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == -1);
+   assert(arg(0, &d) == 8 && !mt6797_fs_read32(d) && (s32)mt6797_fs_read32(d + 4) == -9);
+   l[0] = utf16("Z:\\big.bin", pathbuf); mt6797_fs_write32(control + 32, 5000);
+   assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == 0 && arg_s32(1) == 5000);
+   assert(arg(3, &d) == 5000 && !memcmp(d, big, 5000) && mt6797_fs_reply_frames(&reply) == 2);
+   fstat_error = -EIO;
+   assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == -2);
+   assert(arg(0, &d) == 8 && mt6797_fs_read32(d) == 1 && (s32)mt6797_fs_read32(d + 4) == -18);
+   fstat_error = 0; read_error = -EIO;
+   assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == -4 && arg_s32(2) == 0);
+   assert(arg(0, &d) == 8 && mt6797_fs_read32(d) == 7 && (s32)mt6797_fs_read32(d + 4) == -18);
+   read_error = 0;
+   mt6797_fs_write32(control, 0);
+   assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == -7 && arg_s32(2) == 0);
+   mt6797_fs_write32(control, 15);
+   assert(!run(0, MT6797_FS_COMPACT_READ, 2, a, l) && status == -6);
+   assert(svc.open_count == before && open_files == files);
+   for (unsigned bytes = 1; bytes < 40; bytes++) {
+     l[1] = bytes; assert(run(0, MT6797_FS_COMPACT_READ, 2, a, l) == -EINVAL);
+   }
+   l[1] = 40;
+   assert(run(0, MT6797_FS_COMPACT_READ, 0, a, l) == -EINVAL);
+   assert(run(0, MT6797_FS_COMPACT_READ, 1, a, l) == -EINVAL);
+   mt6797_fs_write32(control + 32, MT6797_FS_READ_MAX + 1);
+   assert(run(0, MT6797_FS_COMPACT_READ, 2, a, l) == -EINVAL);
+   assert(svc.open_count == before && open_files == files);
+ }
  /* Handle exhaustion at the vendor's 128 usable slots, then CLOSEALL/SHUTDOWN. */
  while (svc.open_count < 128) { assert(!run_path(MT6797_FS_OPEN, "Z:\\ro.txt", 0x100, true) && status > 0 && status < 129); }
  assert(!run_path(MT6797_FS_OPEN, "Z:\\ro.txt", 0x100, true) && status == -5 && !findfirst("Z:\\*", 0, 0, 260) && status == -5 && open_files == 128);

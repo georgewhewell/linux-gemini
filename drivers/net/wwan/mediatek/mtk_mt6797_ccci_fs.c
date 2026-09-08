@@ -47,6 +47,7 @@ bool mt6797_fs_service_supports(u32 op)
 	case MT6797_FS_GETCLUSTERSIZE:
 	case MT6797_FS_SETDISKFLAG:
 	case MT6797_FS_RESTORE:
+	case MT6797_FS_COMPACT_READ:
 		return true;
 	default:
 		return false;
@@ -233,6 +234,104 @@ static s32 mt6797_fs_close(struct mt6797_fs_service *service,
 		return MT6797_FS_INVALID_FILE_HANDLE;
 	mt6797_fs_handle_release(service, index);
 	return MT6797_FS_NO_ERROR;
+}
+
+/* Android25 cmpt_Read (0x6ab4): a 40-byte control block combines
+ * OPEN/SIZE/SEEK/READ/CLOSE bits 1/2/4/8/16. Its embedded pointers are
+ * modem addresses, never AP pointers. Reply args are {completed, error},
+ * file size, count, data; the internal stage result is not a wire argument.
+ */
+static int mt6797_fs_compact_read(struct mt6797_fs_service *service,
+				const struct mt6797_fs_request *request,
+				struct mt6797_fs_reply *reply,
+				char *path, s32 *status)
+{
+	struct mt6797_fs_request open_request = *request;
+	struct mt6797_md1_fs_attr attr;
+	struct mt6797_fs_handle *handle;
+	const u8 *control = request->arg[1];
+	u32 operations = mt6797_fs_read32(control);
+	u32 length = mt6797_fs_read32(control + 32);
+	u32 completed = 0, size = 0, count = 0;
+	u8 result[8], *data;
+	s32 error = MT6797_FS_GENERAL_FAILURE, slot;
+	loff_t pos;
+	ssize_t got;
+	int ret;
+
+	/* Reserve the final data argument after the three fixed arguments.
+	 * This also checks capacity before acquiring a file handle.
+	 */
+	reply->len += 28;
+	ret = mt6797_fs_reply_reserve(reply, length, &data);
+	reply->len -= 28;
+	if (ret)
+		return ret;
+	*status = -7; /* vendor: missing OPEN */
+	if (!(operations & 1))
+		goto answer;
+	open_request.argc = 2;
+	open_request.arg[1] = control + 12;
+	open_request.len[1] = 4;
+	slot = mt6797_fs_open(service, &open_request, path);
+	*status = -1;
+	if (slot < 0) {
+		error = slot;
+		goto answer;
+	}
+	handle = &service->handle[slot];
+	completed = 1;
+	if (operations & 2) {
+		ret = mt6797_md1_fs_provider_fstat(handle->file, &attr);
+		if (ret) {
+			error = mt6797_fs_status(ret);
+			*status = -2;
+			goto close;
+		}
+		size = attr.size;
+		completed |= 2;
+	}
+	if (operations & 4) {
+		u32 whence = mt6797_fs_read32(control + 24);
+
+		pos = whence > SEEK_END ? -EINVAL :
+			mt6797_md1_fs_provider_llseek(handle->file,
+				(s32)mt6797_fs_read32(control + 20), whence);
+		if (pos < 0 || pos > S32_MAX) {
+			error = whence > SEEK_END ? MT6797_FS_PARAM_ERROR :
+				pos < 0 ? mt6797_fs_status(pos) : MT6797_FS_GENERAL_FAILURE;
+			*status = -3;
+			goto close;
+		}
+		completed |= 4;
+	}
+	if (operations & 8) {
+		got = mt6797_md1_fs_provider_read(handle->file, data, length,
+						&handle->file->f_pos);
+		if (got < 0) {
+			error = mt6797_fs_status(got);
+			*status = -4;
+			goto close;
+		}
+		count = got;
+		completed |= 8;
+	}
+	*status = -6; /* missing CLOSE still releases the temporary handle */
+	if (operations & 16) {
+		completed |= 16;
+		error = MT6797_FS_NO_ERROR;
+		*status = 0;
+	}
+close:
+	mt6797_fs_handle_release(service, slot);
+answer:
+	mt6797_fs_write32(result, completed);
+	mt6797_fs_write32(result + 4, (u32)error);
+	mt6797_fs_reply_add(reply, result, sizeof(result));
+	mt6797_fs_reply_add_u32(reply, size);
+	mt6797_fs_reply_add_u32(reply, count);
+	mt6797_fs_reply_settle(reply, count);
+	return 0;
 }
 
 static int mt6797_fs_getfilesize(struct mt6797_fs_service *service,
@@ -511,6 +610,10 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 	if (request.op == MT6797_FS_OPENHINT &&
 	    (request.argc != 3 || request.len[2] != 8))
 		return -EINVAL;
+	if (request.op == MT6797_FS_COMPACT_READ &&
+	    (request.argc != 2 || request.len[1] != 40 ||
+	     mt6797_fs_read32(request.arg[1] + 32) > MT6797_FS_READ_MAX))
+		return -EINVAL;
 	if (reply->capacity < MT6797_FS_REPLY_MAX)
 		return -EMSGSIZE;
 	mt6797_fs_reply_init(reply, reply->payload, reply->capacity,
@@ -531,6 +634,9 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 		break;
 	case MT6797_FS_READ:
 		ret = mt6797_fs_read(service, &request, reply, status);
+		goto out;
+	case MT6797_FS_COMPACT_READ:
+		ret = mt6797_fs_compact_read(service, &request, reply, path, status);
 		goto out;
 	case MT6797_FS_WRITE:
 		ret = mt6797_fs_write(service, &request, reply, status);

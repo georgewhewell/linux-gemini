@@ -55,6 +55,7 @@ enum mt6797_fs_op {
 	MT6797_FS_GETCLUSTERSIZE = 0x101b,
 	MT6797_FS_SETDISKFLAG = 0x101c,
 	MT6797_FS_RESTORE = 0x1021,
+	MT6797_FS_COMPACT_READ = 0x1022,
 };
 
 /* Vendor FS result codes actually produced by the installed daemon. */

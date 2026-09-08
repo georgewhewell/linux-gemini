@@ -12,6 +12,7 @@
 #include <linux/mount.h>
 #include <linux/namei.h>
 #include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -655,6 +656,91 @@ ssize_t mt6797_md1_fs_provider_read(struct file *file, void *buf,
 	return kernel_read(file, buf, count, pos);
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_read);
+
+/* Snapshot a bounded source before modifying the destination. This is a copy
+ * primitive, not MOVE's vendor flag/recursive-overwrite policy. It never
+ * unlinks the source, including when both names resolve to the same inode.
+ */
+int mt6797_md1_fs_provider_copy_drive(u8 old_drive, const char *old_path,
+				    u8 new_drive, const char *new_path)
+{
+	struct mt6797_md1_fs_attr attr;
+	struct file *source, *destination;
+	void *buffer = NULL;
+	loff_t pos = 0;
+	size_t size, done;
+	ssize_t count;
+	int ret;
+
+	might_sleep();
+	if (!old_path || !new_path ||
+	    strnlen(old_path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX ||
+	    strnlen(new_path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX)
+		return -ENAMETOOLONG;
+	if (old_drive == new_drive && !strcmp(old_path, new_path))
+		return -EINVAL;
+	source = mt6797_md1_fs_provider_open_ram_drive(old_drive, old_path,
+						    false, false, false);
+	if (IS_ERR(source))
+		return PTR_ERR(source);
+	ret = mt6797_md1_fs_provider_fstat(source, &attr);
+	if (ret)
+		goto put_source;
+	ret = -EFBIG;
+	if (attr.size > 16 * 1024 * 1024)
+		goto put_source;
+	size = attr.size;
+	if (size) {
+		buffer = kvmalloc(size, GFP_KERNEL);
+		ret = -ENOMEM;
+		if (!buffer)
+			goto put_source;
+	}
+	for (done = 0; done < size; done += count) {
+		count = mt6797_md1_fs_provider_read(source, buffer + done,
+						 min_t(size_t, size - done, 65536), &pos);
+		ret = count < 0 ? count : -EIO;
+		if (count <= 0)
+			goto free_buffer;
+		cond_resched();
+	}
+	/* Avoid truncating an existing destination before same-inode checking.
+	 * Path creation is confined by the existing RAM open implementation.
+	 */
+	destination = mt6797_md1_fs_provider_open_ram_drive(new_drive, new_path,
+							 true, true, false);
+	if (IS_ERR(destination)) {
+		ret = PTR_ERR(destination);
+		goto free_buffer;
+	}
+	ret = -EINVAL;
+	if (file_inode(source) == file_inode(destination))
+		goto put_destination;
+	ret = -EROFS;
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(destination))
+		goto put_destination;
+	ret = vfs_truncate(&destination->f_path, 0);
+	if (ret)
+		goto put_destination;
+	pos = 0;
+	for (done = 0; done < size; done += count) {
+		count = mt6797_md1_fs_provider_write(destination, buffer + done,
+						  min_t(size_t, size - done, 65536), &pos);
+		ret = count < 0 ? count : -EIO;
+		if (count <= 0)
+			goto put_destination;
+		cond_resched();
+	}
+	ret = 0;
+put_destination:
+	fput(destination);
+free_buffer:
+	kvfree(buffer);
+put_source:
+	fput(source);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_copy_drive);
 
 loff_t mt6797_md1_fs_provider_llseek(struct file *file, loff_t offset,
 				     int whence)

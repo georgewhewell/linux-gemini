@@ -221,8 +221,14 @@ static irqreturn_t mtk_pmic_keys_irq_handler_thread(int irq, void *data)
 {
 	struct mtk_pmic_keys_info *info = data;
 	u32 key_deb, pressed;
+	int error;
 
-	regmap_read(info->keys->regmap, info->regs->deb_reg, &key_deb);
+	error = regmap_read(info->keys->regmap, info->regs->deb_reg, &key_deb);
+	if (error) {
+		dev_err_ratelimited(info->keys->dev,
+				    "Failed to read key state: %d\n", error);
+		return IRQ_HANDLED;
+	}
 
 	key_deb &= info->regs->deb_mask;
 

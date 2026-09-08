@@ -36,6 +36,7 @@ struct cfg80211_scan_request {
 struct mt6797_wifi_radio {
  int lock, scan_work; bool stopping, abort_scan;
  struct cfg80211_scan_request *request;
+ void *connection;
 };
 struct wiphy { struct mt6797_wifi_radio *radio; };
 static struct mt6797_wifi_radio *wiphy_priv(struct wiphy *w) { return w->radio; }
@@ -49,14 +50,15 @@ program += flags + '\n' + callback
 program += r'''
 static void check(unsigned flags, unsigned ssids, unsigned ies, unsigned count,
                   unsigned band, unsigned channel_flags, bool stopping,
-                  bool busy, int expected) {
+                  unsigned busy, int expected) {
  struct mt6797_wifi_radio radio={ .stopping=stopping, .abort_scan=true };
  struct wiphy wiphy={ .radio=&radio };
  struct channel channel={ .band=band, .flags=channel_flags };
  struct channel *channels[]={&channel};
  struct cfg80211_scan_request request={ .n_ssids=ssids, .ie_len=ies,
   .n_channels=count, .flags=flags, .channels=channels };
- if (busy) radio.request=&request;
+ if (busy==1) radio.request=&request;
+ if (busy==2) radio.connection=(void *)1;
  queued=0;
  int result=mt6797_radio_scan(&wiphy,&request);
  if(result!=expected) {
@@ -81,6 +83,7 @@ int main(void) {
  check(0,0,0,1,0,IEEE80211_CHAN_DISABLED,false,false,-EINVAL);
  check(0,0,0,1,0,0,true,false,-ESHUTDOWN);
  check(0,0,0,1,0,0,false,true,-EBUSY);
+ check(0,0,0,1,0,0,false,2,-EBUSY);
  puts("PASS: plain/default-iw scans, unsupported flags/SSID/IE, channel bounds, stopping and busy; rejected requests never queued");
 }
 '''

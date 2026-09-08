@@ -3,7 +3,9 @@
 #include <linux/etherdevice.h>
 #include <linux/ieee80211.h>
 #include <linux/workqueue.h>
+#include <linux/unaligned.h>
 #include <net/cfg80211.h>
+#include "ais_hif.h"
 #include "capability.h"
 #include "hif.h"
 #include "hif_regs.h"
@@ -11,11 +13,29 @@
 #include "radio.h"
 #include "rx_metadata.h"
 #include "scan.h"
+#include "scan_hif.h"
+
+struct mt6797_radio_connection {
+	struct cfg80211_bss *bss;
+	struct mt6797_wifi_scan_hif scan;
+	struct mt6797_wifi_ais_hif ais;
+	struct mt6797_wifi_ais_hif_join_request join;
+	u8 ies[MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH];
+	bool cancel;
+	bool connected;
+	bool link_attached;
+	bool peer_disconnect;
+	u16 reason;
+};
 
 struct mt6797_wifi_radio {
 	struct wireless_dev wdev;
 	struct net_device *netdev;
 	struct mt6797_wifi_hif_irq *irq;
+	struct mt6797_wifi_runtime_config *config;
+	struct mt6797_wifi_capability capability;
+	struct mt6797_radio_connection *connection;
+	struct work_struct connection_work;
 	struct work_struct scan_work;
 	spinlock_t lock;
 	struct completion scan_done;
@@ -26,6 +46,8 @@ struct mt6797_wifi_radio {
 	struct ieee80211_rate rates[12];
 	unsigned int command_sequence;
 	u8 scan_sequence;
+	u8 channel_token;
+	u8 management_pid;
 	int scan_error;
 	bool armed;
 	bool abort_scan;
@@ -212,7 +234,7 @@ static int mt6797_radio_scan(struct wiphy *wiphy,
 	spin_lock_irqsave(&radio->lock, flags);
 	if (radio->stopping)
 		ret = -ESHUTDOWN;
-	else if (radio->request)
+	else if (radio->request || radio->connection)
 		ret = -EBUSY;
 	else {
 		radio->request = request;
@@ -229,9 +251,340 @@ static void mt6797_radio_abort_scan(struct wiphy *wiphy,
 	mt6797_radio_abort(wiphy_priv(wiphy), -ECANCELED);
 }
 
+static bool mt6797_radio_connection_cancelled(struct mt6797_wifi_radio *radio)
+{
+	unsigned long flags;
+	bool cancelled;
+
+	spin_lock_irqsave(&radio->lock, flags);
+	cancelled = radio->stopping || !radio->connection || radio->connection->cancel;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return cancelled;
+}
+
+static void mt6797_radio_link_abort(void *context, int reason)
+{
+	struct mt6797_wifi_radio *radio = context;
+	unsigned long flags;
+
+	spin_lock_irqsave(&radio->lock, flags);
+	if (radio->connection) {
+		radio->connection->cancel = true;
+		radio->connection->reason = WLAN_REASON_UNSPECIFIED;
+		queue_work(system_long_wq, &radio->connection_work);
+	}
+	spin_unlock_irqrestore(&radio->lock, flags);
+}
+
+static int mt6797_radio_link_frame(void *context,
+	const struct mt6797_wifi_rx_view *view)
+{
+	struct mt6797_wifi_radio *radio = context;
+	struct mt6797_radio_connection *connection;
+	const u8 *frame = view->payload;
+	unsigned long flags;
+	u16 control;
+
+	if (view->kind != MT6797_WIFI_RX_IEEE80211 || view->header_translated ||
+	    view->header_length != 24 || !frame || view->payload_length < 26)
+		return 0;
+	control = get_unaligned_le16(frame);
+	/* This radio does not negotiate protected management or reassemble fragments. */
+	if (control & (IEEE80211_FCTL_VERS | IEEE80211_FCTL_TODS |
+		       IEEE80211_FCTL_FROMDS | IEEE80211_FCTL_MOREFRAGS |
+		       IEEE80211_FCTL_PROTECTED | IEEE80211_FCTL_ORDER) ||
+	    (get_unaligned_le16(frame + 22) & IEEE80211_SCTL_FRAG))
+		return 0;
+	if ((control & (IEEE80211_FCTL_FTYPE | IEEE80211_FCTL_STYPE)) != IEEE80211_STYPE_DEAUTH &&
+	    (control & (IEEE80211_FCTL_FTYPE | IEEE80211_FCTL_STYPE)) != IEEE80211_STYPE_DISASSOC)
+		return 0;
+	spin_lock_irqsave(&radio->lock, flags);
+	connection = radio->connection;
+	if (connection && ether_addr_equal(frame + 10, connection->bss->bssid) &&
+	    ether_addr_equal(frame + 16, connection->bss->bssid) &&
+	    (ether_addr_equal(frame + 4, radio->netdev->dev_addr) || is_broadcast_ether_addr(frame + 4))) {
+		connection->cancel = true;
+		connection->peer_disconnect = true;
+		connection->reason = get_unaligned_le16(frame + 24);
+		queue_work(system_long_wq, &radio->connection_work);
+	}
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return 0;
+}
+
+static void mt6797_radio_connection_work(struct work_struct *work)
+{
+	struct mt6797_wifi_radio *radio = container_of(work, struct mt6797_wifi_radio, connection_work);
+	struct mt6797_radio_connection *connection = radio->connection;
+	struct mt6797_wifi_scan_hif_result scan_result;
+	struct mt6797_wifi_scan_hif_request scan = {};
+	struct mt6797_wifi_ais_hif_request start = {};
+	struct mt6797_wifi_ais_hif_auth_request auth = {};
+	struct mt6797_wifi_ais_hif_auth_result auth_result;
+	struct mt6797_wifi_ais_join_params negotiated;
+	struct mt6797_wifi_hif_runtime_sink sink = {
+		.frame = mt6797_radio_link_frame, .abort = mt6797_radio_link_abort, .context = radio,
+	};
+	unsigned long flags;
+	unsigned int sequence;
+	s64 auth_remaining;
+	bool connected, peer_disconnect;
+	u16 disconnect_reason;
+	u16 status = WLAN_STATUS_UNSPECIFIED_FAILURE;
+	int ret = -ECANCELED;
+
+	if (!connection)
+		return;
+	if (mt6797_radio_connection_cancelled(radio))
+		goto cleanup;
+	if (connection->connected)
+		return;
+	sequence = radio->command_sequence + 1;
+	if (sequence > 245)
+		sequence = 3;
+	/* Reserve scan/cancel, AIS start/cleanup and BSS/activation commands. */
+	radio->command_sequence = sequence + 9;
+	scan.command_sequence = sequence;
+	scan.cancel_sequence = sequence + 1;
+	scan.scan_sequence = ++radio->scan_sequence;
+	scan.band = connection->join.negotiated.channel.band;
+	scan.channel = connection->join.negotiated.channel.primary;
+	scan.timeout_ms = 5000;
+	scan.max_age_ms = 5000;
+	memcpy(scan.key.bssid, connection->bss->bssid, ETH_ALEN);
+	memcpy(scan.key.ssid, connection->join.negotiated.ssid, connection->join.negotiated.ssid_length);
+	scan.key.ssid_length = connection->join.negotiated.ssid_length;
+	ret = mt6797_wifi_scan_hif_init(&connection->scan, radio->irq, NULL);
+	if (ret || mt6797_radio_connection_cancelled(radio))
+		goto cleanup;
+	ret = mt6797_wifi_scan_hif_run(&connection->scan, &scan, &scan_result);
+	if (ret || mt6797_radio_connection_cancelled(radio))
+		goto cleanup;
+	connection->join.negotiated.rcpi = scan_result.target.rcpi;
+	ret = mt6797_wifi_ais_hif_init(&connection->ais, radio->irq, radio->config,
+		&radio->capability, sequence + 2, ++radio->channel_token, NULL);
+	if (ret || mt6797_radio_connection_cancelled(radio))
+		goto cleanup;
+	connection->ais.auth.pid_owner.next_pid = radio->management_pid;
+	start.target_owner = &connection->scan.target_owner;
+	start.target = &scan_result.target;
+	start.now_ms = ktime_to_ms(ktime_get());
+	start.response_timeout_ms = 1000;
+	ret = mt6797_wifi_ais_hif_start(&connection->ais, &start);
+	if (ret || mt6797_radio_connection_cancelled(radio))
+		goto cleanup;
+	auth_remaining = ktime_ms_delta(connection->ais.channel_deadline, ktime_get());
+	if (auth_remaining <= 0) {
+		ret = -ETIMEDOUT;
+		goto cleanup;
+	}
+	auth.response_timeout_ms = min_t(s64, 1000, auth_remaining);
+	auth.sequence_number = 1;
+	auth.fixed_rate = connection->join.negotiated.default_rate;
+	ret = mt6797_wifi_ais_hif_open_auth(&connection->ais, &auth, &auth_result);
+	if (ret || mt6797_radio_connection_cancelled(radio))
+		goto cleanup;
+	ret = mt6797_wifi_ais_hif_associate(&connection->ais, &connection->join, &negotiated);
+	if (ret || mt6797_radio_connection_cancelled(radio))
+		goto cleanup;
+	mutex_lock(&radio->irq->lifecycle_lock);
+	ret = mt6797_wifi_hif_runtime_sink_attach(radio->irq, &sink);
+	connection->link_attached = !ret;
+	mutex_unlock(&radio->irq->lifecycle_lock);
+	if (ret)
+		goto cleanup;
+	spin_lock_irqsave(&radio->lock, flags);
+	if (!connection->cancel && !radio->stopping)
+		connection->connected = true;
+	connected = connection->connected;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	if (!connected)
+		goto cleanup;
+	/* Association is now real; data queues stay stopped until TX/key support. */
+	cfg80211_connect_result(radio->netdev, connection->bss->bssid,
+		connection->join.association.ies, connection->join.association.ies_length,
+		connection->ais.join.response + MT6797_WIFI_AIS_ASSOC_RESPONSE_FIXED_LENGTH,
+		connection->ais.join.response_length - MT6797_WIFI_AIS_ASSOC_RESPONSE_FIXED_LENGTH,
+		WLAN_STATUS_SUCCESS, GFP_KERNEL);
+	return;
+
+cleanup:
+	if (connection->link_attached) {
+		mutex_lock(&radio->irq->lifecycle_lock);
+		mt6797_wifi_hif_runtime_sink_detach(radio->irq, radio);
+		mutex_unlock(&radio->irq->lifecycle_lock);
+	}
+	if (connection->ais.initialized) {
+		radio->management_pid = connection->ais.auth.pid_owner.next_pid;
+		if (connection->ais.runtime.state == MT6797_WIFI_AIS_RUNTIME_STA_STATE1 ||
+		    connection->ais.runtime.state == MT6797_WIFI_AIS_RUNTIME_STA_STATE3)
+			mt6797_wifi_ais_hif_stop(&connection->ais);
+	}
+	if (connection->scan.initialized)
+		mt6797_wifi_scan_hif_close(&connection->scan);
+	spin_lock_irqsave(&radio->lock, flags);
+	connected = connection->connected;
+	peer_disconnect = connection->peer_disconnect;
+	disconnect_reason = connection->reason;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	if (!connected) {
+		if (connection->ais.join.status_code)
+			status = connection->ais.join.status_code;
+		else if (connection->ais.auth.response.status_code)
+			status = connection->ais.auth.response.status_code;
+		cfg80211_connect_result(radio->netdev, connection->bss->bssid,
+			NULL, 0, NULL, 0, status, GFP_KERNEL);
+	} else {
+		cfg80211_disconnected(radio->netdev, disconnect_reason ?: WLAN_REASON_DEAUTH_LEAVING,
+			NULL, 0, !peer_disconnect, GFP_KERNEL);
+	}
+	spin_lock_irqsave(&radio->lock, flags);
+	radio->connection = NULL;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	cfg80211_put_bss(radio->wdev.wiphy, connection->bss);
+	kfree(connection);
+}
+
+static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
+	struct cfg80211_connect_params *sme)
+{
+	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	struct mt6797_radio_connection *connection;
+	const struct cfg80211_bss_ies *peer_ies;
+	const u8 *rsn;
+	struct mt6797_wifi_ais_join_params *params;
+	unsigned long flags;
+	size_t offset, rates_length;
+	int ret = -EOPNOTSUPP;
+	bool secure = sme->privacy;
+	bool have_rsn = false;
+
+	if (!sme->ssid || !sme->ssid_len || sme->ssid_len > 32 || sme->ie_len > 1024 ||
+	    (sme->ie_len && !sme->ie) || sme->key_len || sme->pbss || sme->prev_bssid ||
+	    sme->mfp != NL80211_MFP_NO || sme->want_1x ||
+	    (sme->flags & ~(ASSOC_REQ_DISABLE_HT | ASSOC_REQ_DISABLE_VHT |
+		ASSOC_REQ_DISABLE_HE | ASSOC_REQ_DISABLE_EHT | ASSOC_REQ_DISABLE_UHR)) ||
+	    (sme->auth_type != NL80211_AUTHTYPE_OPEN_SYSTEM && sme->auth_type != NL80211_AUTHTYPE_AUTOMATIC))
+		return -EOPNOTSUPP;
+	if (secure) {
+		if (sme->crypto.wpa_versions != NL80211_WPA_VERSION_2 ||
+		    sme->crypto.n_ciphers_pairwise != 1 || sme->crypto.ciphers_pairwise[0] != WLAN_CIPHER_SUITE_CCMP ||
+		    sme->crypto.cipher_group != WLAN_CIPHER_SUITE_CCMP ||
+		    sme->crypto.n_akm_suites != 1 || sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK ||
+		    sme->crypto.control_port_over_nl80211)
+			return -EOPNOTSUPP;
+	} else if (sme->crypto.wpa_versions || sme->crypto.n_ciphers_pairwise ||
+		   sme->crypto.cipher_group || sme->crypto.n_akm_suites) {
+		return -EOPNOTSUPP;
+	}
+	/* User IEs cannot override SSID/rates or advertise unsupported HT/VHT/WMM. */
+	for (offset = 0; offset < sme->ie_len; offset += sme->ie[offset + 1] + 2) {
+		if (sme->ie_len - offset < 2 || sme->ie[offset + 1] > sme->ie_len - offset - 2)
+			return -EINVAL;
+		if (sme->ie[offset] != WLAN_EID_RSN && sme->ie[offset] != WLAN_EID_EXT_CAPABILITY)
+			return -EOPNOTSUPP;
+		if (sme->ie[offset] == WLAN_EID_RSN) {
+			if (have_rsn)
+				return -EINVAL;
+			have_rsn = true;
+		}
+	}
+	rsn = cfg80211_find_ie(WLAN_EID_RSN, sme->ie, sme->ie_len);
+	if (secure) {
+		static const u8 ccmp[] = { 0, 0x0f, 0xac, 4 };
+		static const u8 psk[] = { 0, 0x0f, 0xac, 2 };
+		if (!rsn || rsn[1] < 20 || get_unaligned_le16(rsn + 2) != 1 ||
+		    memcmp(rsn + 4, ccmp, 4) || get_unaligned_le16(rsn + 8) != 1 ||
+		    memcmp(rsn + 10, ccmp, 4) || get_unaligned_le16(rsn + 14) != 1 ||
+		    memcmp(rsn + 16, psk, 4) || (get_unaligned_le16(rsn + 20) & 0xc0))
+			return -EOPNOTSUPP;
+	} else if (rsn) {
+		return -EINVAL;
+	}
+	connection = kzalloc(sizeof(*connection), GFP_KERNEL);
+	if (!connection)
+		return -ENOMEM;
+	connection->bss = cfg80211_get_bss(wiphy, sme->channel, sme->bssid,
+		sme->ssid, sme->ssid_len, IEEE80211_BSS_TYPE_ESS,
+		secure ? IEEE80211_PRIVACY_ON : IEEE80211_PRIVACY_OFF);
+	if (!connection->bss) {
+		ret = -ENOENT;
+		goto free_connection;
+	}
+	if (connection->bss->channel->flags & (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_NO_IR))
+		goto put_bss;
+	params = &connection->join.negotiated;
+	params->channel.band = connection->bss->channel->band == NL80211_BAND_2GHZ ? 1 : 2;
+	params->channel.primary = ieee80211_frequency_to_channel(connection->bss->channel->center_freq);
+	params->ssid_length = sme->ssid_len;
+	memcpy(params->ssid, sme->ssid, sme->ssid_len);
+	params->listen_interval = 10;
+	params->disconnect_threshold = 10;
+	params->security = secure ? MT6797_WIFI_AIS_SECURITY_WPA2_PSK_CCMP : MT6797_WIFI_AIS_SECURITY_OPEN;
+	rcu_read_lock();
+	peer_ies = rcu_dereference(connection->bss->ies);
+	ret = peer_ies ? mt6797_wifi_ais_join_rates_parse(peer_ies->data, peer_ies->len,
+		connection->bss->capability, params) : -ENOENT;
+	rcu_read_unlock();
+	if (ret)
+		goto put_bss;
+	connection->ies[0] = WLAN_EID_SSID;
+	connection->ies[1] = sme->ssid_len;
+	memcpy(connection->ies + 2, sme->ssid, sme->ssid_len);
+	offset = sme->ssid_len + 2;
+	ret = mt6797_wifi_ais_join_rates_ies_build(params, connection->ies + offset,
+		sizeof(connection->ies) - offset, &rates_length);
+	if (ret)
+		goto put_bss;
+	offset += rates_length;
+	if (sme->ie_len)
+		memcpy(connection->ies + offset, sme->ie, sme->ie_len);
+	connection->join.association.ies = connection->ies;
+	connection->join.association.ies_length = offset + sme->ie_len;
+	connection->join.association.listen_interval = params->listen_interval;
+	connection->join.association.capability = WLAN_CAPABILITY_ESS |
+		(secure ? WLAN_CAPABILITY_PRIVACY : 0) |
+		(params->short_preamble ? WLAN_CAPABILITY_SHORT_PREAMBLE : 0) |
+		(params->short_slot ? WLAN_CAPABILITY_SHORT_SLOT_TIME : 0);
+	connection->join.timeout_ms = 1500;
+	connection->join.sequence_number = 2;
+	spin_lock_irqsave(&radio->lock, flags);
+	ret = radio->stopping ? -ESHUTDOWN : radio->request || radio->connection ? -EBUSY : 0;
+	if (!ret) {
+		radio->connection = connection;
+		queue_work(system_long_wq, &radio->connection_work);
+	}
+	spin_unlock_irqrestore(&radio->lock, flags);
+	if (!ret)
+		return 0;
+put_bss:
+	cfg80211_put_bss(wiphy, connection->bss);
+free_connection:
+	kfree(connection);
+	return ret;
+}
+
+static int mt6797_radio_disconnect(struct wiphy *wiphy, struct net_device *netdev,
+	u16 reason)
+{
+	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	unsigned long flags;
+
+	spin_lock_irqsave(&radio->lock, flags);
+	if (radio->connection) {
+		radio->connection->cancel = true;
+		radio->connection->reason = reason;
+		queue_work(system_long_wq, &radio->connection_work);
+	}
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return 0;
+}
+
 static const struct cfg80211_ops mt6797_radio_ops = {
 	.scan = mt6797_radio_scan,
 	.abort_scan = mt6797_radio_abort_scan,
+	.connect = mt6797_radio_connect,
+	.disconnect = mt6797_radio_disconnect,
 };
 
 static int mt6797_radio_open(struct net_device *netdev)
@@ -252,7 +605,9 @@ static int mt6797_radio_stop(struct net_device *netdev)
 	netif_stop_queue(netdev);
 	netif_carrier_off(netdev);
 	mt6797_radio_abort(radio, -ECANCELED);
+	mt6797_radio_disconnect(radio->wdev.wiphy, netdev, WLAN_REASON_DEAUTH_LEAVING);
 	flush_work(&radio->scan_work);
+	flush_work(&radio->connection_work);
 	return 0;
 }
 
@@ -273,9 +628,11 @@ static const struct net_device_ops mt6797_radio_netdev_ops = {
 
 struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 	struct mt6797_wifi_hif_irq *irq,
+	struct mt6797_wifi_runtime_config *config,
 	const struct mt6797_wifi_capability *capability)
 {
 	static const int rates[] = { 10, 20, 55, 110, 60, 90, 120, 180, 240, 360, 480, 540 };
+	static const u32 ciphers[] = { WLAN_CIPHER_SUITE_CCMP };
 	static const u8 channels_5ghz[] = {
 		36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112,
 		116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165,
@@ -289,16 +646,21 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 		return ERR_PTR(-ENOMEM);
 	radio = wiphy_priv(wiphy);
 	radio->irq = irq;
+	radio->config = config;
+	radio->capability = *capability;
 	radio->wdev.wiphy = wiphy;
 	radio->wdev.iftype = NL80211_IFTYPE_STATION;
 	radio->command_sequence = 2; /* Capability=1, basic configuration=2. */
 	spin_lock_init(&radio->lock);
 	init_completion(&radio->scan_done);
 	INIT_WORK(&radio->scan_work, mt6797_radio_scan_work);
+	INIT_WORK(&radio->connection_work, mt6797_radio_connection_work);
 	set_wiphy_dev(wiphy, dev);
 	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
 	wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
 	wiphy->max_scan_ssids = 0;
+	wiphy->cipher_suites = ciphers;
+	wiphy->n_cipher_suites = ARRAY_SIZE(ciphers);
 	for (index = 0; index < ARRAY_SIZE(rates); index++) {
 		radio->rates[index].bitrate = rates[index];
 		radio->rates[index].hw_value = index;
@@ -337,6 +699,8 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 		eth_hw_addr_set(radio->netdev, capability->mac_address);
 	else
 		eth_hw_addr_random(radio->netdev);
+	/* AIS must use the same station address as this netdev, including fallback. */
+	ether_addr_copy(radio->capability.mac_address, radio->netdev->dev_addr);
 	ether_addr_copy(wiphy->perm_addr, radio->netdev->dev_addr);
 	netif_carrier_off(radio->netdev);
 	ret = wiphy_register(wiphy);
@@ -361,10 +725,14 @@ void mt6797_wifi_radio_unregister(struct mt6797_wifi_radio *radio)
 
 	spin_lock_irqsave(&radio->lock, flags);
 	radio->stopping = true;
+	if (radio->connection)
+		radio->connection->cancel = true;
 	radio->abort_scan = true;
 	complete(&radio->scan_done);
 	spin_unlock_irqrestore(&radio->lock, flags);
 	flush_work(&radio->scan_work);
+	queue_work(system_long_wq, &radio->connection_work);
+	flush_work(&radio->connection_work);
 	unregister_netdev(radio->netdev);
 	wiphy_unregister(radio->wdev.wiphy);
 	free_netdev(radio->netdev);

@@ -4,9 +4,11 @@
 struct device;
 struct mt6797_wifi_hif_irq;
 struct mt6797_wifi_capability;
+struct mt6797_wifi_runtime_config;
 struct mt6797_wifi_radio;
 struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 	struct mt6797_wifi_hif_irq *irq,
+	struct mt6797_wifi_runtime_config *config,
 	const struct mt6797_wifi_capability *capability);
 void mt6797_wifi_radio_unregister(struct mt6797_wifi_radio *radio);
 #endif

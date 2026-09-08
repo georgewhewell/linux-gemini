@@ -4,8 +4,8 @@
 It repeats checksum/group/record validation, requires an explicit supported
 profile, maps only the installed MD1 Z/X/Y prefixes, and retains the first
 eligible occurrence of each target. AP/other-modem records are excluded.
-The result is a caller-owned descriptor; there is no filesystem publication,
-provider registration, ioctl or modem RESTORE integration yet.
+The result is a caller-owned descriptor with no filesystem publication.
+The preparation CLI registers it before RAM roots, as described below.
 
 The archive is an internal versioned format, not the stock backup format.
 All integers are little-endian. Header16 bytes:
@@ -50,8 +50,8 @@ Tests check a literal three-drive archive, exclusion and first-match behavior,
 traversal refusal, total-size expansion, real Linux seal enforcement and
 CLOEXEC, short writes, and descriptor cleanup on write/seal errors. These are
 host tests with synthetic contents. No private backup has been archived or
-registered by this code yet. Kernel consumption and copying into the consumed
-bounded writable roots remain required to implement RESTORE.
+registered by this code yet. Kernel consumption and copying into consumed bounded writable roots have
+separate tests below; phone qualification remains pending.
 
 ## Kernel format validation
 
@@ -66,8 +66,8 @@ are valid. Failure leaves the output view unchanged.
 Validation runs in process context with no provider lock; duplicate checking
 is bounded by4096 entries and yields between entries. The returned view borrows
 an immutable buffer owned by the caller. It is not sufficient to retain a
-mutable userspace buffer after validation. File-type/seal checking, descriptor
-retention, registration lifecycle and RESTORE dispatch still need integration.
+mutable userspace buffer after validation. Registration independently checks file type/seals and owns the copied bytes
+through the lifecycle described below.
 
 `CC=<native-gcc> python3 tools/gemini/test-nvram-archive-kernel.py` compiles
 and runs this exact kernel header with ASan/UBSan against a producer-generated
@@ -75,7 +75,7 @@ synthetic fixture and malformed variants. Cases include every truncated input
 length, forged counts/offsets/sizes, duplicate targets, malformed Unicode,
 path escapes, padding, empty files and unchanged failure outputs. Inclusion
 in the provider translation unit also checks ARM64 compilation; the validator
-is not yet called by a registration path or qualified on the phone.
+is called by registration but has not been qualified on the phone.
 
 ## Registration lifecycle
 
@@ -106,7 +106,7 @@ and instrumented kernel file boundaries. Existing registration regressions also
 cover ioctl routing, root ordering and archive cancellation. The real memfd
 seal test is in the producer suite. ARM64 provider compilation passed with
 MEMFD_CREATE enabled. This registration path has not yet been exercised by the
-phone; RESTORE dispatch and archive-to-RAM copy remain unimplemented.
+phone; RESTORE dispatch and archive-to-RAM copy are tested below.
 
 ## RESTORE service and RAM copy
 
@@ -135,3 +135,32 @@ The service suite covers all three drives, exact argument count and boolean
 error mapping. ARM64 provider/service objects compile with W=1. These tests
 bypass archive registration in the UML fixture; admission has separate tests.
 Phone preparation-service integration and hardware qualification remain pending.
+
+## Boot preparation CLI
+
+`mt6797_fs_restore_register.py --profile gemini-stock-ecci-md3-v1 --sha256 HASH`
+requires an explicit lowercase SHA256 and the reviewed profile (layout0,
+ECCI on, MD3 on, MD5 off, header offset0). It does not infer another profile
+when validation fails. The captured properties support this profile; Android
+runtime property overrides are not proven. The live backup's populated groups
+are unaffected by the remaining MD5 ambiguity.
+
+It opens only `/dev/mmcblk0p19`, read-only, CLOEXEC and NOFOLLOW, checks block
+identity against sysfs, exact nvram/PARTN19 fields, 10240 sectors and ioctl
+size5242880. It reads bounded chunks and checks the supplied hash before
+reconstruction/sealing, then repeats source identity and the full read/hash
+before publication. It opens the provider with NOFOLLOW, checks its character
+device identity against sysfs and sends the16-byte f4 archive registration.
+All FDs close on success or failure. It disables core dumps and emits only a
+fixed success/failure message; no raw bytes, paths from the backup, or identity
+fields are printed or saved. It does not register roots or trigger modem GO.
+A source change after the final check is outside this snapshot check; boot
+service source rechecks remain necessary. Python transient memory is not
+explicitly scrubbed or locked against swap.
+
+`test-fs-restore-register.py` executes the actual reconstruction, archive,
+sealing, and preparation code against a synthetic5MiB backup with device/sysfs
+adapters. It checks real memfd contents/seals at the ioctl boundary, short
+reads, changed/hash-mismatched source, EOF, wrong type/size/partition (including
+duplicate fields), wrong provider, explicit profile refusal, ioctl failure,
+FD cleanup and unchanged input. This is not a real device ioctl test.

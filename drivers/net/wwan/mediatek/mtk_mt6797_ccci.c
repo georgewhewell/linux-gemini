@@ -32,6 +32,7 @@
 #include "mtk_mt6797_ccci_diag.h"
 #include "mtk_mt6797_ccci_rpc.h"
 #include "mtk_mt6797_ccci_fs.h"
+#include "mtk_mt6797_ccci_fs_diag.h"
 
 #define MT6797_CCCI_QUEUE_COUNT		7U
 #define MT6797_CCCI_RING_SIZE		16U
@@ -131,6 +132,7 @@ struct mt6797_ccci {
 	struct mt6797_rpc_eint sim_eint[2];
 	atomic_t rpc_logs;
 	atomic_t fs_logs;
+	struct mt6797_fs_diag fs_diag;
 	atomic_t fs_pending;
 	unsigned long fs_indices;
 	struct workqueue_struct *fs_wq;
@@ -234,6 +236,7 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 
 	if (!mt6797_ccci_diag_freeze(d, ccci->queue[0].tx[0].gpd))
 		return;
+	mt6797_fs_diag_freeze(&ccci->fs_diag);
 	dev_err(ccci->dev,
 		"MT6797_CCCI_FIRST_FATAL site=%s ready=%d irqs=%u first_tx=%08x/%08x first_rx=%08x/%08x last_tx=%08x/%08x last_rx=%08x/%08x q0_submitted=%u reclaimed=%u head=%u tail=%u used=%u descriptor_valid=%u payload_valid=%u reply_finalized=%u runtime_len=%zu\n",
 		site, atomic_read(&ccci->ready), d->irq_count,
@@ -241,6 +244,23 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 		d->last_irq[0], d->last_irq[1], d->last_irq[2], d->last_irq[3],
 		d->submitted, d->reclaimed, d->head, d->tail, d->used,
 		d->descriptor_valid, d->payload_valid, d->reply_finalized, d->runtime_len);
+	/* Freeze before printing: IRQ may have interrupted an in-flight request.
+	 * Readers below see immutable metadata; printk never holds fs_diag.lock.
+	 */
+	dev_err(ccci->dev, "CCCI_FS_RECENT total=%llu count=%u pending=%d\n",
+		(unsigned long long)ccci->fs_diag.total, ccci->fs_diag.count,
+		atomic_read(&ccci->fs_pending));
+	for (i = 0; i < ccci->fs_diag.count; i++) {
+		unsigned int slot = (ccci->fs_diag.head + MT6797_FS_DIAG_COUNT -
+				     ccci->fs_diag.count + i) % MT6797_FS_DIAG_COUNT;
+		const struct mt6797_fs_diag_entry *e = &ccci->fs_diag.entry[slot];
+
+		dev_err(ccci->dev,
+			"CCCI_FS_RECENT seq=%llu op=%x parse=%d compact=%u flags=%x requested=%u done=%u status=%d result=%d sent=%zu\n",
+			(unsigned long long)e->sequence, e->op, e->parse_error,
+			e->compact, e->flags, e->requested, e->done, e->status,
+			e->result, e->sent);
+	}
 	if (d->descriptor_valid)
 		print_hex_dump(KERN_ERR, "CCCI_Q0_GPD ", DUMP_PREFIX_OFFSET,
 			       32, 1, d->descriptor, sizeof(d->descriptor), false);
@@ -955,14 +975,17 @@ static void mt6797_ccci_fs_work(struct work_struct *work)
 	struct mt6797_ccci *ccci = job->ccci;
 	struct mt6797_fs_reply reply = { .capacity = MT6797_FS_REPLY_MAX };
 	size_t sent = 0;
+	u64 diagnostic_sequence;
 	s32 status = 0;
 	int ret;
 	bool index_released = false;
 
 	if (atomic_read(&ccci->failed) || atomic_read(&ccci->teardown))
 		goto done;
+	diagnostic_sequence = mt6797_fs_diag_begin(&ccci->fs_diag, job->frame, job->len);
 	reply.payload = kmalloc(reply.capacity, GFP_KERNEL);
 	if (!reply.payload) {
+		mt6797_fs_diag_end(&ccci->fs_diag, diagnostic_sequence, 0, -ENOMEM, 0);
 		mt6797_ccci_quiesce(ccci, -ENOMEM);
 		goto done;
 	}
@@ -998,6 +1021,7 @@ static void mt6797_ccci_fs_work(struct work_struct *work)
 		dev_info(ccci->dev,
 			 "CCCI FS op=0x%x reply_channel=15 status=%d tx_result=%d bytes=%zu\n",
 			 mt6797_fs_read32(job->frame + 16), status, ret, sent);
+	mt6797_fs_diag_end(&ccci->fs_diag, diagnostic_sequence, status, ret, sent);
 	if (ret == -ENOMEM || ret == -EIO || ret == -EBUSY)
 		mt6797_ccci_quiesce(ccci, ret);
 	kfree(reply.payload);
@@ -1636,6 +1660,7 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	ccci->dev = &pdev->dev;
 	spin_lock_init(&ccci->diag.lock);
+	spin_lock_init(&ccci->fs_diag.lock);
 	spin_lock_init(&ccci->tx_stop_lock);
 	atomic_set(&ccci->rpc_logs, 0);
 	atomic_set(&ccci->fs_logs, 0);

@@ -52,6 +52,7 @@ static int logs;
 static bool test_and_set_bit(unsigned i,unsigned long *p){return (__atomic_fetch_or(p,1UL<<i,__ATOMIC_SEQ_CST)&(1UL<<i))!=0;}
 static void clear_bit(unsigned i,unsigned long *p){__atomic_fetch_and(p,~(1UL<<i),__ATOMIC_SEQ_CST);}
 static bool test_bit(unsigned i,unsigned long *p){return (__atomic_load_n(p,__ATOMIC_SEQ_CST)&(1UL<<i))!=0;}
+typedef int spinlock_t;
 static pthread_mutex_t stop_lock=PTHREAD_MUTEX_INITIALIZER;
 #define spin_lock_irqsave(p,f) do{(f)=0;pthread_mutex_lock(&stop_lock);}while(0)
 #define spin_unlock_irqrestore(p,f) do{(void)(f);pthread_mutex_unlock(&stop_lock);}while(0)
@@ -62,8 +63,9 @@ struct workqueue_struct {struct work_struct *jobs[16];unsigned count;pthread_mut
 struct sk_buff {u8 data[3584];size_t len;};
 struct file;
 '''
+fs_diag = (root / 'drivers/net/wwan/mediatek/mtk_mt6797_ccci_fs_diag.h').read_text()
 adapters = r'''
-struct mt6797_ccci {atomic_int failed,teardown,fs_pending,fs_logs;unsigned long fs_indices;struct workqueue_struct *fs_wq;struct mt6797_fs_service fs_service;};
+struct mt6797_ccci {struct mt6797_fs_diag fs_diag;atomic_int failed,teardown,fs_pending,fs_logs;unsigned long fs_indices;struct workqueue_struct *fs_wq;struct mt6797_fs_service fs_service;};
 static struct mt6797_ccci c;
 static struct workqueue_struct wq;
 static atomic_int allocations,freed;
@@ -175,6 +177,40 @@ int main(void){
  assert(accepted==5&&wq.count==5&&atomic_load(&c.fs_pending)==5&&c.fs_indices==31);
  atomic_store(&c.teardown,1);mt6797_ccci_fs_destroy(&c);
  assert(!requests&&!txs&&!atomic_load(&c.fs_pending)&&atomic_load(&freed)==5&&!c.fs_indices);
+
+ /* Requests beyond the old printk cap remain visible, in chronological order. */
+ { struct mt6797_fs_diag d={0};struct sk_buff s=request();
+   for(unsigned i=1;i<=140;i++){
+     u64 seq=mt6797_fs_diag_begin(&d,s.data,s.len);assert(seq==i);
+     mt6797_fs_diag_end(&d,seq,-9,-EIO,56);
+   }
+   assert(d.total==140&&d.count==16);
+   for(unsigned i=0;i<16;i++){
+     struct mt6797_fs_diag_entry *e=&d.entry[(d.head+16-d.count+i)%16];
+     assert(e->sequence==125+i&&e->op==0x1001&&e->done&&e->status==-9&&e->result==-EIO&&e->sent==56&&!e->compact);
+   }
+   /* Freeze in-flight: completion and future requests cannot rewrite evidence. */
+   u64 seq=mt6797_fs_diag_begin(&d,s.data,s.len);assert(seq==141);
+   mt6797_fs_diag_freeze(&d);struct mt6797_fs_diag before=d;
+   mt6797_fs_diag_end(&d,seq,0,0,99);
+   assert(!mt6797_fs_diag_begin(&d,s.data,s.len));
+   mt6797_fs_diag_freeze(&d);assert(!memcmp(&d,&before,sizeof(d)));
+   assert(!d.entry[(d.head+15)%16].done);
+ }
+ { struct mt6797_fs_diag d={0};u8 frame[76]={0};
+   mt6797_fs_write32(frame+4,sizeof(frame));mt6797_fs_write32(frame+8,14);
+   mt6797_fs_write32(frame+16,MT6797_FS_COMPACT_READ);mt6797_fs_write32(frame+20,2);
+   mt6797_fs_write32(frame+24,4);memcpy(frame+28,"x\0\0\0",4);
+   mt6797_fs_write32(frame+32,40);mt6797_fs_write32(frame+36,0x13);
+   mt6797_fs_write32(frame+68,16384);
+   assert(mt6797_fs_diag_begin(&d,frame,sizeof(frame))==1);
+   assert(d.entry[0].compact&&d.entry[0].flags==0x13&&d.entry[0].requested==16384);
+   /* Request bytes are not retained; changing them cannot affect the ring. */
+   memset(frame,255,sizeof(frame));assert(d.entry[0].flags==0x13);
+   assert(mt6797_fs_diag_begin(&d,frame,1)==2);
+   assert(d.entry[1].parse_error==-EMSGSIZE&&!d.entry[1].compact&&!d.entry[1].op);
+ }
+ puts("PASS FS metadata: last 16 after 140 operations, chronological wrap, immutable freeze during request, compact shape and malformed request");
  puts("PASS actual FS admission/worker/send/destroy: immutable RX copy, C11 frame end to end, three-frame fragmentation with final-frame index release, allocation and TX ownership failures, STOP before/during service/before publish, refusals without claims, drain-once with service release, 32 concurrent admissions bounded to five");
 }
 '''
@@ -184,7 +220,7 @@ assert remove.index('mt6797_ccci_quiesce') < remove.index('mt6797_ccci_fs_destro
 assert source.index('devm_add_action_or_reset(&pdev->dev, mt6797_ccci_fs_destroy') > source.index('mt6797_ccci_alloc_rings(ccci)')
 with tempfile.TemporaryDirectory(prefix='gemini-fs-worker-') as directory:
     path = Path(directory)
-    (path / 'test.c').write_text(shim + provider + codec + adapters + structure + function(service_source, 'mt6797_fs_service_supports') +
+    (path / 'test.c').write_text(shim + provider + codec + fs_diag + adapters + structure + function(service_source, 'mt6797_fs_service_supports') +
                                  function(source, 'mt6797_ccci_fs_index_busy') + function(source, 'mt6797_ccci_fs_index_claim') +
                                  function(source, 'mt6797_ccci_fs_send') + function(source, 'mt6797_ccci_fs_work') +
                                  function(source, 'mt6797_ccci_fs_destroy') + function(source, 'mt6797_ccci_fs_rx') + tests)

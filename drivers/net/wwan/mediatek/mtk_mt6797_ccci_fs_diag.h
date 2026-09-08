@@ -2,7 +2,8 @@
 #ifndef _MTK_MT6797_CCCI_FS_DIAG_H
 #define _MTK_MT6797_CCCI_FS_DIAG_H
 
-/* Numeric metadata only. No paths, payload bytes, handles or modem pointers.
+/* Numeric metadata only (including logical drive IDs). No path strings,
+ * file contents, handles or modem pointers.
  * The ordered FS worker writes; fatal IRQ/worker paths freeze under irqsave.
  * No other driver lock is acquired while holding this lock.
  */
@@ -10,6 +11,7 @@
 struct mt6797_fs_diag_entry {
 	u64 sequence;
 	u32 op, flags, requested, open_flags;
+	u8 drive0, drive1;
 	s32 parse_error, status, result;
 	size_t sent;
 	bool compact, open_valid, done;
@@ -22,6 +24,17 @@ struct mt6797_fs_diag {
 	struct mt6797_fs_diag_entry entry[MT6797_FS_DIAG_COUNT];
 };
 
+/* Extract only a UTF-16LE ASCII letter followed by colon, never the path. */
+static inline u8 mt6797_fs_diag_drive(const u8 *arg, u32 len)
+{
+	if (len < 6 || (len & 1) || arg[1] || arg[2] != ':' || arg[3])
+		return 0;
+	if ((arg[0] >= 'A' && arg[0] <= 'Z') ||
+	    (arg[0] >= 'a' && arg[0] <= 'z'))
+		return arg[0];
+	return 0;
+}
+
 static inline u64 mt6797_fs_diag_begin(struct mt6797_fs_diag *d,
 				     const u8 *frame, size_t len)
 {
@@ -33,6 +46,14 @@ static inline u64 mt6797_fs_diag_begin(struct mt6797_fs_diag *d,
 	e.parse_error = mt6797_fs_request_parse(frame, len, &request);
 	if (!e.parse_error) {
 		e.op = request.op;
+		if (request.argc &&
+		    (request.op == MT6797_FS_OPEN || request.op == MT6797_FS_OPENHINT ||
+		     request.op == MT6797_FS_COMPACT_READ || request.op == MT6797_FS_MOVE ||
+		     request.op == MT6797_FS_RENAME))
+			e.drive0 = mt6797_fs_diag_drive(request.arg[0], request.len[0]);
+		if (request.argc >= 2 &&
+		    (request.op == MT6797_FS_MOVE || request.op == MT6797_FS_RENAME))
+			e.drive1 = mt6797_fs_diag_drive(request.arg[1], request.len[1]);
 		if ((request.op == MT6797_FS_OPEN || request.op == MT6797_FS_OPENHINT) &&
 		    request.argc >= 2 && request.len[1] == 4) {
 			e.open_valid = true;

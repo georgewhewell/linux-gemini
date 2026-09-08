@@ -178,6 +178,25 @@ int main(void){
  atomic_store(&c.teardown,1);mt6797_ccci_fs_destroy(&c);
  assert(!requests&&!txs&&!atomic_load(&c.fs_pending)&&atomic_load(&freed)==5&&!c.fs_indices);
 
+ /* Diagnostics identify logical drives without retaining paths or content. */
+ { u8 p[8]={'X',0,':',0,'a',0,0,0};
+   for(unsigned i=0;i<6;i++)assert(!mt6797_fs_diag_drive(p,i));
+   assert(mt6797_fs_diag_drive(p,8)=='X');
+   p[0]='Y';assert(mt6797_fs_diag_drive(p,8)=='Y');
+   p[1]=1;assert(!mt6797_fs_diag_drive(p,8));p[1]=0;
+   p[2]='/';assert(!mt6797_fs_diag_drive(p,8));p[2]=':';
+   p[0]='9';assert(!mt6797_fs_diag_drive(p,8));
+   assert(!mt6797_fs_diag_drive(p,7));
+ }
+ { struct mt6797_fs_diag d={0};u8 f[48]={0};
+   mt6797_fs_write32(f+4,sizeof(f));mt6797_fs_write32(f+8,14);
+   mt6797_fs_write32(f+16,MT6797_FS_MOVE);mt6797_fs_write32(f+20,2);
+   mt6797_fs_write32(f+24,8);memcpy(f+28,"X\0:\0a\0\0\0",8);
+   mt6797_fs_write32(f+36,8);memcpy(f+40,"Z\0:\0b\0\0\0",8);
+   assert(mt6797_fs_diag_begin(&d,f,sizeof(f))==1);
+   assert(d.entry[0].drive0=='X'&&d.entry[0].drive1=='Z');
+   memset(f,0,sizeof(f));assert(d.entry[0].drive0=='X'&&d.entry[0].drive1=='Z');
+ }
  /* Requests beyond the old printk cap remain visible, in chronological order. */
  { struct mt6797_fs_diag d={0};struct sk_buff s=request();
    for(unsigned i=1;i<=140;i++){

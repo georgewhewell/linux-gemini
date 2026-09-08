@@ -226,6 +226,12 @@ static const struct irq_domain_ops mt6358_irq_domain_ops = {
 
 int mt6358_irq_init(struct mt6397_chip *chip)
 {
+	struct irq_domain_info info = {
+		.fwnode = dev_fwnode(chip->dev),
+		.ops = &mt6358_irq_domain_ops,
+		.host_data = chip,
+		.exit = mt6397_irq_domain_exit,
+	};
 	int i, j, ret;
 	struct pmic_irq_data *irqd;
 
@@ -272,12 +278,12 @@ int mt6358_irq_init(struct mt6397_chip *chip)
 				     irqd->pmic_ints[i].en_reg_shift * j, 0);
 	}
 
-	chip->irq_domain = irq_domain_create_linear(dev_fwnode(chip->dev), irqd->num_pmic_irqs,
-						    &mt6358_irq_domain_ops, chip);
-	if (!chip->irq_domain) {
-		dev_err(chip->dev, "Could not create IRQ domain\n");
-		return -ENODEV;
-	}
+	info.size = irqd->num_pmic_irqs;
+	info.hwirq_max = irqd->num_pmic_irqs;
+	chip->irq_domain = devm_irq_domain_instantiate(chip->dev, &info);
+	if (IS_ERR(chip->irq_domain))
+		return dev_err_probe(chip->dev, PTR_ERR(chip->irq_domain),
+				     "Could not create IRQ domain\n");
 
 	ret = devm_request_threaded_irq(chip->dev, chip->irq, NULL,
 					mt6358_irq_handler, IRQF_ONESHOT,
@@ -285,7 +291,6 @@ int mt6358_irq_init(struct mt6397_chip *chip)
 	if (ret) {
 		dev_err(chip->dev, "Failed to register IRQ=%d, ret=%d\n",
 			chip->irq, ret);
-		irq_domain_remove(chip->irq_domain);
 		return ret;
 	}
 

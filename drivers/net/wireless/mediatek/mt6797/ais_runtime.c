@@ -306,7 +306,8 @@ int mt6797_wifi_ais_runtime_stop(
 		return -EINVAL;
 	if (runtime->state == MT6797_WIFI_AIS_RUNTIME_TERMINAL)
 		return runtime->terminal_reason;
-	if (runtime->state != MT6797_WIFI_AIS_RUNTIME_STA_STATE1 ||
+	if ((runtime->state != MT6797_WIFI_AIS_RUNTIME_STA_STATE1 &&
+	     runtime->state != MT6797_WIFI_AIS_RUNTIME_STA_STATE3) ||
 	    runtime->owner_context != ops->context)
 		return -EALREADY;
 

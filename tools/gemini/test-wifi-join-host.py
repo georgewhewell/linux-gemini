@@ -194,4 +194,5 @@ int main(void) {
  puts("PASS: BSS/STA full command bytes against vendor structures, open/WPA2 and 2.4/5GHz, padding, identity preservation, state3 response request and invalid/capacity rejection");
 }
 '''
-common['run_program'](program)
+if __name__ == '__main__':
+    common['run_program'](program)

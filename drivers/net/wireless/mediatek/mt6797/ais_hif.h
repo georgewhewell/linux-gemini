@@ -8,6 +8,8 @@
 #include <linux/types.h>
 
 #include "ais_auth.h"
+#include "ais_assoc.h"
+#include "ais_join.h"
 #include "ais_mgmt_tx.h"
 #include "ais_runtime.h"
 
@@ -69,6 +71,31 @@ struct mt6797_wifi_ais_hif_auth {
 	bool response_received;
 };
 
+struct mt6797_wifi_ais_hif_join_request {
+	struct mt6797_wifi_ais_assoc_params association;
+	struct mt6797_wifi_ais_join_params negotiated;
+	unsigned int timeout_ms;
+	u16 sequence_number;
+};
+
+struct mt6797_wifi_ais_hif_join {
+	spinlock_t lock;
+	struct completion completion;
+	struct mt6797_wifi_ais_assoc_pending association;
+	struct mt6797_wifi_ais_sta_pending station;
+	struct mt6797_wifi_ais_mgmt_pid_lease lease;
+	u8 response[MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH];
+	size_t response_length;
+	u16 status_code;
+	u8 tx_status;
+	int error;
+	bool attempted;
+	bool armed;
+	bool station_phase;
+	bool tx_done;
+	bool activated;
+};
+
 /*
  * This object is explicitly invoked and never started from probe. The caller
  * owns its lifetime and the scan-target owner for the entire transaction.
@@ -80,6 +107,9 @@ struct mt6797_wifi_ais_hif {
 	struct mt6797_wifi_ais_hif_backend backend;
 	struct mt6797_wifi_ais_runtime runtime;
 	struct mt6797_wifi_ais_hif_auth auth;
+	struct mt6797_wifi_ais_hif_join join;
+	ktime_t channel_requested_at;
+	ktime_t channel_deadline;
 	u64 target_generation;
 	u64 target_cookie;
 	bool initialized;
@@ -105,5 +135,13 @@ int mt6797_wifi_ais_hif_open_auth(
 	struct mt6797_wifi_ais_hif *ais,
 	const struct mt6797_wifi_ais_hif_auth_request *request,
 	struct mt6797_wifi_ais_hif_auth_result *result);
+/* Blocking association+firmware activation after successful open auth.
+ * The owned response remains in ais->join until the AIS lifetime ends.
+ * A successful result still needs key installation and the data path.
+ */
+int mt6797_wifi_ais_hif_associate(
+	struct mt6797_wifi_ais_hif *ais,
+	const struct mt6797_wifi_ais_hif_join_request *request,
+	struct mt6797_wifi_ais_join_params *negotiated);
 
 #endif /* __MT6797_WIFI_AIS_HIF_H */

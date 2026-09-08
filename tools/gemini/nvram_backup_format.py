@@ -70,7 +70,7 @@ class Record:
     opaque: int
     offset: int
     length: int
-    name: bytes
+    name: bytes = field(repr=False)
 
 
 def decode_record(data: bytes, allfile_size: int) -> Record:
@@ -175,3 +175,56 @@ def reconstruct(raw: bytes, *, layout_version: int = 0) -> Backup:
                        for i in data_blocks)[:file_size]
     verify_checksum(allmap, allfile)
     return Backup(allmap, allfile, map_block, header_block, data_blocks)
+
+
+def parse_ecci_records(backup: Backup, *, md5: bool, md3: bool,
+                       ecci: bool, header_offset: int) -> tuple[tuple[int, Record], ...]:
+    """Validate the installed ECCI/header-offset-zero map and eligible records.
+
+    The profile must be supplied explicitly, never inferred from plausible
+    lengths. Other vendor profiles need their own verified layouts. All
+    records are bounds-checked, including groups skipped by the stock caller.
+    Returned records grant no pathname/publication authority.
+    """
+    if any(type(flag) is not bool for flag in (md5, md3, ecci)):
+        raise FormatError("invalid feature profile")
+    if not ecci or type(header_offset) is not int or header_offset != 0:
+        raise FormatError("unsupported map profile")
+    verify_checksum(backup.allmap, backup.allfile)
+    if len(backup.allmap) < 52:
+        raise FormatError("short ECCI map header")
+    counts = struct.unpack_from('<16H', backup.allmap, 12)
+    if any(count >= 0x7fff for count in counts):
+        raise FormatError("invalid signed group count")
+    if sum(counts) > 4096 or 52 + RECORD_BYTES * sum(counts) != len(backup.allmap):
+        raise FormatError("group counts do not cover map")
+    # NVM_CheckData_OneFile 6a2c always skips groups5/6. The ECCI
+    # branch of RestoreFromFiles has no group13; slots13..15 map14..16.
+    skipped = {5, 6}
+    if not md5:
+        skipped.update((10, 11, 12) if md3 else (10, 11, 12, 13))
+    elif not md3:
+        skipped.add(13)
+    records = []
+    offset = 52
+    for slot, count in enumerate(counts):
+        group = slot if slot < 13 else slot + 1
+        for _ in range(count):
+            record = decode_record(backup.allmap[offset:offset + RECORD_BYTES],
+                                   len(backup.allfile))
+            offset += RECORD_BYTES
+            if group not in skipped:
+                records.append((group, record))
+    return tuple(records)
+
+
+def select_record(records: tuple[tuple[int, Record], ...], name: bytes) -> Record:
+    """First exact byte match in validated eligible group order, as stock."""
+    if not isinstance(name, bytes):
+        raise TypeError("record name must be immutable bytes")
+    if not name or len(name) >= 128 or b'\0' in name:
+        raise FormatError("invalid selection name")
+    for _, record in records:
+        if record.name == name:
+            return record
+    raise FormatError("record not found")

@@ -92,3 +92,33 @@ AllMap143132 bytes, AllFile1947576 bytes, and15 data blocks. Only numerical
 metadata was reported; no payload was persisted or published. Source hashes
 were checked before/after and on the host. This proves raw reconstruction
 for that captured source identity, not complete record selection or RESTORE.
+
+
+## ECCI record selection
+
+`parse_ecci_records` requires explicit boolean MD5/MD3/ECCI features and
+platform header offset. The implemented profile requires ECCI=true and
+header_offset=0; other layouts are rejected, not guessed. It verifies the
+checksum again, requires a52-byte header and16 signed-range u16 counts at
+byte12, and checks exact coverage of the map by140-byte records. All record
+extents and names are validated, including disabled groups. It returns
+eligible `(group, record)` pairs in stock order. Payload and filename fields
+are excluded from object repr; callers must still avoid logging their values.
+
+The default branch at4e7c..57c8 uses count slots0..12 for groups0..12,
+returns no records for group13 (55f2..564e ->57ca), and uses slots13..15 for
+groups14..16. Each offset is52 plus140 times preceding slot counts. The
+outer skip table at6a2c always excludes5/6; MD3-only additionally excludes
+10..12, neither feature excludes10..13, MD5-only excludes13. In this ECCI
+layout group13 has no physical slot. `select_record` implements the first
+exact pathname-byte match, with no normalization, extraction or publication.
+
+Live guarded metadata qualification found counts
+`4,6,1,917,0,0,0,0,0,0,0,0,0,3,91,0`: sum1022 gives precisely143132 map
+bytes. All1022 records pass bounded decoding and are eligible in nonempty
+groups0/1/2/3/14/15 under the captured MD3/ECCI-enabled candidate profile.
+No filenames or payloads were reported. This does not prove final Android
+runtime properties; the empty affected feature groups make the MD5 flag
+immaterial for this particular backup. Other profile implementations and
+explicit activation policy remain outstanding alongside confined publication
+and the kernel RESTORE service.

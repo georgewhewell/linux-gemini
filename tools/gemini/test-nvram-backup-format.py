@@ -4,7 +4,8 @@
 import struct
 import unittest
 from nvram_backup_format import (Checksum, FormatError, MAX_BYTES,
-                                 decode_record, verify_checksum, reconstruct, ERASE_BYTES, MAP_MAGIC)
+                                 decode_record, verify_checksum, reconstruct, ERASE_BYTES, MAP_MAGIC, Backup,
+                                 parse_ecci_records, select_record)
 
 
 class FormatTests(unittest.TestCase):
@@ -198,6 +199,68 @@ class ReconstructionTests(unittest.TestCase):
             raw[4*ERASE_BYTES:4*ERASE_BYTES+19] = bitmap*3 + struct.pack('<I', MAP_MAGIC)
             with self.assertRaises(FormatError):
                 reconstruct(bytes(raw))
+
+
+class GroupTests(unittest.TestCase):
+    @staticmethod
+    def fixture():
+        # A distinct record per physical count slot; no implementation-derived
+        # checksum, since the four zero data bytes checksum to4.
+        header = struct.pack('<III16H', 4, 0, 0, *([1]*16)) + bytes(8)
+        records = b''.join(struct.pack('<III', 0, 0, 4) +
+                           ('/fixture/%d' % i).encode().ljust(128, b'\0')
+                           for i in range(16))
+        return Backup(header + records, bytes(4), 4, 0, (1,))
+
+    def test_profile_gates_and_selection(self):
+        backup = self.fixture()
+        for md5, md3, expected in (
+                (True, True, [0,1,2,3,4,7,8,9,10,11,12,14,15,16]),
+                (False, True, [0,1,2,3,4,7,8,9,14,15,16]),
+                (False, False, [0,1,2,3,4,7,8,9,14,15,16]),
+                (True, False, [0,1,2,3,4,7,8,9,10,11,12,14,15,16])):
+            records = parse_ecci_records(backup, md5=md5, md3=md3,
+                                         ecci=True, header_offset=0)
+            self.assertEqual([g for g, _ in records], expected)
+            self.assertEqual(select_record(records, b'/fixture/13').length, 4)
+            self.assertEqual(next(g for g,r in records if r.name==b'/fixture/13'), 14)
+            for name in (b'/fixture/5', b'/fixture/6', b'/FIXTURE/0', b'/fixture/missing'):
+                with self.assertRaises(FormatError):
+                    select_record(records, name)
+        for kwargs in (dict(md5=0, md3=True, ecci=True, header_offset=0),
+                       dict(md5=False, md3=True, ecci=False, header_offset=0),
+                       dict(md5=False, md3=True, ecci=True, header_offset=1)):
+            with self.assertRaises(FormatError):
+                parse_ecci_records(backup, **kwargs)
+
+    def test_first_match_and_invalid_names(self):
+        records = parse_ecci_records(self.fixture(), md5=True, md3=True,
+                                     ecci=True, header_offset=0)
+        first = records[0][1]
+        self.assertIs(select_record(((0,first),(1,first)), first.name), first)
+        self.assertNotIn('/fixture', repr(records))
+        for name in (b'', b'a'*128, b'a\0b'):
+            with self.assertRaises(FormatError):
+                select_record(records, name)
+        with self.assertRaises(TypeError):
+            select_record(records, '/fixture/0')
+
+    def test_entire_map_validation(self):
+        b = self.fixture()
+        bad_maps = [b.allmap[:51], b.allmap[:-1], b.allmap+b'x']
+        for value in (0x7fff, 0x8000, 0xffff, 2):
+            m = bytearray(b.allmap)
+            struct.pack_into('<H', m, 12, value)
+            bad_maps.append(bytes(m))
+        # Corruption in an excluded group must still fail validation.
+        m = bytearray(b.allmap)
+        struct.pack_into('<I', m, 52+5*140+4, 5)
+        bad_maps.append(bytes(m))
+        for m in bad_maps:
+            with self.assertRaises(FormatError):
+                parse_ecci_records(Backup(m,b.allfile,4,0,(1,)), md5=False,
+                                   md3=True,ecci=True,header_offset=0)
+
 
 
 if __name__ == '__main__':

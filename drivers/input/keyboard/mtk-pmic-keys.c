@@ -56,6 +56,7 @@ struct mtk_pmic_regs {
 	const struct mtk_pmic_keys_regs keys_regs[MTK_PMIC_MAX_KEY_COUNT];
 	u32 pmic_rst_reg;
 	u32 rst_lprst_mask; /* Long-press reset timeout bitmask */
+	u32 rst_lprst_seconds[4]; /* Optional selector-to-seconds table */
 	bool key_release_irq;
 };
 
@@ -105,6 +106,7 @@ static const struct mtk_pmic_regs mt6351_regs = {
 				   MTK_PMIC_MT6331_HOMEKEY_RST),
 	.pmic_rst_reg = MT6351_TOP_RST_MISC,
 	.rst_lprst_mask = MTK_PMIC_MT6331_RST_DU_MASK,
+	.rst_lprst_seconds = { 8, 11, 14, 5 },
 	.key_release_irq = true,
 };
 
@@ -184,8 +186,19 @@ static int mtk_pmic_keys_lp_reset_setup(struct mtk_pmic_keys *keys,
 
 	error = of_property_read_u32(keys->dev->of_node, "power-off-time-sec",
 				     &long_press_debounce);
-	if (error)
+	if (error) {
 		long_press_debounce = 0;
+	} else if (regs->rst_lprst_seconds[0]) {
+		unsigned int i;
+
+		for (i = 0; i < ARRAY_SIZE(regs->rst_lprst_seconds); i++)
+			if (long_press_debounce == regs->rst_lprst_seconds[i])
+				break;
+		if (i == ARRAY_SIZE(regs->rst_lprst_seconds))
+			return -EINVAL;
+
+		long_press_debounce = i;
+	}
 
 	mask = regs->rst_lprst_mask;
 	value = long_press_debounce << (ffs(regs->rst_lprst_mask) - 1);

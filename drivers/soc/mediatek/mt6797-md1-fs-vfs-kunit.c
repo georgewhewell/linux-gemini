@@ -101,6 +101,24 @@ static void mt6797_fs_vfs_operations(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_mutate_drive('Z', "../escape", MT6797_MD1_FS_MKDIR), -EINVAL);
 	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_mutate_drive('Z', "", MT6797_MD1_FS_RMDIR), -EINVAL);
 
+	/* Cross-root copy preserves source and replaces destination contents. */
+	KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_copy_drive('Z', "dir/moved", 'Y', "copied"), 0);
+	KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_getattr_drive('Z', "dir/moved", &attr), 0);
+	KUNIT_EXPECT_EQ(test, attr.size, (u64)1);
+	fput(f->files[2]);
+	f->files[2] = mt6797_md1_fs_provider_open_drive('Y', "copied", false);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(f->files[2]));
+	pos = 0;
+	KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_read(f->files[2], result, 1, &pos), (ssize_t)1);
+	KUNIT_EXPECT_EQ(test, result[0], 'Z');
+	KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_copy_drive('Z', "dir/moved", 'X', "dir/moved"), 0);
+	pos = 0;
+	KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_read(f->files[1], result, 1, &pos), (ssize_t)1);
+	KUNIT_EXPECT_EQ(test, result[0], 'Z');
+	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_copy_drive('Z', "dir/moved", 'Z', "dir/moved"), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_copy_drive('Z', "missing", 'Y', "copied"), -ENOENT);
+	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_copy_drive('Z', "dir/moved", 'Y', "../escape"), -EINVAL);
+
 	/* Replace an existing inode while retaining the source FD. */
 	KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_rename_drive('Z', "dir/moved", 'Z', "target"), 0);
 	fput(f->files[0]);

@@ -70,6 +70,8 @@ int mt6797_cpuclk_decode_state(enum mt6797_cpuclk_domain domain,
 bool mt6797_cpuclk_secure_read_allowed(unsigned long fid, u32 address);
 bool mt6797_cpuclk_snapshots_equal(const struct mt6797_cpuclk_snapshot *first,
 				   const struct mt6797_cpuclk_snapshot *second);
+int mt6797_cpuclk_validate_cold_mp2(const struct mt6797_cpuclk_snapshot *snapshot,
+				 unsigned long reference_rate);
 unsigned long mt6797_cpuclk_apply_divider(unsigned long parent_rate,
 					  u8 divider);
 int mt6797_cpuclk_plan_pll_rate(enum mt6797_cpuclk_domain domain,

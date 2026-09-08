@@ -224,6 +224,37 @@ static void mt6797_cpuclk_cold_mp2_test(struct kunit *test)
 	}
 }
 
+static void mt6797_cpuclk_cold_admission_test(struct kunit *test)
+{
+	struct mt6797_cpuclk_snapshot snapshot = { .muxsel = 0x54 };
+
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&snapshot,
+		26000000), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(NULL,
+		26000000), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&snapshot, 0), -ERANGE);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&snapshot,
+		25000000), -ERANGE);
+	/* Other clusters' divider/mux fields do not define the MP2 contract. */
+	snapshot.clkdiv = 0xffffffe0;
+	snapshot.muxsel = 0xfffffffc;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&snapshot,
+		26000000), 0);
+	snapshot.muxsel = 0x55;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&snapshot,
+		26000000), -ERANGE);
+	snapshot.clkdiv = 8;
+	snapshot.mp2_armpll_con0 = 0x00ff1101;
+	snapshot.mp2_armpll_con1 = 0xb9b13b14;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&snapshot,
+		26000000), -EBUSY);
+	/* Even an unselected programmed PLL is outside the cold contract. */
+	snapshot.muxsel = 0x54;
+	snapshot.clkdiv = 0;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&snapshot,
+		26000000), -EBUSY);
+}
+
 static void mt6797_cpuclk_rate_plan_test(struct kunit *test)
 {
 	struct mt6797_cpuclk_snapshot snapshot = mt6797_cpuclk_test_snapshot();
@@ -351,6 +382,7 @@ static struct kunit_case mt6797_cpuclk_test_cases[] = {
 	KUNIT_CASE(mt6797_cpuclk_pll_formats_test),
 	KUNIT_CASE(mt6797_cpuclk_divider_test),
 	KUNIT_CASE(mt6797_cpuclk_cold_mp2_test),
+	KUNIT_CASE(mt6797_cpuclk_cold_admission_test),
 	KUNIT_CASE(mt6797_cpuclk_decode_rejects_invalid_test),
 	KUNIT_CASE(mt6797_cpuclk_rate_plan_test),
 	KUNIT_CASE(mt6797_cpuclk_rate_plan_rejects_invalid_test),

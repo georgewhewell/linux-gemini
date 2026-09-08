@@ -28,6 +28,7 @@
 #include <linux/reset.h>
 #include <linux/smp.h>
 #include <linux/soc/mediatek/mt6797-a72-power.h>
+#include <linux/soc/mediatek/mt6797-cpuclk.h>
 #include <uapi/linux/psci.h>
 
 #include <asm/cputype.h>
@@ -420,6 +421,11 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 	if (preflight->admission_ret)
 		return preflight->admission_ret;
 
+	/* Recheck immediately before any Linux-owned rail/reset mutation. */
+	ret = mt6797_cpuclk_check_mp2_boot(preflight->dev, preflight->mp2_clk);
+	if (ret)
+		return ret;
+
 	ret = mt6797_a72_transaction_begin(&preflight->transaction,
 					   &preflight->plan,
 					   &mt6797_a72_live_ops,
@@ -743,6 +749,10 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 				     "failed to read big-cluster SRAM selector\n");
 	sram_selector &= 0xf;
 
+	ret = mt6797_cpuclk_check_mp2_boot(dev, preflight->mp2_clk);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "MP2 is not in the cold firmware-owned clock state\n");
 	mp2_rate = clk_get_rate(preflight->mp2_clk);
 	if (!mp2_rate)
 		return dev_err_probe(dev, -EINVAL,
@@ -821,7 +831,7 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, preflight);
 	dev_info(dev,
-		 "CPU%u/%u resource-preflight-v2: offline=1 mode=%s vproc=%duV vproc-enabled=%d sram=%duV sram-selector=%u sram-contract=voltage-only mp2=%luHz pwrap-reset=%d spm-mp2=0x%08x spm-buck-iso=0x%08x plan-steps=%u transaction=ready\n",
+		 "CPU%u/%u resource-preflight-v2: offline=1 mode=%s vproc=%duV vproc-enabled=%d sram=%duV sram-selector=%u sram-contract=voltage-only mp2-clock-contract=cold-clk26m-v1 mp2=%luHz pwrap-reset=%d spm-mp2=0x%08x spm-buck-iso=0x%08x plan-steps=%u transaction=ready\n",
 		 preflight->cpus[0], preflight->cpus[1],
 		 preflight->cpu8_available ? "cpu8-admission" : "provider-only",
 		 vproc_uv, vproc_enabled, sram_uv, sram_selector, mp2_rate,

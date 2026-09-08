@@ -47,6 +47,7 @@ int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
 /* Explicit ASCII drive; only registered Z/X/Y roots are addressable. Paths
  * remain relative and undergo the same confinement checks as the legacy API.
  */
+/* Process context: live statfs, including current RAM free space. */
 int mt6797_md1_fs_provider_stats_drive(u8 drive, struct mt6797_md1_fs_stats *stats);
 int mt6797_md1_fs_provider_getattr_drive(u8 drive, const char *path,
 				       struct mt6797_md1_fs_attr *attr);

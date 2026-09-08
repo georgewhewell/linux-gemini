@@ -35,10 +35,8 @@ static DEFINE_SPINLOCK(provider_lock);
 static struct mt6797_fs_state provider_state;
 static struct file *provider_file; /* Z, including legacy registration */
 static struct file *provider_extra[2]; /* X, Y; NULL in legacy mode */
-static struct mt6797_md1_fs_stats provider_extra_stats[2];
 static bool provider_volatile;
 static struct device *provider_cold;
-static struct mt6797_md1_fs_stats provider_stats;
 
 bool mt6797_md1_fs_provider_enabled(void)
 {
@@ -130,29 +128,6 @@ int mt6797_md1_fs_provider_claim(struct device *cold)
 	spin_unlock_irqrestore(&provider_lock, flags);
 	return ret;
 }
-
-int mt6797_md1_fs_provider_stats_drive(u8 drive, struct mt6797_md1_fs_stats *stats)
-{
-	unsigned long flags;
-	int ret = -ENODEV;
-
-	spin_lock_irqsave(&provider_lock, flags);
-	if (provider_state.stage == MT6797_FS_CONSUMED &&
-	    mt6797_fs_accessible(mt6797_fs_drive_file(drive))) {
-		*stats = drive == 'Z' ? provider_stats :
-			provider_extra_stats[drive == 'X' ? 0 : 1];
-		ret = 0;
-	}
-	spin_unlock_irqrestore(&provider_lock, flags);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_stats_drive);
-
-int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *stats)
-{
-	return mt6797_md1_fs_provider_stats_drive('Z', stats);
-}
-EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_stats);
 
 /* A retained, consumed root with its backing policy intact; NULL if absent. */
 static struct file *mt6797_fs_root_get(u8 drive)
@@ -857,6 +832,40 @@ static int mt6797_fs_validate_root(struct file *file, bool ram,
 	return 0;
 }
 
+/* Query live geometry in process context. Cached registration-time free
+ * space becomes stale after RAM writes, truncation or namespace mutations.
+ */
+int mt6797_md1_fs_provider_stats_drive(u8 drive, struct mt6797_md1_fs_stats *stats)
+{
+	struct mt6797_md1_fs_stats snapshot;
+	struct file *root;
+	int ret;
+
+	might_sleep();
+	if (!stats)
+		return -EINVAL;
+	root = mt6797_fs_root_get(drive);
+	if (!root)
+		return -ENODEV;
+	ret = mt6797_fs_validate_root(root, READ_ONCE(provider_volatile), &snapshot);
+	/* A remount during statfs must not publish a result from an authority
+	 * whose backing policy no longer holds.
+	 */
+	if (!ret && !mt6797_fs_accessible(root))
+		ret = -EROFS;
+	if (!ret)
+		*stats = snapshot;
+	fput(root);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_stats_drive);
+
+int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *stats)
+{
+	return mt6797_md1_fs_provider_stats_drive('Z', stats);
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_stats);
+
 static int mt6797_fs_register_fds(const int *fds, unsigned int count, bool ram)
 {
 	struct mt6797_md1_fs_stats stats[3];
@@ -910,12 +919,9 @@ static int mt6797_fs_register_fds(const int *fds, unsigned int count, bool ram)
 	if (!ret) {
 		provider_volatile = ram;
 		provider_file = files[0];
-		provider_stats = stats[0];
 		provider_cold = cold;
-		for (i = 1; i < count; i++) {
+		for (i = 1; i < count; i++)
 			provider_extra[i - 1] = files[i];
-			provider_extra_stats[i - 1] = stats[i];
-		}
 		for (i = 0; i < count; i++)
 			files[i] = NULL;
 	}

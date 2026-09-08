@@ -46,6 +46,7 @@ struct path {struct vfsmount *mnt;struct dentry *dentry;};
 struct file {struct path f_path;int f_mode,refs;struct inode inode;};
 struct device {int refs;};
 static bool enable=true,locked,enable_volatile,provider_volatile;
+static void might_sleep(void){assert(!locked);}
 static int mode,attaches,stats_calls,file_puts,unlock_count;
 static struct device target;
 static struct vfsmount mount;
@@ -54,13 +55,11 @@ static struct dentry dent;
 static struct file backing;
 static struct kstatfs observed;
 static struct file *provider_file, *provider_extra[2];
-static struct mt6797_md1_fs_stats provider_extra_stats[2];
 static struct file extra_backing[2];
 static struct super_block extra_sb[2];
 static struct vfsmount extra_mount[2];
 static struct dentry extra_dent[2];
 static struct device *provider_cold;
-static struct mt6797_md1_fs_stats provider_stats;
 static void after_unlock(void);
 #define spin_lock_irqsave(p,f) do{(f)=0;assert(!locked);locked=true;}while(0)
 #define spin_unlock_irqrestore(p,f) do{(void)(f);assert(locked);locked=false;after_unlock();}while(0)
@@ -74,12 +73,14 @@ static void put_device(struct device *d){assert(!locked);if(d){assert(d->refs>0)
 static int mt6797_fs_cancel_registration(void);
 static int vfs_statfs(struct path *p,struct kstatfs *out)
 {(void)p;assert(!locked);stats_calls++;*out=observed;
- if(stats_calls==3){
+ if(stats_calls==3 && mode>=14 && mode<=16){
   assert(!provider_file&&!provider_extra[0]&&!provider_extra[1]);
   if(mode==14)assert(!mt6797_fs_cancel_registration());
   if(mode==15)extra_mount[0].mnt_flags=MNT_READONLY;
   if(mode==16)out->f_blocks=16385;
  }
+ if(mode==18)out->f_bfree=observed.f_bfree+(p->mnt==&mount?0:p->mnt==&extra_mount[0]?1:2);
+ if(mode==17)mount.mnt_flags=0;
  return mode==1?-EIO:0;}
 static struct device *mt6797_fs_find_cold(void){assert(!locked);return get_device(&target);}
 static int device_attach(struct device *d);
@@ -236,11 +237,38 @@ int main(void){
   assert(f==(i?&extra_backing[i-1]:&backing));fput(f);
   assert(!mt6797_md1_fs_provider_stats_drive(drive,&stats)&&stats.blocks==16384);
  }
+ mode=18;
+ for(int round=0;round<2;round++){
+  observed.f_bfree=round?20:10;
+  for(int i=0;i<3;i++)assert(!mt6797_md1_fs_provider_stats_drive("ZXY"[i],&stats)&&stats.free_blocks==(u32)(observed.f_bfree+i));
+ }
+ mode=0;
  assert(!mt6797_fs_root_get('W')&&!mt6797_fs_root_get('z'));
  assert(mt6797_md1_fs_provider_stats_drive('V',&stats)==-ENODEV);
  extra_mount[0].mnt_flags=MNT_READONLY;assert(!mt6797_fs_root_get('X'));assert(mt6797_fs_root_get('Y')==&extra_backing[1]);fput(&extra_backing[1]);
  assert(mt6797_fs_cancel_registration()==-EBUSY);
  reset(0);assert(!mt6797_fs_register_fd(7,false));assert(!mt6797_fs_root_get('X')&&!mt6797_fs_root_get('Y'));
+
+ /* Live queries reflect changes after publication, not the initial snapshot.
+  * Every failed query leaves caller output unchanged and releases its ref.
+  */
+ reset(0);assert(!mt6797_fs_register_fd(7,false));
+ observed.f_bfree=77;assert(!mt6797_md1_fs_provider_stats(&stats)&&stats.free_blocks==77);
+ observed.f_bfree=88;assert(!mt6797_md1_fs_provider_stats(&stats)&&stats.free_blocks==88);
+ int refs=backing.refs;
+ mode=1;assert(mt6797_md1_fs_provider_stats(&stats)==-EIO&&stats.free_blocks==88&&backing.refs==refs);
+ mode=0;observed.f_bfree=observed.f_blocks+1;
+ assert(mt6797_md1_fs_provider_stats(&stats)==-EOVERFLOW&&stats.free_blocks==88&&backing.refs==refs);
+ observed.f_bfree=77;mode=17;
+ assert(mt6797_md1_fs_provider_stats(&stats)==-EROFS&&stats.free_blocks==88&&backing.refs==refs);
+ assert(mt6797_md1_fs_provider_stats(NULL)==-EINVAL&&backing.refs==refs);
+ reset(0);sb.s_magic=TMPFS_MAGIC;sb.s_flags=0;mount.mnt_flags=0;enable_volatile=true;
+ observed.f_type=TMPFS_MAGIC;observed.f_blocks=16384;observed.f_bfree=16000;observed.f_files=4096;
+ assert(!mt6797_fs_register_fd(7,true));
+ observed.f_bfree=3;assert(!mt6797_md1_fs_provider_stats(&stats)&&stats.free_blocks==3);
+ observed.f_blocks=16385;
+ assert(mt6797_md1_fs_provider_stats(&stats)==-EFBIG&&stats.free_blocks==3);
+ puts("PASS live statistics: post-registration free-space changes, VFS error, overflow, policy drift, RAM bounds and unchanged output on failure");
  puts("PASS atomic Z/X/Y: all FD failures release refs; disk/alias refusal; cancellation and claim races; all-root preclaim check; exact root selection; unknown/unregistered roots refused");
  puts("PASS actual ioctl: privilege/unknown/copy/shape/opt-in refusals, distinct RO and RAM commands");
  puts("PASS actual FS registration: FD/VFS failures, mount+superblock RO, returned type, refs, single publication, concurrent claim/cancel before attach, cancellation at attach, consumed lifetime");
@@ -249,7 +277,7 @@ int main(void){
 parts=[shim,(root/'include/uapi/linux/mt6797_md1_fs.h').read_text(),(root/'drivers/soc/mediatek/mt6797-md1-fs-state.h').read_text(),adapter]
 parts += [function(n) for n in ('mt6797_md1_fs_provider_enabled','mt6797_fs_readonly','mt6797_fs_tmpfs_writable','mt6797_fs_backing_matches','mt6797_fs_accessible','mt6797_fs_roots_accessible','mt6797_fs_drive_file',
           'mt6797_md1_fs_provider_require','mt6797_md1_fs_provider_claim',
-          'mt6797_md1_fs_provider_stats_drive','mt6797_md1_fs_provider_stats','mt6797_fs_root_get','mt6797_fs_cancel_registration','mt6797_fs_validate_root','mt6797_fs_register_fds','mt6797_fs_register_fd','mt6797_fs_ioctl')]
+          'mt6797_fs_root_get','mt6797_fs_cancel_registration','mt6797_fs_validate_root','mt6797_md1_fs_provider_stats_drive','mt6797_md1_fs_provider_stats','mt6797_fs_register_fds','mt6797_fs_register_fd','mt6797_fs_ioctl')]
 parts += [tests]
 with tempfile.TemporaryDirectory(prefix='gemini-fs-registration-') as d:
     p=Path(d);(p/'test.c').write_text('\n'.join(parts))

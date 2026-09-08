@@ -11,6 +11,16 @@ maintainers:
 
 allOf:
   - $ref: input.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: mediatek,mt6351-keys
+    then:
+      properties:
+        power-off-time-sec:
+          enum: [5, 8, 11, 14]
+          default: 8
 
 description: |
   There are two key functions provided by MT6397, MT6323 and other MediaTek

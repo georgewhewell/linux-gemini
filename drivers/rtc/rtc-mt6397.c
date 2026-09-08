@@ -40,16 +40,15 @@ static int mtk_rtc_write_trigger(struct mt6397_rtc *rtc)
 static irqreturn_t mtk_rtc_irq_handler_thread(int irq, void *data)
 {
 	struct mt6397_rtc *rtc = data;
-	u32 irqsta, irqen;
+	u32 irqsta;
 	int ret;
 
 	ret = regmap_read(rtc->regmap, rtc->addr_base + RTC_IRQ_STA, &irqsta);
 	if ((ret >= 0) && (irqsta & RTC_IRQ_STA_AL)) {
 		rtc_update_irq(rtc->rtc_dev, 1, RTC_IRQF | RTC_AF);
-		irqen = irqsta & ~RTC_IRQ_EN_AL;
 		mutex_lock(&rtc->lock);
-		if (regmap_write(rtc->regmap, rtc->addr_base + RTC_IRQ_EN,
-				 irqen) == 0)
+		if (regmap_update_bits(rtc->regmap, rtc->addr_base + RTC_IRQ_EN,
+				       RTC_IRQ_EN_AL, 0) == 0)
 			mtk_rtc_write_trigger(rtc);
 		mutex_unlock(&rtc->lock);
 

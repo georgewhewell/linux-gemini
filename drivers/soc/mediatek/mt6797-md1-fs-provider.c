@@ -1005,3 +1005,7 @@ static int __init mt6797_fs_init(void)
 }
 device_initcall(mt6797_fs_init);
 /* Built-in only. A consumed provider pins its authority until this boot ends. */
+
+#if IS_ENABLED(CONFIG_MTK_MT6797_MD1_FS_VFS_KUNIT_TEST)
+#include "mt6797-md1-fs-vfs-kunit.c"
+#endif

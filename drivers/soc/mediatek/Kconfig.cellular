@@ -95,12 +95,21 @@ config MTK_MT6797_MD1_COLD_OWNER
 	  HS1. Any post-release failure remains latched until a full platform reset.
 
 config MTK_MT6797_MD1_FS_PROVIDER
-	bool "MT6797 MD1 opt-in read-only filesystem bootstrap authority"
-	depends on MTK_MT6797_MD1_COLD_OWNER=y
+	bool "MT6797 MD1 opt-in filesystem bootstrap authority"
+	depends on MTK_MT6797_MD1_COLD_OWNER=y || MTK_MT6797_MD1_FS_VFS_KUNIT_TEST
 	help
-	  Root-only registration of an already-open read-only ext4 directory for
-	  genuine cached modem disk statistics and one-shot cold-start admission.
+	  Root-only registration of retained read-only ext4 or opt-in bounded
+	  volatile tmpfs authorities, with live disk statistics and one-shot
+	  cold-start admission.
 	  Inert unless its independent enable module parameter is supplied.
+
+config MTK_MT6797_MD1_FS_VFS_KUNIT_TEST
+	bool "KUnit real tmpfs tests for the MD1 filesystem provider"
+	depends on KUNIT=y && UML
+	select TMPFS
+	help
+	  Exercise the actual provider against private bounded tmpfs mounts in
+	  User Mode Linux. No platform device, modem or block partition is used.
 
 config MTK_MT6797_MD1_COLD_OWNER_KUNIT_TEST
 	bool "KUnit tests for the MT6797 MD1 cold owner"

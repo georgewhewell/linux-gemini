@@ -14,6 +14,10 @@ struct mt6797_a72_fake {
 	unsigned int apply_calls;
 	unsigned int verify_calls;
 	unsigned int rollback_calls;
+	unsigned int retain_calls;
+	bool fail_before_effect;
+	struct mt6797_a72_transaction *transaction;
+	bool isolation_latched_at_dispatch;
 	int fail_apply_at;
 	int fail_verify_at;
 	int fail_rollback_at;
@@ -93,6 +97,11 @@ static int mt6797_a72_fake_apply(void *context,
 	unsigned int call = fake->apply_calls++;
 
 	fake->applied[call] = step->action;
+	if (fake->transaction && step->action == MT6797_A72_SPM_UPDATE &&
+	    step->reg == MT6797_A72_SPM_EXT_BUCK_ISO)
+		fake->isolation_latched_at_dispatch = fake->transaction->isolation_attempted;
+	if (call == fake->fail_apply_at && fake->fail_before_effect)
+		return -EIO;
 	mt6797_a72_fake_apply_step(fake, step);
 
 	return call == fake->fail_apply_at ? -EIO : 0;
@@ -187,11 +196,20 @@ mt6797_a72_fake_rollback(void *context, const struct mt6797_a72_step *step,
 	return 0;
 }
 
+static void mt6797_a72_fake_retain_fault(void *context)
+{
+	struct mt6797_a72_fake *fake = context;
+
+	fake->retain_calls++;
+	fake->state.transaction_guarded = false;
+}
+
 static const struct mt6797_a72_backend_ops mt6797_a72_fake_ops = {
 	.snapshot = mt6797_a72_fake_snapshot,
 	.apply = mt6797_a72_fake_apply,
 	.verify = mt6797_a72_fake_verify,
 	.rollback = mt6797_a72_fake_rollback,
+	.retain_fault = mt6797_a72_fake_retain_fault,
 };
 
 static void mt6797_a72_plan_matches_vendor_boundary_test(struct kunit *test)
@@ -327,68 +345,103 @@ static void mt6797_a72_removal_requires_quiescent_owner_test(struct kunit *test)
 static void mt6797_a72_transaction_orders_and_aborts_test(struct kunit *test)
 {
 	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
-	struct mt6797_a72_state initial = fake.state;
+	struct mt6797_a72_state powered;
 	struct mt6797_a72_transaction transaction = { };
 	struct mt6797_a72_plan plan;
-	int ret;
 
 	KUNIT_ASSERT_EQ(test, mt6797_a72_build_plan(&plan), 0);
-	ret = mt6797_a72_transaction_begin(&transaction, &plan,
-					   &mt6797_a72_fake_ops, &fake,
-					   MT6797_A72_REQUIRED_CAPS);
-	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_ASSERT_EQ(test, mt6797_a72_transaction_begin(&transaction, &plan,
+		&mt6797_a72_fake_ops, &fake, MT6797_A72_REQUIRED_CAPS), 0);
 	KUNIT_EXPECT_TRUE(test, transaction.active);
+	KUNIT_EXPECT_TRUE(test, transaction.isolation_attempted);
 	KUNIT_EXPECT_EQ(test, fake.apply_calls, plan.count);
 	KUNIT_EXPECT_EQ(test, fake.applied[2],
-			(enum mt6797_a72_action)MT6797_A72_IDVFS_READ_FENCE);
+		(enum mt6797_a72_action)MT6797_A72_IDVFS_READ_FENCE);
 	KUNIT_EXPECT_EQ(test, fake.applied[7],
-			(enum mt6797_a72_action)MT6797_A72_PWRAP_RESET_DEASSERT);
-
-	KUNIT_ASSERT_EQ(test, mt6797_a72_transaction_abort(&transaction), 0);
+		(enum mt6797_a72_action)MT6797_A72_PWRAP_RESET_DEASSERT);
+	powered = fake.state;
+	KUNIT_ASSERT_EQ(test, mt6797_a72_transaction_abort(&transaction), -EUCLEAN);
 	KUNIT_EXPECT_FALSE(test, transaction.active);
-	KUNIT_EXPECT_EQ(test, fake.state.mp2_pwr_con, initial.mp2_pwr_con);
-	KUNIT_EXPECT_EQ(test, fake.state.ext_buck_iso, initial.ext_buck_iso);
-	KUNIT_EXPECT_EQ(test, fake.state.vproc_enabled, initial.vproc_enabled);
-	KUNIT_EXPECT_EQ(test, fake.state.vsram_uv, initial.vsram_uv);
-	KUNIT_EXPECT_EQ(test, fake.rollback_calls, plan.count);
+	KUNIT_EXPECT_TRUE(test, transaction.faulted);
+	KUNIT_EXPECT_EQ(test, fake.state.mp2_pwr_con, powered.mp2_pwr_con);
+	KUNIT_EXPECT_EQ(test, fake.state.ext_buck_iso, powered.ext_buck_iso);
+	KUNIT_EXPECT_EQ(test, fake.state.vproc_enabled, powered.vproc_enabled);
+	KUNIT_EXPECT_EQ(test, fake.state.vsram_uv, powered.vsram_uv);
+	KUNIT_EXPECT_EQ(test, fake.rollback_calls, 0U);
+	KUNIT_EXPECT_EQ(test, fake.retain_calls, 1U);
 }
 
-static void mt6797_a72_failure_rolls_back_attempted_step_test(struct kunit *test)
+/* Apply failures before/after effects, plus readback failures at every step. */
+static void mt6797_a72_all_step_failures_test(struct kunit *test)
+{
+	struct mt6797_a72_plan plan;
+	unsigned int i, mode, j;
+
+	KUNIT_ASSERT_EQ(test, mt6797_a72_build_plan(&plan), 0);
+	for (mode = 0; mode < 3; mode++) {
+		for (i = 0; i < plan.count; i++) {
+			struct mt6797_a72_fake fake = mt6797_a72_new_fake();
+			struct mt6797_a72_fake expected = fake;
+			struct mt6797_a72_transaction transaction = { };
+			unsigned int calls;
+			int ret;
+
+			fake.transaction = &transaction;
+			fake.fail_before_effect = mode == 2;
+			if (mode == 1)
+				fake.fail_verify_at = i;
+			else
+				fake.fail_apply_at = i;
+			ret = mt6797_a72_transaction_begin(&transaction, &plan,
+				&mt6797_a72_fake_ops, &fake, MT6797_A72_REQUIRED_CAPS);
+			KUNIT_EXPECT_EQ(test, fake.apply_calls, i + 1);
+			KUNIT_EXPECT_FALSE(test, fake.state.transaction_guarded);
+			KUNIT_EXPECT_FALSE(test, transaction.active);
+			if (i < 6) {
+				KUNIT_EXPECT_EQ(test, ret, -EIO);
+				KUNIT_EXPECT_EQ(test, fake.rollback_calls, i + 1);
+				KUNIT_EXPECT_EQ(test, fake.retain_calls, 0U);
+				KUNIT_EXPECT_FALSE(test, transaction.faulted);
+				KUNIT_EXPECT_FALSE(test, transaction.isolation_attempted);
+			} else {
+				/* Expected hardware is exactly the attempted forward prefix. */
+				for (j = 0; j < i + (mode != 2); j++)
+					mt6797_a72_fake_apply_step(&expected, &plan.steps[j]);
+				KUNIT_EXPECT_EQ(test, ret, -EUCLEAN);
+				KUNIT_EXPECT_EQ(test, fake.rollback_calls, 0U);
+				KUNIT_EXPECT_EQ(test, fake.retain_calls, 1U);
+				KUNIT_EXPECT_TRUE(test, transaction.faulted);
+				KUNIT_EXPECT_TRUE(test, transaction.isolation_attempted);
+				KUNIT_EXPECT_TRUE(test, fake.isolation_latched_at_dispatch);
+				calls = fake.apply_calls;
+				KUNIT_EXPECT_EQ(test, mt6797_a72_transaction_begin(
+					&transaction, &plan, &mt6797_a72_fake_ops,
+					&fake, MT6797_A72_REQUIRED_CAPS), -EUCLEAN);
+				KUNIT_EXPECT_EQ(test, fake.apply_calls, calls);
+				KUNIT_EXPECT_EQ(test, mt6797_a72_transaction_commit(
+					&transaction), -EINVAL);
+			}
+			KUNIT_EXPECT_EQ(test, fake.state.mp2_pwr_con, expected.state.mp2_pwr_con);
+			KUNIT_EXPECT_EQ(test, fake.state.ext_buck_iso, expected.state.ext_buck_iso);
+			KUNIT_EXPECT_EQ(test, fake.state.pwrap_reset_asserted, expected.state.pwrap_reset_asserted);
+			KUNIT_EXPECT_EQ(test, fake.state.vproc_enabled, expected.state.vproc_enabled);
+			KUNIT_EXPECT_EQ(test, fake.state.vsram_uv, expected.state.vsram_uv);
+			KUNIT_EXPECT_EQ(test, fake.state.vsram_selector, expected.state.vsram_selector);
+		}
+	}
+}
+
+static void mt6797_a72_requires_isolated_start_test(struct kunit *test)
 {
 	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
-	struct mt6797_a72_state initial = fake.state;
 	struct mt6797_a72_transaction transaction = { };
 	struct mt6797_a72_plan plan;
 
-	fake.fail_apply_at = 6;
+	fake.state.ext_buck_iso &= ~MT6797_A72_BIG_BUCK_ISO;
 	KUNIT_ASSERT_EQ(test, mt6797_a72_build_plan(&plan), 0);
-	KUNIT_EXPECT_EQ(test,
-		mt6797_a72_transaction_begin(&transaction, &plan,
-			&mt6797_a72_fake_ops, &fake, MT6797_A72_REQUIRED_CAPS),
-		-EIO);
-	KUNIT_EXPECT_EQ(test, fake.rollback_calls, 7U);
-	KUNIT_EXPECT_EQ(test, fake.rolled_back[0], plan.steps[6].action);
-	KUNIT_EXPECT_EQ(test, fake.state.mp2_pwr_con, initial.mp2_pwr_con);
-	KUNIT_EXPECT_EQ(test, fake.state.ext_buck_iso, initial.ext_buck_iso);
-	KUNIT_EXPECT_FALSE(test, transaction.faulted);
-}
-
-static void mt6797_a72_verify_failure_rolls_back_test(struct kunit *test)
-{
-	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
-	struct mt6797_a72_state initial = fake.state;
-	struct mt6797_a72_transaction transaction = { };
-	struct mt6797_a72_plan plan;
-
-	fake.fail_verify_at = 10;
-	KUNIT_ASSERT_EQ(test, mt6797_a72_build_plan(&plan), 0);
-	KUNIT_EXPECT_EQ(test,
-		mt6797_a72_transaction_begin(&transaction, &plan,
-			&mt6797_a72_fake_ops, &fake, MT6797_A72_REQUIRED_CAPS),
-		-EIO);
-	KUNIT_EXPECT_EQ(test, fake.rollback_calls, 11U);
-	KUNIT_EXPECT_EQ(test, fake.state.vsram_uv, initial.vsram_uv);
-	KUNIT_EXPECT_FALSE(test, transaction.faulted);
+	KUNIT_EXPECT_EQ(test, mt6797_a72_transaction_begin(&transaction, &plan,
+		&mt6797_a72_fake_ops, &fake, MT6797_A72_REQUIRED_CAPS), -EBUSY);
+	KUNIT_EXPECT_EQ(test, fake.apply_calls, 0U);
 }
 
 static void mt6797_a72_uncertain_rollback_fences_test(struct kunit *test)
@@ -397,7 +450,7 @@ static void mt6797_a72_uncertain_rollback_fences_test(struct kunit *test)
 	struct mt6797_a72_transaction transaction = { };
 	struct mt6797_a72_plan plan;
 
-	fake.fail_apply_at = 6;
+	fake.fail_apply_at = 4;
 	fake.fail_rollback_at = 0;
 	KUNIT_ASSERT_EQ(test, mt6797_a72_build_plan(&plan), 0);
 	KUNIT_EXPECT_EQ(test,
@@ -455,8 +508,8 @@ static struct kunit_case mt6797_a72_power_test_cases[] = {
 	KUNIT_CASE(mt6797_a72_cpu8_identity_test),
 	KUNIT_CASE(mt6797_a72_removal_requires_quiescent_owner_test),
 	KUNIT_CASE(mt6797_a72_transaction_orders_and_aborts_test),
-	KUNIT_CASE(mt6797_a72_failure_rolls_back_attempted_step_test),
-	KUNIT_CASE(mt6797_a72_verify_failure_rolls_back_test),
+	KUNIT_CASE(mt6797_a72_all_step_failures_test),
+	KUNIT_CASE(mt6797_a72_requires_isolated_start_test),
 	KUNIT_CASE(mt6797_a72_uncertain_rollback_fences_test),
 	KUNIT_CASE(mt6797_a72_rejects_modified_plan_test),
 	KUNIT_CASE(mt6797_a72_commit_forgets_rollback_state_test),

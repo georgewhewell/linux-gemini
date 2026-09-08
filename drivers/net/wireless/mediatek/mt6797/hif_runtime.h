@@ -10,6 +10,7 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
+#include "hif.h"
 #include "hif_pump.h"
 #include "scan.h"
 
@@ -100,6 +101,7 @@ struct mt6797_wifi_hif_runtime_ops {
 };
 
 struct mt6797_wifi_hif_irq {
+	struct mt6797_wifi_irq_gate cccr_gate;
 	struct device *dev;
 	struct mt6797_wifi_ahb_hif *hif;
 	struct mt6797_wifi_boot *boot;

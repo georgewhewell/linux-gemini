@@ -357,6 +357,10 @@ static int mt6797_wifi_capability_enable_device_irq(void *context)
 		if (ret)
 			return ret;
 	}
+	ret = mt6797_wifi_ahb_irq_gate_update(irq->owner->hif,
+					    &irq->owner->cccr_gate, true);
+	if (ret)
+		return ret;
 	return mt6797_wifi_capability_reg_write(irq, MT6797_WIFI_MCR_WHLPCR,
 						MT6797_WIFI_WHLPCR_INT_SET);
 }
@@ -428,6 +432,10 @@ static int mt6797_wifi_capability_disable_device_irq(void *context)
 		if (!cleanup && ret)
 			cleanup = ret;
 	}
+	ret = mt6797_wifi_ahb_irq_gate_update(irq->owner->hif,
+					    &irq->owner->cccr_gate, false);
+	if (!cleanup && ret)
+		cleanup = ret;
 	return cleanup;
 }
 

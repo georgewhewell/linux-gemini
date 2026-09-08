@@ -303,6 +303,11 @@ static void mt6797_wifi_hif_runtime_publish(
 static int mt6797_wifi_hif_runtime_enable_device(void *context)
 {
 	struct mt6797_wifi_hif_irq *irq = context;
+	int ret;
+
+	ret = mt6797_wifi_ahb_irq_gate_update(irq->hif, &irq->cccr_gate, true);
+	if (ret)
+		return ret;
 
 	return mt6797_wifi_hif_reg_write(irq, MT6797_WIFI_MCR_WHLPCR,
 					 MT6797_WIFI_WHLPCR_INT_SET);
@@ -327,9 +332,12 @@ static void mt6797_wifi_hif_runtime_unmask(void *context)
 static int mt6797_wifi_hif_runtime_disable_device(void *context)
 {
 	struct mt6797_wifi_hif_irq *irq = context;
+	int ret, gate_ret;
 
-	return mt6797_wifi_hif_reg_write(irq, MT6797_WIFI_MCR_WHLPCR,
-					 MT6797_WIFI_WHLPCR_INT_CLR);
+	ret = mt6797_wifi_hif_reg_write(irq, MT6797_WIFI_MCR_WHLPCR,
+				      MT6797_WIFI_WHLPCR_INT_CLR);
+	gate_ret = mt6797_wifi_ahb_irq_gate_update(irq->hif, &irq->cccr_gate, false);
+	return ret ?: gate_ret;
 }
 
 static void mt6797_wifi_hif_runtime_disable_linux(void *context)

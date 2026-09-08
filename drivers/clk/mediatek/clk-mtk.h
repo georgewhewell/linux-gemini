@@ -242,6 +242,10 @@ void mtk_clk_unregister_ref2usb_tx(struct clk_hw *hw);
 struct mtk_clk_desc {
 	const struct mtk_gate *clks;
 	size_t num_clks;
+	/* Minimum onecell capacity for sparse or one-based binding IDs.
+	 * num_clks and the other counts remain lengths of their arrays.
+	 */
+	size_t num_clk_ids;
 	const struct mtk_composite *composite_clks;
 	size_t num_composite_clks;
 	const struct mtk_clk_divider *divider_clks;

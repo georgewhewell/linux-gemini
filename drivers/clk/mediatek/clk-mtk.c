@@ -513,6 +513,7 @@ static int __mtk_clk_simple_probe(struct platform_device *pdev,
 	num_clks = mcd->num_clks + mcd->num_composite_clks;
 	num_clks += mcd->num_fixed_clks + mcd->num_factor_clks;
 	num_clks += mcd->num_mux_clks + mcd->num_divider_clks;
+	num_clks = max_t(size_t, num_clks, mcd->num_clk_ids);
 
 	clk_data = mtk_alloc_clk_data(num_clks);
 	if (!clk_data) {

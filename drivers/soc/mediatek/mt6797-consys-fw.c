@@ -177,6 +177,8 @@ err_release:
 	return ret;
 }
 
+EXPORT_SYMBOL_GPL(mt6797_consys_fw_request);
+
 void mt6797_consys_fw_release(struct mt6797_consys_fw_bundle *bundle)
 {
 	unsigned int i;
@@ -193,6 +195,8 @@ void mt6797_consys_fw_release(struct mt6797_consys_fw_bundle *bundle)
 	release_firmware(bundle->config);
 	kfree(bundle);
 }
+
+EXPORT_SYMBOL_GPL(mt6797_consys_fw_release);
 
 int mt6797_consys_fw_patch_view(const struct mt6797_consys_fw_bundle *bundle,
 				unsigned int patch_index,

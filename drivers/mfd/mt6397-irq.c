@@ -217,8 +217,12 @@ int mt6397_irq_init(struct mt6397_chip *chip)
 	}
 
 	/* Mask all interrupt sources */
-	for (i = 0; i < chip->num_irq_regs; i++)
-		regmap_write(chip->regmap, chip->int_con[i], 0x0);
+	for (i = 0; i < chip->num_irq_regs; i++) {
+		ret = regmap_write(chip->regmap, chip->int_con[i], 0x0);
+		if (ret)
+			return dev_err_probe(chip->dev, ret,
+					     "Failed to mask interrupt bank %u\n", i);
+	}
 
 	chip->pm_nb.notifier_call = mt6397_irq_pm_notifier;
 	chip->irq_domain = irq_domain_create_linear(dev_fwnode(chip->dev),

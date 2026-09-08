@@ -172,6 +172,11 @@ void mt6397_irq_domain_exit(struct irq_domain *domain)
 	}
 }
 
+static void mt6397_irq_unregister_pm_notifier(void *data)
+{
+	unregister_pm_notifier(data);
+}
+
 int mt6397_irq_init(struct mt6397_chip *chip)
 {
 	struct irq_domain_info info = {
@@ -259,6 +264,11 @@ int mt6397_irq_init(struct mt6397_chip *chip)
 		return ret;
 	}
 
-	register_pm_notifier(&chip->pm_nb);
-	return 0;
+	ret = register_pm_notifier(&chip->pm_nb);
+	if (ret)
+		return ret;
+
+	return devm_add_action_or_reset(chip->dev,
+					mt6397_irq_unregister_pm_notifier,
+					&chip->pm_nb);
 }

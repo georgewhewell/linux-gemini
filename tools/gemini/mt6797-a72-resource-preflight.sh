@@ -16,6 +16,7 @@ clock_summary=${CLOCK_SUMMARY:-/sys/kernel/debug/clk/clk_summary}
 cmdline_path=${CMDLINE_PATH:-/proc/cmdline}
 kernel_log=${KERNEL_LOG:-}
 expected_cpu8_status=${EXPECTED_CPU8_STATUS:-disabled}
+expected_cpu9_status=${EXPECTED_CPU9_STATUS:-disabled}
 sram_voltages=" 600000 700000 900000 925000 950000 975000 1000000"
 sram_voltages="$sram_voltages 1025000 1050000 1075000 1100000 1125000"
 sram_voltages="$sram_voltages 1150000 1175000 1200000 "
@@ -146,7 +147,8 @@ if ! cpu9_status=$(read_trimmed "$dt_root/cpus/cpu@201/status"); then
 fi
 [ "$cpu8_status" = "$expected_cpu8_status" ] ||
 	fail "CPU8 DT status is $cpu8_status, expected $expected_cpu8_status"
-[ "$cpu9_status" = "disabled" ] || fail "CPU9 DT status is $cpu9_status"
+[ "$cpu9_status" = "$expected_cpu9_status" ] ||
+	fail "CPU9 DT status is $cpu9_status, expected $expected_cpu9_status"
 
 if ! cmdline=$(read_trimmed "$cmdline_path"); then
 	fail "cannot read kernel command line"

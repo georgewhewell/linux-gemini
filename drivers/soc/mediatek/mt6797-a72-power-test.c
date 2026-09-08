@@ -275,6 +275,25 @@ static void mt6797_a72_cpu8_boot_admission_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ret, -EUCLEAN);
 }
 
+static void mt6797_a72_cpu9_boot_admission_test(struct kunit *test)
+{
+	int ret;
+
+	ret = mt6797_a72_validate_cpu9_boot(9, true, false);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	ret = mt6797_a72_validate_cpu9_boot(8, true, false);
+	KUNIT_EXPECT_EQ(test, ret, -EPERM);
+	ret = mt6797_a72_validate_cpu9_boot(10, true, false);
+	KUNIT_EXPECT_EQ(test, ret, -EPERM);
+	ret = mt6797_a72_validate_cpu9_boot(9, false, false);
+	KUNIT_EXPECT_EQ(test, ret, -EAGAIN);
+	ret = mt6797_a72_validate_cpu9_boot(9, true, true);
+	KUNIT_EXPECT_EQ(test, ret, -EUCLEAN);
+	/* A faulted owner is terminal even with CPU8 online. */
+	ret = mt6797_a72_validate_cpu9_boot(9, false, true);
+	KUNIT_EXPECT_EQ(test, ret, -EUCLEAN);
+}
+
 static void mt6797_a72_cpu8_identity_test(struct kunit *test)
 {
 	int ret;
@@ -432,6 +451,7 @@ static struct kunit_case mt6797_a72_power_test_cases[] = {
 	KUNIT_CASE(mt6797_a72_admission_fences_online_cpu_test),
 	KUNIT_CASE(mt6797_a72_admission_rejects_unrestorable_selector_test),
 	KUNIT_CASE(mt6797_a72_cpu8_boot_admission_test),
+	KUNIT_CASE(mt6797_a72_cpu9_boot_admission_test),
 	KUNIT_CASE(mt6797_a72_cpu8_identity_test),
 	KUNIT_CASE(mt6797_a72_removal_requires_quiescent_owner_test),
 	KUNIT_CASE(mt6797_a72_transaction_orders_and_aborts_test),

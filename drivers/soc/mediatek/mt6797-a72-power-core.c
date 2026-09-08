@@ -129,6 +129,25 @@ int mt6797_a72_validate_cpu8_boot(unsigned int cpu, bool cpu4_online,
 	return 0;
 }
 
+/*
+ * Vendor psci.c:617-621 guards the buck sequence with "if (!g_cl2_online)":
+ * the second big core only needs PSCI CPU_ON once the first one is running.
+ * CPU8 online is the only accepted proof that BUCK B, B_EXT_BUCK_ISO and the
+ * SRAM LDO were committed by this owner; a faulted owner admits nothing.
+ */
+int mt6797_a72_validate_cpu9_boot(unsigned int cpu, bool cpu8_online,
+				  bool faulted)
+{
+	if (cpu != 9)
+		return -EPERM;
+	if (faulted)
+		return -EUCLEAN;
+	if (!cpu8_online)
+		return -EAGAIN;
+
+	return 0;
+}
+
 int mt6797_a72_validate_cpu8_identity(u32 midr)
 {
 	return midr == MT6797_A72_R0P1_MIDR ? 0 : -ENODEV;

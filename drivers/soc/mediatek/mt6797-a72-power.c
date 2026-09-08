@@ -70,6 +70,7 @@ struct mt6797_a72_preflight {
 	bool guarded;
 	bool faulted;
 	bool cpu8_available;
+	bool cpu9_available;
 	bool cpu8_armed;
 	bool overlay_nb_registered;
 };
@@ -96,6 +97,7 @@ int mt6797_a72_power_cpu_boot_admit(unsigned int cpu)
 {
 	struct mt6797_a72_preflight *preflight;
 	bool cpu4_online;
+	bool cpu8_online;
 	bool armed;
 	bool faulted;
 	int ret;
@@ -104,6 +106,10 @@ int mt6797_a72_power_cpu_boot_admit(unsigned int cpu)
 	preflight = mt6797_a72_owner;
 	if (!preflight) {
 		ret = -EAGAIN;
+	} else if (cpu == MT6797_A72_FIRST_CPU + 1 && preflight->cpu9_available) {
+		cpu8_online = cpu_online(MT6797_A72_FIRST_CPU);
+		faulted = preflight->faulted;
+		ret = mt6797_a72_validate_cpu9_boot(cpu, cpu8_online, faulted);
 	} else {
 		cpu4_online = cpu_online(4);
 		armed = preflight->cpu8_armed;
@@ -356,14 +362,18 @@ static int mt6797_a72_preflight_parse_cpus(struct device *dev,
 			goto invalid_cpu;
 		if (strcmp(enable_method, "mediatek,mt6797-psci"))
 			goto invalid_cpu;
-		if (i && of_device_is_available(cpu_node))
-			goto invalid_cpu;
 		if (!i)
 			preflight->cpu8_available =
 				of_device_is_available(cpu_node);
+		else
+			preflight->cpu9_available =
+				of_device_is_available(cpu_node);
+		/* CPU9 may only be described as available behind CPU8. */
+		if (i && preflight->cpu9_available && !preflight->cpu8_available)
+			goto invalid_cpu;
 
 		of_node_put(cpu_node);
-		if (!i && cpu < nr_cpu_ids &&
+		if (cpu < nr_cpu_ids &&
 		    cpumask_test_and_set_cpu(cpu, &preflight->cpu_mask))
 			return dev_err_probe(dev, -EINVAL,
 					     "duplicate CPU phandle %d\n", i);
@@ -391,6 +401,16 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 	preflight = hlist_entry(node, struct mt6797_a72_preflight, cpuhp_node);
 	if (!cpumask_test_cpu(cpu, &preflight->cpu_mask))
 		return 0;
+	/*
+	 * CPU9 shares the MP2 cluster rails that the CPU8 transaction
+	 * committed.  Safety invariants (vendor mt_cpufreq.c/da9214.c): BUCK B
+	 * is never disabled while a big core is on, and no rail is touched
+	 * here; CPU8 online is the proof that VPROC/VSRAM/ISO are in place.
+	 */
+	if (cpu == MT6797_A72_FIRST_CPU + 1)
+		return mt6797_a72_validate_cpu9_boot(cpu,
+				cpu_online(MT6797_A72_FIRST_CPU),
+				preflight->faulted);
 	if (cpu != MT6797_A72_FIRST_CPU)
 		return -EPERM;
 	if (!cpu_online(4))
@@ -459,6 +479,25 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 	int ret;
 
 	preflight = hlist_entry(node, struct mt6797_a72_preflight, online_node);
+	if (cpu == MT6797_A72_FIRST_CPU + 1 &&
+	    cpumask_test_cpu(cpu, &preflight->cpu_mask)) {
+		ret = mt6797_a72_validate_cpu9_boot(cpu,
+				cpu_online(MT6797_A72_FIRST_CPU),
+				preflight->faulted);
+		if (!ret)
+			ret = mt6797_a72_validate_cpu8_identity(read_cpuid_id());
+		if (!ret) {
+			affinity = psci_ops.affinity_info(preflight->mpidrs[1], 0);
+			if (affinity != PSCI_0_2_AFFINITY_LEVEL_ON)
+				ret = affinity < 0 ? affinity : -EIO;
+		}
+		if (ret)
+			preflight->faulted = true;
+		else
+			dev_info(preflight->dev,
+				 "CPU9 PSCI CPU_ON committed with CPU8 prerequisite\n");
+		return ret;
+	}
 	if (cpu != MT6797_A72_FIRST_CPU)
 		return 0;
 
@@ -789,12 +828,13 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 		 pwrap_reset_asserted, mp2_power, buck_iso, plan.count);
 	if (preflight->cpu8_available)
 		dev_info(dev,
-			 "cpu-on-gate-v3: method=mediatek,mt6797-psci CPU8-mpidr=0x%llx CPU9-mpidr=0x%llx PSCI=%u.%u affinity8=off affinity9=off prepare-state=%d commit-state=%d CPU4-prerequisite=required CPU8-r0p1=required CPU8-admission=ready CPU9=blocked\n",
+			 "cpu-on-gate-v3: method=mediatek,mt6797-psci CPU8-mpidr=0x%llx CPU9-mpidr=0x%llx PSCI=%u.%u affinity8=off affinity9=off prepare-state=%d commit-state=%d CPU4-prerequisite=required CPU8-r0p1=required CPU8-admission=ready CPU9=%s\n",
 			 (unsigned long long)preflight->mpidrs[0],
 			 (unsigned long long)preflight->mpidrs[1],
 			 PSCI_VERSION_MAJOR(psci_version),
 			 PSCI_VERSION_MINOR(psci_version), preflight->cpuhp_state,
-			 preflight->online_state);
+			 preflight->online_state,
+			 preflight->cpu9_available ? "after-CPU8" : "blocked");
 
 	return 0;
 }
@@ -829,7 +869,8 @@ static void mt6797_a72_preflight_remove(struct platform_device *pdev)
 			preflight->faulted = true;
 	}
 
-	cpu8_online = cpu_online(MT6797_A72_FIRST_CPU);
+	cpu8_online = cpu_online(MT6797_A72_FIRST_CPU) ||
+		      cpu_online(MT6797_A72_FIRST_CPU + 1);
 	transaction_active = preflight->transaction.active;
 	armed = preflight->cpu8_armed;
 	guarded = preflight->guarded;

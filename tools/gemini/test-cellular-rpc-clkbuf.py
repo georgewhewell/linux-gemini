@@ -97,6 +97,37 @@ int main(void)
   memcpy(b,request,36);mt6797_rpc_write(b+12,i);
   assert(!run(b,36,56));assert(mt6797_rpc_read(reply+12)==i);
  }
+
+ /* Vendor's absent optional NFC operation returns one FS_NO_OP argument. */
+ const u8 no_nfc[32]={0x78,0x56,0x34,0x12,32,0,0,0,32,0,0,128,1,0,0,0,
+  10,64,0,0,1,0,0,0,1,0,0,0,1,0xaa,0xbb,0xcc};
+ const u8 no_op_reply[32]={0x78,0x56,0x34,0x12,32,0,0,0,33,0,0,0,1,0,0,0,
+  10,64,255,255,1,0,0,0,4,0,0,0,255,255,255,255};
+ before=calls;memset(reply,0xa5,sizeof(reply));
+ assert(!mt6797_rpc_unsupported_reply(no_nfc,32,reply,32,&size,&status));
+ assert(size==32&&status==-1&&!memcmp(reply,no_op_reply,32)&&calls==before);
+ for(unsigned i=32;i<64;i++)assert(reply[i]==0xa5);
+ for(unsigned n=0;n<32;n++) {
+  memcpy(b,no_nfc,32);assert(mt6797_rpc_unsupported_reply(b,n,reply,32,&size,&status)<0);
+  mt6797_rpc_write(b+4,n);assert(mt6797_rpc_unsupported_reply(b,n,reply,32,&size,&status)<0);
+  assert(mt6797_rpc_unsupported_reply(no_nfc,32,reply,n,&size,&status)==-EMSGSIZE);
+ }
+ for(unsigned i=0;i<sizeof(offsets)/sizeof(offsets[0]);i++) {
+  memcpy(b,no_nfc,32);mt6797_rpc_write(b+offsets[i],UINT32_MAX);
+  assert(mt6797_rpc_unsupported_reply(b,32,reply,32,&size,&status)<0);
+ }
+ memcpy(b,no_nfc,32);mt6797_rpc_write(b+16,0xffff400a);
+ assert(mt6797_rpc_unsupported_reply(b,32,reply,32,&size,&status)==-EPROTO);
+ memcpy(b,no_nfc,32);mt6797_rpc_write(b+4,36);
+ assert(mt6797_rpc_unsupported_reply(b,36,reply,32,&size,&status)==-EPROTO);
+ /* Unknown operations with zero or six well-framed arguments still get a reply. */
+ for(unsigned n=0;n<=6;n++) {
+  memset(b,0,sizeof(b));memcpy(b,no_nfc,24);mt6797_rpc_write(b+4,24+n*8);mt6797_rpc_write(b+20,n);
+  for(unsigned i=0;i<n;i++)mt6797_rpc_write(b+24+i*8,4);
+  assert(!mt6797_rpc_unsupported_reply(b,24+n*8,reply,32,&size,&status));
+  assert(size==32&&status==-1&&calls==before);
+ }
+ puts("PASS unsupported RPC: literal NFC-disabled FS_NO_OP, one argument, no provider call, truncation/overflow/response-ID/padding/slot bounds");
  puts("PASS RF clock RPC: literal wire, packed AFC, provider effects only after bounds validation, all count sentinels, failure/invalid state, padding, slot identity");
 }
 '''

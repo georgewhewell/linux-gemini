@@ -39,6 +39,8 @@ enum mt6797_md1_fs_mutation {
 };
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_MD1_FS_PROVIDER)
+int mt6797_md1_fs_provider_rename_drive(u8 old_drive, const char *old_path,
+				      u8 new_drive, const char *new_path);
 /* Process-context namespace mutations, restricted to consumed RAM roots. */
 int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
 				      enum mt6797_md1_fs_mutation operation);
@@ -75,6 +77,11 @@ int mt6797_md1_fs_provider_next_entry(struct file *dir,
 				      struct mt6797_md1_fs_entry *entry);
 void mt6797_md1_fs_provider_close(struct file *file);
 #else
+static inline int mt6797_md1_fs_provider_rename_drive(u8 old_drive, const char *old_path,
+				      u8 new_drive, const char *new_path)
+{
+	return -ENODEV;
+}
 static inline int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
 				      enum mt6797_md1_fs_mutation operation)
 {

@@ -529,6 +529,117 @@ put_root:
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_mutate_drive);
 
+/* Split a relative non-root path without following its final component.
+ * The caller owns @copy for as long as the returned qstr is used.
+ */
+static struct dentry *mt6797_fs_rename_parent(struct file *root, char *copy,
+					    struct qstr *name)
+{
+	char *slash = strrchr(copy, '/');
+	char *leaf = slash ? slash + 1 : copy;
+
+	*name = (struct qstr)QSTR_INIT(leaf, strlen(leaf));
+	if (!name->len || name->len > NAME_MAX || copy[0] == '/' ||
+	    (name->len <= 2 && !strncmp(leaf, "..", name->len)))
+		return ERR_PTR(-EINVAL);
+	if (slash)
+		*slash = '\0';
+	return mt6797_fs_walk(root, slash ? copy : "");
+}
+
+int mt6797_md1_fs_provider_rename_drive(u8 old_drive, const char *old_path,
+				      u8 new_drive, const char *new_path)
+{
+	struct file *old_root, *new_root;
+	struct renamedata rd = {};
+	struct qstr old_name, new_name;
+	char *old_copy, *new_copy;
+	int ret;
+
+	might_sleep();
+	if (!old_path || !new_path ||
+	    strnlen(old_path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX ||
+	    strnlen(new_path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX)
+		return -ENAMETOOLONG;
+	old_root = mt6797_fs_root_get(old_drive);
+	if (!old_root)
+		return -ENODEV;
+	new_root = mt6797_fs_root_get(new_drive);
+	ret = -ENODEV;
+	if (!new_root)
+		goto put_old_root;
+	ret = -EROFS;
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(old_root) ||
+	    !mt6797_fs_tmpfs_writable(new_root))
+		goto put_new_root;
+	ret = -EXDEV;
+	if (old_root->f_path.mnt != new_root->f_path.mnt)
+		goto put_new_root;
+	old_copy = kstrdup(old_path, GFP_KERNEL);
+	ret = -ENOMEM;
+	if (!old_copy)
+		goto put_new_root;
+	new_copy = kstrdup(new_path, GFP_KERNEL);
+	if (!new_copy)
+		goto free_old;
+	rd.old_parent = mt6797_fs_rename_parent(old_root, old_copy, &old_name);
+	if (IS_ERR(rd.old_parent)) {
+		ret = PTR_ERR(rd.old_parent);
+		goto free_new;
+	}
+	rd.new_parent = mt6797_fs_rename_parent(new_root, new_copy, &new_name);
+	if (IS_ERR(rd.new_parent)) {
+		ret = PTR_ERR(rd.new_parent);
+		goto put_old_parent;
+	}
+	ret = -ENOTDIR;
+	if (!d_is_dir(rd.old_parent) || !d_is_dir(rd.new_parent))
+		goto put_new_parent;
+	ret = mnt_want_write(old_root->f_path.mnt);
+	if (ret)
+		goto put_new_parent;
+	rd.mnt_idmap = mnt_idmap(old_root->f_path.mnt);
+	/* Native rename semantics: replacement allowed, ancestor traps handled
+	 * by start_renaming. No effects until both final dentries are checked.
+	 */
+	ret = start_renaming(&rd, LOOKUP_NO_SYMLINKS, &old_name, &new_name);
+	if (ret)
+		goto drop_write;
+	ret = -EACCES;
+	if (!mt6797_fs_tmpfs_writable(old_root) || !mt6797_fs_tmpfs_writable(new_root) ||
+	    d_mountpoint(rd.old_dentry) || d_mountpoint(rd.new_dentry) ||
+	    rd.old_dentry->d_sb != file_inode(old_root)->i_sb ||
+	    rd.new_dentry->d_sb != file_inode(new_root)->i_sb)
+		goto end_rename;
+	ret = -ENOENT;
+	if (d_is_negative(rd.old_dentry))
+		goto end_rename;
+	ret = -EACCES;
+	if ((!d_is_reg(rd.old_dentry) && !d_is_dir(rd.old_dentry)) ||
+	    (!d_is_negative(rd.new_dentry) &&
+	     !d_is_reg(rd.new_dentry) && !d_is_dir(rd.new_dentry)))
+		goto end_rename;
+	ret = vfs_rename(&rd);
+end_rename:
+	end_renaming(&rd);
+drop_write:
+	mnt_drop_write(old_root->f_path.mnt);
+put_new_parent:
+	dput(rd.new_parent);
+put_old_parent:
+	dput(rd.old_parent);
+free_new:
+	kfree(new_copy);
+free_old:
+	kfree(old_copy);
+put_new_root:
+	fput(new_root);
+put_old_root:
+	fput(old_root);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_rename_drive);
+
 struct file *mt6797_md1_fs_provider_open_ram(const char *path, bool writable, bool create, bool truncate)
 {
 	return mt6797_md1_fs_provider_open_ram_drive('Z', path, writable, create, truncate);

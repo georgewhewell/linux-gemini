@@ -15,6 +15,8 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/soc/mediatek/mt6797-cpuclk.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/soc/mediatek/mt6797-dvfsp-handoff.h>
@@ -1001,6 +1003,8 @@ static int mt6797_cpuclk_probe(struct platform_device *pdev)
 
 	ret = mt6797_cpuclk_register(provider);
 	mt6797_cpuclk_drop_probe_snapshot(provider);
+	if (!ret)
+		platform_set_drvdata(pdev, provider);
 
 	return ret;
 }
@@ -1018,6 +1022,59 @@ static struct platform_driver mt6797_cpuclk_driver = {
 		.of_match_table = mt6797_cpuclk_of_match,
 	},
 };
+int mt6797_cpuclk_check_mp2_boot(struct device *consumer, struct clk *clk)
+{
+	struct mt6797_cpuclk_snapshot snapshot;
+	struct of_phandle_args args;
+	struct platform_device *pdev;
+	struct mt6797_cpuclk *provider;
+	struct clk_hw *reference;
+	unsigned long reference_rate;
+	int index, ret;
+
+	if (!consumer || !consumer->of_node || IS_ERR_OR_NULL(clk))
+		return -EINVAL;
+	index = of_property_match_string(consumer->of_node, "clock-names", "mp2");
+	if (index < 0)
+		return index;
+	ret = of_parse_phandle_with_args(consumer->of_node, "clocks",
+					"#clock-cells", index, &args);
+	if (ret)
+		return ret;
+	pdev = of_find_device_by_node(args.np);
+	of_node_put(args.np);
+	if (!pdev)
+		return -EPROBE_DEFER;
+
+	/* Hold the supplier against unbind while using its devm-owned state. */
+	device_lock(&pdev->dev);
+	provider = platform_get_drvdata(pdev);
+	if (pdev->dev.driver != &mt6797_cpuclk_driver.driver || !provider) {
+		ret = -EPROBE_DEFER;
+		goto out;
+	}
+	if (args.args_count != 1 || args.args[0] != CLK_MCU_MP2 ||
+	    __clk_get_hw(clk) != &provider->paths[MT6797_CPUCLK_MP2].hw) {
+		ret = -EINVAL;
+		goto out;
+	}
+	reference = clk_hw_get_parent_by_index(
+		&provider->paths[MT6797_CPUCLK_MP2].hw, MT6797_CPUCLK_CLK26M);
+	if (!reference) {
+		ret = -ENOENT;
+		goto out;
+	}
+	reference_rate = clk_hw_get_rate(reference);
+	ret = mt6797_cpuclk_snapshot(provider, &snapshot);
+	if (!ret)
+		ret = mt6797_cpuclk_validate_cold_mp2(&snapshot, reference_rate);
+out:
+	device_unlock(&pdev->dev);
+	put_device(&pdev->dev);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_cpuclk_check_mp2_boot);
+
 module_platform_driver(mt6797_cpuclk_driver);
 
 MODULE_DESCRIPTION("MediaTek MT6797 CPU clock provider foundation");

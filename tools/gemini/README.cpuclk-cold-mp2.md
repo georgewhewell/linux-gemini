@@ -31,3 +31,27 @@ This decoder repair is not a complete A72 startup fix. The resource helper's
 pre-CPU_ON running-PLL requirement and regulator-name assumptions still need
 an explicit offline-state contract and source/provider checks. CPU8/9 startup
 and post-start clock validation remain to be qualified under recovery.
+
+
+The A72 owner now calls mt6797_cpuclk_check_mp2_boot at probe and again in
+CPU8 preparation before starting its rail/reset transaction. The API resolves
+the consumer's named mp2 clock phandle, verifies the bound supplier is this
+clock driver, checks CLK_MCU_MP2 and exact CCF hardware identity, holds the
+supplier device lock against removal, then takes a fresh snapshot through the
+existing CSPM owner. Device/node references are released on every return.
+This snapshot uses the existing CSPM access transaction (including its normal
+interface-clock/semaphore operations); it does not program PLL/mux/divider.
+
+The pure contract requires actual reference26MHz, selectedclk26m, divider0,
+and raw MP2CON0=CON1=0. A programmed PLL is refused even when unselected.
+Other clusters' mux/divider bits do not determine MP2 admission. CPU9 retains
+its existing CPU8-online admission and does not repeat the cold check.
+The resource transcript reports mp2-clock-contract=cold-clk26m-v1 only after
+successful probe validation. This is a point-in-time check; secure firmware's
+subsequent CPU_ON behavior still needs hardware qualification. No post-start
+rate success is inferred from a pre-start check.
+
+The core host runner now executes12 cases125 assertions. The boot API host
+runner executes the actual function with device/CCF/snapshot boundary doubles
+across13 success/failure paths, checking reference cleanup and no sampling on
+identity failures. This is not a proof of real CCF locking or firmware behavior.

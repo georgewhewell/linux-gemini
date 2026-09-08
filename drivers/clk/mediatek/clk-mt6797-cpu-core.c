@@ -180,6 +180,26 @@ int mt6797_cpuclk_decode_state(enum mt6797_cpuclk_domain domain,
 	return 0;
 }
 
+/* A pre-CPU_ON contract, not a statement about clocks after firmware starts MP2. */
+int mt6797_cpuclk_validate_cold_mp2(const struct mt6797_cpuclk_snapshot *snapshot,
+				 unsigned long reference_rate)
+{
+	struct mt6797_cpuclk_state state;
+	int ret;
+
+	if (reference_rate != 26000000)
+		return -ERANGE;
+	ret = mt6797_cpuclk_decode_state(MT6797_CPUCLK_MP2, snapshot,
+					 reference_rate, &state);
+	if (ret)
+		return ret;
+	if (state.source != MT6797_CPUCLK_CLK26M || state.divider ||
+	    state.armpll_rate || snapshot->mp2_armpll_con0 ||
+	    snapshot->mp2_armpll_con1)
+		return -EBUSY;
+	return 0;
+}
+
 unsigned long mt6797_cpuclk_apply_divider(unsigned long parent_rate, u8 divider)
 {
 	u8 numerator, denominator;

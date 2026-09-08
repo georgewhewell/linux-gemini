@@ -52,3 +52,27 @@ CLOEXEC, short writes, and descriptor cleanup on write/seal errors. These are
 host tests with synthetic contents. No private backup has been archived or
 registered by this code yet. Kernel consumption and copying into the consumed
 bounded writable roots remain required to implement RESTORE.
+
+## Kernel format validation
+
+`drivers/soc/mediatek/mt6797-md1-fs-archive.h` provides the kernel-side
+validator. It requires the exact version magic/length, a bounded count and
+complete index, approved drives, strict UTF-8 canonical relative paths and
+zero padding. Payload extents must be contiguous in entry order, start after
+the complete index, and end exactly at the archive length. Duplicate targets
+are rejected; identical paths on different drives are distinct. Empty files
+are valid. Failure leaves the output view unchanged.
+
+Validation runs in process context with no provider lock; duplicate checking
+is bounded by4096 entries and yields between entries. The returned view borrows
+an immutable buffer owned by the caller. It is not sufficient to retain a
+mutable userspace buffer after validation. File-type/seal checking, descriptor
+retention, registration lifecycle and RESTORE dispatch still need integration.
+
+`CC=<native-gcc> python3 tools/gemini/test-nvram-archive-kernel.py` compiles
+and runs this exact kernel header with ASan/UBSan against a producer-generated
+synthetic fixture and malformed variants. Cases include every truncated input
+length, forged counts/offsets/sizes, duplicate targets, malformed Unicode,
+path escapes, padding, empty files and unchanged failure outputs. Inclusion
+in the provider translation unit also checks ARM64 compilation; the validator
+is not yet called by a registration path or qualified on the phone.

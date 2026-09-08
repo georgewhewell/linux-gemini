@@ -23,6 +23,7 @@
 #include <linux/soc/mediatek/mt6797-md1-fs-provider.h>
 #include <uapi/linux/mt6797_md1_fs.h>
 #include "mt6797-md1-fs-state.h"
+#include "mt6797-md1-fs-archive.h"
 
 static bool enable;
 module_param(enable, bool, 0400);

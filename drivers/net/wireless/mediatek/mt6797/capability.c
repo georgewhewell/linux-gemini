@@ -474,6 +474,16 @@ int mt6797_wifi_capability_query(struct mt6797_wifi_capability_session *irq,
 	ret = mt6797_wifi_capability_transaction(&ops);
 	if (!ret)
 		*capability = irq->capability;
+	else
+		/* The transaction has synchronized the IRQ; inspect saved state only. */
+		dev_err(irq->owner->dev,
+			"capability result=%d irq_count=%u done=%u irq_result=%d whisr=%#x wrplr=%#x whcr_before=%#x tx_released=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+			ret, irq->irq_count, irq->done, irq->result,
+			irq->whisr, irq->wrplr, irq->whcr_before,
+			irq->tx_released[0], irq->tx_released[1],
+			irq->tx_released[2], irq->tx_released[3],
+			irq->tx_released[4], irq->tx_released[5],
+			irq->tx_released[6], irq->tx_released[7]);
 	irq->boot = NULL;
 	return ret;
 }

@@ -122,3 +122,27 @@ runtime properties; the empty affected feature groups make the MD5 flag
 immaterial for this particular backup. Other profile implementations and
 explicit activation policy remain outstanding alongside confined publication
 and the kernel RESTORE service.
+
+## Confined MD1 target mapping
+
+`modem_target(name)` maps only exact installed prefixes `/data/nvram/md/`
+to Z, `/protect_f/md/` to X and `/protect_s/md/` to Y. These prefixes are
+in the installed ccci_fsd root table at18000/18020/18040. The physical
+nvdata mount is not a second accepted backup namespace. Other modem roots,
+AP configuration and unrelated paths return None. A malformed name within
+an approved root fails, including root-only, dot/dotdot, empty components,
+trailing separators, backslash/colon, control bytes, invalid UTF-8 and
+component/path overflow. The mapper does no I/O and does not follow aliases.
+
+Synthetic tests cover all three prefixes, Unicode, MD2/MD3/MD5/common and
+AP exclusions, prefix collisions, traversal and encoding failures. Guarded
+live classification found918 Z records, zero X/Y records,104 outside MD1,
+and no duplicate MD1 targets. No names or content were logged or published.
+A RESTORE request for an absent backup must fail; absence must not trigger
+a fallback to the current seed or another modem's record. These results do
+not establish that X/Y can be restored from this backup.
+
+An eventual publisher must enforce no-symlink/no-mount traversal while
+creating/writing through retained RAM-directory authority. Textual mapping
+alone does not prevent filesystem races or authorize modifying original
+partitions. RESTORE provider registration and wire integration are pending.

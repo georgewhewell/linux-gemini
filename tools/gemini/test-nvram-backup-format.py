@@ -5,7 +5,7 @@ import struct
 import unittest
 from nvram_backup_format import (Checksum, FormatError, MAX_BYTES,
                                  decode_record, verify_checksum, reconstruct, ERASE_BYTES, MAP_MAGIC, Backup,
-                                 parse_ecci_records, select_record)
+                                 parse_ecci_records, select_record, modem_target)
 
 
 class FormatTests(unittest.TestCase):
@@ -261,6 +261,29 @@ class GroupTests(unittest.TestCase):
                 parse_ecci_records(Backup(m,b.allfile,4,0,(1,)), md5=False,
                                    md3=True,ecci=True,header_offset=0)
 
+
+
+class TargetTests(unittest.TestCase):
+    def test_exact_roots_and_unicode(self):
+        for root, drive in ((b'/data/nvram/md', 'Z'), (b'/protect_f/md', 'X'),
+                            (b'/protect_s/md', 'Y')):
+            self.assertEqual(modem_target(root+b'/NVRAM/file'), (drive,b'NVRAM/file'))
+            self.assertEqual(modem_target(root+'/café'.encode()), (drive,'café'.encode()))
+        for name in (b'/data/nvram/md3/file', b'/data/nvram/md_cmn/file',
+                     b'/data/nvram/md2/file', b'/protect_f/md5/file',
+                     b'/nvdata/md/file', b'/data/nvram/APCFG/file', b'/etc/passwd',
+                     b'data/nvram/md/file', b'/data/nvram/md-other/file'):
+            self.assertIsNone(modem_target(name))
+
+    def test_refuses_aliases_and_escape(self):
+        for suffix in (b'', b'/', b'/../file', b'/a/../../file', b'/./file',
+                       b'/a//b', b'/a/', b'/a\\b', b'/Z:file', b'/a\0b',
+                       b'/a\nb', b'/\xff', b'/'+b'a'*256,
+                       b'/'+b'a/'*513+b'a'):
+            with self.assertRaises(FormatError):
+                modem_target(b'/data/nvram/md'+suffix)
+        with self.assertRaises(TypeError):
+            modem_target('/data/nvram/md/file')
 
 
 if __name__ == '__main__':

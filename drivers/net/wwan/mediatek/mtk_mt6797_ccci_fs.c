@@ -670,25 +670,22 @@ static s32 mt6797_fs_move(const struct mt6797_fs_request *request, char *path)
 	return status;
 }
 
-/* Remaining write-class operations are not implemented. Validate their
- * paths and return the vendor general failure, never a synthetic success.
+/* Installed NVM restore has a boolean result: all provider failures become
+ * vendor general failure. Path decoding still preserves its normal errors.
  */
-static s32 mt6797_fs_refuse_write(const struct mt6797_fs_request *request,
-				  unsigned int paths, char *path)
+static s32 mt6797_fs_restore(const struct mt6797_fs_request *request, char *path)
 {
 	u8 drive;
-	unsigned int i;
 	s32 status;
 
-	if (request->argc < paths)
+	if (request->argc != 1)
 		return MT6797_FS_PARAM_ERROR;
-	for (i = 0; i < paths; i++) {
-		status = mt6797_fs_arg_path(request, i, path,
-					    MT6797_MD1_FS_PATH_MAX + 1, &drive);
-		if (status)
-			return status;
-	}
-	return MT6797_FS_GENERAL_FAILURE;
+	status = mt6797_fs_arg_path(request, 0, path,
+				    MT6797_MD1_FS_PATH_MAX + 1, &drive);
+	if (status)
+		return status;
+	return mt6797_md1_fs_provider_restore_drive(drive, path) ?
+		MT6797_FS_GENERAL_FAILURE : MT6797_FS_NO_ERROR;
 }
 
 
@@ -844,7 +841,7 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 		*status = mt6797_fs_xdelete(&request, path);
 		break;
 	case MT6797_FS_RESTORE:
-		*status = mt6797_fs_refuse_write(&request, 1, path);
+		*status = mt6797_fs_restore(&request, path);
 		break;
 	case MT6797_FS_RENAME:
 		*status = mt6797_fs_rename(&request, path);

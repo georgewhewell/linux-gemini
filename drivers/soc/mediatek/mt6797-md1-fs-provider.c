@@ -746,6 +746,90 @@ put_source:
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_copy_drive);
 
+/* Archive memory is pinned for this boot once roots are consumed. No
+ * mutable seed fallback: the exact drive/path must exist in the archive.
+ */
+int mt6797_md1_fs_provider_restore_drive(u8 drive, const char *path)
+{
+	struct mt6797_fs_archive archive;
+	const u8 *payload = NULL;
+	struct file *file;
+	unsigned long flags;
+	u32 length = 0, i;
+	loff_t pos = 0;
+	char *copy, *p;
+	int ret;
+
+	might_sleep();
+	if (!path || !*path || strnlen(path, 128) == 128)
+		return -EINVAL;
+	spin_lock_irqsave(&provider_lock, flags);
+	ret = -ENODEV;
+	if (provider_state.stage == MT6797_FS_CONSUMED && provider_volatile &&
+	    mt6797_fs_roots_accessible() && mt6797_fs_drive_file(drive)) {
+		archive = provider_archive;
+		ret = archive.data ? 0 : -ENOENT;
+	}
+	spin_unlock_irqrestore(&provider_lock, flags);
+	if (ret)
+		return ret;
+	for (i = 0; i < archive.count; i++) {
+		const u8 *entry = archive.data + MT6797_FS_ARCHIVE_HEADER +
+				  i * MT6797_FS_ARCHIVE_ENTRY;
+
+		if (mt6797_fs_archive_u32(entry) == drive &&
+		    !strcmp((const char *)entry + 12, path)) {
+			payload = archive.data + mt6797_fs_archive_u32(entry + 4);
+			length = mt6797_fs_archive_u32(entry + 8);
+			break;
+		}
+	}
+	if (!payload)
+		return -ENOENT;
+	copy = kstrdup(path, GFP_KERNEL);
+	if (!copy)
+		return -ENOMEM;
+	/* Installed open_file_with_dirs creates missing parents. All component
+	 * operations here retain the ordinary provider confinement checks.
+	 */
+	for (p = copy; *p; p++) {
+		if (*p != '/')
+			continue;
+		*p = 0;
+		ret = mt6797_md1_fs_provider_mutate_drive(drive, copy, MT6797_MD1_FS_MKDIR);
+		if (ret == -EEXIST) {
+			file = mt6797_md1_fs_provider_open_drive(drive, copy, true);
+			ret = IS_ERR(file) ? PTR_ERR(file) : 0;
+			if (!ret)
+				fput(file);
+		}
+		*p = '/';
+		if (ret)
+			goto free;
+	}
+	file = mt6797_md1_fs_provider_open_ram_drive(drive, path, true, true, true);
+	if (IS_ERR(file)) {
+		ret = PTR_ERR(file);
+		goto free;
+	}
+	ret = 0;
+	while (pos < length) {
+		ssize_t done = mt6797_md1_fs_provider_write(file, payload + pos,
+						 min_t(u32, length - pos, 65536), &pos);
+
+		if (done <= 0) {
+			ret = done < 0 ? done : -EIO;
+			break;
+		}
+		cond_resched();
+	}
+	fput(file);
+free:
+	kfree(copy);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_restore_drive);
+
 loff_t mt6797_md1_fs_provider_llseek(struct file *file, loff_t offset,
 				     int whence)
 {

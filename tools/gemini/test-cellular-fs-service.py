@@ -182,6 +182,13 @@ static int mt6797_md1_fs_provider_copy_drive(u8 old_drive,const char *old_path,u
  return copy_error;
 }
 
+static int restore_calls,restore_result=-ENOENT;
+static u8 restore_drive;
+static char restore_path[1025];
+static int mt6797_md1_fs_provider_restore_drive(u8 drive,const char *path){
+ restore_calls++;restore_drive=drive;strcpy(restore_path,path);return restore_result;
+}
+
 '''
 tests = r'''
 static u8 frame[3584], payload[MT6797_FS_REPLY_MAX];
@@ -524,6 +531,18 @@ int main(void) {
    assert(copy_calls==before&&mutation_calls+xdelete_calls==deleted);
    ram_enabled=roots_enabled=false;
    puts("PASS actual MOVE service: six flags/all drive pairs, KILL no source unlink, ordered overwrite/count, read-only -45, ancestor/root/alias guards, malformed input and effect failures");
+ }
+ { roots_enabled=true;
+   int errors[]={0,-ENOENT,-EACCES,-EIO,-ENOSPC,-ENODEV};
+   for(unsigned d=0;d<3;d++)for(unsigned e=0;e<6;e++){
+     char name[]="Z:\\restore";name[0]="ZXY"[d];restore_result=errors[e];int before=restore_calls;
+     assert(!run_path(MT6797_FS_RESTORE,name,0,0)&&status==(errors[e]?-18:0)&&reply.argc==1&&arg_s32(0)==status);
+     assert(restore_calls==before+1&&restore_drive==name[0]&&!strcmp(restore_path,"restore"));
+   }
+   int before=restore_calls;
+   assert(!run_path(MT6797_FS_RESTORE,"Z:\\restore",1,1)&&status==-2&&restore_calls==before);
+   roots_enabled=false;
+   puts("PASS RESTORE service: three drives, exact one argument, boolean vendor error mapping and signed reply");
  }
  { u32 unsupported[] = {MT6797_FS_GETFOLDERSIZE, MT6797_FS_COUNT, MT6797_FS_GETDRIVE, 0x101d, 0x101e, 0x101f, 0x1020, 0x1023, 0x1000, 0x1024, 0};
    for (unsigned i = 0; i < sizeof(unsupported) / sizeof(*unsupported); i++) { assert(!mt6797_fs_service_supports(unsupported[i]));

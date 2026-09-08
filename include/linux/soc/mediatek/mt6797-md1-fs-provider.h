@@ -39,6 +39,7 @@ enum mt6797_md1_fs_mutation {
 };
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_MD1_FS_PROVIDER)
+int mt6797_md1_fs_provider_restore_drive(u8 drive, const char *path);
 /* Returns a nonnegative deletion count or negative errno. */
 int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *path, u32 flags);
 /* Bounded RAM file copy; does not unlink source or process MOVE flags. */
@@ -83,6 +84,10 @@ int mt6797_md1_fs_provider_next_entry(struct file *dir,
 				      struct mt6797_md1_fs_entry *entry);
 void mt6797_md1_fs_provider_close(struct file *file);
 #else
+static inline int mt6797_md1_fs_provider_restore_drive(u8 drive, const char *path)
+{
+	return -ENODEV;
+}
 static inline int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *path, u32 flags)
 {
 	return -ENODEV;

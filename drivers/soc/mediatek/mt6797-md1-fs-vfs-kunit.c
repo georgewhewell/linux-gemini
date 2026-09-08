@@ -5,6 +5,7 @@
  */
 #include <kunit/test.h>
 #include <linux/slab.h>
+#include <linux/unaligned.h>
 
 struct mt6797_fs_vfs_fixture {
 	struct vfsmount *mounts[3];
@@ -21,6 +22,7 @@ static void mt6797_fs_vfs_cleanup(void *data)
 
 	if (f->published) {
 		spin_lock_irqsave(&provider_lock, flags);
+		provider_archive = (struct mt6797_fs_archive){};
 		provider_file = NULL;
 		provider_extra[0] = provider_extra[1] = NULL;
 		provider_state = (struct mt6797_fs_state){};
@@ -183,6 +185,72 @@ static void mt6797_fs_vfs_operations(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_xdelete_drive('X', "delete16", 32), -EINVAL);
 	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_xdelete_drive('X', "delete16/file", 28), -ENOTDIR);
 	KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_xdelete_drive('X', "../escape", 28), -EINVAL);
+
+	/* Real tmpfs RESTORE from a validated immutable synthetic archive. */
+	{
+		u8 *bytes = kunit_kzalloc(test, 444, GFP_KERNEL);
+		struct file *restored;
+		u32 offset = 436;
+
+		KUNIT_ASSERT_NOT_NULL(test, bytes);
+		KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_restore_drive('Z', "restore/deep/file"), -ENOENT);
+		memcpy(bytes, "MD1BKP1\0", 8);
+		put_unaligned_le32(3, bytes + 8);
+		put_unaligned_le32(444, bytes + 12);
+		for (i = 0; i < 3; i++) {
+			u8 *entry = bytes + 16 + i * 140;
+
+			put_unaligned_le32("ZXY"[i], entry);
+			put_unaligned_le32(offset, entry + 4);
+			put_unaligned_le32(i == 2 ? 0 : 4, entry + 8);
+			memcpy(entry + 12, "restore/deep/file", sizeof("restore/deep/file"));
+			if (i != 2) {
+				memcpy(bytes + offset, i ? "seed" : "gold", 4);
+				offset += 4;
+			}
+		}
+		KUNIT_ASSERT_EQ(test, mt6797_fs_archive_validate(bytes, 444, &provider_archive), 0);
+		for (i = 0; i < 3; i++) {
+			u8 drive = "ZXY"[i];
+
+			KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_restore_drive(drive, "restore/deep/file"), 0);
+			restored = mt6797_md1_fs_provider_open_drive(drive, "restore/deep/file", false);
+			KUNIT_ASSERT_FALSE(test, IS_ERR(restored));
+			pos = 0;
+			KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_read(restored, result, 4, &pos), (ssize_t)(i == 2 ? 0 : 4));
+			if (i != 2)
+				KUNIT_EXPECT_EQ(test, memcmp(result, i ? "seed" : "gold", 4), 0);
+			fput(restored);
+		}
+		restored = mt6797_md1_fs_provider_open_ram_drive('Z', "restore/deep/file", true, false, false);
+		KUNIT_ASSERT_FALSE(test, IS_ERR(restored));
+		pos = 0;
+		KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_write(restored, "changed", 7, &pos), (ssize_t)7);
+		fput(restored);
+		KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_restore_drive('Z', "restore/deep/file"), 0);
+		KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_getattr_drive('Z', "restore/deep/file", &attr), 0);
+		KUNIT_EXPECT_EQ(test, attr.size, (u64)4);
+		restored = mt6797_md1_fs_provider_open_drive('Z', "restore/deep/file", false);
+		KUNIT_ASSERT_FALSE(test, IS_ERR(restored));
+		pos = 0;
+		KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_read(restored, result, 4, &pos), (ssize_t)4);
+		KUNIT_EXPECT_EQ(test, memcmp(result, "gold", 4), 0);
+		fput(restored);
+		KUNIT_EXPECT_EQ(test, memcmp(bytes + 436, "goldseed", 8), 0);
+		KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_restore_drive('Z', "absent/deep/file"), -ENOENT);
+		KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_getattr_drive('Z', "absent", &attr), -ENOENT);
+		KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_restore_drive('Z', "../restore/deep/file"), -ENOENT);
+		KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_mutate_drive('X', "restore/deep/file", MT6797_MD1_FS_UNLINK), 0);
+		KUNIT_ASSERT_EQ(test, mt6797_md1_fs_provider_mutate_drive('X', "restore/deep", MT6797_MD1_FS_RMDIR), 0);
+		restored = mt6797_md1_fs_provider_open_ram_drive('X', "restore/deep", true, true, false);
+		KUNIT_ASSERT_FALSE(test, IS_ERR(restored));
+		fput(restored);
+		KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_restore_drive('X', "restore/deep/file"), -ENOTDIR);
+		provider_volatile = false;
+		KUNIT_EXPECT_EQ(test, mt6797_md1_fs_provider_restore_drive('Z', "restore/deep/file"), -ENODEV);
+		provider_volatile = true;
+
+	}
 
 }
 

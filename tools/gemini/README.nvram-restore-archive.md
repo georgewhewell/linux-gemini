@@ -107,3 +107,31 @@ cover ioctl routing, root ordering and archive cancellation. The real memfd
 seal test is in the producer suite. ARM64 provider compilation passed with
 MEMFD_CREATE enabled. This registration path has not yet been exercised by the
 phone; RESTORE dispatch and archive-to-RAM copy remain unimplemented.
+
+## RESTORE service and RAM copy
+
+RESTORE0x1021 now requires exactly one decoded path and invokes the provider.
+The installed library returns a boolean: provider success maps to vendor0,
+all provider failures to general failure-18. Path decode and malformed argument
+errors retain their ordinary wire statuses. Missing backup data never falls
+back to mutable seeds or another drive.
+
+The provider requires consumed writable roots and a registered archive. It
+matches the exact drive/relative path before creating anything. The immutable
+archive copy cannot be freed after consumption, so lookup/read lifetime is
+stable without holding the spinlock over filesystem operations. Missing
+parents are created through the confined namespace provider; an existing
+parent must pass the confined directory open. The target is created/truncated
+through the writable RAM provider and all recorded bytes are written with
+short-write/error handling. Empty files are restored by creation/truncation.
+A failure can leave newly created parents or a truncated/partial destination;
+this is not an atomic transaction or rollback mechanism.
+
+The UML suite exercises actual production operations on isolated tmpfs roots:
+Z/X content, Y empty file, missing nested parents, repeat restore after a
+longer modification, unchanged archive bytes, missing backup with no parent
+creation, invalid alias, non-directory parent and disabled writable authority.
+The service suite covers all three drives, exact argument count and boolean
+error mapping. ARM64 provider/service objects compile with W=1. These tests
+bypass archive registration in the UML fixture; admission has separate tests.
+Phone preparation-service integration and hardware qualification remain pending.

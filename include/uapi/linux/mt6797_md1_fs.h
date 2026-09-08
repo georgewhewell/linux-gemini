@@ -28,6 +28,10 @@ struct mt6797_md1_fs_ram_roots {
 	__u32 reserved; /* zero */
 };
 #define MT6797_MD1_FS_REGISTER_RAM_ROOTS _IOW('M', 0xf3, struct mt6797_md1_fs_ram_roots)
+/* Optional sealed MD1BKP1 archive; version1, flags/reserved zero. The
+ * directory_fd field carries the archive memfd. Register before RAM roots.
+ */
+#define MT6797_MD1_FS_REGISTER_ARCHIVE _IOW('M', 0xf4, struct mt6797_md1_fs_registration)
 #define MT6797_MD1_FS_CANCEL _IO('M', 0xf1)
 
 #endif

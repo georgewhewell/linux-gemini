@@ -7,6 +7,7 @@
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/magic.h>
+#include <linux/memfd.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mount.h>
@@ -38,6 +39,8 @@ static struct mt6797_fs_state provider_state;
 static struct file *provider_file; /* Z, including legacy registration */
 static struct file *provider_extra[2]; /* X, Y; NULL in legacy mode */
 static bool provider_volatile;
+static bool archive_installing;
+static struct mt6797_fs_archive provider_archive;
 static struct device *provider_cold;
 
 bool mt6797_md1_fs_provider_enabled(void)
@@ -969,6 +972,7 @@ EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_close);
 
 static int mt6797_fs_cancel_registration(void)
 {
+	struct mt6797_fs_archive archive = {};
 	struct device *cold = NULL;
 	struct file *file = NULL, *extra[2] = {};
 	unsigned long flags;
@@ -977,6 +981,8 @@ static int mt6797_fs_cancel_registration(void)
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = mt6797_fs_cancel(&provider_state);
 	if (!ret) {
+		archive = provider_archive;
+		provider_archive = (struct mt6797_fs_archive){};
 		file = provider_file;
 		for (i = 0; i < 2; i++) {
 			extra[i] = provider_extra[i];
@@ -993,6 +999,7 @@ static int mt6797_fs_cancel_registration(void)
 		if (extra[i])
 			fput(extra[i]);
 	put_device(cold);
+	kvfree_sensitive(archive.data, archive.size);
 	return ret;
 }
 
@@ -1087,6 +1094,85 @@ int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *stats)
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_stats);
 
+/* Optional immutable backup must be registered before writable roots can
+ * trigger cold probe. Loading uses no spinlock; cancellation is final and
+ * root registration cannot overtake an in-flight archive installation.
+ */
+static int mt6797_fs_register_archive(int fd)
+{
+	struct mt6797_fs_archive archive = {};
+	struct file *file;
+	unsigned long flags;
+	loff_t size, pos = 0;
+	u8 *data = NULL;
+	int seals, ret;
+	const int required = F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL;
+
+	if (!enable_volatile)
+		return -EPERM;
+	spin_lock_irqsave(&provider_lock, flags);
+	ret = 0;
+	if (provider_state.stage != MT6797_FS_EMPTY || provider_archive.data)
+		ret = -EALREADY;
+	else if (archive_installing)
+		ret = -EBUSY;
+	else
+		archive_installing = true;
+	spin_unlock_irqrestore(&provider_lock, flags);
+	if (ret)
+		return ret;
+	file = fget(fd);
+	ret = -EBADF;
+	if (!file)
+		goto finish;
+	ret = -EINVAL;
+	if (!S_ISREG(file_inode(file)->i_mode) ||
+	    file_inode(file)->i_sb->s_magic != TMPFS_MAGIC || !(file->f_mode & FMODE_READ))
+		goto put;
+	seals = memfd_get_seals(file);
+	ret = -EPERM;
+	if (seals < 0 || (seals & required) != required)
+		goto put;
+	size = i_size_read(file_inode(file));
+	ret = -EFBIG;
+	if (size < MT6797_FS_ARCHIVE_HEADER || size > MT6797_FS_ARCHIVE_MAX)
+		goto put;
+	data = kvmalloc(size, GFP_KERNEL);
+	ret = -ENOMEM;
+	if (!data)
+		goto put;
+	while (pos < size) {
+		ssize_t got = kernel_read(file, data + pos,
+					 min_t(loff_t, size - pos, 65536), &pos);
+
+		if (got <= 0) {
+			ret = got < 0 ? got : -EIO;
+			goto free;
+		}
+		cond_resched();
+	}
+	ret = mt6797_fs_archive_validate(data, size, &archive);
+	if (ret)
+		goto free;
+	spin_lock_irqsave(&provider_lock, flags);
+	if (provider_state.stage != MT6797_FS_EMPTY)
+		ret = -ECANCELED;
+	else {
+		provider_archive = archive;
+		data = NULL;
+	}
+	spin_unlock_irqrestore(&provider_lock, flags);
+free:
+	kvfree_sensitive(data, size);
+put:
+	fput(file);
+finish:
+	spin_lock_irqsave(&provider_lock, flags);
+	archive_installing = false;
+	spin_unlock_irqrestore(&provider_lock, flags);
+	return ret;
+}
+
 static int mt6797_fs_register_fds(const int *fds, unsigned int count, bool ram)
 {
 	struct mt6797_md1_fs_stats stats[3];
@@ -1101,7 +1187,9 @@ static int mt6797_fs_register_fds(const int *fds, unsigned int count, bool ram)
 	if (ram && !enable_volatile)
 		return -EPERM;
 	spin_lock_irqsave(&provider_lock, flags);
-	ret = mt6797_fs_begin(&provider_state);
+	ret = archive_installing ? -EBUSY :
+	      provider_archive.data && !ram ? -EINVAL :
+	      mt6797_fs_begin(&provider_state);
 	spin_unlock_irqrestore(&provider_lock, flags);
 	if (ret)
 		return ret;
@@ -1196,12 +1284,15 @@ static long mt6797_fs_ioctl(struct file *file, unsigned int cmd, unsigned long a
 			return -EINVAL;
 		return mt6797_fs_register_fds(roots.directory_fd, 3, true);
 	}
-	if (cmd != MT6797_MD1_FS_REGISTER && cmd != MT6797_MD1_FS_REGISTER_RAM)
+	if (cmd != MT6797_MD1_FS_REGISTER && cmd != MT6797_MD1_FS_REGISTER_RAM &&
+	    cmd != MT6797_MD1_FS_REGISTER_ARCHIVE)
 		return -ENOTTY;
 	if (copy_from_user(&registration, (void __user *)arg, sizeof(registration)))
 		return -EFAULT;
 	if (registration.version != 1 || registration.flags || registration.reserved)
 		return -EINVAL;
+	if (cmd == MT6797_MD1_FS_REGISTER_ARCHIVE)
+		return mt6797_fs_register_archive(registration.directory_fd);
 	return mt6797_fs_register_fd(registration.directory_fd,
 				    cmd == MT6797_MD1_FS_REGISTER_RAM);
 }

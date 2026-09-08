@@ -24,6 +24,7 @@ walk_struct = source[source.index('struct mt6797_fs_dir_walk {'):source.index('s
 provider = (root / 'include/linux/soc/mediatek/mt6797-md1-fs-provider.h').read_text()
 provider = provider[provider.index('#define MT6797_MD1_FS_PATH_MAX'):provider.index('#if IS_ENABLED')]
 shim = r'''
+#define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -99,7 +100,6 @@ static bool d_is_reg(struct dentry *d){return d->kind==1;}
 static bool d_is_dir(struct dentry *d){return d->kind==2;}
 static void *mnt_idmap(struct vfsmount *m){assert(m==&mount);return NULL;}
 static const void *current_cred(void){return NULL;}
-static char *strchrnul(const char *s,int c){char *p=strchr(s,c);return p?p:(char *)s+strlen(s);}
 static struct dentry *lookup_one_positive_unlocked(void *id,struct qstr *q,struct dentry *base){
  assert(!locked&&!id&&base->refs>0);lookups++;
  /* qstr components point into the caller's path and are not NUL terminated. */

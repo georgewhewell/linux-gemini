@@ -564,6 +564,26 @@ static s32 mt6797_fs_mutate(const struct mt6797_fs_request *request,
 								 operation));
 }
 
+static s32 mt6797_fs_rename(const struct mt6797_fs_request *request, char *path)
+{
+	char *new_path = path + MT6797_MD1_FS_PATH_MAX + 1;
+	u8 old_drive, new_drive;
+	s32 status;
+
+	if (request->argc != 2)
+		return MT6797_FS_PARAM_ERROR;
+	status = mt6797_fs_arg_path(request, 0, path,
+				    MT6797_MD1_FS_PATH_MAX + 1, &old_drive);
+	if (status)
+		return status;
+	status = mt6797_fs_arg_path(request, 1, new_path,
+				    MT6797_MD1_FS_PATH_MAX + 1, &new_drive);
+	if (status)
+		return status;
+	return mt6797_fs_status(mt6797_md1_fs_provider_rename_drive(old_drive, path,
+								 new_drive, new_path));
+}
+
 /* Remaining write-class operations are not implemented. Validate their
  * paths and return the vendor general failure, never a synthetic success.
  */
@@ -663,7 +683,7 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 		return -EMSGSIZE;
 	mt6797_fs_reply_init(reply, reply->payload, reply->capacity,
 			     request.index, request.op);
-	/* One decoded path plus a FINDFIRST pattern copy. */
+	/* Two decoded RENAME paths, or one FINDFIRST path plus pattern copy. */
 	path = kmalloc(2 * (MT6797_MD1_FS_PATH_MAX + 1), GFP_KERNEL);
 	if (!path)
 		return -ENOMEM;
@@ -739,6 +759,8 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 		*status = mt6797_fs_refuse_write(&request, 1, path);
 		break;
 	case MT6797_FS_RENAME:
+		*status = mt6797_fs_rename(&request, path);
+		break;
 	case MT6797_FS_MOVE:
 		*status = mt6797_fs_refuse_write(&request, 2, path);
 		break;

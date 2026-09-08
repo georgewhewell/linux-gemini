@@ -153,6 +153,15 @@ static int mt6797_md1_fs_provider_mutate_drive(u8 drive,const char *path,enum mt
  return mutation_error;
 }
 
+static int rename_calls, rename_error;
+static u8 rename_old_drive, rename_new_drive;
+static char rename_old_path[1025], rename_new_path[1025];
+static int mt6797_md1_fs_provider_rename_drive(u8 old_drive,const char *old_path,u8 new_drive,const char *new_path){
+ if(!ram_enabled)return -EROFS;
+ rename_calls++;rename_old_drive=old_drive;rename_new_drive=new_drive;
+ strcpy(rename_old_path,old_path);strcpy(rename_new_path,new_path);return rename_error;
+}
+
 '''
 tests = r'''
 static u8 frame[3584], payload[MT6797_FS_REPLY_MAX];
@@ -389,6 +398,29 @@ int main(void) {
    }
    ram_enabled=false; roots_enabled=false; mutation_error=0;
    puts("PASS actual namespace service: Z/X/Y routing, exact argument counts, confinement refusals, provider failures and signed replies");
+ }
+
+ { u8 second[128]; const void *args[3]={pathbuf,second,second};u32 lens[3];
+   ram_enabled=roots_enabled=true;
+   int errors[]={0,-ENOENT,-EACCES,-EXDEV,-ENOTEMPTY,-EINVAL,-ENOSPC};
+   int expected[]={0,-9,-16,-18,-18,-18,-18};
+   for(unsigned d=0;d<3;d++)for(unsigned e=0;e<3;e++){
+     char old[]="Z:\\old",new[]="Z:\\new";old[0]="ZXY"[d];new[0]="ZXY"[e];
+     lens[0]=utf16(old,pathbuf);lens[1]=utf16(new,second);lens[2]=lens[1];
+     for(unsigned i=0;i<sizeof(errors)/sizeof(*errors);i++){
+       rename_error=errors[i];int before=rename_calls;
+       assert(!run(0,MT6797_FS_RENAME,2,args,lens)&&status==expected[i]&&reply.argc==1&&arg_s32(0)==expected[i]);
+       assert(rename_calls==before+1&&rename_old_drive==old[0]&&rename_new_drive==new[0]);
+       assert(!strcmp(rename_old_path,"old")&&!strcmp(rename_new_path,"new"));
+     }
+     int before=rename_calls;
+     assert(!run(0,MT6797_FS_RENAME,1,args,lens)&&status==-2&&rename_calls==before);
+     assert(!run(0,MT6797_FS_RENAME,3,args,lens)&&status==-2&&rename_calls==before);
+     lens[1]=utf16("Z:\\..\\bad",second);
+     assert(!run(0,MT6797_FS_RENAME,2,args,lens)&&status==-16&&rename_calls==before);
+   }
+   rename_error=0;ram_enabled=roots_enabled=false;
+   puts("PASS actual RENAME service: two independent paths, all drive pairs, argument/path refusal, errno and signed reply");
  }
  { u32 unsupported[] = {MT6797_FS_GETFOLDERSIZE, MT6797_FS_COUNT, MT6797_FS_GETDRIVE, 0x101d, 0x101e, 0x101f, 0x1020, 0x1023, 0x1000, 0x1024, 0};
    for (unsigned i = 0; i < sizeof(unsupported) / sizeof(*unsupported); i++) { assert(!mt6797_fs_service_supports(unsupported[i]));

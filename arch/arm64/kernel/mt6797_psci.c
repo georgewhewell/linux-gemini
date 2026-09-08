@@ -1474,10 +1474,47 @@ static int mt6797_psci_cpu_boot(unsigned int cpu)
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
+static bool mt6797_psci_is_late_a72(unsigned int cpu)
+{
+	return cpu == 8 || cpu == 9;
+}
+
+/*
+ * The "mediatek,mt6797-psci" enable-method is only given to the two
+ * Cortex-A72 cores that stay offline through SMP boot (maxcpus=8) and are
+ * brought up later through sysfs.  arch_cpu_is_hotpluggable() consults this
+ * hook when the CPU devices are registered: a false answer clears
+ * cpu->hotpluggable, which sets dev.offline_disabled and suppresses the
+ * /sys/devices/system/cpu/cpuN/online attribute entirely
+ * (drivers/base/cpu.c register_cpu(), drivers/base/core.c device_add()).
+ *
+ * Returning false here therefore never made the A72s "not unpluggable"; it
+ * made them un-onlineable from userspace.  Answer true so the attribute
+ * exists.  Hot-unplug stays refused: op_cpu_disable() aborts with -EOPNOTSUPP
+ * before the point of no return when no cpu_die method is installed, and
+ * mt6797_psci_cpu_disable() below refuses first with -EPERM while no cluster
+ * power-off path exists.
+ */
 static bool mt6797_psci_cpu_can_disable(unsigned int cpu)
 {
-	return false;
+	return mt6797_psci_is_late_a72(cpu);
 }
+
+#ifndef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
+static int mt6797_psci_cpu_disable(unsigned int cpu)
+{
+	/*
+	 * No MP2 cluster power-off sequence is implemented (vendor kills
+	 * DA9214 BUCK B on last-core-off; that path is deliberately absent).
+	 * Refuse hot-unplug of the big cores rather than leave the rail state
+	 * undefined.
+	 */
+	if (mt6797_psci_is_late_a72(cpu))
+		return -EPERM;
+
+	return -EOPNOTSUPP;
+}
+#endif
 #endif
 
 const struct cpu_operations mt6797_psci_ops = {
@@ -1494,8 +1531,8 @@ const struct cpu_operations mt6797_psci_ops = {
 	.cpu_boot	= mt6797_psci_cpu_boot,
 #ifdef CONFIG_HOTPLUG_CPU
 	.cpu_can_disable = mt6797_psci_cpu_can_disable,
-#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
 	.cpu_disable = mt6797_psci_cpu_disable,
+#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
 	.cpu_die = mt6797_psci_cpu_die,
 	.cpu_kill = mt6797_psci_cpu_kill,
 #endif

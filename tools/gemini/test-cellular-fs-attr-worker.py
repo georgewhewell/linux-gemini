@@ -48,6 +48,7 @@ typedef uint8_t u8;typedef uint32_t u32;typedef int32_t s32;typedef uint64_t u64
 #define xchg(p,v) __atomic_exchange_n(p,v,__ATOMIC_SEQ_CST)
 static int logs;
 #define dev_info(...) (logs++)
+#define dev_info_ratelimited(...) ((void)0)
 static bool test_and_set_bit(unsigned i,unsigned long *p){return (__atomic_fetch_or(p,1UL<<i,__ATOMIC_SEQ_CST)&(1UL<<i))!=0;}
 static void clear_bit(unsigned i,unsigned long *p){__atomic_fetch_and(p,~(1UL<<i),__ATOMIC_SEQ_CST);}
 static bool test_bit(unsigned i,unsigned long *p){return (__atomic_load_n(p,__ATOMIC_SEQ_CST)&(1UL<<i))!=0;}

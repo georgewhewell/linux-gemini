@@ -70,6 +70,7 @@ struct mt6397_chip {
 	u16 irq_masks_cache[4];
 	u16 int_con[4];
 	u16 int_status[4];
+	bool irq_wake_enabled;
 	u8 num_irq_regs;
 	u16 chip_id;
 	void *irq_data;

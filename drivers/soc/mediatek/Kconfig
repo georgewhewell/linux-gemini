@@ -302,7 +302,7 @@ config MTK_MT6797_A72_POWER_KUNIT_TEST
 	  or other hardware operation.
 
 config MTK_MT6797_CONSYS_INVENTORY
-	bool "MediaTek MT6797 CONSYS ownership foundation"
+	tristate "MediaTek MT6797 CONSYS ownership foundation"
 	depends on ARM64 && ARCH_MEDIATEK && OF
 	depends on PM && PM_GENERIC_DOMAINS_OF
 	depends on REGULATOR_MT6351=y && RESET_CONTROLLER
@@ -323,6 +323,10 @@ config MTK_MT6797_CONSYS_INVENTORY
 	  immutable WMT firmware bundle, assembles the referenced BTIF component,
 	  then performs the vendor-evidenced persistent-EMI, reset-held identity,
 	  MBIST/AFE/reset-release, and mandatory-to-full STP chronology.
+
+	  Building this owner as a module permits firmware installation and watchdog
+	  takeover before its platform driver is registered. Keep the EMI MPU
+	  provider built-in so its per-boot claim survives owner module removal.
 
 	  Shared EMI has no inverse. Any subsequent startup failure is terminal for
 	  that boot; teardown synchronously fences BTIF before asserting reset and

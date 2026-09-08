@@ -13,6 +13,7 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/regulator/driver.h>
+#include <linux/regulator/of_regulator.h>
 
 #include "da9213-legacy-transaction.h"
 
@@ -319,6 +320,15 @@ static int da9213_legacy_register_regulators(struct da9213_legacy *chip)
 		if (!of_device_is_available(config.of_node)) {
 			of_node_put(config.of_node);
 			continue;
+		}
+
+		/* config.of_node alone does not populate regulator constraints. */
+		config.init_data = of_get_regulator_init_data(chip->dev,
+				config.of_node, &da9213_legacy_regulators[i]);
+		if (!config.init_data) {
+			of_node_put(config.of_node);
+			of_node_put(regulators);
+			return -ENOMEM;
 		}
 
 		rdev = devm_regulator_register(chip->dev,

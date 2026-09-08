@@ -125,10 +125,13 @@ def main_test():
     cc = os.environ.get("HOSTCC", "/nix/store/061ybr50r1m2jnvih4vvpgmgwb37df3r-gcc-wrapper-12.2.0/bin/gcc")
     libfdt = root.parents[2] / "scripts/dtc/libfdt"
     put = os.environ.get("FDTPUT", "fdtput")
+    get = os.environ.get("FDTGET", "fdtget")
+    rail = subprocess.check_output([get, "-t", "x", str(args.derivative),
+        "/i2c@11010000/regulator@1c", "phandle"], text=True).strip()
     cases = [
       ("/", "compatible", "s", ["wrong,board"]),
-      ("/power-controller@10006000", "mfg-supply", "x", ["c"]),
-      ("/gpu@13040000", "mali-supply", "x", ["c"]),
+      ("/power-controller@10006000", "mfg-supply", "x", [rail]),
+      ("/gpu@13040000", "mali-supply", "x", [rail]),
       ("/i2c@11010000/regulator@1c", "reg", "x", ["1d"]),
       ("/i2c@11010000/regulator@1c", "regulator-name", "s", ["other"]),
       ("/i2c@11010000/regulator@1c", "regulator-boot-on", None, []),

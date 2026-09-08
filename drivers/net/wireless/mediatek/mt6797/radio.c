@@ -607,7 +607,7 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	if (!sme->ssid || !sme->ssid_len || sme->ssid_len > 32 || sme->ie_len > 1024 ||
 	    (sme->ie_len && !sme->ie) ||
 	    (sme->crypto.control_port_ethertype && sme->crypto.control_port_ethertype != htons(ETH_P_PAE)) ||
-	    sme->key_len || sme->pbss || sme->prev_bssid ||
+	    sme->key_len || sme->pbss || sme->prev_bssid || sme->crypto.control_port_over_nl80211 ||
 	    sme->mfp != NL80211_MFP_NO || sme->want_1x ||
 	    (sme->flags & ~(ASSOC_REQ_DISABLE_HT | ASSOC_REQ_DISABLE_VHT |
 		ASSOC_REQ_DISABLE_HE | ASSOC_REQ_DISABLE_EHT | ASSOC_REQ_DISABLE_UHR)) ||
@@ -617,8 +617,7 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 		if (sme->crypto.wpa_versions != NL80211_WPA_VERSION_2 ||
 		    sme->crypto.n_ciphers_pairwise != 1 || sme->crypto.ciphers_pairwise[0] != WLAN_CIPHER_SUITE_CCMP ||
 		    sme->crypto.cipher_group != WLAN_CIPHER_SUITE_CCMP ||
-		    sme->crypto.n_akm_suites != 1 || sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK ||
-		    sme->crypto.control_port_over_nl80211)
+		    sme->crypto.n_akm_suites != 1 || sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK)
 			return -EOPNOTSUPP;
 	} else if (sme->crypto.wpa_versions || sme->crypto.n_ciphers_pairwise ||
 		   sme->crypto.cipher_group || sme->crypto.n_akm_suites) {

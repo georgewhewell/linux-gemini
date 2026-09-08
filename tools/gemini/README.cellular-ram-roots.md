@@ -22,10 +22,25 @@ select Z. All pathname walks and RAM mutations retain the existing component,
 mount, inode-type and superblock confinement checks. Read/write file handles
 continue to refer to their opened root independently of subsequent requests.
 
-This commit adds the provider interface only. The protocol decoder/service,
-userspace source validator, and NixOS preparation must be connected before
-X/Y requests can succeed on hardware. MOVE semantics and persistent writes
-remain unfinished. There is no new image or hardware qualification here.
+The protocol decoder/service now carries an explicit drive through OPEN,
+OPENHINT, compact reads, GETATTRIBUTES, FINDFIRST, GETCLUSTERSIZE and
+GETDISKINFO. Handle operations keep the selected open file. Unregistered X/Y
+roots remain unavailable; an absent root never aliases Z. The legacy codec
+wrapper still accepts only Z. Existing mutating operations that are not
+implemented continue returning an error rather than reporting success.
+
+The helper provides --check-roots-device (metadata only), --check-root-mount
+Z/X/Y /mount (one verified read-only source), and --ram-roots /sourceZ /ramZ
+/sourceX /ramX /sourceY /ramY. It validates the fixed source block identity,
+geometry, clean ext4 metadata, actual read-only mount and confined md child
+for each source, then retains the corresponding bounded tmpfs md directory.
+All three RAM directories must have different device identities. It opens the
+provider only after all source/RAM validation and makes exactly one f3 ioctl;
+all FDs are closed on success or failure and EINTR is never retried.
+
+NixOS preparation and package pins still need updating before hardware can use
+this interface. MOVE semantics and persistent writes remain unfinished. There
+is no new image or hardware qualification here.
 
 Device source evidence: protect1 is GPT partition8, 8 MiB; protect2 is
 partition9, 12.46875 MiB. Both ext4 filesystems are clean, match their partition

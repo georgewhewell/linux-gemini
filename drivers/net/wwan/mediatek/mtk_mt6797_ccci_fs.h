@@ -457,8 +457,8 @@ static inline bool mt6797_fs_match(const char *pattern, const char *name)
 /* Z:\a\b -> "a/b" (Z:\ -> ""). Both separators are accepted like the
  * vendor's byte copy; empty and "." components are dropped; ".." is refused.
  */
-static inline int mt6797_fs_path_decode(const u8 *arg, u32 len, char *out,
-					size_t outsize)
+static inline int mt6797_fs_path_decode_drive(const u8 *arg, u32 len, char *out,
+					      size_t outsize, u8 *drive)
 {
 	size_t i = 0, o = 0, start;
 	int ret;
@@ -466,8 +466,9 @@ static inline int mt6797_fs_path_decode(const u8 *arg, u32 len, char *out,
 	ret = mt6797_fs_utf16_decode(arg, len, out, outsize);
 	if (ret)
 		return ret;
-	if (out[0] != 'Z' || out[1] != ':')
+	if ((out[0] != 'Z' && out[0] != 'X' && out[0] != 'Y') || out[1] != ':')
 		return -ENXIO;
+	*drive = out[0];
 	i = 2;
 	while (out[i]) {
 		while (out[i] == '\\' || out[i] == '/')
@@ -492,10 +493,20 @@ static inline int mt6797_fs_path_decode(const u8 *arg, u32 len, char *out,
 	return 0;
 }
 
+/* Legacy codec callers retain single-Z interpretation. */
+static inline int mt6797_fs_path_decode(const u8 *arg, u32 len, char *out,
+					size_t outsize)
+{
+	u8 drive;
+	int ret = mt6797_fs_path_decode_drive(arg, len, out, outsize, &drive);
+
+	return ret ? ret : drive == 'Z' ? 0 : -ENXIO;
+}
+
 static inline s32 mt6797_fs_path_status(int error)
 {
 	switch (error) {
-	case -ENXIO: return MT6797_FS_PATH_NOT_FOUND; /* not the Z root (0xeaf4) */
+	case -ENXIO: return MT6797_FS_PATH_NOT_FOUND; /* unknown root (0xeaf4) */
 	case -EINVAL: return MT6797_FS_ACCESS_DENIED; /* ".." (0xe370, 0xe3f4) */
 	case -ENAMETOOLONG: return MT6797_FS_PATH_OVER_LEN_ERROR; /* 0xe738 */
 	default: return MT6797_FS_INVALID_FILENAME; /* malformed UTF-16 */
@@ -533,18 +544,20 @@ void mt6797_fs_service_release(struct mt6797_fs_service *service);
  * root's statfs; FAT statistics are not a Linux capability. Fills the 84-byte
  * FS_DiskInfo and returns the vendor status.
  */
-static inline s32 mt6797_fs_diskinfo(const struct mt6797_fs_request *request,
+static inline s32 mt6797_fs_diskinfo_drive(const struct mt6797_fs_request *request,
 				     const struct mt6797_md1_fs_stats *stats,
-				     u8 *info)
+				     u8 *info, u8 drive)
 {
-	static const u8 z_root[] = { 'Z', 0, ':', 0, '\\', 0, 0, 0 };
+	u8 z_root[] = { 'Z', 0, ':', 0, '\\', 0, 0, 0 };
 	u32 flags;
 
 	memset(info, 0, MT6797_FS_DISKINFO_SIZE);
 	if (request->argc != 2 || request->len[0] != sizeof(z_root) ||
 	    request->len[1] != 4)
 		return MT6797_FS_PARAM_ERROR;
-	/* Only the registered Z root is owned. */
+	if (drive != 'Z' && drive != 'X' && drive != 'Y')
+		return MT6797_FS_DRIVE_NOT_FOUND;
+	z_root[0] = drive;
 	if (memcmp(request->arg[0], z_root, sizeof(z_root)))
 		return MT6797_FS_DRIVE_NOT_FOUND;
 	flags = mt6797_fs_read32(request->arg[1]);
@@ -554,8 +567,8 @@ static inline s32 mt6797_fs_diskinfo(const struct mt6797_fs_request *request,
 	if (!stats)
 		return MT6797_FS_ERROR_RESERVED;
 	if (flags & 1) {
-		info[24] = 'Z';
-		info[25] = 1; /* This provider requires a read-only mount and superblock. */
+		info[24] = drive;
+		info[25] = 1; /* Stock daemon volume field. */
 		mt6797_fs_write32(info + 48, 512);
 		mt6797_fs_write32(info + 52, stats->block_size / 512);
 		mt6797_fs_write32(info + 56, stats->blocks);
@@ -563,5 +576,10 @@ static inline s32 mt6797_fs_diskinfo(const struct mt6797_fs_request *request,
 	if (flags & 2)
 		mt6797_fs_write32(info + 64, stats->free_blocks);
 	return MT6797_FS_NO_ERROR;
+}
+static inline s32 mt6797_fs_diskinfo(const struct mt6797_fs_request *request,
+				     const struct mt6797_md1_fs_stats *stats, u8 *info)
+{
+	return mt6797_fs_diskinfo_drive(request, stats, info, 'Z');
 }
 #endif

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* One-shot registration of the proven nvdata:/md metadata authority.
+/* One-shot registration of verified stock filesystem roots.
  * Never mounts, repairs, enumerates provision files, or executes Android code.
  */
 #define _GNU_SOURCE
@@ -23,6 +23,15 @@
 
 #define NVDATA_BYTES UINT64_C(33554432)
 #define NVDATA_SECTORS "65536\n"
+struct fs_source {
+	const char *device, *partname, *partn, *sectors;
+	uint64_t bytes;
+};
+static const struct fs_source sources[] = {
+	{ "/dev/mmcblk0p6", "PARTNAME=nvdata", "PARTN=6", NVDATA_SECTORS, NVDATA_BYTES },
+	{ "/dev/mmcblk0p8", "PARTNAME=protect1", "PARTN=8", "16384\n", UINT64_C(8388608) },
+	{ "/dev/mmcblk0p9", "PARTNAME=protect2", "PARTN=9", "25536\n", UINT64_C(13074432) },
+};
 static const char *failure_stage = "arguments";
 
 static uint16_t get16(const unsigned char *p)
@@ -35,7 +44,8 @@ static uint32_t get32(const unsigned char *p)
 	return get16(p) | ((uint32_t)get16(p + 2) << 16);
 }
 
-static int partition_identity(const char *uevent, const char *sectors)
+static int partition_identity_for(const char *uevent, const char *sectors,
+				  const struct fs_source *source)
 {
 	const char *p = uevent;
 	unsigned int labels = 0, numbers = 0;
@@ -48,29 +58,29 @@ static int partition_identity(const char *uevent, const char *sectors)
 			return -EINVAL;
 		n = end - p;
 		if (n >= 9 && !memcmp(p, "PARTNAME=", 9)) {
-			if (n != 15 || memcmp(p, "PARTNAME=nvdata", 15))
+			if (n != strlen(source->partname) || memcmp(p, source->partname, n))
 				return -ENODEV;
 			labels++;
 		}
 		if (n >= 6 && !memcmp(p, "PARTN=", 6)) {
-			if (n != 7 || memcmp(p, "PARTN=6", 7))
+			if (n != strlen(source->partn) || memcmp(p, source->partn, n))
 				return -ENODEV;
 			numbers++;
 		}
 		p = end + 1;
 	}
-	return labels == 1 && numbers == 1 && !strcmp(sectors, NVDATA_SECTORS) ?
+	return labels == 1 && numbers == 1 && !strcmp(sectors, source->sectors) ?
 		0 : -ENODEV;
 }
 
-static int clean_ext4(const unsigned char sb[1024], uint64_t bytes)
+static int clean_ext4_for(const unsigned char sb[1024], uint64_t bytes, uint64_t expected)
 {
 	uint32_t log_block = get32(sb + 24);
 	uint32_t incompat = get32(sb + 96);
 	uint64_t blocks = get32(sb + 4);
 	uint16_t state = get16(sb + 58);
 
-	if (bytes != NVDATA_BYTES || get16(sb + 56) != EXT4_SUPER_MAGIC)
+	if (bytes != expected || get16(sb + 56) != EXT4_SUPER_MAGIC)
 		return -ENODEV;
 	/* Refuse dirty/error/orphan state and pending journal recovery. No repair. */
 	if (state != 1 || (incompat & 4) || get32(sb + 0xe8) ||
@@ -81,6 +91,16 @@ static int clean_ext4(const unsigned char sb[1024], uint64_t bytes)
 	if (log_block > 6 || !blocks || blocks > (bytes >> (10 + log_block)))
 		return -EINVAL;
 	return 0;
+}
+
+static inline int partition_identity(const char *uevent, const char *sectors)
+{
+	return partition_identity_for(uevent, sectors, &sources[0]);
+}
+
+static inline int clean_ext4(const unsigned char sb[1024], uint64_t bytes)
+{
+	return clean_ext4_for(sb, bytes, NVDATA_BYTES);
 }
 
 static int read_small(const char *path, char *out, size_t capacity)
@@ -113,7 +133,8 @@ static int no_symlink_dir(int dirfd, const char *path, uint64_t resolve)
 	return fd < 0 ? -errno : fd;
 }
 
-static int nvdata_authority(const char *mountpoint, int publish, const char *ramdir)
+static int source_authority(const struct fs_source *source, const char *mountpoint,
+			    int publish, const char *ramdir, int *retained)
 {
 	struct mt6797_md1_fs_registration registration = { .version = 1 };
 	struct stat block_stat, root_stat, md_stat;
@@ -127,7 +148,7 @@ static int nvdata_authority(const char *mountpoint, int publish, const char *ram
 	int ret;
 
 	failure_stage = "nvdata-block-open";
-	block = open("/dev/mmcblk0p6", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+	block = open(source->device, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
 	if (block < 0)
 		return -errno;
 	failure_stage = "nvdata-block-stat";
@@ -151,7 +172,7 @@ static int nvdata_authority(const char *mountpoint, int publish, const char *ram
 	if (ret)
 		goto out;
 	failure_stage = "nvdata-partition-identity";
-	ret = partition_identity(uevent, sectors);
+	ret = partition_identity_for(uevent, sectors, source);
 	if (ret)
 		goto out;
 	failure_stage = "nvdata-block-size";
@@ -166,7 +187,7 @@ static int nvdata_authority(const char *mountpoint, int publish, const char *ram
 		goto out;
 	}
 	failure_stage = "nvdata-superblock-validation";
-	ret = clean_ext4(super, bytes);
+	ret = clean_ext4_for(super, bytes, source->bytes);
 	if (ret)
 		goto out;
 	/* Pre-mount mode shares every block metadata check, but opens neither
@@ -234,6 +255,15 @@ static int nvdata_authority(const char *mountpoint, int publish, const char *ram
 		if (!S_ISDIR(md_stat.st_mode) || md_stat.st_dev != root_stat.st_dev)
 			goto out;
 	}
+	if (retained) {
+		ret = -EINVAL;
+		if (ram_md < 0)
+			goto out;
+		*retained = ram_md;
+		ram_md = -1;
+		ret = 0;
+		goto out;
+	}
 	failure_stage = "provider-device-open";
 	provider = open("/dev/mt6797-md1-fs-provider", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
 	if (provider < 0) {
@@ -260,6 +290,52 @@ out:
 	return ret;
 }
 
+static int nvdata_authority(const char *mountpoint, int publish, const char *ramdir)
+{
+	return source_authority(&sources[0], mountpoint, publish, ramdir, NULL);
+}
+
+/* Validate all sources and retain all RAM children before opening the device.
+ * REGISTER_RAM_ROOTS is a single publication, never three single-root calls.
+ */
+static int register_ram_roots(char **paths)
+{
+	struct mt6797_md1_fs_ram_roots roots = {
+		.version = 1, .directory_fd = { -1, -1, -1 },
+	};
+	struct stat st[3];
+	int i, j, provider = -1, ret;
+
+	for (i = 0; i < 3; i++) {
+		ret = source_authority(&sources[i], paths[2 * i], 1,
+				       paths[2 * i + 1], &roots.directory_fd[i]);
+		if (ret)
+			goto out;
+		failure_stage = "ram-roots-distinct";
+		if (fstat(roots.directory_fd[i], &st[i])) {
+			ret = -errno;
+			goto out;
+		}
+		for (j = 0; j < i; j++) {
+			ret = -EXDEV;
+			if (st[i].st_dev == st[j].st_dev)
+				goto out;
+		}
+	}
+	failure_stage = "provider-device-open";
+	provider = open("/dev/mt6797-md1-fs-provider", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+	if (provider < 0) { ret = -errno; goto out; }
+	failure_stage = "provider-register-roots-once";
+	ret = ioctl(provider, MT6797_MD1_FS_REGISTER_RAM_ROOTS, &roots) ? -errno : 0;
+out:
+	if (provider >= 0)
+		close(provider);
+	for (i = 0; i < 3; i++)
+		if (roots.directory_fd[i] >= 0)
+			close(roots.directory_fd[i]);
+	return ret;
+}
+
 static int register_nvdata(const char *mountpoint)
 {
 	return nvdata_authority(mountpoint, 1, NULL);
@@ -282,6 +358,23 @@ int main(int argc, char **argv)
 		 argv[2][0] == '/' && argv[3][0] == '/') {
 		ret = nvdata_authority(argv[2], 1, argv[3]);
 		published = 1;
+	} else if (argc == 8 && !strcmp(argv[1], "--ram-roots")) {
+		for (int i = 2; i < 8; i++)
+			if (argv[i][0] != '/')
+				goto usage;
+		ret = register_ram_roots(argv + 2);
+		published = 1;
+	} else if (argc == 2 && !strcmp(argv[1], "--check-roots-device")) {
+		ret = 0;
+		for (int i = 0; i < 3 && !ret; i++)
+			ret = source_authority(&sources[i], NULL, 0, NULL, NULL);
+	} else if (argc == 4 && !strcmp(argv[1], "--check-root-mount") &&
+		   argv[3][0] == '/' && strlen(argv[2]) == 1) {
+		int i = argv[2][0] == 'Z' ? 0 : argv[2][0] == 'X' ? 1 :
+			argv[2][0] == 'Y' ? 2 : -1;
+		if (i < 0)
+			goto usage;
+		ret = source_authority(&sources[i], argv[3], 0, NULL, NULL);
 	} else
 		goto usage;
 	if (ret) {
@@ -290,9 +383,9 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	puts(published ? "MD1 FS authority published once; this is not an HS2/AT result" :
-	     "MD1 nvdata metadata precheck passed; no provider registration");
+	     "MD1 filesystem metadata precheck passed; no provider registration");
 	return 0;
 usage:
-	fprintf(stderr, "usage (root only): mt6797-fs-register --check-device | /absolute/ro-mount | --check-mount /absolute/ro-mount | --ram /absolute/ro-mount /absolute/ram-mount\n");
+	fprintf(stderr, "usage (root only): mt6797-fs-register --check-device | /absolute/ro-mount | --check-mount /absolute/ro-mount | --ram /absolute/ro-mount /absolute/ram-mount | --check-roots-device | --check-root-mount Z/X/Y /absolute/ro-mount | --ram-roots /sourceZ /ramZ /sourceX /ramX /sourceY /ramY\n");
 	return 2;
 }

@@ -105,13 +105,17 @@ static bool mt6797_fs_arg_u32(const struct mt6797_fs_request *request,
 }
 
 static s32 mt6797_fs_arg_path(const struct mt6797_fs_request *request,
-			      unsigned int n, char *path, size_t size)
+			      unsigned int n, char *path, size_t size, u8 *drive)
 {
+	struct mt6797_md1_fs_stats stats;
 	int ret;
 
 	if (n >= request->argc)
 		return MT6797_FS_PARAM_ERROR;
-	ret = mt6797_fs_path_decode(request->arg[n], request->len[n], path, size);
+	ret = mt6797_fs_path_decode_drive(request->arg[n], request->len[n], path, size, drive);
+	/* A syntactically supported root must also have been registered. */
+	if (!ret && *drive != 'Z' && mt6797_md1_fs_provider_stats_drive(*drive, &stats))
+		ret = -ENXIO;
 	return ret ? mt6797_fs_path_status(ret) : MT6797_FS_NO_ERROR;
 }
 
@@ -130,6 +134,7 @@ static u32 mt6797_fs_dos_stamp(s64 seconds)
 static s32 mt6797_fs_open(struct mt6797_fs_service *service,
 			  const struct mt6797_fs_request *request, char *path)
 {
+	u8 drive;
 	struct mt6797_md1_fs_attr attr;
 	struct file *file;
 	u32 flags;
@@ -138,22 +143,22 @@ static s32 mt6797_fs_open(struct mt6797_fs_service *service,
 
 	if (!mt6797_fs_arg_u32(request, 1, &flags))
 		return MT6797_FS_PARAM_ERROR;
-	status = mt6797_fs_arg_path(request, 0, path, MT6797_MD1_FS_PATH_MAX + 1);
+	status = mt6797_fs_arg_path(request, 0, path, MT6797_MD1_FS_PATH_MAX + 1, &drive);
 	if (status)
 		return status;
 	if (service->open_count >= MT6797_FS_HANDLES - 1)
 		return MT6797_FS_TOO_MANY_FILES;
 	if (!(flags & MT6797_FS_OPEN_READ_ONLY) ||
 	    (flags & (MT6797_FS_OPEN_CREATE | MT6797_FS_OPEN_CREATE_ALWAYS))) {
-		file = mt6797_md1_fs_provider_open_ram(path,
+		file = mt6797_md1_fs_provider_open_ram_drive(drive, path,
 			!(flags & MT6797_FS_OPEN_READ_ONLY),
 			flags & (MT6797_FS_OPEN_CREATE | MT6797_FS_OPEN_CREATE_ALWAYS),
 			flags & MT6797_FS_OPEN_CREATE_ALWAYS);
 	} else {
-		ret = mt6797_md1_fs_provider_getattr(path, &attr);
+		ret = mt6797_md1_fs_provider_getattr_drive(drive, path, &attr);
 		if (ret)
 			return mt6797_fs_status(ret);
-		file = mt6797_md1_fs_provider_open(path, S_ISDIR(attr.mode));
+		file = mt6797_md1_fs_provider_open_drive(drive, path, S_ISDIR(attr.mode));
 	}
 	if (IS_ERR(file))
 		return mt6797_fs_status(PTR_ERR(file));
@@ -367,14 +372,15 @@ static int mt6797_fs_getfilesize(struct mt6797_fs_service *service,
 static s32 mt6797_fs_getattributes(const struct mt6797_fs_request *request,
 				   char *path)
 {
+	u8 drive;
 	struct mt6797_md1_fs_attr attr;
 	s32 status;
 	int ret;
 
-	status = mt6797_fs_arg_path(request, 0, path, MT6797_MD1_FS_PATH_MAX + 1);
+	status = mt6797_fs_arg_path(request, 0, path, MT6797_MD1_FS_PATH_MAX + 1, &drive);
 	if (status)
 		return status;
-	ret = mt6797_md1_fs_provider_getattr(path, &attr);
+	ret = mt6797_md1_fs_provider_getattr_drive(drive, path, &attr);
 	return ret ? mt6797_fs_status(ret) : (s32)mt6797_fs_attributes(attr.mode);
 }
 
@@ -431,6 +437,7 @@ static int mt6797_fs_findfirst(struct mt6797_fs_service *service,
 			       struct mt6797_fs_reply *reply, s32 *status,
 			       char *path)
 {
+	u8 drive;
 	struct mt6797_md1_fs_entry *entry = NULL;
 	struct mt6797_fs_handle *handle;
 	struct file *dir;
@@ -441,7 +448,7 @@ static int mt6797_fs_findfirst(struct mt6797_fs_service *service,
 	*status = MT6797_FS_PARAM_ERROR;
 	if (request->argc != 4 || !mt6797_fs_arg_u32(request, 3, &max_chars))
 		goto reply;
-	*status = mt6797_fs_arg_path(request, 0, path, MT6797_MD1_FS_PATH_MAX + 1);
+	*status = mt6797_fs_arg_path(request, 0, path, MT6797_MD1_FS_PATH_MAX + 1, &drive);
 	if (*status)
 		goto reply;
 	separator = strrchr(path, '/');
@@ -463,7 +470,7 @@ static int mt6797_fs_findfirst(struct mt6797_fs_service *service,
 	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (!entry)
 		return -ENOMEM;
-	dir = mt6797_md1_fs_provider_open(path, true);
+	dir = mt6797_md1_fs_provider_open_drive(drive, path, true);
 	if (IS_ERR(dir)) {
 		*status = mt6797_fs_status(PTR_ERR(dir));
 		goto reply;
@@ -533,11 +540,11 @@ static s32 mt6797_fs_getclustersize(const struct mt6797_fs_request *request)
 
 	if (!mt6797_fs_arg_u32(request, 0, &drive))
 		return MT6797_FS_PARAM_ERROR;
-	if (drive != 'Z')
+	if (drive != 'Z' && drive != 'X' && drive != 'Y')
 		return MT6797_FS_DRIVE_NOT_FOUND;
-	ret = mt6797_md1_fs_provider_stats(&stats);
+	ret = mt6797_md1_fs_provider_stats_drive(drive, &stats);
 	if (ret)
-		return mt6797_fs_status(ret);
+		return drive == 'Z' ? mt6797_fs_status(ret) : MT6797_FS_DRIVE_NOT_FOUND;
 	return stats.block_size > S32_MAX ? MT6797_FS_GENERAL_FAILURE :
 		(s32)stats.block_size;
 }
@@ -549,6 +556,7 @@ static s32 mt6797_fs_getclustersize(const struct mt6797_fs_request *request)
 static s32 mt6797_fs_refuse_write(const struct mt6797_fs_request *request,
 				  unsigned int paths, char *path)
 {
+	u8 drive;
 	unsigned int i;
 	s32 status;
 
@@ -556,7 +564,7 @@ static s32 mt6797_fs_refuse_write(const struct mt6797_fs_request *request,
 		return MT6797_FS_PARAM_ERROR;
 	for (i = 0; i < paths; i++) {
 		status = mt6797_fs_arg_path(request, i, path,
-					    MT6797_MD1_FS_PATH_MAX + 1);
+					    MT6797_MD1_FS_PATH_MAX + 1, &drive);
 		if (status)
 			return status;
 	}
@@ -599,10 +607,12 @@ static int mt6797_fs_diskinfo_reply(const struct mt6797_fs_request *request,
 {
 	struct mt6797_md1_fs_stats stats;
 	u8 info[MT6797_FS_DISKINFO_SIZE];
+	u8 drive = request->argc && request->len[0] ? request->arg[0][0] : 0;
 	int ret;
 
-	ret = mt6797_md1_fs_provider_stats(&stats);
-	*status = mt6797_fs_diskinfo(request, ret ? NULL : &stats, info);
+	ret = mt6797_md1_fs_provider_stats_drive(drive, &stats);
+	*status = mt6797_fs_diskinfo_drive(request, ret ? NULL : &stats, info,
+					   ret && drive != 'Z' ? 0 : drive);
 	ret = mt6797_fs_reply_add_u32(reply, (u32)*status);
 	return ret ? ret : mt6797_fs_reply_add(reply, info, sizeof(info));
 }

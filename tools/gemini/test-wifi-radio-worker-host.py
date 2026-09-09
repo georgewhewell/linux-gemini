@@ -15,8 +15,11 @@ driver = root / 'drivers/net/wireless/mediatek/mt6797'
 radio = (driver / 'radio.c').read_text()
 
 def function(name):
-    start = radio.rfind('\nstatic ', 0, radio.index(name)) + 1
-    end = radio.index('{', start) + 1
+    name = name.removesuffix('(')
+    match = re.search(r'\nstatic [^;{}]*\b' + re.escape(name) + r'\([^;{}]*\)\n\{', radio)
+    assert match, name
+    start = match.start() + 1
+    end = match.end()
     depth = 1
     while depth:
         depth += (radio[end] == '{') - (radio[end] == '}')
@@ -100,7 +103,7 @@ static struct {
  u8 scan_command,ais_command;
  bool expired;
  int pm_error;
- unsigned pm_finishes,pm_aborts;
+ unsigned pm_finishes,pm_aborts,igtk_cleanups;
 } test;
 static int stage(enum stage stage) {
  assert(stage>test.last); test.last=stage; test.stages++;
@@ -163,7 +166,7 @@ int mt6797_wifi_ais_hif_associate(struct mt6797_wifi_ais_hif *ais,
  return ret;
 }
 int mt6797_wifi_ais_hif_stop(struct mt6797_wifi_ais_hif *ais) {
- assert(!test.radio->irq->attached);
+ assert(!test.radio->irq->attached && test.igtk_cleanups==1);
  assert(ais->runtime.state==MT6797_WIFI_AIS_RUNTIME_STA_STATE1 || ais->runtime.state==MT6797_WIFI_AIS_RUNTIME_STA_STATE3);
  test.stops++; ais->runtime.state=MT6797_WIFI_AIS_RUNTIME_STOPPED; return 0;
 }
@@ -196,6 +199,7 @@ static void mt6797_radio_purge_tx(struct mt6797_wifi_radio *r) { (void)r; }
 static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
 static int mt6797_radio_beacon(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
 static int mt6797_radio_finish_pm(struct mt6797_wifi_radio *r) { assert(r->connection_lock.held && test.success==1); test.pm_finishes++; if(test.pm_error)return test.pm_error; r->connection->pm_started=true; return 0; }
+static int mt6797_radio_igtk_cleanup(struct mt6797_wifi_radio *r) { assert(r->connection_lock.held && !r->irq->attached); test.igtk_cleanups++; return 0; }
 static int mt6797_radio_pm_send(struct mt6797_wifi_radio *r,bool connected) { assert(!connected && r->connection_lock.held && !r->irq->attached); test.pm_aborts++; r->connection->pm_started=false; return 0; }
 '''
 for name in ['mt6797_radio_link_event', 'mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',

@@ -81,6 +81,13 @@ allOf:
             - const: iocfg_lt
             - const: iocfg_tl
             - const: eint
+      patternProperties:
+        '-[0-9]*$':
+          patternProperties:
+            '-pins*$':
+              properties:
+                drive-strength:
+                  enum: [2, 4, 8, 12, 16]
   - if:
       properties:
         compatible:
@@ -153,7 +160,7 @@ patternProperties:
           input-schmitt-disable: true
 
           drive-strength:
-            enum: [2, 4, 8, 12, 16]
+            enum: [2, 4, 6, 8, 10, 12, 14, 16]
 
           slew-rate:
             enum: [0, 1]

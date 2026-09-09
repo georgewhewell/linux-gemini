@@ -119,6 +119,14 @@ int main(void) {
  setup(); submit(ETH_P_IP); run();
  assert(sends==1 && freed==1 && dev.tx_packets==1 && dev.tx_bytes==18 && !dev.tx_dropped);
  assert(captured[3]==0x20 && captured[4]==3 && captured[6]==0x80 && captured[7]==8);
+ /* A non-QoS pairwise link uses priority zero for ARP as well as IP,
+  * including broadcast Ethernet requests, which still travel to the AP. */
+ setup(); struct sk_buff *arp=packet(ETH_P_ARP); memset(arp->data,255,6);
+ assert(!mt6797_radio_xmit(arp,&dev)); run();
+ assert(sends==1 && captured[3]==0x20 && captured[4]==3 && captured[6]==0x80);
+ assert(captured[11]==0x80 && !get_unaligned_le16(captured+26));
+ setup(); c.join.negotiated.security=MT6797_WIFI_AIS_SECURITY_OPEN;
+ submit(ETH_P_ARP); run(); assert(sends==1 && captured[6]==0);
  setup(); c.authorized=false; submit(ETH_P_IP); assert(freed==1 && !queued); run(); assert(!sends);
  setup(); c.authorized=false; c.pairwise_key.installed=c.pairwise_ready=false;
  submit(ETH_P_PAE); run(); assert(sends==1 && captured[3]==0x88 && !(captured[6]&0x80));

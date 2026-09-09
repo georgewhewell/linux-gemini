@@ -32,7 +32,6 @@
 #define MT6797_WIFI_TX_QUEUE_EAPOL		(BIT(7) | BIT(3))
 #define MT6797_WIFI_TX_HEADER_ETHERNET_LONG	(BIT(7) | BIT(4))
 #define MT6797_WIFI_TX_PROTECTED		BIT(7)
-#define MT6797_WIFI_TX_ARP_PRIORITY		(6U << 4)
 #define MT6797_WIFI_TX_FIXED_RATE		BIT(7)
 #define MT6797_WIFI_TX_RETRY_LIMIT		(30U << 11)
 #define MT6797_WIFI_TX_FIXED_RATE_MAX		GENMASK(13, 0)
@@ -275,8 +274,10 @@ int mt6797_wifi_tx_build(u8 *packet, size_t capacity, const u8 *payload,
 	packet[7] = params->own_mac_index << 2;
 	if (params->protected)
 		packet[6] |= MT6797_WIFI_TX_PROTECTED;
-	if (params->traffic == MT6797_WIFI_TX_ARP)
-		packet[6] |= MT6797_WIFI_TX_ARP_PRIORITY;
+	/* This radio negotiates non-QoS only. Keep descriptor TID0 for every
+	 * EtherType, as GEN3's shared non-QoS TX template does; ARP's host
+	 * scheduling priority must not become a CCMP priority on the link.
+	 */
 	put_unaligned_le16(MT6797_WIFI_TX_RETRY_LIMIT, packet + 12);
 	if (params->traffic != MT6797_WIFI_TX_DATA) {
 		packet[11] = MT6797_WIFI_TX_FIXED_RATE;

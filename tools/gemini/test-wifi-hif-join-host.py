@@ -77,7 +77,7 @@ static int mt6797_wifi_hif_runtime_sink_detach(struct mt6797_wifi_hif_irq *irq,
 }
 '''
 hif = (base['driver'] / 'ais_hif.c').read_text()
-program += hif[hif.index('static bool mt6797_ais_join_finished('):hif.index('int mt6797_wifi_ais_hif_stop(')]
+program += hif[hif.index('static bool mt6797_ais_join_finished('):hif.index('int mt6797_wifi_ais_hif_release_channel(')]
 program += r'''
 enum mode { NORMAL, RX_FIRST, ASYNC, AP_REJECT, TX_FAIL, NO_TX, NO_RX,
             NO_ACTIVATION, EXPIRE_AFTER_BSS, ABORT_AFTER_BSS, LATE_ABORT };
@@ -202,6 +202,7 @@ struct cleanup_fixture {
  struct mt6797_wifi_ais_runtime runtime;
  struct mt6797_wifi_ais_runtime_ops ops;
  unsigned sends, fail_send, terminals;
+ bool release_early;
 };
 static int cleanup_precheck(void *context) { (void)context; return 0; }
 static void cleanup_fence(void *context,int error) {
@@ -210,10 +211,11 @@ static void cleanup_fence(void *context,int error) {
 static int cleanup_send(void *context,const struct mt6797_wifi_ais_runtime *runtime,
  enum mt6797_wifi_ais_runtime_command command,const u8 *packet,size_t length) {
  struct cleanup_fixture *f=context;
- const enum mt6797_wifi_ais_runtime_command order[]={
+ enum mt6797_wifi_ais_runtime_command order[]={
   MT6797_WIFI_AIS_RUNTIME_BSS_ACTIVATE,MT6797_WIFI_AIS_RUNTIME_CHANNEL_REQUEST,
   MT6797_WIFI_AIS_RUNTIME_STA_STATE1_UPDATE,MT6797_WIFI_AIS_RUNTIME_STA_REMOVE,
   MT6797_WIFI_AIS_RUNTIME_CHANNEL_ABORT,MT6797_WIFI_AIS_RUNTIME_BSS_DEACTIVATE};
+ if(f->release_early) { order[3]=MT6797_WIFI_AIS_RUNTIME_CHANNEL_ABORT; order[4]=MT6797_WIFI_AIS_RUNTIME_STA_REMOVE; }
  assert(runtime==&f->runtime && f->sends<6 && command==order[f->sends]);
  assert(packet && length); f->sends++;
  return f->sends==f->fail_send?-EIO:0;
@@ -230,16 +232,27 @@ static int cleanup_channel(void *context,unsigned timeout) {
  assert(!ret && d==MT6797_WIFI_AIS_EVENT_COMPLETE); return ret;
 }
 static void cleanup_test(void) {
+ for(unsigned early=0;early<2;early++) {
  for(unsigned fail=0;fail<=6;fail++) {
   if(fail && fail<4) continue;
-  struct cleanup_fixture f={.fail_send=fail};
+  struct cleanup_fixture f={.fail_send=fail,.release_early=early};
   f.ops=(struct mt6797_wifi_ais_runtime_ops){cleanup_precheck,cleanup_send,cleanup_channel,cleanup_fence,&f};
   struct mt6797_wifi_ais_runtime_params p={.channel={1,6},.bss_index=3,.own_mac_index=1,.response_timeout_ms=1000};
   memcpy(p.own_addr,bss.own_addr,6); memcpy(p.peer_addr,sta.peer_addr,6);
   mt6797_wifi_ais_runtime_init(&f.runtime,3,1);
   assert(!mt6797_wifi_ais_runtime_start(&f.runtime,&f.ops,&p));
   assert(f.runtime.state==MT6797_WIFI_AIS_RUNTIME_STA_STATE1);
+  assert(mt6797_wifi_ais_runtime_release_channel(&f.runtime,&f.ops)==-EALREADY);
+  assert(f.sends==3);
   f.runtime.state=MT6797_WIFI_AIS_RUNTIME_STA_STATE3;
+  if(early) {
+   int release=mt6797_wifi_ais_runtime_release_channel(&f.runtime,&f.ops);
+   assert(release==(fail==4?-EIO:0));
+   assert(f.sends==4);
+   /* A duplicate success or a terminal retry must never emit a second abort. */
+   assert(mt6797_wifi_ais_runtime_release_channel(&f.runtime,&f.ops)==release);
+   assert(f.sends==4);
+  }
   int ret=mt6797_wifi_ais_runtime_stop(&f.runtime,&f.ops);
   assert(ret==(fail?-EIO:0) && f.sends==(fail?fail:6));
   if(fail) {
@@ -251,6 +264,7 @@ static void cleanup_test(void) {
    assert(bitmap_empty(f.runtime.resources.sta_used,MT6797_WIFI_AIS_STA_COUNT));
    assert(bitmap_empty(f.runtime.resources.wtbl_used,MT6797_WIFI_AIS_WTBL_COUNT));
   }
+ }
  }
  puts("PASS: real AIS resource ledger and runtime cleanup from state3, exact remove/channel-abort/deactivate order, released slots and no subsequent writes after each cleanup failure");
 }

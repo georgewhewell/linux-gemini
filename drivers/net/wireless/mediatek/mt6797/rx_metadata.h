@@ -37,6 +37,8 @@ struct mt6797_wifi_bss_view {
 	bool hidden_ssid;
 };
 
+int mt6797_wifi_rx_channel_decode(u8 encoded,
+	enum mt6797_wifi_rx_band *band, u8 *channel);
 int mt6797_wifi_rx_metadata_decode(const u8 *packet, size_t available,
 				   struct mt6797_wifi_rx_metadata *metadata);
 int mt6797_wifi_bss_parse(const struct mt6797_wifi_rx_metadata *metadata,

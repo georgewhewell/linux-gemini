@@ -45,6 +45,7 @@ struct sk_buff_head { unsigned length; };
 #define GENMASK(h,l) ((~0UL<<(l)) & (~0UL>>(63-(h))))
 #define IEEE80211_MAX_SSID_LEN 32
 #define GFP_KERNEL 0
+#define dev_warn(...) do {} while(0)
 #define system_long_wq 0
 #define container_of(p,t,m) ((t *)((char *)(p)-offsetof(t,m)))
 #define min_t(t,a,b) ((t)(a)<(t)(b)?(t)(a):(t)(b))
@@ -77,7 +78,7 @@ ieee = (root / 'include/linux/ieee80211.h').read_text()
 for name in ['IEEE80211_FCTL_VERS', 'IEEE80211_FCTL_FTYPE', 'IEEE80211_FCTL_STYPE',
              'IEEE80211_FCTL_TODS', 'IEEE80211_FCTL_FROMDS', 'IEEE80211_FCTL_MOREFRAGS',
              'IEEE80211_FCTL_PROTECTED', 'IEEE80211_FCTL_ORDER', 'IEEE80211_SCTL_FRAG',
-             'IEEE80211_STYPE_DEAUTH', 'IEEE80211_STYPE_DISASSOC']:
+             'IEEE80211_STYPE_DEAUTH', 'IEEE80211_STYPE_DISASSOC', 'IEEE80211_STYPE_BEACON']:
     program += re.search(r'^#define\s+' + name + r'\s+[^\n]+', ieee, re.M)[0] + '\n'
 program += r'''
 #define WLAN_REASON_UNSPECIFIED 1
@@ -97,6 +98,8 @@ static struct {
  unsigned stages,stops,closes,detaches,success,failure,disconnected,puts,frees,queued;
  u8 scan_command,ais_command;
  bool expired;
+ int pm_error;
+ unsigned pm_finishes,pm_aborts;
 } test;
 static int stage(enum stage stage) {
  assert(stage>test.last); test.last=stage; test.stages++;
@@ -190,6 +193,9 @@ static void netif_stop_queue(struct net_device *d) { (void)d; }
 static void netif_wake_queue(struct net_device *d) { (void)d; }
 static void mt6797_radio_purge_tx(struct mt6797_wifi_radio *r) { (void)r; }
 static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
+static int mt6797_radio_beacon(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
+static int mt6797_radio_finish_pm(struct mt6797_wifi_radio *r) { assert(r->connection_lock.held && test.success==1); test.pm_finishes++; if(test.pm_error)return test.pm_error; r->connection->pm_started=true; return 0; }
+static int mt6797_radio_pm_send(struct mt6797_wifi_radio *r,bool connected) { assert(!connected && r->connection_lock.held && !r->irq->attached); test.pm_aborts++; r->connection->pm_started=false; return 0; }
 '''
 for name in ['mt6797_radio_link_event', 'mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
              'mt6797_radio_link_frame', 'mt6797_radio_connection_work']:
@@ -238,9 +244,15 @@ int main(void) {
  assert(test.success==1 && !test.failure && r.connection && test.scan_command==3);
  assert(test.ais_command==5 && r.command_sequence==12);
  assert(!test.puts && !test.frees && !test.stops);
+ assert(test.pm_finishes==1 && r.connection->pm_started);
  r.connection->cancel=true; r.connection->reason=3;
  mt6797_radio_connection_work(&r.connection_work);
  assert(test.disconnected==1 && test.detaches==1 && test.stops==1 && r.management_pid==9);
+ assert(test.pm_aborts==1);
+ check_freed();
+ setup(&r,&irq,NONE,NONE); test.pm_error=-ETIMEDOUT;
+ mt6797_radio_connection_work(&r.connection_work);
+ assert(test.success==1 && test.disconnected==1 && test.pm_finishes==1 && !test.pm_aborts);
  check_freed();
  puts("PASS: production connection worker stage failures/cancellations, grant expiry, callback ordering, command reservation, retained connection, cleanup and exactly-once BSS/free ownership");
 }

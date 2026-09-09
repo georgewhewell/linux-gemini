@@ -36,6 +36,10 @@ struct mt6797_radio_connection {
 	struct mt6797_radio_key group_key;
 	struct mt6797_wifi_ais_sta_pending key_pending;
 	struct completion key_completion;
+	struct completion pm_completion;
+	struct mt6797_wifi_ais_pm_params pm;
+	bool beacon_seen;
+	bool pm_started;
 	int key_error;
 	bool key_waiting;
 	bool pairwise_ready;
@@ -309,6 +313,7 @@ static void mt6797_radio_link_abort(void *context, int reason)
 	spin_lock_irqsave(&radio->lock, flags);
 	if (radio->connection) {
 		radio->connection->cancel = true;
+		complete(&radio->connection->pm_completion);
 		radio->connection->reason = WLAN_REASON_UNSPECIFIED;
 		if (radio->connection->key_waiting) {
 			radio->connection->key_error = reason < 0 ? reason : -EIO;
@@ -465,6 +470,98 @@ drop:
 	return 0; /* Bad over-the-air data is not a fatal HIF transport error. */
 }
 
+static int mt6797_radio_beacon(struct mt6797_wifi_radio *radio,
+	const struct mt6797_wifi_rx_view *view)
+{
+	struct mt6797_wifi_ais_pm_params params;
+	struct mt6797_radio_connection *connection;
+	const u8 *frame = view->payload;
+	unsigned long flags;
+	enum mt6797_wifi_rx_band band;
+	u8 channel;
+
+	if (mt6797_wifi_ais_pm_beacon_parse(frame, view->payload_length, &params) ||
+	    mt6797_wifi_rx_channel_decode(view->channel, &band, &channel))
+		return 0;
+	spin_lock_irqsave(&radio->lock, flags);
+	connection = radio->connection;
+	if (connection && connection->connected && !connection->cancel && !radio->stopping &&
+	    !connection->beacon_seen &&
+	    band == connection->join.negotiated.channel.band &&
+	    channel == connection->join.negotiated.channel.primary &&
+	    ether_addr_equal(frame + 10, connection->bss->bssid) &&
+	    ether_addr_equal(frame + 16, connection->bss->bssid) &&
+	    (ether_addr_equal(frame + 4, radio->netdev->dev_addr) || is_broadcast_ether_addr(frame + 4))) {
+		params.association_id = connection->join.negotiated.association_id;
+		connection->pm = params;
+		connection->beacon_seen = true;
+		complete(&connection->pm_completion);
+	}
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return 0;
+}
+
+/* connection_lock serializes this notification with key installation/teardown.
+ * IRQ delivery supplies only the owned beacon metadata and completion.
+ */
+static int mt6797_radio_pm_send(struct mt6797_wifi_radio *radio, bool connected)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	struct mt6797_wifi_ais_runtime *runtime = &connection->ais.runtime;
+	u8 command[MT6797_WIFI_AIS_PM_CONNECTED_LENGTH];
+	size_t length = connected ? sizeof(command) : MT6797_WIFI_AIS_PM_ABORT_LENGTH;
+	int ret;
+
+	mutex_lock(&radio->irq->lifecycle_lock);
+	if (mt6797_wifi_hif_irq_mode(radio->irq) != MT6797_WIFI_HIF_IRQ_RUNTIME ||
+	    (connected && mt6797_radio_connection_cancelled(radio))) {
+		ret = -ENOTCONN;
+		goto out;
+	}
+	if (++radio->command_sequence > 255)
+		radio->command_sequence = 3;
+	ret = mt6797_wifi_ais_pm_build(&runtime->bss, &runtime->sta,
+		&connection->pm, connected, radio->command_sequence, command, sizeof(command));
+	if (ret)
+		goto out;
+	ret = mt6797_wifi_hif_runtime_send(radio->irq, MT6797_WIFI_MCR_WTDR1, command, length);
+	if (ret)
+		mt6797_wifi_hif_runtime_fail(radio->irq, ret);
+	else
+		connection->pm_started = connected;
+out:
+	mutex_unlock(&radio->irq->lifecycle_lock);
+	return ret;
+}
+
+static int mt6797_radio_finish_pm(struct mt6797_wifi_radio *radio)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	s64 remaining = ktime_ms_delta(connection->ais.channel_deadline, ktime_get());
+	int ret;
+
+	if (remaining <= 0 ||
+	    !wait_for_completion_timeout(&connection->pm_completion,
+		msecs_to_jiffies(min_t(s64, 1500, remaining))))
+		return -ETIMEDOUT;
+	if (mt6797_radio_connection_cancelled(radio))
+		return -ECANCELED;
+	if (ktime_ms_delta(connection->ais.channel_deadline, ktime_get()) <= 0)
+		return -ETIMEDOUT;
+	if (!connection->beacon_seen)
+		return -EPROTO;
+	ret = mt6797_radio_pm_send(radio, true);
+	if (ret)
+		return ret;
+	if (mt6797_radio_connection_cancelled(radio))
+		return -ECANCELED;
+	ret = mt6797_wifi_ais_hif_release_channel(&connection->ais);
+	if (!ret)
+		dev_info(wiphy_dev(radio->wdev.wiphy),
+			"associated beacon accepted; PM connected and join channel released\n");
+	return ret;
+}
+
 static int mt6797_radio_link_frame(void *context,
 	const struct mt6797_wifi_rx_view *view)
 {
@@ -481,6 +578,8 @@ static int mt6797_radio_link_frame(void *context,
 	    view->header_length != 24 || !frame || view->payload_length < 26)
 		return 0;
 	control = get_unaligned_le16(frame);
+	if ((control & (IEEE80211_FCTL_FTYPE | IEEE80211_FCTL_STYPE)) == IEEE80211_STYPE_BEACON)
+		return mt6797_radio_beacon(radio, view);
 	/* This radio does not negotiate protected management or reassemble fragments. */
 	if (control & (IEEE80211_FCTL_VERS | IEEE80211_FCTL_TODS |
 		       IEEE80211_FCTL_FROMDS | IEEE80211_FCTL_MOREFRAGS |
@@ -496,6 +595,7 @@ static int mt6797_radio_link_frame(void *context,
 	    ether_addr_equal(frame + 16, connection->bss->bssid) &&
 	    (ether_addr_equal(frame + 4, radio->netdev->dev_addr) || is_broadcast_ether_addr(frame + 4))) {
 		connection->cancel = true;
+		complete(&connection->pm_completion);
 		connection->peer_disconnect = true;
 		connection->reason = get_unaligned_le16(frame + 24);
 		queue_work(system_long_wq, &radio->connection_work);
@@ -604,6 +704,13 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 		connection->ais.join.response + MT6797_WIFI_AIS_ASSOC_RESPONSE_FIXED_LENGTH,
 		connection->ais.join.response_length - MT6797_WIFI_AIS_ASSOC_RESPONSE_FIXED_LENGTH,
 		WLAN_STATUS_SUCCESS, GFP_KERNEL);
+	ret = mt6797_radio_finish_pm(radio);
+	if (ret)
+		dev_warn(wiphy_dev(radio->wdev.wiphy),
+			"PM connection setup failed error=%d beacon=%u started=%u\n",
+			ret, connection->beacon_seen, connection->pm_started);
+	if (ret || mt6797_radio_connection_cancelled(radio))
+		goto cleanup;
 	goto unlock;
 
 cleanup:
@@ -619,6 +726,8 @@ cleanup:
 		mutex_unlock(&radio->irq->lifecycle_lock);
 	}
 	if (connection->ais.initialized) {
+		if (connection->pm_started)
+			mt6797_radio_pm_send(radio, false);
 		radio->management_pid = connection->ais.auth.pid_owner.next_pid;
 		if (connection->ais.runtime.state == MT6797_WIFI_AIS_RUNTIME_STA_STATE1 ||
 		    connection->ais.runtime.state == MT6797_WIFI_AIS_RUNTIME_STA_STATE3)
@@ -712,6 +821,7 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	if (!connection)
 		return -ENOMEM;
 	init_completion(&connection->key_completion);
+	init_completion(&connection->pm_completion);
 	connection->control_port_no_encrypt = sme->crypto.control_port_no_encrypt;
 	connection->bss = cfg80211_get_bss(wiphy, sme->channel, sme->bssid,
 		sme->ssid, sme->ssid_len, IEEE80211_BSS_TYPE_ESS,
@@ -782,6 +892,7 @@ static int mt6797_radio_disconnect(struct wiphy *wiphy, struct net_device *netde
 	spin_lock_irqsave(&radio->lock, flags);
 	if (radio->connection) {
 		radio->connection->cancel = true;
+		complete(&radio->connection->pm_completion);
 		radio->connection->reason = reason;
 		queue_work(system_long_wq, &radio->connection_work);
 	}

@@ -848,6 +848,20 @@ out:
 	return ret;
 }
 
+int mt6797_wifi_ais_hif_release_channel(struct mt6797_wifi_ais_hif *ais)
+{
+	struct mt6797_wifi_ais_runtime_ops ops;
+	int ret;
+
+	if (!ais || !ais->initialized)
+		return -EINVAL;
+	mutex_lock(&ais->irq->lifecycle_lock);
+	mt6797_wifi_ais_hif_init_runtime_ops(ais, &ops);
+	ret = mt6797_wifi_ais_runtime_release_channel(&ais->runtime, &ops);
+	mutex_unlock(&ais->irq->lifecycle_lock);
+	return ret;
+}
+
 int mt6797_wifi_ais_hif_stop(struct mt6797_wifi_ais_hif *ais)
 {
 	struct mt6797_wifi_ais_runtime_ops ops;

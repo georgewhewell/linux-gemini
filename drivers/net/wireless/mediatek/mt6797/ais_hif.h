@@ -126,6 +126,7 @@ int mt6797_wifi_ais_hif_start(
 	struct mt6797_wifi_ais_hif *ais,
 	const struct mt6797_wifi_ais_hif_request *request);
 int mt6797_wifi_ais_hif_stop(struct mt6797_wifi_ais_hif *ais);
+int mt6797_wifi_ais_hif_release_channel(struct mt6797_wifi_ais_hif *ais);
 /*
  * Explicit, blocking, one-shot operation after start() reached STA_STATE1.
  * It is never invoked by probe; the caller supplies both timeout policy and

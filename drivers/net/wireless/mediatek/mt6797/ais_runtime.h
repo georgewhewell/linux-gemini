@@ -91,5 +91,9 @@ int mt6797_wifi_ais_runtime_event(
 int mt6797_wifi_ais_runtime_stop(
 	struct mt6797_wifi_ais_runtime *runtime,
 	const struct mt6797_wifi_ais_runtime_ops *ops);
+/* Drop temporary join privilege once firmware owns the connected BSS. */
+int mt6797_wifi_ais_runtime_release_channel(
+	struct mt6797_wifi_ais_runtime *runtime,
+	const struct mt6797_wifi_ais_runtime_ops *ops);
 
 #endif /* __MT6797_WIFI_AIS_RUNTIME_H */

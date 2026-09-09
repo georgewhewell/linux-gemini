@@ -48,7 +48,7 @@ struct net_device { u8 dev_addr[6]; };
 struct cfg80211_bss { u8 bssid[6]; };
 struct mt6797_radio_connection {
  struct cfg80211_bss *bss; bool cancel,peer_disconnect; u16 reason;
- bool key_waiting; int key_error; struct completion key_completion;
+ bool key_waiting; int key_error; struct completion key_completion,pm_completion;
 };
 struct mt6797_wifi_radio {
  int lock,connection_work; bool stopping;
@@ -68,11 +68,12 @@ program += re.sub(r'^#include .*\n', '', (driver / 'protocol.h').read_text(), fl
 for name in ['IEEE80211_FCTL_VERS', 'IEEE80211_FCTL_FTYPE', 'IEEE80211_FCTL_STYPE',
              'IEEE80211_FCTL_TODS', 'IEEE80211_FCTL_FROMDS', 'IEEE80211_FCTL_MOREFRAGS',
              'IEEE80211_FCTL_PROTECTED', 'IEEE80211_FCTL_ORDER', 'IEEE80211_SCTL_FRAG',
-             'IEEE80211_STYPE_DEAUTH', 'IEEE80211_STYPE_DISASSOC']:
+             'IEEE80211_STYPE_DEAUTH', 'IEEE80211_STYPE_DISASSOC', 'IEEE80211_STYPE_BEACON']:
     program += re.search(r'^#define\s+' + name + r'\s+[^\n]+', ieee, re.M)[0] + '\n'
 program += '''
 static unsigned data_calls;
 static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; data_calls++; return 0; }
+static int mt6797_radio_beacon(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
 '''
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
              'mt6797_radio_link_frame', 'mt6797_radio_disconnect']:

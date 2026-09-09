@@ -296,6 +296,28 @@ int mt6797_wifi_ais_runtime_start(
 	return 0;
 }
 
+int mt6797_wifi_ais_runtime_release_channel(
+	struct mt6797_wifi_ais_runtime *runtime,
+	const struct mt6797_wifi_ais_runtime_ops *ops)
+{
+	int ret;
+
+	if (!runtime || !mt6797_wifi_ais_runtime_ops_valid(ops))
+		return -EINVAL;
+	if (runtime->state == MT6797_WIFI_AIS_RUNTIME_TERMINAL)
+		return runtime->terminal_reason;
+	if (runtime->state != MT6797_WIFI_AIS_RUNTIME_STA_STATE3 ||
+	    runtime->owner_context != ops->context)
+		return -EALREADY;
+	if (runtime->sent[MT6797_WIFI_AIS_RUNTIME_CHANNEL_ABORT])
+		return 0;
+	ret = ops->precheck(ops->context);
+	if (ret)
+		return mt6797_wifi_ais_runtime_terminal(runtime, ops, ret);
+	return mt6797_wifi_ais_runtime_send(runtime, ops,
+		MT6797_WIFI_AIS_RUNTIME_CHANNEL_ABORT);
+}
+
 int mt6797_wifi_ais_runtime_stop(
 	struct mt6797_wifi_ais_runtime *runtime,
 	const struct mt6797_wifi_ais_runtime_ops *ops)
@@ -315,10 +337,12 @@ int mt6797_wifi_ais_runtime_stop(
 					   MT6797_WIFI_AIS_RUNTIME_STA_REMOVE);
 	if (ret)
 		return ret;
-	ret = mt6797_wifi_ais_runtime_send(runtime, ops,
-					   MT6797_WIFI_AIS_RUNTIME_CHANNEL_ABORT);
-	if (ret)
-		return ret;
+	if (!runtime->sent[MT6797_WIFI_AIS_RUNTIME_CHANNEL_ABORT]) {
+		ret = mt6797_wifi_ais_runtime_send(runtime, ops,
+			MT6797_WIFI_AIS_RUNTIME_CHANNEL_ABORT);
+		if (ret)
+			return ret;
+	}
 	ret = mt6797_wifi_ais_runtime_send(runtime, ops,
 					   MT6797_WIFI_AIS_RUNTIME_BSS_DEACTIVATE);
 	if (ret)

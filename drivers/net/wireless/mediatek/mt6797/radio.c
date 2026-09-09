@@ -86,8 +86,8 @@ struct mt6797_wifi_radio {
 	bool stopping;
 };
 
-#define MT6797_RADIO_TX_QUEUE_LIMIT 64U
-#define MT6797_RADIO_TX_WAKE_THRESHOLD 32U
+#define MT6797_RADIO_TX_QUEUE_LIMIT 16U
+#define MT6797_RADIO_TX_WAKE_THRESHOLD 8U
 
 struct mt6797_radio_tx_cb {
 	u64 enqueued_ns;

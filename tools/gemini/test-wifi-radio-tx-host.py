@@ -20,6 +20,8 @@ program = program.replace('struct mt6797_wifi_hif_irq { int lifecycle_lock; bool
  'struct mt6797_wifi_hif_irq { int lifecycle_lock; bool attached; struct completion tx_credit_completion; };')
 program = program.replace('static ktime_t ktime_get(void) { return 100; }',
  'static ktime_t test_time; static ktime_t ktime_get(void) { return test_time; }')
+for name in ('MT6797_RADIO_TX_QUEUE_LIMIT', 'MT6797_RADIO_TX_WAKE_THRESHOLD'):
+    program += re.search(r'^#define '+name+r' [0-9]+U$', base['radio'], re.M)[0]+'\n'
 program += r'''
 #include <stdarg.h>
 #include <sys/types.h>
@@ -36,8 +38,6 @@ program += r'''
 #define ALIGN(n,a) (((n)+(a)-1)&~((a)-1))
 #define check_add_overflow(a,b,p) __builtin_add_overflow(a,b,p)
 #define MT6797_WIFI_MCR_WTDR1 0x34
-#define MT6797_RADIO_TX_QUEUE_LIMIT 64U
-#define MT6797_RADIO_TX_WAKE_THRESHOLD 32U
 #define DEV_STATS_INC(d,n) ((d)->n++)
 #define DEV_STATS_ADD(d,n,v) ((d)->n+=(v))
 #define NETDEV_TX_OK 0
@@ -135,7 +135,7 @@ static void check_snapshot(void) {
  ssize_t length=tx_diagnostics_show((struct device *)&dev,NULL,text);
  assert(length>0 && length<PAGE_SIZE && text[length]=='\0' && text[length-1]=='\n');
  assert(!memcmp(&before,&r.tx_diag,sizeof(before))); /* Reads do not reset or mutate counters. */
- assert(field(text,"version")==1 && field(text,"queue_limit")==64);
+ assert(field(text,"version")==1 && field(text,"queue_limit")==MT6797_RADIO_TX_QUEUE_LIMIT && field(text,"queue_wake_below")==MT6797_RADIO_TX_WAKE_THRESHOLD);
  assert(field(text,"enqueued")==field(text,"dequeued")+field(text,"purged")+field(text,"queue_depth"));
  assert(field(text,"dequeued")==field(text,"hif_submitted")+field(text,"send_failed")+field(text,"send_active"));
  assert(field(text,"credit_wait_attempts")==field(text,"credit_wait_count")+field(text,"credit_wait_active"));
@@ -247,13 +247,15 @@ int main(void) {
  setup(); allocation_failure=true; submit(ETH_P_IP); run(); assert(r.tx_diag.send_failed==1 && !calls);
  setup(); submit(ETH_P_IP); c.connected=false; run(); assert(r.tx_diag.send_disconnected==1 && !calls);
  setup();
- for(unsigned i=0;i<64;i++) submit(ETH_P_IP);
- assert(r.tx_queue.length==64 && dev.stopped);
+ for(unsigned i=0;i<MT6797_RADIO_TX_QUEUE_LIMIT;i++) submit(ETH_P_IP);
+ assert(r.tx_queue.length==MT6797_RADIO_TX_QUEUE_LIMIT && dev.stopped);
  skb=packet(ETH_P_IP); memset(skb->cb,0xa5,sizeof(skb->cb));
+ struct sk_buff retained=*skb; unsigned queue_requests=queued;
  assert(mt6797_radio_xmit(skb,&dev)==NETDEV_TX_BUSY && !freed);
+ assert(!memcmp(&retained,skb,sizeof(retained)) && queued==queue_requests);
  for(unsigned i=0;i<sizeof(skb->cb);i++) assert(skb->cb[i]==0xa5); free(skb);
- assert(r.tx_diag.busy==1 && r.tx_diag.enqueued==64 && r.tx_diag.queue_high_water==64); check_snapshot();
- run(); assert(sends==64 && freed==64 && !dev.stopped);
+ assert(r.tx_diag.busy==1 && r.tx_diag.enqueued==MT6797_RADIO_TX_QUEUE_LIMIT && r.tx_diag.queue_high_water==MT6797_RADIO_TX_QUEUE_LIMIT); check_snapshot();
+ run(); assert(sends==MT6797_RADIO_TX_QUEUE_LIMIT && freed==MT6797_RADIO_TX_QUEUE_LIMIT && !dev.stopped);
  setup(); submit(ETH_P_IP); submit(ETH_P_PAE); c.cancel=true;
  mt6797_radio_purge_tx(&r); assert(freed==2 && dev.tx_dropped==2); run(); assert(!sends);
  assert(r.tx_diag.purged==2 && !r.tx_diag.dequeued && !r.tx_diag.queue_wait.count);
@@ -289,3 +291,5 @@ if __name__ == '__main__':
         subprocess.run([str(path / 'test')], check=True)
     subprocess.run([sys.executable, '-B', str(Path(__file__).with_name(
         'test-wifi-radio-tx-diag-lifecycle-host.py'))], check=True)
+    subprocess.run([sys.executable, '-B', str(Path(__file__).with_name(
+        'test-wifi-radio-tx-queue-race-host.py'))], check=True)

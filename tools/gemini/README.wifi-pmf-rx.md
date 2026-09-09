@@ -17,8 +17,8 @@ association ownership and WTBL generation before advancing replay state. Valid
 deauthentication/disassociation queues the existing disconnect path. Once PMF
 is selected, rejected frames cannot fall through to the legacy unauthenticated
 disconnect path. Robust actions are classified and checked. The subsequent
-[SA Query responder slice](README.wifi-sa-query.md) handles requests; query
-initiation and other robust-action delivery remain unimplemented.
+[SA Query implementation](README.wifi-sa-query.md) handles initiation, matching,
+timers and requests; other robust-action delivery remains unimplemented.
 
 Validation uses `test-wifi-pmf-rx-host.py` with actual production parser, BIP
 formatting, callbacks, ownership helpers and replay mutation. OpenSSL substitutes
@@ -39,7 +39,7 @@ Firmware assumptions still require controlled evidence before enabling PMF:
   status in the expected GEN3 format. Current vendor auth/assoc and nic_rx sources
   support this interpretation, but synthetic tests cannot verify the blob.
 - IGTK overlap/rekey and historical key-reinstallation policy, robust-action
-  TX/RX delivery, SA Query initiation, PMF negotiation/capabilities and the SAE external-auth
+  TX/RX delivery, PMF negotiation/capabilities and the SAE external-auth
   bridge remain separate prerequisites. This is not working WPA3 support.
 
 Source basis: vendor GEN3 `include/nic/nic_rx.h`, `nic/nic_rx.c`,

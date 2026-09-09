@@ -26,6 +26,46 @@ static bool mt6797_wifi_mgmt_action_robust(u8 category)
 		category != WLAN_CATEGORY_VENDOR_SPECIFIC;
 }
 
+int mt6797_wifi_mgmt_rx_sa_query_trigger(const u8 *packet, size_t available,
+	struct mt6797_wifi_mgmt_rx *management)
+{
+	struct mt6797_wifi_rx_view view;
+	u16 control, reason;
+	int ret;
+
+	if (!management)
+		return -EINVAL;
+	*management = (struct mt6797_wifi_mgmt_rx) {};
+	ret = mt6797_wifi_rx_parse(packet, available, &view);
+	if (ret)
+		return ret;
+	if (view.kind != MT6797_WIFI_RX_IEEE80211 || view.header_translated ||
+	    view.header_length != MT6797_MGMT_HEADER_LENGTH ||
+	    view.payload_length < MT6797_MGMT_HEADER_LENGTH + 2 || (packet[7] & 3) ||
+	    (packet[9] >> 4) != 0 || (get_unaligned_le16(packet + 10) & (0x1ffe & ~BIT(2))))
+		return -EOPNOTSUPP;
+	control = get_unaligned_le16(view.payload);
+	if (control & (IEEE80211_FCTL_VERS | IEEE80211_FCTL_FTYPE |
+		       IEEE80211_FCTL_TODS | IEEE80211_FCTL_FROMDS | IEEE80211_FCTL_PROTECTED |
+		       IEEE80211_FCTL_MOREFRAGS | IEEE80211_FCTL_ORDER) ||
+	    (get_unaligned_le16(view.payload + 22) & IEEE80211_SCTL_FRAG) ||
+	    !is_valid_ether_addr(view.payload + 4) || !is_valid_ether_addr(view.payload + 10) ||
+	    !is_valid_ether_addr(view.payload + 16))
+		return -EPROTO;
+	control &= IEEE80211_FCTL_STYPE;
+	if (control != IEEE80211_STYPE_DEAUTH && control != IEEE80211_STYPE_DISASSOC)
+		return -EOPNOTSUPP;
+	reason = get_unaligned_le16(view.payload + 24);
+	if (reason != WLAN_REASON_CLASS2_FRAME_FROM_NONAUTH_STA &&
+	    reason != WLAN_REASON_CLASS3_FRAME_FROM_NONASSOC_STA)
+		return -EOPNOTSUPP;
+	*management = (struct mt6797_wifi_mgmt_rx) {
+		.frame = view.payload, .frame_length = view.payload_length,
+		.subtype = control, .bss_index = packet[7] >> 2, .wlan_index = view.wlan_index,
+	};
+	return 0;
+}
+
 int mt6797_wifi_mgmt_rx_decode(const u8 *packet, size_t available,
 	struct mt6797_wifi_mgmt_rx *management)
 {

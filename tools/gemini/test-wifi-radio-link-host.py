@@ -58,6 +58,7 @@ struct mt6797_wifi_radio {
 };
 struct wiphy { struct mt6797_wifi_radio *radio; };
 static struct mt6797_wifi_radio *wiphy_priv(struct wiphy *w) { return w->radio; }
+static void mt6797_radio_sa_query_stop(struct mt6797_wifi_radio *r) { (void)r; }
 #define spin_lock_irqsave(l,f) do { assert(!*(l)); *(l)=1; (f)=0; } while(0)
 #define spin_unlock_irqrestore(l,f) do { (void)(f); assert(*(l)); *(l)=0; } while(0)
 #define system_long_wq 0

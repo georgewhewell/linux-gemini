@@ -41,9 +41,12 @@ struct completion { bool done; };
 static void complete(struct completion *c) { c->done=true; }
 struct mutex { int held; };
 struct work_struct { int dummy; };
+struct delayed_work { struct work_struct work; bool pending; unsigned long delay; ktime_t due; unsigned scheduled,cancelled; };
+static bool cancel_delayed_work(struct delayed_work *w) { bool pending=w->pending; w->pending=false; w->cancelled++; return pending; }
 struct sk_buff_head { unsigned length; };
 #define ETH_ALEN 6
 #define U8_MAX UINT8_MAX
+#define U64_MAX UINT64_MAX
 #define DECLARE_BITMAP(name,bits) unsigned long name[((bits)+63)/64]
 #define GENMASK(h,l) ((~0UL<<(l)) & (~0UL>>(63-(h))))
 #define IEEE80211_MAX_SSID_LEN 32
@@ -185,7 +188,11 @@ static void cfg80211_disconnected(struct net_device *netdev,u16 reason,
 static void cfg80211_put_bss(struct wiphy *wiphy,struct cfg80211_bss *bss) {
  (void)wiphy; assert(bss); test.puts++;
 }
-static void kfree_sensitive(void *p) { assert(!test.radio->connection); test.frees++; free(p); }
+static void kfree_sensitive(void *p) {
+ struct mt6797_radio_connection *c=p;
+ assert(!test.radio->connection && !c->sa_query_active && !c->sa_query_count && !test.radio->sa_query_work.pending);
+ test.frees++; free(p);
+}
 '''
 program += '''
 int mt6797_wifi_ais_ccmp_ready_match(const struct mt6797_wifi_ais_sta_pending *p, const struct mt6797_wifi_event_view *e, enum mt6797_wifi_ais_event_disposition *d) { (void)p; (void)e; *d=MT6797_WIFI_AIS_EVENT_IGNORED; return 0; }
@@ -197,6 +204,7 @@ static void netif_carrier_off(struct net_device *d) { (void)d; }
 static void netif_stop_queue(struct net_device *d) { (void)d; }
 static void netif_wake_queue(struct net_device *d) { (void)d; }
 static void mt6797_radio_purge_tx(struct mt6797_wifi_radio *r) { (void)r; }
+static void memzero_explicit(void *p,size_t n) { memset(p,0,n); }
 static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
 static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return false; }
 static int mt6797_radio_beacon(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
@@ -204,7 +212,7 @@ static int mt6797_radio_finish_pm(struct mt6797_wifi_radio *r) { assert(r->conne
 static int mt6797_radio_igtk_cleanup(struct mt6797_wifi_radio *r) { assert(r->connection_lock.held && !r->irq->attached); test.igtk_cleanups++; return 0; }
 static int mt6797_radio_pm_send(struct mt6797_wifi_radio *r,bool connected) { assert(!connected && r->connection_lock.held && !r->irq->attached); test.pm_aborts++; r->connection->pm_started=false; return 0; }
 '''
-for name in ['mt6797_radio_link_event', 'mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
+for name in ['mt6797_radio_link_event', 'mt6797_radio_connection_cancelled', 'mt6797_radio_sa_query_stop', 'mt6797_radio_link_abort',
              'mt6797_radio_link_frame', 'mt6797_radio_connection_work']:
     program += function(name)
 program += r'''
@@ -252,6 +260,8 @@ int main(void) {
  assert(test.ais_command==5 && r.command_sequence==12);
  assert(!test.puts && !test.frees && !test.stops);
  assert(test.pm_finishes==1 && r.connection->pm_started);
+ r.connection->sa_query_active=true; r.connection->sa_query_count=2;
+ r.sa_query_work.pending=true; memset(r.connection->sa_query_ids,0xa5,sizeof(r.connection->sa_query_ids));
  r.connection->cancel=true; r.connection->reason=3;
  mt6797_radio_connection_work(&r.connection_work);
  assert(test.disconnected==1 && test.detaches==1 && test.stops==1 && r.management_pid==9);

@@ -18,6 +18,8 @@ base = runpy.run_path(str(Path(__file__).with_name('test-wifi-radio-key-host.py'
 driver = base['driver']
 root = driver.parents[4]
 program = base['program'].replace('int main(void) {', 'static int key_main(void) {')
+program = program.replace('static ktime_t ktime_get(void) { return 100; }',
+    'static ktime_t fake_now_us=100000; static ktime_t ktime_get(void) { return fake_now_us; }')
 program = re.sub(r'static u64 mt6797_wifi_data_rx_pn\([^\n]*\n', '', program)
 data = (driver / 'data_rx.c').read_text()
 # This function is needed by earlier production key callbacks too.
@@ -39,7 +41,9 @@ for name in ['WLAN_CATEGORY_PUBLIC', 'WLAN_CATEGORY_HT', 'WLAN_CATEGORY_WNM_UNPR
              'WLAN_CATEGORY_SELF_PROTECTED', 'WLAN_CATEGORY_UNPROT_DMG',
              'WLAN_CATEGORY_VHT', 'WLAN_CATEGORY_S1G', 'WLAN_CATEGORY_VENDOR_SPECIFIC',
              'WLAN_EID_MMIE', 'WLAN_CATEGORY_SA_QUERY',
-             'WLAN_ACTION_SA_QUERY_REQUEST', 'WLAN_ACTION_SA_QUERY_RESPONSE']:
+             'WLAN_ACTION_SA_QUERY_REQUEST', 'WLAN_ACTION_SA_QUERY_RESPONSE',
+             'WLAN_REASON_CLASS2_FRAME_FROM_NONAUTH_STA', 'WLAN_REASON_CLASS3_FRAME_FROM_NONASSOC_STA',
+             'WLAN_REASON_PREV_AUTH_NOT_VALID']:
     value = re.search(r'\b' + name + r'\s*=\s*(0x[0-9a-fA-F]+|\d+)', ieee)[1]
     program += '#define ' + name + ' ' + value + '\n'
 program += r'''
@@ -69,10 +73,24 @@ static void aes_cmac_final(struct aes_cmac_ctx *ctx,u8 out[16]) {
 }
 static int crypto_memneq(const void *a,const void *b,size_t length) { return CRYPTO_memcmp(a,b,length); }
 static bool is_multicast_ether_addr(const u8 *a) { return a[0]&1; }
+static ktime_t ktime_add_ms(ktime_t a,s64 b) { return a+b*1000; }
+static ktime_t ktime_add_us(ktime_t a,s64 b) { return a+b; }
+static s64 ktime_us_delta(ktime_t a,ktime_t b) { return a-b; }
+static bool ktime_before(ktime_t a,ktime_t b) { return a<b; }
+static bool ktime_after(ktime_t a,ktime_t b) { return a>b; }
+static unsigned long usecs_to_jiffies(unsigned long us) { return (us+999)/1000; }
+static bool mod_delayed_work(int queue,struct delayed_work *w,unsigned long delay) {
+ (void)queue; bool pending=w->pending; w->pending=true; w->delay=delay;
+ w->due=fake_now_us+delay*1000; w->scheduled++; return pending;
+}
+#define to_delayed_work(w) container_of(w,struct delayed_work,work)
+#define DIV_ROUND_UP(n,d) (((n)+(d)-1)/(d))
 '''
 for name in ['mgmt_rx.h', 'mgmt_rx.c']:
     program += re.sub(r'^#include .*\n', '', (driver / name).read_text(), flags=re.M)
-program += base['function']('mt6797_radio_pmf_frame')
+for name in ['mt6797_radio_management_ready', 'mt6797_radio_sa_query_current',
+             'mt6797_radio_sa_query_start', 'mt6797_radio_sa_query_match', 'mt6797_radio_pmf_frame']:
+    program += base['function'](name)
 program += r'''
 static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r,const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
 static int mt6797_radio_beacon(struct mt6797_wifi_radio *r,const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }

@@ -108,7 +108,7 @@ for name in ['mt6797_wifi_ais_mgmt_require_open', 'mt6797_wifi_ais_mgmt_lease_ma
              'mt6797_wifi_ais_mgmt_tx_event_match']:
     program += extract(management, name)
 
-for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
+for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_sa_query_stop', 'mt6797_radio_link_abort',
              'mt6797_radio_link_event', 'mt6797_radio_key_connection',
              'mt6797_radio_key_send', 'mt6797_radio_sta_owner_same',
              'mt6797_radio_wtbl_same', 'mt6797_radio_igtk_owner',

@@ -38,7 +38,8 @@ for name in ['IEEE80211_STYPE_ACTION', 'IEEE80211_FCTL_RETRY', 'IEEE80211_FCTL_P
 for name in ['WLAN_CATEGORY_PUBLIC', 'WLAN_CATEGORY_HT', 'WLAN_CATEGORY_WNM_UNPROTECTED',
              'WLAN_CATEGORY_SELF_PROTECTED', 'WLAN_CATEGORY_UNPROT_DMG',
              'WLAN_CATEGORY_VHT', 'WLAN_CATEGORY_S1G', 'WLAN_CATEGORY_VENDOR_SPECIFIC',
-             'WLAN_EID_MMIE']:
+             'WLAN_EID_MMIE', 'WLAN_CATEGORY_SA_QUERY',
+             'WLAN_ACTION_SA_QUERY_REQUEST', 'WLAN_ACTION_SA_QUERY_RESPONSE']:
     value = re.search(r'\b' + name + r'\s*=\s*(0x[0-9a-fA-F]+|\d+)', ieee)[1]
     program += '#define ' + name + ' ' + value + '\n'
 program += r'''
@@ -192,9 +193,12 @@ int main(void) {
  setup_rx(false); memset(packet+16,0xff,6); receive(true);
  assert(c.pairwise_key.mgmt_rx_pn==0xffffffffffffULL); receive(false);
  memset(packet+16,0,6); receive(false); assert(c.pairwise_key.mgmt_rx_pn==0xffffffffffffULL);
- /* Robust actions validate/update replay state but are not delivered by this slice. */
- setup_rx(false); packet[frame_offset]=0xd0; packet[frame_offset+24]=8;
+ /* Other robust actions validate/update replay state but are not delivered. */
+ setup_rx(false); packet[frame_offset]=0xd0; packet[frame_offset+24]=0;
  receive(false); assert(c.pairwise_key.mgmt_rx_pn==8);
+ /* SA Query needs both transaction-ID bytes before it can advance replay. */
+ setup_rx(false); packet[frame_offset]=0xd0; packet[frame_offset+24]=WLAN_CATEGORY_SA_QUERY;
+ decoded_rejected(); receive(false); assert(c.pairwise_key.mgmt_rx_pn==7);
  setup_rx(true); packet[frame_offset]=0xd0; packet[frame_offset+24]=WLAN_CATEGORY_PUBLIC;
  decoded_rejected();
  setup_rx(true); c.connected=false; receive(false); assert(c.igtk.rx_pn[0]==7);

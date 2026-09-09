@@ -651,7 +651,7 @@ int mt6797_wifi_ais_hif_associate(
 		.event = mt6797_ais_join_event, .frame = mt6797_ais_join_frame,
 		.abort = mt6797_ais_join_abort, .context = ais,
 	};
-	struct mt6797_wifi_ais_mgmt_tx_params tx;
+	struct mt6797_wifi_ais_mgmt_tx_params tx = {};
 	struct mt6797_wifi_ais_assoc_response response;
 	struct mt6797_wifi_ais_join_params params;
 	struct mt6797_wifi_ais_hif_join *join;

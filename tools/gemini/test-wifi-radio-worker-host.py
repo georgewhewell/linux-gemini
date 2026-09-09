@@ -189,6 +189,7 @@ static void kfree_sensitive(void *p) { assert(!test.radio->connection); test.fre
 '''
 program += '''
 int mt6797_wifi_ais_ccmp_ready_match(const struct mt6797_wifi_ais_sta_pending *p, const struct mt6797_wifi_event_view *e, enum mt6797_wifi_ais_event_disposition *d) { (void)p; (void)e; *d=MT6797_WIFI_AIS_EVENT_IGNORED; return 0; }
+int mt6797_wifi_ais_mgmt_tx_event_match(const struct mt6797_wifi_ais_mgmt_pid_owner *o, const struct mt6797_wifi_ais_mgmt_pid_lease *l, const struct mt6797_wifi_event_view *e, enum mt6797_wifi_ais_event_disposition *d, struct mt6797_wifi_ais_mgmt_tx_status *s) { (void)o; (void)l; (void)e; (void)s; *d=MT6797_WIFI_AIS_EVENT_IGNORED; return 0; }
 '''
 program += '''
 static void netif_carrier_on(struct net_device *d) { (void)d; }

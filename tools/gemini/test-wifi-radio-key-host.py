@@ -102,6 +102,11 @@ for name in ['mt6797_wifi_ais_wtbl_valid', 'mt6797_wifi_ais_bss_valid',
              'mt6797_wifi_ais_sta_valid', 'mt6797_wifi_ais_sta_pending_init']:
     program += extract(protocol, name)
 program += re.sub(r'^#include .*\n', '', (driver / 'ais_key.c').read_text(), flags=re.M)
+management = (driver / 'ais_mgmt_tx.c').read_text()
+program += '#define MT6797_WIFI_AIS_MGMT_EVENT_TX_DONE 0x0fU\n'
+for name in ['mt6797_wifi_ais_mgmt_require_open', 'mt6797_wifi_ais_mgmt_lease_matches',
+             'mt6797_wifi_ais_mgmt_tx_event_match']:
+    program += extract(management, name)
 
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
              'mt6797_radio_link_event', 'mt6797_radio_key_connection',

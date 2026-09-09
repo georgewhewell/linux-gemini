@@ -49,6 +49,7 @@ struct cfg80211_bss { u8 bssid[6]; };
 struct mt6797_radio_connection {
  struct cfg80211_bss *bss; bool cancel,peer_disconnect; u16 reason;
  bool key_waiting; int key_error; struct completion key_completion,pm_completion;
+ bool management_waiting; int management_error; struct completion management_completion;
 };
 struct mt6797_wifi_radio {
  int lock,connection_work; bool stopping;

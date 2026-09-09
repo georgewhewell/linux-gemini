@@ -62,7 +62,7 @@ program += rate_mask + '\n' + rate_macro + '\n'
 # Import the actual kernel's wire constants; do not duplicate their values.
 ieee = (root / 'include/linux/ieee80211.h').read_text()
 names = ['IEEE80211_STYPE_ASSOC_REQ', 'IEEE80211_STYPE_ASSOC_RESP',
-         'IEEE80211_STYPE_AUTH', 'IEEE80211_STYPE_BEACON', 'IEEE80211_FTYPE_MGMT', 'IEEE80211_FCTL_ORDER',
+         'IEEE80211_STYPE_AUTH', 'IEEE80211_STYPE_BEACON', 'IEEE80211_STYPE_ACTION', 'IEEE80211_FTYPE_MGMT', 'IEEE80211_FCTL_ORDER',
          'IEEE80211_FCTL_VERS', 'IEEE80211_FCTL_FTYPE', 'IEEE80211_FCTL_STYPE',
          'IEEE80211_FCTL_TODS', 'IEEE80211_FCTL_FROMDS', 'IEEE80211_FCTL_PROTECTED',
          'IEEE80211_FCTL_MOREFRAGS', 'IEEE80211_SCTL_FRAG',
@@ -70,6 +70,9 @@ names = ['IEEE80211_STYPE_ASSOC_REQ', 'IEEE80211_STYPE_ASSOC_RESP',
 for name in names:
     program += re.search(r'^#define\s+' + name + r'\s+[^\n]+', ieee, re.M)[0] + '\n'
 program += re.search(r'enum ieee80211_eid \{.*?\n\};', ieee, re.S)[0] + '\n'
+for name in ['WLAN_CATEGORY_SA_QUERY', 'WLAN_ACTION_SA_QUERY_REQUEST', 'WLAN_ACTION_SA_QUERY_RESPONSE']:
+    value = re.search(r'\b' + name + r'\s*=\s*(0x[0-9a-fA-F]+|\d+)', ieee)[1]
+    program += '#define ' + name + ' ' + value + '\n'
 for name in ['protocol.h', 'ais_resources.h', 'ais_protocol.h', 'ais_assoc.h',
              'ais_mgmt_tx.h', 'ais_protocol.c', 'ais_assoc.c', 'ais_mgmt_tx.c']:
     program += source(name) + '\n'

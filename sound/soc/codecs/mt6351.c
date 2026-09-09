@@ -114,14 +114,6 @@
 /* MT6351_AFE_NCP_CFG0 */
 #define RG_NCP_ON_BIT 0
 
-/* MT6351_LDO_VUSB33_CON0 */
-#define RG_VUSB33_EN 1
-#define RG_VUSB33_ON_CTRL 3
-
-/* MT6351_LDO_VA18_CON0 */
-#define RG_VA18_EN 1
-#define RG_VA18_ON_CTRL 3
-
 /* MT6351_AUDENC_ANA_CON0 */
 #define RG_AUDPREAMPLON 0
 #define RG_AUDPREAMPLDCCEN 1
@@ -1230,18 +1222,9 @@ static const struct snd_soc_dapm_widget mt6351_dapm_widgets[] = {
 			       mt_aif_out_event,
 			       SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_PRE_PMD),
 
-	SND_SOC_DAPM_SUPPLY_S("VUSB33_LDO", SUPPLY_SUBSEQ_ENABLE,
-			      MT6351_LDO_VUSB33_CON0, RG_VUSB33_EN, 0,
-			      NULL, 0),
-	SND_SOC_DAPM_SUPPLY_S("VUSB33_LDO_CTRL", SUPPLY_SUBSEQ_SETTING,
-			      MT6351_LDO_VUSB33_CON0, RG_VUSB33_ON_CTRL, 1,
-			      NULL, 0),
-
-	SND_SOC_DAPM_SUPPLY_S("VA18_LDO", SUPPLY_SUBSEQ_ENABLE,
-			      MT6351_LDO_VA18_CON0, RG_VA18_EN, 0, NULL, 0),
-	SND_SOC_DAPM_SUPPLY_S("VA18_LDO_CTRL", SUPPLY_SUBSEQ_SETTING,
-			      MT6351_LDO_VA18_CON0, RG_VA18_ON_CTRL, 1,
-			      NULL, 0),
+	/* These PMIC rails are shared with other consumers, including USB. */
+	SND_SOC_DAPM_REGULATOR_SUPPLY("vusb33", 0, 0),
+	SND_SOC_DAPM_REGULATOR_SUPPLY("va18", 0, 0),
 
 	SND_SOC_DAPM_SUPPLY_S("ADC CLKGEN", SUPPLY_SUBSEQ_ENABLE,
 			      MT6351_AUDENC_ANA_CON3, RG_AUDADCCLKRSTB, 0,
@@ -1306,10 +1289,8 @@ static const struct snd_soc_dapm_widget mt6351_dapm_widgets[] = {
 static const struct snd_soc_dapm_route mt6351_dapm_routes[] = {
 	/* Capture */
 	{"AIF1TX", NULL, "AIF Out Mux"},
-	{"AIF1TX", NULL, "VUSB33_LDO"},
-	{"VUSB33_LDO", NULL, "VUSB33_LDO_CTRL"},
-	{"AIF1TX", NULL, "VA18_LDO"},
-	{"VA18_LDO", NULL, "VA18_LDO_CTRL"},
+	{"AIF1TX", NULL, "vusb33"},
+	{"AIF1TX", NULL, "va18"},
 
 	{"AIF1TX", NULL, "AUDGLB"},
 	{"AIF1TX", NULL, "CLKSQ Audio"},

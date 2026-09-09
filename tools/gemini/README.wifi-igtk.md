@@ -89,3 +89,6 @@ provides the independent reference for per-ID key ownership and suppressing
 identical key replacement. The bounded association-wide history here is a
 conservative driver policy, not a claim that mac80211 supplies that history or
 that the GEN3 firmware has equivalent storage.
+
+A concrete [firmware qualification plan and cached-state observer](README.wifi-pmf-qualification.md)
+separates accepted WPA2 observations from future controlled PMF tests.

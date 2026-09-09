@@ -73,6 +73,7 @@ for name in ['IEEE80211_FCTL_VERS', 'IEEE80211_FCTL_FTYPE', 'IEEE80211_FCTL_STYP
 program += '''
 static unsigned data_calls;
 static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; data_calls++; return 0; }
+static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return false; }
 static int mt6797_radio_beacon(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
 '''
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',

@@ -50,6 +50,10 @@ int main(void) {
  frame[12]=8; frame[13]=6; p.traffic=MT6797_WIFI_TX_ARP;
  assert(!mt6797_wifi_tx_build(packet,sizeof(packet),frame,sizeof(frame),&p,&length));
  assert(packet[3]==0x20 && packet[11]==0x80 && !get_unaligned_le16(packet+26));
+ assert(packet[6]==0); /* Non-QoS ARP has TID0, including on open links. */
+ p.protected=true;
+ assert(!mt6797_wifi_tx_build(packet,sizeof(packet),frame,sizeof(frame),&p,&length));
+ assert(packet[6]==0x80); /* CCMP protection must not introduce a QoS TID. */
  frame[13]=0; p.traffic=MT6797_WIFI_TX_DATA; p.protected=true;
  assert(!mt6797_wifi_tx_build(packet,sizeof(packet),frame,sizeof(frame),&p,&length));
  assert(packet[6]==0x80 && packet[11]==0);

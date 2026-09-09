@@ -249,6 +249,34 @@ static void mt6797_wifi_tx_eapol_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, packet[43], (u8)0);
 }
 
+static void mt6797_wifi_tx_nonqos_arp_test(struct kunit *test)
+{
+	u8 payload[ETH_HLEN + 28] = {};
+	u8 packet[72];
+	struct mt6797_wifi_tx_params params = {
+		.traffic = MT6797_WIFI_TX_ARP,
+		.wlan_index = 3,
+		.protected = true,
+	};
+	size_t transfer_length;
+	int ret;
+
+	memset(payload, 0xff, ETH_ALEN);
+	put_unaligned_be16(ETH_P_ARP, payload + 12);
+	ret = mt6797_wifi_tx_build(packet, sizeof(packet), payload,
+				   sizeof(payload), &params, &transfer_length);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, transfer_length, (size_t)72);
+	KUNIT_EXPECT_EQ(test, packet[3], (u8)0x20);
+	KUNIT_EXPECT_EQ(test, packet[4], (u8)3);
+	/* Broadcast Ethernet still uses the AP's pairwise, non-QoS link. */
+	KUNIT_EXPECT_EQ(test, packet[6], (u8)BIT(7));
+	KUNIT_EXPECT_EQ(test, packet[11], (u8)BIT(7));
+	KUNIT_EXPECT_EQ(test, get_unaligned_le16(packet + 26), (u16)0);
+	KUNIT_EXPECT_MEMEQ(test, packet + MT6797_WIFI_TX_DESCRIPTOR_LENGTH,
+			   payload, sizeof(payload));
+}
+
 static void mt6797_wifi_tx_bounds_test(struct kunit *test)
 {
 	u8 payload[ETH_HLEN] = {};
@@ -289,6 +317,7 @@ static struct kunit_case mt6797_wifi_protocol_cases[] = {
 	KUNIT_CASE(mt6797_wifi_rx_bounds_test),
 	KUNIT_CASE(mt6797_wifi_tx_data_test),
 	KUNIT_CASE(mt6797_wifi_tx_eapol_test),
+	KUNIT_CASE(mt6797_wifi_tx_nonqos_arp_test),
 	KUNIT_CASE(mt6797_wifi_tx_bounds_test),
 	{}
 };

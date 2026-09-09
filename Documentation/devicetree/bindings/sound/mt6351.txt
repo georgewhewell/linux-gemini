@@ -11,6 +11,19 @@ Required properties:
 - vusb33-supply : Regulator supplying the shared 3.3 V rail.
 - va18-supply : Regulator supplying the 1.8 V analog rail.
 
+Optional properties:
+
+- mediatek,jack-detection : Enable the internal active-low PMIC EINT detector
+  when the machine driver attaches an ALSA jack. This supports ACC detection
+  with 2.7 V microphone bias; AP GPIO detection and external contact switches
+  are not described by this property. The detector reports headphones and a
+  headset microphone. Button ADC decoding is not yet supported.
+- mediatek,accdet-pwm-settings : Required with mediatek,jack-detection. Seven
+  integers: PWM width, PWM threshold, falling-delay enable, rising delay,
+  AB=0 debounce, AB=1 debounce and AB=3 debounce. Width and threshold are in
+  hardware ticks (1..65535), with threshold <= width; falling-delay enable is
+  0 or 1, rising delay is 0..32767, and the debounce values are 1..65535.
+
 Example:
 
 mt6351_snd {

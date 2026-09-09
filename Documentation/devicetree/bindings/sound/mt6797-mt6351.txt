@@ -18,6 +18,14 @@ Required properties for "planet,gemini-mt6797-mt6351":
   are enabled after the headphone buffers and disabled before those buffers.
   Both pins are held low at card initialization and when Speaker is disabled.
 
+Optional Gemini properties:
+- mediatek,headset-jack: attach the codec's internal PMIC headset detector and
+  expose separate Headphone Jack and Headset Mic Jack controls. Requires
+  mediatek,jack-detection on the referenced codec. A present headphone mutes
+  the external amplifiers, including during an existing Speaker stream. On
+  removal the amplifiers resume only if that stream still requests Speaker.
+  This does not disconnect the shared codec headphone buffers.
+
 Example:
 
 	sound {

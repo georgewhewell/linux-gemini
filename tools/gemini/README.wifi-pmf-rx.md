@@ -38,9 +38,11 @@ Firmware assumptions still require controlled evidence before enabling PMF:
 - CCMP robust management must expose the decrypted body, group1 PN and integrity
   status in the expected GEN3 format. Current vendor auth/assoc and nic_rx sources
   support this interpretation, but synthetic tests cannot verify the blob.
-- IGTK overlap/rekey and historical key-reinstallation policy, robust-action
-  TX/RX delivery, PMF negotiation/capabilities and the SAE external-auth
-  bridge remain separate prerequisites. This is not working WPA3 support.
+- The subsequent [IGTK lifecycle implementation](README.wifi-igtk.md) provides
+  host overlap/rekey and historical reinstall protection, but firmware overlap
+  and delete isolation still require evidence. Other robust-action handling,
+  PMF negotiation/capabilities and the SAE external-auth bridge remain separate
+  prerequisites. This is not working WPA3 support.
 
 Source basis: vendor GEN3 `include/nic/nic_rx.h`, `nic/nic_rx.c`,
 `mgmt/saa_fsm.c`, `mgmt/auth.c` and `mgmt/assoc.c`; this kernel's

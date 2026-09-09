@@ -147,6 +147,41 @@ static void decoded_rejected(void) {
  assert(mt6797_wifi_mgmt_rx_decode(packet,packet_length,&out)<0);
  assert(!memcmp(&out,&zero,sizeof(out)));
 }
+static void receive_during_key_change(void) {
+ assert(c.igtk_updating); receive(false);
+ assert(c.igtk[0].rx_pn[0]==7 && !c.cancel);
+}
+static void overlap_tests(void) {
+ const u8 second[16]={0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
+ /* OpenSSL CLI CMAC vectors for the same AAD/body as bip_mic with key
+  * 000102030405060708090a0b0c0d0e0f and the stated full MMIE ID/IPN. */
+ const u8 mic5pn8[8]={0x08,0x9a,0x25,0xba,0x1a,0x4f,0xad,0x98};
+ const u8 mic5pn9[8]={0x7b,0x1b,0xe5,0xfd,0x72,0x7d,0x39,0xad};
+ const u8 mic4pn9[8]={0x45,0xf7,0xc7,0x8e,0xd5,0x84,0x47,0x0d};
+ const u8 mic4pn8[8]={0x9a,0x32,0x4c,0x9c,0x15,0x91,0x28,0x50};
+ setup_rx(true); params.key=second; igtk_send_hook=receive_during_key_change;
+ assert(!add(5,false)); igtk_send_hook=NULL;
+ assert(c.igtk[0].rx_pn[0]==7 && c.igtk[1].rx_pn[0]==7 && !c.igtk_updating);
+ assert(!default_igtk(5)); receive(true); assert(c.igtk[0].rx_pn[0]==8 && c.igtk[1].rx_pn[0]==7);
+ frame_build(true,5); packet[packet_length-16]=5; memcpy(packet+packet_length-8,mic5pn8,8);
+ receive(true); assert(c.igtk[0].rx_pn[0]==8 && c.igtk[1].rx_pn[0]==8); receive(false);
+ /* An authentic MIC under the other installed material is not an ID match. */
+ frame_build(true,5); packet[packet_length-14]=9; memcpy(packet+packet_length-8,mic4pn9,8);
+ receive(false); assert(c.igtk[0].rx_pn[0]==8 && c.igtk[1].rx_pn[0]==8);
+ assert(!del(4,false) && c.authorized && c.igtk_default==5);
+ frame_build(true,5); receive(false); /* Retired ID has no host fallback. */
+ packet[packet_length-16]=5; packet[packet_length-14]=9; memcpy(packet+packet_length-8,mic5pn9,8);
+ receive(true); assert(c.igtk[1].rx_pn[0]==9); receive(false);
+ params.key=bip_key; assert(add(4,false)==-EKEYREJECTED && c.igtk[1].rx_pn[0]==9);
+ /* Same-ID replacement rejects old MIC without advancing its fresh counter. */
+ setup_rx(true); params.key=second; assert(!add(4,false));
+ receive(false); assert(c.igtk[0].rx_pn[0]==7);
+ memcpy(packet+packet_length-8,mic4pn8,8); receive(true); assert(c.igtk[0].rx_pn[0]==8);
+ /* Deleting either ID gates RX while the shared WTBL command is in flight. */
+ setup_rx(true); params.key=second; assert(!add(5,false));
+ igtk_send_hook=receive_during_key_change; assert(!del(5,false)); igtk_send_hook=NULL;
+ receive(true); assert(c.igtk[0].rx_pn[0]==8 && !c.igtk[1].installed);
+}
 static void primitive_known_answer(void) {
  /* RFC4493 example2 independently verifies the host AES-CMAC replacement. */
  const u8 input[16]={0x6b,0xc1,0xbe,0xe2,0x2e,0x40,0x9f,0x96,0xe9,0x3d,0x7e,0x11,0x73,0x93,0x17,0x2a};
@@ -156,7 +191,7 @@ static void primitive_known_answer(void) {
  aes_cmac_update(&ctx,input,16); aes_cmac_final(&ctx,out); assert(!memcmp(out,expected,16));
 }
 int main(void) {
- key_main(); primitive_known_answer();
+ key_main(); primitive_known_answer(); overlap_tests();
  /* BIP uses intact MMIE ID/IPN, never the descriptor's 2-bit ID/group1 PN. */
  for(unsigned groups=0;groups<16;groups++) {
   setup_rx(true); frame_build(true,groups); packet[4]=0xc0;
@@ -164,13 +199,13 @@ int main(void) {
   assert(!mt6797_wifi_mgmt_rx_decode(packet,packet_length,&data));
   assert(data.multicast && data.key_index==4 && data.pn==8);
   assert(!mt6797_wifi_mgmt_rx_bip_verify(&data,bip_key));
-  receive(true); assert(c.igtk.rx_pn[0]==8); receive(false);
+  receive(true); assert(c.igtk[0].rx_pn[0]==8); receive(false);
  }
  /* Key ID5 has its own independent known-answer MIC, not a truncated ID1. */
  pmf_setup(); r.netdev=&netdev; params.key=bip_key; assert(!add(5,false)); queued=0;
  frame_build(true,5); packet[packet_length-16]=5;
  const u8 mic5[8]={0x6a,0x81,0xcd,0xc7,0x0e,0x8c,0x39,0x27};
- memcpy(packet+packet_length-8,mic5,8); receive(true); assert(c.igtk.rx_pn[0]==8);
+ memcpy(packet+packet_length-8,mic5,8); receive(true); assert(c.igtk[1].rx_pn[0]==8);
  /* RXD's two-byte header offset changes no authenticated or PN bytes. */
  for(unsigned group=0;group<2;group++) {
   setup_rx(group); memmove(packet+frame_offset+2,packet+frame_offset,packet_length-frame_offset);
@@ -184,21 +219,21 @@ int main(void) {
  /* Every authenticated-byte corruption, including MMIE ID/IPN/MIC, leaves IPN untouched. */
  for(size_t pos=4;pos<44;pos++) if(pos<22 || pos>=24) {
   setup_rx(true); packet[frame_offset+pos]^=0x04; receive(false);
-  assert(c.igtk.rx_pn[0]==7);
+  assert(c.igtk[0].rx_pn[0]==7);
  }
  /* Firmware's cipher6/no-error claim cannot override a bad MIC. */
- setup_rx(true); packet[packet_length-1]^=1; receive(false); assert(c.igtk.rx_pn[0]==7);
+ setup_rx(true); packet[packet_length-1]^=1; receive(false); assert(c.igtk[0].rx_pn[0]==7);
  packet[packet_length-1]^=1; receive(true);
  /* Key update and stale station/WTBL state gate validation before replay mutation. */
- setup_rx(true); c.igtk.updating=true; receive(false); assert(c.igtk.rx_pn[0]==7);
- setup_rx(true); c.igtk.installed=false; receive(false);
- setup_rx(true); c.igtk.index=5; receive(false);
+ setup_rx(true); c.igtk_updating=true; receive(false); assert(c.igtk[0].rx_pn[0]==7);
+ setup_rx(true); c.igtk[0].installed=false; receive(false);
+ setup_rx(true); c.igtk[0].index=5; receive(false);
  setup_rx(true); c.igtk_owner.generation++; receive(false);
  setup_rx(true); c.ais.runtime.sta.ap_bmc_group.cookie++; receive(false);
- setup_rx(true); packet[8]=1; receive(false); assert(c.igtk.rx_pn[0]==7);
+ setup_rx(true); packet[8]=1; receive(false); assert(c.igtk[0].rx_pn[0]==7);
  setup_rx(true); packet[7]=4; receive(false);
  /* Wrong IGTK has valid metadata but fails software authentication. */
- setup_rx(true); c.igtk.material[0]^=1; receive(false); assert(c.igtk.rx_pn[0]==7);
+ setup_rx(true); c.igtk[0].material[0]^=1; receive(false); assert(c.igtk[0].rx_pn[0]==7);
  /* Unprotected disconnect cannot fall through to the legacy PMF-disabled path. */
  setup_rx(false); packet[9]=0; packet[frame_offset+1]&=~0x40; receive(false);
  assert(c.pairwise_key.mgmt_rx_pn==7);
@@ -219,8 +254,8 @@ int main(void) {
  decoded_rejected(); receive(false); assert(c.pairwise_key.mgmt_rx_pn==7);
  setup_rx(true); packet[frame_offset]=0xd0; packet[frame_offset+24]=WLAN_CATEGORY_PUBLIC;
  decoded_rejected();
- setup_rx(true); c.connected=false; receive(false); assert(c.igtk.rx_pn[0]==7);
- setup_rx(true); r.stopping=true; receive(false); assert(c.igtk.rx_pn[0]==7);
+ setup_rx(true); c.connected=false; receive(false); assert(c.igtk[0].rx_pn[0]==7);
+ setup_rx(true); r.stopping=true; receive(false); assert(c.igtk[0].rx_pn[0]==7);
  setup_rx(false); c.key_pending.generation++; receive(false);
  setup_rx(false); c.pairwise_wtbl.cookie++; receive(false);
  setup_rx(false); c.pairwise_ready=false; receive(false);

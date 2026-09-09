@@ -182,18 +182,25 @@ int main(void) {
  sa_setup(); memset(packet+frame_offset+4,0xff,6); query_receive(); assert(!queued);
  sa_setup(); packet[frame_offset+1]&=~0x40; packet[9]=0; query_receive(); assert(!queued);
  /* A valid RX request is revalidated when the deferred worker owns the connection. */
- for(unsigned change=0;change<11;change++) {
+ for(unsigned change=0;change<14;change++) {
   sa_setup(); query_receive();
   switch(change) {
    case 0: c.cancel=true; break; case 1: r.stopping=true; break;
    case 2: c.pmf_negotiated=false; break; case 3: c.pairwise_ready=false; break;
    case 4: c.pairwise_key.installed=false; break; case 5: c.pairwise_key.updating=true; break;
    case 6: c.key_pending.generation++; break; case 7: c.pairwise_wtbl.cookie++; break;
-   case 8: c.igtk.installed=false; break; case 9: c.connected=false; break;
+   case 8: c.igtk[0].installed=false; break; case 9: c.connected=false; break;
    case 10: r.connection=NULL; break;
+   case 11: c.igtk_owner.generation++; break; case 12: c.igtk_wtbl.cookie++; break;
+   case 13: c.igtk_updating=true; break;
   }
   run_worker(); assert(!sa_writes && !terminals);
  }
+ /* Retiring the old IGTK keeps protected unicast response service available. */
+ sa_setup(); query_receive();
+ const u8 next_igtk[16]={0x42}; params.key=next_igtk;
+ assert(!add(5,false) && !del(4,false));
+ run_worker(); assert_response(0x12,0x34);
  /* Foreign PID/WLAN/SN cannot complete this TX; missing completion fences. */
  for(unsigned mode=WRONG_PID;mode<=MALFORMED_THEN_VALID;mode++) {
   sa_setup(); sa_mode=mode; query_receive(); run_worker(); assert(sa_writes==1);
@@ -274,7 +281,7 @@ static void initiation_tests(void) {
    case 6: packet[8]=2; break; case 7: packet[frame_offset+1]|=0x40; break;
    case 8: packet[9]=0x40; break; case 9: packet[frame_offset+22]=1; break;
    case 10: c.authorized=false; break; case 11: c.pmf_negotiated=false; break;
-   case 12: c.pairwise_ready=false; break; case 13: c.igtk.installed=false; break;
+   case 12: c.pairwise_ready=false; break; case 13: c.igtk[0].installed=false; break;
    case 14: c.key_pending.generation++; break; case 15: c.pairwise_wtbl.cookie++; break;
    case 16: packet_length--; put_unaligned_le16(packet_length,packet); break;
   }
@@ -328,6 +335,13 @@ static void initiation_tests(void) {
  assert(c.sa_query_active && c.sa_query_generation==2); query_timer_next();
  query_frame(WLAN_ACTION_SA_QUERY_RESPONSE,old_id[0],old_id[1],9); query_receive(); assert(c.sa_query_active);
  reply_to_last_query(); assert_query_stopped(); assert(!c.cancel);
+ /* IGTK overlap/rekey leaves an active PTK-authenticated query's identity
+  * and deadline intact, including removal of the old IGTK. */
+ sa_setup(); start_query(); query_timer_next(); deadline=c.sa_query_deadline;
+ const u8 next_igtk[16]={0x42}; params.key=next_igtk;
+ assert(!add(5,false) && !del(4,false));
+ assert(c.sa_query_active && c.sa_query_count==1 && c.sa_query_deadline==deadline && r.sa_query_work.pending);
+ reply_to_last_query(); assert_query_stopped(); assert(!c.cancel && c.authorized && !terminals);
  /* Wrong/unprotected/replayed/foreign/stale-owner responses never finish a query. */
  for(unsigned bad=0;bad<6;bad++) {
   sa_setup(); start_query(); query_timer_next();

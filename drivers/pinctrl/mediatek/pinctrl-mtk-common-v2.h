@@ -306,6 +306,9 @@ struct mtk_pinctrl {
 
 void mtk_rmw(struct mtk_pinctrl *pctl, u8 i, u32 reg, u32 mask, u32 set);
 
+int mtk_hw_pin_field_get(struct mtk_pinctrl *hw,
+			 const struct mtk_pin_desc *desc, int field,
+			 struct mtk_pin_field *pfd);
 int mtk_hw_set_value(struct mtk_pinctrl *hw, const struct mtk_pin_desc *desc,
 		     int field, int value);
 int mtk_hw_get_value(struct mtk_pinctrl *hw, const struct mtk_pin_desc *desc,

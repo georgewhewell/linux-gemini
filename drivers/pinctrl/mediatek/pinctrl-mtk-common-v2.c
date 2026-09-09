@@ -143,9 +143,9 @@ static int mtk_hw_pin_field_lookup(struct mtk_pinctrl *hw,
 	return 0;
 }
 
-static int mtk_hw_pin_field_get(struct mtk_pinctrl *hw,
-				const struct mtk_pin_desc *desc,
-				int field, struct mtk_pin_field *pfd)
+int mtk_hw_pin_field_get(struct mtk_pinctrl *hw,
+			 const struct mtk_pin_desc *desc,
+			 int field, struct mtk_pin_field *pfd)
 {
 	if (field < 0 || field >= PINCTRL_PIN_REG_MAX) {
 		dev_err(hw->dev, "Invalid Field %d\n", field);
@@ -154,6 +154,7 @@ static int mtk_hw_pin_field_get(struct mtk_pinctrl *hw,
 
 	return mtk_hw_pin_field_lookup(hw, desc, field, pfd);
 }
+EXPORT_SYMBOL_GPL(mtk_hw_pin_field_get);
 
 static void mtk_hw_bits_part(struct mtk_pin_field *pf, int *h, int *l)
 {

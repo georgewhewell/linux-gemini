@@ -260,6 +260,7 @@ static int mtk_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 {
 	struct mtk_pinctrl *hw = pinctrl_dev_get_drvdata(pctldev);
 	const struct mtk_pin_desc *desc;
+	struct mtk_pin_field pf;
 	int err = -ENOTSUPP;
 	u32 reg;
 
@@ -303,6 +304,11 @@ static int mtk_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 		break;
 	case PIN_CONFIG_INPUT_SCHMITT:
 	case PIN_CONFIG_INPUT_SCHMITT_ENABLE:
+		/* Reject unavailable SMT fields before changing direction. */
+		err = mtk_hw_pin_field_get(hw, desc, PINCTRL_PIN_REG_SMT, &pf);
+		if (err)
+			break;
+
 		/* arg = 1: Input mode & SMT enable ;
 		 * arg = 0: Output mode & SMT disable
 		 */

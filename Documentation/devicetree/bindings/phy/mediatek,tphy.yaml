@@ -243,6 +243,9 @@ patternProperties:
         minimum: 1
         maximum: 3
 
+      phy-supply:
+        description: Regulator supplying power to the PHY.
+
       mediatek,bc12:
         description:
           Specify the flag to enable BC1.2 if support it

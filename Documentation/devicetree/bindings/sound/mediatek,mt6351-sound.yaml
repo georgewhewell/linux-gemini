@@ -23,9 +23,17 @@ properties:
   "#sound-dai-cells":
     const: 0
 
+  vusb33-supply:
+    description: Shared 3.3 V rail.
+
+  va18-supply:
+    description: 1.8 V analog rail.
+
 required:
   - compatible
   - "#sound-dai-cells"
+  - vusb33-supply
+  - va18-supply
 
 unevaluatedProperties: false
 
@@ -34,4 +42,6 @@ examples:
     sound {
        compatible = "mediatek,mt6351-sound";
        #sound-dai-cells = <0>;
+       vusb33-supply = <&mt6351_vusb33_reg>;
+       va18-supply = <&mt6351_va18_reg>;
     };

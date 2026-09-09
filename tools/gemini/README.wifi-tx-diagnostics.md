@@ -2,11 +2,13 @@
 
 This source adds a read-only `/sys/class/net/<interface>/tx_diagnostics`
 snapshot for the cfg80211 radio, to investigate private queue delay after
-M35's fq_codel comparison. It does not change the 64-packet queue limit,
-below-32 wake threshold, qdisc, firmware commands, credit ownership or
-security admission. It does not implement BQL or any TX-completion reporting.
+M35's fq_codel comparison. The accepted M37 diagnostic kernel uses a 64-packet
+queue and wake below 32. This isolated M38 experiment changes that policy to
+16 packets and wake below 8; diagnostics, qdisc, firmware commands, credit
+ownership and security admission are preserved. It does not implement BQL or
+any TX-completion reporting.
 
-There is no hardware qualification claim. Future deployment and measurement
+There is no M38 hardware qualification claim. Future deployment and measurement
 must use an accepted candidate boot and the existing bounded benchmark guard.
 The accepted M35 kernel and the isolated WPA3/PMF work are separate.
 
@@ -40,7 +42,7 @@ never clear or alter counters.
 |---|---|
 | `version`, `snapshot_ns`, `lifetime_start_ns` | Format version 1 and monotonic nanosecond observation/lifetime clocks. |
 | `queue_depth`, `queue_high_water` | Current/max accepted SKBs waiting in the private software queue; excludes the worker's current SKB and firmware buffers. |
-| `queue_limit`, `queue_wake_below` | Existing queue policy: 64 and 32. Informational, not writable. |
+| `queue_limit`, `queue_wake_below` | Compiled queue policy: 16 and 8 in this experiment; accepted M37 used 64 and 32. Informational, not writable. |
 | `enqueued`, `dequeued`, `purged` | Accepted SKBs, SKBs selected by the send worker, and queued SKBs freed during cleanup without a send attempt. |
 | `rejected`, `busy` | SKBs dropped by xmit admission and NETDEV_TX_BUSY returns. A busy return retains caller ownership and leaves `skb->cb` untouched. |
 | `hif_submitted`, `send_failed` | Worker sends accepted by HIF transport versus worker validation/encoding/transport failures. Neither is an airtime or firmware-completion count. |
@@ -121,3 +123,12 @@ connection-worker/key/link/RX/PM/admission tests preserve existing behavior.
 Host tests do not simulate real IRQ/workqueue concurrency or the kernel's
 sysfs active-reader barrier. ARM64 compilation and source lifecycle review
 supplement them; hardware latency/overhead qualification remains future work.
+
+The TX entry point also runs `test-wifi-radio-tx-queue-race-host.py`. It executes
+production xmit, worker, disconnect, purge and snapshot functions with a real
+pthread mutex representing the radio spinlock. Controlled interleavings cover
+producer stop before worker drain, worker wake before producer refill, strict
+wake below 8 (not at 8), full-queue BUSY retaining the entire skb for retry, and
+disconnect/purge before a pending wake. ASan/UBSan cover ownership and memory
+errors. These tests verify the forced host interleavings, not real kernel IRQ,
+workqueue scheduling, firmware completion or performance.

@@ -3,6 +3,7 @@
 #include <linux/etherdevice.h>
 #include <linux/ieee80211.h>
 #include <linux/if_vlan.h>
+#include <linux/random.h>
 #include <linux/workqueue.h>
 #include <linux/unaligned.h>
 #include <net/cfg80211.h>
@@ -58,6 +59,17 @@ struct mt6797_radio_connection {
 	bool management_waiting;
 	bool management_done;
 	int management_error;
+	/* 1000 TU maximum / 201 TU retry permits at most five attempts. */
+	u8 sa_query_ids[5][2];
+	u8 sa_query_count;
+	u8 sa_query_attempts;
+	bool sa_query_active;
+	u64 sa_query_generation;
+	ktime_t sa_query_deadline;
+	ktime_t sa_query_next;
+	ktime_t sa_query_next_start;
+	struct mt6797_wifi_ais_sta_pending sa_query_owner;
+	struct mt6797_wifi_ais_wtbl_handle sa_query_wtbl;
 	struct mt6797_wifi_ais_pm_params pm;
 	bool beacon_seen;
 	bool pm_started;
@@ -87,6 +99,7 @@ struct mt6797_wifi_radio {
 	struct work_struct connection_work;
 	struct work_struct tx_work;
 	struct work_struct management_work;
+	struct delayed_work sa_query_work;
 	struct sk_buff_head tx_queue;
 	struct mt6797_radio_tx_diag tx_diag;
 	struct work_struct scan_work;
@@ -445,6 +458,28 @@ static bool mt6797_radio_connection_cancelled(struct mt6797_wifi_radio *radio)
 	return cancelled;
 }
 
+/* radio->lock held. Nonblocking cancellation is safe in RX and while holding
+ * connection_lock: a running timer gets the connection only after taking that
+ * mutex. Stop/unregister synchronously cancel outside the connection mutex.
+ * Keep generation/cooldown so stale work cannot restart or complete a query.
+ */
+static void mt6797_radio_sa_query_stop(struct mt6797_wifi_radio *radio)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+
+	if (connection) {
+		connection->sa_query_active = false;
+		connection->sa_query_count = 0;
+		connection->sa_query_attempts = 0;
+		connection->sa_query_deadline = 0;
+		connection->sa_query_next = 0;
+		memzero_explicit(connection->sa_query_ids, sizeof(connection->sa_query_ids));
+		memzero_explicit(&connection->sa_query_owner, sizeof(connection->sa_query_owner));
+		memzero_explicit(&connection->sa_query_wtbl, sizeof(connection->sa_query_wtbl));
+	}
+	cancel_delayed_work(&radio->sa_query_work);
+}
+
 static void mt6797_radio_link_abort(void *context, int reason)
 {
 	struct mt6797_wifi_radio *radio = context;
@@ -453,6 +488,7 @@ static void mt6797_radio_link_abort(void *context, int reason)
 	spin_lock_irqsave(&radio->lock, flags);
 	if (radio->connection) {
 		radio->connection->cancel = true;
+		mt6797_radio_sa_query_stop(radio);
 		complete(&radio->connection->pm_completion);
 		if (radio->connection->management_waiting) {
 			radio->connection->management_error = reason < 0 ? reason : -EIO;
@@ -881,6 +917,7 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 cleanup:
 	spin_lock_irqsave(&radio->lock, flags);
 	connection->cancel = true;
+	mt6797_radio_sa_query_stop(radio);
 	netif_stop_queue(radio->netdev);
 	netif_carrier_off(radio->netdev);
 	spin_unlock_irqrestore(&radio->lock, flags);
@@ -1061,6 +1098,7 @@ static int mt6797_radio_disconnect(struct wiphy *wiphy, struct net_device *netde
 	spin_lock_irqsave(&radio->lock, flags);
 	if (radio->connection) {
 		radio->connection->cancel = true;
+		mt6797_radio_sa_query_stop(radio);
 		complete(&radio->connection->pm_completion);
 		radio->connection->reason = reason;
 		queue_work(system_long_wq, &radio->connection_work);
@@ -1178,11 +1216,12 @@ static bool mt6797_radio_management_ready(struct mt6797_wifi_radio *radio)
 		mt6797_radio_wtbl_same(&connection->pairwise_wtbl, &runtime->sta.pairwise);
 }
 
-/* One protected response per worker invocation. The PID is released only after
+/* One protected action per worker invocation. The PID is released only after
  * a matched TX-done or a proved-not-sent failure. Timeout/ambiguous transport
  * fences the firmware lifetime. TX-done proves completion, not encryption.
  */
-static int mt6797_radio_sa_query_response(struct mt6797_wifi_radio *radio, const u8 id[2])
+static int mt6797_radio_sa_query_tx(struct mt6797_wifi_radio *radio, u8 action,
+	const u8 id[2], u64 generation, bool *submitted)
 {
 	struct mt6797_radio_connection *connection = radio->connection;
 	struct mt6797_wifi_ais_runtime *runtime = &connection->ais.runtime;
@@ -1192,10 +1231,14 @@ static int mt6797_radio_sa_query_response(struct mt6797_wifi_radio *radio, const
 	};
 	u8 frame[28] = {}, packet[MT6797_WIFI_TX_DESCRIPTOR_LENGTH + sizeof(frame)];
 	unsigned long flags;
+	unsigned int timeout_ms = 1000;
+	s64 remaining;
 	size_t length;
 	bool opened = false, held = false, uncertain = false;
 	int ret, release;
 
+	if (submitted)
+		*submitted = false;
 	mutex_lock(&radio->irq->lifecycle_lock);
 	spin_lock_irqsave(&radio->lock, flags);
 	ret = mt6797_radio_management_ready(radio) ? 0 : -ENOTCONN;
@@ -1220,7 +1263,7 @@ static int mt6797_radio_sa_query_response(struct mt6797_wifi_radio *radio, const
 	memcpy(frame + 16, runtime->sta.peer_addr, ETH_ALEN);
 	put_unaligned_le16(params.sequence_number << 4, frame + 22);
 	frame[24] = WLAN_CATEGORY_SA_QUERY;
-	frame[25] = WLAN_ACTION_SA_QUERY_RESPONSE;
+	frame[25] = action;
 	memcpy(frame + 26, id, 2);
 	ret = mt6797_wifi_ais_mgmt_tx_build(owner, &connection->management_lease,
 		&runtime->bss, &runtime->sta, &params, frame, sizeof(frame), packet, sizeof(packet), &length);
@@ -1232,6 +1275,15 @@ static int mt6797_radio_sa_query_response(struct mt6797_wifi_radio *radio, const
 		ret = -ECANCELED;
 		goto out;
 	}
+	if (action == WLAN_ACTION_SA_QUERY_REQUEST) {
+		remaining = ktime_us_delta(connection->sa_query_deadline, ktime_get());
+		if (!connection->sa_query_active || connection->sa_query_generation != generation || remaining <= 0) {
+			spin_unlock_irqrestore(&radio->lock, flags);
+			ret = -ECANCELED;
+			goto out;
+		}
+		timeout_ms = min_t(s64, 1000, DIV_ROUND_UP(remaining, 1000));
+	}
 	reinit_completion(&connection->management_completion);
 	connection->management_error = 0;
 	connection->management_done = false;
@@ -1242,7 +1294,9 @@ static int mt6797_radio_sa_query_response(struct mt6797_wifi_radio *radio, const
 	 * its request; do not hold or accumulate an unbounded response queue.
 	 */
 	uncertain = ret != -EAGAIN;
-	if (!ret && !wait_for_completion_timeout(&connection->management_completion, msecs_to_jiffies(1000)))
+	if (submitted)
+		*submitted = uncertain;
+	if (!ret && !wait_for_completion_timeout(&connection->management_completion, msecs_to_jiffies(timeout_ms)))
 		ret = -ETIMEDOUT;
 	spin_lock_irqsave(&radio->lock, flags);
 	connection->management_waiting = false;
@@ -1272,6 +1326,11 @@ out:
 	return ret;
 }
 
+static int mt6797_radio_sa_query_response(struct mt6797_wifi_radio *radio, const u8 id[2])
+{
+	return mt6797_radio_sa_query_tx(radio, WLAN_ACTION_SA_QUERY_RESPONSE, id, 0, NULL);
+}
+
 static void mt6797_radio_management_work(struct work_struct *work)
 {
 	struct mt6797_wifi_radio *radio = container_of(work, struct mt6797_wifi_radio, management_work);
@@ -1289,6 +1348,156 @@ static void mt6797_radio_management_work(struct work_struct *work)
 	spin_unlock_irqrestore(&radio->lock, flags);
 	if (respond)
 		mt6797_radio_sa_query_response(radio, id);
+	mutex_unlock(&radio->connection_lock);
+}
+
+/* All query state is protected by radio->lock. The worker additionally holds
+ * connection_lock so neither key callbacks nor teardown can replace its peer.
+ */
+static bool mt6797_radio_sa_query_current(struct mt6797_wifi_radio *radio)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+
+	return mt6797_radio_management_ready(radio) && connection->authorized &&
+		connection->sa_query_active &&
+		mt6797_radio_sta_owner_same(&connection->sa_query_owner, &connection->key_pending) &&
+		mt6797_radio_wtbl_same(&connection->sa_query_wtbl, &connection->pairwise_wtbl);
+}
+
+static void mt6797_radio_sa_query_schedule(struct mt6797_wifi_radio *radio)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	ktime_t next = connection->sa_query_next;
+	s64 remaining;
+
+	if (ktime_after(next, connection->sa_query_deadline) ||
+	    connection->sa_query_attempts == ARRAY_SIZE(connection->sa_query_ids))
+		next = connection->sa_query_deadline;
+	remaining = ktime_us_delta(next, ktime_get());
+	mod_delayed_work(system_long_wq, &radio->sa_query_work,
+		remaining > 0 ? usecs_to_jiffies(remaining) : 0);
+}
+
+static void mt6797_radio_sa_query_start(struct mt6797_wifi_radio *radio,
+	const struct mt6797_wifi_mgmt_rx *trigger)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	struct mt6797_wifi_ais_runtime *runtime = &connection->ais.runtime;
+	ktime_t now = ktime_get();
+
+	if (!mt6797_radio_management_ready(radio) || !connection->authorized ||
+	    connection->sa_query_active || ktime_before(now, connection->sa_query_next_start) ||
+	    connection->sa_query_generation == U64_MAX ||
+	    !ether_addr_equal(trigger->frame + 4, radio->netdev->dev_addr) ||
+	    !ether_addr_equal(trigger->frame + 10, connection->bss->bssid) ||
+	    !ether_addr_equal(trigger->frame + 16, connection->bss->bssid) ||
+	    trigger->bss_index != runtime->bss.bss_index || trigger->wlan_index != runtime->sta.pairwise.index)
+		return;
+	connection->sa_query_generation++;
+	connection->sa_query_owner = connection->key_pending;
+	connection->sa_query_wtbl = connection->pairwise_wtbl;
+	connection->sa_query_deadline = ktime_add_ms(now, 1024); /* 1000 TU */
+	connection->sa_query_next = now;
+	connection->sa_query_next_start = ktime_add_ms(now, 10000); /* Supplicant DoS rate limit. */
+	connection->sa_query_count = 0;
+	connection->sa_query_attempts = 0;
+	connection->sa_query_active = true;
+	mod_delayed_work(system_long_wq, &radio->sa_query_work, 0);
+}
+
+static void mt6797_radio_sa_query_match(struct mt6797_wifi_radio *radio, const u8 id[2])
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	unsigned int i;
+
+	if (!mt6797_radio_sa_query_current(radio) ||
+	    !ktime_before(ktime_get(), connection->sa_query_deadline))
+		return;
+	for (i = 0; i < connection->sa_query_count; i++) {
+		if (!memcmp(connection->sa_query_ids[i], id, 2)) {
+			mt6797_radio_sa_query_stop(radio);
+			break;
+		}
+	}
+}
+
+static void mt6797_radio_sa_query_timeout(struct mt6797_wifi_radio *radio)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+
+	mt6797_radio_sa_query_stop(radio);
+	connection->cancel = true;
+	complete(&connection->pm_completion);
+	connection->peer_disconnect = false; /* Local validation timed out; trigger was unauthenticated. */
+	connection->reason = WLAN_REASON_PREV_AUTH_NOT_VALID;
+	queue_work(system_long_wq, &radio->connection_work);
+}
+
+static void mt6797_radio_sa_query_work(struct work_struct *work)
+{
+	struct mt6797_wifi_radio *radio = container_of(to_delayed_work(work), struct mt6797_wifi_radio, sa_query_work);
+	struct mt6797_radio_connection *connection;
+	unsigned long flags;
+	unsigned int i, attempt;
+	u64 generation;
+	ktime_t now;
+	u16 candidate;
+	u8 id[2];
+	bool submitted;
+
+	mutex_lock(&radio->connection_lock);
+	spin_lock_irqsave(&radio->lock, flags);
+	connection = radio->connection;
+	if (!connection || !connection->sa_query_active)
+		goto out;
+	if (!mt6797_radio_sa_query_current(radio)) {
+		mt6797_radio_sa_query_stop(radio);
+		goto out;
+	}
+	now = ktime_get();
+	if (!ktime_before(now, connection->sa_query_deadline)) {
+		mt6797_radio_sa_query_timeout(radio);
+		goto out;
+	}
+	if (ktime_before(now, connection->sa_query_next) ||
+	    connection->sa_query_attempts == ARRAY_SIZE(connection->sa_query_ids)) {
+		mt6797_radio_sa_query_schedule(radio);
+		goto out;
+	}
+	/* Random IDs are unique within this bounded query even if entropy collides.
+	 * Register before submission so an early authenticated response can match.
+	 */
+	candidate = get_random_u32();
+	for (attempt = 0; attempt <= connection->sa_query_count; attempt++, candidate++) {
+		for (i = 0; i < connection->sa_query_count; i++)
+			if (get_unaligned_le16(connection->sa_query_ids[i]) == candidate)
+				break;
+		if (i == connection->sa_query_count)
+			break;
+	}
+	put_unaligned_le16(candidate, id);
+	memcpy(connection->sa_query_ids[connection->sa_query_count++], id, 2);
+	connection->sa_query_attempts++;
+	connection->sa_query_next = ktime_add_us(now, 201 * 1024);
+	generation = connection->sa_query_generation;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	mt6797_radio_sa_query_tx(radio, WLAN_ACTION_SA_QUERY_REQUEST, id, generation, &submitted);
+	spin_lock_irqsave(&radio->lock, flags);
+	if (connection->sa_query_active && connection->sa_query_generation == generation) {
+		/* A preflight failure never creates a matchable transaction ID. */
+		if (!submitted) {
+			connection->sa_query_count--;
+			memzero_explicit(connection->sa_query_ids[connection->sa_query_count], 2);
+		}
+		if (!mt6797_radio_sa_query_current(radio))
+			mt6797_radio_sa_query_stop(radio);
+		else if (!ktime_before(ktime_get(), connection->sa_query_deadline))
+			mt6797_radio_sa_query_timeout(radio);
+		else
+			mt6797_radio_sa_query_schedule(radio);
+	}
+out:
+	spin_unlock_irqrestore(&radio->lock, flags);
 	mutex_unlock(&radio->connection_lock);
 }
 
@@ -1340,8 +1549,11 @@ static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *radio,
 	if (!connection->connected || connection->cancel || radio->stopping)
 		goto out;
 	ret = mt6797_wifi_mgmt_rx_decode(view->packet, view->packet_length, &management);
-	if (ret)
+	if (ret) {
+		if (!mt6797_wifi_mgmt_rx_sa_query_trigger(view->packet, view->packet_length, &management))
+			mt6797_radio_sa_query_start(radio, &management);
 		goto out;
+	}
 	runtime = &connection->ais.runtime;
 	if (!ether_addr_equal(management.frame + 10, connection->bss->bssid) ||
 	    !ether_addr_equal(management.frame + 16, connection->bss->bssid) ||
@@ -1378,6 +1590,7 @@ static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *radio,
 	if (management.subtype == IEEE80211_STYPE_DEAUTH ||
 	    management.subtype == IEEE80211_STYPE_DISASSOC) {
 		connection->cancel = true;
+		mt6797_radio_sa_query_stop(radio);
 		complete(&connection->pm_completion);
 		connection->peer_disconnect = true;
 		connection->reason = get_unaligned_le16(management.frame + 24);
@@ -1391,7 +1604,11 @@ static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *radio,
 		connection->sa_query_response_pending = true;
 		queue_work(system_long_wq, &radio->management_work);
 	}
-	/* Initiating SA Query and delivery of other robust actions remain separate. */
+	if (management.subtype == IEEE80211_STYPE_ACTION &&
+	    management.frame[24] == WLAN_CATEGORY_SA_QUERY &&
+	    management.frame[25] == WLAN_ACTION_SA_QUERY_RESPONSE)
+		mt6797_radio_sa_query_match(radio, management.frame + 26);
+	/* Delivery of other robust action categories remains separate. */
 out:
 	spin_unlock_irqrestore(&radio->lock, flags);
 	return handled;
@@ -1420,8 +1637,10 @@ static void mt6797_radio_igtk_forget(struct mt6797_wifi_radio *radio)
 	memzero_explicit(&connection->igtk_owner, sizeof(connection->igtk_owner));
 	memzero_explicit(&connection->igtk_wtbl, sizeof(connection->igtk_wtbl));
 	connection->igtk_default = false;
-	if (connection->pmf_negotiated)
+	if (connection->pmf_negotiated) {
 		connection->authorized = false;
+		mt6797_radio_sa_query_stop(radio);
+	}
 	spin_unlock_irqrestore(&radio->lock, flags);
 }
 
@@ -1708,6 +1927,7 @@ static int mt6797_radio_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 	if (!ret) {
 		memzero_explicit(key, sizeof(*key));
 		radio->connection->authorized = false;
+		mt6797_radio_sa_query_stop(radio);
 		if (pairwise) {
 			radio->connection->pairwise_ready = false;
 			memzero_explicit(&radio->connection->pairwise_wtbl, sizeof(radio->connection->pairwise_wtbl));
@@ -1772,8 +1992,11 @@ static int mt6797_radio_change_station(struct wiphy *wiphy, struct wireless_dev 
 		  !connection->group_key.installed ||
 		  (connection->pmf_negotiated && !connection->igtk.installed)))
 		ret = -ENOKEY;
-	else
+	else {
 		connection->authorized = authorize;
+		if (!authorize)
+			mt6797_radio_sa_query_stop(radio);
+	}
 	spin_unlock_irqrestore(&radio->lock, flags);
 out:
 	mutex_unlock(&radio->connection_lock);
@@ -1815,6 +2038,7 @@ static int mt6797_radio_stop(struct net_device *netdev)
 	flush_work(&radio->connection_work);
 	flush_work(&radio->tx_work);
 	flush_work(&radio->management_work);
+	cancel_delayed_work_sync(&radio->sa_query_work);
 	mt6797_radio_purge_tx(radio);
 	return 0;
 }
@@ -2090,6 +2314,7 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 	INIT_WORK(&radio->connection_work, mt6797_radio_connection_work);
 	INIT_WORK(&radio->tx_work, mt6797_radio_tx_work);
 	INIT_WORK(&radio->management_work, mt6797_radio_management_work);
+	INIT_DELAYED_WORK(&radio->sa_query_work, mt6797_radio_sa_query_work);
 	skb_queue_head_init(&radio->tx_queue);
 	radio->tx_diag.lifetime_start_ns = ktime_get_ns();
 	set_wiphy_dev(wiphy, dev);
@@ -2174,6 +2399,7 @@ void mt6797_wifi_radio_unregister(struct mt6797_wifi_radio *radio)
 	flush_work(&radio->connection_work);
 	flush_work(&radio->tx_work);
 	flush_work(&radio->management_work);
+	cancel_delayed_work_sync(&radio->sa_query_work);
 	mt6797_radio_purge_tx(radio);
 	unregister_netdev(radio->netdev);
 	wiphy_unregister(radio->wdev.wiphy);

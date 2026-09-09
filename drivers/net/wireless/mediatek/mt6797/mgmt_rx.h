@@ -23,6 +23,13 @@ struct mt6797_wifi_mgmt_rx {
 int mt6797_wifi_mgmt_rx_decode(const u8 *packet, size_t available,
 	struct mt6797_wifi_mgmt_rx *management);
 
+/* Classify only plaintext unicast deauth/disassoc reasons 6/7. This is a
+ * suspicion trigger, never integrity evidence or permission to disconnect.
+ * GEN3's cipher-mismatch bit is allowed here; all other error bits reject.
+ */
+int mt6797_wifi_mgmt_rx_sa_query_trigger(const u8 *packet, size_t available,
+	struct mt6797_wifi_mgmt_rx *management);
+
 /* Verify BIP-CMAC-128 independently of firmware's integrity claim. The caller
  * first checks peer/key ownership, then advances IPN only after this succeeds.
  * Does not support an MMIE that firmware stripped or rewrote.

@@ -55,6 +55,8 @@
 		compatible = "mediatek,mt6351-sound";
 		vusb33-supply = <&mt6351_vusb33_reg>;
 		va18-supply = <&mt6351_va18_reg>;
+		mediatek,jack-detection;
+		mediatek,accdet-pwm-settings = <0x500 0x500 1 0x1f0 0x800 0x800 0x20>;
 		status = "okay";
 	};
 };
@@ -69,6 +71,7 @@
 		microphone-enable-gpios = <&pio 234 GPIO_ACTIVE_HIGH>;
 		mediatek,platform = <&afe>;
 		mediatek,audio-codec = <&mt6351_sound>;
+		mediatek,headset-jack;
 		status = "okay";
 	};
 };

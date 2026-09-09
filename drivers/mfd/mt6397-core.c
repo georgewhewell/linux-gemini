@@ -131,6 +131,11 @@ static const struct resource mt6351_keys_resources[] = {
 	DEFINE_RES_IRQ_NAMED(MT6351_IRQ_HOMEKEY_R, "homekey_r"),
 };
 
+static const struct resource mt6351_sound_resources[] = {
+	DEFINE_RES_IRQ_NAMED(MT6351_IRQ_ACCDET, "accdet"),
+	DEFINE_RES_IRQ_NAMED(MT6351_IRQ_ACCDET_EINT, "accdet-eint"),
+};
+
 static const struct resource mt6397_keys_resources[] = {
 	DEFINE_RES_IRQ_NAMED(MT6397_IRQ_PWRKEY, "powerkey"),
 	DEFINE_RES_IRQ_NAMED(MT6397_IRQ_HOMEKEY, "homekey"),
@@ -238,6 +243,8 @@ static const struct mfd_cell mt6351_devs[] = {
 	}, {
 		.name = "mt6351-sound",
 		.of_compatible = "mediatek,mt6351-sound",
+		.num_resources = ARRAY_SIZE(mt6351_sound_resources),
+		.resources = mt6351_sound_resources,
 	}, {
 		.name = "mt6351-keys",
 		.num_resources = ARRAY_SIZE(mt6351_keys_resources),

@@ -20,6 +20,7 @@
 #include <sound/tlv.h>
 
 #include "mt6351.h"
+#include "mt6351-accdet.h"
 
 /* MT6351_TOP_CLKSQ */
 #define RG_CLKSQ_EN_AUD_BIT (0)
@@ -182,6 +183,7 @@ enum {
 struct mt6351_priv {
 	struct device *dev;
 	struct regmap *regmap;
+	struct mt6351_accdet *accdet;
 	/*
 	 * The PMIC baseline is deliberately established by the first real audio
 	 * stream, rather than while the MFD child is being enumerated.  Keep that
@@ -1027,6 +1029,15 @@ static int mt_mic_bias_1_event(struct snd_soc_dapm_widget *w,
 			       int event)
 {
 	struct snd_soc_component *cmpnt = snd_soc_dapm_to_component(w->dapm);
+	struct mt6351_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+
+	if (priv->accdet) {
+		if (event == SND_SOC_DAPM_PRE_PMU)
+			return mt6351_accdet_micbias(priv->accdet, true);
+		if (event == SND_SOC_DAPM_POST_PMD)
+			return mt6351_accdet_micbias(priv->accdet, false);
+		return 0;
+	}
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
@@ -1418,8 +1429,8 @@ struct mt6351_codec_init_reg {
 
 /*
  * This is the upstream MT6351 inactive baseline.  It is not a board routing
- * description: external amplifiers, headset detection and depop GPIOs remain
- * outside this codec driver until their Gemini wiring is established.
+ * description. The optional detector initializes its own registers separately;
+ * external amplifier GPIOs belong to the machine driver.
  */
 static const struct mt6351_codec_init_reg mt6351_codec_init_regs[] = {
 	{ MT6351_TOP_CLKSQ, 0x0001, 0x0000, "CLKSQ" },
@@ -1481,8 +1492,25 @@ static int mt6351_codec_probe(struct snd_soc_component *cmpnt)
 	return 0;
 }
 
+static int mt6351_codec_set_jack(struct snd_soc_component *cmpnt,
+				 struct snd_soc_jack *jack, void *data)
+{
+	struct mt6351_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+
+	return mt6351_accdet_set_jack(priv->accdet, jack);
+}
+
+static void mt6351_codec_remove(struct snd_soc_component *cmpnt)
+{
+	struct mt6351_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+
+	mt6351_accdet_set_jack(priv->accdet, NULL);
+}
+
 static const struct snd_soc_component_driver mt6351_soc_component_driver = {
 	.probe = mt6351_codec_probe,
+	.remove = mt6351_codec_remove,
+	.set_jack = mt6351_codec_set_jack,
 	.controls = mt6351_snd_controls,
 	.num_controls = ARRAY_SIZE(mt6351_snd_controls),
 	.dapm_widgets = mt6351_dapm_widgets,
@@ -1521,6 +1549,10 @@ static int mt6351_codec_driver_probe(struct platform_device *pdev)
 				     "MT6351 MFD regmap not ready\n");
 
 	priv->regmap = mt6351->regmap;
+	priv->accdet = mt6351_accdet_probe(pdev, priv->regmap);
+	if (IS_ERR(priv->accdet))
+		return dev_err_probe(&pdev->dev, PTR_ERR(priv->accdet),
+				     "headset detector setup failed\n");
 
 	dev_dbg(priv->dev, "%s(), dev name %s\n",
 		__func__, dev_name(&pdev->dev));

@@ -15,6 +15,12 @@ description:
 
 allOf:
   - $ref: dai-common.yaml#
+  - if:
+      required:
+        - mediatek,jack-detection
+    then:
+      required:
+        - mediatek,accdet-pwm-settings
 
 properties:
   compatible:
@@ -28,6 +34,44 @@ properties:
 
   va18-supply:
     description: 1.8 V analog rail.
+
+  mediatek,jack-detection:
+    type: boolean
+    description:
+      Enable the internal active-low PMIC EINT detector when the machine
+      driver attaches an ALSA jack. Supports ACC detection with 2.7 V
+      microphone bias and reports headphones and a headset microphone.
+      AP GPIO detection, external contact switches and button ADC decoding
+      are not described by this property.
+
+  mediatek,accdet-pwm-settings:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description:
+      PWM width and threshold in hardware ticks, falling-delay enable,
+      rising delay, and AB=0, AB=1 and AB=3 debounce values. The threshold
+      must not exceed the width.
+    items:
+      - description: PWM width
+        minimum: 1
+        maximum: 65535
+      - description: PWM threshold
+        minimum: 1
+        maximum: 65535
+      - description: Falling-delay enable
+        minimum: 0
+        maximum: 1
+      - description: Rising delay
+        minimum: 0
+        maximum: 32767
+      - description: AB=0 debounce
+        minimum: 1
+        maximum: 65535
+      - description: AB=1 debounce
+        minimum: 1
+        maximum: 65535
+      - description: AB=3 debounce
+        minimum: 1
+        maximum: 65535
 
 required:
   - compatible

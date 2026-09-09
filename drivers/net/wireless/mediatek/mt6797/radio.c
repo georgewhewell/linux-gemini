@@ -17,6 +17,7 @@
 #include "rx_metadata.h"
 #include "scan.h"
 #include "scan_hif.h"
+#include "tx_diag.h"
 
 struct mt6797_radio_key {
 	u8 material[MT6797_WIFI_AIS_CCMP_KEY_LENGTH];
@@ -66,6 +67,7 @@ struct mt6797_wifi_radio {
 	struct work_struct connection_work;
 	struct work_struct tx_work;
 	struct sk_buff_head tx_queue;
+	struct mt6797_radio_tx_diag tx_diag;
 	struct work_struct scan_work;
 	spinlock_t lock;
 	struct completion scan_done;
@@ -87,11 +89,128 @@ struct mt6797_wifi_radio {
 #define MT6797_RADIO_TX_QUEUE_LIMIT 64U
 #define MT6797_RADIO_TX_WAKE_THRESHOLD 32U
 
+struct mt6797_radio_tx_cb {
+	u64 enqueued_ns;
+};
+
+static void mt6797_radio_tx_diag_add(struct mt6797_radio_tx_diag_span *span, u64 ns)
+{
+	static const u64 bounds_ns[] = {
+		100000, 500000, 1000000, 2000000, 5000000,
+		10000000, 20000000, 50000000, 100000000,
+	};
+	unsigned int bucket = 0;
+
+	while (bucket < ARRAY_SIZE(bounds_ns) && ns > bounds_ns[bucket])
+		bucket++;
+	span->count++;
+	span->total_ns += ns;
+	if (ns > span->max_ns)
+		span->max_ns = ns;
+	span->buckets[bucket]++;
+}
+
+static int mt6797_radio_tx_diag_span_emit(char *buf, int offset, const char *name,
+					const struct mt6797_radio_tx_diag_span *span)
+{
+	unsigned int bucket;
+
+	offset += sysfs_emit_at(buf, offset, "%s_count=%llu\n%s_total_ns=%llu\n%s_max_ns=%llu\n%s_hist=",
+		name, (unsigned long long)span->count,
+		name, (unsigned long long)span->total_ns,
+		name, (unsigned long long)span->max_ns, name);
+	for (bucket = 0; bucket < MT6797_RADIO_TX_DIAG_BUCKETS; bucket++)
+		offset += sysfs_emit_at(buf, offset, "%s%llu", bucket ? "," : "",
+			(unsigned long long)span->buckets[bucket]);
+	return offset + sysfs_emit_at(buf, offset, "\n");
+}
+
+static ssize_t tx_diagnostics_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct net_device *netdev = to_net_dev(dev);
+	struct mt6797_wifi_radio *radio = wiphy_priv(netdev->ieee80211_ptr->wiphy);
+	struct mt6797_radio_tx_diag snapshot;
+	unsigned long flags;
+	bool connected, stopping;
+	u64 now;
+	int offset = 0;
+
+	spin_lock_irqsave(&radio->lock, flags);
+	snapshot = radio->tx_diag;
+	now = ktime_get_ns();
+	connected = radio->connection && radio->connection->connected && !radio->connection->cancel;
+	stopping = radio->stopping;
+	spin_unlock_irqrestore(&radio->lock, flags);
+
+#define EMIT_VALUE(name, value) \
+	(offset += sysfs_emit_at(buf, offset, name "=%llu\n", (unsigned long long)(value)))
+#define EMIT_FIELD(field) EMIT_VALUE(#field, snapshot.field)
+	EMIT_VALUE("version", 1);
+	EMIT_FIELD(lifetime_start_ns);
+	EMIT_VALUE("snapshot_ns", now);
+	EMIT_FIELD(connection_generation);
+	EMIT_VALUE("connected", connected);
+	EMIT_VALUE("stopping", stopping);
+	EMIT_VALUE("queue_limit", MT6797_RADIO_TX_QUEUE_LIMIT);
+	EMIT_VALUE("queue_wake_below", MT6797_RADIO_TX_WAKE_THRESHOLD);
+	EMIT_FIELD(queue_depth);
+	EMIT_FIELD(queue_high_water);
+	EMIT_FIELD(enqueued);
+	EMIT_FIELD(dequeued);
+	EMIT_FIELD(purged);
+	EMIT_FIELD(rejected);
+	EMIT_FIELD(busy);
+	EMIT_FIELD(hif_submitted);
+	EMIT_FIELD(send_failed);
+	EMIT_FIELD(send_cancelled);
+	EMIT_FIELD(send_disconnected);
+	EMIT_FIELD(send_timed_out);
+	EMIT_FIELD(credit_wait_attempts);
+	EMIT_FIELD(credit_wait_packets);
+	EMIT_FIELD(credit_wait_wakeups);
+	EMIT_FIELD(credit_wait_timeouts);
+	EMIT_FIELD(worker_active);
+	EMIT_FIELD(send_active);
+	EMIT_FIELD(credit_wait_active);
+	EMIT_VALUE("worker_active_ns", snapshot.worker_active ? now - snapshot.worker_started_ns : 0);
+	EMIT_VALUE("send_active_ns", snapshot.send_active ? now - snapshot.send_started_ns : 0);
+	EMIT_VALUE("credit_wait_active_ns", snapshot.credit_wait_active ? now - snapshot.credit_wait_started_ns : 0);
+#undef EMIT_FIELD
+#undef EMIT_VALUE
+	offset += sysfs_emit_at(buf, offset,
+		"hist_upper_ns=100000,500000,1000000,2000000,5000000,10000000,20000000,50000000,100000000,inf\n");
+	offset = mt6797_radio_tx_diag_span_emit(buf, offset, "queue_wait", &snapshot.queue_wait);
+	offset = mt6797_radio_tx_diag_span_emit(buf, offset, "send_duration", &snapshot.send_duration);
+	offset = mt6797_radio_tx_diag_span_emit(buf, offset, "credit_wait", &snapshot.credit_wait);
+	return mt6797_radio_tx_diag_span_emit(buf, offset, "worker_duration", &snapshot.worker_duration);
+}
+static DEVICE_ATTR_RO(tx_diagnostics);
+
+static struct attribute *mt6797_radio_tx_diag_attrs[] = {
+	&dev_attr_tx_diagnostics.attr,
+	NULL,
+};
+
+static const struct attribute_group mt6797_radio_tx_diag_group = {
+	.attrs = mt6797_radio_tx_diag_attrs,
+};
+
 static void mt6797_radio_purge_tx(struct mt6797_wifi_radio *radio)
 {
 	struct sk_buff *skb;
+	unsigned long flags;
 
-	while ((skb = skb_dequeue(&radio->tx_queue))) {
+	for (;;) {
+		spin_lock_irqsave(&radio->lock, flags);
+		skb = skb_dequeue(&radio->tx_queue);
+		if (skb) {
+			radio->tx_diag.purged++;
+			radio->tx_diag.queue_depth--;
+		}
+		spin_unlock_irqrestore(&radio->lock, flags);
+		if (!skb)
+			break;
 		DEV_STATS_INC(radio->netdev, tx_dropped);
 		dev_kfree_skb_any(skb);
 	}
@@ -871,6 +990,7 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	ret = radio->stopping ? -ESHUTDOWN : radio->request || radio->connection ? -EBUSY : 0;
 	if (!ret) {
 		radio->connection = connection;
+		radio->tx_diag.connection_generation++;
 		queue_work(system_long_wq, &radio->connection_work);
 	}
 	spin_unlock_irqrestore(&radio->lock, flags);
@@ -1172,6 +1292,32 @@ static int mt6797_radio_stop(struct net_device *netdev)
 	return 0;
 }
 
+static void mt6797_radio_tx_credit_wait(struct mt6797_wifi_radio *radio, bool first)
+{
+	unsigned long flags, remaining;
+	u64 started;
+
+	spin_lock_irqsave(&radio->lock, flags);
+	started = ktime_get_ns();
+	radio->tx_diag.credit_wait_attempts++;
+	if (first)
+		radio->tx_diag.credit_wait_packets++;
+	radio->tx_diag.credit_wait_active = true;
+	radio->tx_diag.credit_wait_started_ns = started;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	/* A wakeup reports credit availability, not packet/airtime completion. */
+	remaining = wait_for_completion_timeout(&radio->irq->tx_credit_completion,
+						msecs_to_jiffies(50));
+	spin_lock_irqsave(&radio->lock, flags);
+	mt6797_radio_tx_diag_add(&radio->tx_diag.credit_wait, ktime_get_ns() - started);
+	radio->tx_diag.credit_wait_active = false;
+	if (remaining)
+		radio->tx_diag.credit_wait_wakeups++;
+	else
+		radio->tx_diag.credit_wait_timeouts++;
+	spin_unlock_irqrestore(&radio->lock, flags);
+}
+
 static int mt6797_radio_tx_packet(struct mt6797_wifi_radio *radio, struct sk_buff *skb)
 {
 	struct mt6797_radio_connection *connection = radio->connection;
@@ -1181,7 +1327,7 @@ static int mt6797_radio_tx_packet(struct mt6797_wifi_radio *radio, struct sk_buf
 	size_t length;
 	u16 ether_type;
 	u8 *packet;
-	bool secure;
+	bool secure, waited = false;
 	int ret;
 
 	if (skb_linearize(skb))
@@ -1257,7 +1403,8 @@ unlock:
 		if (ret != -EAGAIN)
 			break;
 		/* Short bounded waits also notice disconnect/terminal without an IRQ. */
-		wait_for_completion_timeout(&radio->irq->tx_credit_completion, msecs_to_jiffies(50));
+		mt6797_radio_tx_credit_wait(radio, !waited);
+		waited = true;
 	}
 	mutex_unlock(&radio->irq->lifecycle_lock);
 free_packet:
@@ -1270,12 +1417,29 @@ static void mt6797_radio_tx_work(struct work_struct *work)
 	struct mt6797_wifi_radio *radio = container_of(work, struct mt6797_wifi_radio, tx_work);
 	struct sk_buff *skb;
 	unsigned long flags;
+	u64 now;
 	int ret;
 
+	spin_lock_irqsave(&radio->lock, flags);
+	radio->tx_diag.worker_active = true;
+	radio->tx_diag.worker_started_ns = ktime_get_ns();
+	spin_unlock_irqrestore(&radio->lock, flags);
 	for (;;) {
 		/* Drop the mutex between packets so keys/disconnect are not starved. */
 		mutex_lock(&radio->connection_lock);
+		spin_lock_irqsave(&radio->lock, flags);
 		skb = skb_dequeue(&radio->tx_queue);
+		if (skb) {
+			const struct mt6797_radio_tx_cb *stamp = (const void *)skb->cb;
+
+			now = ktime_get_ns();
+			radio->tx_diag.dequeued++;
+			radio->tx_diag.queue_depth--;
+			mt6797_radio_tx_diag_add(&radio->tx_diag.queue_wait, now - stamp->enqueued_ns);
+			radio->tx_diag.send_active = true;
+			radio->tx_diag.send_started_ns = now;
+		}
+		spin_unlock_irqrestore(&radio->lock, flags);
 		if (!skb) {
 			mutex_unlock(&radio->connection_lock);
 			break;
@@ -1289,19 +1453,41 @@ static void mt6797_radio_tx_work(struct work_struct *work)
 		}
 		dev_kfree_skb_any(skb);
 		spin_lock_irqsave(&radio->lock, flags);
+		mt6797_radio_tx_diag_add(&radio->tx_diag.send_duration,
+			ktime_get_ns() - radio->tx_diag.send_started_ns);
+		radio->tx_diag.send_active = false;
+		if (ret) {
+			radio->tx_diag.send_failed++;
+			if (ret == -ECANCELED)
+				radio->tx_diag.send_cancelled++;
+			else if (ret == -ENOTCONN)
+				radio->tx_diag.send_disconnected++;
+			else if (ret == -ETIMEDOUT)
+				radio->tx_diag.send_timed_out++;
+		} else {
+			/* Success here is only a HIF submission, never a TX completion. */
+			radio->tx_diag.hif_submitted++;
+		}
 		if (!radio->stopping && radio->connection && radio->connection->connected &&
 		    !radio->connection->cancel && skb_queue_len(&radio->tx_queue) < MT6797_RADIO_TX_WAKE_THRESHOLD)
 			netif_wake_queue(radio->netdev);
 		spin_unlock_irqrestore(&radio->lock, flags);
 		mutex_unlock(&radio->connection_lock);
 	}
+	spin_lock_irqsave(&radio->lock, flags);
+	mt6797_radio_tx_diag_add(&radio->tx_diag.worker_duration,
+		ktime_get_ns() - radio->tx_diag.worker_started_ns);
+	radio->tx_diag.worker_active = false;
+	spin_unlock_irqrestore(&radio->lock, flags);
 }
 
 static netdev_tx_t mt6797_radio_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct mt6797_wifi_radio *radio = wiphy_priv(netdev->ieee80211_ptr->wiphy);
+	struct mt6797_radio_tx_cb *stamp = (void *)skb->cb;
 	unsigned long flags;
 
+	BUILD_BUG_ON(sizeof(*stamp) > sizeof(skb->cb));
 	if (!pskb_may_pull(skb, ETH_HLEN))
 		goto drop;
 	spin_lock_irqsave(&radio->lock, flags);
@@ -1312,17 +1498,27 @@ static netdev_tx_t mt6797_radio_xmit(struct sk_buff *skb, struct net_device *net
 		goto drop;
 	}
 	if (skb_queue_len(&radio->tx_queue) >= MT6797_RADIO_TX_QUEUE_LIMIT) {
+		radio->tx_diag.busy++;
 		netif_stop_queue(netdev);
 		spin_unlock_irqrestore(&radio->lock, flags);
 		return NETDEV_TX_BUSY;
 	}
+	/* skb->cb belongs to the driver only after it accepts this packet. */
+	stamp->enqueued_ns = ktime_get_ns();
 	skb_queue_tail(&radio->tx_queue, skb);
+	radio->tx_diag.enqueued++;
+	radio->tx_diag.queue_depth++;
+	if (radio->tx_diag.queue_depth > radio->tx_diag.queue_high_water)
+		radio->tx_diag.queue_high_water = radio->tx_diag.queue_depth;
 	if (skb_queue_len(&radio->tx_queue) >= MT6797_RADIO_TX_QUEUE_LIMIT)
 		netif_stop_queue(netdev);
 	queue_work(system_long_wq, &radio->tx_work);
 	spin_unlock_irqrestore(&radio->lock, flags);
 	return NETDEV_TX_OK;
 drop:
+	spin_lock_irqsave(&radio->lock, flags);
+	radio->tx_diag.rejected++;
+	spin_unlock_irqrestore(&radio->lock, flags);
 	dev_kfree_skb_any(skb);
 	DEV_STATS_INC(netdev, tx_dropped);
 	return NETDEV_TX_OK;
@@ -1367,6 +1563,7 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 	INIT_WORK(&radio->connection_work, mt6797_radio_connection_work);
 	INIT_WORK(&radio->tx_work, mt6797_radio_tx_work);
 	skb_queue_head_init(&radio->tx_queue);
+	radio->tx_diag.lifetime_start_ns = ktime_get_ns();
 	set_wiphy_dev(wiphy, dev);
 	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
 	wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
@@ -1404,6 +1601,8 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 	}
 	strscpy(radio->netdev->name, "wlan%d", IFNAMSIZ);
 	radio->netdev->netdev_ops = &mt6797_radio_netdev_ops;
+	/* Netdev registration/removal owns publication and active sysfs readers. */
+	radio->netdev->sysfs_groups[0] = &mt6797_radio_tx_diag_group;
 	radio->netdev->ieee80211_ptr = &radio->wdev;
 	radio->wdev.netdev = radio->netdev;
 	SET_NETDEV_DEV(radio->netdev, dev);

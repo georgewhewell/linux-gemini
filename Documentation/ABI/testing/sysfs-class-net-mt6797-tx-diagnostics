@@ -1,0 +1,37 @@
+What:           /sys/class/net/<interface>/tx_diagnostics
+Date:           September 2026
+KernelVersion:  7.1
+Contact:        Linux wireless developers <linux-wireless@vger.kernel.org>
+Description:
+                Read-only (0444) versioned snapshot of the MT6797 radio's
+                software transmit queue and send worker. Available only on
+                the cfg80211 radio netdev, for its registration lifetime.
+                Reading does not reset counters or perform firmware access.
+
+                ASCII key=value lines contain cumulative packet/event counts,
+                queue depth/high-water, monotonic nanosecond durations and
+                comma-separated duration histograms. version=1 identifies
+                this format. hist_upper_ns gives inclusive upper bounds for
+                every histogram, ending in an unbounded final bucket.
+                lifetime_start_ns and connection_generation distinguish the
+                counter lifetime and accepted connect requests. snapshot_ns
+                identifies the coherent observation time.
+
+                queue_wait measures accepted enqueue to worker dequeue;
+                send_duration measures dequeue through submission/error and
+                local packet release; credit_wait measures completion waits
+                following a firmware transport credit shortage. worker_duration
+                measures each complete TX worker invocation, including its
+                connection-lock waits. Each has _count, _total_ns, _max_ns and
+                _hist fields. Active states/ages describe incomplete spans.
+
+                hif_submitted counts successful transport submissions, not
+                firmware or over-the-air TX completion. credit_wait_wakeups
+                similarly do not imply TX completion. No payload, key, SSID,
+                peer/station address or per-packet identifier is exposed.
+
+                All values share one radio-lock snapshot. Counters persist
+                over interface stop and reconnect and disappear on netdev
+                removal. There is no writable/reset attribute. Details and
+                safe interval interpretation are documented in
+                tools/gemini/README.wifi-tx-diagnostics.md.

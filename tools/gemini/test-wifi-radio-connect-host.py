@@ -110,6 +110,7 @@ int main(void) {
  for(unsigned secure=0;secure<2;secure++) {
   setup(secure); p.crypto.control_port_no_encrypt=true;
   assert(!connect() && queued==1 && allocated==1 && !freed && !bss_puts);
+  assert(r.tx_diag.connection_generation==1);
   assert(r.connection->control_port_no_encrypt && r.connection->join.negotiated.channel.primary==6);
   assert(r.connection->join.negotiated.security==(secure?MT6797_WIFI_AIS_SECURITY_WPA2_PSK_CCMP:MT6797_WIFI_AIS_SECURITY_OPEN));
   assert(r.connection->ies[0]==0 && r.connection->ies[1]==4 && !memcmp(r.connection->ies+2,ssid,4));

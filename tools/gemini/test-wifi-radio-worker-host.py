@@ -71,7 +71,8 @@ struct ieee80211_rate { int dummy; };
 '''
 for name in ['protocol.h', 'scan.h', 'rx_metadata.h', 'scan_target.h', 'scan_hif.h',
              'ais_resources.h', 'ais_protocol.h', 'ais_runtime.h', 'ais_auth.h',
-             'ais_key.h', 'ais_mgmt_tx.h', 'ais_assoc.h', 'ais_join.h', 'ais_hif.h', 'capability.h']:
+             'ais_key.h', 'ais_mgmt_tx.h', 'ais_assoc.h', 'ais_join.h', 'ais_hif.h', 'capability.h',
+             'tx_diag.h']:
     program += re.sub(r'^#include .*\n', '', (driver / name).read_text(), flags=re.M)
 program += radio[radio.index('struct mt6797_radio_key {'):radio.index('#define MT6797_RADIO_TX_QUEUE_LIMIT')]
 ieee = (root / 'include/linux/ieee80211.h').read_text()

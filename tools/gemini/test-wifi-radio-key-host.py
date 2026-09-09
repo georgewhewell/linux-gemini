@@ -105,7 +105,8 @@ program += re.sub(r'^#include .*\n', '', (driver / 'ais_key.c').read_text(), fla
 
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
              'mt6797_radio_link_event', 'mt6797_radio_key_connection',
-             'mt6797_radio_key_send', 'mt6797_radio_igtk_owner',
+             'mt6797_radio_key_send', 'mt6797_radio_sta_owner_same',
+             'mt6797_radio_wtbl_same', 'mt6797_radio_igtk_owner',
              'mt6797_radio_igtk_connection', 'mt6797_radio_igtk_forget',
              'mt6797_radio_igtk_send', 'mt6797_radio_add_igtk',
              'mt6797_radio_del_igtk', 'mt6797_radio_igtk_cleanup',
@@ -263,9 +264,10 @@ int main(void) {
   assert(!add(0,true) && writes==1 && c.pairwise_key.installed && c.pairwise_ready && !c.key_waiting);
   assert(r.command_sequence==3 && !terminals);
   for(unsigned tid=0;tid<16;tid++) assert(c.pairwise_key.rx_pn[tid]==7);
+  assert(c.pairwise_key.mgmt_rx_pn==7); c.pairwise_key.mgmt_rx_pn=29;
   c.pairwise_key.rx_pn[0]=19;
   assert(!offer(3)); /* Late malformed/duplicate events do not rewrite a completed result. */
-  assert(!add(0,true) && writes==1 && c.pairwise_key.rx_pn[0]==19); /* Identical installation is not sent again. */
+  assert(!add(0,true) && writes==1 && c.pairwise_key.rx_pn[0]==19 && c.pairwise_key.mgmt_rx_pn==29); /* Identical installation is not sent again. */
   u8 other[16]={9}; params.key=other;
   assert(add(0,true)==-EOPNOTSUPP && writes==1);
   assert(!del(0,true) && writes==2 && !c.pairwise_ready && !c.pairwise_key.installed);

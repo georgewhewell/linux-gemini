@@ -14,6 +14,7 @@
 #include "hif_regs.h"
 #include "hif_runtime.h"
 #include "radio.h"
+#include "mgmt_rx.h"
 #include "rx_metadata.h"
 #include "scan.h"
 #include "scan_hif.h"
@@ -23,6 +24,7 @@ struct mt6797_radio_key {
 	u8 material[MT6797_WIFI_AIS_CCMP_KEY_LENGTH];
 	u8 receive_sequence[6];
 	u64 rx_pn[16];
+	u64 mgmt_rx_pn; /* Robust management has a distinct CCMP replay space. */
 	u8 index;
 	bool installed;
 	bool updating;
@@ -45,6 +47,7 @@ struct mt6797_radio_connection {
 	/* Kept false until PMF negotiation and protected management exist. */
 	bool pmf_negotiated;
 	struct mt6797_wifi_ais_sta_pending key_pending;
+	struct mt6797_wifi_ais_wtbl_handle pairwise_wtbl;
 	struct completion key_completion;
 	struct completion pm_completion;
 	struct mt6797_wifi_ais_pm_params pm;
@@ -690,6 +693,9 @@ static int mt6797_radio_finish_pm(struct mt6797_wifi_radio *radio)
 	return ret;
 }
 
+static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *radio,
+	const struct mt6797_wifi_rx_view *view);
+
 static int mt6797_radio_link_frame(void *context,
 	const struct mt6797_wifi_rx_view *view)
 {
@@ -708,7 +714,9 @@ static int mt6797_radio_link_frame(void *context,
 	control = get_unaligned_le16(frame);
 	if ((control & (IEEE80211_FCTL_FTYPE | IEEE80211_FCTL_STYPE)) == IEEE80211_STYPE_BEACON)
 		return mt6797_radio_beacon(radio, view);
-	/* This radio does not negotiate protected management or reassemble fragments. */
+	if (mt6797_radio_pmf_frame(radio, view))
+		return 0;
+	/* Legacy joins do not admit protected management or reassemble fragments. */
 	if (control & (IEEE80211_FCTL_VERS | IEEE80211_FCTL_TODS |
 		       IEEE80211_FCTL_FROMDS | IEEE80211_FCTL_MOREFRAGS |
 		       IEEE80211_FCTL_PROTECTED | IEEE80211_FCTL_ORDER) ||
@@ -1082,6 +1090,7 @@ static int mt6797_radio_key_send(struct mt6797_wifi_radio *radio,
 		connection->pairwise_ready = false;
 		connection->key_waiting = true;
 		connection->pairwise_attempted = true;
+		connection->pairwise_wtbl = runtime->sta.pairwise;
 		spin_unlock_irqrestore(&radio->lock, flags);
 	}
 	ret = mt6797_wifi_hif_runtime_send(radio->irq, MT6797_WIFI_MCR_WTDR1,
@@ -1107,7 +1116,25 @@ out:
 	return ret;
 }
 
-/* connection_lock pins this association while callbacks and cleanup run. */
+static bool mt6797_radio_sta_owner_same(const struct mt6797_wifi_ais_sta_pending *a,
+	const struct mt6797_wifi_ais_sta_pending *b)
+{
+	return a->generation == b->generation && a->bss_cookie == b->bss_cookie &&
+		a->sta_cookie == b->sta_cookie && a->bss_index == b->bss_index &&
+		a->sta_index == b->sta_index && ether_addr_equal(a->peer_addr, b->peer_addr);
+}
+
+static bool mt6797_radio_wtbl_same(const struct mt6797_wifi_ais_wtbl_handle *a,
+	const struct mt6797_wifi_ais_wtbl_handle *b)
+{
+	return a->generation == b->generation && a->cookie == b->cookie &&
+		a->owner_cookie == b->owner_cookie && a->role == b->role && a->index == b->index;
+}
+
+/* connection_lock pins this association for callbacks/cleanup. RX instead holds
+ * radio->lock and requires connected && !cancel: teardown publishes cancel
+ * under that lock before mutating/releasing the connection's runtime handles.
+ */
 static int mt6797_radio_igtk_owner(struct mt6797_wifi_radio *radio,
 	struct mt6797_wifi_ais_sta_pending *owner)
 {
@@ -1122,17 +1149,83 @@ static int mt6797_radio_igtk_owner(struct mt6797_wifi_radio *radio,
 	if (!ether_addr_equal(owner->peer_addr, connection->bss->bssid))
 		return -ESTALE;
 	if (connection->igtk.installed &&
-	    (old->generation != owner->generation || old->bss_cookie != owner->bss_cookie ||
-	     old->sta_cookie != owner->sta_cookie || old->bss_index != owner->bss_index ||
-	     old->sta_index != owner->sta_index ||
-	     !ether_addr_equal(old->peer_addr, owner->peer_addr) ||
-	     connection->igtk_wtbl.generation != runtime->sta.ap_bmc_group.generation ||
-	     connection->igtk_wtbl.cookie != runtime->sta.ap_bmc_group.cookie ||
-	     connection->igtk_wtbl.owner_cookie != runtime->sta.ap_bmc_group.owner_cookie ||
-	     connection->igtk_wtbl.role != runtime->sta.ap_bmc_group.role ||
-	     connection->igtk_wtbl.index != runtime->sta.ap_bmc_group.index))
+	    (!mt6797_radio_sta_owner_same(old, owner) ||
+	     !mt6797_radio_wtbl_same(&connection->igtk_wtbl, &runtime->sta.ap_bmc_group)))
 		return -ESTALE;
 	return 0;
+}
+
+/* True means PMF policy handled or rejected this frame: never fall through
+ * to the legacy unauthenticated disconnect path after PMF is negotiated.
+ */
+static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *radio,
+	const struct mt6797_wifi_rx_view *view)
+{
+	struct mt6797_radio_connection *connection;
+	struct mt6797_wifi_mgmt_rx management;
+	struct mt6797_wifi_ais_sta_pending owner;
+	struct mt6797_wifi_ais_runtime *runtime;
+	struct mt6797_radio_key *key;
+	unsigned long flags;
+	u64 *last;
+	bool handled = false;
+	int ret;
+
+	spin_lock_irqsave(&radio->lock, flags);
+	connection = radio->connection;
+	if (!connection || !connection->pmf_negotiated)
+		goto out;
+	handled = true;
+	if (!connection->connected || connection->cancel || radio->stopping)
+		goto out;
+	ret = mt6797_wifi_mgmt_rx_decode(view->packet, view->packet_length, &management);
+	if (ret)
+		goto out;
+	runtime = &connection->ais.runtime;
+	if (!ether_addr_equal(management.frame + 10, connection->bss->bssid) ||
+	    !ether_addr_equal(management.frame + 16, connection->bss->bssid) ||
+	    management.bss_index != runtime->bss.bss_index ||
+	    (management.multicast ? !is_broadcast_ether_addr(management.frame + 4) :
+	     !ether_addr_equal(management.frame + 4, radio->netdev->dev_addr)))
+		goto out;
+	if (management.multicast) {
+		key = &connection->igtk;
+		if (management.wlan_index != runtime->sta.ap_bmc_group.index ||
+		    mt6797_radio_igtk_owner(radio, &owner))
+			goto out;
+		last = &key->rx_pn[0];
+	} else {
+		key = &connection->pairwise_key;
+		if (!connection->pairwise_ready || management.wlan_index != runtime->sta.pairwise.index ||
+		    mt6797_wifi_ais_sta_pending_init(&runtime->bss, &runtime->sta, 0, &owner) ||
+		    !mt6797_radio_sta_owner_same(&connection->key_pending, &owner) ||
+		    !mt6797_radio_wtbl_same(&connection->pairwise_wtbl, &runtime->sta.pairwise))
+			goto out;
+		last = &key->mgmt_rx_pn;
+	}
+	if (!key->installed || key->updating || key->index != management.key_index ||
+	    management.pn <= *last)
+		goto out;
+	/* Software BIP validation never trusts RXD cipher mode alone for MIC
+	 * success. CCMP relies on descriptor integrity status and a preserved group1 PN.
+	 * Neither path advances replay state on a failed ownership/integrity check.
+	 */
+	if (management.multicast && mt6797_wifi_mgmt_rx_bip_verify(&management, key->material))
+		goto out;
+	if (mt6797_wifi_data_rx_replay(last, management.pn))
+		goto out;
+	if (management.subtype == IEEE80211_STYPE_DEAUTH ||
+	    management.subtype == IEEE80211_STYPE_DISASSOC) {
+		connection->cancel = true;
+		complete(&connection->pm_completion);
+		connection->peer_disconnect = true;
+		connection->reason = get_unaligned_le16(management.frame + 24);
+		queue_work(system_long_wq, &radio->connection_work);
+	}
+	/* Robust action delivery and SA Query remain separate implementation work. */
+out:
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return handled;
 }
 
 static int mt6797_radio_igtk_connection(struct mt6797_wifi_radio *radio,
@@ -1403,6 +1496,7 @@ static int mt6797_radio_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 			memcpy(key->receive_sequence, params->seq, params->seq_len);
 		for (tid = 0; tid < ARRAY_SIZE(key->rx_pn); tid++)
 			key->rx_pn[tid] = mt6797_wifi_data_rx_pn(key->receive_sequence);
+		key->mgmt_rx_pn = mt6797_wifi_data_rx_pn(key->receive_sequence);
 		key->index = index;
 		key->installed = true;
 	}
@@ -1445,8 +1539,10 @@ static int mt6797_radio_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 	if (!ret) {
 		memzero_explicit(key, sizeof(*key));
 		radio->connection->authorized = false;
-		if (pairwise)
+		if (pairwise) {
 			radio->connection->pairwise_ready = false;
+			memzero_explicit(&radio->connection->pairwise_wtbl, sizeof(radio->connection->pairwise_wtbl));
+		}
 	}
 	spin_unlock_irqrestore(&radio->lock, flags);
 out:

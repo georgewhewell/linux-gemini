@@ -1,9 +1,16 @@
 MT6797 with MT6351 CODEC
 
 Required properties:
-- compatible: "mediatek,mt6797-mt6351-sound"
+- compatible: "mediatek,mt6797-mt6351-sound", or
+  "planet,gemini-mt6797-mt6351" for the Gemini PDA capture gate
 - mediatek,platform: the phandle of MT6797 ASoC platform
 - mediatek,audio-codec: the phandles of MT6351 codec
+
+Required properties for "planet,gemini-mt6797-mt6351":
+- microphone-enable-gpios: active-high GPIO enabling the board's microphone
+  capture path. This is the legacy headphone_en signal (GPIO234), not the
+  headphone contact-selection signal or either speaker amplifier enable.
+  It is held low while the card is idle and managed with the capture PGAs.
 
 Example:
 

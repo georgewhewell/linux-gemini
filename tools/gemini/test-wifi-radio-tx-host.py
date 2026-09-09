@@ -7,6 +7,7 @@ import os
 import re
 import runpy
 import subprocess
+import sys
 import tempfile
 base = runpy.run_path(str(Path(__file__).with_name('test-wifi-radio-worker-host.py')))
 driver = base['driver']
@@ -20,6 +21,8 @@ program = program.replace('struct mt6797_wifi_hif_irq { int lifecycle_lock; bool
 program = program.replace('static ktime_t ktime_get(void) { return 100; }',
  'static ktime_t test_time; static ktime_t ktime_get(void) { return test_time; }')
 program += r'''
+#include <stdarg.h>
+#include <sys/types.h>
 #define dev_info_ratelimited(...) do {} while(0)
 #define ETH_HLEN 14
 #define ETH_P_IP 0x0800
@@ -39,15 +42,29 @@ program += r'''
 #define DEV_STATS_ADD(d,n,v) ((d)->n+=(v))
 #define NETDEV_TX_OK 0
 #define NETDEV_TX_BUSY 1
+#define BUILD_BUG_ON(condition) _Static_assert(!(condition), "invalid size")
+#define PAGE_SIZE 4096
 typedef int netdev_tx_t;
-struct sk_buff { struct sk_buff *next; size_t len; u8 data[1600]; };
+struct sk_buff { struct sk_buff *next; size_t len; u8 data[1600]; _Alignas(8) u8 cb[48]; };
+struct device { int unused; };
+struct device_attribute { int unused; };
+#define to_net_dev(d) ((struct net_device *)(d))
+static int sysfs_emit_at(char *buf,int offset,const char *format,...) {
+ assert(offset>=0 && offset<PAGE_SIZE);
+ va_list args; va_start(args,format); int count=vsnprintf(buf+offset,PAGE_SIZE-offset,format,args); va_end(args);
+ assert(count>=0 && count<PAGE_SIZE-offset); return count;
+}
 static struct mt6797_wifi_radio r;
 static struct mt6797_wifi_hif_irq irq;
 static struct mt6797_radio_connection c;
 static struct net_device dev={.dev_addr={2,6,7,8,9,10},.mtu=1500};
 static struct cfg80211_bss bss={.bssid={2,1,2,3,4,5}};
 static unsigned calls,sends,freed,queued,fenced;
-static int action;
+static int action,linearize_error;
+static bool allocation_failure;
+static unsigned send_delay_ms;
+static void check_snapshot(void);
+static u64 ktime_get_ns(void) { return (u64)test_time*1000000; }
 static u8 captured[2352];
 static struct mt6797_wifi_radio *wiphy_priv(struct wiphy *w) { (void)w; return &r; }
 static void netif_stop_queue(struct net_device *d) { d->stopped=true; }
@@ -61,10 +78,10 @@ static struct sk_buff *skb_dequeue(struct sk_buff_head *q) {
  q->head=skb->next; if(!q->head) q->tail=NULL; q->length--; return skb;
 }
 static bool pskb_may_pull(struct sk_buff *skb,unsigned length) { return skb->len>=length; }
-static int skb_linearize(struct sk_buff *skb) { (void)skb; return 0; }
+static int skb_linearize(struct sk_buff *skb) { (void)skb; return linearize_error; }
 static void dev_kfree_skb_any(struct sk_buff *skb) { freed++; free(skb); }
 static void queue_work(int queue,struct work_struct *work) { (void)queue; (void)work; queued++; }
-static void *kmalloc(size_t n,int allocation) { (void)allocation; return malloc(n); }
+static void *kmalloc(size_t n,int allocation) { (void)allocation; return allocation_failure?NULL:malloc(n); }
 static void kfree_sensitive(void *p) { free(p); }
 static u16 get_unaligned_be16(const void *p) { const u8 *b=p; return (u16)b[0]<<8|b[1]; }
 static void put_unaligned_le16(u16 value,void *p) { u8 *b=p; b[0]=value; b[1]=value>>8; }
@@ -73,19 +90,28 @@ static int ktime_compare(ktime_t a,ktime_t b) { return a<b?-1:a>b; }
 static unsigned long msecs_to_jiffies(unsigned ms) { return ms; }
 static unsigned long wait_for_completion_timeout(struct completion *completion,unsigned long timeout) {
  (void)completion; assert(timeout==50 && irq.lifecycle_lock && r.connection_lock.held);
- test_time+=timeout; if(action==3) c.cancel=true; return 0;
+ check_snapshot();
+ if(action==4) { test_time+=7; check_snapshot(); return 43; }
+ test_time+=timeout; if(action==3) c.cancel=true; if(action==6) r.stopping=true;
+ check_snapshot(); return 0;
 }
 static void mt6797_wifi_hif_runtime_fail(struct mt6797_wifi_hif_irq *i,int error) { assert(i==&irq && error); fenced++; c.cancel=true; }
 static int mt6797_wifi_hif_runtime_send(struct mt6797_wifi_hif_irq *i,u32 address,const u8 *p,size_t length) {
  assert(i==&irq && address==MT6797_WIFI_MCR_WTDR1 && irq.lifecycle_lock && r.connection_lock.held);
  calls++;
- if(action==2 || action==3 || (action==1 && calls<=3)) return -EAGAIN;
+ check_snapshot();
+ if(action==2 || action==3 || action==6 || (action==1 && calls<=3) || (action==4 && calls==1)) return -EAGAIN;
+ if(action==5) return -EIO;
+ test_time+=send_delay_ms;
  memcpy(captured,p,length); sends++; return 0;
 }
 '''
 program += re.sub(r'^#include .*\n', '', (driver / 'protocol.c').read_text(), flags=re.M)
+program += re.search(r'struct mt6797_radio_tx_cb \{.*?\n\};', base['radio'], re.S)[0] + '\n'
 program += base['function']('mt6797_radio_eapol_pairwise_message')
-for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_purge_tx',
+for name in ['mt6797_radio_tx_diag_add', 'mt6797_radio_tx_diag_span_emit',
+             'tx_diagnostics_show', 'mt6797_radio_tx_credit_wait',
+             'mt6797_radio_connection_cancelled', 'mt6797_radio_purge_tx',
              'mt6797_radio_tx_packet', 'mt6797_radio_tx_work', 'mt6797_radio_xmit']:
     program += base['function'](name)
 program += r'''
@@ -97,6 +123,36 @@ static void setup(void) {
  c.ais.runtime.sta.pairwise.index=3; c.ais.runtime.bss.own_mac_index=2;
  dev.tx_packets=dev.tx_bytes=dev.tx_dropped=0; dev.stopped=false;
  calls=sends=freed=queued=fenced=0; action=0; test_time=0;
+ linearize_error=0; allocation_failure=false; send_delay_ms=0;
+}
+static u64 field(const char *text,const char *name) {
+ char key[96]; snprintf(key,sizeof(key),"%s=",name);
+ const char *p=strstr(text,key); assert(p && (p==text || p[-1]=='\n'));
+ return strtoull(p+strlen(key),NULL,10);
+}
+static void check_snapshot(void) {
+ char text[PAGE_SIZE]; struct mt6797_radio_tx_diag before=r.tx_diag;
+ ssize_t length=tx_diagnostics_show((struct device *)&dev,NULL,text);
+ assert(length>0 && length<PAGE_SIZE && text[length]=='\0' && text[length-1]=='\n');
+ assert(!memcmp(&before,&r.tx_diag,sizeof(before))); /* Reads do not reset or mutate counters. */
+ assert(field(text,"version")==1 && field(text,"queue_limit")==64);
+ assert(field(text,"enqueued")==field(text,"dequeued")+field(text,"purged")+field(text,"queue_depth"));
+ assert(field(text,"dequeued")==field(text,"hif_submitted")+field(text,"send_failed")+field(text,"send_active"));
+ assert(field(text,"credit_wait_attempts")==field(text,"credit_wait_count")+field(text,"credit_wait_active"));
+ assert(field(text,"credit_wait_count")==field(text,"credit_wait_wakeups")+field(text,"credit_wait_timeouts"));
+ assert(field(text,"queue_depth")==r.tx_queue.length);
+ assert(field(text,"queue_wait_count")==field(text,"dequeued"));
+ assert(field(text,"send_duration_count")==field(text,"hif_submitted")+field(text,"send_failed"));
+ assert(field(text,"worker_active_ns")== (r.tx_diag.worker_active?ktime_get_ns()-r.tx_diag.worker_started_ns:0));
+ assert(field(text,"send_active_ns")== (r.tx_diag.send_active?ktime_get_ns()-r.tx_diag.send_started_ns:0));
+ assert(field(text,"credit_wait_active_ns")== (r.tx_diag.credit_wait_active?ktime_get_ns()-r.tx_diag.credit_wait_started_ns:0));
+ if(r.tx_diag.credit_wait_active) assert(r.tx_diag.send_active && r.tx_diag.worker_active);
+ for(unsigned i=0;i<4;i++) {
+  const struct mt6797_radio_tx_diag_span *span=i==0?&r.tx_diag.queue_wait:i==1?&r.tx_diag.send_duration:i==2?&r.tx_diag.credit_wait:&r.tx_diag.worker_duration;
+  u64 count=0; for(unsigned bucket=0;bucket<MT6797_RADIO_TX_DIAG_BUCKETS;bucket++) count+=span->buckets[bucket];
+  assert(count==span->count);
+ }
+ assert(!strstr(text,"test") && !strstr(text,"bssid") && !strstr(text,"ssid") && !strstr(text,"address") && !strstr(text,"material"));
 }
 static struct sk_buff *packet(u16 ether_type) {
  struct sk_buff *skb=calloc(1,sizeof(*skb)); skb->len=18;
@@ -114,10 +170,13 @@ static void submit(u16 ether_type) { assert(mt6797_radio_xmit(packet(ether_type)
 static void run(void) {
  mt6797_radio_tx_work(&r.tx_work);
  assert(!r.lock && !r.connection_lock.held && !irq.lifecycle_lock && !r.tx_queue.length);
+ assert(!r.tx_diag.worker_active && !r.tx_diag.send_active && !r.tx_diag.credit_wait_active);
+ check_snapshot();
 }
 int main(void) {
  setup(); submit(ETH_P_IP); run();
  assert(sends==1 && freed==1 && dev.tx_packets==1 && dev.tx_bytes==18 && !dev.tx_dropped);
+ assert(r.tx_diag.enqueued==1 && r.tx_diag.dequeued==1 && r.tx_diag.hif_submitted==1 && r.tx_diag.queue_high_water==1);
  assert(captured[3]==0x20 && captured[4]==3 && captured[6]==0x80 && captured[7]==8);
  /* A non-QoS pairwise link uses priority zero for ARP as well as IP,
   * including broadcast Ethernet requests, which still travel to the AP. */
@@ -174,22 +233,59 @@ int main(void) {
  setup(); submit(ETH_P_8021Q); run(); assert(!sends && dev.tx_dropped==1);
  setup(); c.pairwise_ready=false; submit(ETH_P_IP); run(); assert(!sends && dev.tx_dropped==1);
  setup(); action=1; submit(ETH_P_IP); run(); assert(sends==1 && calls==4 && test_time==150);
+ assert(r.tx_diag.credit_wait.count==3 && r.tx_diag.credit_wait_packets==1 && r.tx_diag.credit_wait_timeouts==3);
+ assert(r.tx_diag.credit_wait.total_ns==150000000 && r.tx_diag.credit_wait.max_ns==50000000 && r.tx_diag.send_duration.total_ns==150000000);
  setup(); action=2; submit(ETH_P_IP); run(); assert(!sends && fenced==1 && test_time==1000 && dev.tx_dropped==1);
+ assert(r.tx_diag.send_timed_out==1 && r.tx_diag.credit_wait.count==20 && r.tx_diag.credit_wait.total_ns==1000000000);
  setup(); action=3; submit(ETH_P_IP); run(); assert(!sends && !fenced && test_time==50 && dev.tx_dropped==1);
+ assert(r.tx_diag.send_cancelled==1 && r.tx_diag.credit_wait.count==1);
+ setup(); action=6; submit(ETH_P_IP); run(); assert(r.stopping && r.tx_diag.send_cancelled==1 && !sends && !fenced);
+ setup(); action=4; submit(ETH_P_IP); run(); assert(sends==1 && calls==2 && test_time==7);
+ assert(r.tx_diag.credit_wait_wakeups==1 && !r.tx_diag.credit_wait_timeouts && r.tx_diag.credit_wait.total_ns==7000000);
+ setup(); action=5; submit(ETH_P_IP); run(); assert(r.tx_diag.send_failed==1 && !r.tx_diag.credit_wait_attempts && !sends);
+ setup(); linearize_error=-ENOMEM; submit(ETH_P_IP); run(); assert(r.tx_diag.send_failed==1 && !calls);
+ setup(); allocation_failure=true; submit(ETH_P_IP); run(); assert(r.tx_diag.send_failed==1 && !calls);
+ setup(); submit(ETH_P_IP); c.connected=false; run(); assert(r.tx_diag.send_disconnected==1 && !calls);
  setup();
  for(unsigned i=0;i<64;i++) submit(ETH_P_IP);
  assert(r.tx_queue.length==64 && dev.stopped);
- skb=packet(ETH_P_IP); assert(mt6797_radio_xmit(skb,&dev)==NETDEV_TX_BUSY && !freed); free(skb);
+ skb=packet(ETH_P_IP); memset(skb->cb,0xa5,sizeof(skb->cb));
+ assert(mt6797_radio_xmit(skb,&dev)==NETDEV_TX_BUSY && !freed);
+ for(unsigned i=0;i<sizeof(skb->cb);i++) assert(skb->cb[i]==0xa5); free(skb);
+ assert(r.tx_diag.busy==1 && r.tx_diag.enqueued==64 && r.tx_diag.queue_high_water==64); check_snapshot();
  run(); assert(sends==64 && freed==64 && !dev.stopped);
  setup(); submit(ETH_P_IP); submit(ETH_P_PAE); c.cancel=true;
  mt6797_radio_purge_tx(&r); assert(freed==2 && dev.tx_dropped==2); run(); assert(!sends);
- puts("PASS: production TX queue/worker/codec: port/key/encryption policy, plaintext-M3 reply and retransmit policy, bounded EAPOL classifier, AP EAPOL, multicast via PTK, fixed 1Mbps, credit retries/deadline/cancellation, queue backpressure and teardown ownership");
+ assert(r.tx_diag.purged==2 && !r.tx_diag.dequeued && !r.tx_diag.queue_wait.count);
+ /* The same netdev's counters survive a connection ending and reopening. */
+ c.cancel=false; submit(ETH_P_IP); run(); assert(r.tx_diag.enqueued==3 && r.tx_diag.purged==2 && r.tx_diag.hif_submitted==1);
+ /* Known clock: two enqueues, one 3ms send each, independent queue/worker spans. */
+ setup(); test_time=10; submit(ETH_P_IP); test_time=12; submit(ETH_P_IP);
+ test_time=20; send_delay_ms=3; run();
+ assert(r.tx_diag.queue_wait.count==2 && r.tx_diag.queue_wait.total_ns==21000000 && r.tx_diag.queue_wait.max_ns==11000000);
+ assert(r.tx_diag.send_duration.count==2 && r.tx_diag.send_duration.total_ns==6000000 && r.tx_diag.send_duration.max_ns==3000000);
+ assert(r.tx_diag.worker_duration.count==1 && r.tx_diag.worker_duration.total_ns==6000000);
+ /* Boundaries use inclusive upper limits, with overflow in the final bucket. */
+ struct mt6797_radio_tx_diag_span span={0};
+ const u64 bounds[]={100000,500000,1000000,2000000,5000000,10000000,20000000,50000000,100000000};
+ for(unsigned i=0;i<9;i++) { mt6797_radio_tx_diag_add(&span,bounds[i]); mt6797_radio_tx_diag_add(&span,bounds[i]+1); }
+ assert(span.count==18 && span.buckets[0]==1 && span.buckets[9]==1);
+ for(unsigned i=1;i<9;i++) assert(span.buckets[i]==2);
+ /* Worst-width counters must still fit the single sysfs page without truncation. */
+ memset(&r.tx_diag,0xff,sizeof(r.tx_diag));
+ r.tx_diag.worker_active=r.tx_diag.send_active=r.tx_diag.credit_wait_active=false;
+ char snapshot[PAGE_SIZE]; ssize_t length=tx_diagnostics_show((struct device *)&dev,NULL,snapshot);
+ assert(length>0 && length<PAGE_SIZE && snapshot[length-1]=='\n' && strstr(snapshot,"worker_duration_hist="));
+ puts("PASS: production TX queue/worker/codec policy, diagnostic spans/histograms, coherent active snapshots, credit retry/wakeup/deadline/cancellation, failures, queue ownership/backpressure, purge and bounded read-only output");
 }
 '''
-with tempfile.TemporaryDirectory(prefix='gemini-radio-tx-') as temporary:
-    path = Path(temporary)
-    (path / 'test.c').write_text(program)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g',
-                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
-                    str(path / 'test.c'), '-o', str(path / 'test')], check=True)
-    subprocess.run([str(path / 'test')], check=True)
+if __name__ == '__main__':
+    with tempfile.TemporaryDirectory(prefix='gemini-radio-tx-') as temporary:
+        path = Path(temporary)
+        (path / 'test.c').write_text(program)
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g',
+                        '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                        str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+        subprocess.run([str(path / 'test')], check=True)
+    subprocess.run([sys.executable, '-B', str(Path(__file__).with_name(
+        'test-wifi-radio-tx-diag-lifecycle-host.py'))], check=True)

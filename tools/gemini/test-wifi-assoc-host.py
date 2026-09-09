@@ -62,7 +62,7 @@ program += rate_mask + '\n' + rate_macro + '\n'
 # Import the actual kernel's wire constants; do not duplicate their values.
 ieee = (root / 'include/linux/ieee80211.h').read_text()
 names = ['IEEE80211_STYPE_ASSOC_REQ', 'IEEE80211_STYPE_ASSOC_RESP',
-         'IEEE80211_STYPE_AUTH', 'IEEE80211_FTYPE_MGMT', 'IEEE80211_FCTL_ORDER',
+         'IEEE80211_STYPE_AUTH', 'IEEE80211_STYPE_BEACON', 'IEEE80211_FTYPE_MGMT', 'IEEE80211_FCTL_ORDER',
          'IEEE80211_FCTL_VERS', 'IEEE80211_FCTL_FTYPE', 'IEEE80211_FCTL_STYPE',
          'IEEE80211_FCTL_TODS', 'IEEE80211_FCTL_FROMDS', 'IEEE80211_FCTL_PROTECTED',
          'IEEE80211_FCTL_MOREFRAGS', 'IEEE80211_SCTL_FRAG',

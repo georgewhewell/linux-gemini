@@ -76,10 +76,12 @@ static int mt6797_wifi_rx_group3_offset(u8 groups, size_t *group3,
 	return 0;
 }
 
-static int mt6797_wifi_rx_channel_decode(u8 encoded,
+int mt6797_wifi_rx_channel_decode(u8 encoded,
 					 enum mt6797_wifi_rx_band *band,
 					 u8 *channel)
 {
+	if (!band || !channel)
+		return -EINVAL;
 	if (!encoded)
 		return -EPROTO;
 	if (encoded <= 14) {

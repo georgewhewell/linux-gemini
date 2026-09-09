@@ -11,6 +11,78 @@
 #define MT6797_JOIN_LEGACY_RATES 0x3fcfU
 #define MT6797_JOIN_CCK_RATES 0x000fU
 
+int mt6797_wifi_ais_pm_beacon_parse(const u8 *frame, size_t length,
+	struct mt6797_wifi_ais_pm_params *params)
+{
+	struct mt6797_wifi_ais_pm_params candidate = {};
+	size_t offset;
+	u16 control;
+	bool have_tim = false;
+
+	if (!params)
+		return -EINVAL;
+	*params = candidate;
+	if (!frame || length < 36)
+		return -EMSGSIZE;
+	control = get_unaligned_le16(frame);
+	if ((control & (IEEE80211_FCTL_VERS | IEEE80211_FCTL_FTYPE |
+			IEEE80211_FCTL_STYPE)) != IEEE80211_STYPE_BEACON ||
+	    (control & (IEEE80211_FCTL_TODS | IEEE80211_FCTL_FROMDS |
+			IEEE80211_FCTL_MOREFRAGS | IEEE80211_FCTL_PROTECTED |
+			IEEE80211_FCTL_ORDER)) ||
+	    (get_unaligned_le16(frame + 22) & IEEE80211_SCTL_FRAG))
+		return -EPROTO;
+	candidate.beacon_interval = get_unaligned_le16(frame + 32);
+	if (!candidate.beacon_interval)
+		return -EPROTO;
+	for (offset = 36; offset < length; offset += frame[offset + 1] + 2) {
+		if (length - offset < 2 || frame[offset + 1] > length - offset - 2)
+			return -EPROTO;
+		if (frame[offset] != WLAN_EID_TIM)
+			continue;
+		if (have_tim || frame[offset + 1] < 4 || !frame[offset + 3] ||
+		    frame[offset + 2] >= frame[offset + 3])
+			return -EPROTO;
+		have_tim = true;
+		candidate.dtim_period = frame[offset + 3];
+	}
+	if (!have_tim)
+		return -ENOENT;
+	*params = candidate;
+	return 0;
+}
+
+int mt6797_wifi_ais_pm_build(
+	const struct mt6797_wifi_ais_bss_handle *bss,
+	const struct mt6797_wifi_ais_sta_handle *sta,
+	const struct mt6797_wifi_ais_pm_params *params, bool connected,
+	u8 sequence, u8 *command, size_t capacity)
+{
+	struct mt6797_wifi_ais_sta_pending owner;
+	u8 *body;
+	int ret;
+
+	if (!command || (connected && (!params || !params->association_id ||
+	    params->association_id > 2007 || !params->beacon_interval || !params->dtim_period)))
+		return -EINVAL;
+	ret = mt6797_wifi_ais_sta_pending_init(bss, sta, sequence, &owner);
+	if (ret)
+		return ret;
+	/* GEN3 CMD_INDICATE_PM_BSS_CONNECTED/ABORT; non-QoS, no U-APSD. */
+	ret = mt6797_wifi_command_init(command, capacity, connected ? 12 : 4,
+		connected ? 0x16 : 0x17, true, sequence);
+	if (ret)
+		return ret;
+	body = command + MT6797_WIFI_COMMAND_HEADER_LENGTH;
+	body[0] = bss->bss_index;
+	if (connected) {
+		body[1] = params->dtim_period;
+		put_unaligned_le16(params->association_id, body + 2);
+		put_unaligned_le16(params->beacon_interval, body + 4);
+	}
+	return 0;
+}
+
 /* GEN3 wlan_def.h software-index and long-preamble hardware encodings. */
 static const struct {
 	u8 rate;

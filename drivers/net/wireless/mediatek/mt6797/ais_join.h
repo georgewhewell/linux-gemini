@@ -5,6 +5,23 @@
 #include "ais_protocol.h"
 
 #define MT6797_WIFI_AIS_BSS_INFO_LENGTH 96U
+#define MT6797_WIFI_AIS_PM_CONNECTED_LENGTH 20U
+#define MT6797_WIFI_AIS_PM_ABORT_LENGTH 12U
+
+struct mt6797_wifi_ais_pm_params {
+	u16 association_id;
+	u16 beacon_interval;
+	u8 dtim_period;
+};
+
+/* The caller binds this structurally valid beacon to its associated AP. */
+int mt6797_wifi_ais_pm_beacon_parse(const u8 *frame, size_t length,
+	struct mt6797_wifi_ais_pm_params *params);
+int mt6797_wifi_ais_pm_build(
+	const struct mt6797_wifi_ais_bss_handle *bss,
+	const struct mt6797_wifi_ais_sta_handle *sta,
+	const struct mt6797_wifi_ais_pm_params *params, bool connected,
+	u8 sequence, u8 *command, size_t capacity);
 
 enum mt6797_wifi_ais_security {
 	MT6797_WIFI_AIS_SECURITY_OPEN,

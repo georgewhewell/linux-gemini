@@ -41,12 +41,20 @@ static const struct mtk_pin_field_calc mt6797_pin_ies_range[] = {
 	PIN_FIELD_CALC(129, 134, 2, 0x020, 0x10, 25, 1, 32, 0),
 };
 
+static const struct mtk_pin_field_calc mt6797_pin_drv_range[] = {
+	PIN_FIELD_CALC(129, 129, 2, 0x1b0, 0x10, 21, 3, 32, 0),
+	/* DAT0 through DAT3 share one drive-strength selector. */
+	PIN_FIELD_CALC(130, 133, 2, 0x1b0, 0x10, 24, 3, 32, 1),
+	PIN_FIELD_CALC(134, 134, 2, 0x1b0, 0x10, 27, 3, 32, 0),
+};
+
 static const struct mtk_pin_reg_calc mt6797_reg_cals[PINCTRL_PIN_REG_MAX] = {
 	[PINCTRL_PIN_REG_MODE] = MTK_RANGE(mt6797_pin_mode_range),
 	[PINCTRL_PIN_REG_DIR] = MTK_RANGE(mt6797_pin_dir_range),
 	[PINCTRL_PIN_REG_DI] = MTK_RANGE(mt6797_pin_di_range),
 	[PINCTRL_PIN_REG_DO] = MTK_RANGE(mt6797_pin_do_range),
 	[PINCTRL_PIN_REG_IES] = MTK_RANGE(mt6797_pin_ies_range),
+	[PINCTRL_PIN_REG_DRV] = MTK_RANGE(mt6797_pin_drv_range),
 };
 
 static const char * const mt6797_pinctrl_register_base_names[] = {
@@ -74,6 +82,8 @@ static const struct mtk_pin_soc mt6797_data = {
 	.gpio_m = 0,
 	.base_names = mt6797_pinctrl_register_base_names,
 	.nbase_names = ARRAY_SIZE(mt6797_pinctrl_register_base_names),
+	.drive_set = mtk_pinconf_drive_set_rev1,
+	.drive_get = mtk_pinconf_drive_get_rev1,
 };
 
 static const struct of_device_id mt6797_pinctrl_of_match[] = {

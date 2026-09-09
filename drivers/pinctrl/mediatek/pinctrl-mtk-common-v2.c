@@ -1151,12 +1151,12 @@ int mtk_pinconf_adv_pull_set(struct mtk_pinctrl *hw,
 	 */
 	err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_R0, arg & 1);
 	if (err)
-		return 0;
+		return err;
 
 	err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_R1,
 			       !!(arg & 2));
 	if (err)
-		return 0;
+		return err;
 
 	arg = pullup ? 0 : 1;
 

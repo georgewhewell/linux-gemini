@@ -107,10 +107,14 @@ static void setup(bool secure) {
 static int connect(void) { int ret=mt6797_radio_connect(NULL,NULL,&p); assert(!r.lock); return ret; }
 static void release(void) { free(r.connection); r.connection=NULL; }
 int main(void) {
+ setup(true); p.mfp=2; assert(connect()==-EOPNOTSUPP && !queued && !allocated);
+ setup(true); p.crypto.akm_suites[0]=0x000fac08; assert(connect()==-EOPNOTSUPP && !queued && !allocated);
+
  for(unsigned secure=0;secure<2;secure++) {
   setup(secure); p.crypto.control_port_no_encrypt=true;
   assert(!connect() && queued==1 && allocated==1 && !freed && !bss_puts);
   assert(r.tx_diag.connection_generation==1);
+  assert(!r.connection->pmf_negotiated);
   assert(r.connection->control_port_no_encrypt && r.connection->join.negotiated.channel.primary==6);
   assert(r.connection->join.negotiated.security==(secure?MT6797_WIFI_AIS_SECURITY_WPA2_PSK_CCMP:MT6797_WIFI_AIS_SECURITY_OPEN));
   assert(r.connection->ies[0]==0 && r.connection->ies[1]==4 && !memcmp(r.connection->ies+2,ssid,4));

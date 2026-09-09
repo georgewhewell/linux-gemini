@@ -1695,9 +1695,8 @@ static int msdc_ops_switch_volt(struct mmc_host *mmc, struct mmc_ios *ios)
 
 		/* Apply different pinctrl settings for different signal voltage */
 		if (ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180)
-			pinctrl_select_state(host->pinctrl, host->pins_uhs);
-		else
-			pinctrl_select_state(host->pinctrl, host->pins_default);
+			return pinctrl_select_state(host->pinctrl, host->pins_uhs);
+		return pinctrl_select_state(host->pinctrl, host->pins_default);
 	}
 	return 0;
 }

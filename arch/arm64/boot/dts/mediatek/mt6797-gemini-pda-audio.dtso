@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Planet Computers Gemini PDA MT6797/MT6351 audio smoke-test overlay.
+ * Planet Computers Gemini PDA MT6797/MT6351 audio overlay.
  *
  * This overlay is deliberately not part of mt6797-gemini-pda.dtb.  It enables
- * only the upstream MT6797 AFE, MT6351 codec and their upstream machine card;
- * it does not describe the Gemini's unverified external amplifier, headphone
- * depop GPIO, headset detection or UCM routing.
+ * the MT6797 AFE, MT6351 codec and the Gemini machine-card capture gate.
+ * The external speaker amplifiers and headset contact selection still need
+ * separate routing support.
  *
  * Evidence:
  * - The Gemini base DT identifies the parent PMIC as MT6351:
@@ -14,14 +14,29 @@
  *   wrapper: Documentation/devicetree/bindings/sound/mt6351.txt:3-16.
  * - The MT6797 machine binding pairs the AFE and codec phandles exactly as
  *   below: Documentation/devicetree/bindings/sound/mt6797-mt6351.txt:3-14.
- * - The vendor k57v1_64 DTS has legacy smart-amp and hp-depop pin states, but
- *   it does not establish a safe Gemini mainline routing contract
- *   (vendor/gemini-linux-kernel-3.18/arch/arm64/boot/dts/k57v1_64.dts:221-321).
- *   Do not copy those states into this smoke test.
+ * - gemian/gemini-linux-kernel-3.18 aeon6797_6m_n.dts assigns headphone_en
+ *   to GPIO234. mt_soc_audio_6797/mt_soc_codec_63xx.c calls that enable in
+ *   TurnOnADcPowerDCC(), before starting either capture preamplifier, and
+ *   lowers it on teardown. AudDrv_Gpio.c uses active-high polarity.
+ * - The hpdepop states on GPIO243/244 are used by EXTAMP/EXTAMP2 in that
+ *   vendor tree, not by its disabled HPDEPOP_Select implementation. They
+ *   must not be treated as a headphone-enable signal.
  */
 
 /dts-v1/;
 /plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/mt6797-pinfunc.h>
+
+&pio {
+	gemini_microphone_pins: microphone-pins {
+		pins-enable {
+			pinmux = <MT6797_GPIO234__FUNC_GPIO234>;
+			output-low;
+		};
+	};
+};
 
 &afe {
 	status = "okay";
@@ -36,7 +51,10 @@
 
 &{/} {
 	gemini_audio: sound {
-		compatible = "mediatek,mt6797-mt6351-sound";
+		compatible = "planet,gemini-mt6797-mt6351";
+		pinctrl-names = "default";
+		pinctrl-0 = <&gemini_microphone_pins>;
+		microphone-enable-gpios = <&pio 234 GPIO_ACTIVE_HIGH>;
 		mediatek,platform = <&afe>;
 		mediatek,audio-codec = <&mt6351_sound>;
 		status = "okay";

@@ -9,6 +9,9 @@
 #include <linux/gpio/consumer.h>
 #include <linux/irqflags.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/property.h>
+#include <sound/jack.h>
 #include <sound/soc.h>
 
 #include "mt6797-afe-common.h"
@@ -18,6 +21,15 @@
 
 struct mt6797_mt6351_priv {
 	struct gpio_desc *mic_enable;
+	struct snd_soc_card *card;
+	/* Serializes DAPM requests with asynchronous jack notifications. */
+	struct mutex speaker_lock;
+	struct snd_soc_jack headset_jack;
+	struct notifier_block jack_notifier;
+	bool jack_present;
+	bool speaker_requested;
+	bool speaker_active;
+	bool jack_notifier_registered;
 	struct gpio_desc *speaker_enable[GEMINI_SPEAKER_AMPS];
 };
 
@@ -69,24 +81,12 @@ static void gemini_speaker_disable(void *data)
 	usleep_range(500, 1000);
 }
 
-static int gemini_speaker_event(struct snd_soc_dapm_widget *w,
-				struct snd_kcontrol *kcontrol, int event)
+/* Caller serializes DAPM and jack-notifier changes with speaker_lock. */
+static int gemini_speaker_power(struct snd_soc_card *card, bool enable)
 {
-	struct snd_soc_card *card = snd_soc_dapm_to_card(w->dapm);
 	struct mt6797_mt6351_priv *priv = snd_soc_card_get_drvdata(card);
 	unsigned long flags;
-	int enable, i, pulse, value[GEMINI_SPEAKER_AMPS];
-
-	switch (event) {
-	case SND_SOC_DAPM_POST_PMU:
-		enable = 1;
-		break;
-	case SND_SOC_DAPM_PRE_PMD:
-		enable = 0;
-		break;
-	default:
-		return -EINVAL;
-	}
+	int i, pulse, value[GEMINI_SPEAKER_AMPS];
 
 	dev_info(card->dev, "Gemini speaker amplifiers before enable=%d mode=%d\n",
 		 enable, GEMINI_SPEAKER_MODE);
@@ -127,10 +127,106 @@ static int gemini_speaker_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+static int gemini_speaker_update(struct mt6797_mt6351_priv *priv)
+{
+	bool enable = priv->speaker_requested && !priv->jack_present;
+	int ret;
+
+	if (enable == priv->speaker_active)
+		return 0;
+	ret = gemini_speaker_power(priv->card, enable);
+	priv->speaker_active = !ret && enable;
+	return ret;
+}
+
+static int gemini_speaker_event(struct snd_soc_dapm_widget *w,
+				struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_card *card = snd_soc_dapm_to_card(w->dapm);
+	struct mt6797_mt6351_priv *priv = snd_soc_card_get_drvdata(card);
+	int ret;
+
+	if (event != SND_SOC_DAPM_POST_PMU && event != SND_SOC_DAPM_PRE_PMD)
+		return -EINVAL;
+	mutex_lock(&priv->speaker_lock);
+	priv->speaker_requested = event == SND_SOC_DAPM_POST_PMU;
+	ret = gemini_speaker_update(priv);
+	if (ret)
+		priv->speaker_requested = false;
+	mutex_unlock(&priv->speaker_lock);
+	return ret;
+}
+
+static int gemini_jack_notify(struct notifier_block *nb, unsigned long status,
+			      void *data)
+{
+	struct mt6797_mt6351_priv *priv = container_of(nb, struct mt6797_mt6351_priv,
+						     jack_notifier);
+	int ret;
+
+	mutex_lock(&priv->speaker_lock);
+	priv->jack_present = !!(status & SND_JACK_HEADPHONE);
+	ret = gemini_speaker_update(priv);
+	mutex_unlock(&priv->speaker_lock);
+	if (ret)
+		dev_err(priv->card->dev, "speaker update after headset event failed: %d\n", ret);
+	return NOTIFY_OK;
+}
+
 static int gemini_late_probe(struct snd_soc_card *card)
 {
-	/* A headphone stream must not enable the external amplifiers. */
-	return snd_soc_dapm_disable_pin(snd_soc_card_to_dapm(card), "Speaker");
+	struct mt6797_mt6351_priv *priv = snd_soc_card_get_drvdata(card);
+	struct snd_soc_pcm_runtime *rtd;
+	struct snd_soc_component *codec = NULL;
+	int ret;
+
+	ret = snd_soc_dapm_disable_pin(snd_soc_card_to_dapm(card), "Speaker");
+	if (ret || !device_property_read_bool(card->dev, "mediatek,headset-jack"))
+		return ret;
+	for_each_card_rtds(card, rtd) {
+		if (!strcmp(rtd->dai_link->name, "Primary Codec")) {
+			codec = snd_soc_rtd_to_codec(rtd, 0)->component;
+			break;
+		}
+	}
+	if (!codec)
+		return -ENODEV;
+	/* No DAPM pins: speaker and headphones share the codec HP buffers. */
+	ret = snd_soc_card_jack_new_pins(card, "Headset", SND_JACK_HEADSET,
+					 &priv->headset_jack, NULL, 0);
+	if (ret)
+		return ret;
+	ret = snd_jack_add_new_kctl(priv->headset_jack.jack, "Headphone Jack",
+				    SND_JACK_HEADPHONE);
+	if (ret)
+		return ret;
+	ret = snd_jack_add_new_kctl(priv->headset_jack.jack, "Headset Mic Jack",
+				    SND_JACK_MICROPHONE);
+	if (ret)
+		return ret;
+	/* Keep the amplifiers off until the initial detector report arrives. */
+	priv->jack_present = true;
+	priv->jack_notifier.notifier_call = gemini_jack_notify;
+	snd_soc_jack_notifier_register(&priv->headset_jack, &priv->jack_notifier);
+	priv->jack_notifier_registered = true;
+	ret = snd_soc_component_set_jack(codec, &priv->headset_jack, NULL);
+	if (ret) {
+		snd_soc_jack_notifier_unregister(&priv->headset_jack, &priv->jack_notifier);
+		priv->jack_notifier_registered = false;
+	}
+	return ret;
+}
+
+static int gemini_card_remove(struct snd_soc_card *card)
+{
+	struct mt6797_mt6351_priv *priv = snd_soc_card_get_drvdata(card);
+
+	/* The codec remove callback has already stopped detector IRQs/work. */
+	if (priv->jack_notifier_registered) {
+		snd_soc_jack_notifier_unregister(&priv->headset_jack, &priv->jack_notifier);
+		priv->jack_notifier_registered = false;
+	}
+	return 0;
 }
 
 static const struct snd_kcontrol_new gemini_controls[] = {
@@ -373,6 +469,8 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 		priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 		if (!priv)
 			return -ENOMEM;
+		priv->card = card;
+		mutex_init(&priv->speaker_lock);
 		priv->mic_enable = devm_gpiod_get(&pdev->dev, "microphone-enable",
 						  GPIOD_OUT_LOW);
 		if (IS_ERR(priv->mic_enable))
@@ -404,6 +502,7 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 		card->controls = gemini_controls;
 		card->num_controls = ARRAY_SIZE(gemini_controls);
 		card->late_probe = gemini_late_probe;
+		card->remove = gemini_card_remove;
 		card->dapm_widgets = gemini_widgets;
 		card->num_dapm_widgets = ARRAY_SIZE(gemini_widgets);
 		card->dapm_routes = gemini_routes;

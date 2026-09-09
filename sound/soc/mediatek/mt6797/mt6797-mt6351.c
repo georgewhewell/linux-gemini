@@ -249,7 +249,8 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 	struct mt6797_mt6351_priv *priv;
 	struct device_node *platform_node, *codec_node;
 	struct snd_soc_dai_link *dai_link;
-	int ret, i;
+	struct snd_soc_dai_link_component *component;
+	int ret, i, j;
 
 	card = devm_kmemdup(&pdev->dev, &mt6797_mt6351_card,
 			    sizeof(*card), GFP_KERNEL);
@@ -261,14 +262,21 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	/* Each card owns the component references populated below. */
 	for_each_card_prelinks(card, i, dai_link) {
-		dai_link->platforms = devm_kmemdup(&pdev->dev, dai_link->platforms,
+		if (dai_link->num_platforms) {
+			dai_link->platforms = devm_kmemdup(&pdev->dev, dai_link->platforms,
 						   sizeof(*dai_link->platforms) *
 						   dai_link->num_platforms, GFP_KERNEL);
-		dai_link->codecs = devm_kmemdup(&pdev->dev, dai_link->codecs,
+			if (!dai_link->platforms)
+				return -ENOMEM;
+		}
+		/* COMP_DUMMY() is empty until snd_soc_fill_dummy_dai(). */
+		if (dai_link->num_codecs) {
+			dai_link->codecs = devm_kmemdup(&pdev->dev, dai_link->codecs,
 						sizeof(*dai_link->codecs) *
 						dai_link->num_codecs, GFP_KERNEL);
-		if (!dai_link->platforms || !dai_link->codecs)
-			return -ENOMEM;
+			if (!dai_link->codecs)
+				return -ENOMEM;
+		}
 	}
 
 	card->dev = &pdev->dev;
@@ -299,9 +307,10 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 	for_each_card_prelinks(card, i, dai_link) {
-		if (dai_link->platforms->name)
-			continue;
-		dai_link->platforms->of_node = platform_node;
+		for_each_link_platforms(dai_link, j, component) {
+			if (!component->name)
+				component->of_node = platform_node;
+		}
 	}
 
 	codec_node = of_parse_phandle(pdev->dev.of_node,
@@ -313,9 +322,10 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 		goto put_platform_node;
 	}
 	for_each_card_prelinks(card, i, dai_link) {
-		if (dai_link->codecs->name)
-			continue;
-		dai_link->codecs->of_node = codec_node;
+		for_each_link_codecs(dai_link, j, component) {
+			if (!component->name)
+				component->of_node = codec_node;
+		}
 	}
 
 	ret = devm_snd_soc_register_card(&pdev->dev, card);

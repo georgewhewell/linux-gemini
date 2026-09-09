@@ -4,8 +4,8 @@
  *
  * This overlay is deliberately not part of mt6797-gemini-pda.dtb.  It enables
  * the MT6797 AFE, MT6351 codec and the Gemini machine-card capture gate.
- * The external speaker amplifiers and headset contact selection still need
- * separate routing support.
+ * The speaker amplifiers follow the headphone buffers, as configured by
+ * the shipped HAL. Headset contact selection still needs separate support.
  *
  * Evidence:
  * - The Gemini base DT identifies the parent PMIC as MT6351:
@@ -30,6 +30,14 @@
 #include <dt-bindings/pinctrl/mt6797-pinfunc.h>
 
 &pio {
+	gemini_speaker_pins: speaker-pins {
+		pins-enables {
+			pinmux = <MT6797_GPIO243__FUNC_GPIO243>,
+				 <MT6797_GPIO244__FUNC_GPIO244>;
+			output-low;
+		};
+	};
+
 	gemini_microphone_pins: microphone-pins {
 		pins-enable {
 			pinmux = <MT6797_GPIO234__FUNC_GPIO234>;
@@ -55,7 +63,9 @@
 	gemini_audio: sound {
 		compatible = "planet,gemini-mt6797-mt6351";
 		pinctrl-names = "default";
-		pinctrl-0 = <&gemini_microphone_pins>;
+		pinctrl-0 = <&gemini_microphone_pins &gemini_speaker_pins>;
+		speaker-enable-gpios = <&pio 243 GPIO_ACTIVE_HIGH>,
+				       <&pio 244 GPIO_ACTIVE_HIGH>;
 		microphone-enable-gpios = <&pio 234 GPIO_ACTIVE_HIGH>;
 		mediatek,platform = <&afe>;
 		mediatek,audio-codec = <&mt6351_sound>;

@@ -5,14 +5,20 @@
 // Copyright (c) 2018 MediaTek Inc.
 // Author: KaiChieh Chuang <kaichieh.chuang@mediatek.com>
 
+#include <linux/delay.h>
 #include <linux/gpio/consumer.h>
+#include <linux/irqflags.h>
 #include <linux/module.h>
 #include <sound/soc.h>
 
 #include "mt6797-afe-common.h"
 
+#define GEMINI_SPEAKER_AMPS 2
+#define GEMINI_SPEAKER_MODE 3
+
 struct mt6797_mt6351_priv {
 	struct gpio_desc *mic_enable;
+	struct gpio_desc *speaker_enable[GEMINI_SPEAKER_AMPS];
 };
 
 static void gemini_mic_disable(void *data)
@@ -53,6 +59,84 @@ static int gemini_mic_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+static void gemini_speaker_disable(void *data)
+{
+	struct mt6797_mt6351_priv *priv = data;
+	int i;
+
+	for (i = 0; i < GEMINI_SPEAKER_AMPS; i++)
+		gpiod_set_value(priv->speaker_enable[i], 0);
+	usleep_range(500, 1000);
+}
+
+static int gemini_speaker_event(struct snd_soc_dapm_widget *w,
+				struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_card *card = snd_soc_dapm_to_card(w->dapm);
+	struct mt6797_mt6351_priv *priv = snd_soc_card_get_drvdata(card);
+	unsigned long flags;
+	int enable, i, pulse, value[GEMINI_SPEAKER_AMPS];
+
+	switch (event) {
+	case SND_SOC_DAPM_POST_PMU:
+		enable = 1;
+		break;
+	case SND_SOC_DAPM_PRE_PMD:
+		enable = 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	dev_info(card->dev, "Gemini speaker amplifiers before enable=%d mode=%d\n",
+		 enable, GEMINI_SPEAKER_MODE);
+	gemini_speaker_disable(priv);
+	if (enable) {
+		usleep_range(1000, 2000);
+		/*
+		 * AudDrv_GPIO_EXTAMP{,2}_Select() programs mode 3 with
+		 * three low/high pulses, each phase lasting 2 us. Both
+		 * descriptors are non-sleeping SoC GPIOs. Prevent local
+		 * interrupts from extending the short programming pulses.
+		 */
+		local_irq_save(flags);
+		for (i = 0; i < GEMINI_SPEAKER_AMPS; i++) {
+			for (pulse = 0; pulse < GEMINI_SPEAKER_MODE; pulse++) {
+				gpiod_set_value(priv->speaker_enable[i], 0);
+				udelay(2);
+				gpiod_set_value(priv->speaker_enable[i], 1);
+				udelay(2);
+			}
+		}
+		local_irq_restore(flags);
+		msleep(25);
+	}
+
+	for (i = 0; i < GEMINI_SPEAKER_AMPS; i++)
+		value[i] = gpiod_get_value(priv->speaker_enable[i]);
+	dev_info(card->dev,
+		 "Gemini speaker amplifiers after enable=%d readback=%d,%d\n",
+		 enable, value[0], value[1]);
+	for (i = 0; i < GEMINI_SPEAKER_AMPS; i++) {
+		if (value[i] != enable) {
+			gemini_speaker_disable(priv);
+			return value[i] < 0 ? value[i] : -EIO;
+		}
+	}
+
+	return 0;
+}
+
+static int gemini_late_probe(struct snd_soc_card *card)
+{
+	/* A headphone stream must not enable the external amplifiers. */
+	return snd_soc_dapm_disable_pin(snd_soc_card_to_dapm(card), "Speaker");
+}
+
+static const struct snd_kcontrol_new gemini_controls[] = {
+	SOC_DAPM_PIN_SWITCH("Speaker"),
+};
+
 /*
  * The Gemini vendor TurnOnADcPowerDCC() raises headphone_en (GPIO234)
  * before either DCC preamplifier is started, and lowers it after capture.
@@ -62,12 +146,16 @@ static int gemini_mic_event(struct snd_soc_dapm_widget *w,
  * needed to select the internal AIN0 microphone and is not driven here.
  */
 static const struct snd_soc_dapm_widget gemini_widgets[] = {
+	SND_SOC_DAPM_SPK("Speaker", gemini_speaker_event),
 	SND_SOC_DAPM_SUPPLY("Gemini Mic Enable", SND_SOC_NOPM, 0, 0,
 			    gemini_mic_event,
 			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 };
 
 static const struct snd_soc_dapm_route gemini_routes[] = {
+	/* The shipped HAL uses int_hp_buf, then the external amplifiers. */
+	{ "Speaker", NULL, "Headphone L" },
+	{ "Speaker", NULL, "Headphone R" },
 	{ "PGA L", NULL, "Gemini Mic Enable" },
 	{ "PGA R", NULL, "Gemini Mic Enable" },
 };
@@ -293,7 +381,29 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 		ret = devm_add_action_or_reset(&pdev->dev, gemini_mic_disable, priv);
 		if (ret)
 			return ret;
+		ret = gpiod_count(&pdev->dev, "speaker-enable");
+		if (ret != GEMINI_SPEAKER_AMPS)
+			return dev_err_probe(&pdev->dev, ret < 0 ? ret : -EINVAL,
+					     "Gemini requires two speaker enables\n");
+		for (i = 0; i < GEMINI_SPEAKER_AMPS; i++) {
+			priv->speaker_enable[i] = devm_gpiod_get_index(&pdev->dev,
+					"speaker-enable", i, GPIOD_OUT_LOW);
+			if (IS_ERR(priv->speaker_enable[i]))
+				return dev_err_probe(&pdev->dev,
+						     PTR_ERR(priv->speaker_enable[i]),
+						     "Cannot acquire speaker enable\n");
+			if (gpiod_cansleep(priv->speaker_enable[i]) ||
+			    gpiod_is_active_low(priv->speaker_enable[i]))
+				return dev_err_probe(&pdev->dev, -EINVAL,
+					"Speaker enables need non-sleeping active-high GPIOs\n");
+		}
+		ret = devm_add_action_or_reset(&pdev->dev, gemini_speaker_disable, priv);
+		if (ret)
+			return ret;
 		snd_soc_card_set_drvdata(card, priv);
+		card->controls = gemini_controls;
+		card->num_controls = ARRAY_SIZE(gemini_controls);
+		card->late_probe = gemini_late_probe;
 		card->dapm_widgets = gemini_widgets;
 		card->num_dapm_widgets = ARRAY_SIZE(gemini_widgets);
 		card->dapm_routes = gemini_routes;

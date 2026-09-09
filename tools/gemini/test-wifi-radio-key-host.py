@@ -39,6 +39,7 @@ static struct cfg80211_bss bss={.bssid={2,6,7,8,9,10}};
 static unsigned writes,terminals,queued,wipes;
 static u8 last_command[72];
 static int action,terminal_reason;
+static void (*igtk_send_hook)(void);
 static struct mt6797_wifi_radio *wiphy_priv(struct wiphy *w) { (void)w; return &r; }
 static int mt6797_wifi_hif_irq_mode(struct mt6797_wifi_hif_irq *i) { return i->mode; }
 static bool is_valid_ether_addr(const u8 *a) {
@@ -61,9 +62,10 @@ static int mt6797_wifi_hif_runtime_send(struct mt6797_wifi_hif_irq *hif,u32 addr
  (void)hif; (void)command;
  assert(r.connection_lock.held && irq.lifecycle_lock && address==MT6797_WIFI_MCR_WTDR1 && length==72);
  writes++; memcpy(last_command,command,length);
+ if(igtk_send_hook) igtk_send_hook();
  if(action==7) mt6797_radio_link_abort(&r,-ECANCELED);
  if(action==1) assert(!offer(0)); /* Completion before send returns. */
- return action==4?-EIO:0;
+ return action==4 || (action==8 && command[8]==0 && command[20]==5) ? -EIO : 0;
 }
 static unsigned long wait_for_completion_timeout(struct completion *completion,unsigned long timeout) {
  assert(timeout==1000 && wipes && r.connection_lock.held && irq.lifecycle_lock);
@@ -111,7 +113,7 @@ for name in ['mt6797_wifi_ais_mgmt_require_open', 'mt6797_wifi_ais_mgmt_lease_ma
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_sa_query_stop', 'mt6797_radio_link_abort',
              'mt6797_radio_link_event', 'mt6797_radio_key_connection',
              'mt6797_radio_key_send', 'mt6797_radio_sta_owner_same',
-             'mt6797_radio_wtbl_same', 'mt6797_radio_igtk_owner',
+             'mt6797_radio_wtbl_same', 'mt6797_radio_igtk_owner', 'mt6797_radio_igtk_ready',
              'mt6797_radio_igtk_connection', 'mt6797_radio_igtk_forget',
              'mt6797_radio_igtk_send', 'mt6797_radio_add_igtk',
              'mt6797_radio_del_igtk', 'mt6797_radio_igtk_cleanup',
@@ -136,7 +138,7 @@ static void setup(void) {
  memcpy(c.ais.runtime.sta.peer_addr,bss.bssid,6);
  irq.mode=MT6797_WIFI_HIF_IRQ_RUNTIME;
  params=(struct key_params){.key=material,.key_len=16,.seq=sequence,.seq_len=6,.cipher=WLAN_CIPHER_SUITE_CCMP};
- writes=terminals=queued=wipes=0; action=terminal_reason=0; memset(last_command,0,sizeof(last_command));
+ writes=terminals=queued=wipes=0; action=terminal_reason=0; igtk_send_hook=NULL; memset(last_command,0,sizeof(last_command));
 }
 static int add(u8 index,bool pairwise) {
  int ret=mt6797_radio_add_key(NULL,&r.wdev,-1,index,pairwise,pairwise?bss.bssid:NULL,&params);
@@ -167,7 +169,9 @@ static int cleanup_igtk(void) {
 }
 static void assert_forgotten(void) {
  struct mt6797_radio_key zero={0}; struct mt6797_wifi_ais_sta_pending owner={0};
- assert(!memcmp(&c.igtk,&zero,sizeof(zero)) && !memcmp(&c.igtk_owner,&owner,sizeof(owner)));
+ for(unsigned i=0;i<2;i++) assert(!memcmp(&c.igtk[i],&zero,sizeof(zero)));
+ assert(!memcmp(&c.igtk_owner,&owner,sizeof(owner)) && !c.igtk_history_count && !c.igtk_updating);
+ for(unsigned i=0;i<sizeof(c.igtk_history);i++) assert(!((u8 *)c.igtk_history)[i]);
  struct mt6797_wifi_ais_wtbl_handle wtbl={0};
  assert(!memcmp(&c.igtk_wtbl,&wtbl,sizeof(wtbl)) && !c.igtk_default && !c.authorized);
 }
@@ -189,25 +193,65 @@ static void igtk_tests(void) {
  pmf_setup(); assert(mt6797_radio_add_key(NULL,&r.wdev,0,4,false,NULL,&params)==-EINVAL && !writes);
  pmf_setup(); assert(mt6797_radio_add_key(NULL,&r.wdev,-1,4,false,bss.bssid,&params)==-EINVAL && !writes);
  for(unsigned id=4;id<=5;id++) {
-  pmf_setup(); assert(!add(id,false) && writes==1 && c.igtk.index==id && c.igtk.installed);
+  unsigned slot=id-4, other=1-slot;
+  pmf_setup(); assert(!add(id,false) && writes==1 && c.igtk[slot].index==id && c.igtk[slot].installed);
   assert(last_command[19]==6 && last_command[20]==id && last_command[22]==2);
   assert(!last_command[9] && !last_command[10]); /* RX group BIP, not PTK TX ownership. */
-  assert(c.igtk.rx_pn[0]==7 && !c.group_key.installed && !c.pairwise_key.installed);
-  c.igtk.rx_pn[0]=35; params.seq=seq;
-  assert(!add(id,false) && writes==1 && c.igtk.rx_pn[0]==35);
-  assert(add(9-id,false)==-EOPNOTSUPP && writes==1); /* Same material/new ID cannot reset IPN. */
-  assert(!default_igtk(id) && c.igtk_default && writes==1);
-  assert(default_igtk(9-id)==-ENOENT && c.igtk_default);
-  params.key=next; assert(!add(id,false) && writes==2 && c.igtk_default && c.igtk.rx_pn[0]==0);
-  params.key=material; assert(!add(9-id,false) && writes==3 && !c.igtk_default);
-  assert(del(id,false)==-ENOENT && writes==3 && c.igtk.installed);
-  assert(default_igtk(id)==-ENOENT && !c.igtk_default);
+  assert(c.igtk[slot].rx_pn[0]==7 && !c.group_key.installed && !c.pairwise_key.installed);
+  c.igtk[slot].rx_pn[0]=35; params.seq=seq;
+  assert(!add(id,false) && writes==1 && c.igtk[slot].rx_pn[0]==35 && c.igtk_history_count==1);
+  assert(add(9-id,false)==-EKEYREJECTED && writes==1); /* Same material/new ID cannot reset IPN. */
+  assert(!default_igtk(id) && c.igtk_default==id && writes==1);
+  assert(default_igtk(9-id)==-ENOENT && c.igtk_default==id);
+  /* Installing the other ID keeps the old key and its advanced IPN usable. */
+  params.key=next; assert(!add(9-id,false) && writes==2 && c.igtk_default==id);
+  assert(c.igtk[slot].rx_pn[0]==35 && c.igtk[other].rx_pn[0]==0 && c.igtk_history_count==2);
+  c.igtk[other].rx_pn[0]=48; params.seq=sequence;
+  assert(!add(9-id,false) && writes==2 && c.igtk[other].rx_pn[0]==48);
+  assert(add(id,false)==-EKEYREJECTED && writes==2);
   assert(!default_igtk(9-id)); c.authorized=true;
-  assert(!del(9-id,false) && writes==4); assert_forgotten();
+  assert(!del(id,false) && writes==3 && c.authorized && c.igtk_default==9-id);
+  struct mt6797_radio_key zero={0}; assert(!memcmp(&c.igtk[slot],&zero,sizeof(zero)));
+  assert(c.igtk[other].installed && c.igtk[other].rx_pn[0]==48 && c.igtk_history_count==2);
+  assert(del(id,false)==-ENOENT && writes==3 && default_igtk(id)==-ENOENT);
+  params.key=material; assert(add(id,false)==-EKEYREJECTED && add(9-id,false)==-EKEYREJECTED && writes==3);
+  assert(!del(9-id,false) && writes==4 && !c.authorized && !c.igtk_default);
+  assert(c.igtk_history_count==2 && !memcmp(c.igtk_history[0],material,16));
   assert(last_command[8]==0 && last_command[20]==9-id && last_command[22]==2);
   for(unsigned n=24;n<72;n++) assert(!last_command[n]);
   assert(del(9-id,false)==-ENOENT && writes==4);
+  /* Removing every live key does not forget the association's replay history. */
+  assert(add(id,false)==-EKEYREJECTED && writes==4);
+  assert(!cleanup_igtk() && writes==4); assert_forgotten();
  }
+ /* Same-ID replacement preserves default selection but rejects A->B->A. */
+ pmf_setup(); assert(!add(4,false) && !default_igtk(4));
+ params.key=next; params.seq=seq; assert(!add(4,false));
+ assert(c.igtk[0].rx_pn[0]==0 && c.igtk_default==4 && c.igtk_history_count==2);
+ params.key=material; assert(add(4,false)==-EKEYREJECTED && add(5,false)==-EKEYREJECTED && writes==2);
+ /* No eviction: fill every history entry, keep duplicates usable at capacity,
+  * then reject fresh keys without changing either live slot or authorization. */
+ pmf_setup(); u8 fresh[16]={0}; params.key=fresh;
+ for(unsigned i=0;i<ARRAY_SIZE(c.igtk_history);i++) {
+  fresh[0]=i; assert(!add(4+(i%2),false));
+  assert(c.igtk_history_count==i+1 && writes==i+1);
+ }
+ unsigned full=writes; c.authorized=true; c.igtk[1].rx_pn[0]=99;
+ assert(!add(5,false) && writes==full && c.igtk[1].rx_pn[0]==99);
+ fresh[0]=100; assert(add(4,false)==-ENOSPC && writes==full && c.authorized);
+ fresh[0]=0; assert(add(4,false)==-EKEYREJECTED && writes==full);
+ assert(!del(4,false) && c.authorized && c.igtk_history_count==32);
+ fresh[0]=100; assert(add(4,false)==-ENOSPC && writes==full+1);
+ assert(!cleanup_igtk()); assert_forgotten();
+ pmf_setup(); params.key=fresh; assert(!add(4,false)); /* Fresh association gets new history. */
+ /* Deleting the selected ID clears only its local default, not the other key. */
+ pmf_setup(); assert(!add(4,false) && !default_igtk(4)); params.key=next; assert(!add(5,false));
+ c.authorized=true; assert(!del(4,false) && c.authorized && !c.igtk_default && c.igtk[1].installed);
+ assert(!default_igtk(5) && c.igtk_default==5);
+ /* Removing both keys must not weaken the captured generation/WTBL owner. */
+ pmf_setup(); assert(!add(4,false) && !del(4,false));
+ c.ais.runtime.sta.ap_bmc_group.cookie++; params.key=next;
+ assert(add(5,false)==-ESTALE && writes==2);
  /* Real owner validation rejects invalid and coherently replaced generations. */
  pmf_setup(); c.ais.runtime.sta.ap_bmc_group.owner_cookie++;
  assert(add(4,false)==-EINVAL && !writes);
@@ -224,6 +268,7 @@ static void igtk_tests(void) {
  /* A failed install, rekey or delete clears host secrets only after transport fencing. */
  for(int mode=4;mode<=7;mode+=3) for(unsigned stage=0;stage<3;stage++) {
   pmf_setup(); if(stage) { assert(!add(4,false)); assert(!default_igtk(4)); c.authorized=true; }
+  if(stage==2) { params.key=next; assert(!add(5,false)); }
   action=mode; params.key=next;
   int ret=stage==2 ? del(4,false) : add(stage?5:4,false);
   assert(ret==(mode==4?-EIO:-ECANCELED));
@@ -231,13 +276,20 @@ static void igtk_tests(void) {
   assert(add(4,false)==-ENOTCONN);
  }
  /* Teardown wipes partial host state even when no firmware install completed. */
- pmf_setup(); c.igtk.updating=true; memset(c.igtk.material,0x5a,sizeof(c.igtk.material));
+ pmf_setup(); c.igtk_updating=true; memset(c.igtk[0].material,0x5a,sizeof(c.igtk[0].material));
+ memset(c.igtk_history,0x5a,sizeof(c.igtk_history)); c.igtk_history_count=32;
  c.igtk_default=true; c.authorized=true;
  assert(!cleanup_igtk() && !writes && !terminals); assert_forgotten();
  /* Teardown deletes before handles are released, despite an intentional disconnect. */
- pmf_setup(); assert(!add(4,false)); c.cancel=true; c.authorized=true;
- assert(!cleanup_igtk() && writes==2 && !terminals); assert_forgotten();
- assert(!cleanup_igtk() && writes==2);
+ pmf_setup(); assert(!add(4,false)); params.key=next; assert(!add(5,false)); c.cancel=true; c.authorized=true;
+ assert(!cleanup_igtk() && writes==4 && !terminals); assert_forgotten();
+ assert(last_command[20]==5 && last_command[8]==0);
+ assert(!cleanup_igtk() && writes==4);
+ for(unsigned mode=4;mode<=8;mode+=4) {
+  pmf_setup(); assert(!add(4,false)); params.key=next; assert(!add(5,false));
+  c.cancel=true; action=mode;
+  assert(cleanup_igtk()==-EIO && terminals && writes==(mode==4?3:4)); assert_forgotten();
+ }
  pmf_setup(); assert(!add(5,false)); c.cancel=true; action=4;
  assert(cleanup_igtk()==-EIO && terminals && c.cancel); assert_forgotten();
  pmf_setup(); assert(!add(4,false)); c.ais.runtime.sta.ap_bmc_group.index=3;
@@ -253,7 +305,7 @@ static void igtk_tests(void) {
  assert(authorize(true)==-ENOKEY && !c.authorized);
  params.cipher=WLAN_CIPHER_SUITE_AES_CMAC; assert(!add(4,false)); assert(!authorize(true));
  assert(!del(4,false) && !c.authorized);
- puts("PASS: production IGTK callbacks/codecs: PMF gate, IDs4/5, BMC ownership, duplicate IPN preservation, replacement/stale deletion, default key, real generation validation, transport fencing and teardown secret cleanup");
+ puts("PASS: production IGTK callbacks/codecs: PMF gate, IDs4/5, BMC ownership, duplicate IPN preservation, dual-ID overlap, bounded historical reinstall rejection, independent deletion/default key, real generation validation, transport fencing and teardown secret cleanup");
 }
 int main(void) {
  igtk_tests();

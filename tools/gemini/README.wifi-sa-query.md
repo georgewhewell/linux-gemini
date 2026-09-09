@@ -98,8 +98,10 @@ Source basis:
   accessible primary-source version is
   [Linux mac80211 RX](https://android.googlesource.com/kernel/common/+/b77587ac51d2fe4b9d5751662ddc083d19153662/net/mac80211/rx.c).
 
-Remaining prerequisites include other robust-action handling, IGTK overlap/rekey/historical
-reinstall policy, PMF negotiation/capabilities and SAE external authentication.
+The subsequent [IGTK lifecycle implementation](README.wifi-igtk.md) provides
+host overlap, rekey and historical reinstall protection. Remaining prerequisites
+include its firmware overlap/delete validation, other robust-action handling,
+PMF negotiation/capabilities and SAE external authentication.
 The deployed blob must still be shown to encrypt this management TX using the
 current PTK and a monotonic PN, and to return the expected TX sequence metadata.
 A TX-done event alone proves neither encryption nor AP acceptance. Earlier RX

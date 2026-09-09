@@ -38,13 +38,19 @@ struct mt6797_radio_connection {
 	struct mt6797_wifi_ais_hif_join_request join;
 	struct mt6797_radio_key pairwise_key;
 	struct mt6797_radio_key group_key;
-	/* One firmware BIP slot at the peer BMC allocation, separate from GTK.
-	 * Do not infer simultaneous IGTK storage from the two on-wire key IDs.
+	/* Host overlap for MMIE key IDs 4/5. Firmware slot coexistence/delete
+	 * isolation is still unverified: these fields do not enable PMF.
 	 */
-	struct mt6797_radio_key igtk;
+	struct mt6797_radio_key igtk[2];
+	/* Exact association history: never evict a retired key and allow its IPN
+	 * to reset. Exhaustion requires a new association, not a cache flush.
+	 */
+	u8 igtk_history[32][MT6797_WIFI_AIS_CCMP_KEY_LENGTH];
+	u8 igtk_history_count;
+	bool igtk_updating; /* Both IDs share firmware WTBL ownership. */
 	struct mt6797_wifi_ais_sta_pending igtk_owner;
 	struct mt6797_wifi_ais_wtbl_handle igtk_wtbl;
-	bool igtk_default;
+	u8 igtk_default; /* 0 means none, otherwise on-wire ID 4 or 5. */
 	/* Kept false until PMF negotiation and protected management exist. */
 	bool pmf_negotiated;
 	struct mt6797_wifi_ais_sta_pending key_pending;
@@ -1198,6 +1204,41 @@ static bool mt6797_radio_wtbl_same(const struct mt6797_wifi_ais_wtbl_handle *a,
 		a->owner_cookie == b->owner_cookie && a->role == b->role && a->index == b->index;
 }
 
+/* connection_lock pins this association for callbacks/cleanup. RX instead holds
+ * radio->lock and requires connected && !cancel: teardown publishes cancel
+ * under that lock before mutating/releasing the connection's runtime handles.
+ */
+static int mt6797_radio_igtk_owner(struct mt6797_wifi_radio *radio,
+	struct mt6797_wifi_ais_sta_pending *owner)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	struct mt6797_wifi_ais_runtime *runtime = &connection->ais.runtime;
+	const struct mt6797_wifi_ais_sta_pending *old = &connection->igtk_owner;
+	int ret;
+
+	ret = mt6797_wifi_ais_sta_pending_init(&runtime->bss, &runtime->sta, 0, owner);
+	if (ret)
+		return ret;
+	if (!ether_addr_equal(owner->peer_addr, connection->bss->bssid))
+		return -ESTALE;
+	if (connection->igtk_history_count &&
+	    (!mt6797_radio_sta_owner_same(old, owner) ||
+	     !mt6797_radio_wtbl_same(&connection->igtk_wtbl, &runtime->sta.ap_bmc_group)))
+		return -ESTALE;
+	return 0;
+}
+
+/* Called under radio->lock or with connection_lock pinning key callbacks. */
+static bool mt6797_radio_igtk_ready(struct mt6797_wifi_radio *radio)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	struct mt6797_wifi_ais_sta_pending owner;
+
+	return connection && !connection->igtk_updating &&
+		(connection->igtk[0].installed || connection->igtk[1].installed) &&
+		!mt6797_radio_igtk_owner(radio, &owner);
+}
+
 /* radio->lock protects key/connection flags; connection_lock pins TX lifetime. */
 static bool mt6797_radio_management_ready(struct mt6797_wifi_radio *radio)
 {
@@ -1206,7 +1247,7 @@ static bool mt6797_radio_management_ready(struct mt6797_wifi_radio *radio)
 	struct mt6797_wifi_ais_runtime *runtime;
 
 	if (!connection || !connection->connected || connection->cancel || radio->stopping ||
-	    !connection->pmf_negotiated || !connection->igtk.installed || connection->igtk.updating ||
+	    !connection->pmf_negotiated || !mt6797_radio_igtk_ready(radio) ||
 	    !connection->pairwise_ready || !connection->pairwise_key.installed || connection->pairwise_key.updating)
 		return false;
 	runtime = &connection->ais.runtime;
@@ -1501,30 +1542,6 @@ out:
 	mutex_unlock(&radio->connection_lock);
 }
 
-/* connection_lock pins this association for callbacks/cleanup. RX instead holds
- * radio->lock and requires connected && !cancel: teardown publishes cancel
- * under that lock before mutating/releasing the connection's runtime handles.
- */
-static int mt6797_radio_igtk_owner(struct mt6797_wifi_radio *radio,
-	struct mt6797_wifi_ais_sta_pending *owner)
-{
-	struct mt6797_radio_connection *connection = radio->connection;
-	struct mt6797_wifi_ais_runtime *runtime = &connection->ais.runtime;
-	const struct mt6797_wifi_ais_sta_pending *old = &connection->igtk_owner;
-	int ret;
-
-	ret = mt6797_wifi_ais_sta_pending_init(&runtime->bss, &runtime->sta, 0, owner);
-	if (ret)
-		return ret;
-	if (!ether_addr_equal(owner->peer_addr, connection->bss->bssid))
-		return -ESTALE;
-	if (connection->igtk.installed &&
-	    (!mt6797_radio_sta_owner_same(old, owner) ||
-	     !mt6797_radio_wtbl_same(&connection->igtk_wtbl, &runtime->sta.ap_bmc_group)))
-		return -ESTALE;
-	return 0;
-}
-
 /* True means PMF policy handled or rejected this frame: never fall through
  * to the legacy unauthenticated disconnect path after PMF is negotiated.
  */
@@ -1562,7 +1579,10 @@ static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *radio,
 	     !ether_addr_equal(management.frame + 4, radio->netdev->dev_addr)))
 		goto out;
 	if (management.multicast) {
-		key = &connection->igtk;
+		/* The complete MMIE ID chooses the independent host replay space. */
+		if (management.key_index < 4 || management.key_index > 5 || connection->igtk_updating)
+			goto out;
+		key = &connection->igtk[management.key_index - 4];
 		if (management.wlan_index != runtime->sta.ap_bmc_group.index ||
 		    mt6797_radio_igtk_owner(radio, &owner))
 			goto out;
@@ -1633,10 +1653,13 @@ static void mt6797_radio_igtk_forget(struct mt6797_wifi_radio *radio)
 	unsigned long flags;
 
 	spin_lock_irqsave(&radio->lock, flags);
-	memzero_explicit(&connection->igtk, sizeof(connection->igtk));
+	memzero_explicit(connection->igtk, sizeof(connection->igtk));
+	memzero_explicit(connection->igtk_history, sizeof(connection->igtk_history));
+	connection->igtk_history_count = 0;
+	connection->igtk_updating = false;
 	memzero_explicit(&connection->igtk_owner, sizeof(connection->igtk_owner));
 	memzero_explicit(&connection->igtk_wtbl, sizeof(connection->igtk_wtbl));
-	connection->igtk_default = false;
+	connection->igtk_default = 0;
 	if (connection->pmf_negotiated) {
 		connection->authorized = false;
 		mt6797_radio_sa_query_stop(radio);
@@ -1687,8 +1710,9 @@ static int mt6797_radio_add_igtk(struct mt6797_wifi_radio *radio,
 	struct mt6797_radio_connection *connection;
 	struct mt6797_wifi_ais_sta_pending owner;
 	struct mt6797_wifi_ais_key_params request = { .index = index };
+	struct mt6797_radio_key *key;
 	unsigned long flags;
-	bool same_index;
+	unsigned int i;
 	int ret;
 
 	if (wdev != &radio->wdev || link_id != -1 || (index != 4 && index != 5) ||
@@ -1702,13 +1726,25 @@ static int mt6797_radio_add_igtk(struct mt6797_wifi_radio *radio,
 	if (ret)
 		goto out;
 	connection = radio->connection;
-	same_index = connection->igtk.installed && connection->igtk.index == index;
-	/* Duplicate handshakes must not reset the firmware IPN. Neither a new
-	 * key ID nor a different supplied receive sequence makes reuse safe.
+	key = &connection->igtk[index - 4];
+	/* Duplicate handshakes are host no-ops, even if their supplied IPN
+	 * differs. Do not reset either the firmware or host replay state.
 	 */
-	if (connection->igtk.installed &&
-	    !memcmp(connection->igtk.material, params->key, sizeof(connection->igtk.material))) {
-		ret = same_index ? 0 : -EOPNOTSUPP;
+	if (key->installed && !memcmp(key->material, params->key, sizeof(key->material))) {
+		ret = 0;
+		goto out;
+	}
+	/* This includes other-ID aliases, same-ID A->B->A replacement, and
+	 * reinstall after deletion. Keep history until association teardown.
+	 */
+	for (i = 0; i < connection->igtk_history_count; i++) {
+		if (!memcmp(connection->igtk_history[i], params->key, sizeof(key->material))) {
+			ret = -EKEYREJECTED;
+			goto out;
+		}
+	}
+	if (connection->igtk_history_count == ARRAY_SIZE(connection->igtk_history)) {
+		ret = -ENOSPC;
 		goto out;
 	}
 	request.material = params->key;
@@ -1716,7 +1752,7 @@ static int mt6797_radio_add_igtk(struct mt6797_wifi_radio *radio,
 	if (params->seq_len)
 		memcpy(request.rsc, params->seq, params->seq_len);
 	spin_lock_irqsave(&radio->lock, flags);
-	connection->igtk.updating = true;
+	connection->igtk_updating = true;
 	spin_unlock_irqrestore(&radio->lock, flags);
 	ret = mt6797_radio_igtk_send(radio, &request, false);
 	if (ret) {
@@ -1726,22 +1762,24 @@ static int mt6797_radio_add_igtk(struct mt6797_wifi_radio *radio,
 			mt6797_radio_igtk_forget(radio);
 		else {
 			spin_lock_irqsave(&radio->lock, flags);
-			connection->igtk.updating = false;
+			connection->igtk_updating = false;
 			spin_unlock_irqrestore(&radio->lock, flags);
 		}
 		goto out;
 	}
 	spin_lock_irqsave(&radio->lock, flags);
-	memzero_explicit(&connection->igtk, sizeof(connection->igtk));
-	memcpy(connection->igtk.material, params->key, sizeof(connection->igtk.material));
+	memzero_explicit(key, sizeof(*key));
+	memcpy(key->material, params->key, sizeof(key->material));
 	if (params->seq_len)
-		memcpy(connection->igtk.receive_sequence, params->seq, params->seq_len);
-	connection->igtk.rx_pn[0] = mt6797_wifi_data_rx_pn(connection->igtk.receive_sequence);
-	connection->igtk.index = index;
-	connection->igtk.installed = true;
+		memcpy(key->receive_sequence, params->seq, params->seq_len);
+	key->rx_pn[0] = mt6797_wifi_data_rx_pn(key->receive_sequence);
+	key->index = index;
+	key->installed = true;
+	memcpy(connection->igtk_history[connection->igtk_history_count++], params->key,
+		sizeof(key->material));
 	connection->igtk_owner = owner;
 	connection->igtk_wtbl = connection->ais.runtime.sta.ap_bmc_group;
-	connection->igtk_default &= same_index;
+	connection->igtk_updating = false;
 	spin_unlock_irqrestore(&radio->lock, flags);
 out:
 	mutex_unlock(&radio->connection_lock);
@@ -1751,29 +1789,43 @@ out:
 static int mt6797_radio_del_igtk(struct mt6797_wifi_radio *radio,
 	const u8 *mac, u8 index)
 {
+	struct mt6797_radio_connection *connection;
 	struct mt6797_wifi_ais_sta_pending owner;
 	struct mt6797_wifi_ais_key_params request = { .index = index, .remove = true };
 	unsigned long flags;
 	int ret;
 
+	if (index != 4 && index != 5)
+		return -EINVAL;
 	mutex_lock(&radio->connection_lock);
 	ret = mt6797_radio_igtk_connection(radio, mac, &owner);
 	if (ret)
 		goto out;
-	if (!radio->connection->igtk.installed || radio->connection->igtk.index != index) {
+	connection = radio->connection;
+	if (!connection->igtk[index - 4].installed) {
 		ret = -ENOENT;
 		goto out;
 	}
 	spin_lock_irqsave(&radio->lock, flags);
-	radio->connection->igtk.updating = true;
+	connection->igtk_updating = true;
 	spin_unlock_irqrestore(&radio->lock, flags);
 	ret = mt6797_radio_igtk_send(radio, &request, false);
-	if (!ret || mt6797_wifi_hif_irq_mode(radio->irq) != MT6797_WIFI_HIF_IRQ_RUNTIME ||
-	    mt6797_radio_connection_cancelled(radio))
+	if (mt6797_wifi_hif_irq_mode(radio->irq) != MT6797_WIFI_HIF_IRQ_RUNTIME ||
+	    mt6797_radio_connection_cancelled(radio)) {
 		mt6797_radio_igtk_forget(radio);
-	else {
+	} else {
 		spin_lock_irqsave(&radio->lock, flags);
-		radio->connection->igtk.updating = false;
+		connection->igtk_updating = false;
+		if (!ret) {
+			/* Retire only this ID. History and the other key's IPN survive. */
+			memzero_explicit(&connection->igtk[index - 4], sizeof(connection->igtk[0]));
+			if (connection->igtk_default == index)
+				connection->igtk_default = 0;
+			if (!mt6797_radio_igtk_ready(radio)) {
+				connection->authorized = false;
+				mt6797_radio_sa_query_stop(radio);
+			}
+		}
 		spin_unlock_irqrestore(&radio->lock, flags);
 	}
 out:
@@ -1793,14 +1845,14 @@ static int mt6797_radio_set_default_mgmt_key(struct wiphy *wiphy,
 		return -EINVAL;
 	mutex_lock(&radio->connection_lock);
 	ret = mt6797_radio_igtk_connection(radio, NULL, &owner);
-	if (!ret && (!radio->connection->igtk.installed || radio->connection->igtk.index != index))
+	if (!ret && !radio->connection->igtk[index - 4].installed)
 		ret = -ENOENT;
 	if (!ret) {
 		/* A station receives BIP; its robust unicast TX uses the PTK.
 		 * There is no separate GEN3 default-management-key command to send.
 		 */
 		spin_lock_irqsave(&radio->lock, flags);
-		radio->connection->igtk_default = true;
+		radio->connection->igtk_default = index;
 		spin_unlock_irqrestore(&radio->lock, flags);
 	}
 	mutex_unlock(&radio->connection_lock);
@@ -1813,10 +1865,13 @@ static int mt6797_radio_igtk_cleanup(struct mt6797_wifi_radio *radio)
 	struct mt6797_radio_connection *connection = radio->connection;
 	struct mt6797_wifi_ais_sta_pending owner;
 	struct mt6797_wifi_ais_key_params request = { .remove = true };
+	unsigned int i;
 	int ret = 0;
 
-	if (connection->igtk.installed) {
-		request.index = connection->igtk.index;
+	for (i = 0; i < ARRAY_SIZE(connection->igtk); i++) {
+		if (!connection->igtk[i].installed)
+			continue;
+		request.index = i + 4;
 		ret = mt6797_radio_igtk_owner(radio, &owner);
 		if (!ret)
 			ret = mt6797_radio_igtk_send(radio, &request, true);
@@ -1825,6 +1880,7 @@ static int mt6797_radio_igtk_cleanup(struct mt6797_wifi_radio *radio)
 			mutex_lock(&radio->irq->lifecycle_lock);
 			mt6797_wifi_hif_runtime_fail(radio->irq, ret);
 			mutex_unlock(&radio->irq->lifecycle_lock);
+			break;
 		}
 	}
 	mt6797_radio_igtk_forget(radio);
@@ -1990,7 +2046,7 @@ static int mt6797_radio_change_station(struct wiphy *wiphy, struct wireless_dev 
 	else if (authorize && connection->join.negotiated.security != MT6797_WIFI_AIS_SECURITY_OPEN &&
 		 (!connection->pairwise_key.installed || !connection->pairwise_ready ||
 		  !connection->group_key.installed ||
-		  (connection->pmf_negotiated && !connection->igtk.installed)))
+		  (connection->pmf_negotiated && !mt6797_radio_igtk_ready(radio))))
 		ret = -ENOKEY;
 	else {
 		connection->authorized = authorize;

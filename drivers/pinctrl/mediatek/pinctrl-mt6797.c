@@ -36,11 +36,17 @@ static const struct mtk_pin_field_calc mt6797_pin_do_range[] = {
 	PIN_FIELD(0, 261, 0x100, 0x10, 0, 1),
 };
 
+static const struct mtk_pin_field_calc mt6797_pin_ies_range[] = {
+	/* MSDC1 CMD, DAT0-3 and CLK input buffers in IOCFG_B. */
+	PIN_FIELD_CALC(129, 134, 2, 0x020, 0x10, 25, 1, 32, 0),
+};
+
 static const struct mtk_pin_reg_calc mt6797_reg_cals[PINCTRL_PIN_REG_MAX] = {
 	[PINCTRL_PIN_REG_MODE] = MTK_RANGE(mt6797_pin_mode_range),
 	[PINCTRL_PIN_REG_DIR] = MTK_RANGE(mt6797_pin_dir_range),
 	[PINCTRL_PIN_REG_DI] = MTK_RANGE(mt6797_pin_di_range),
 	[PINCTRL_PIN_REG_DO] = MTK_RANGE(mt6797_pin_do_range),
+	[PINCTRL_PIN_REG_IES] = MTK_RANGE(mt6797_pin_ies_range),
 };
 
 static const char * const mt6797_pinctrl_register_base_names[] = {

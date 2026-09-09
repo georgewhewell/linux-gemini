@@ -28,6 +28,18 @@ int mt6797_wifi_ais_ccmp_key_build(
 	const struct mt6797_wifi_ais_key_params *params, u8 sequence,
 	u8 *command, size_t capacity);
 
+/* Pure BIP-CMAC-128 IGTK command encoder for the PMF implementation.
+ * Accepts only non-pairwise key IDs 4/5; uses the AP-group WTBL allocation.
+ * Encoding a command does not establish firmware replay/integrity protection.
+ * The radio must not advertise PMF until key ownership and robust management
+ * TX/RX (including replay, integrity, and SA Query) are implemented.
+ */
+int mt6797_wifi_ais_bip_key_build(
+	const struct mt6797_wifi_ais_bss_handle *bss,
+	const struct mt6797_wifi_ais_sta_handle *sta,
+	const struct mt6797_wifi_ais_key_params *params, u8 sequence,
+	u8 *command, size_t capacity);
+
 /* EVENT_ID_ADD_PKEY_DONE is unsolicited and has no key ID/cookie on the wire.
  * Invoke only while one pairwise installation is armed for this station.
  * Caller owns epoch/reinstall policy; this matcher cannot disambiguate rekeys.

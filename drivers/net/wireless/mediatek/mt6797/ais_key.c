@@ -6,18 +6,21 @@
 
 #include "ais_key.h"
 
-int mt6797_wifi_ais_ccmp_key_build(
+static int mt6797_wifi_ais_key_build(
 	const struct mt6797_wifi_ais_bss_handle *bss,
 	const struct mt6797_wifi_ais_sta_handle *sta,
 	const struct mt6797_wifi_ais_key_params *params, u8 sequence,
-	u8 *command, size_t capacity)
+	u8 algorithm, u8 *command, size_t capacity)
 {
 	struct mt6797_wifi_ais_sta_pending owner;
 	u8 *body;
 	int ret;
 
-	if (!command || !params || params->index > 3 ||
-	    (params->pairwise && params->index))
+	if (!command || !params || (algorithm != 4 && algorithm != 6) ||
+	    (algorithm == 4 && (params->index > 3 ||
+		(params->pairwise && params->index))) ||
+	    (algorithm == 6 && (params->pairwise ||
+		(params->index != 4 && params->index != 5))))
 		return -EINVAL;
 	if (params->remove) {
 		if (params->material || params->material_length)
@@ -40,7 +43,7 @@ int mt6797_wifi_ais_ccmp_key_build(
 	/* Infrastructure station, not authenticator; group RX keys also name the AP. */
 	memcpy(body + 4, sta->peer_addr, ETH_ALEN);
 	body[10] = bss->bss_index;
-	body[11] = params->remove ? 0 : 4; /* CIPHER_SUITE_CCMP */
+	body[11] = params->remove ? 0 : algorithm;
 	body[12] = params->index;
 	body[14] = params->pairwise ? sta->pairwise.index : sta->ap_bmc_group.index;
 	if (!params->remove) {
@@ -49,6 +52,29 @@ int mt6797_wifi_ais_ccmp_key_build(
 		memcpy(body + 48, params->rsc, MT6797_WIFI_AIS_KEY_RSC_LENGTH);
 	}
 	return 0;
+}
+
+int mt6797_wifi_ais_ccmp_key_build(
+	const struct mt6797_wifi_ais_bss_handle *bss,
+	const struct mt6797_wifi_ais_sta_handle *sta,
+	const struct mt6797_wifi_ais_key_params *params, u8 sequence,
+	u8 *command, size_t capacity)
+{
+	return mt6797_wifi_ais_key_build(bss, sta, params, sequence,
+		4, command, capacity); /* GEN3 CIPHER_SUITE_CCMP */
+}
+
+int mt6797_wifi_ais_bip_key_build(
+	const struct mt6797_wifi_ais_bss_handle *bss,
+	const struct mt6797_wifi_ais_sta_handle *sta,
+	const struct mt6797_wifi_ais_key_params *params, u8 sequence,
+	u8 *command, size_t capacity)
+{
+	/* GEN3 wlanoidSetAddKey uses the AP BMC allocation for IGTK IDs 4/5.
+	 * The caller must keep IGTK lifetime distinct from GTK bookkeeping.
+	 */
+	return mt6797_wifi_ais_key_build(bss, sta, params, sequence,
+		6, command, capacity); /* GEN3 CIPHER_SUITE_BIP */
 }
 
 int mt6797_wifi_ais_ccmp_ready_match(

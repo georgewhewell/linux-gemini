@@ -96,6 +96,11 @@ int mt6797_wifi_mgmt_rx_decode(const u8 *packet, size_t available,
 	if (candidate.subtype == IEEE80211_STYPE_ACTION &&
 	    (body_length < 2 || !mt6797_wifi_mgmt_action_robust(view.payload[24])))
 		return -EOPNOTSUPP;
+	/* SA Query is an individually addressed exchange with a two-byte ID. */
+	if (candidate.subtype == IEEE80211_STYPE_ACTION && view.payload[24] == WLAN_CATEGORY_SA_QUERY &&
+	    (candidate.multicast || body_length < 4 ||
+	     (view.payload[25] != WLAN_ACTION_SA_QUERY_REQUEST && view.payload[25] != WLAN_ACTION_SA_QUERY_RESPONSE)))
+		return -EPROTO;
 	candidate.frame = view.payload;
 	candidate.frame_length = view.payload_length;
 	candidate.bss_index = packet[7] >> 2;

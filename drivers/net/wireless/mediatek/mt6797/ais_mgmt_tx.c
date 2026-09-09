@@ -24,6 +24,7 @@
 #define MT6797_WIFI_AIS_MGMT_RETRY_LIMIT		(30U << 11)
 #define MT6797_WIFI_AIS_MGMT_SN_VALID		BIT(15)
 #define MT6797_WIFI_AIS_MGMT_TXS_TO_MCU		BIT(1)
+#define MT6797_WIFI_AIS_MGMT_PROTECTED		BIT(7) /* GEN3 ucHeaderPadding */
 #define MT6797_WIFI_AIS_MGMT_RATE_FROM_DESC	0U /* Bit 0 selects CR when set. */
 
 #define MT6797_WIFI_AIS_MGMT_DEST_OFFSET		4U
@@ -201,7 +202,8 @@ static bool mt6797_wifi_ais_mgmt_frame_valid(
 	if ((control & (IEEE80211_FCTL_VERS | IEEE80211_FCTL_FTYPE)) !=
 	    IEEE80211_FTYPE_MGMT ||
 	    control & (IEEE80211_FCTL_TODS | IEEE80211_FCTL_FROMDS |
-		       IEEE80211_FCTL_ORDER) ||
+		       IEEE80211_FCTL_ORDER | IEEE80211_FCTL_MOREFRAGS) ||
+	    (get_unaligned_le16(frame + 22) & IEEE80211_SCTL_FRAG) ||
 	    !ether_addr_equal(frame + MT6797_WIFI_AIS_MGMT_DEST_OFFSET,
 			      sta->peer_addr) ||
 	    !ether_addr_equal(frame + MT6797_WIFI_AIS_MGMT_SOURCE_OFFSET,
@@ -251,11 +253,16 @@ int mt6797_wifi_ais_mgmt_tx_build(
 					       &frame_control))
 		return -EINVAL;
 	subtype = frame_control & IEEE80211_FCTL_STYPE;
-	if (subtype != IEEE80211_STYPE_AUTH &&
-	    subtype != IEEE80211_STYPE_ASSOC_REQ)
+	if (params->sa_query_protected) {
+		if (subtype != IEEE80211_STYPE_ACTION ||
+		    !(frame_control & IEEE80211_FCTL_PROTECTED) || frame_length != 28 ||
+		    frame[24] != WLAN_CATEGORY_SA_QUERY ||
+		    (frame[25] != WLAN_ACTION_SA_QUERY_REQUEST && frame[25] != WLAN_ACTION_SA_QUERY_RESPONSE))
+			return -EOPNOTSUPP;
+	} else if ((subtype != IEEE80211_STYPE_AUTH && subtype != IEEE80211_STYPE_ASSOC_REQ) ||
+		   (frame_control & IEEE80211_FCTL_PROTECTED)) {
 		return -EOPNOTSUPP;
-	if (frame_control & IEEE80211_FCTL_PROTECTED)
-		return -EOPNOTSUPP;
+	}
 	if (check_add_overflow(frame_length,
 			       (size_t)MT6797_WIFI_TX_DESCRIPTOR_LENGTH,
 			       &packet_length))
@@ -274,6 +281,8 @@ int mt6797_wifi_ais_mgmt_tx_build(
 	packet[4] = lease->wlan_index;
 	packet[5] = MT6797_WIFI_AIS_MGMT_LONG_80211 |
 		(MT6797_WIFI_AIS_MGMT_HEADER_LENGTH >> 1);
+	if (params->sa_query_protected)
+		packet[6] = MT6797_WIFI_AIS_MGMT_PROTECTED;
 	packet[7] = bss->own_mac_index << 2;
 	packet[8] = ((frame_control & IEEE80211_FCTL_STYPE) >> 4) |
 		((frame_control & IEEE80211_FCTL_FTYPE) << 2);

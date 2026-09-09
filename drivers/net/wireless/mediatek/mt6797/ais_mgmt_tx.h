@@ -51,6 +51,10 @@ struct mt6797_wifi_ais_mgmt_pid_owner {
 struct mt6797_wifi_ais_mgmt_tx_params {
 	u16 sequence_number;
 	u16 fixed_rate;
+	/* Only a complete unicast SA Query action is admitted in this mode.
+	 * Caller must pin the association and its installed, ready pairwise key.
+	 */
+	bool sa_query_protected;
 };
 
 struct mt6797_wifi_ais_mgmt_tx_status {

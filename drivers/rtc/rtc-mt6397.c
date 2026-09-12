@@ -302,7 +302,7 @@ static int mt6397_rtc_suspend(struct device *dev)
 	struct mt6397_rtc *rtc = dev_get_drvdata(dev);
 
 	if (device_may_wakeup(dev))
-		enable_irq_wake(rtc->irq);
+		return enable_irq_wake(rtc->irq);
 
 	return 0;
 }
@@ -312,7 +312,7 @@ static int mt6397_rtc_resume(struct device *dev)
 	struct mt6397_rtc *rtc = dev_get_drvdata(dev);
 
 	if (device_may_wakeup(dev))
-		disable_irq_wake(rtc->irq);
+		return disable_irq_wake(rtc->irq);
 
 	return 0;
 }

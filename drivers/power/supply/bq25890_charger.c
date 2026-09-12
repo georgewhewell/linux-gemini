@@ -1625,12 +1625,6 @@ static int bq25890_probe(struct i2c_client *client)
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "reading device properties\n");
 
-	ret = bq25890_hw_init(bq);
-	if (ret < 0) {
-		dev_err(dev, "Cannot initialize the chip: %d\n", ret);
-		return ret;
-	}
-
 	if (!bq->read_only) {
 		if (client->irq <= 0)
 			client->irq = bq25890_irq_probe(bq);
@@ -1639,7 +1633,15 @@ static int bq25890_probe(struct i2c_client *client)
 			dev_err(dev, "No irq resource found.\n");
 			return client->irq;
 		}
+	}
 
+	ret = bq25890_hw_init(bq);
+	if (ret < 0) {
+		dev_err(dev, "Cannot initialize the chip: %d\n", ret);
+		return ret;
+	}
+
+	if (!bq->read_only) {
 		/* OTG reporting */
 		bq->usb_phy = devm_usb_get_phy(dev, USB_PHY_TYPE_USB2);
 	}

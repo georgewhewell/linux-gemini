@@ -174,7 +174,8 @@ static void mt6797_wifi_hif_program_failure_test(struct kunit *test)
 {
 	static const enum mt6797_wifi_hif_test_event expected[] = {
 		TEST_PRECHECK, TEST_MASK, TEST_SAVE, TEST_PROGRAM, TEST_TERMINAL,
-		TEST_MASK, TEST_RESTORE, TEST_FENCE, TEST_TEARDOWN, TEST_TERMINAL,
+		TEST_MASK, TEST_MASK, TEST_RESTORE, TEST_FENCE, TEST_TEARDOWN,
+		TEST_TERMINAL,
 	};
 	struct mt6797_wifi_hif_test_context context = {
 		.test = test,

@@ -86,7 +86,26 @@ int main(void) {
  assert(!mt6797_rpc_eint_reply(b,68,c.sim_eint,reply,40,&status));assert(status==-12);
  u32 v;assert(!mt6797_rpc_eint_value(6,112,&v));assert(!mt6797_rpc_eint_value(2,2,&v));
  assert(mt6797_rpc_eint_value(1,100999,&v)&&v==100);
- printf("PASS actual RPC EINT: literal C6 request, all14 board values, DT field/disabled ownership, status errors, header identity, malformed/count/padding/overflow/unsupported guards\n");
+ /* Log-only query identity: vendor SIM1..SIM4 names, unknown names, shapes. */
+ u32 slot=99,type=99;
+ assert(mt6797_rpc_eint_query(request,68,&slot,&type)&&slot==1&&type==6);
+ for(unsigned s=1;s<=4;s++)for(unsigned t=0;t<8;t++){
+  memcpy(b,request,68);b[35]='0'+s;mt6797_rpc_write(b+64,t);
+  assert(!mt6797_rpc_eint_reply(b,68,c.sim_eint,reply,40,&status));
+  assert(status==(s<=2?(t<7?0:-12):(t<7?-11:-12)));
+  assert(mt6797_rpc_eint_query(b,68,&slot,&type)&&slot==s&&type==t);
+ }
+ memcpy(b,request,68);b[35]='0';assert(mt6797_rpc_eint_query(b,68,&slot,&type)&&slot==0);
+ memcpy(b,request,68);b[40]='x';assert(mt6797_rpc_eint_query(b,68,&slot,&type)&&slot==0);
+ memcpy(b,request,68);b[50]='x';assert(mt6797_rpc_eint_query(b,68,&slot,&type)&&slot==0);
+ for(unsigned n=0;n<68;n++)assert(!mt6797_rpc_eint_query(request,n,&slot,&type));
+ memcpy(b,request,68);mt6797_rpc_write(b+20,2);assert(!mt6797_rpc_eint_query(b,68,&slot,&type));
+ memcpy(b,request,68);mt6797_rpc_write(b+24,65);assert(!mt6797_rpc_eint_query(b,68,&slot,&type));
+ memcpy(b,request,68);mt6797_rpc_write(b+24,1);assert(!mt6797_rpc_eint_query(b,68,&slot,&type));
+ memcpy(b,request,68);mt6797_rpc_write(b+60,3);assert(!mt6797_rpc_eint_query(b,68,&slot,&type));
+ assert(!mt6797_rpc_eint_query(NULL,68,&slot,&type)&&!mt6797_rpc_eint_query(request,68,NULL,&type));
+ printf("PASS actual RPC EINT query identity: SIM1-4 name/type, SIM3/4 -11 like vendor md_eint_node without DT node, non-template names, truncation\n");
+ printf("PASS actual RPC EINT:literal C6 request, all14 board values, DT field/disabled ownership, status errors, header identity, malformed/count/padding/overflow/unsupported guards\n");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-rpc-eint-') as d:

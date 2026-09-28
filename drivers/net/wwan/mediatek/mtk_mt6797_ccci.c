@@ -957,10 +957,17 @@ static void mt6797_ccci_rpc_work(struct work_struct *work)
 		dev_info_ratelimited(ccci->dev,
 			 "CCCI RPC op=0x%x reply_channel=33 status=%d tx_result=%d bytes=%zu\n",
 			 op, status, ret, size);
-	else if (atomic_add_unless(&ccci->rpc_logs, 1, 16))
+	else if (atomic_add_unless(&ccci->rpc_logs, 1, 16)) {
+		u32 slot = 0, type = 0;
+		bool known = mt6797_rpc_eint_query(job->frame, job->len,
+						   &slot, &type);
+
+		/* sim=N names MD1_SIM<N>_HOT_PLUG_EINT, 0 another name. */
 		dev_info(ccci->dev,
-			 "CCCI RPC op=0x4005 reply_channel=33 status=%d tx_result=%d bytes=%zu\n",
-			 status, ret, size);
+			 "CCCI RPC op=0x4005 reply_channel=33 status=%d tx_result=%d bytes=%zu sim=%d type=%d\n",
+			 status, ret, size, known ? (int)slot : -1,
+			 known ? (int)type : -1);
+	}
 failed:
 	if (ret) {
 		mt6797_rx_rejected_record(&ccci->rx_rejected, MT6797_RPC_RX, 1,

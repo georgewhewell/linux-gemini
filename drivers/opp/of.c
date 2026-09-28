@@ -1306,10 +1306,9 @@ int dev_pm_opp_of_get_sharing_cpus(struct device *cpu_dev,
 		struct device_node *tmp_np __free(device_node) =
 			_opp_of_get_opp_desc_node(cpu_np, 0);
 
-		if (!tmp_np) {
-			pr_err("%pOF: Couldn't find opp node\n", cpu_np);
-			return -ENOENT;
-		}
+		/* A CPU without an OPP table cannot share this one. */
+		if (!tmp_np)
+			continue;
 
 		/* CPUs are sharing opp node */
 		if (np == tmp_np)

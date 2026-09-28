@@ -103,94 +103,111 @@
 		};
 	};
 
-	/* Vendor CPU_LEVEL_1 (SB) table; both A53 clusters share their rails. */
+	/*
+	 * Vendor CPU_LEVEL_1 (SB) tables: mt_cpufreq.c OPP_TBL(LL, SB) and
+	 * OPP_TBL(L, SB), selected on Gemini by the function-code efuse.  Each
+	 * voltage is the uncalibrated minimum for its rate on the shared
+	 * vproc-little rail, which may run up to the vendor 1.2 V ceiling.
+	 *
+	 * vproc-little also supplies the CCI, which Linux does not scale, so the
+	 * rail is held at its boot voltage and only rates at or below it are
+	 * usable.  The clock provider only retunes an ARMPLL within its post
+	 * divider and does not program the CKDIV path divider; rates needing
+	 * either change stay disabled as well.
+	 */
 	cluster0_opp: opp-table-cluster0 {
 		compatible = "operating-points-v2";
 		opp-shared;
 
 		opp-221000000 {
 			opp-hz = /bits/ 64 <221000000>;
-			opp-microvolt = <770000>;
+			opp-microvolt = <770000 770000 1200000>;
 			status = "disabled";
 		};
 
 		opp-338000000 {
 			opp-hz = /bits/ 64 <338000000>;
-			opp-microvolt = <800000>;
+			opp-microvolt = <800000 800000 1200000>;
 			status = "disabled";
 		};
 
 		opp-481000000 {
 			opp-hz = /bits/ 64 <481000000>;
-			opp-microvolt = <850000>;
+			opp-microvolt = <850000 850000 1200000>;
 			status = "disabled";
 		};
 
 		opp-624000000 {
 			opp-hz = /bits/ 64 <624000000>;
-			opp-microvolt = <900000>;
+			opp-microvolt = <900000 900000 1200000>;
 		};
 
 		opp-715000000 {
 			opp-hz = /bits/ 64 <715000000>;
-			opp-microvolt = <940000>;
+			opp-microvolt = <940000 940000 1200000>;
 		};
 
 		opp-806000000 {
 			opp-hz = /bits/ 64 <806000000>;
-			opp-microvolt = <970000>;
+			opp-microvolt = <970000 970000 1200000>;
 		};
 
 		opp-897000000 {
 			opp-hz = /bits/ 64 <897000000>;
-			opp-microvolt = <1000000>;
+			opp-microvolt = <1000000 1000000 1200000>;
 		};
 
 		opp-1014000000 {
 			opp-hz = /bits/ 64 <1014000000>;
-			opp-microvolt = <1040000>;
+			opp-microvolt = <1040000 1040000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1118000000 {
 			opp-hz = /bits/ 64 <1118000000>;
-			opp-microvolt = <1070000>;
+			opp-microvolt = <1070000 1070000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1222000000 {
 			opp-hz = /bits/ 64 <1222000000>;
-			opp-microvolt = <1100000>;
+			opp-microvolt = <1100000 1100000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1274000000 {
 			opp-hz = /bits/ 64 <1274000000>;
-			opp-microvolt = <1130000>;
+			opp-microvolt = <1130000 1130000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1339000000 {
 			opp-hz = /bits/ 64 <1339000000>;
-			opp-microvolt = <1140000>;
+			opp-microvolt = <1140000 1140000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1391000000 {
 			opp-hz = /bits/ 64 <1391000000>;
-			opp-microvolt = <1150000>;
+			opp-microvolt = <1150000 1150000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1443000000 {
 			opp-hz = /bits/ 64 <1443000000>;
-			opp-microvolt = <1170000>;
+			opp-microvolt = <1170000 1170000 1200000>;
 			status = "disabled";
 		};
 
 		opp-1495000000 {
 			opp-hz = /bits/ 64 <1495000000>;
-			opp-microvolt = <1190000>;
+			opp-microvolt = <1190000 1190000 1200000>;
 			status = "disabled";
 		};
 
 		opp-1547000000 {
 			opp-hz = /bits/ 64 <1547000000>;
-			opp-microvolt = <1200000>;
+			opp-microvolt = <1200000 1200000 1200000>;
 			status = "disabled";
 		};
 	};
@@ -201,84 +218,95 @@
 
 		opp-325000000 {
 			opp-hz = /bits/ 64 <325000000>;
-			opp-microvolt = <770000>;
+			opp-microvolt = <770000 770000 1200000>;
 			status = "disabled";
 		};
 
 		opp-468000000 {
 			opp-hz = /bits/ 64 <468000000>;
-			opp-microvolt = <800000>;
+			opp-microvolt = <800000 800000 1200000>;
 			status = "disabled";
 		};
 
 		opp-650000000 {
 			opp-hz = /bits/ 64 <650000000>;
-			opp-microvolt = <850000>;
+			opp-microvolt = <850000 850000 1200000>;
+			status = "disabled";
 		};
 
 		opp-832000000 {
 			opp-hz = /bits/ 64 <832000000>;
-			opp-microvolt = <900000>;
+			opp-microvolt = <900000 900000 1200000>;
+			status = "disabled";
 		};
 
 		opp-962000000 {
 			opp-hz = /bits/ 64 <962000000>;
-			opp-microvolt = <940000>;
+			opp-microvolt = <940000 940000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1092000000 {
 			opp-hz = /bits/ 64 <1092000000>;
-			opp-microvolt = <970000>;
+			opp-microvolt = <970000 970000 1200000>;
 		};
 
 		opp-1209000000 {
 			opp-hz = /bits/ 64 <1209000000>;
-			opp-microvolt = <1000000>;
+			opp-microvolt = <1000000 1000000 1200000>;
 		};
 
 		opp-1352000000 {
 			opp-hz = /bits/ 64 <1352000000>;
-			opp-microvolt = <1040000>;
+			opp-microvolt = <1040000 1040000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1495000000 {
 			opp-hz = /bits/ 64 <1495000000>;
-			opp-microvolt = <1070000>;
+			opp-microvolt = <1070000 1070000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1625000000 {
 			opp-hz = /bits/ 64 <1625000000>;
-			opp-microvolt = <1100000>;
+			opp-microvolt = <1100000 1100000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1703000000 {
 			opp-hz = /bits/ 64 <1703000000>;
-			opp-microvolt = <1130000>;
+			opp-microvolt = <1130000 1130000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1755000000 {
 			opp-hz = /bits/ 64 <1755000000>;
-			opp-microvolt = <1140000>;
+			opp-microvolt = <1140000 1140000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1820000000 {
 			opp-hz = /bits/ 64 <1820000000>;
-			opp-microvolt = <1150000>;
+			opp-microvolt = <1150000 1150000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1885000000 {
 			opp-hz = /bits/ 64 <1885000000>;
-			opp-microvolt = <1170000>;
+			opp-microvolt = <1170000 1170000 1200000>;
+			status = "disabled";
 		};
 
 		opp-1950000000 {
 			opp-hz = /bits/ 64 <1950000000>;
-			opp-microvolt = <1190000>;
+			opp-microvolt = <1190000 1190000 1200000>;
+			status = "disabled";
 		};
 
 		opp-2002000000 {
 			opp-hz = /bits/ 64 <2002000000>;
-			opp-microvolt = <1200000>;
+			opp-microvolt = <1200000 1200000 1200000>;
 			status = "disabled";
 		};
 	};
@@ -402,7 +430,6 @@
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
 	clock-names = "cpu", "intermediate";
 	cpu-supply = <&da9214_bucka>;
-	sram-supply = <&mt6351_vsram_proc_reg>;
 	operating-points-v2 = <&cluster0_opp>;
 	#cooling-cells = <2>;
 };
@@ -413,7 +440,6 @@
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
 	clock-names = "cpu", "intermediate";
 	cpu-supply = <&da9214_bucka>;
-	sram-supply = <&mt6351_vsram_proc_reg>;
 	operating-points-v2 = <&cluster0_opp>;
 	#cooling-cells = <2>;
 };
@@ -424,7 +450,6 @@
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
 	clock-names = "cpu", "intermediate";
 	cpu-supply = <&da9214_bucka>;
-	sram-supply = <&mt6351_vsram_proc_reg>;
 	operating-points-v2 = <&cluster0_opp>;
 	#cooling-cells = <2>;
 };
@@ -446,7 +471,6 @@
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
 	clock-names = "cpu", "intermediate";
 	cpu-supply = <&da9214_bucka>;
-	sram-supply = <&mt6351_vsram_proc_reg>;
 	operating-points-v2 = <&cluster0_opp>;
 	#cooling-cells = <2>;
 };
@@ -457,7 +481,6 @@
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
 	clock-names = "cpu", "intermediate";
 	cpu-supply = <&da9214_bucka>;
-	sram-supply = <&mt6351_vsram_proc_reg>;
 	operating-points-v2 = <&cluster1_opp>;
 	#cooling-cells = <2>;
 };
@@ -468,7 +491,6 @@
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
 	clock-names = "cpu", "intermediate";
 	cpu-supply = <&da9214_bucka>;
-	sram-supply = <&mt6351_vsram_proc_reg>;
 	operating-points-v2 = <&cluster1_opp>;
 	#cooling-cells = <2>;
 };
@@ -479,7 +501,6 @@
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
 	clock-names = "cpu", "intermediate";
 	cpu-supply = <&da9214_bucka>;
-	sram-supply = <&mt6351_vsram_proc_reg>;
 	operating-points-v2 = <&cluster1_opp>;
 	#cooling-cells = <2>;
 };
@@ -490,7 +511,6 @@
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
 	clock-names = "cpu", "intermediate";
 	cpu-supply = <&da9214_bucka>;
-	sram-supply = <&mt6351_vsram_proc_reg>;
 	operating-points-v2 = <&cluster1_opp>;
 	#cooling-cells = <2>;
 };
@@ -504,6 +524,11 @@
 };
 
 &mt6351regulator {
+	/*
+	 * Despite its PMIC name this buck is the SoC core SRAM rail, which the
+	 * vendor SPM switches with Vcore.  The Cortex-A53 SRAM is fed by on-die
+	 * CPULDOs in INFRACFG_AO instead.
+	 */
 	mt6351_vsram_proc_reg: buck-vsram-proc {
 		regulator-name = "vsram-proc";
 		regulator-min-microvolt = <1000000>;
@@ -708,10 +733,15 @@
 		status = "disabled";
 
 		regulators {
+			/*
+			 * Vproc of both Cortex-A53 clusters and of the CCI.
+			 * The CCI clock is not scaled, so keep the rail at
+			 * the 1.00 V the boot loader programs for it.
+			 */
 			da9214_bucka: BUCKA {
 				regulator-name = "vproc-little";
-				regulator-min-microvolt = <770000>;
-				regulator-max-microvolt = <1200000>;
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <1000000>;
 				regulator-always-on;
 			};
 

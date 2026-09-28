@@ -36,7 +36,6 @@ struct mt6797_wifi_hif_pump_ops {
 			     const struct mt6797_wifi_rx_view *frame);
 	/* Diagnostic only; never log payloads or hardware report address fields. */
 	void (*reject_packet)(void *context, const u8 *packet, size_t length, int error);
-	bool (*expired)(void *context);
 	/* Only startup, before opening interrupt gates, may find no status. */
 	bool allow_empty_status;
 	void *context;

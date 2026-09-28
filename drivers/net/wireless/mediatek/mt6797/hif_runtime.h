@@ -115,6 +115,7 @@ struct mt6797_wifi_hif_irq {
 	struct mt6797_wifi_tx_credit tx_credit;
 	struct completion tx_credit_completion;
 	struct work_struct terminal_work;
+	const void *terminal_caller;
 	irqreturn_t (*capability_thread)(void *context);
 	void *capability_context;
 	struct mt6797_wifi_hif_runtime_transaction transaction;
@@ -122,7 +123,6 @@ struct mt6797_wifi_hif_irq {
 	struct mt6797_wifi_hif_wait_event wait_event;
 	struct mt6797_wifi_hif_runtime_sink sink;
 	u8 *rx_buffer[2];
-	ktime_t pump_deadline;
 	u32 whcr_before;
 	u32 whier_before;
 	u32 acknowledged_status;

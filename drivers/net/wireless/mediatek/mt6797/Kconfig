@@ -42,10 +42,9 @@ config MTK_MT6797_WIFI
 	  IRQ283 is requested once with IRQF_NO_AUTOEN. After configuration, the
 	  driver establishes persistent ownership of the ordinary HIF interrupt
 	  format and gates. Runtime interrupts use read-clear acknowledgment, TX
-	  release accounting, and a bounded ordinary-mode RX pump. Valid firmware
-	  events and frame classes are decoded and counted but not yet delivered to
-	  a radio consumer. Any malformed, overflowing, timed-out, or failed pump is
-	  fenced and stopped asynchronously. The optional cfg80211 station interface
+	  release accounting, and an ordinary-mode RX pump bounded by work, not
+	  time. Any malformed, overflowing or failed pump is fenced and stopped
+	  asynchronously. The optional cfg80211 station interface
 	  registers a wiphy and network device. The Device Tree node is disabled by default, so enabling this
 	  option alone performs no hardware access.
 

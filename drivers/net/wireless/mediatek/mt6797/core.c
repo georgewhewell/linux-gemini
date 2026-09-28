@@ -209,7 +209,7 @@ static int mt6797_wifi_probe(struct platform_device *pdev)
 	}
 #endif
 	dev_info(dev,
-		 "WLAN %#06x fw %#06x HIF_EVENT_PUMP_READY irq=%d budget=%u timeout_ms=100\n",
+		 "WLAN %#06x fw %#06x HIF_EVENT_PUMP_READY irq=%d budget=%u\n",
 		 wifi->capability.product_id, wifi->capability.firmware_version,
 		 wifi->irq, MT6797_WIFI_HIF_RX_BUDGET);
 	return 0;

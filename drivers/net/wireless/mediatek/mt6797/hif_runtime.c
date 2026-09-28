@@ -21,7 +21,8 @@
 #include "hif_runtime.h"
 
 #define MT6797_WIFI_HIF_RX_APPEND_LENGTH	4U
-#define MT6797_WIFI_HIF_PUMP_TIMEOUT_NS		(100ULL * NSEC_PER_MSEC)
+/* Diagnostic only: a slower pass is reported, never treated as a fault. */
+#define MT6797_WIFI_HIF_PUMP_SLOW_NS		(100ULL * NSEC_PER_MSEC)
 
 static bool mt6797_wifi_hif_runtime_ops_valid(
 	const struct mt6797_wifi_hif_runtime_ops *ops)
@@ -444,16 +445,18 @@ static void mt6797_wifi_hif_terminal_work(struct work_struct *work)
 			READ_ONCE(irq->pump_stats.tx_released[queue]));
 	mutex_unlock(&irq->lifecycle_lock);
 	dev_err(irq->dev,
-		"runtime HIF fault %d; WLAN fenced and stopped%s\n",
-		READ_ONCE(irq->terminal_reason),
+		"runtime HIF fault %d from %pS; WLAN fenced and stopped%s\n",
+		READ_ONCE(irq->terminal_reason), READ_ONCE(irq->terminal_caller),
 		ret ? " with cleanup failure" : "");
 }
 
 static void mt6797_wifi_hif_runtime_terminal(
-	struct mt6797_wifi_hif_irq *irq, int reason)
+	struct mt6797_wifi_hif_irq *irq, int reason, const void *caller)
 {
 	if (!mt6797_wifi_hif_runtime_publish_terminal(irq, reason))
 		return;
+	/* Diagnostic only: names the owner that declared the fault. */
+	WRITE_ONCE(irq->terminal_caller, caller);
 	mt6797_wifi_hif_wait_event_abort(&irq->wait_event, reason);
 	mt6797_wifi_hif_runtime_sink_abort(irq, reason);
 	schedule_work(&irq->terminal_work);
@@ -527,7 +530,8 @@ void mt6797_wifi_hif_runtime_fail(struct mt6797_wifi_hif_irq *irq,
 				   int reason)
 {
 	if (irq)
-		mt6797_wifi_hif_runtime_terminal(irq, reason);
+		mt6797_wifi_hif_runtime_terminal(irq, reason,
+						 __builtin_return_address(0));
 }
 
 void mt6797_wifi_hif_wait_event_init(
@@ -680,13 +684,6 @@ void mt6797_wifi_hif_wait_event_disarm(
 	spin_unlock_irqrestore(&wait_event->lock, flags);
 }
 
-static bool mt6797_wifi_hif_runtime_pump_expired(void *context)
-{
-	struct mt6797_wifi_hif_irq *irq = context;
-
-	return ktime_after(ktime_get(), irq->pump_deadline);
-}
-
 static int mt6797_wifi_hif_runtime_pump_status(void *context, u32 *status)
 {
 	struct mt6797_wifi_hif_irq *irq = context;
@@ -747,8 +744,6 @@ static int mt6797_wifi_hif_runtime_pump_tx(
 	int ret;
 
 	for (register_index = 0; register_index < 8; register_index++) {
-		if (mt6797_wifi_hif_runtime_pump_expired(irq))
-			return -ETIMEDOUT;
 		ret = mt6797_wifi_hif_reg_read(
 			irq, MT6797_WIFI_MCR_WTQCR0 +
 			register_index * sizeof(u32), &value);
@@ -946,7 +941,6 @@ static int mt6797_wifi_hif_runtime_clear_status(void *context)
 		.deliver_event = mt6797_wifi_hif_runtime_pump_event,
 		.deliver_frame = mt6797_wifi_hif_runtime_pump_frame,
 		.reject_packet = mt6797_wifi_hif_runtime_reject_packet,
-		.expired = mt6797_wifi_hif_runtime_pump_expired,
 		.allow_empty_status = true,
 		.context = irq,
 	};
@@ -959,8 +953,6 @@ static int mt6797_wifi_hif_runtime_clear_status(void *context)
 	 */
 	memset(irq->rx_buffer[0], 0, MT6797_WIFI_EVENT_HEADER_LENGTH);
 	memset(irq->rx_buffer[1], 0, MT6797_WIFI_EVENT_HEADER_LENGTH);
-	irq->pump_deadline = ktime_add_ns(ktime_get(),
-		MT6797_WIFI_HIF_PUMP_TIMEOUT_NS);
 	ret = mt6797_wifi_hif_pump_run(&ops, &irq->pump_stats,
 				     &irq->acknowledged_status);
 	dev_info(irq->dev, "HIF startup result=%d status=%#x rx=%llu events=%llu rx0_header=%8ph rx1_header=%8ph\n",
@@ -976,6 +968,8 @@ static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
 	struct mt6797_wifi_hif_pump_ops ops;
 	u64 interrupts;
 	void *context;
+	ktime_t started;
+	s64 elapsed;
 	int ret;
 
 	(void)linux_irq;
@@ -984,12 +978,12 @@ static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
 	if (ret == MT6797_WIFI_HIF_IRQ_RUNTIME) {
 		if (check_add_overflow(irq->pump_stats.interrupts, 1ULL,
 				       &interrupts)) {
-			mt6797_wifi_hif_runtime_terminal(irq, -EOVERFLOW);
+			mt6797_wifi_hif_runtime_terminal(irq, -EOVERFLOW,
+							 mt6797_wifi_hif_irq_thread);
 			return IRQ_HANDLED;
 		}
 		irq->pump_stats.interrupts = interrupts;
-		irq->pump_deadline = ktime_add_ns(ktime_get(),
-			MT6797_WIFI_HIF_PUMP_TIMEOUT_NS);
+		started = ktime_get();
 		ops = (struct mt6797_wifi_hif_pump_ops) {
 			.read_status = mt6797_wifi_hif_runtime_pump_status,
 			.read_tx_released = mt6797_wifi_hif_runtime_pump_tx,
@@ -998,15 +992,25 @@ static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
 			.deliver_event = mt6797_wifi_hif_runtime_pump_event,
 			.deliver_frame = mt6797_wifi_hif_runtime_pump_frame,
 			.reject_packet = mt6797_wifi_hif_runtime_reject_packet,
-			.expired = mt6797_wifi_hif_runtime_pump_expired,
 			.context = irq,
 		};
 		ret = mt6797_wifi_hif_pump_run(&ops, &irq->pump_stats,
 						&irq->acknowledged_status);
+		elapsed = ktime_to_ns(ktime_sub(ktime_get(), started));
 		if (ret) {
-			mt6797_wifi_hif_runtime_terminal(irq, ret);
+			dev_err(irq->dev,
+				"HIF pump failed %d status=%#x after %lld us\n",
+				ret, irq->acknowledged_status,
+				elapsed / NSEC_PER_USEC);
+			mt6797_wifi_hif_runtime_terminal(irq, ret,
+							 mt6797_wifi_hif_irq_thread);
 			return IRQ_HANDLED;
 		}
+		if (elapsed > MT6797_WIFI_HIF_PUMP_SLOW_NS)
+			dev_warn_ratelimited(irq->dev,
+				"HIF pump took %lld ms status=%#x\n",
+				elapsed / NSEC_PER_MSEC,
+				irq->acknowledged_status);
 		dev_dbg(irq->dev,
 			"HIF irq status=%#x total=%llu rx=%llu events=%llu\n",
 			irq->acknowledged_status, irq->pump_stats.interrupts,

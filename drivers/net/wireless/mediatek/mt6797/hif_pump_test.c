@@ -13,8 +13,6 @@ struct mt6797_wifi_hif_pump_test_context {
 	u16 lengths[2][2];
 	u32 status;
 	unsigned int lengths_index;
-	unsigned int expired_calls;
-	unsigned int expire_at;
 	unsigned int delivered_events;
 	unsigned int delivered_frames;
 	int event_result;
@@ -84,15 +82,6 @@ static int mt6797_wifi_hif_pump_test_packet(void *data, unsigned int port,
 	return 0;
 }
 
-static bool mt6797_wifi_hif_pump_test_expired(void *data)
-{
-	struct mt6797_wifi_hif_pump_test_context *context = data;
-
-	if (!context->expire_at)
-		return false;
-	return ++context->expired_calls >= context->expire_at;
-}
-
 static int mt6797_wifi_hif_pump_test_deliver(
 	void *data, const struct mt6797_wifi_event_view *event)
 {
@@ -128,7 +117,6 @@ static void mt6797_wifi_hif_pump_test_ops(
 		.read_packet = mt6797_wifi_hif_pump_test_packet,
 		.deliver_event = mt6797_wifi_hif_pump_test_deliver,
 		.deliver_frame = mt6797_wifi_hif_pump_test_deliver_frame,
-		.expired = mt6797_wifi_hif_pump_test_expired,
 		.context = context,
 	};
 }
@@ -218,21 +206,6 @@ static void mt6797_wifi_hif_pump_overflow_test(struct kunit *test)
 		mt6797_wifi_hif_pump_run(&ops, &stats, &status), -EOVERFLOW);
 	KUNIT_EXPECT_EQ(test, stats.rx_packets,
 			(u64)MT6797_WIFI_HIF_RX_BUDGET);
-}
-
-static void mt6797_wifi_hif_pump_timeout_test(struct kunit *test)
-{
-	struct mt6797_wifi_hif_pump_test_context context = {
-		.status = MT6797_WIFI_WHISR_RX0_DONE,
-		.expire_at = 2,
-	};
-	struct mt6797_wifi_hif_pump_stats stats = {};
-	struct mt6797_wifi_hif_pump_ops ops;
-	u32 status;
-
-	mt6797_wifi_hif_pump_test_ops(&context, &ops);
-	KUNIT_EXPECT_EQ(test,
-		mt6797_wifi_hif_pump_run(&ops, &stats, &status), -ETIMEDOUT);
 }
 
 static void mt6797_wifi_hif_pump_packet_fault_test(struct kunit *test)
@@ -372,7 +345,6 @@ static struct kunit_case mt6797_wifi_hif_pump_cases[] = {
 	KUNIT_CASE(mt6797_wifi_hif_pump_startup_rx_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_malformed_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_overflow_test),
-	KUNIT_CASE(mt6797_wifi_hif_pump_timeout_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_packet_fault_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_status_fault_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_tx_overflow_test),

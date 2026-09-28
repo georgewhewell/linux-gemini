@@ -105,13 +105,6 @@ static bool mt6797_cpuclk_divider_valid(u8 divider)
 	}
 }
 
-static bool mt6797_cpuclk_state_valid(const struct mt6797_cpuclk_state *state)
-{
-	return state && state->source < MT6797_CPUCLK_NR_SOURCES &&
-	       mt6797_cpuclk_divider_valid(state->divider) &&
-	       state->armpll_rate;
-}
-
 static int
 mt6797_cpuclk_decode_armpll(enum mt6797_cpuclk_domain domain,
 			    const struct mt6797_cpuclk_snapshot *snapshot,
@@ -349,82 +342,69 @@ int mt6797_cpuclk_plan_dcm(enum mt6797_cpuclk_domain domain,
 	return 0;
 }
 
-int mt6797_cpuclk_build_rate_plan(enum mt6797_cpuclk_domain domain,
-				  const struct mt6797_cpuclk_snapshot *snapshot,
-				  unsigned long clk26m_rate,
-				  const struct mt6797_cpuclk_state *target,
-				  struct mt6797_cpuclk_rate_plan *plan)
+static bool mt6797_cpuclk_divider_is_unity(u8 divider)
+{
+	return !(divider & 0x7);
+}
+
+/*
+ * Plan an in-place ARMPLL retune through the MCU frequency-hopping controller.
+ *
+ * This is the vendor LL/L path: mt_cpufreq.c set_cur_freq() hands only the
+ * 21-bit DDS to mt_dfs_armpll() while the cluster keeps running from its
+ * ARMPLL, and it changes the post divider (through MAINPLL) only when an OPP
+ * crosses a post-divider boundary.  Linux does not change post dividers or
+ * the CKDIV path divider, so a hop is only planned when the current and target
+ * rates share one post divider and the cluster runs from its ARMPLL at 1/1.
+ *
+ * The hopping controller slews the DDS monotonically, so every intermediate
+ * rate lies between the current and target rates.  Vendor mt_cpufreq.c
+ * set_cur_freq() lowers the sync-DCM divider before a rate decrease and raises
+ * it after an increase; the plan records that order.
+ */
+int mt6797_cpuclk_plan_hop(enum mt6797_cpuclk_domain domain,
+			   const struct mt6797_cpuclk_snapshot *snapshot,
+			   unsigned long clk26m_rate, unsigned long rate,
+			   struct mt6797_cpuclk_hop_plan *plan)
 {
 	struct mt6797_cpuclk_state initial;
+	unsigned long actual_rate;
+	u32 con1, target_con1;
 	int ret;
 
-	if (!snapshot || !mt6797_cpuclk_state_valid(target) || !plan)
+	if (!snapshot || !plan || !clk26m_rate)
 		return -EINVAL;
+	if (domain != MT6797_CPUCLK_MP0 && domain != MT6797_CPUCLK_MP1)
+		return -EOPNOTSUPP;
 
 	ret = mt6797_cpuclk_decode_state(domain, snapshot, clk26m_rate,
 					 &initial);
 	if (ret)
 		return ret;
-
-	/* Standard mediatek-cpufreq reparents to MAINPLL before set_rate. */
-	if (initial.source != MT6797_CPUCLK_MAINPLL || initial.divider != 8 ||
-	    target->source != initial.source ||
-	    target->divider != initial.divider)
+	if (initial.source != MT6797_CPUCLK_ARMPLL ||
+	    !mt6797_cpuclk_divider_is_unity(initial.divider))
 		return -EOPNOTSUPP;
 
-	plan->domain = domain;
-	plan->clk26m_rate = clk26m_rate;
-	plan->initial = initial;
-	plan->target = *target;
-	plan->rollback = initial;
-	plan->rollback_snapshot = *snapshot;
-	plan->intermediate_source = MT6797_CPUCLK_MAINPLL;
+	con1 = snapshot->armpll_con1[domain];
+	ret = mt6797_cpuclk_plan_pll_rate(domain, rate, clk26m_rate, con1,
+					  &target_con1, &actual_rate);
+	if (ret)
+		return ret;
+	if ((con1 ^ target_con1) & MT6797_ARMPLL_POSDIV_MASK)
+		return -EOPNOTSUPP;
 
-	return 0;
-}
-
-int mt6797_cpuclk_get_rollback_state(const struct mt6797_cpuclk_rate_plan *plan,
-				     struct mt6797_cpuclk_state *rollback)
-{
-	struct mt6797_cpuclk_state decoded;
-	int ret;
-
-	if (!plan || !rollback || !mt6797_cpuclk_domain_valid(plan->domain) ||
-	    plan->intermediate_source != MT6797_CPUCLK_MAINPLL ||
-	    !mt6797_cpuclk_state_valid(&plan->initial) ||
-	    !mt6797_cpuclk_state_valid(&plan->target) ||
-	    plan->initial.source != MT6797_CPUCLK_MAINPLL ||
-	    plan->initial.divider != 8 ||
-	    plan->target.source != plan->initial.source ||
-	    plan->target.divider != plan->initial.divider ||
-	    plan->rollback.armpll_rate != plan->initial.armpll_rate ||
-	    plan->rollback.source != plan->initial.source ||
-	    plan->rollback.divider != plan->initial.divider)
-		return -EINVAL;
-
-	ret = mt6797_cpuclk_decode_state(plan->domain, &plan->rollback_snapshot,
-					 plan->clk26m_rate, &decoded);
-	if (ret || decoded.armpll_rate != plan->rollback.armpll_rate ||
-	    decoded.source != plan->rollback.source ||
-	    decoded.divider != plan->rollback.divider)
-		return -EINVAL;
-
-	*rollback = plan->rollback;
-	return 0;
-}
-
-int mt6797_cpuclk_apply_rate_plan(struct mt6797_cpuclk_backend *backend,
-				  const struct mt6797_cpuclk_rate_plan *plan)
-{
-	struct mt6797_cpuclk_state rollback;
-	int ret;
-
-	ret = mt6797_cpuclk_get_rollback_state(plan, &rollback);
+	ret = mt6797_cpuclk_plan_dcm(domain, actual_rate, snapshot->sync_dcm,
+				     &plan->dcm);
 	if (ret)
 		return ret;
 
-	if (!backend || !backend->ops || !backend->ops->apply)
-		return -EOPNOTSUPP;
+	plan->domain = domain;
+	plan->clk26m_rate = clk26m_rate;
+	plan->initial_rate = initial.armpll_rate;
+	plan->rate = actual_rate;
+	plan->dds = FIELD_GET(MT6797_ARMPLL_PCW_MASK, target_con1);
+	plan->dcm_before_hop = actual_rate < initial.armpll_rate;
+	plan->snapshot = *snapshot;
 
-	return backend->ops->apply(backend->context, plan);
+	return 0;
 }

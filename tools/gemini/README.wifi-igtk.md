@@ -1,5 +1,11 @@
 # IGTK overlap and association rekey prerequisite
 
+> **Status update (gemini-wifi-wpa3):** `ais_rsn.c` now negotiates PMF when both
+> RSN elements set MFPC and the driver advertises BIP-CMAC-128, so the gated
+> paths described here are live on PMF associations. Statements below about
+> PMF being disabled describe the original slice. Hardware qualification of
+> firmware CCMP management/BIP behaviour is still outstanding.
+
 This change retains both host BIP-CMAC-128 receive keys, IDs 4 and 5, instead of
 replacing one host slot on every install. Each ID has its own key and 48-bit
 replay counter. The complete MMIE ID selects exactly one key before software

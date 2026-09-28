@@ -1,5 +1,11 @@
 # PMF firmware qualification plan
 
+> **Status update (gemini-wifi-wpa3):** `ais_rsn.c` now negotiates PMF when both
+> RSN elements set MFPC and the driver advertises BIP-CMAC-128, so the gated
+> paths described here are live on PMF associations. Statements below about
+> PMF being disabled describe the original slice. Hardware qualification of
+> firmware CCMP management/BIP behaviour is still outstanding.
+
 **No hardware was accessed for this task.** Production PMF/SAE stays disabled.
 The host protocol work ends at `83d207ce3d911cb3c4dd7f4ace6658281341dc3c`.
 This document and the adjacent observer add no kernel/firmware commands or

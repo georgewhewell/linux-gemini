@@ -1,5 +1,11 @@
 # Protected management RX prerequisite
 
+> **Status update (gemini-wifi-wpa3):** `ais_rsn.c` now negotiates PMF when both
+> RSN elements set MFPC and the driver advertises BIP-CMAC-128, so the gated
+> paths described here are live on PMF associations. Statements below about
+> PMF being disabled describe the original slice. Hardware qualification of
+> firmware CCMP management/BIP behaviour is still outstanding.
+
 This slice adds bounded BIP-CMAC-128 and CCMP robust-management receive handling.
 It does not enable PMF negotiation or SAE admission; `pmf_negotiated` remains
 false in production. It has not been exercised on the Gemini firmware/device.

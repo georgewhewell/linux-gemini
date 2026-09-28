@@ -9,6 +9,7 @@
 #include <net/cfg80211.h>
 #include "ais_hif.h"
 #include "ais_key.h"
+#include "ais_rsn.h"
 #include "capability.h"
 #include "data_rx.h"
 #include "hif.h"
@@ -51,7 +52,7 @@ struct mt6797_radio_connection {
 	struct mt6797_wifi_ais_sta_pending igtk_owner;
 	struct mt6797_wifi_ais_wtbl_handle igtk_wtbl;
 	u8 igtk_default; /* 0 means none, otherwise on-wire ID 4 or 5. */
-	/* Kept false until PMF negotiation and protected management exist. */
+	/* Both RSN elements set MFPC (ais_rsn.c); fixed for the association. */
 	bool pmf_negotiated;
 	struct mt6797_wifi_ais_sta_pending key_pending;
 	struct mt6797_wifi_ais_wtbl_handle pairwise_wtbl;
@@ -977,6 +978,8 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	const struct cfg80211_bss_ies *peer_ies;
 	const u8 *rsn;
 	struct mt6797_wifi_ais_join_params *params;
+	struct mt6797_wifi_ais_rsn_request policy = {};
+	struct mt6797_wifi_ais_rsn_result negotiated = {};
 	unsigned long flags;
 	size_t offset, rates_length;
 	int ret = -EOPNOTSUPP;
@@ -987,7 +990,7 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	    (sme->ie_len && !sme->ie) ||
 	    (sme->crypto.control_port_ethertype && sme->crypto.control_port_ethertype != htons(ETH_P_PAE)) ||
 	    sme->key_len || sme->pbss || sme->prev_bssid || sme->crypto.control_port_over_nl80211 ||
-	    sme->mfp != NL80211_MFP_NO || sme->want_1x ||
+	    (sme->mfp != NL80211_MFP_NO && sme->mfp != NL80211_MFP_REQUIRED) || sme->want_1x ||
 	    (sme->flags & ~(ASSOC_REQ_DISABLE_HT | ASSOC_REQ_DISABLE_VHT |
 		ASSOC_REQ_DISABLE_HE | ASSOC_REQ_DISABLE_EHT | ASSOC_REQ_DISABLE_UHR)) ||
 	    (sme->auth_type != NL80211_AUTHTYPE_OPEN_SYSTEM && sme->auth_type != NL80211_AUTHTYPE_AUTOMATIC))
@@ -995,11 +998,11 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	if (secure) {
 		if (sme->crypto.wpa_versions != NL80211_WPA_VERSION_2 ||
 		    sme->crypto.n_ciphers_pairwise != 1 || sme->crypto.ciphers_pairwise[0] != WLAN_CIPHER_SUITE_CCMP ||
-		    sme->crypto.cipher_group != WLAN_CIPHER_SUITE_CCMP ||
-		    sme->crypto.n_akm_suites != 1 || sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK)
+		    sme->crypto.cipher_group != WLAN_CIPHER_SUITE_CCMP || sme->crypto.n_akm_suites != 1)
 			return -EOPNOTSUPP;
 	} else if (sme->crypto.wpa_versions || sme->crypto.n_ciphers_pairwise ||
-		   sme->crypto.cipher_group || sme->crypto.n_akm_suites) {
+		   sme->crypto.cipher_group || sme->crypto.n_akm_suites ||
+		   sme->mfp != NL80211_MFP_NO) {
 		return -EOPNOTSUPP;
 	}
 	/* User IEs cannot override SSID/rates or advertise unsupported HT/VHT/WMM. */
@@ -1015,17 +1018,23 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 		}
 	}
 	rsn = cfg80211_find_ie(WLAN_EID_RSN, sme->ie, sme->ie_len);
-	if (secure) {
-		static const u8 ccmp[] = { 0, 0x0f, 0xac, 4 };
-		static const u8 psk[] = { 0, 0x0f, 0xac, 2 };
-		if (!rsn || rsn[1] < 20 || get_unaligned_le16(rsn + 2) != 1 ||
-		    memcmp(rsn + 4, ccmp, 4) || get_unaligned_le16(rsn + 8) != 1 ||
-		    memcmp(rsn + 10, ccmp, 4) || get_unaligned_le16(rsn + 14) != 1 ||
-		    memcmp(rsn + 16, psk, 4) || (get_unaligned_le16(rsn + 20) & 0xc0))
-			return -EOPNOTSUPP;
-	} else if (rsn) {
+	if (secure && !rsn)
+		return -EOPNOTSUPP;
+	if (!secure && rsn)
 		return -EINVAL;
+	/* Reject what the station alone makes invalid before touching the BSS. */
+	if (secure) {
+		struct mt6797_wifi_ais_rsn own;
+
+		if (sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK &&
+		    sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK_SHA256)
+			return -EOPNOTSUPP;
+		if (mt6797_wifi_ais_rsn_parse(rsn, &own))
+			return -EOPNOTSUPP;
 	}
+	policy.sta_ie = rsn;
+	policy.akm = sme->crypto.akm_suites[0];
+	policy.mfp_required = sme->mfp == NL80211_MFP_REQUIRED;
 	connection = kzalloc(sizeof(*connection), GFP_KERNEL);
 	if (!connection)
 		return -ENOMEM;
@@ -1055,9 +1064,17 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	peer_ies = rcu_dereference(connection->bss->ies);
 	ret = peer_ies ? mt6797_wifi_ais_join_rates_parse(peer_ies->data, peer_ies->len,
 		connection->bss->capability, params) : -ENOENT;
+	if (!ret && secure) {
+		policy.ap_ie = cfg80211_find_ie(WLAN_EID_RSN, peer_ies->data, peer_ies->len);
+		ret = mt6797_wifi_ais_rsn_policy(&policy, &negotiated);
+	}
 	rcu_read_unlock();
 	if (ret)
 		goto put_bss;
+	/* Firmware keeps WPA2-PSK/CCMP auth mode: GEN3 has no PMF mode and the
+	 * data path is CCMP either way; PMF is decided and enforced in the host.
+	 */
+	connection->pmf_negotiated = negotiated.pmf;
 	connection->ies[0] = WLAN_EID_SSID;
 	connection->ies[1] = sme->ssid_len;
 	memcpy(connection->ies + 2, sme->ssid, sme->ssid_len);
@@ -2344,7 +2361,8 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 	const struct mt6797_wifi_capability *capability)
 {
 	static const int rates[] = { 10, 20, 55, 110, 60, 90, 120, 180, 240, 360, 480, 540 };
-	static const u32 ciphers[] = { WLAN_CIPHER_SUITE_CCMP };
+	/* BIP-CMAC-128 is the PMF IGTK; firmware keys it as GEN3 algorithm 6. */
+	static const u32 ciphers[] = { WLAN_CIPHER_SUITE_CCMP, WLAN_CIPHER_SUITE_AES_CMAC };
 	static const u8 channels_5ghz[] = {
 		36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112,
 		116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165,

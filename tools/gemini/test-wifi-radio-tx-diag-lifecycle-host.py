@@ -28,6 +28,7 @@ program += r'''
 #define NL80211_IFTYPE_STATION 2
 #define CFG80211_SIGNAL_TYPE_MBM 1
 #define WLAN_CIPHER_SUITE_CCMP 0x000fac04
+#define WLAN_CIPHER_SUITE_AES_CMAC 0x000fac06
 #define IFNAMSIZ 16
 #define ERR_PTR(error) ((void *)(intptr_t)(error))
 #define PTR_ERR(pointer) ((int)(intptr_t)(pointer))
@@ -134,6 +135,9 @@ int main(void) {
  registry_setup(0); test_time=8;
  assert(mt6797_wifi_radio_register(&parent,&irq,NULL,&capability)==&r);
  assert(r.tx_diag.lifetime_start_ns==8000000 && sysfs_published); check_snapshot();
+ /* PMF advertisement: BIP-CMAC-128 next to CCMP. */
+ assert(registered_wiphy.n_cipher_suites==2 && registered_wiphy.cipher_suites[0]==WLAN_CIPHER_SUITE_CCMP);
+ assert(registered_wiphy.cipher_suites[1]==WLAN_CIPHER_SUITE_AES_CMAC);
  r.connection=&c; c.connected=c.authorized=true;
  submit(ETH_P_IP); submit(ETH_P_IP); check_snapshot();
  mt6797_radio_stop(&dev);

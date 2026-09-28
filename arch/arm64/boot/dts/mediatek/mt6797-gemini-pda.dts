@@ -7,6 +7,7 @@
 
 #include "mt6797.dtsi"
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/gpio-keys.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/leds/common.h>
@@ -1289,6 +1290,12 @@
 			linux,code = <SW_LID>;
 			gpios = <&pio 66 GPIO_ACTIVE_LOW>;
 			debounce-interval = <64>;
+			/*
+			 * Opening the lid wakes the system (vendor hall.c keeps
+			 * EINT5 armed as a wake source); closing it does not.
+			 */
+			wakeup-source;
+			wakeup-event-action = <EV_ACT_DEASSERTED>;
 		};
 	};
 };

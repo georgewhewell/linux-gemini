@@ -666,7 +666,7 @@
 
 	hall_pins: hall-pins {
 		pins-hall {
-			pinmux = <MT6797_GPIO66__FUNC_GPIO66>;
+			pinmux = <MT6797_GPIO66__FUNC_EINT5>;
 		};
 	};
 };

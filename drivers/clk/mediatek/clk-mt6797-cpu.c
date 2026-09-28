@@ -47,9 +47,32 @@ struct mt6797_cpuclk;
 #define MT6797_CPUCLK_CSPM_RETRIES 200
 
 #define MT6797_CPUCLK_SMC_MCUSYS_WRITE 0x82000201UL
-#define MT6797_CPUCLK_PLL_SETTLE_US 2
+
+#define MT6797_ARMPLL_CHG BIT(31)
+
+/* MCU frequency-hopping controller, vendor mach/mt_fhreg.h. */
+#define MT6797_FHCTL_HP_EN 0xf00
+#define MT6797_FHCTL_CLK_CON 0xf04
+#define MT6797_FHCTL_RST_CON 0xf08
+#define MT6797_FHCTL_SLOPE0 0xf0c
+#define MT6797_FHCTL_CFG(ch) (0xf34 + 0x14 * (ch))
+#define MT6797_FHCTL_UPDNLMT(ch) (0xf38 + 0x14 * (ch))
+#define MT6797_FHCTL_DDS(ch) (0xf3c + 0x14 * (ch))
+#define MT6797_FHCTL_DVFS(ch) (0xf40 + 0x14 * (ch))
+#define MT6797_FHCTL_MON(ch) (0xf44 + 0x14 * (ch))
+#define MT6797_FHCTL_CFG_FHCTL_EN BIT(0)
+#define MT6797_FHCTL_CFG_SFSTR_EN BIT(2)
+#define MT6797_FHCTL_DDS_EN BIT(31)
+#define MT6797_FHCTL_DDS_MASK GENMASK(20, 0)
+#define MT6797_FHCTL_SLOPE0_VALUE 0x6003c97
+#define MT6797_FHCTL_ACCESS_NS 200
+#define MT6797_FHCTL_READ_TRIES 3
+#define MT6797_FHCTL_WRITE_TRIES 4
+#define MT6797_FHCTL_POLL_US 10
+#define MT6797_FHCTL_POLLS 100
 
 struct mt6797_cpuclk_observer {
+	struct device *dev;
 	void __iomem *mcumixed;
 	void __iomem *mcucfg;
 	struct mt6797_dvfsp_handoff *handoff;
@@ -58,6 +81,8 @@ struct mt6797_cpuclk_observer {
 	struct mutex lock;
 	bool faulted;
 	bool probe_snapshot_valid;
+	/* FHCTL channels initialized by this driver. */
+	u32 fhctl_ready;
 	struct mt6797_cpuclk_snapshot probe_snapshot;
 };
 
@@ -290,12 +315,12 @@ mt6797_cpuclk_observer_snapshot(void *context,
 }
 
 static int
-mt6797_cpuclk_observer_apply(void *context,
-			     const struct mt6797_cpuclk_rate_plan *plan);
+mt6797_cpuclk_observer_hop(void *context,
+			   const struct mt6797_cpuclk_hop_plan *plan);
 
 static const struct mt6797_cpuclk_backend_ops mt6797_cpuclk_observer_ops = {
 	.snapshot = mt6797_cpuclk_observer_snapshot,
-	.apply = mt6797_cpuclk_observer_apply,
+	.hop = mt6797_cpuclk_observer_hop,
 };
 
 static u32 mt6797_cpuclk_pll_offset(enum mt6797_cpuclk_domain domain)
@@ -310,24 +335,178 @@ static u32 mt6797_cpuclk_pll_offset(enum mt6797_cpuclk_domain domain)
 	}
 }
 
-static int
-mt6797_cpuclk_write_pll(struct mt6797_cpuclk_observer *observer,
-			enum mt6797_cpuclk_domain domain, u32 value)
+/*
+ * MCU frequency-hopping controller registers.  They share the MCUMIXED window
+ * and its CSPM hardware semaphore with the ARMPLLs.  Vendor channels 0 and 1
+ * (MCU_FH_PLL0/1) retune the LL and L ARMPLLs.
+ */
+static u32 mt6797_cpuclk_fhctl_channel(enum mt6797_cpuclk_domain domain)
 {
-	u32 offset = mt6797_cpuclk_pll_offset(domain);
-	u32 verify;
+	return domain == MT6797_CPUCLK_MP0 ? 0 : 1;
+}
 
-	if (!offset)
-		return -EOPNOTSUPP;
+/* The vendor driver reads MCU FHCTL registers twice after a settle delay. */
+static u32 mt6797_cpuclk_fhctl_read(struct mt6797_cpuclk_observer *observer,
+				    u32 offset)
+{
+	void __iomem *reg = observer->mcumixed + offset;
+	unsigned int i;
+	u32 value = 0;
 
-	writel(value, observer->mcumixed + offset);
-	readl(observer->mcumixed + offset);
-	ndelay(200);
-	udelay(MT6797_CPUCLK_PLL_SETTLE_US);
-	verify = readl(observer->mcumixed + offset);
+	ndelay(MT6797_FHCTL_ACCESS_NS);
+	for (i = 0; i < MT6797_FHCTL_READ_TRIES && !value; i++) {
+		readl(reg);
+		value = readl(reg);
+	}
 
-	return ((verify ^ value) & (GENMASK(26, 24) | GENMASK(20, 0))) ?
-		-EIO : 0;
+	return value;
+}
+
+static int mt6797_cpuclk_fhctl_write(struct mt6797_cpuclk_observer *observer,
+				     u32 offset, u32 value, u32 check_mask)
+{
+	void __iomem *reg = observer->mcumixed + offset;
+	unsigned int i;
+
+	for (i = 0; i < MT6797_FHCTL_WRITE_TRIES; i++) {
+		writel(value, reg);
+		ndelay(MT6797_FHCTL_ACCESS_NS);
+		if (!((mt6797_cpuclk_fhctl_read(observer, offset) ^ value) &
+		      check_mask))
+			return 0;
+	}
+
+	return -EIO;
+}
+
+static int mt6797_cpuclk_fhctl_update(struct mt6797_cpuclk_observer *observer,
+				      u32 offset, u32 mask, u32 value)
+{
+	u32 current_value = mt6797_cpuclk_fhctl_read(observer, offset);
+
+	return mt6797_cpuclk_fhctl_write(observer, offset,
+					 (current_value & ~mask) | value, mask);
+}
+
+/* One-time channel setup, as done by the vendor hopping driver at init. */
+static int mt6797_cpuclk_fhctl_init(struct mt6797_cpuclk_observer *observer,
+				    u32 channel)
+{
+	u32 bit = BIT(channel);
+	int ret;
+
+	if (observer->fhctl_ready & bit)
+		return 0;
+
+	/* A channel which already owns its PLL is not ours to reset. */
+	if (mt6797_cpuclk_fhctl_read(observer, MT6797_FHCTL_HP_EN) & bit)
+		return -EBUSY;
+
+	ret = mt6797_cpuclk_fhctl_update(observer, MT6797_FHCTL_CLK_CON, bit,
+					 bit);
+	if (!ret)
+		ret = mt6797_cpuclk_fhctl_update(observer, MT6797_FHCTL_RST_CON,
+						 bit, 0);
+	if (!ret)
+		ret = mt6797_cpuclk_fhctl_update(observer, MT6797_FHCTL_RST_CON,
+						 bit, bit);
+	if (ret)
+		return ret;
+
+	writel(0, observer->mcumixed + MT6797_FHCTL_CFG(channel));
+	writel(0, observer->mcumixed + MT6797_FHCTL_UPDNLMT(channel));
+	writel(0, observer->mcumixed + MT6797_FHCTL_DDS(channel));
+	ndelay(MT6797_FHCTL_ACCESS_NS);
+
+	observer->fhctl_ready |= bit;
+	return 0;
+}
+
+/*
+ * Slew one ARMPLL to a new DDS with the frequency-hopping controller, then
+ * hand the reached DDS back to the PLL register.  This follows the vendor
+ * mt_fh_hal_dfs_armpll() and mt_fh_hal_hopping_mcu() sequence.  Whenever the
+ * controller took the PLL over, the hand-back copies the DDS it drives into
+ * the PLL register first, so returning to register control never changes
+ * the running rate, even when the slew stopped short of its target.
+ */
+static int mt6797_cpuclk_fhctl_hop(struct mt6797_cpuclk_observer *observer,
+				   enum mt6797_cpuclk_domain domain, u32 dds)
+{
+	u32 channel = mt6797_cpuclk_fhctl_channel(domain);
+	u32 con1_offset = mt6797_cpuclk_pll_offset(domain);
+	u32 bit = BIT(channel);
+	u32 con1, mon, initial;
+	unsigned long flags;
+	unsigned int i;
+	int ret, hand_back = 0;
+
+	local_irq_save(flags);
+	/* Disable SSC, DVFS and hopping, then load the running DDS. */
+	ret = mt6797_cpuclk_fhctl_write(observer, MT6797_FHCTL_CFG(channel), 0,
+					~0U);
+	con1 = mt6797_cpuclk_fhctl_read(observer, con1_offset);
+	initial = con1 & MT6797_FHCTL_DDS_MASK;
+	if (!ret)
+		ret = mt6797_cpuclk_fhctl_write(observer,
+			MT6797_FHCTL_DDS(channel),
+			initial | MT6797_FHCTL_DDS_EN, MT6797_FHCTL_DDS_MASK);
+	if (!ret)
+		ret = mt6797_cpuclk_fhctl_write(observer,
+			MT6797_FHCTL_CFG(channel),
+			MT6797_FHCTL_CFG_SFSTR_EN | MT6797_FHCTL_CFG_FHCTL_EN,
+			~0U);
+	/* The MCU controller has a single slope setting. */
+	if (!ret)
+		ret = mt6797_cpuclk_fhctl_write(observer, MT6797_FHCTL_SLOPE0,
+						MT6797_FHCTL_SLOPE0_VALUE,
+						~0U);
+	/* Hand the PLL to the controller and request the new DDS. */
+	if (!ret)
+		ret = mt6797_cpuclk_fhctl_update(observer, MT6797_FHCTL_HP_EN,
+						 bit, bit);
+	/* The vendor sequence completes the hand-over before the request. */
+	mb();
+	if (!ret)
+		ret = mt6797_cpuclk_fhctl_write(observer,
+			MT6797_FHCTL_DVFS(channel), dds | MT6797_FHCTL_DDS_EN,
+			MT6797_FHCTL_DDS_MASK);
+	local_irq_restore(flags);
+
+	for (i = 0; !ret && i < MT6797_FHCTL_POLLS; i++) {
+		mon = mt6797_cpuclk_fhctl_read(observer,
+			MT6797_FHCTL_MON(channel)) & MT6797_FHCTL_DDS_MASK;
+		if (mon == dds)
+			break;
+		udelay(MT6797_FHCTL_POLL_US);
+	}
+
+	local_irq_save(flags);
+	mon = initial;
+	if (mt6797_cpuclk_fhctl_read(observer, MT6797_FHCTL_HP_EN) & bit) {
+		mon = mt6797_cpuclk_fhctl_read(observer,
+			MT6797_FHCTL_MON(channel)) & MT6797_FHCTL_DDS_MASK;
+		con1 = mt6797_cpuclk_fhctl_read(observer, con1_offset);
+		hand_back = mt6797_cpuclk_fhctl_write(observer, con1_offset,
+			(con1 & ~MT6797_FHCTL_DDS_MASK) | mon |
+			MT6797_ARMPLL_CHG, MT6797_FHCTL_DDS_MASK);
+		if (mt6797_cpuclk_fhctl_update(observer, MT6797_FHCTL_HP_EN,
+					       bit, 0))
+			hand_back = -EIO;
+		/* Complete the hand-back before the channel is disabled. */
+		mb();
+	}
+	if (mt6797_cpuclk_fhctl_write(observer, MT6797_FHCTL_CFG(channel), 0,
+				      ~0U))
+		hand_back = -EIO;
+	local_irq_restore(flags);
+
+	if (hand_back)
+		return hand_back;
+	if (ret)
+		return ret;
+
+	return mon == dds ? 0 : -ETIMEDOUT;
 }
 
 static int
@@ -349,99 +528,93 @@ mt6797_cpuclk_write_dcm(struct mt6797_cpuclk_observer *observer,
 	return 0;
 }
 
-static int
-mt6797_cpuclk_rollback_locked(struct mt6797_cpuclk_observer *observer,
-			      const struct mt6797_cpuclk_rate_plan *plan)
-{
-	u32 con1;
-
-	con1 = plan->rollback_snapshot.armpll_con1[plan->domain] | BIT(31);
-	return mt6797_cpuclk_write_pll(observer, plan->domain, con1);
-}
-
-struct mt6797_cpuclk_apply_transaction {
+struct mt6797_cpuclk_hop_transaction {
 	struct mt6797_cpuclk_observer *observer;
-	const struct mt6797_cpuclk_rate_plan *plan;
+	const struct mt6797_cpuclk_hop_plan *plan;
 };
 
-static int mt6797_cpuclk_apply_transaction(void __iomem *cspm, void *context)
+static int mt6797_cpuclk_hop_transaction(void __iomem *cspm, void *context)
 {
-	struct mt6797_cpuclk_apply_transaction *transaction = context;
+	struct mt6797_cpuclk_hop_transaction *transaction = context;
 	struct mt6797_cpuclk_observer *observer = transaction->observer;
-	const struct mt6797_cpuclk_rate_plan *plan = transaction->plan;
+	const struct mt6797_cpuclk_hop_plan *plan = transaction->plan;
 	struct mt6797_cpuclk_snapshot snapshot;
 	struct mt6797_cpuclk_state state;
-	unsigned long actual_rate;
-	u32 target_con1;
-	bool leased = false;
 	int release_ret;
 	int ret;
 
 	ret = mt6797_cpuclk_lease_acquire(observer, cspm);
 	if (ret)
 		return ret;
-	leased = true;
 
 	ret = mt6797_cpuclk_read_stable(observer, &snapshot);
 	if (ret)
 		goto out_release;
-	if (!mt6797_cpuclk_snapshots_equal(&snapshot,
-					   &plan->rollback_snapshot)) {
+	if (!mt6797_cpuclk_snapshots_equal(&snapshot, &plan->snapshot)) {
 		ret = -EAGAIN;
 		goto out_release;
 	}
 
-	ret = mt6797_cpuclk_plan_pll_rate(plan->domain,
-		plan->target.armpll_rate, plan->clk26m_rate,
-		snapshot.armpll_con1[plan->domain], &target_con1, &actual_rate);
+	ret = mt6797_cpuclk_fhctl_init(observer,
+				       mt6797_cpuclk_fhctl_channel(plan->domain));
 	if (ret)
 		goto out_release;
 
-	/* Plan validation guarantees that the CPU path is on MAINPLL. */
-	ret = mt6797_cpuclk_write_pll(observer, plan->domain, target_con1);
+	/*
+	 * From the first write on, a failure leaves a consistent but possibly
+	 * unplanned rate.  Every rate the hop passes through lies between the
+	 * old and new rates, and the DCM order keeps its divider at or below
+	 * the one required by the lower of the two, so fence further changes
+	 * instead of attempting a speculative repair.
+	 */
+	if (plan->dcm_before_hop) {
+		ret = mt6797_cpuclk_write_dcm(observer, &plan->dcm);
+		if (ret)
+			goto fault;
+	}
+
+	ret = mt6797_cpuclk_fhctl_hop(observer, plan->domain, plan->dds);
 	if (ret)
-		goto rollback;
+		goto fault;
+
+	if (!plan->dcm_before_hop) {
+		ret = mt6797_cpuclk_write_dcm(observer, &plan->dcm);
+		if (ret)
+			goto fault;
+	}
 
 	ret = mt6797_cpuclk_read_stable(observer, &snapshot);
-	if (ret)
-		goto rollback;
-	ret = mt6797_cpuclk_decode_state(plan->domain, &snapshot,
-					 plan->clk26m_rate, &state);
-	if (ret)
-		goto rollback;
-	if (state.armpll_rate != actual_rate ||
-	    ((snapshot.armpll_con1[plan->domain] ^ target_con1) &
-	     (GENMASK(26, 24) | GENMASK(20, 0))) ||
-	    snapshot.sync_dcm != plan->rollback_snapshot.sync_dcm) {
+	if (!ret)
+		ret = mt6797_cpuclk_decode_state(plan->domain, &snapshot,
+						 plan->clk26m_rate, &state);
+	if (!ret && (state.armpll_rate != plan->rate ||
+		     snapshot.muxsel != plan->snapshot.muxsel ||
+		     snapshot.clkdiv != plan->snapshot.clkdiv))
 		ret = -EIO;
-		goto rollback;
-	}
+	if (!ret)
+		goto out_release;
 
-	goto out_release;
-
-rollback:
-	if (mt6797_cpuclk_rollback_locked(observer, plan)) {
-		observer->faulted = true;
-		ret = -EUCLEAN;
-	}
+fault:
+	observer->faulted = true;
+	dev_err(observer->dev,
+		"domain %u hop %llu -> %lu Hz failed: %d; fencing CPU clock changes\n",
+		plan->domain, plan->initial_rate, plan->rate, ret);
 
 out_release:
-	if (leased) {
-		release_ret = mt6797_cpuclk_lease_release(observer, cspm);
-		if (release_ret) {
-			observer->faulted = true;
-			ret = -EUCLEAN;
-		}
+	release_ret = mt6797_cpuclk_lease_release(observer, cspm);
+	if (release_ret) {
+		observer->faulted = true;
+		ret = -EUCLEAN;
 	}
 	return ret;
 }
 
 static int
-mt6797_cpuclk_observer_apply(void *context,
-			     const struct mt6797_cpuclk_rate_plan *plan)
+mt6797_cpuclk_observer_hop(void *context,
+			   const struct mt6797_cpuclk_hop_plan *plan)
 {
 	struct mt6797_cpuclk_observer *observer = context;
-	struct mt6797_cpuclk_apply_transaction transaction = {
+	struct mt6797_cpuclk_hop_transaction transaction = {
 		.observer = observer,
 		.plan = plan,
 	};
@@ -455,7 +628,7 @@ mt6797_cpuclk_observer_apply(void *context,
 		ret = -EUCLEAN;
 	else
 		ret = mt6797_dvfsp_cspm_transaction(observer->handoff,
-						    mt6797_cpuclk_apply_transaction,
+						    mt6797_cpuclk_hop_transaction,
 						    &transaction);
 	mutex_unlock(&observer->lock);
 
@@ -541,31 +714,27 @@ static int mt6797_cpuclk_pll_set_rate(struct clk_hw *hw, unsigned long rate,
 {
 	struct mt6797_cpuclk_pll_hw *pll =
 		container_of(hw, struct mt6797_cpuclk_pll_hw, hw);
+	struct mt6797_cpuclk_backend *backend = &pll->provider->backend;
 	struct mt6797_cpuclk_snapshot snapshot;
-	struct mt6797_cpuclk_rate_plan plan;
-	struct mt6797_cpuclk_state target;
+	struct mt6797_cpuclk_hop_plan plan;
 	int ret;
 
 	if (pll->domain != MT6797_CPUCLK_MP0 &&
 	    pll->domain != MT6797_CPUCLK_MP1)
+		return -EOPNOTSUPP;
+	if (!backend->ops || !backend->ops->hop)
 		return -EOPNOTSUPP;
 
 	ret = mt6797_cpuclk_snapshot(pll->provider, &snapshot);
 	if (ret)
 		return ret;
 
-	ret = mt6797_cpuclk_decode_state(pll->domain, &snapshot, parent_rate,
-					 &target);
+	ret = mt6797_cpuclk_plan_hop(pll->domain, &snapshot, parent_rate, rate,
+				     &plan);
 	if (ret)
 		return ret;
 
-	target.armpll_rate = rate;
-	ret = mt6797_cpuclk_build_rate_plan(pll->domain, &snapshot, parent_rate,
-					    &target, &plan);
-	if (ret)
-		return ret;
-
-	return mt6797_cpuclk_apply_rate_plan(&pll->provider->backend, &plan);
+	return backend->ops->hop(backend->context, &plan);
 }
 
 static const struct clk_ops mt6797_cpuclk_pll_ops = {
@@ -889,6 +1058,10 @@ static int mt6797_cpuclk_register_paths(struct mt6797_cpuclk *provider)
 		path->parents[MT6797_CPUCLK_UNIVPLL].fw_name = "univpll";
 		path->hw.init = &init;
 		init.name = mt6797_cpuclk_path_names[i];
+		/* LL and L rate requests retune their ARMPLL in place. */
+		init.flags = CLK_GET_RATE_NOCACHE;
+		if (i == MT6797_CPUCLK_MP0 || i == MT6797_CPUCLK_MP1)
+			init.flags |= CLK_SET_RATE_PARENT;
 		init.parent_data = path->parents;
 
 		ret = devm_clk_hw_register(provider->dev, &path->hw);
@@ -932,6 +1105,7 @@ static int mt6797_cpuclk_backend_init(struct platform_device *pdev,
 	struct mt6797_cpuclk_observer *observer = &provider->observer;
 	int ret;
 
+	observer->dev = &pdev->dev;
 	observer->handoff = mt6797_dvfsp_handoff_get(&pdev->dev);
 	if (IS_ERR(observer->handoff))
 		return dev_err_probe(&pdev->dev, PTR_ERR(observer->handoff),

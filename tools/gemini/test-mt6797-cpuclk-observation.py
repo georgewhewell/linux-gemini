@@ -24,7 +24,7 @@ callbacks = '\n'.join(extract('static ' + signature) for signature in (
     'u8 mt6797_cpuclk_path_get_parent(',
     'unsigned long mt6797_cpuclk_path_recalc_rate(',
 ))
-types = header[header.index('enum mt6797_cpuclk_domain'):header.index('struct mt6797_cpuclk_rate_plan')]
+types = header[header.index('enum mt6797_cpuclk_domain'):header.index('struct mt6797_cpuclk_dcm_plan')]
 c = r'''
 #include <assert.h>
 #include <errno.h>

@@ -11,6 +11,9 @@
 #include "ais_auth.h"
 
 #define MT6797_WIFI_AIS_AUTH_ALGORITHM_OPEN	0U
+#define MT6797_WIFI_AIS_AUTH_ALGORITHM_SAE	3U
+#define MT6797_WIFI_AIS_SAE_COMMIT		1U
+#define MT6797_WIFI_AIS_SAE_CONFIRM		2U
 #define MT6797_WIFI_AIS_AUTH_TRANSACTION_REQUEST	1U
 #define MT6797_WIFI_AIS_AUTH_TRANSACTION_RESPONSE	2U
 #define MT6797_WIFI_AIS_AUTH_HEADER_LENGTH	24U
@@ -49,10 +52,10 @@ static int mt6797_wifi_ais_auth_ie_tail_validate(const u8 *frame,
 	return 0;
 }
 
-int mt6797_wifi_ais_open_auth_request_build(
+int mt6797_wifi_ais_auth_pending_init(
 	const struct mt6797_wifi_ais_bss_handle *bss,
-	const struct mt6797_wifi_ais_sta_handle *sta, u8 *frame,
-	size_t capacity, struct mt6797_wifi_ais_auth_pending *pending)
+	const struct mt6797_wifi_ais_sta_handle *sta,
+	struct mt6797_wifi_ais_auth_pending *pending)
 {
 	struct mt6797_wifi_ais_auth_pending candidate = {};
 	struct mt6797_wifi_ais_sta_pending sta_pending;
@@ -60,11 +63,35 @@ int mt6797_wifi_ais_open_auth_request_build(
 
 	if (pending)
 		memset(pending, 0, sizeof(*pending));
-	if (!frame || !pending)
+	if (!pending)
 		return -EINVAL;
 	ret = mt6797_wifi_ais_sta_pending_init(bss, sta, 0, &sta_pending);
 	if (ret || ether_addr_equal(bss->own_addr, sta->peer_addr))
 		return -EINVAL;
+	candidate.generation = sta_pending.generation;
+	candidate.bss_cookie = sta_pending.bss_cookie;
+	candidate.sta_cookie = sta_pending.sta_cookie;
+	memcpy(candidate.own_addr, bss->own_addr, ETH_ALEN);
+	memcpy(candidate.peer_addr, sta->peer_addr, ETH_ALEN);
+	*pending = candidate;
+	return 0;
+}
+
+int mt6797_wifi_ais_open_auth_request_build(
+	const struct mt6797_wifi_ais_bss_handle *bss,
+	const struct mt6797_wifi_ais_sta_handle *sta, u8 *frame,
+	size_t capacity, struct mt6797_wifi_ais_auth_pending *pending)
+{
+	struct mt6797_wifi_ais_auth_pending candidate;
+	int ret;
+
+	if (pending)
+		memset(pending, 0, sizeof(*pending));
+	if (!frame || !pending)
+		return -EINVAL;
+	ret = mt6797_wifi_ais_auth_pending_init(bss, sta, &candidate);
+	if (ret)
+		return ret;
 	if (capacity < MT6797_WIFI_AIS_AUTH_FRAME_LENGTH)
 		return -EMSGSIZE;
 
@@ -80,13 +107,75 @@ int mt6797_wifi_ais_open_auth_request_build(
 			   frame + MT6797_WIFI_AIS_AUTH_ALGORITHM_OFFSET);
 	put_unaligned_le16(MT6797_WIFI_AIS_AUTH_TRANSACTION_REQUEST,
 			   frame + MT6797_WIFI_AIS_AUTH_TRANSACTION_OFFSET);
-
-	candidate.generation = sta_pending.generation;
-	candidate.bss_cookie = sta_pending.bss_cookie;
-	candidate.sta_cookie = sta_pending.sta_cookie;
-	memcpy(candidate.own_addr, bss->own_addr, ETH_ALEN);
-	memcpy(candidate.peer_addr, sta->peer_addr, ETH_ALEN);
 	*pending = candidate;
+	return 0;
+}
+
+static bool mt6797_wifi_ais_sae_transaction(const u8 *frame)
+{
+	u16 transaction = get_unaligned_le16(frame +
+		MT6797_WIFI_AIS_AUTH_TRANSACTION_OFFSET);
+
+	return get_unaligned_le16(frame + MT6797_WIFI_AIS_AUTH_ALGORITHM_OFFSET) ==
+		MT6797_WIFI_AIS_AUTH_ALGORITHM_SAE &&
+		(transaction == MT6797_WIFI_AIS_SAE_COMMIT ||
+		 transaction == MT6797_WIFI_AIS_SAE_CONFIRM);
+}
+
+/*
+ * Only the SAE algorithm is bridged. Its body is opaque here: wpa_supplicant
+ * computes and verifies every commit/confirm field. The driver pins the
+ * frame to the AIS peer so user space cannot use this path as raw injection.
+ */
+int mt6797_wifi_ais_sae_auth_tx_check(
+	const struct mt6797_wifi_ais_auth_pending *pending, const u8 *frame,
+	size_t length)
+{
+	if (!mt6797_wifi_ais_auth_pending_valid(pending) || !frame)
+		return -EINVAL;
+	if (length < MT6797_WIFI_AIS_AUTH_FRAME_LENGTH ||
+	    length > MT6797_WIFI_AIS_SAE_FRAME_MAX ||
+	    get_unaligned_le16(frame) != IEEE80211_STYPE_AUTH ||
+	    !ether_addr_equal(frame + MT6797_WIFI_AIS_AUTH_DEST_OFFSET,
+			      pending->peer_addr) ||
+	    !ether_addr_equal(frame + MT6797_WIFI_AIS_AUTH_SOURCE_OFFSET,
+			      pending->own_addr) ||
+	    !ether_addr_equal(frame + MT6797_WIFI_AIS_AUTH_BSSID_OFFSET,
+			      pending->peer_addr) ||
+	    !mt6797_wifi_ais_sae_transaction(frame))
+		return -EINVAL;
+	return 0;
+}
+
+int mt6797_wifi_ais_sae_auth_rx_match(
+	const struct mt6797_wifi_ais_auth_pending *pending, const u8 *frame,
+	size_t length, enum mt6797_wifi_ais_event_disposition *disposition)
+{
+	u16 frame_control;
+
+	if (!mt6797_wifi_ais_auth_pending_valid(pending) || !frame ||
+	    !disposition)
+		return -EINVAL;
+	*disposition = MT6797_WIFI_AIS_EVENT_IGNORED;
+	if (length < MT6797_WIFI_AIS_AUTH_FRAME_LENGTH ||
+	    length > MT6797_WIFI_AIS_SAE_FRAME_MAX)
+		return 0;
+	frame_control = get_unaligned_le16(frame);
+	/* Unauthenticated noise is ignored rather than failing the exchange. */
+	if ((frame_control & (IEEE80211_FCTL_VERS | IEEE80211_FCTL_FTYPE |
+			      IEEE80211_FCTL_STYPE)) != IEEE80211_STYPE_AUTH ||
+	    frame_control & (IEEE80211_FCTL_TODS | IEEE80211_FCTL_FROMDS |
+			     IEEE80211_FCTL_MOREFRAGS | IEEE80211_FCTL_PROTECTED |
+			     IEEE80211_FCTL_ORDER) ||
+	    !ether_addr_equal(frame + MT6797_WIFI_AIS_AUTH_DEST_OFFSET,
+			      pending->own_addr) ||
+	    !ether_addr_equal(frame + MT6797_WIFI_AIS_AUTH_SOURCE_OFFSET,
+			      pending->peer_addr) ||
+	    !ether_addr_equal(frame + MT6797_WIFI_AIS_AUTH_BSSID_OFFSET,
+			      pending->peer_addr) ||
+	    !mt6797_wifi_ais_sae_transaction(frame))
+		return 0;
+	*disposition = MT6797_WIFI_AIS_EVENT_COMPLETE;
 	return 0;
 }
 

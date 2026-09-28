@@ -71,6 +71,35 @@ struct mt6797_wifi_ais_hif_auth {
 	bool response_received;
 };
 
+#define MT6797_WIFI_AIS_EXT_AUTH_RX_SLOTS	4U
+
+struct mt6797_wifi_ais_hif_ext_auth_request {
+	const u8 *frame;
+	size_t length;
+	unsigned int timeout_ms;
+	u16 sequence_number;
+	u16 fixed_rate;
+};
+
+/*
+ * SAE is computed by user space (NL80211_CMD_EXTERNAL_AUTH). This bridge only
+ * transmits its authentication frames to the AIS peer and queues the peer's
+ * SAE frames. The auth lock protects every field against IRQ delivery.
+ */
+struct mt6797_wifi_ais_hif_ext_auth {
+	u8 rx[MT6797_WIFI_AIS_EXT_AUTH_RX_SLOTS][MT6797_WIFI_AIS_SAE_FRAME_MAX];
+	u16 rx_length[MT6797_WIFI_AIS_EXT_AUTH_RX_SLOTS];
+	u8 packet[MT6797_WIFI_AIS_SAE_FRAME_MAX + MT6797_WIFI_TX_DESCRIPTOR_LENGTH + 4];
+	u8 rx_head;
+	u8 rx_count;
+	u32 rx_frames;
+	u32 rx_dropped;
+	u32 tx_frames;
+	u32 tx_acked;
+	bool active;
+	bool tx_outstanding;
+};
+
 struct mt6797_wifi_ais_hif_join_request {
 	struct mt6797_wifi_ais_assoc_params association;
 	struct mt6797_wifi_ais_join_params negotiated;
@@ -107,6 +136,7 @@ struct mt6797_wifi_ais_hif {
 	struct mt6797_wifi_ais_hif_backend backend;
 	struct mt6797_wifi_ais_runtime runtime;
 	struct mt6797_wifi_ais_hif_auth auth;
+	struct mt6797_wifi_ais_hif_ext_auth ext_auth;
 	struct mt6797_wifi_ais_hif_join join;
 	ktime_t channel_requested_at;
 	ktime_t channel_deadline;
@@ -136,7 +166,26 @@ int mt6797_wifi_ais_hif_open_auth(
 	struct mt6797_wifi_ais_hif *ais,
 	const struct mt6797_wifi_ais_hif_auth_request *request,
 	struct mt6797_wifi_ais_hif_auth_result *result);
-/* Blocking association+firmware activation after successful open auth.
+/*
+ * External (SAE) authentication after start() reached STA_STATE1, instead of
+ * open auth. begin() attaches the AIS sink; send() blocks for one TX-done;
+ * take() pops a queued peer SAE frame; wait() sleeps until RX, TX or kick().
+ * end() detaches, closes management TX ownership and, only for a successful
+ * user-space status after completed TX/RX, arms association.
+ */
+int mt6797_wifi_ais_hif_ext_auth_begin(struct mt6797_wifi_ais_hif *ais);
+int mt6797_wifi_ais_hif_ext_auth_send(
+	struct mt6797_wifi_ais_hif *ais,
+	const struct mt6797_wifi_ais_hif_ext_auth_request *request,
+	struct mt6797_wifi_ais_mgmt_tx_status *status);
+int mt6797_wifi_ais_hif_ext_auth_take(struct mt6797_wifi_ais_hif *ais,
+	u8 *frame, size_t capacity, size_t *length);
+void mt6797_wifi_ais_hif_ext_auth_wait(struct mt6797_wifi_ais_hif *ais,
+	ktime_t deadline);
+void mt6797_wifi_ais_hif_ext_auth_kick(struct mt6797_wifi_ais_hif *ais);
+int mt6797_wifi_ais_hif_ext_auth_end(struct mt6797_wifi_ais_hif *ais,
+	u16 status_code);
+/* Blocking association+firmware activation after successful authentication.
  * The owned response remains in ais->join until the AIS lifetime ends.
  * A successful result still needs key installation and the data path.
  */

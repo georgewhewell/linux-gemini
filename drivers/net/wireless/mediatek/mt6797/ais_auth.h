@@ -9,6 +9,8 @@
 #include "ais_resources.h"
 
 #define MT6797_WIFI_AIS_AUTH_FRAME_LENGTH	30U
+/* SAE commit/confirm incl. anti-clogging token and H2E rejected groups. */
+#define MT6797_WIFI_AIS_SAE_FRAME_MAX		1024U
 
 /*
  * The request builder publishes this immutable ownership snapshot before the
@@ -31,6 +33,19 @@ int mt6797_wifi_ais_open_auth_request_build(
 	const struct mt6797_wifi_ais_bss_handle *bss,
 	const struct mt6797_wifi_ais_sta_handle *sta, u8 *frame,
 	size_t capacity, struct mt6797_wifi_ais_auth_pending *pending);
+/* Snapshot the AIS owner for an authentication exchange without a frame. */
+int mt6797_wifi_ais_auth_pending_init(
+	const struct mt6797_wifi_ais_bss_handle *bss,
+	const struct mt6797_wifi_ais_sta_handle *sta,
+	struct mt6797_wifi_ais_auth_pending *pending);
+/* A user-space SAE commit/confirm from us to the pending peer. */
+int mt6797_wifi_ais_sae_auth_tx_check(
+	const struct mt6797_wifi_ais_auth_pending *pending, const u8 *frame,
+	size_t length);
+/* COMPLETE for an SAE authentication frame from the pending peer to us. */
+int mt6797_wifi_ais_sae_auth_rx_match(
+	const struct mt6797_wifi_ais_auth_pending *pending, const u8 *frame,
+	size_t length, enum mt6797_wifi_ais_event_disposition *disposition);
 int mt6797_wifi_ais_open_auth_response_match(
 	const struct mt6797_wifi_ais_auth_pending *pending, const u8 *frame,
 	size_t length, enum mt6797_wifi_ais_event_disposition *disposition,

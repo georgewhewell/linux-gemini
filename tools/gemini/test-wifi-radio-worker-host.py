@@ -106,7 +106,7 @@ static struct {
  u8 scan_command,ais_command;
  bool expired;
  int pm_error;
- unsigned pm_finishes,pm_aborts,igtk_cleanups;
+ unsigned pm_finishes,pm_aborts,igtk_cleanups,sae_runs;
 } test;
 static int stage(enum stage stage) {
  assert(stage>test.last); test.last=stage; test.stages++;
@@ -154,13 +154,23 @@ int mt6797_wifi_ais_hif_start(struct mt6797_wifi_ais_hif *ais,
 }
 int mt6797_wifi_ais_hif_open_auth(struct mt6797_wifi_ais_hif *ais,
  const struct mt6797_wifi_ais_hif_auth_request *request,struct mt6797_wifi_ais_hif_auth_result *result) {
- assert(ais->runtime.state==MT6797_WIFI_AIS_RUNTIME_STA_STATE1);
+ assert(ais->runtime.state==MT6797_WIFI_AIS_RUNTIME_STA_STATE1 && !test.radio->connection->sae);
  assert(request->response_timeout_ms==400 && request->sequence_number==1);
  memset(result,0,sizeof(*result)); return stage(AUTH);
+}
+/* The SAE bridge has its own tests; here it is one worker stage that used
+ * three authentication sequence numbers (commit, anti-clogging retry, confirm). */
+static int mt6797_radio_sae(struct mt6797_wifi_radio *radio) {
+ assert(radio->connection_lock.held && radio->connection->sae && !radio->irq->attached);
+ assert(radio->connection->ais.runtime.state==MT6797_WIFI_AIS_RUNTIME_STA_STATE1);
+ test.sae_runs++; radio->connection->auth_sequence=3; return stage(AUTH);
 }
 int mt6797_wifi_ais_hif_associate(struct mt6797_wifi_ais_hif *ais,
  const struct mt6797_wifi_ais_hif_join_request *request,struct mt6797_wifi_ais_join_params *out) {
  assert(ais->initialized && request->negotiated.rcpi==100);
+ /* Association continues the authentication 802.11 sequence space. */
+ assert(request->sequence_number==(test.radio->connection->sae?4:2));
+ assert(test.radio->connection->management_sequence==request->sequence_number);
  int ret=stage(ASSOC);
  if(!ret) { ais->runtime.state=MT6797_WIFI_AIS_RUNTIME_STA_STATE3;
   ais->join.response_length=33; memset(ais->join.response,0,33);
@@ -267,11 +277,18 @@ int main(void) {
  assert(test.disconnected==1 && test.detaches==1 && test.stops==1 && r.management_pid==9);
  assert(test.pm_aborts==1);
  check_freed();
+ for(enum stage fail=NONE;fail<=AUTH;fail+=AUTH) {
+  setup(&r,&irq,fail,NONE); r.connection->sae=true;
+  mt6797_radio_connection_work(&r.connection_work);
+  assert(test.sae_runs==1 && test.success==!fail && test.failure==!!fail);
+  if(fail) { assert(test.last==AUTH && test.stops==1); check_freed(); }
+  else { r.connection->cancel=true; mt6797_radio_connection_work(&r.connection_work); check_freed(); }
+ }
  setup(&r,&irq,NONE,NONE); test.pm_error=-ETIMEDOUT;
  mt6797_radio_connection_work(&r.connection_work);
  assert(test.success==1 && test.disconnected==1 && test.pm_finishes==1 && !test.pm_aborts);
  check_freed();
- puts("PASS: production connection worker stage failures/cancellations, grant expiry, callback ordering, command reservation, retained connection, cleanup and exactly-once BSS/free ownership");
+ puts("PASS: production connection worker stage failures/cancellations, SAE authentication stage and sequence continuity, grant expiry, callback ordering, command reservation, retained connection, cleanup and exactly-once BSS/free ownership");
 }
 '''
 if __name__ == '__main__':

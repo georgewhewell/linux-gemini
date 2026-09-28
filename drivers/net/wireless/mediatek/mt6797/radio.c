@@ -54,6 +54,20 @@ struct mt6797_radio_connection {
 	u8 igtk_default; /* 0 means none, otherwise on-wire ID 4 or 5. */
 	/* Both RSN elements set MFPC (ais_rsn.c); fixed for the association. */
 	bool pmf_negotiated;
+	/* SAE bridge mailbox for NL80211_CMD_EXTERNAL_AUTH; radio->lock guards it. */
+	u8 sae_frame[MT6797_WIFI_AIS_SAE_FRAME_MAX];
+	u8 sae_scratch[MT6797_WIFI_AIS_SAE_FRAME_MAX]; /* Worker-owned copy. */
+	size_t sae_frame_length;
+	u64 sae_cookie;
+	u8 sae_pmkid[MT6797_WIFI_AIS_RSN_PMKID_LENGTH];
+	u16 sae_status;
+	u16 auth_sequence; /* Last 802.11 sequence number used before association. */
+	bool sae;
+	bool sae_active;
+	bool sae_tx_pending;
+	bool sae_tx_ack;
+	bool sae_done;
+	bool sae_pmkid_set;
 	struct mt6797_wifi_ais_sta_pending key_pending;
 	struct mt6797_wifi_ais_wtbl_handle pairwise_wtbl;
 	struct completion key_completion;
@@ -121,6 +135,7 @@ struct mt6797_wifi_radio {
 	u8 scan_sequence;
 	u8 channel_token;
 	u8 management_pid;
+	u64 mgmt_cookie;
 	int scan_error;
 	bool armed;
 	bool abort_scan;
@@ -812,6 +827,139 @@ static int mt6797_radio_link_frame(void *context,
 
 static int mt6797_radio_igtk_cleanup(struct mt6797_wifi_radio *radio);
 
+/* Association needs its own response window inside the same channel grant. */
+#define MT6797_RADIO_SAE_ASSOC_RESERVE_MS	600
+#define MT6797_RADIO_SAE_MIN_BUDGET_MS		200
+#define MT6797_RADIO_SAE_TX_TIMEOUT_MS		500
+
+static int mt6797_radio_sae_request(struct mt6797_wifi_radio *radio,
+	enum nl80211_external_auth_action action)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	struct cfg80211_external_auth_params request = {
+		.action = action,
+		.key_mgmt_suite = WLAN_AKM_SUITE_SAE,
+	};
+
+	memcpy(request.bssid, connection->bss->bssid, ETH_ALEN);
+	request.ssid.ssid_len = connection->join.negotiated.ssid_length;
+	memcpy(request.ssid.ssid, connection->join.negotiated.ssid, request.ssid.ssid_len);
+	/* Fails without an NL80211_ATTR_SOCKET_OWNER connection owner. */
+	return cfg80211_external_auth_request(radio->netdev, &request, GFP_KERNEL);
+}
+
+/*
+ * Firmware-independent WPA3 authentication: wpa_supplicant computes SAE and
+ * exchanges frames through mgmt_tx/cfg80211_rx_mgmt while this worker owns the
+ * AIS join channel. The worker holds connection_lock; the mailbox callbacks
+ * take only radio->lock, so cfg80211 can deliver them while we wait.
+ */
+static int mt6797_radio_sae(struct mt6797_wifi_radio *radio)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+	struct mt6797_wifi_ais_hif *ais = &connection->ais;
+	struct mt6797_wifi_ais_hif_ext_auth_request tx = {};
+	struct mt6797_wifi_ais_mgmt_tx_status tx_status;
+	unsigned long flags;
+	size_t length;
+	ktime_t deadline;
+	u16 status = WLAN_STATUS_UNSPECIFIED_FAILURE;
+	u64 cookie;
+	bool pending, ack, done = false;
+	int ret, end;
+
+	deadline = ktime_sub_ms(ais->channel_deadline, MT6797_RADIO_SAE_ASSOC_RESERVE_MS);
+	if (ktime_ms_delta(deadline, ktime_get()) < MT6797_RADIO_SAE_MIN_BUDGET_MS) {
+		dev_warn(wiphy_dev(radio->wdev.wiphy),
+			"SAE skipped: join channel grant leaves %lld ms\n",
+			ktime_ms_delta(ais->channel_deadline, ktime_get()));
+		return -ETIMEDOUT;
+	}
+	ret = mt6797_wifi_ais_hif_ext_auth_begin(ais);
+	if (ret)
+		return ret;
+	spin_lock_irqsave(&radio->lock, flags);
+	connection->sae_active = !connection->cancel && !radio->stopping;
+	ret = connection->sae_active ? 0 : -ECANCELED;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	if (!ret && mt6797_radio_sae_request(radio, NL80211_EXTERNAL_AUTH_START))
+		ret = -ENOTCONN;
+	while (!ret) {
+		if (mt6797_radio_connection_cancelled(radio)) {
+			ret = -ECANCELED;
+			break;
+		}
+		while (!mt6797_wifi_ais_hif_ext_auth_take(ais, connection->sae_scratch,
+				sizeof(connection->sae_scratch), &length))
+			cfg80211_rx_mgmt(&radio->wdev, connection->bss->channel->center_freq, 0,
+				connection->sae_scratch, length, 0);
+		spin_lock_irqsave(&radio->lock, flags);
+		pending = connection->sae_tx_pending;
+		if (pending) {
+			length = connection->sae_frame_length;
+			memcpy(connection->sae_scratch, connection->sae_frame, length);
+			cookie = connection->sae_cookie;
+			ack = connection->sae_tx_ack;
+		}
+		done = connection->sae_done;
+		status = connection->sae_status;
+		spin_unlock_irqrestore(&radio->lock, flags);
+		if (pending) {
+			connection->auth_sequence = (connection->auth_sequence + 1) & GENMASK(11, 0);
+			tx.frame = connection->sae_scratch;
+			tx.length = length;
+			tx.sequence_number = connection->auth_sequence;
+			tx.fixed_rate = connection->join.negotiated.default_rate;
+			tx.timeout_ms = MT6797_RADIO_SAE_TX_TIMEOUT_MS;
+			ret = mt6797_wifi_ais_hif_ext_auth_send(ais, &tx, &tx_status);
+			spin_lock_irqsave(&radio->lock, flags);
+			connection->sae_tx_pending = false;
+			spin_unlock_irqrestore(&radio->lock, flags);
+			if (ack)
+				cfg80211_mgmt_tx_status(&radio->wdev, cookie, connection->sae_scratch,
+					length, !ret, GFP_KERNEL);
+			/* Unacknowledged or malformed frames are retried by SAE itself. */
+			if (ret == -EREMOTEIO || ret == -EINVAL)
+				ret = 0;
+			if (ret)
+				break;
+			continue;
+		}
+		if (done)
+			break;
+		if (ktime_ms_delta(deadline, ktime_get()) <= 0) {
+			ret = -ETIMEDOUT;
+			break;
+		}
+		mt6797_wifi_ais_hif_ext_auth_wait(ais, deadline);
+	}
+	spin_lock_irqsave(&radio->lock, flags);
+	connection->sae_active = false;
+	connection->sae_tx_pending = false;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	memzero_explicit(connection->sae_frame, sizeof(connection->sae_frame));
+	memzero_explicit(connection->sae_scratch, sizeof(connection->sae_scratch));
+	end = mt6797_wifi_ais_hif_ext_auth_end(ais, done ? status : WLAN_STATUS_UNSPECIFIED_FAILURE);
+	if (!done && ret != -ENOTCONN)
+		mt6797_radio_sae_request(radio, NL80211_EXTERNAL_AUTH_ABORT);
+	if (!ret)
+		ret = end;
+	if (ret)
+		dev_warn(wiphy_dev(radio->wdev.wiphy),
+			"SAE authentication failed error=%d status=%u tx=%u acked=%u rx=%u dropped=%u\n",
+			ret, done ? status : 0, ais->ext_auth.tx_frames, ais->ext_auth.tx_acked,
+			ais->ext_auth.rx_frames, ais->ext_auth.rx_dropped);
+	if (!ret && connection->sae_pmkid_set) {
+		size_t ies_length = connection->join.association.ies_length;
+
+		ret = mt6797_wifi_ais_rsn_set_pmkid(connection->ies, &ies_length,
+			sizeof(connection->ies), connection->sae_pmkid);
+		if (!ret)
+			connection->join.association.ies_length = ies_length;
+	}
+	return ret;
+}
+
 static void mt6797_radio_connection_work(struct work_struct *work)
 {
 	struct mt6797_wifi_radio *radio = container_of(work, struct mt6797_wifi_radio, connection_work);
@@ -881,12 +1029,18 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 		ret = -ETIMEDOUT;
 		goto cleanup;
 	}
-	auth.response_timeout_ms = min_t(s64, 1000, auth_remaining);
-	auth.sequence_number = 1;
-	auth.fixed_rate = connection->join.negotiated.default_rate;
-	ret = mt6797_wifi_ais_hif_open_auth(&connection->ais, &auth, &auth_result);
+	if (connection->sae) {
+		ret = mt6797_radio_sae(radio);
+	} else {
+		auth.response_timeout_ms = min_t(s64, 1000, auth_remaining);
+		auth.sequence_number = ++connection->auth_sequence;
+		auth.fixed_rate = connection->join.negotiated.default_rate;
+		ret = mt6797_wifi_ais_hif_open_auth(&connection->ais, &auth, &auth_result);
+	}
 	if (ret || mt6797_radio_connection_cancelled(radio))
 		goto cleanup;
+	connection->join.sequence_number = (connection->auth_sequence + 1) & GENMASK(11, 0);
+	connection->management_sequence = connection->join.sequence_number;
 	ret = mt6797_wifi_ais_hif_associate(&connection->ais, &connection->join, &negotiated);
 	if (ret || mt6797_radio_connection_cancelled(radio))
 		goto cleanup;
@@ -984,7 +1138,7 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	size_t offset, rates_length;
 	int ret = -EOPNOTSUPP;
 	bool secure = sme->privacy;
-	bool have_rsn = false;
+	bool have_rsn = false, have_rsnx = false;
 
 	if (!sme->ssid || !sme->ssid_len || sme->ssid_len > 32 || sme->ie_len > 1024 ||
 	    (sme->ie_len && !sme->ie) ||
@@ -992,23 +1146,35 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	    sme->key_len || sme->pbss || sme->prev_bssid || sme->crypto.control_port_over_nl80211 ||
 	    (sme->mfp != NL80211_MFP_NO && sme->mfp != NL80211_MFP_REQUIRED) || sme->want_1x ||
 	    (sme->flags & ~(ASSOC_REQ_DISABLE_HT | ASSOC_REQ_DISABLE_VHT |
-		ASSOC_REQ_DISABLE_HE | ASSOC_REQ_DISABLE_EHT | ASSOC_REQ_DISABLE_UHR)) ||
-	    (sme->auth_type != NL80211_AUTHTYPE_OPEN_SYSTEM && sme->auth_type != NL80211_AUTHTYPE_AUTOMATIC))
+		ASSOC_REQ_DISABLE_HE | ASSOC_REQ_DISABLE_EHT | ASSOC_REQ_DISABLE_UHR |
+		CONNECT_REQ_EXTERNAL_AUTH_SUPPORT)) ||
+	    (sme->auth_type != NL80211_AUTHTYPE_OPEN_SYSTEM && sme->auth_type != NL80211_AUTHTYPE_AUTOMATIC &&
+	     sme->auth_type != NL80211_AUTHTYPE_SAE))
 		return -EOPNOTSUPP;
 	if (secure) {
-		if (sme->crypto.wpa_versions != NL80211_WPA_VERSION_2 ||
+		/* wpa_supplicant 2.11 reports SAE as WPA3, 2.10 as WPA2. */
+		if ((sme->crypto.wpa_versions != NL80211_WPA_VERSION_2 &&
+		     (sme->crypto.wpa_versions != NL80211_WPA_VERSION_3 ||
+		      sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_SAE)) ||
 		    sme->crypto.n_ciphers_pairwise != 1 || sme->crypto.ciphers_pairwise[0] != WLAN_CIPHER_SUITE_CCMP ||
 		    sme->crypto.cipher_group != WLAN_CIPHER_SUITE_CCMP || sme->crypto.n_akm_suites != 1)
 			return -EOPNOTSUPP;
 	} else if (sme->crypto.wpa_versions || sme->crypto.n_ciphers_pairwise ||
 		   sme->crypto.cipher_group || sme->crypto.n_akm_suites ||
-		   sme->mfp != NL80211_MFP_NO) {
+		   sme->mfp != NL80211_MFP_NO || sme->auth_type == NL80211_AUTHTYPE_SAE) {
 		return -EOPNOTSUPP;
 	}
 	/* User IEs cannot override SSID/rates or advertise unsupported HT/VHT/WMM. */
 	for (offset = 0; offset < sme->ie_len; offset += sme->ie[offset + 1] + 2) {
 		if (sme->ie_len - offset < 2 || sme->ie[offset + 1] > sme->ie_len - offset - 2)
 			return -EINVAL;
+		if (sme->ie[offset] == WLAN_EID_RSNX) {
+			/* SAE hash-to-element capability; the AP validates its use. */
+			if (!secure || have_rsnx || !sme->ie[offset + 1] || sme->ie[offset + 1] > 2)
+				return -EOPNOTSUPP;
+			have_rsnx = true;
+			continue;
+		}
 		if (sme->ie[offset] != WLAN_EID_RSN && sme->ie[offset] != WLAN_EID_EXT_CAPABILITY)
 			return -EOPNOTSUPP;
 		if (sme->ie[offset] == WLAN_EID_RSN) {
@@ -1027,7 +1193,8 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 		struct mt6797_wifi_ais_rsn own;
 
 		if (sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK &&
-		    sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK_SHA256)
+		    sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK_SHA256 &&
+		    sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_SAE)
 			return -EOPNOTSUPP;
 		if (mt6797_wifi_ais_rsn_parse(rsn, &own))
 			return -EOPNOTSUPP;
@@ -1035,6 +1202,8 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	policy.sta_ie = rsn;
 	policy.akm = sme->crypto.akm_suites[0];
 	policy.mfp_required = sme->mfp == NL80211_MFP_REQUIRED;
+	policy.sae_auth = sme->auth_type == NL80211_AUTHTYPE_SAE;
+	policy.external_auth = sme->flags & CONNECT_REQ_EXTERNAL_AUTH_SUPPORT;
 	connection = kzalloc(sizeof(*connection), GFP_KERNEL);
 	if (!connection)
 		return -ENOMEM;
@@ -1071,10 +1240,11 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	rcu_read_unlock();
 	if (ret)
 		goto put_bss;
-	/* Firmware keeps WPA2-PSK/CCMP auth mode: GEN3 has no PMF mode and the
-	 * data path is CCMP either way; PMF is decided and enforced in the host.
+	/* Firmware keeps WPA2-PSK/CCMP auth mode: GEN3 has no SAE/PMF mode and
+	 * the data path is CCMP either way; PMF and SAE are host-side.
 	 */
 	connection->pmf_negotiated = negotiated.pmf;
+	connection->sae = negotiated.sae;
 	connection->ies[0] = WLAN_EID_SSID;
 	connection->ies[1] = sme->ssid_len;
 	memcpy(connection->ies + 2, sme->ssid, sme->ssid_len);
@@ -2076,6 +2246,80 @@ out:
 	return ret;
 }
 
+/* Only SAE authentication frames for the current AIS join are accepted. */
+static int mt6797_radio_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
+	struct cfg80211_mgmt_tx_params *params, u64 *cookie)
+{
+	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	struct mt6797_radio_connection *connection;
+	unsigned long flags;
+	int ret;
+
+	if (wdev != &radio->wdev || !params || !cookie || !params->buf ||
+	    params->offchan || params->wait || params->n_csa_offsets ||
+	    params->link_id >= 0)
+		return -EOPNOTSUPP;
+	if (params->len < MT6797_WIFI_AIS_AUTH_FRAME_LENGTH ||
+	    params->len > MT6797_WIFI_AIS_SAE_FRAME_MAX)
+		return -EINVAL;
+	spin_lock_irqsave(&radio->lock, flags);
+	connection = radio->connection;
+	if (!connection || !connection->sae_active || connection->sae_done ||
+	    connection->cancel || radio->stopping) {
+		ret = -ENOTCONN;
+	} else if ((params->chan && params->chan != connection->bss->channel) ||
+		   mt6797_wifi_ais_sae_auth_tx_check(&connection->ais.auth.pending,
+			params->buf, params->len)) {
+		ret = -EINVAL;
+	} else if (connection->sae_tx_pending) {
+		ret = -EBUSY;
+	} else {
+		memcpy(connection->sae_frame, params->buf, params->len);
+		connection->sae_frame_length = params->len;
+		connection->sae_cookie = *cookie = ++radio->mgmt_cookie;
+		connection->sae_tx_ack = !params->dont_wait_for_ack;
+		connection->sae_tx_pending = true;
+		mt6797_wifi_ais_hif_ext_auth_kick(&connection->ais);
+		ret = 0;
+	}
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return ret;
+}
+
+static int mt6797_radio_external_auth(struct wiphy *wiphy, struct net_device *netdev,
+	struct cfg80211_external_auth_params *params)
+{
+	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	struct mt6797_radio_connection *connection;
+	unsigned long flags;
+	int ret = 0;
+
+	if (netdev != radio->netdev || !params)
+		return -EINVAL;
+	spin_lock_irqsave(&radio->lock, flags);
+	connection = radio->connection;
+	if (!connection || !connection->sae_active || connection->sae_done ||
+	    connection->cancel || radio->stopping) {
+		ret = -ENOTCONN;
+	} else if (!ether_addr_equal(params->bssid, connection->bss->bssid) ||
+		   (params->ssid.ssid_len &&
+		    (params->ssid.ssid_len != connection->join.negotiated.ssid_length ||
+		     memcmp(params->ssid.ssid, connection->join.negotiated.ssid,
+			    params->ssid.ssid_len)))) {
+		ret = -EINVAL;
+	} else {
+		connection->sae_status = params->status;
+		if (params->status == WLAN_STATUS_SUCCESS && params->pmkid) {
+			memcpy(connection->sae_pmkid, params->pmkid, sizeof(connection->sae_pmkid));
+			connection->sae_pmkid_set = true;
+		}
+		connection->sae_done = true;
+		mt6797_wifi_ais_hif_ext_auth_kick(&connection->ais);
+	}
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return ret;
+}
+
 static const struct cfg80211_ops mt6797_radio_ops = {
 	.scan = mt6797_radio_scan,
 	.abort_scan = mt6797_radio_abort_scan,
@@ -2086,6 +2330,16 @@ static const struct cfg80211_ops mt6797_radio_ops = {
 	.set_default_key = mt6797_radio_set_default_key,
 	.set_default_mgmt_key = mt6797_radio_set_default_mgmt_key,
 	.change_station = mt6797_radio_change_station,
+	.mgmt_tx = mt6797_radio_mgmt_tx,
+	.external_auth = mt6797_radio_external_auth,
+};
+
+static const struct ieee80211_txrx_stypes
+mt6797_radio_mgmt_stypes[NUM_NL80211_IFTYPES] = {
+	[NL80211_IFTYPE_STATION] = {
+		.tx = BIT(IEEE80211_STYPE_AUTH >> 4),
+		.rx = BIT(IEEE80211_STYPE_AUTH >> 4),
+	},
 };
 
 static int mt6797_radio_open(struct net_device *netdev)
@@ -2397,6 +2651,9 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 	wiphy->max_scan_ssids = 0;
 	wiphy->cipher_suites = ciphers;
 	wiphy->n_cipher_suites = ARRAY_SIZE(ciphers);
+	/* WPA3-Personal: user space runs SAE via NL80211_CMD_EXTERNAL_AUTH. */
+	wiphy->features |= NL80211_FEATURE_SAE;
+	wiphy->mgmt_stypes = mt6797_radio_mgmt_stypes;
 	for (index = 0; index < ARRAY_SIZE(rates); index++) {
 		radio->rates[index].bitrate = rates[index];
 		radio->rates[index].hw_value = index;

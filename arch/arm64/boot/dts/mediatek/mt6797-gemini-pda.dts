@@ -857,11 +857,13 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&touchscreen_irq_pins>;
 		/*
-		 * The controller reports in the panel's native portrait frame
-		 * (1080x2160), the same frame as the DSI mode.  Display rotation
-		 * is the compositor's job and it rotates touch with the output,
-		 * so no axis swap or inversion belongs here.
+		 * The controller reports the panel's native portrait frame
+		 * (1080x2160, the same frame as the DSI mode) rotated by 180
+		 * degrees.  Undo that here; display rotation stays the
+		 * compositor's job, and it rotates touch with the output.
 		 */
+		touchscreen-inverted-x;
+		touchscreen-inverted-y;
 		status = "disabled";
 	};
 };

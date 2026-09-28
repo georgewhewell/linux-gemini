@@ -62,6 +62,14 @@
 #define MT6797_CONSYS_RESET_RELEASE_SETTLE_MS	20
 #define MT6797_CONSYS_WMT_TIMEOUT_MS		3000
 #define MT6797_CONSYS_VCN33_UV			3300000
+/*
+ * Bound one HCI frame's wait for window credit by the vendor STP retry budget:
+ * MTKSTP_RETRY_LIMIT retransmissions at MTKSTP_TX_TIMEOUT each.
+ */
+#define MT6797_CONSYS_BT_TX_TIMEOUT_MS \
+	((MT6797_CONSYS_STP_RETRY_LIMIT + 1) * MT6797_CONSYS_STP_TX_TIMEOUT_MS)
+#define MT6797_CONSYS_BT_TX_RETRY_MIN_US	500
+#define MT6797_CONSYS_BT_TX_RETRY_MAX_US	1000
 
 struct mt6797_consys_afe_write {
 	u8 offset;
@@ -599,30 +607,58 @@ EXPORT_SYMBOL_GPL(mt6797_consys_bt_acquire);
 int mt6797_consys_bt_transmit(const struct mt6797_consys_bt_lease *lease,
 			     const u8 *frame, size_t frame_length)
 {
+	const struct mt6797_consys_stp_session_lease *stp_lease;
 	struct mt6797_consys *consys;
+	unsigned long deadline;
 	bool terminal = false;
 	int ret;
 
 	if (!lease || !frame || !frame_length)
 		return -EINVAL;
 	consys = lease->consys;
-	mutex_lock(&consys->lifecycle_lock);
-	if (consys->state != MT6797_CONSYS_OWNER_ACTIVE ||
-	    consys->bt_lease != lease || !lease->active)
-		ret = -ESHUTDOWN;
-	else {
-		ret = mt6797_consys_stp_session_transmit(consys->stp_lease,
-						  MTK_STP_BT, frame,
-						  frame_length);
-		if (!ret)
-			ret = consys->btif_ops->arm_session_timeout(
-				consys->btif_context, consys->stp_lease);
-		if (ret && ret != -EAGAIN) {
-			mt6797_consys_radio_fence(consys);
-			terminal = true;
+	deadline = jiffies + msecs_to_jiffies(MT6797_CONSYS_BT_TX_TIMEOUT_MS);
+
+	for (;;) {
+		mutex_lock(&consys->lifecycle_lock);
+		stp_lease = consys->stp_lease;
+		if (consys->state != MT6797_CONSYS_OWNER_ACTIVE ||
+		    consys->bt_lease != lease || !lease->active) {
+			ret = -ESHUTDOWN;
+		} else {
+			ret = mt6797_consys_stp_session_transmit(stp_lease,
+								  MTK_STP_BT, frame,
+								  frame_length);
+			if (!ret)
+				ret = consys->btif_ops->arm_session_timeout(
+					consys->btif_context, stp_lease);
+			if (ret && ret != -EAGAIN) {
+				mt6797_consys_radio_fence(consys);
+				terminal = true;
+			}
 		}
+		mutex_unlock(&consys->lifecycle_lock);
+		if (ret != -EAGAIN || time_after_eq(jiffies, deadline))
+			break;
+
+		/*
+		 * -EAGAIN is either a full seven-frame STP window or a whole-frame
+		 * BTIF TX backpressure result; neither consumed the frame. Sleep
+		 * until a cumulative ACK releases window credit. The BTIF FIFO has
+		 * no drain notification, so retry its backpressure after a short
+		 * sleep. HCI unregisters before the aggregate destroys the session.
+		 */
+		ret = mt6797_consys_stp_session_wait_tx_credit(stp_lease,
+				max_t(long, deadline - jiffies, 1));
+		if (ret == -ETIMEDOUT) {
+			ret = -EAGAIN;
+			break;
+		}
+		if (ret && ret != -EAGAIN)
+			break;
+		if (!ret)
+			usleep_range(MT6797_CONSYS_BT_TX_RETRY_MIN_US,
+				     MT6797_CONSYS_BT_TX_RETRY_MAX_US);
 	}
-	mutex_unlock(&consys->lifecycle_lock);
 	if (terminal)
 		consys->btif_ops->stop(consys->btif_context);
 	return ret;

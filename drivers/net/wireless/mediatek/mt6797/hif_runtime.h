@@ -66,6 +66,8 @@ struct mt6797_wifi_hif_runtime_transaction {
 	bool linux_enabled;
 	bool active;
 	bool terminal;
+	/* Terminal stop proved the firmware powered off; a restart is valid. */
+	bool recoverable;
 };
 
 /*
@@ -96,6 +98,12 @@ struct mt6797_wifi_hif_runtime_ops {
 	int (*disable_device)(void *context);
 	void (*disable_linux)(void *context);
 	int (*restore_registers)(void *context);
+	/*
+	 * Optional. Only a terminal stop of an established runtime calls it,
+	 * with both interrupt gates closed and the runtime WHCR still in place.
+	 * 0 proves the firmware stopped, so the aggregate is not fenced.
+	 */
+	int (*power_off)(void *context);
 	void (*fence)(void *context);
 	int (*teardown)(void *context);
 	void *context;
@@ -115,6 +123,9 @@ struct mt6797_wifi_hif_irq {
 	struct mt6797_wifi_tx_credit tx_credit;
 	struct completion tx_credit_completion;
 	struct work_struct terminal_work;
+	/* Called from terminal_work after the runtime has been stopped. */
+	void (*terminal_notify)(void *context, int reason);
+	void *terminal_context;
 	const void *terminal_caller;
 	irqreturn_t (*capability_thread)(void *context);
 	void *capability_context;
@@ -200,5 +211,10 @@ int mt6797_wifi_hif_runtime_start(struct mt6797_wifi_hif_irq *irq,
 int mt6797_wifi_hif_runtime_configure_rxinf(struct mt6797_wifi_hif_irq *irq,
 	u32 *before, u32 *after);
 int mt6797_wifi_hif_runtime_stop(struct mt6797_wifi_hif_irq *irq);
+void mt6797_wifi_hif_runtime_set_terminal_notify(
+	struct mt6797_wifi_hif_irq *irq,
+	void (*notify)(void *context, int reason), void *context);
+bool mt6797_wifi_hif_runtime_recoverable(struct mt6797_wifi_hif_irq *irq);
+int mt6797_wifi_hif_runtime_reset(struct mt6797_wifi_hif_irq *irq);
 
 #endif /* __MT6797_WIFI_HIF_RUNTIME_H */

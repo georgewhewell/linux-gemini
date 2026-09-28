@@ -24,6 +24,7 @@ enum mt6797_wifi_hif_test_event {
 	TEST_DEVICE_DISABLE,
 	TEST_LINUX_DISABLE,
 	TEST_RESTORE,
+	TEST_POWER_OFF,
 	TEST_FENCE,
 	TEST_TEARDOWN,
 };
@@ -69,6 +70,7 @@ MT6797_WIFI_HIF_TEST_VOID_CALLBACK(unmask, TEST_UNMASK)
 MT6797_WIFI_HIF_TEST_INT_CALLBACK(device_disable, TEST_DEVICE_DISABLE)
 MT6797_WIFI_HIF_TEST_VOID_CALLBACK(linux_disable, TEST_LINUX_DISABLE)
 MT6797_WIFI_HIF_TEST_INT_CALLBACK(restore, TEST_RESTORE)
+MT6797_WIFI_HIF_TEST_INT_CALLBACK(power_off, TEST_POWER_OFF)
 MT6797_WIFI_HIF_TEST_VOID_CALLBACK(fence, TEST_FENCE)
 MT6797_WIFI_HIF_TEST_INT_CALLBACK(teardown, TEST_TEARDOWN)
 
@@ -118,6 +120,7 @@ static void mt6797_wifi_hif_test_init(
 		.disable_device = mt6797_wifi_hif_test_device_disable,
 		.disable_linux = mt6797_wifi_hif_test_linux_disable,
 		.restore_registers = mt6797_wifi_hif_test_restore,
+		.power_off = mt6797_wifi_hif_test_power_off,
 		.fence = mt6797_wifi_hif_test_fence,
 		.teardown = mt6797_wifi_hif_test_teardown,
 		.context = context,
@@ -244,6 +247,90 @@ static void mt6797_wifi_hif_restore_failure_test(struct kunit *test)
 	KUNIT_EXPECT_TRUE(test, transaction.terminal);
 	mt6797_wifi_hif_test_expect(test, &context, expected,
 				      ARRAY_SIZE(expected));
+}
+
+/* A terminal stop powers the firmware off before registers are restored. */
+static void mt6797_wifi_hif_terminal_power_off_test(struct kunit *test)
+{
+	static const enum mt6797_wifi_hif_test_event recovered[] = {
+		TEST_TERMINAL, TEST_MASK, TEST_DEVICE_DISABLE,
+		TEST_LINUX_DISABLE, TEST_MASK, TEST_POWER_OFF, TEST_RESTORE,
+		TEST_TEARDOWN, TEST_TERMINAL,
+	};
+	static const enum mt6797_wifi_hif_test_event fenced[] = {
+		TEST_TERMINAL, TEST_MASK, TEST_DEVICE_DISABLE,
+		TEST_LINUX_DISABLE, TEST_MASK, TEST_POWER_OFF, TEST_RESTORE,
+		TEST_FENCE, TEST_TEARDOWN, TEST_TERMINAL,
+	};
+	/* fail_at defaults to the first event; TEST_FENCE is a void no-op. */
+	struct mt6797_wifi_hif_test_context context = {
+		.test = test,
+		.fail_at = TEST_FENCE,
+	};
+	struct mt6797_wifi_hif_runtime_transaction transaction;
+	struct mt6797_wifi_hif_runtime_ops ops;
+
+	mt6797_wifi_hif_test_init(&context, &ops, &transaction);
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_runtime_transaction_start(&ops, &transaction), 0);
+	context.event_count = 0;
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_hif_runtime_transaction_stop(&ops,
+		&transaction, true), 0);
+	KUNIT_EXPECT_TRUE(test, transaction.terminal);
+	KUNIT_EXPECT_TRUE(test, transaction.recoverable);
+	mt6797_wifi_hif_test_expect(test, &context, recovered,
+				      ARRAY_SIZE(recovered));
+	/* A terminal lifetime still refuses a restart without a reset. */
+	KUNIT_EXPECT_EQ(test,
+		mt6797_wifi_hif_runtime_transaction_start(&ops, &transaction),
+		-ESHUTDOWN);
+
+	/* Unproven power-off keeps the conservative aggregate fence. */
+	mt6797_wifi_hif_test_init(&context, &ops, &transaction);
+	context.event_count = 0;
+	context.fail_at = TEST_FENCE;
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_runtime_transaction_start(&ops, &transaction), 0);
+	context.event_count = 0;
+	context.fail_at = TEST_POWER_OFF;
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_hif_runtime_transaction_stop(&ops,
+		&transaction, true), -EIO);
+	KUNIT_EXPECT_FALSE(test, transaction.recoverable);
+	mt6797_wifi_hif_test_expect(test, &context, fenced, ARRAY_SIZE(fenced));
+
+	/* An ordinary stop never commands a power-off. */
+	mt6797_wifi_hif_test_init(&context, &ops, &transaction);
+	context.event_count = 0;
+	context.fail_at = TEST_POWER_OFF;
+	KUNIT_ASSERT_EQ(test,
+		mt6797_wifi_hif_runtime_transaction_start(&ops, &transaction), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_wifi_hif_runtime_transaction_stop(&ops,
+		&transaction, false), 0);
+	KUNIT_EXPECT_FALSE(test, transaction.recoverable);
+}
+
+/* A failed start is ambiguous and is fenced without a power-off attempt. */
+static void mt6797_wifi_hif_start_failure_no_power_off_test(struct kunit *test)
+{
+	struct mt6797_wifi_hif_test_context context = {
+		.test = test,
+		.fail_at = TEST_DEVICE_ENABLE,
+	};
+	struct mt6797_wifi_hif_runtime_transaction transaction;
+	struct mt6797_wifi_hif_runtime_ops ops;
+	unsigned int index;
+	bool fenced = false;
+
+	mt6797_wifi_hif_test_init(&context, &ops, &transaction);
+	KUNIT_EXPECT_EQ(test,
+		mt6797_wifi_hif_runtime_transaction_start(&ops, &transaction),
+		-EIO);
+	for (index = 0; index < context.event_count; index++) {
+		KUNIT_EXPECT_NE(test, context.events[index], TEST_POWER_OFF);
+		fenced |= context.events[index] == TEST_FENCE;
+	}
+	KUNIT_EXPECT_TRUE(test, fenced);
+	KUNIT_EXPECT_FALSE(test, transaction.recoverable);
 }
 
 static void mt6797_wifi_hif_terminal_transition_test(struct kunit *test)
@@ -452,6 +539,8 @@ static void mt6797_wifi_hif_remove_after_fault_test(struct kunit *test)
 	int ret;
 
 	mt6797_wifi_hif_test_init(&context, &ops, &transaction);
+	/* Without a power-off proof a terminal stop keeps the fence. */
+	ops.power_off = NULL;
 	KUNIT_ASSERT_EQ(test,
 		mt6797_wifi_hif_runtime_transaction_start(&ops, &transaction), 0);
 	context.event_count = 0;
@@ -471,6 +560,8 @@ static struct kunit_case mt6797_wifi_hif_runtime_cases[] = {
 	KUNIT_CASE(mt6797_wifi_hif_program_failure_test),
 	KUNIT_CASE(mt6797_wifi_hif_device_enable_failure_test),
 	KUNIT_CASE(mt6797_wifi_hif_restore_failure_test),
+	KUNIT_CASE(mt6797_wifi_hif_terminal_power_off_test),
+	KUNIT_CASE(mt6797_wifi_hif_start_failure_no_power_off_test),
 	KUNIT_CASE(mt6797_wifi_hif_terminal_transition_test),
 	KUNIT_CASE(mt6797_wifi_hif_terminal_reason_race_test),
 	KUNIT_CASE(mt6797_wifi_hif_sink_terminal_gate_test),

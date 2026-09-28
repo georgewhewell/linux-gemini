@@ -154,7 +154,8 @@ static int nvt36xxx_identify(struct nvt36xxx_data *data)
 	return ret;
 }
 
-static int nvt36xxx_wait_reset(struct nvt36xxx_data *data)
+static int nvt36xxx_wait_reset(struct nvt36xxx_data *data, u8 min_state,
+			       u8 *last_state)
 {
 	u8 state[NVT36XXX_RESET_STATE_LEN];
 	int ret;
@@ -171,13 +172,45 @@ static int nvt36xxx_wait_reset(struct nvt36xxx_data *data)
 				    sizeof(state));
 		if (ret)
 			return ret;
-		if (state[0] >= NVT36XXX_RESET_STATE_INIT && state[0] != 0xff)
+		if (last_state)
+			*last_state = state[0];
+		if (state[0] >= min_state && state[0] != 0xff)
 			return 0;
 
 		usleep_range(10000, 11000);
 	}
 
 	return -ETIMEDOUT;
+}
+
+/*
+ * On this TDDI part the panel driver's RESX pulse also resets the touch MCU,
+ * and the vendor resumes touch only after the display reset and DSI
+ * initialisation, with a bootloader reset followed by a wait for
+ * RESET_STATE_REK (aeon_nt36xxx/nt36xxx.c nvt_ts_resume()).  Repeat that
+ * here whenever reporting is (re)started.  The caller holds data->lock.
+ */
+static int nvt36xxx_restart(struct nvt36xxx_data *data)
+{
+	struct device *dev = &data->client->dev;
+	u8 state = 0;
+	int ret;
+
+	ret = nvt36xxx_bootloader_reset(data);
+	if (ret)
+		return ret;
+
+	ret = nvt36xxx_wait_reset(data, NVT36XXX_RESET_STATE_REK, &state);
+	if (ret == -ETIMEDOUT) {
+		/* Do not make an unsettled baseline fatal; report it. */
+		dev_warn(dev, "controller reset state %#04x did not reach REK\n",
+			 state);
+		return 0;
+	}
+	if (!ret)
+		dev_dbg(dev, "controller reset state %#04x\n", state);
+
+	return ret;
 }
 
 static int nvt36xxx_read_fw_info(struct nvt36xxx_data *data)
@@ -199,6 +232,14 @@ static int nvt36xxx_read_fw_info(struct nvt36xxx_data *data)
 
 	data->raw_x_max = get_unaligned_be16(&info[4]);
 	data->raw_y_max = get_unaligned_be16(&info[6]);
+	/*
+	 * Linux's novatek-nvt-ts reads the same 0x78 parameter block and takes
+	 * byte 11 as the firmware's INT mode (0 rising, 1 falling, 2 low,
+	 * 3 high).  Report it so the DT trigger can be checked against it.
+	 */
+	dev_info(&data->client->dev, "firmware %#04x, INT mode byte %#04x\n",
+		 info[0], info[NVT36XXX_FW_INFO_IRQ_TYPE]);
+
 	if (!data->raw_x_max || !data->raw_y_max ||
 	    data->raw_x_max > NVT36XXX_MAX_COORD ||
 	    data->raw_y_max > NVT36XXX_MAX_COORD)
@@ -256,11 +297,43 @@ out:
 	return IRQ_HANDLED;
 }
 
+static int nvt36xxx_start(struct nvt36xxx_data *data)
+{
+	int ret;
+
+	mutex_lock(&data->lock);
+	ret = nvt36xxx_restart(data);
+	mutex_unlock(&data->lock);
+
+	/*
+	 * Do not expose post-reset I2C traffic to the event handler until the
+	 * controller has passed the bounded reset-state gate.
+	 */
+	if (!ret)
+		enable_irq(data->client->irq);
+
+	return ret;
+}
+
+static int nvt36xxx_open(struct input_dev *input)
+{
+	return nvt36xxx_start(input_get_drvdata(input));
+}
+
+static void nvt36xxx_close(struct input_dev *input)
+{
+	struct nvt36xxx_data *data = input_get_drvdata(input);
+
+	disable_irq(data->client->irq);
+}
+
 static int nvt36xxx_suspend(struct device *dev)
 {
 	struct nvt36xxx_data *data = i2c_get_clientdata(to_i2c_client(dev));
 
-	disable_irq(data->client->irq);
+	guard(mutex)(&data->input->mutex);
+	if (input_device_enabled(data->input))
+		disable_irq(data->client->irq);
 
 	return 0;
 }
@@ -268,22 +341,12 @@ static int nvt36xxx_suspend(struct device *dev)
 static int nvt36xxx_resume(struct device *dev)
 {
 	struct nvt36xxx_data *data = i2c_get_clientdata(to_i2c_client(dev));
-	int ret;
 
-	mutex_lock(&data->lock);
-	ret = nvt36xxx_bootloader_reset(data);
-	if (!ret)
-		ret = nvt36xxx_wait_reset(data);
-	mutex_unlock(&data->lock);
+	guard(mutex)(&data->input->mutex);
+	if (!input_device_enabled(data->input))
+		return 0;
 
-	/*
-	 * Do not expose post-suspend I2C traffic to the event handler until the
-	 * controller has passed the same bounded reset-state gate as probe.
-	 */
-	if (!ret)
-		enable_irq(data->client->irq);
-
-	return ret;
+	return nvt36xxx_start(data);
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(nvt36xxx_pm_ops, nvt36xxx_suspend,
@@ -326,7 +389,9 @@ static int nvt36xxx_probe(struct i2c_client *client)
 	if (device_property_read_bool(dev, "novatek,identity-only")) {
 		ret = nvt36xxx_bootloader_reset(data);
 		if (!ret)
-			ret = nvt36xxx_wait_reset(data);
+			ret = nvt36xxx_wait_reset(data,
+						  NVT36XXX_RESET_STATE_INIT,
+						  NULL);
 		if (ret)
 			return dev_err_probe(dev, ret,
 					     "identity trim read could not restore controller\n");
@@ -340,7 +405,7 @@ static int nvt36xxx_probe(struct i2c_client *client)
 	if (ret)
 		return dev_err_probe(dev, ret, "bootloader reset failed\n");
 
-	ret = nvt36xxx_wait_reset(data);
+	ret = nvt36xxx_wait_reset(data, NVT36XXX_RESET_STATE_INIT, NULL);
 	if (ret)
 		return dev_err_probe(dev, ret, "controller did not leave reset\n");
 
@@ -354,6 +419,9 @@ static int nvt36xxx_probe(struct i2c_client *client)
 
 	input->name = "Novatek NT36xxx touchscreen";
 	input->id.bustype = BUS_I2C;
+	input->open = nvt36xxx_open;
+	input->close = nvt36xxx_close;
+	input_set_drvdata(input, data);
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, data->raw_x_max - 1,
 			     0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, data->raw_y_max - 1,
@@ -375,11 +443,10 @@ static int nvt36xxx_probe(struct i2c_client *client)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request IRQ\n");
 
+	/* The IRQ stays disabled until the first open restarts the controller. */
 	ret = input_register_device(input);
 	if (ret)
 		return ret;
-
-	enable_irq(client->irq);
 
 	dev_info(dev, "%s trim %*ph detected (%ux%u)\n", data->chip->name,
 		 NVT36XXX_TRIM_LEN, data->trim, data->raw_x_max, data->raw_y_max);

@@ -21,6 +21,8 @@
 #define NVT36XXX_MAX_WIDTH		255
 #define NVT36XXX_RESET_RETRIES		5
 #define NVT36XXX_RESET_STATE_INIT	0xa0
+#define NVT36XXX_RESET_STATE_REK	0xa1
+#define NVT36XXX_FW_INFO_IRQ_TYPE	11
 
 struct nvt36xxx_mem_map {
 	u32 event_buf_addr;

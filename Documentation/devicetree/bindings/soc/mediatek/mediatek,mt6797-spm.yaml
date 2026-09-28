@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-spm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 System Power Manager low-power programs
+
+maintainers:
+  - Gemini Mainline Experiment <gemini-mainline@example.invalid>
+
+description: |
+  The MT6797 System Power Manager (SPM) runs PCM programs that take the
+  SoC through suspend, screen-on idle (SODI) and deep idle.  The programs
+  are loaded as firmware files.  The SPM register block is shared with the
+  SCPSYS power-domain controller, so this node refers to that syscon
+  instead of claiming the registers.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-spm
+
+  mediatek,spm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the MT6797 SCPSYS/SPM syscon.
+
+required:
+  - compatible
+  - mediatek,spm
+
+additionalProperties: false
+
+examples:
+  - |
+    spm {
+        compatible = "mediatek,mt6797-spm";
+        mediatek,spm = <&scpsys>;
+    };

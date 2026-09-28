@@ -44,7 +44,6 @@ static int packet_read(void *c,unsigned port,u16 len,const u8 **out) {
  else { assert(len==8); *out=event; }
  read_index++; return 0;
 }
-static bool expired(void *c) { (void)c; return false; }
 static int frame_deliver(void *c,const struct mt6797_wifi_rx_view *v) {
  struct mt6797_wifi_data_rx d; (void)c;
  assert(!mt6797_wifi_data_rx_decode(v->packet,v->packet_length,&d));
@@ -62,7 +61,7 @@ static int pump(struct mt6797_wifi_hif_pump_stats *s) {
  const struct mt6797_wifi_hif_pump_ops ops={
  .read_status=status_read,.read_tx_released=credits,.read_lengths=lengths_read,
  .read_packet=packet_read,.deliver_frame=frame_deliver,.deliver_event=event_deliver,
- .reject_packet=reject,.expired=expired}; u32 status;
+ .reject_packet=reject}; u32 status;
  read_index=frames=events=drops=0; memset(s,0,sizeof(*s));
  return mt6797_wifi_hif_pump_run(&ops,s,&status);
 }

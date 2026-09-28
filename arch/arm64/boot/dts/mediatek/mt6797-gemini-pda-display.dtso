@@ -215,7 +215,7 @@
 	#size-cells = <0>;
 	status = "okay";
 
-	panel@0 {
+	gemini_panel: panel@0 {
 		compatible = "planet,gemini-pda-nt36672";
 		reg = <0>;
 		outp-supply = <&outp>;
@@ -226,6 +226,17 @@
 		backlight = <&backlight>;
 		port { gemini_panel_in: endpoint { remote-endpoint = <&gemini_dsi0_out>; }; };
 	};
+};
+
+/*
+ * The NT36672 is a TDDI part: the panel's reset (RESX) also resets the touch
+ * controller, and the vendor restarts touch only after the display reset and
+ * DSI initialisation, from its display blank/unblank notifier
+ * (drivers/input/touchscreen/mediatek/mtk_tpd.c:398-417,
+ * aeon_nt36xxx/nt36xxx.c:1775-1800).  Sequence touch with the panel.
+ */
+&touchscreen {
+	panel = <&gemini_panel>;
 };
 
 &dsi0_in {

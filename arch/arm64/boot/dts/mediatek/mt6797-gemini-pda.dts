@@ -550,6 +550,24 @@
 	};
 };
 
+&pmic {
+	pmic_keys: keys {
+		compatible = "mediatek,mt6351-keys";
+		/*
+		 * Keep the vendor long-press policy: power key alone resets
+		 * the PMIC after 11 s. This is the only way to recover a hung
+		 * Gemini, which has no removable battery.
+		 */
+		mediatek,long-press-mode = <1>;
+		power-off-time-sec = <11>;
+
+		power {
+			linux,keycodes = <KEY_POWER>;
+			wakeup-source;
+		};
+	};
+};
+
 / {
 	consys: consys@18070000 {
 		#address-cells = <2>;

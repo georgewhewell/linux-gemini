@@ -247,6 +247,9 @@ static irqreturn_t mtk_pmic_keys_irq_handler_thread(int irq, void *data)
 
 	pressed = !key_deb;
 
+	if (info->wakeup && device_may_wakeup(info->keys->dev))
+		pm_wakeup_event(info->keys->dev, 0);
+
 	input_report_key(info->keys->input_dev, info->keycode, pressed);
 	input_sync(info->keys->input_dev);
 
@@ -301,6 +304,9 @@ static int mtk_pmic_keys_suspend(struct device *dev)
 	struct mtk_pmic_keys *keys = dev_get_drvdata(dev);
 	int index;
 
+	if (!device_may_wakeup(dev))
+		return 0;
+
 	for (index = 0; index < MTK_PMIC_MAX_KEY_COUNT; index++) {
 		if (keys->keys[index].wakeup) {
 			enable_irq_wake(keys->keys[index].irq);
@@ -316,6 +322,9 @@ static int mtk_pmic_keys_resume(struct device *dev)
 {
 	struct mtk_pmic_keys *keys = dev_get_drvdata(dev);
 	int index;
+
+	if (!device_may_wakeup(dev))
+		return 0;
 
 	for (index = 0; index < MTK_PMIC_MAX_KEY_COUNT; index++) {
 		if (keys->keys[index].wakeup) {
@@ -362,6 +371,7 @@ MODULE_DEVICE_TABLE(of, of_mtk_pmic_keys_match_tbl);
 static int mtk_pmic_keys_probe(struct platform_device *pdev)
 {
 	int error, index = 0;
+	bool wakeup = false;
 	unsigned int keycount;
 	struct mt6397_chip *pmic_chip = dev_get_drvdata(pdev->dev.parent);
 	struct device_node *node = pdev->dev.of_node;
@@ -425,14 +435,22 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 			return error;
 		}
 
-		if (of_property_read_bool(child, "wakeup-source"))
+		if (of_property_read_bool(child, "wakeup-source")) {
 			keys->keys[index].wakeup = true;
+			wakeup = true;
+		}
 
 		error = mtk_pmic_key_setup(keys, &keys->keys[index]);
 		if (error)
 			return error;
 
 		index++;
+	}
+
+	if (wakeup) {
+		error = devm_device_init_wakeup(&pdev->dev);
+		if (error)
+			return error;
 	}
 
 	error = mtk_pmic_keys_lp_reset_setup(keys, mtk_pmic_regs);

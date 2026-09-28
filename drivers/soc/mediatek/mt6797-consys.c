@@ -1476,6 +1476,23 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int mt6797_consys_suspend(struct device *dev)
+{
+	/*
+	 * CONN power belongs to the CONSYS lifecycle, which only switches it
+	 * together with the CONMCU reset and boot sequence.  Keep genpd from
+	 * cycling it for system sleep: powering it off would kill the running
+	 * connectivity firmware, and the unconditional genpd power-on at
+	 * resume would start a CONN that the lifecycle left off.
+	 */
+	device_set_awake_path(dev);
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(mt6797_consys_pm_ops, mt6797_consys_suspend,
+				NULL);
+
 static const struct of_device_id mt6797_consys_of_match[] = {
 	{ .compatible = "mediatek,mt6797-consys" },
 	{ }
@@ -1487,6 +1504,7 @@ static struct platform_driver mt6797_consys_driver = {
 	.driver = {
 		.name = "mt6797-consys",
 		.of_match_table = mt6797_consys_of_match,
+		.pm = pm_sleep_ptr(&mt6797_consys_pm_ops),
 		.suppress_bind_attrs = true,
 	},
 };

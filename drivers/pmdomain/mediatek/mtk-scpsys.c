@@ -1322,6 +1322,9 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 	 * Do not power CONN while registering SCPSYS. Its first vote must be
 	 * made by an explicitly enabled, recoverable identity experiment after
 	 * CONMCU reset has been asserted.
+	 *
+	 * CONN runs its own firmware.  Its consumer marks itself in the
+	 * awake path so that system sleep leaves CONN in its current state.
 	 */
 	[MT6797_POWER_DOMAIN_CONN] = {
 		.name = "conn",
@@ -1329,7 +1332,7 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.ctl_offs = 0x32c,
 		.bus_prot_mask = BIT(17) | BIT(18),
 		.clk_id = {CLK_NONE},
-		.caps = MTK_SCPD_KEEP_DEFAULT_OFF,
+		.caps = MTK_SCPD_KEEP_DEFAULT_OFF | MTK_SCPD_ACTIVE_WAKEUP,
 	},
 };
 

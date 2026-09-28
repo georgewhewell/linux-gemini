@@ -28,6 +28,10 @@
 #define MT6351_FGADC_LATCHDATA_ST	BIT(10)
 #define MT6351_FGADC_SW_READ_PRE	BIT(9)
 #define MT6351_FGADC_SW_CLEAR		BIT(11)
+/* The latch handshake: request, status and clear. None survive a capture. */
+#define MT6351_FGADC_LATCH_BITS		(MT6351_FGADC_SW_READ_PRE | \
+					 MT6351_FGADC_LATCHDATA_ST | \
+					 MT6351_FGADC_SW_CLEAR)
 
 /* Vendor UNIT_FGCURRENT (158122) expressed as nanoamps per raw count. */
 #define MT6351_FGADC_CURRENT_LSB_NA	1581220
@@ -53,6 +57,9 @@ struct mt6351_fgadc {
 	unsigned int saved_clkpdn;
 	unsigned int saved_con0;
 	unsigned int saved_osr;
+
+	/* A latch timeout was reported; stay quiet until a capture succeeds. */
+	bool stalled;
 };
 
 static int mt6351_fgadc_restore(struct mt6351_fgadc *fg)
@@ -131,6 +138,36 @@ restore:
 }
 
 /*
+ * A latch that never asserts (or never clears) is a hardware state, not a
+ * transient: every reader then waits the full poll timeout and fails the
+ * same way.  Report it once, with the registers needed to tell a gated
+ * clock or a disabled FGADC from a stuck handshake, and report recovery.
+ * Called with fg->lock held.
+ */
+static void mt6351_fgadc_note_result(struct mt6351_fgadc *fg, int ret,
+				     unsigned int saved_con0)
+{
+	unsigned int con0 = 0, clkpdn = 0, con15 = 0;
+
+	if (ret != -ETIMEDOUT) {
+		if (!ret && fg->stalled) {
+			fg->stalled = false;
+			dev_info(fg->dev, "FGADC latch recovered\n");
+		}
+		return;
+	}
+	if (fg->stalled)
+		return;
+	fg->stalled = true;
+	regmap_read(fg->regmap, MT6351_FGADC_CON0, &con0);
+	regmap_read(fg->regmap, MT6351_TOP_CKPDN_CON2, &clkpdn);
+	regmap_read(fg->regmap, MT6351_FGADC_CON15, &con15);
+	dev_warn(fg->dev,
+		 "FGADC latch timed out; con0=%#06x (before %#06x) ckpdn_con2=%#06x con15=%#06x; reads report no data until it recovers\n",
+		 con0, saved_con0, clkpdn, con15);
+}
+
+/*
  * Request a latch and read both ADC current and CAR while it is held. This is
  * the vendor's read-pre/latch/clear ordering, except the prior high byte
  * is restored instead of assuming it was zero.
@@ -181,11 +218,18 @@ out_clear:
 	if (!ret)
 		ret = clear_ret;
 out_restore:
+	/*
+	 * Restore the other high-byte controls, but never re-issue a latch
+	 * request or clear: the vendor sequence ends with both released, and
+	 * echoing a stale request would leave the next capture a held latch.
+	 */
 	restore_ret = regmap_update_bits(fg->regmap, MT6351_FGADC_CON0,
 					 MT6351_FGADC_CON0_HIGH_MASK,
-					 saved_con0 & MT6351_FGADC_CON0_HIGH_MASK);
+					 saved_con0 & MT6351_FGADC_CON0_HIGH_MASK &
+					 ~MT6351_FGADC_LATCH_BITS);
 	if (!ret)
 		ret = restore_ret;
+	mt6351_fgadc_note_result(fg, ret, saved_con0);
 out_unlock:
 	mutex_unlock(&fg->lock);
 	return ret;
@@ -288,6 +332,13 @@ static int mt6351_fgadc_get_property(struct power_supply *psy,
 	}
 
 	ret = mt6351_fgadc_read(fg, &current_ua, &charge_counter_uah);
+	/*
+	 * A latch timeout has already been reported once by the capture.
+	 * -ENODATA keeps the power-supply core from logging every sysfs read
+	 * and lets a uevent still carry the static properties.
+	 */
+	if (ret == -ETIMEDOUT)
+		return -ENODATA;
 	if (ret)
 		return ret;
 

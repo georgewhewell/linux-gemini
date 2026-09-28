@@ -11,7 +11,7 @@ import tempfile
 base = runpy.run_path(str(Path(__file__).with_name('test-wifi-radio-worker-host.py')))
 program = base['program'].split('enum stage {')[0]
 program = program.replace('struct cfg80211_bss { u8 bssid[6]; };',
- 'struct cfg80211_bss_ies { u8 data[8]; size_t len; }; struct cfg80211_bss { u8 bssid[6]; struct ieee80211_channel *channel; struct cfg80211_bss_ies *ies; u16 capability; };')
+ 'struct cfg80211_bss_ies { u8 data[64]; size_t len; }; struct cfg80211_bss { u8 bssid[6]; struct ieee80211_channel *channel; struct cfg80211_bss_ies *ies; u16 capability; };')
 program = program.replace('struct ieee80211_channel { int dummy; };',
  'struct ieee80211_channel { unsigned flags,band,center_freq; };')
 program += r'''
@@ -32,9 +32,19 @@ program += r'''
 #define IEEE80211_PRIVACY_OFF 0
 #define NL80211_BAND_2GHZ 0
 #define NL80211_MFP_NO 0
+#define NL80211_MFP_REQUIRED 1
 #define NL80211_AUTHTYPE_OPEN_SYSTEM 0
+#define NL80211_AUTHTYPE_SAE 4
 #define NL80211_AUTHTYPE_AUTOMATIC 8
 #define NL80211_WPA_VERSION_2 2
+#define NL80211_WPA_VERSION_3 4
+#define WLAN_AKM_SUITE_SAE 0x000fac08
+#define WLAN_AKM_SUITE_PSK_SHA256 0x000fac06
+#define WLAN_EID_RSNX 244
+#define CONNECT_REQ_EXTERNAL_AUTH_SUPPORT 8
+static u32 get_unaligned_be32(const void *p) { const u8 *b=p; return (u32)b[0]<<24|(u32)b[1]<<16|(u32)b[2]<<8|b[3]; }
+static void put_unaligned_be32(u32 v,void *p) { u8 *b=p; b[0]=v>>24; b[1]=v>>16; b[2]=v>>8; b[3]=v; }
+static void rsn_put_le16(u16 v,void *p) { u8 *b=p; b[0]=v; b[1]=v>>8; }
 #define ASSOC_REQ_DISABLE_HT 1
 #define ASSOC_REQ_DISABLE_VHT 2
 #define ASSOC_REQ_DISABLE_HE 16
@@ -88,6 +98,8 @@ int mt6797_wifi_ais_join_rates_ies_build(const struct mt6797_wifi_ais_join_param
 }
 static void queue_work(int queue,struct work_struct *work) { (void)queue; (void)work; queued++; }
 '''
+rsn_source = (Path(__file__).resolve().parents[2] / 'drivers/net/wireless/mediatek/mt6797/ais_rsn.c').read_text()
+program += re.sub(r'^#include .*\n', '', rsn_source, flags=re.M).replace('put_unaligned_le16', 'rsn_put_le16')
 program += base['function']('mt6797_radio_connect(')
 program += r'''
 static u8 ssid[]={1,2,3,4};
@@ -106,9 +118,34 @@ static void setup(bool secure) {
 }
 static int connect(void) { int ret=mt6797_radio_connect(NULL,NULL,&p); assert(!r.lock); return ret; }
 static void release(void) { free(r.connection); r.connection=NULL; }
+/* PMF admission with the real ais_rsn.c. */
+static u8 ap_rsn[]={48,24,1,0,0,15,172,4,1,0,0,15,172,4,2,0,0,15,172,2,0,15,172,8,0x80,0};
+static void ap_ies(bool with_rsn) {
+ u8 rates[]={1,1,0x82}; peer.len=0;
+ memcpy(peer.data,rates,3); peer.len=3;
+ if(with_rsn) { memcpy(peer.data+3,ap_rsn,sizeof(ap_rsn)); peer.len+=sizeof(ap_rsn); }
+}
+static void pmf_cases(void) {
+ u8 sta[40]; memcpy(sta,rsn,22);
+ /* WPA2-PSK + PMF (ieee80211w=1 against an MFPC AP): PMF negotiated. */
+ setup(true); ap_ies(true); sta[20]=0x80; p.ie=sta; p.ie_len=22; p.mfp=NL80211_MFP_REQUIRED;
+ assert(!connect() && r.connection->pmf_negotiated && queued==1); release();
+ setup(true); ap_ies(true); p.ie=sta; p.ie_len=22; /* ap_scan=2: MFPC but mfp NO */
+ assert(!connect() && r.connection->pmf_negotiated); release();
+ setup(true); ap_ies(false); p.ie=sta; p.ie_len=22;
+ assert(connect()==-EOPNOTSUPP && !queued && freed==allocated && bss_puts==1);
+ ap_rsn[24]=0; setup(true); ap_ies(true); p.ie=sta; p.ie_len=22;
+ assert(!connect() && !r.connection->pmf_negotiated); release();
+ setup(true); ap_ies(true); p.ie=sta; p.ie_len=22; p.mfp=NL80211_MFP_REQUIRED;
+ assert(connect()==-EOPNOTSUPP && freed==allocated); ap_rsn[24]=0x80;
+ setup(false); p.mfp=NL80211_MFP_REQUIRED; assert(connect()==-EOPNOTSUPP && !allocated);
+ setup(true); p.auth_type=NL80211_AUTHTYPE_SAE; assert(connect()==-EOPNOTSUPP && !allocated);
+ ap_ies(false);
+}
 int main(void) {
- setup(true); p.mfp=2; assert(connect()==-EOPNOTSUPP && !queued && !allocated);
- setup(true); p.crypto.akm_suites[0]=0x000fac08; assert(connect()==-EOPNOTSUPP && !queued && !allocated);
+ setup(true); p.mfp=2; assert(connect()==-EOPNOTSUPP && !queued && !allocated); /* MFP optional */
+ setup(true); p.crypto.akm_suites[0]=0x000fac08; assert(connect()==-EOPNOTSUPP && !queued && !allocated); /* SAE not yet */
+ pmf_cases();
 
  for(unsigned secure=0;secure<2;secure++) {
   setup(secure); p.crypto.control_port_no_encrypt=true;
@@ -129,7 +166,7 @@ int main(void) {
   switch(which) {
   case 0: p.ssid=NULL; break; case 1: p.ssid_len=0; break; case 2: p.ssid_len=33; break;
   case 3: p.ie_len=1025; break; case 4: p.ie=NULL; break; case 5: p.key_len=16; break;
-  case 6: p.pbss=true; break; case 7: p.prev_bssid=ssid; break; case 8: p.mfp=1; break;
+  case 6: p.pbss=true; break; case 7: p.prev_bssid=ssid; break; case 8: p.mfp=3; break;
   case 9: p.want_1x=true; break; case 10: p.flags=0x8000; break; case 11: p.auth_type=1; break;
   case 12: p.crypto.wpa_versions=1; break; case 13: p.crypto.n_ciphers_pairwise=0; break;
   case 14: p.crypto.cipher_group=0; break; case 15: p.crypto.akm_suites[0]=0; break;
@@ -143,7 +180,7 @@ int main(void) {
  setup(true); u8 twice[44]; memcpy(twice,rsn,22); memcpy(twice+22,rsn,22); p.ie=twice; p.ie_len=44;
  assert(connect()==-EINVAL && !allocated);
  setup(false); p.ie=rsn; p.ie_len=22; assert(connect()==-EINVAL && !allocated);
- setup(true); rsn[20]=0x40; assert(connect()==-EOPNOTSUPP && !allocated); rsn[20]=0;
+ setup(true); rsn[20]=0x40; assert(connect()==-EINVAL && freed==allocated); rsn[20]=0; /* MFPR w/o MFPC */
  setup(false); no_memory=true; assert(connect()==-ENOMEM && !allocated && !gets);
  setup(false); no_bss=true; assert(connect()==-ENOENT && allocated==1 && freed==1 && !bss_puts);
  setup(false); channel.flags=IEEE80211_CHAN_NO_IR; assert(connect()==-EOPNOTSUPP && freed==1 && bss_puts==1);
@@ -151,7 +188,7 @@ int main(void) {
  setup(false); bss.ies=NULL; assert(connect()==-ENOENT && freed==1 && bss_puts==1);
  setup(false); r.stopping=true; assert(connect()==-ESHUTDOWN && !queued && freed==1 && bss_puts==1);
  setup(false); r.request=(void *)1; assert(connect()==-EBUSY && !queued && freed==1 && bss_puts==1);
- printf("PASS: production connect admission: open/WPA2 construction, control-port support, crypto/IE bounds, MFP/RSN rejection, cached-BSS errors and all allocation/reference cleanup paths\n");
+ printf("PASS: production connect admission: open/WPA2 construction, WPA2+PMF (MFPC/MFPR vs AP), control-port support, crypto/IE bounds, MFP/RSN rejection, cached-BSS errors and all allocation/reference cleanup paths\n");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-radio-connect-') as temporary:

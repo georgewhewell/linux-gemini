@@ -1,5 +1,11 @@
 # Disabled SA Query prerequisite
 
+> **Status update (gemini-wifi-wpa3):** `ais_rsn.c` now negotiates PMF when both
+> RSN elements set MFPC and the driver advertises BIP-CMAC-128, so the gated
+> paths described here are live on PMF associations. Statements below about
+> PMF being disabled describe the original slice. Hardware qualification of
+> firmware CCMP management/BIP behaviour is still outstanding.
+
 The station can initiate an SA Query after an applicable suspicious plaintext
 disconnect, match authenticated responses, and answer authenticated SA Query
 requests from its current AP. Production still never sets

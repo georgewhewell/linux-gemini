@@ -856,6 +856,20 @@ config MTK_MT6797_DVFSP_BIGIDVFS_BACKEND
 	  state owner or clock provider. Its Device Tree node is disabled by
 	  default.
 
+config MTK_MT6797_SPM
+	tristate "MediaTek MT6797 SPM firmware and idle status"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF
+	select MFD_SYSCON
+	help
+	  Load and validate the MT6797 System Power Manager (SPM) PCM
+	  scenario programs (suspend, SODI, deep idle, vcore DVFS) and
+	  expose a read-only debugfs view of the SPM power, CPU idle and
+	  CPU retention status.  The driver never writes SPM registers.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called mt6797-spm.
+
 config MTK_PMIC_WRAP
 	tristate "MediaTek PMIC Wrapper Support"
 	depends on RESET_CONTROLLER

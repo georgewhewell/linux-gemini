@@ -36,6 +36,7 @@ program += r'''
 #define mutex_init(lock) ((lock)->held=0)
 #define init_completion(completion) ((completion)->done=false)
 #define INIT_WORK(work,callback) do { (void)(work); (void)(callback); } while(0)
+#define INIT_DELAYED_WORK(work,callback) do { (void)(work); (void)(callback); } while(0)
 #define SET_NETDEV_DEV(netdev,parent) do { (void)(netdev); (void)(parent); } while(0)
 static const int mt6797_radio_ops,mt6797_radio_netdev_ops;
 static struct wiphy registered_wiphy;
@@ -45,6 +46,10 @@ static unsigned registration_failure,wiphy_frees,netdev_frees,wiphy_unregisters,
 static int mt6797_radio_stop(struct net_device *netdev);
 static void mt6797_radio_scan_work(struct work_struct *work) { (void)work; }
 static void mt6797_radio_connection_work(struct work_struct *work) { (void)work; }
+static void mt6797_radio_sa_query_work(struct work_struct *work) { (void)work; }
+static void mt6797_radio_management_work(struct work_struct *work) { (void)work; }
+static void mt6797_radio_sa_query_stop(struct mt6797_wifi_radio *radio) { (void)radio; }
+static void cancel_delayed_work_sync(struct delayed_work *work) { assert(work==&r.sa_query_work && !r.lock && !r.connection_lock.held); }
 static struct wiphy *wiphy_new(const void *ops,size_t size) {
  assert(ops==&mt6797_radio_ops && size==sizeof(r) && !wiphy_alive);
  if(registration_failure==1) return NULL;
@@ -79,7 +84,7 @@ static void flush_work(struct work_struct *work) {
  assert(!r.lock && !r.connection_lock.held);
  if(work==&r.connection_work) r.connection=NULL;
  else if(work==&r.tx_work) mt6797_radio_tx_work(work);
- else assert(work==&r.scan_work);
+ else assert(work==&r.scan_work || work==&r.management_work);
 }
 static void unregister_netdev(struct net_device *netdev) {
  assert(netdev_alive && sysfs_published && netdev==&dev);

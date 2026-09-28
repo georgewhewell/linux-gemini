@@ -78,6 +78,7 @@ program = program[:start] + '''static void check_snapshot(void) {
  assert(field(text,"dequeued")==field(text,"hif_submitted")+field(text,"send_failed")+field(text,"send_active"));
 }
 ''' + program[end:]
+program += 'static void mt6797_radio_sa_query_stop(struct mt6797_wifi_radio *radio) { (void)radio; }\n'
 program += base['base']['function']('mt6797_radio_disconnect')
 program += r'''
 static void reset(void) {

@@ -90,7 +90,8 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 
 	priv = cpufreq_dt_find_data(policy->cpu);
 	if (!priv) {
-		pr_err("failed to find data for cpu%d\n", policy->cpu);
+		/* CPUs without OPPs are deliberately left unmanaged. */
+		pr_debug("no OPP data for cpu%d\n", policy->cpu);
 		return -ENODEV;
 	}
 	cpu_dev = priv->cpu_dev;
@@ -168,6 +169,18 @@ static int dt_cpufreq_early_init(struct device *dev, int cpu)
 	cpu_dev = get_cpu_device(cpu);
 	if (!cpu_dev)
 		return -EPROBE_DEFER;
+
+	/*
+	 * A CPU described without any OPPs cannot be scaled by this driver,
+	 * for instance a cluster whose clock belongs to secure firmware.
+	 * Leave it unmanaged instead of refusing to scale all other CPUs.
+	 */
+	if (!of_property_present(cpu_dev->of_node, "operating-points-v2") &&
+	    !of_property_present(cpu_dev->of_node, "operating-points") &&
+	    dev_pm_opp_get_opp_count(cpu_dev) <= 0) {
+		dev_dbg(cpu_dev, "no OPPs, not managed by cpufreq-dt\n");
+		return 0;
+	}
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)

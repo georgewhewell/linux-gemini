@@ -190,6 +190,14 @@ mt6797-gemini-pda-thermal-hall-observe-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-thermal-hall-observe.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-thermal-hall-observe.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-cpufreq.dtbo
+mt6797-gemini-pda-cpufreq-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-a72-resource-preflight.dtbo \
+	mt6797-gemini-a72-cpu-on-gate.dtbo \
+	mt6797-gemini-pda-thermal-hall-observe.dtbo \
+	mt6797-gemini-pda-cpufreq.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-cpufreq.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-keyboard.dtbo
 mt6797-gemini-pda-keyboard-test-dtbs := \
 	mt6797-gemini-pda.dtb \

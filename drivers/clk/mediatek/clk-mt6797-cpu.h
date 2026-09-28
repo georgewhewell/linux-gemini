@@ -39,23 +39,24 @@ struct mt6797_cpuclk_state {
 	u8 divider;
 };
 
-struct mt6797_cpuclk_rate_plan {
-	enum mt6797_cpuclk_domain domain;
-	unsigned long clk26m_rate;
-	struct mt6797_cpuclk_state initial;
-	struct mt6797_cpuclk_state target;
-	struct mt6797_cpuclk_state rollback;
-	struct mt6797_cpuclk_snapshot rollback_snapshot;
-	u8 intermediate_source;
-};
-
 struct mt6797_cpuclk_dcm_plan {
 	u32 value[3];
 };
 
+struct mt6797_cpuclk_hop_plan {
+	enum mt6797_cpuclk_domain domain;
+	unsigned long clk26m_rate;
+	u64 initial_rate;
+	unsigned long rate;
+	u32 dds;
+	bool dcm_before_hop;
+	struct mt6797_cpuclk_dcm_plan dcm;
+	struct mt6797_cpuclk_snapshot snapshot;
+};
+
 struct mt6797_cpuclk_backend_ops {
 	int (*snapshot)(void *context, struct mt6797_cpuclk_snapshot *snapshot);
-	int (*apply)(void *context, const struct mt6797_cpuclk_rate_plan *plan);
+	int (*hop)(void *context, const struct mt6797_cpuclk_hop_plan *plan);
 };
 
 struct mt6797_cpuclk_backend {
@@ -83,14 +84,9 @@ int mt6797_cpuclk_plan_mux(enum mt6797_cpuclk_domain domain, u8 source,
 int mt6797_cpuclk_plan_dcm(enum mt6797_cpuclk_domain domain,
 			   unsigned long rate, u32 initial_dcm,
 			   struct mt6797_cpuclk_dcm_plan *plan);
-int mt6797_cpuclk_build_rate_plan(enum mt6797_cpuclk_domain domain,
-				  const struct mt6797_cpuclk_snapshot *snapshot,
-				  unsigned long clk26m_rate,
-				  const struct mt6797_cpuclk_state *target,
-				  struct mt6797_cpuclk_rate_plan *plan);
-int mt6797_cpuclk_get_rollback_state(const struct mt6797_cpuclk_rate_plan *plan,
-				     struct mt6797_cpuclk_state *rollback);
-int mt6797_cpuclk_apply_rate_plan(struct mt6797_cpuclk_backend *backend,
-				  const struct mt6797_cpuclk_rate_plan *plan);
+int mt6797_cpuclk_plan_hop(enum mt6797_cpuclk_domain domain,
+			   const struct mt6797_cpuclk_snapshot *snapshot,
+			   unsigned long clk26m_rate, unsigned long rate,
+			   struct mt6797_cpuclk_hop_plan *plan);
 
 #endif /* __DRV_CLK_MT6797_CPU_H */

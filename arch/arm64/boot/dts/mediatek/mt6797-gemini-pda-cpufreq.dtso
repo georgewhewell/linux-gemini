@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA Cortex-A53 frequency scaling and CPU cooling.
+ *
+ * Apply after the Cortex-A72 overlays and after the thermal observation
+ * overlay that describes the soc-thermal zone.  The A53 OPPs themselves are
+ * described in the board DT; this overlay only publishes the two cluster
+ * tables and attaches both cpufreq policies to the SoC thermal zone.
+ *
+ * Trip points follow the vendor MT6797 CPU thermal zone (mt6797
+ * tzcpu_initcfg.h): CPU throttling from 85 C, the strongest CPU limit at
+ * 95 C, and a system reset at 117 C.  Linux cannot reproduce the vendor
+ * power-budget coolers, so step_wise walks both policies down the available
+ * OPPs instead.  The 40 ms passive polling interval matches the vendor zone.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/thermal/thermal.h>
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&cluster0_opp {
+	status = "okay";
+};
+
+&cluster1_opp {
+	status = "okay";
+};
+
+&{/} {
+	thermal-zones {
+		soc-thermal {
+			polling-delay-passive = <40>;
+
+			trips {
+				cpu_throttle: cpu-throttle {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_limit: cpu-limit {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_crit: cpu-critical {
+					temperature = <117000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map-cpu-throttle {
+					trip = <&cpu_throttle>;
+					cooling-device =
+						<&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						<&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				map-cpu-limit {
+					trip = <&cpu_limit>;
+					cooling-device =
+						<&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						<&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+	};
+};

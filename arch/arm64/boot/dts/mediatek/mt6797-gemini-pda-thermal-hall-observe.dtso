@@ -19,8 +19,8 @@
  * The vendor Hall wiring is GPIO66/EINT5 with a pull-up. Its driver
  * defines a raw low as FCOVER_CLOSE and reports that as SW_LID, matching the
  * active-low generic gpio-keys definition in the base Gemini DT. The base
- * candidate retains a 64 ms debounce interval; no wake source is requested
- * because suspend/wake behaviour has not been measured.
+ * candidate retains a 64 ms debounce interval and arms the switch as a wake
+ * source for lid opening only.
  *
  * This is deliberately opt-in. It adds no external sensor, regulator,
  * power-domain, or SCP node, and it does not describe a sensor identity.

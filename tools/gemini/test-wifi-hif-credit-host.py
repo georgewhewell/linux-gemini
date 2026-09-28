@@ -40,7 +40,6 @@ static int mt6797_wifi_ahb_cmd53_write(void *hif,u32 address,const u8 *packet,si
  (void)hif; (void)address; (void)packet; (void)length;
  assert(irq.lifecycle_lock && !irq.tx_credit_lock); writes++; return write_error;
 }
-static bool mt6797_wifi_hif_runtime_pump_expired(struct mt6797_wifi_hif_irq *i) { (void)i; return false; }
 '''
 regs = (driver / 'hif_regs.h').read_text()
 for name in ['MT6797_WIFI_MCR_WTDR1', 'MT6797_WIFI_MCR_WTQCR0']:

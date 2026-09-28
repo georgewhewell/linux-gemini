@@ -13,7 +13,7 @@ static bool mt6797_wifi_hif_pump_ops_valid(
 	const struct mt6797_wifi_hif_pump_ops *ops)
 {
 	return ops && ops->read_status && ops->read_tx_released &&
-		ops->read_lengths && ops->read_packet && ops->expired;
+		ops->read_lengths && ops->read_packet;
 }
 
 int mt6797_wifi_hif_pump_account_tx(
@@ -91,6 +91,14 @@ int mt6797_wifi_hif_pump_dispatch(
 	return 0;
 }
 
+/*
+ * One pass is bounded by work, never by wall-clock time: one WHISR read, eight
+ * WTQCR reads and at most MT6797_WIFI_HIF_RX_BUDGET FIFO packets. GEN3 bounds
+ * its interrupt service the same way (nic/nic.c nicProcessIST(), a loop of
+ * u4HifIstLoopCount passes). A threaded IRQ can be preempted by hard and soft
+ * interrupts for an unbounded time, so elapsed time says nothing about the
+ * health of the interface and must not be reported as a transport fault.
+ */
 int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 			     struct mt6797_wifi_hif_pump_stats *stats,
 			     u32 *acknowledged_status)
@@ -107,13 +115,9 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 	if (!mt6797_wifi_hif_pump_ops_valid(ops) || !stats ||
 	    !acknowledged_status)
 		return -EINVAL;
-	if (ops->expired(ops->context))
-		return -ETIMEDOUT;
 	ret = ops->read_status(ops->context, &status);
 	if (ret)
 		return ret;
-	if (ops->expired(ops->context))
-		return -ETIMEDOUT;
 	*acknowledged_status = status;
 	if (!status)
 		return ops->allow_empty_status ? 0 : -ENODATA;
@@ -124,13 +128,9 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 		return -EIO;
 
 	if (status & MT6797_WIFI_WHISR_TX_DONE) {
-		if (ops->expired(ops->context))
-			return -ETIMEDOUT;
 		ret = ops->read_tx_released(ops->context, released);
 		if (ret)
 			return ret;
-		if (ops->expired(ops->context))
-			return -ETIMEDOUT;
 		ret = mt6797_wifi_hif_pump_account_tx(stats, released);
 		if (ret)
 			return ret;
@@ -139,13 +139,9 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 		return 0;
 
 	while (packets < MT6797_WIFI_HIF_RX_BUDGET) {
-		if (ops->expired(ops->context))
-			return -ETIMEDOUT;
 		ret = ops->read_lengths(ops->context, lengths);
 		if (ret)
 			return ret;
-		if (ops->expired(ops->context))
-			return -ETIMEDOUT;
 		if (!lengths[0] && !lengths[1])
 			return saw_length ? 0 : -ENODATA;
 		saw_length = true;
@@ -159,14 +155,10 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 				return -EMSGSIZE;
 			if (packets == MT6797_WIFI_HIF_RX_BUDGET)
 				return -EOVERFLOW;
-			if (ops->expired(ops->context))
-				return -ETIMEDOUT;
 			ret = ops->read_packet(ops->context, port,
 					       lengths[port], &packet);
 			if (ret)
 				return ret;
-			if (ops->expired(ops->context))
-				return -ETIMEDOUT;
 			ret = mt6797_wifi_rx_parse(packet, lengths[port], &frame);
 			if (ret) {
 				if (ops->reject_packet)
@@ -187,18 +179,12 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 			ret = mt6797_wifi_hif_pump_dispatch(ops, stats, &frame);
 			if (ret)
 				return ret;
-			if (ops->expired(ops->context))
-				return -ETIMEDOUT;
 			packets++;
 		}
 	}
 
-	if (ops->expired(ops->context))
-		return -ETIMEDOUT;
 	ret = ops->read_lengths(ops->context, lengths);
 	if (ret)
 		return ret;
-	if (ops->expired(ops->context))
-		return -ETIMEDOUT;
 	return lengths[0] || lengths[1] ? -EOVERFLOW : 0;
 }

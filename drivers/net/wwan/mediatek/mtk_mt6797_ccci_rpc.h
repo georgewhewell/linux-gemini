@@ -125,6 +125,41 @@ respond:
 	*result = status;
 	return 0;
 }
+/* Log-only identity of a GET_EINT_ATTR request: which vendor DT node name and
+ * attribute type the modem asked for.  Vendor port_rpc.c looks nodes up by the
+ * exact name "MD1_SIM<n>_HOT_PLUG_EINT" (md_eint_node[] lists SIM1..SIM4) and
+ * answers ERR_SIM_HOT_PLUG_QUERY_STRING (-11) for a name with no DT node.
+ * *slot is n for that exact template and 0 for any other name; the raw name is
+ * never returned.  Returns false unless the frame has the three-argument shape.
+ */
+static inline bool mt6797_rpc_eint_query(const u8 *data, size_t len,
+		u32 *slot, u32 *type)
+{
+	static const char prefix[] = "MD1_SIM";
+	static const char suffix[] = "_HOT_PLUG_EINT";
+	const size_t name = sizeof(prefix) - 1 + 1 + sizeof(suffix);
+	size_t cursor;
+	u32 name_len;
+
+	if (!data || !slot || !type || len < 24 || len > 2072 ||
+	    mt6797_rpc_read(data + 20) != 3)
+		return false;
+	name_len = mt6797_rpc_read(data + 24);
+	if (name_len < 2 || name_len > 64)
+		return false;
+	cursor = 28 + ((name_len + 3) & ~3U);
+	if (len < cursor + 16 || mt6797_rpc_read(data + cursor) != 4 ||
+	    mt6797_rpc_read(data + cursor + 8) != 4)
+		return false;
+	*type = mt6797_rpc_read(data + cursor + 12);
+	*slot = 0;
+	if (name_len == name && !memcmp(data + 28, prefix, sizeof(prefix) - 1) &&
+	    data[35] >= '1' && data[35] <= '9' &&
+	    !memcmp(data + 36, suffix, sizeof(suffix)))
+		*slot = data[35] - '0';
+	return true;
+}
+
 /* Vendor default RPC case: one FS_NO_OP argument, not a dropped request.
  * Validate all framing even though an unsupported operation consumes no args.
  */

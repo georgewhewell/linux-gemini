@@ -954,7 +954,13 @@ static int mt6797_md1_cold_enable_srcclk(void *context)
 	void __iomem *infra = backend->base[MT6797_MD1_RES_INFRA];
 	u32 value = readl(infra + MT6797_MD1_INFRA_SRC_CLKENA);
 
-	value = (value & ~0xff) | 0x29;
+	/*
+	 * Vendor eccci/mt6797/cldma_platform.c:md_cd_power_on() with the Gemini
+	 * config (CONFIG_MTK_MD3_SUPPORT=2): clear MD1 bits 1/4/7 (0x92), set
+	 * 0x29, and keep the C2K bits 2/6 (0x44) as found.  The non-MD3 branch
+	 * that cleared the whole low byte is not the vendor build for this board.
+	 */
+	value = (value & ~0x92) | 0x29;
 	return mt6797_md1_cold_write_value(infra, MT6797_MD1_INFRA_SRC_CLKENA,
 					     value);
 }

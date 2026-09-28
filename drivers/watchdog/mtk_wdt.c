@@ -615,7 +615,13 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int mtk_wdt_suspend(struct device *dev)
+/*
+ * Nothing can pet the watchdog while the system sleeps, so stop it.  Do that
+ * in the noirq phase, as late as possible, so that the watchdog still covers
+ * the rest of the suspend sequence and is running again as early as possible
+ * on resume.
+ */
+static int mtk_wdt_suspend_noirq(struct device *dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
 
@@ -625,7 +631,7 @@ static int mtk_wdt_suspend(struct device *dev)
 	return 0;
 }
 
-static int mtk_wdt_resume(struct device *dev)
+static int mtk_wdt_resume_noirq(struct device *dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
 
@@ -654,8 +660,9 @@ static const struct of_device_id mtk_wdt_dt_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, mtk_wdt_dt_ids);
 
-static DEFINE_SIMPLE_DEV_PM_OPS(mtk_wdt_pm_ops,
-				mtk_wdt_suspend, mtk_wdt_resume);
+static const struct dev_pm_ops mtk_wdt_pm_ops = {
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(mtk_wdt_suspend_noirq, mtk_wdt_resume_noirq)
+};
 
 static struct platform_driver mtk_wdt_driver = {
 	.probe		= mtk_wdt_probe,

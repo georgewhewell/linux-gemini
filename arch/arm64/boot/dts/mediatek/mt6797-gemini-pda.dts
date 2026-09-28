@@ -796,9 +796,12 @@
 		interrupts = <8 IRQ_TYPE_EDGE_RISING>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&touchscreen_irq_pins>;
-		/* Vendor reports X/Y swapped and reverses the raw X axis. */
-		touchscreen-inverted-x;
-		touchscreen-swapped-x-y;
+		/*
+		 * The controller reports in the panel's native portrait frame
+		 * (1080x2160), the same frame as the DSI mode.  Display rotation
+		 * is the compositor's job and it rotates touch with the output,
+		 * so no axis swap or inversion belongs here.
+		 */
 		status = "disabled";
 	};
 };

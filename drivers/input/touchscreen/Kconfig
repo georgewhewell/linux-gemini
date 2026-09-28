@@ -704,6 +704,7 @@ config TOUCHSCREEN_NOVATEK_NVT_TS
 config TOUCHSCREEN_NOVATEK_NT36XXX
 	tristate "Novatek legacy NT36xxx touchscreen support"
 	depends on I2C
+	depends on DRM || !DRM
 	help
 	  Say Y here for a Novatek NT36xxx touchscreen using the legacy
 	  reset, xdata, and alternate-target protocol. The driver validates the

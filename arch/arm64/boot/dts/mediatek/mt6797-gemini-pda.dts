@@ -669,6 +669,12 @@
 			pinmux = <MT6797_GPIO66__FUNC_EINT5>;
 		};
 	};
+
+	light_sensor_pins: light-sensor-pins {
+		pins-irq {
+			pinmux = <MT6797_GPIO88__FUNC_EINT11>;
+		};
+	};
 };
 
 &uart0 {
@@ -759,17 +765,41 @@
 
 &i2c1 {
 	/*
-	 * Keep this candidate disabled until the physical ID, rails, and
-	 * interrupt/polling contract are verified on a recoverable image.
-	 * The vendor's logical 0x68 client is rewritten to 0x69 in probe.
+	 * The sensor bus.  The vendor board DT runs it at 400 kHz and the vendor
+	 * DWS lists the IMU and the ambient light/proximity sensor on channel 1.
 	 */
-	bmi160_candidate: bmi160@69 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins_a>;
+	status = "okay";
+
+	/*
+	 * The vendor driver forces the BMI160 client to 0x69 (SDO high) and
+	 * reads chip ID 0xd1 there.  No interrupt is described: no vendor
+	 * source ties INT1 or INT2 to a SoC pin, so the driver polls.  The
+	 * vendor "direction 7" remaps (x, y, z) to (-y, -x, -z) for both the
+	 * accelerometer and the gyroscope.
+	 */
+	imu@69 {
 		compatible = "bosch,bmi160";
 		reg = <0x69>;
 		mount-matrix = "0", "-1", "0",
-				       "-1", "0", "0",
-				       "0", "0", "-1";
-		status = "disabled";
+			       "-1", "0", "0",
+			       "0", "0", "-1";
+	};
+
+	/*
+	 * Sensortek STK3x1x ambient light and proximity sensor (vendor PID
+	 * 0x11, which the driver accepts as an unknown ID), interrupt on
+	 * GPIO88/EINT11, active low.
+	 */
+	light-sensor@48 {
+		compatible = "sensortek,stk3310";
+		reg = <0x48>;
+		interrupt-parent = <&pio>;
+		interrupts = <11 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&light_sensor_pins>;
 	};
 };
 

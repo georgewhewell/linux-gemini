@@ -30,9 +30,13 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/wait.h>
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_CONSYS_STP_SESSION_KUNIT_TEST)
 #include <kunit/test.h>
+#include <linux/completion.h>
+#include <linux/delay.h>
+#include <linux/kthread.h>
 #endif
 
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
@@ -82,6 +86,8 @@ struct mt6797_consys_stp_session {
 	u8 rxack;
 	u8 expected_rxseq;
 	u8 credits;
+	/* Woken when credits are released or the session stops being active. */
+	wait_queue_head_t tx_wait;
 	u8 retries;
 	u8 header[MTK_STP_HEADER_SIZE];
 	u8 header_length;
@@ -120,6 +126,14 @@ static bool mt6797_consys_stp_channel_supported(enum mtk_stp_channel channel)
 static u8 mt6797_consys_stp_header_checksum(const u8 header[MTK_STP_HEADER_SIZE])
 {
 	return header[0] + header[1] + header[2];
+}
+
+/* Every transition out of ACTIVE wakes senders waiting for window credit. */
+static void mt6797_consys_stp_fence_locked(
+		struct mt6797_consys_stp_session *session)
+{
+	session->state = MT6797_CONSYS_STP_FENCED;
+	wake_up_all(&session->tx_wait);
 }
 
 static bool mt6797_consys_stp_lease_valid(
@@ -187,7 +201,7 @@ static int mt6797_consys_stp_transmit_locked(
 		return ret;
 	}
 	if (ret)
-		session->state = MT6797_CONSYS_STP_FENCED;
+		mt6797_consys_stp_fence_locked(session);
 	return ret;
 }
 
@@ -223,7 +237,7 @@ static int mt6797_consys_stp_process_ack_locked(
 	sequence = mt6797_consys_stp_sequence_next(session->rxack);
 	for (;;) {
 		if (!session->tx[sequence].valid) {
-			session->state = MT6797_CONSYS_STP_FENCED;
+			mt6797_consys_stp_fence_locked(session);
 			return -EPROTO;
 		}
 		session->tx[sequence].valid = false;
@@ -236,10 +250,11 @@ static int mt6797_consys_stp_process_ack_locked(
 	session->rxack = ack;
 	session->credits += released;
 	if (session->credits > MT6797_CONSYS_STP_WINDOW_SIZE) {
-		session->state = MT6797_CONSYS_STP_FENCED;
+		mt6797_consys_stp_fence_locked(session);
 		return -EPROTO;
 	}
 	session->retries = 0;
+	wake_up_all(&session->tx_wait);
 	return 0;
 }
 
@@ -398,7 +413,7 @@ static int mt6797_consys_stp_timeout_locked(
 	if (session->credits == MT6797_CONSYS_STP_WINDOW_SIZE)
 		return 0;
 	if (session->retries > MT6797_CONSYS_STP_RETRY_LIMIT) {
-		session->state = MT6797_CONSYS_STP_FENCED;
+		mt6797_consys_stp_fence_locked(session);
 		return -ETIMEDOUT;
 	}
 
@@ -411,7 +426,7 @@ static int mt6797_consys_stp_timeout_locked(
 	sequence = mt6797_consys_stp_sequence_next(session->rxack);
 	while (sequence != session->txseq) {
 		if (!session->tx[sequence].valid) {
-			session->state = MT6797_CONSYS_STP_FENCED;
+			mt6797_consys_stp_fence_locked(session);
 			return -EPROTO;
 		}
 		ret = mt6797_consys_stp_transmit_locked(session,
@@ -424,7 +439,7 @@ static int mt6797_consys_stp_timeout_locked(
 
 	session->retries++;
 	if (session->retries > MT6797_CONSYS_STP_RETRY_LIMIT) {
-		session->state = MT6797_CONSYS_STP_FENCED;
+		mt6797_consys_stp_fence_locked(session);
 		return -ETIMEDOUT;
 	}
 
@@ -457,6 +472,7 @@ mt6797_consys_stp_session_create(const struct mt6797_consys_stp_session_ops *ops
 	}
 
 	mutex_init(&session->lock);
+	init_waitqueue_head(&session->tx_wait);
 	session->ops = *ops;
 	session->lease = lease;
 	session->bootstrap_lease = bootstrap_lease;
@@ -714,7 +730,7 @@ static int mt6797_consys_stp_session_transmit_locked(
 
 	slot = &session->tx[session->txseq];
 	if (slot->valid) {
-		session->state = MT6797_CONSYS_STP_FENCED;
+		mt6797_consys_stp_fence_locked(session);
 		ret = -EPROTO;
 		goto out;
 	}
@@ -772,6 +788,45 @@ int mt6797_consys_stp_session_transmit(
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_transmit);
+
+static bool mt6797_consys_stp_tx_credit_ready(
+		struct mt6797_consys_stp_session *session)
+{
+	return READ_ONCE(session->credits) ||
+		READ_ONCE(session->state) != MT6797_CONSYS_STP_ACTIVE;
+}
+
+int mt6797_consys_stp_session_wait_tx_credit(
+		const struct mt6797_consys_stp_session_lease *lease,
+		unsigned long timeout)
+{
+	struct mt6797_consys_stp_session *session;
+	int ret;
+
+	if (!lease || !lease->session)
+		return -EINVAL;
+	session = lease->session;
+
+	/*
+	 * Vendor hci_stp_tx_wakeup() requeues a BT frame when
+	 * mtk_wcn_stp_send_data() finds the window full, then resumes when STP
+	 * reports TX space (drv_bt/linux/hci_stp.c:601-607). The equivalent
+	 * wakeup here is the cumulative ACK which releases window credits.
+	 */
+	if (!wait_event_timeout(session->tx_wait,
+				mt6797_consys_stp_tx_credit_ready(session),
+				timeout))
+		return -ETIMEDOUT;
+
+	mutex_lock(&session->lock);
+	if (!mt6797_consys_stp_lease_valid(lease))
+		ret = -ESHUTDOWN;
+	else
+		ret = session->credits ? 0 : -EAGAIN;
+	mutex_unlock(&session->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_wait_tx_credit);
 
 int mt6797_consys_stp_session_bootstrap_transmit(
 		const struct mt6797_consys_stp_session_bootstrap_lease *lease,
@@ -970,7 +1025,7 @@ void mt6797_consys_stp_session_quiesce(struct mt6797_consys_stp_session *session
 		return;
 
 	mutex_lock(&session->lock);
-	session->state = MT6797_CONSYS_STP_FENCED;
+	mt6797_consys_stp_fence_locked(session);
 	mt6797_consys_stp_reset_parser(session);
 	mutex_unlock(&session->lock);
 }
@@ -1122,6 +1177,66 @@ static void mt6797_consys_stp_test_credit_exhaustion(struct kunit *test)
 							 sizeof(ack)), 0);
 	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_transmit(lease,
 					 MTK_STP_WMT, &payload, sizeof(payload)), 0);
+	mt6797_consys_stp_session_destroy(session);
+}
+
+struct mt6797_consys_stp_test_late_ack {
+	struct mt6797_consys_stp_session *session;
+	struct completion done;
+	int ret;
+};
+
+static int mt6797_consys_stp_test_late_ack_thread(void *data)
+{
+	struct mt6797_consys_stp_test_late_ack *late = data;
+	static const u8 ack[] = { 0x80, 0x00, 0x00, 0x80 };
+
+	msleep(20);
+	late->ret = mt6797_consys_stp_session_receive(late->session, ack,
+						      sizeof(ack));
+	complete(&late->done);
+	return 0;
+}
+
+static void mt6797_consys_stp_test_credit_wait(struct kunit *test)
+{
+	const struct mt6797_consys_stp_session_lease *lease;
+	struct mt6797_consys_stp_test_late_ack late;
+	struct mt6797_consys_stp_test_link *link;
+	struct mt6797_consys_stp_session *session;
+	struct task_struct *task;
+	u8 payload = 0;
+	unsigned int index;
+
+	session = mt6797_consys_stp_test_session(test, &link, &lease);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_wait_tx_credit(lease, 1),
+			0);
+	for (index = 0; index < MT6797_CONSYS_STP_WINDOW_SIZE; index++)
+		KUNIT_ASSERT_EQ(test, mt6797_consys_stp_session_transmit(lease,
+					 MTK_STP_BT, &payload, sizeof(payload)), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_wait_tx_credit(lease, 1),
+			-ETIMEDOUT);
+
+	/* A cumulative ACK from the receive path wakes the blocked sender. */
+	late.session = session;
+	late.ret = -EINPROGRESS;
+	init_completion(&late.done);
+	task = kthread_run(mt6797_consys_stp_test_late_ack_thread, &late,
+			   "stp-late-ack");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(task));
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_wait_tx_credit(lease, HZ),
+			0);
+	wait_for_completion(&late.done);
+	KUNIT_EXPECT_EQ(test, late.ret, 0);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_transmit(lease,
+					 MTK_STP_BT, &payload, sizeof(payload)), 0);
+
+	/* Quiesce releases waiters with a terminal result. */
+	mt6797_consys_stp_session_quiesce(session);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_wait_tx_credit(lease, HZ),
+			-ESHUTDOWN);
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_wait_tx_credit(NULL, 1),
+			-EINVAL);
 	mt6797_consys_stp_session_destroy(session);
 }
 
@@ -1498,6 +1613,7 @@ static void mt6797_consys_stp_test_null_session_lease_is_rejected(
 static struct kunit_case mt6797_consys_stp_session_test_cases[] = {
 	KUNIT_CASE(mt6797_consys_stp_test_wraparound),
 	KUNIT_CASE(mt6797_consys_stp_test_credit_exhaustion),
+	KUNIT_CASE(mt6797_consys_stp_test_credit_wait),
 	KUNIT_CASE(mt6797_consys_stp_test_backpressure_releases_frame_slot),
 	KUNIT_CASE(mt6797_consys_stp_test_cumulative_ack),
 	KUNIT_CASE(mt6797_consys_stp_test_duplicate_and_out_of_order),

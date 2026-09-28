@@ -163,6 +163,17 @@ int mt6797_consys_stp_session_transmit(
 		const struct mt6797_consys_stp_session_lease *lease,
 		enum mtk_stp_channel channel, const u8 *payload, size_t payload_length);
 
+/*
+ * Sleep until the seven-frame full-STP window has a free credit, the session
+ * stops being active, or @timeout jiffies elapse. Returns 0 when a transmit
+ * may be retried, -ESHUTDOWN once the capability is inactive, -ETIMEDOUT on
+ * timeout, and -EAGAIN if another sender consumed the released credit. The
+ * caller must keep the capability's owning session alive across the wait.
+ */
+int mt6797_consys_stp_session_wait_tx_credit(
+		const struct mt6797_consys_stp_session_lease *lease,
+		unsigned long timeout);
+
 /* Feed arbitrary full-STP byte fragments from the owning transport. */
 int mt6797_consys_stp_session_receive(struct mt6797_consys_stp_session *session,
 						      const u8 *data, size_t length);

@@ -146,7 +146,7 @@ static void mt6797_md1_backend_srcclk_restores_snapshot(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, mt6797_md1_bringup_backend_enable_srcclk(&memory->backend),
 				0);
 	KUNIT_EXPECT_EQ(test, readl(memory->infracfg + MT6797_MD1_INFRA_SRC_CLKENA),
-		(original & ~0xff) | 0x29);
+		(original & ~0x92) | 0x29);
 	KUNIT_EXPECT_EQ(test,
 		mt6797_md1_bringup_backend_power_off_reset_held(&memory->backend), 0);
 	KUNIT_EXPECT_EQ(test, readl(memory->infracfg + MT6797_MD1_INFRA_SRC_CLKENA),

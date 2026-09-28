@@ -319,7 +319,13 @@ int mt6797_md1_bringup_backend_enable_srcclk(void *context)
 	backend->srcclk_original = readl(backend->infracfg +
 					  MT6797_MD1_INFRA_SRC_CLKENA);
 	backend->srcclk_valid = true;
-	value = (backend->srcclk_original & ~0xff) | 0x29;
+	/*
+	 * Vendor eccci/mt6797/cldma_platform.c:md_cd_power_on() with the Gemini
+	 * config (CONFIG_MTK_MD3_SUPPORT=2): clear MD1 bits 1/4/7 (0x92), set
+	 * 0x29, and keep the C2K bits 2/6 (0x44) as found.  The non-MD3 branch
+	 * that cleared the whole low byte is not the vendor build for this board.
+	 */
+	value = (backend->srcclk_original & ~0x92) | 0x29;
 	ret = mt6797_md1_bringup_write_verify(backend->infracfg,
 		MT6797_MD1_INFRA_SRC_CLKENA, value);
 	if (ret && backend->dev)

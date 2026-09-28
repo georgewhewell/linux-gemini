@@ -17,7 +17,49 @@
 /dts-v1/;
 /plugin/;
 
+#include <dt-bindings/clock/mt6797-clk.h>
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/mt6797-pinfunc.h>
+
+&{/} {
+	/*
+	 * The vendor lcd-backlight LED node (aeon6797_6m_n.dts led@6) uses
+	 * led_mode 5, MT65XX_LED_MODE_CUST_BLS_PWM: brightness is set only by
+	 * the SoC display PWM, with 1024 duty steps and 0 turning the PWM off.
+	 * The panel init table writes DCS brightness 0xff once and never
+	 * changes it.  The MT6797 LK boots the backlight at LED_FULL, which it
+	 * maps to the full 1023/1023 duty, so start at the top level too.
+	 */
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&disp_pwm 0 39385>;
+		brightness-levels = <0 1023>;
+		num-interpolated-steps = <1023>;
+		default-brightness-level = <1023>;
+	};
+};
+
+&pio {
+	disp_pwm_pins: disp-pwm-pins {
+		pins-pwm {
+			pinmux = <MT6797_GPIO178__FUNC_DISP_PWM>;
+		};
+	};
+};
+
+/*
+ * The vendor pwm_config is all zero: clock source 0 and divider 0.  The
+ * MT6797 LK writes that source into the topckgen PWM mux (CLK_CFG_1 bits
+ * 1:0), selecting clk26m, and programs a 1024-count period: 39385 ns, or
+ * 25.4 kHz.  Keep that clock explicitly rather than inheriting it.
+ */
+&disp_pwm {
+	pinctrl-names = "default";
+	pinctrl-0 = <&disp_pwm_pins>;
+	assigned-clocks = <&topckgen CLK_TOP_MUX_PWM>;
+	assigned-clock-parents = <&clk26m>;
+	status = "okay";
+};
 
 &i2c1 {
 	#address-cells = <1>;
@@ -181,6 +223,7 @@
 		/* Vendor aeon6797_6m_n.dts identifies GPIO180 as LCM_RST. */
 		reset-gpios = <&pio 180 GPIO_ACTIVE_HIGH>;
 		rotation = <270>;
+		backlight = <&backlight>;
 		port { gemini_panel_in: endpoint { remote-endpoint = <&gemini_dsi0_out>; }; };
 	};
 };

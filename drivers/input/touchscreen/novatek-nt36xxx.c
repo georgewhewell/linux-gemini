@@ -16,8 +16,15 @@
 #include <linux/property.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
+#include <linux/workqueue.h>
+
+#include <drm/drm_panel.h>
 
 #include "novatek-nt36xxx.h"
+
+/* Bounded retries of a failed controller restart. */
+#define NVT36XXX_START_RETRIES		5
+#define NVT36XXX_START_RETRY_MS		200
 
 struct nvt36xxx_data {
 	struct i2c_client *client;
@@ -30,6 +37,17 @@ struct nvt36xxx_data {
 	u8 event[NVT36XXX_EVENT_DATA_LEN];
 	u32 raw_x_max;
 	u32 raw_y_max;
+	/*
+	 * The following are protected by input->mutex.  @running is true while
+	 * the controller has been restarted and its IRQ is enabled.
+	 */
+	bool running;
+	bool suspended;
+	bool is_panel_follower;
+	bool panel_prepared;
+	unsigned int start_retries;
+	struct delayed_work start_work;
+	struct drm_panel_follower panel_follower;
 };
 
 static int nvt36xxx_write(struct nvt36xxx_data *data, u16 target,
@@ -297,9 +315,13 @@ out:
 	return IRQ_HANDLED;
 }
 
+/* The caller holds input->mutex. */
 static int nvt36xxx_start(struct nvt36xxx_data *data)
 {
 	int ret;
+
+	if (data->running)
+		return 0;
 
 	mutex_lock(&data->lock);
 	ret = nvt36xxx_restart(data);
@@ -309,31 +331,153 @@ static int nvt36xxx_start(struct nvt36xxx_data *data)
 	 * Do not expose post-reset I2C traffic to the event handler until the
 	 * controller has passed the bounded reset-state gate.
 	 */
-	if (!ret)
-		enable_irq(data->client->irq);
+	if (ret)
+		return ret;
 
-	return ret;
+	enable_irq(data->client->irq);
+	data->running = true;
+
+	return 0;
+}
+
+/* The caller holds input->mutex. */
+static void nvt36xxx_stop(struct nvt36xxx_data *data)
+{
+	if (!data->running)
+		return;
+
+	disable_irq(data->client->irq);
+	data->running = false;
+
+	/* Release any contacts that were down when reporting stopped. */
+	input_mt_sync_frame(data->input);
+	input_report_key(data->input, BTN_TOUCH, 0);
+	input_sync(data->input);
+}
+
+/*
+ * When the touchscreen follows its panel, the panel's power sequence resets
+ * the controller, so it can only be started while the panel is prepared.
+ */
+static bool nvt36xxx_want_running(struct nvt36xxx_data *data)
+{
+	if (data->suspended || !input_device_enabled(data->input))
+		return false;
+
+	return !data->is_panel_follower || data->panel_prepared;
+}
+
+/*
+ * Start reporting if it is wanted.  A failed restart is reported and retried
+ * a bounded number of times, so that a controller which was still coming out
+ * of reset does not leave the touchscreen dead.  The caller holds
+ * input->mutex.
+ */
+static void nvt36xxx_update(struct nvt36xxx_data *data)
+{
+	struct device *dev = &data->client->dev;
+	int ret;
+
+	if (!nvt36xxx_want_running(data) || data->running) {
+		data->start_retries = 0;
+		return;
+	}
+
+	ret = nvt36xxx_start(data);
+	if (!ret) {
+		data->start_retries = 0;
+		return;
+	}
+
+	if (data->start_retries >= NVT36XXX_START_RETRIES) {
+		dev_err(dev, "controller restart failed: %d; giving up\n", ret);
+		data->start_retries = 0;
+		return;
+	}
+
+	data->start_retries++;
+	dev_warn(dev, "controller restart failed: %d; retry %u of %u\n", ret,
+		 data->start_retries, NVT36XXX_START_RETRIES);
+	mod_delayed_work(system_wq, &data->start_work,
+			 msecs_to_jiffies(NVT36XXX_START_RETRY_MS));
+}
+
+static void nvt36xxx_start_work(struct work_struct *work)
+{
+	struct nvt36xxx_data *data =
+		container_of(to_delayed_work(work), struct nvt36xxx_data,
+			     start_work);
+
+	guard(mutex)(&data->input->mutex);
+	nvt36xxx_update(data);
+}
+
+static void nvt36xxx_cancel_start_work(void *data)
+{
+	struct nvt36xxx_data *nvt = data;
+
+	cancel_delayed_work_sync(&nvt->start_work);
 }
 
 static int nvt36xxx_open(struct input_dev *input)
 {
-	return nvt36xxx_start(input_get_drvdata(input));
+	nvt36xxx_update(input_get_drvdata(input));
+
+	return 0;
 }
 
 static void nvt36xxx_close(struct input_dev *input)
 {
-	struct nvt36xxx_data *data = input_get_drvdata(input);
-
-	disable_irq(data->client->irq);
+	nvt36xxx_stop(input_get_drvdata(input));
 }
+
+static int nvt36xxx_panel_prepared(struct drm_panel_follower *follower)
+{
+	struct nvt36xxx_data *data =
+		container_of(follower, struct nvt36xxx_data, panel_follower);
+
+	guard(mutex)(&data->input->mutex);
+	data->panel_prepared = true;
+	/* The panel power-on has just reset the controller: restart it. */
+	nvt36xxx_stop(data);
+	data->start_retries = 0;
+	nvt36xxx_update(data);
+
+	return 0;
+}
+
+static int nvt36xxx_panel_unpreparing(struct drm_panel_follower *follower)
+{
+	struct nvt36xxx_data *data =
+		container_of(follower, struct nvt36xxx_data, panel_follower);
+
+	cancel_delayed_work_sync(&data->start_work);
+
+	guard(mutex)(&data->input->mutex);
+	nvt36xxx_stop(data);
+	data->panel_prepared = false;
+
+	return 0;
+}
+
+static const struct drm_panel_follower_funcs nvt36xxx_panel_follower_funcs = {
+	.panel_prepared = nvt36xxx_panel_prepared,
+	.panel_unpreparing = nvt36xxx_panel_unpreparing,
+};
 
 static int nvt36xxx_suspend(struct device *dev)
 {
 	struct nvt36xxx_data *data = i2c_get_clientdata(to_i2c_client(dev));
 
+	/* A panel follower is stopped and started with its panel. */
+	if (data->is_panel_follower)
+		return 0;
+
+	cancel_delayed_work_sync(&data->start_work);
+
 	guard(mutex)(&data->input->mutex);
-	if (input_device_enabled(data->input))
-		disable_irq(data->client->irq);
+	data->suspended = true;
+	nvt36xxx_stop(data);
 
 	return 0;
 }
@@ -342,11 +486,15 @@ static int nvt36xxx_resume(struct device *dev)
 {
 	struct nvt36xxx_data *data = i2c_get_clientdata(to_i2c_client(dev));
 
-	guard(mutex)(&data->input->mutex);
-	if (!input_device_enabled(data->input))
+	if (data->is_panel_follower)
 		return 0;
 
-	return nvt36xxx_start(data);
+	guard(mutex)(&data->input->mutex);
+	data->suspended = false;
+	data->start_retries = 0;
+	nvt36xxx_update(data);
+
+	return 0;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(nvt36xxx_pm_ops, nvt36xxx_suspend,
@@ -437,11 +585,29 @@ static int nvt36xxx_probe(struct i2c_client *client)
 		return ret;
 
 	data->input = input;
+	INIT_DELAYED_WORK(&data->start_work, nvt36xxx_start_work);
+	ret = devm_add_action_or_reset(dev, nvt36xxx_cancel_start_work, data);
+	if (ret)
+		return ret;
+
 	ret = devm_request_threaded_irq(dev, client->irq, NULL, nvt36xxx_irq,
 					IRQF_ONESHOT | IRQF_NO_AUTOEN,
 					dev_name(dev), data);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request IRQ\n");
+
+	/*
+	 * With a panel reference, the panel's reset sequence also resets the
+	 * controller, so reporting is started and stopped with the panel.
+	 * Follow it before the input device can be opened.
+	 */
+	if (drm_is_panel_follower(dev)) {
+		data->is_panel_follower = true;
+		data->panel_follower.funcs = &nvt36xxx_panel_follower_funcs;
+		ret = devm_drm_panel_add_follower(dev, &data->panel_follower);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to follow panel\n");
+	}
 
 	/* The IRQ stays disabled until the first open restarts the controller. */
 	ret = input_register_device(input);

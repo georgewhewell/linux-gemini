@@ -43,6 +43,8 @@ struct mtk_musb_data {
 	const char *const *clock_names;
 	unsigned int num_clocks;
 	const struct musb_hdrc_config *hdrc_config;
+	/* Extra musb_platform_ops quirks for this instance. */
+	u32 quirks;
 };
 
 struct mtk_glue {
@@ -57,6 +59,7 @@ struct mtk_glue {
 	struct clk_bulk_data clks[MTK_MUSB_CLKS_NUM];
 	enum usb_role role;
 	struct usb_role_switch *role_sw;
+	struct musb_platform_ops ops;
 };
 
 static int mtk_musb_clks_get(struct mtk_glue *glue)
@@ -445,6 +448,14 @@ static const struct mtk_musb_data mt6797_usb11_data = {
 	.clock_names = mt6797_usb11_clock_names,
 	.num_clocks = ARRAY_SIZE(mt6797_usb11_clock_names),
 	.hdrc_config = &mt6797_usb11_hdrc_config,
+	/*
+	 * USB11 is a host-only port whose A-device session is forced in the
+	 * PHY.  Keep the session across system sleep, so that the attached
+	 * device is only USB-suspended by the hub and resumed: with the
+	 * session ended and restarted, the attached device was lost and never
+	 * enumerated again.
+	 */
+	.quirks = MUSB_PRESERVE_SESSION,
 };
 
 static const struct platform_device_info mtk_dev_info = {
@@ -485,7 +496,9 @@ static int mtk_musb_probe(struct platform_device *pdev)
 		return ret;
 
 	pdata->config = glue->data->hdrc_config;
-	pdata->platform_ops = &mtk_musb_ops;
+	glue->ops = mtk_musb_ops;
+	glue->ops.quirks |= glue->data->quirks;
+	pdata->platform_ops = &glue->ops;
 	pdata->mode = usb_get_dr_mode(dev);
 
 	if (IS_ENABLED(CONFIG_USB_MUSB_HOST))

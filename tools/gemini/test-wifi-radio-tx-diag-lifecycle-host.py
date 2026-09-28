@@ -12,7 +12,7 @@ base = runpy.run_path(str(Path(__file__).with_name('test-wifi-radio-tx-host.py')
 program = base['program'].split('int main(void) {')[0]
 radio = (base['driver'] / 'radio.c').read_text()
 program = program.replace('bool stopped; };', 'bool stopped; char name[16]; const void *netdev_ops; const struct attribute_group *sysfs_groups[5]; };')
-program = program.replace('struct wiphy { int dummy; };', 'struct wiphy { unsigned interface_modes,signal_type,max_scan_ssids,n_cipher_suites; const u32 *cipher_suites; struct ieee80211_supported_band *bands[2]; u8 perm_addr[6]; };')
+program = program.replace('struct wiphy { int dummy; };', 'struct wiphy { unsigned interface_modes,signal_type,max_scan_ssids,n_cipher_suites,features; const u32 *cipher_suites; const void *mgmt_stypes; struct ieee80211_supported_band *bands[2]; u8 perm_addr[6]; };')
 program = program.replace('struct wireless_dev { struct wiphy *wiphy; };', 'struct wireless_dev { struct wiphy *wiphy; unsigned iftype; struct net_device *netdev; };')
 program = program.replace('struct ieee80211_supported_band { int dummy; };', 'struct ieee80211_supported_band { struct ieee80211_channel *channels; struct ieee80211_rate *bitrates; unsigned n_channels,n_bitrates; };')
 program = program.replace('struct ieee80211_channel { int dummy; };', 'struct ieee80211_channel { unsigned band,hw_value,center_freq,max_power; };')
@@ -29,6 +29,7 @@ program += r'''
 #define CFG80211_SIGNAL_TYPE_MBM 1
 #define WLAN_CIPHER_SUITE_CCMP 0x000fac04
 #define WLAN_CIPHER_SUITE_AES_CMAC 0x000fac06
+#define NL80211_FEATURE_SAE (1U<<5)
 #define IFNAMSIZ 16
 #define ERR_PTR(error) ((void *)(intptr_t)(error))
 #define PTR_ERR(pointer) ((int)(intptr_t)(pointer))
@@ -39,7 +40,7 @@ program += r'''
 #define INIT_WORK(work,callback) do { (void)(work); (void)(callback); } while(0)
 #define INIT_DELAYED_WORK(work,callback) do { (void)(work); (void)(callback); } while(0)
 #define SET_NETDEV_DEV(netdev,parent) do { (void)(netdev); (void)(parent); } while(0)
-static const int mt6797_radio_ops,mt6797_radio_netdev_ops;
+static const int mt6797_radio_ops,mt6797_radio_netdev_ops,mt6797_radio_mgmt_stypes[1];
 static struct wiphy registered_wiphy;
 static struct device parent;
 static bool wiphy_alive,netdev_alive,sysfs_published;
@@ -135,9 +136,10 @@ int main(void) {
  registry_setup(0); test_time=8;
  assert(mt6797_wifi_radio_register(&parent,&irq,NULL,&capability)==&r);
  assert(r.tx_diag.lifetime_start_ns==8000000 && sysfs_published); check_snapshot();
- /* PMF advertisement: BIP-CMAC-128 next to CCMP. */
+ /* PMF/WPA3 advertisement: BIP-CMAC-128, SAE via external auth, auth frame RX/TX. */
  assert(registered_wiphy.n_cipher_suites==2 && registered_wiphy.cipher_suites[0]==WLAN_CIPHER_SUITE_CCMP);
  assert(registered_wiphy.cipher_suites[1]==WLAN_CIPHER_SUITE_AES_CMAC);
+ assert(registered_wiphy.features==NL80211_FEATURE_SAE && registered_wiphy.mgmt_stypes==mt6797_radio_mgmt_stypes);
  r.connection=&c; c.connected=c.authorized=true;
  submit(ETH_P_IP); submit(ETH_P_IP); check_snapshot();
  mt6797_radio_stop(&dev);

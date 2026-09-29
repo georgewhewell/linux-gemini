@@ -29,8 +29,10 @@ program = r'''
 #define NL80211_BAND_5GHZ 1
 #define IEEE80211_CHAN_DISABLED 1
 struct channel { unsigned band, flags; };
+struct cfg80211_ssid { unsigned char ssid[32]; unsigned ssid_len; };
 struct cfg80211_scan_request {
  unsigned n_ssids, ie_len, n_channels; uint32_t flags;
+ struct cfg80211_ssid *ssids;
  struct channel **channels;
 };
 struct mt6797_wifi_radio {
@@ -48,6 +50,8 @@ static void queue_work(int wq, int *work) { (void)wq; (void)work; queued++; }
 '''
 program += flags + '\n' + callback
 program += r'''
+/* Length of the first requested SSID; 0 is the wildcard. */
+static unsigned first_ssid_len;
 static void check(unsigned flags, unsigned ssids, unsigned ies, unsigned count,
                   unsigned band, unsigned channel_flags, bool stopping,
                   unsigned busy, int expected) {
@@ -55,8 +59,9 @@ static void check(unsigned flags, unsigned ssids, unsigned ies, unsigned count,
  struct wiphy wiphy={ .radio=&radio };
  struct channel channel={ .band=band, .flags=channel_flags };
  struct channel *channels[]={&channel};
+ struct cfg80211_ssid ssid_list[2]={ { .ssid_len=first_ssid_len }, { .ssid_len=0 } };
  struct cfg80211_scan_request request={ .n_ssids=ssids, .ie_len=ies,
-  .n_channels=count, .flags=flags, .channels=channels };
+  .n_channels=count, .flags=flags, .ssids=ssid_list, .channels=channels };
  if (busy==1) radio.request=&request;
  if (busy==2) radio.connection=(void *)1;
  queued=0;
@@ -76,7 +81,13 @@ int main(void) {
   if(flag==NL80211_SCAN_FLAG_COLOCATED_6GHZ) continue;
   check(flag|NL80211_SCAN_FLAG_COLOCATED_6GHZ,0,0,1,0,0,false,false,-EOPNOTSUPP);
  }
+ /* wpa_supplicant's lone wildcard SSID is served by the passive scan. */
+ check(0,1,0,1,0,0,false,false,0);
+ /* A named SSID (hidden network) or a second SSID needs probe requests. */
+ first_ssid_len=4;
  check(0,1,0,1,0,0,false,false,-EOPNOTSUPP);
+ first_ssid_len=0;
+ check(0,2,0,1,0,0,false,false,-EOPNOTSUPP);
  check(0,0,1,1,0,0,false,false,-EOPNOTSUPP);
  check(0,0,0,0,0,0,false,false,-EINVAL);
  check(0,0,0,1,2,0,false,false,-EINVAL);
@@ -84,7 +95,7 @@ int main(void) {
  check(0,0,0,1,0,0,true,false,-ESHUTDOWN);
  check(0,0,0,1,0,0,false,true,-EBUSY);
  check(0,0,0,1,0,0,false,2,-EBUSY);
- puts("PASS: plain/default-iw scans, unsupported flags/SSID/IE, channel bounds, stopping and busy; rejected requests never queued");
+ puts("PASS: plain/default-iw/wildcard-SSID scans, unsupported flags/named SSID/IE, channel bounds, stopping and busy; rejected requests never queued");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='mt6797-radio-admission-') as tmp:

@@ -439,8 +439,15 @@ static int mt6797_radio_scan(struct wiphy *wiphy,
 	unsigned int index;
 	int ret = 0;
 
-	/* iw adds COLOCATED_6GHZ by default; this wiphy has no 6 GHz band. */
-	if (request->n_ssids || request->ie_len ||
+	/*
+	 * The firmware scan is passive, so no probe request is sent: a lone
+	 * wildcard SSID (wpa_supplicant always asks for one) finds the same
+	 * beaconing BSSs, while a named SSID for a hidden network cannot be
+	 * served. iw adds COLOCATED_6GHZ by default; there is no 6 GHz band.
+	 */
+	if (request->n_ssids > 1 ||
+	    (request->n_ssids && request->ssids[0].ssid_len) ||
+	    request->ie_len ||
 	    (request->flags & ~NL80211_SCAN_FLAG_COLOCATED_6GHZ))
 		return -EOPNOTSUPP;
 	if (!request->n_channels)
@@ -2648,7 +2655,8 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 	set_wiphy_dev(wiphy, dev);
 	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
 	wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
-	wiphy->max_scan_ssids = 0;
+	/* Only the wildcard SSID; see mt6797_radio_scan(). */
+	wiphy->max_scan_ssids = 1;
 	wiphy->cipher_suites = ciphers;
 	wiphy->n_cipher_suites = ARRAY_SIZE(ciphers);
 	/* WPA3-Personal: user space runs SAE via NL80211_CMD_EXTERNAL_AUTH. */

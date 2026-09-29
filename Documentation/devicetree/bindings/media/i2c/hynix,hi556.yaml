@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/hynix,hi556.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: SK Hynix Hi-556 5M Pixel MIPI CSI-2 sensor
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description:
+  The Hi-556 is a raw Bayer image sensor with a two-lane MIPI CSI-2
+  data interface and a CCI (I2C compatible) control bus.
+
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
+properties:
+  compatible:
+    const: hynix,hi556
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: External clock (MCLK).
+
+  reset-gpios:
+    description: GPIO connected to the RESETB pin. Active low.
+    maxItems: 1
+
+  powerdown-gpios:
+    description: GPIO that holds the sensor in power down when asserted.
+    maxItems: 1
+
+  dovdd-supply:
+    description: Digital I/O supply.
+
+  avdd-supply:
+    description: Analog supply.
+
+  dvdd-supply:
+    description: Digital core supply.
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    unevaluatedProperties: false
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          data-lanes:
+            items:
+              - const: 1
+              - const: 2
+
+          link-frequencies: true
+
+        required:
+          - data-lanes
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - dovdd-supply
+  - avdd-supply
+  - dvdd-supply
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        camera@20 {
+            compatible = "hynix,hi556";
+            reg = <0x20>;
+            clocks = <&mclk 1>;
+            assigned-clocks = <&mclk 1>;
+            assigned-clock-rates = <24000000>;
+            dovdd-supply = <&vcamio>;
+            avdd-supply = <&vcama>;
+            dvdd-supply = <&vcamd>;
+            reset-gpios = <&pio 33 GPIO_ACTIVE_LOW>;
+            powerdown-gpios = <&pio 29 GPIO_ACTIVE_LOW>;
+
+            port {
+                endpoint {
+                    data-lanes = <1 2>;
+                };
+            };
+        };
+    };
+...

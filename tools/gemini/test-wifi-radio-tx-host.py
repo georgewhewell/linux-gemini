@@ -221,8 +221,18 @@ int main(void) {
  body[1]=0; assert(!mt6797_radio_eapol_pairwise_message(body,99)); body[1]=3;
  body[4]=254; assert(!mt6797_radio_eapol_pairwise_message(body,99)); body[4]=2;
  body[98]=1; assert(!mt6797_radio_eapol_pairwise_message(body,99)); body[98]=0;
- body[3]=96; assert(!mt6797_radio_eapol_pairwise_message(body,99));
+ body[3]=96; assert(!mt6797_radio_eapol_pairwise_message(body,99)); body[3]=95;
+ /* Descriptor versions: 0 (SAE), 2 (PSK) and 3 (PSK-SHA256) share the layout. */
+ for(unsigned version=0;version<8;version++) {
+  bool admitted=version==0 || version==2 || version==3;
+  body[6]=0xc8|version; assert(mt6797_radio_eapol_pairwise_message(body,99)==(admitted?3:0));
+  body[5]=0x03; body[6]=0x08|version; assert(mt6797_radio_eapol_pairwise_message(body,99)==(admitted?4:0));
+  body[5]=0x13;
+ }
  free(key);
+ /* SAE M4 after a plaintext M3 stays plaintext, as for WPA2. */
+ setup(); c.pairwise_reply_plaintext=true;
+ assert(!mt6797_radio_xmit(eapol(0x0308,0),&dev)); run(); assert(sends==1 && !(captured[6]&0x80));
  setup(); c.join.negotiated.security=MT6797_WIFI_AIS_SECURITY_OPEN; submit(ETH_P_IP); run(); assert(sends==1 && !(captured[6]&0x80));
  setup(); struct sk_buff *skb=packet(ETH_P_IP); memset(skb->data,255,6);
  assert(!mt6797_radio_xmit(skb,&dev)); run(); assert(sends==1 && captured[4]==3 && (captured[6]&0x80));

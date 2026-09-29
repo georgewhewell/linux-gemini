@@ -584,7 +584,7 @@ static int mt6797_radio_link_event(void *context,
 static unsigned int mt6797_radio_eapol_pairwise_message(const u8 *payload,
 	size_t length)
 {
-	u16 body_length, key_data_length, info;
+	u16 body_length, key_data_length, info, version;
 
 	if (!payload || length < 99 || (payload[0] != 1 && payload[0] != 2) ||
 	    payload[1] != 3 || payload[4] != 2)
@@ -594,8 +594,14 @@ static unsigned int mt6797_radio_eapol_pairwise_message(const u8 *payload,
 	if (body_length != 95U + key_data_length || 4U + body_length > length)
 		return 0;
 	info = get_unaligned_be16(payload + 5);
-	/* Descriptor version2, pairwise, MIC; no reserved/error/request/SMK bits. */
-	if ((info & 0x010f) != 0x010a || (info & 0xec30))
+	version = info & 7;
+	/*
+	 * Pairwise, MIC; no reserved/error/request/SMK bits. Descriptor version
+	 * 2 (PSK), 3 (PSK-SHA256) or 0 (AKM-defined: SAE). Every AKM connect
+	 * admits has a 16-octet MIC, so the offsets above hold for all three.
+	 */
+	if ((info & 0x0108) != 0x0108 || (info & 0xec30) ||
+	    (version != 0 && version != 2 && version != 3))
 		return 0;
 	if (info & 0x0080)
 		return 3;

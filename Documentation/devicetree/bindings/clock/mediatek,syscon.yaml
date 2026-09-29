@@ -96,7 +96,9 @@ if:
   properties:
     compatible:
       contains:
-        const: mediatek,mt8183-mfgcfg
+        enum:
+          - mediatek,mt6797-camsys
+          - mediatek,mt8183-mfgcfg
 then:
   properties:
     power-domains: true

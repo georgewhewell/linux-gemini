@@ -32,6 +32,7 @@ unregistration = function((clk / "clk-gate.c").read_text(), "mtk_clk_unregister_
 shim = r'''
 #include <assert.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,7 +55,8 @@ struct mtk_gate { unsigned id; const char *name; const char *parent_name;
 int mtk_clk_gate_ops_setclr, mtk_clk_gate_ops_setclr_inv;
 #define GATE_MTK(i,n,p,r,s,o) {i,n,p,r,s,o}
 struct mtk_clk_desc { const struct mtk_gate *clks; size_t num_clks, num_clk_ids;
- size_t num_composite_clks, num_fixed_clks, num_factor_clks, num_mux_clks, num_divider_clks; };
+ size_t num_composite_clks, num_fixed_clks, num_factor_clks, num_mux_clks, num_divider_clks;
+ bool need_runtime_pm; };
 static struct regmap map;
 static struct regmap *device_node_to_regmap(struct device_node *n) {(void)n;return &map;}
 static struct regmap *mtk_clk_get_hwv_regmap(struct device_node *n) {(void)n;return NULL;}

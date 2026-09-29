@@ -107,6 +107,7 @@ static struct {
  bool expired;
  int pm_error;
  unsigned pm_finishes,pm_aborts,igtk_cleanups,sae_runs;
+ int stop_error; unsigned fences;
 } test;
 static int stage(enum stage stage) {
  assert(stage>test.last); test.last=stage; test.stages++;
@@ -181,7 +182,11 @@ int mt6797_wifi_ais_hif_associate(struct mt6797_wifi_ais_hif *ais,
 int mt6797_wifi_ais_hif_stop(struct mt6797_wifi_ais_hif *ais) {
  assert(!test.radio->irq->attached && test.igtk_cleanups==1);
  assert(ais->runtime.state==MT6797_WIFI_AIS_RUNTIME_STA_STATE1 || ais->runtime.state==MT6797_WIFI_AIS_RUNTIME_STA_STATE3);
- test.stops++; ais->runtime.state=MT6797_WIFI_AIS_RUNTIME_STOPPED; return 0;
+ test.stops++; if(test.stop_error) return test.stop_error;
+ ais->runtime.state=MT6797_WIFI_AIS_RUNTIME_STOPPED; return 0;
+}
+static void mt6797_wifi_hif_runtime_fail(struct mt6797_wifi_hif_irq *irq,int reason) {
+ assert(irq==test.radio->irq && reason==test.stop_error); test.fences++;
 }
 static void cfg80211_connect_result(struct net_device *netdev,const u8 *bssid,
  const u8 *req,size_t req_len,const u8 *resp,size_t resp_len,u16 status,int allocation) {
@@ -276,8 +281,13 @@ int main(void) {
  r.connection->cancel=true; r.connection->reason=3;
  mt6797_radio_connection_work(&r.connection_work);
  assert(test.disconnected==1 && test.detaches==1 && test.stops==1 && r.management_pid==9);
- assert(test.pm_aborts==1);
+ assert(test.pm_aborts==1 && !test.fences);
  check_freed();
+ /* A failed BSS leave leaves firmware joined: the transport is fenced once. */
+ setup(&r,&irq,NONE,NONE); mt6797_radio_connection_work(&r.connection_work);
+ test.stop_error=-EALREADY; r.connection->cancel=true;
+ mt6797_radio_connection_work(&r.connection_work);
+ assert(test.disconnected==1 && test.stops==1 && test.fences==1); check_freed();
  for(enum stage fail=NONE;fail<=AUTH;fail+=AUTH) {
   setup(&r,&irq,fail,NONE); r.connection->sae=true;
   mt6797_radio_connection_work(&r.connection_work);
@@ -289,7 +299,7 @@ int main(void) {
  mt6797_radio_connection_work(&r.connection_work);
  assert(test.success==1 && test.disconnected==1 && test.pm_finishes==1 && !test.pm_aborts);
  check_freed();
- puts("PASS: production connection worker stage failures/cancellations, SAE authentication stage and sequence continuity, grant expiry, callback ordering, command reservation, retained connection, cleanup and exactly-once BSS/free ownership");
+ puts("PASS: production connection worker stage failures/cancellations, SAE authentication stage and sequence continuity, grant expiry, callback ordering, command reservation, retained connection, cleanup, failed BSS leave fencing and exactly-once BSS/free ownership");
 }
 '''
 if __name__ == '__main__':

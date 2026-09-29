@@ -993,6 +993,7 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 	u16 disconnect_reason;
 	u16 status = WLAN_STATUS_UNSPECIFIED_FAILURE;
 	int ret = -ECANCELED;
+	int teardown_ret;
 
 	mutex_lock(&radio->connection_lock);
 	connection = radio->connection;
@@ -1100,14 +1101,36 @@ cleanup:
 		mt6797_wifi_hif_runtime_sink_detach(radio->irq, radio);
 		mutex_unlock(&radio->irq->lifecycle_lock);
 	}
-	mt6797_radio_igtk_cleanup(radio);
+	teardown_ret = mt6797_radio_igtk_cleanup(radio);
+	if (teardown_ret)
+		dev_warn(wiphy_dev(radio->wdev.wiphy),
+			 "IGTK removal on teardown failed error=%d\n", teardown_ret);
 	if (connection->ais.initialized) {
-		if (connection->pm_started)
-			mt6797_radio_pm_send(radio, false);
+		if (connection->pm_started) {
+			teardown_ret = mt6797_radio_pm_send(radio, false);
+			if (teardown_ret)
+				dev_warn(wiphy_dev(radio->wdev.wiphy),
+					 "PM disconnect on teardown failed error=%d\n",
+					 teardown_ret);
+		}
 		radio->management_pid = connection->ais.auth.pid_owner.next_pid;
 		if (connection->ais.runtime.state == MT6797_WIFI_AIS_RUNTIME_STA_STATE1 ||
-		    connection->ais.runtime.state == MT6797_WIFI_AIS_RUNTIME_STA_STATE3)
-			mt6797_wifi_ais_hif_stop(&connection->ais);
+		    connection->ais.runtime.state == MT6797_WIFI_AIS_RUNTIME_STA_STATE3) {
+			teardown_ret = mt6797_wifi_ais_hif_stop(&connection->ais);
+			if (teardown_ret) {
+				/*
+				 * The firmware may still be joined to the BSS, which
+				 * blocks later scans and joins. Fence the transport
+				 * so recovery restarts the firmware from a known state.
+				 */
+				dev_warn(wiphy_dev(radio->wdev.wiphy),
+					 "leaving the BSS failed error=%d state=%d; restarting WLAN\n",
+					 teardown_ret, connection->ais.runtime.state);
+				mutex_lock(&radio->irq->lifecycle_lock);
+				mt6797_wifi_hif_runtime_fail(radio->irq, teardown_ret);
+				mutex_unlock(&radio->irq->lifecycle_lock);
+			}
+		}
 	}
 	if (connection->scan.initialized)
 		mt6797_wifi_scan_hif_close(&connection->scan);

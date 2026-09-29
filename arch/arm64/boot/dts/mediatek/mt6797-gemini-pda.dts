@@ -578,6 +578,10 @@
 };
 
 &pmic {
+	power-controller {
+		compatible = "mediatek,mt6351-pwrc";
+	};
+
 	pmic_keys: keys {
 		compatible = "mediatek,mt6351-keys";
 		/*

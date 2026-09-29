@@ -217,7 +217,9 @@ properties:
 
     properties:
       compatible:
-        const: mediatek,mt6323-pwrc
+        enum:
+          - mediatek,mt6323-pwrc
+          - mediatek,mt6351-pwrc
 
       '#power-domain-cells':
         const: 0

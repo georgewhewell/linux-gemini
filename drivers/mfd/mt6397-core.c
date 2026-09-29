@@ -42,6 +42,9 @@
 #define MT6351_RTC_BASE		0x4000
 #define MT6351_RTC_SIZE		0x40
 
+#define MT6351_PWRC_BASE	MT6351_RTC_BASE
+#define MT6351_PWRC_SIZE	MT6351_RTC_SIZE
+
 #define MT6358_RTC_BASE		0x0588
 #define MT6358_RTC_SIZE		0x3c
 
@@ -69,6 +72,10 @@ static const struct resource mt6331_rtc_resources[] = {
 static const struct resource mt6351_rtc_resources[] = {
 	DEFINE_RES_MEM(MT6351_RTC_BASE, MT6351_RTC_SIZE),
 	DEFINE_RES_IRQ(MT6351_IRQ_RTC),
+};
+
+static const struct resource mt6351_pwrc_resources[] = {
+	DEFINE_RES_MEM(MT6351_PWRC_BASE, MT6351_PWRC_SIZE),
 };
 
 static const struct resource mt6358_rtc_resources[] = {
@@ -251,6 +258,11 @@ static const struct mfd_cell mt6351_devs[] = {
 		.num_resources = ARRAY_SIZE(mt6351_keys_resources),
 		.resources = mt6351_keys_resources,
 		.of_compatible = "mediatek,mt6351-keys",
+	}, {
+		.name = "mt6323-pwrc",
+		.num_resources = ARRAY_SIZE(mt6351_pwrc_resources),
+		.resources = mt6351_pwrc_resources,
+		.of_compatible = "mediatek,mt6351-pwrc",
 	},
 };
 

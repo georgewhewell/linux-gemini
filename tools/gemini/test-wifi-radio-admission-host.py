@@ -88,14 +88,15 @@ int main(void) {
  check(0,1,0,1,0,0,false,false,-EOPNOTSUPP);
  first_ssid_len=0;
  check(0,2,0,1,0,0,false,false,-EOPNOTSUPP);
- check(0,0,1,1,0,0,false,false,-EOPNOTSUPP);
+ /* Probe request IEs (wpa_supplicant's Extended Capabilities) are unused. */
+ check(0,1,13,1,0,0,false,false,0);
  check(0,0,0,0,0,0,false,false,-EINVAL);
  check(0,0,0,1,2,0,false,false,-EINVAL);
  check(0,0,0,1,0,IEEE80211_CHAN_DISABLED,false,false,-EINVAL);
  check(0,0,0,1,0,0,true,false,-ESHUTDOWN);
  check(0,0,0,1,0,0,false,true,-EBUSY);
  check(0,0,0,1,0,0,false,2,-EBUSY);
- puts("PASS: plain/default-iw/wildcard-SSID scans, unsupported flags/named SSID/IE, channel bounds, stopping and busy; rejected requests never queued");
+ puts("PASS: plain/default-iw/wildcard-SSID scans, unsupported flags/named SSID, ignored IEs, channel bounds, stopping and busy; rejected requests never queued");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='mt6797-radio-admission-') as tmp:

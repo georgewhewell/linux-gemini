@@ -99,6 +99,8 @@ struct mt6797_radio_connection {
 	bool pairwise_ready;
 	bool pairwise_attempted;
 	bool authorized;
+	/* Authorization requested before the group keys; see change_station. */
+	bool authorize_pending;
 	bool control_port_no_encrypt;
 	bool pairwise_reply_plaintext;
 	u8 ies[MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH];
@@ -534,6 +536,8 @@ static void mt6797_radio_link_abort(void *context, int reason)
 }
 
 /* Unsolicited firmware key readiness has no key ID or transaction cookie. */
+static void mt6797_radio_authorize_pending(struct mt6797_wifi_radio *radio);
+
 static int mt6797_radio_link_event(void *context,
 	const struct mt6797_wifi_event_view *event)
 {
@@ -565,6 +569,7 @@ static int mt6797_radio_link_event(void *context,
 			connection->key_waiting = false;
 			connection->key_error = ret;
 			connection->pairwise_ready = !ret;
+			mt6797_radio_authorize_pending(radio);
 			complete(&connection->key_completion);
 		}
 	}
@@ -1442,6 +1447,33 @@ static bool mt6797_radio_igtk_ready(struct mt6797_wifi_radio *radio)
 		!mt6797_radio_igtk_owner(radio, &owner);
 }
 
+/* radio->lock held. Every key a secure data path needs is in place. */
+static bool mt6797_radio_keys_ready(struct mt6797_wifi_radio *radio)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+
+	return connection->join.negotiated.security == MT6797_WIFI_AIS_SECURITY_OPEN ||
+		(connection->pairwise_key.installed && connection->pairwise_ready &&
+		 connection->group_key.installed &&
+		 (!connection->pmf_negotiated || mt6797_radio_igtk_ready(radio)));
+}
+
+/*
+ * radio->lock held. wpa_supplicant authorizes the port right after the PTK,
+ * before it installs the GTK and IGTK; apply that authorization once the last
+ * of those keys is in place.
+ */
+static void mt6797_radio_authorize_pending(struct mt6797_wifi_radio *radio)
+{
+	struct mt6797_radio_connection *connection = radio->connection;
+
+	if (connection && connection->authorize_pending && !connection->cancel &&
+	    !radio->stopping && mt6797_radio_keys_ready(radio)) {
+		connection->authorize_pending = false;
+		connection->authorized = true;
+	}
+}
+
 /* radio->lock protects key/connection flags; connection_lock pins TX lifetime. */
 static bool mt6797_radio_management_ready(struct mt6797_wifi_radio *radio)
 {
@@ -1865,6 +1897,7 @@ static void mt6797_radio_igtk_forget(struct mt6797_wifi_radio *radio)
 	connection->igtk_default = 0;
 	if (connection->pmf_negotiated) {
 		connection->authorized = false;
+		connection->authorize_pending = false;
 		mt6797_radio_sa_query_stop(radio);
 	}
 	spin_unlock_irqrestore(&radio->lock, flags);
@@ -1983,6 +2016,7 @@ static int mt6797_radio_add_igtk(struct mt6797_wifi_radio *radio,
 	connection->igtk_owner = owner;
 	connection->igtk_wtbl = connection->ais.runtime.sta.ap_bmc_group;
 	connection->igtk_updating = false;
+	mt6797_radio_authorize_pending(radio);
 	spin_unlock_irqrestore(&radio->lock, flags);
 out:
 	mutex_unlock(&radio->connection_lock);
@@ -2026,6 +2060,7 @@ static int mt6797_radio_del_igtk(struct mt6797_wifi_radio *radio,
 				connection->igtk_default = 0;
 			if (!mt6797_radio_igtk_ready(radio)) {
 				connection->authorized = false;
+				connection->authorize_pending = false;
 				mt6797_radio_sa_query_stop(radio);
 			}
 		}
@@ -2146,6 +2181,7 @@ static int mt6797_radio_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 		key->mgmt_rx_pn = mt6797_wifi_data_rx_pn(key->receive_sequence);
 		key->index = index;
 		key->installed = true;
+		mt6797_radio_authorize_pending(radio);
 	}
 	spin_unlock_irqrestore(&radio->lock, flags);
 out:
@@ -2186,6 +2222,7 @@ static int mt6797_radio_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 	if (!ret) {
 		memzero_explicit(key, sizeof(*key));
 		radio->connection->authorized = false;
+		radio->connection->authorize_pending = false;
 		mt6797_radio_sa_query_stop(radio);
 		if (pairwise) {
 			radio->connection->pairwise_ready = false;
@@ -2246,15 +2283,17 @@ static int mt6797_radio_change_station(struct wiphy *wiphy, struct wireless_dev 
 	spin_lock_irqsave(&radio->lock, flags);
 	if (connection->cancel || radio->stopping)
 		ret = -ENOTCONN;
-	else if (authorize && connection->join.negotiated.security != MT6797_WIFI_AIS_SECURITY_OPEN &&
-		 (!connection->pairwise_key.installed || !connection->pairwise_ready ||
-		  !connection->group_key.installed ||
-		  (connection->pmf_negotiated && !mt6797_radio_igtk_ready(radio))))
+	else if (!authorize) {
+		connection->authorized = false;
+		connection->authorize_pending = false;
+		mt6797_radio_sa_query_stop(radio);
+	} else if (mt6797_radio_keys_ready(radio)) {
+		connection->authorized = true;
+	} else if (connection->pairwise_key.installed) {
+		/* The group keys follow the PTK; data waits for them. */
+		connection->authorize_pending = true;
+	} else {
 		ret = -ENOKEY;
-	else {
-		connection->authorized = authorize;
-		if (!authorize)
-			mt6797_radio_sa_query_stop(radio);
 	}
 	spin_unlock_irqrestore(&radio->lock, flags);
 out:

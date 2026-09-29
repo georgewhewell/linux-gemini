@@ -218,6 +218,7 @@ static void memzero_explicit(void *p,size_t n) { memset(p,0,n); }
 static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
 static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return false; }
 static int mt6797_radio_beacon(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
+static void mt6797_radio_authorize_pending(struct mt6797_wifi_radio *r) { (void)r; }
 static int mt6797_radio_finish_pm(struct mt6797_wifi_radio *r) { assert(r->connection_lock.held && test.success==1); test.pm_finishes++; if(test.pm_error)return test.pm_error; r->connection->pm_started=true; return 0; }
 static int mt6797_radio_igtk_cleanup(struct mt6797_wifi_radio *r) { assert(r->connection_lock.held && !r->irq->attached); test.igtk_cleanups++; return 0; }
 static int mt6797_radio_pm_send(struct mt6797_wifi_radio *r,bool connected) { assert(!connected && r->connection_lock.held && !r->irq->attached); test.pm_aborts++; r->connection->pm_started=false; return 0; }

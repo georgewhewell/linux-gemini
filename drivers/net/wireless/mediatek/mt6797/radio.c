@@ -141,6 +141,8 @@ struct mt6797_wifi_radio {
 	int scan_error;
 	bool armed;
 	bool abort_scan;
+	/* The scan runs while associated; its events arrive via the link sink. */
+	bool scan_on_link;
 	bool stopping;
 };
 
@@ -274,15 +276,13 @@ static void mt6797_radio_purge_tx(struct mt6797_wifi_radio *radio)
 	}
 }
 
-static int mt6797_radio_event(void *context,
-			    const struct mt6797_wifi_event_view *event)
+/* radio->lock held. */
+static int mt6797_radio_scan_event(struct mt6797_wifi_radio *radio,
+				   const struct mt6797_wifi_event_view *event)
 {
-	struct mt6797_wifi_radio *radio = context;
 	enum mt6797_wifi_scan_event_result disposition;
-	unsigned long flags;
 	int ret = 0;
 
-	spin_lock_irqsave(&radio->lock, flags);
 	if (radio->armed) {
 		ret = mt6797_wifi_scan_event(&radio->scan, event, &disposition);
 		if (ret || disposition == MT6797_WIFI_SCAN_EVENT_COMPLETE) {
@@ -290,6 +290,18 @@ static int mt6797_radio_event(void *context,
 			complete(&radio->scan_done);
 		}
 	}
+	return ret;
+}
+
+static int mt6797_radio_event(void *context,
+			    const struct mt6797_wifi_event_view *event)
+{
+	struct mt6797_wifi_radio *radio = context;
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&radio->lock, flags);
+	ret = mt6797_radio_scan_event(radio, event);
 	spin_unlock_irqrestore(&radio->lock, flags);
 	return ret;
 }
@@ -356,14 +368,25 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 	u8 command[MT6797_WIFI_SCAN_COMMAND_LENGTH];
 	unsigned long flags;
 	unsigned int offset = 0, count, index;
-	bool attached = false, sent, needs_fence;
-	int ret;
+	bool attached = false, sent, needs_fence, on_link;
+	int ret = 0;
 
-	mutex_lock(&radio->irq->lifecycle_lock);
-	ret = mt6797_wifi_hif_runtime_sink_attach(radio->irq, &sink);
-	if (ret)
-		goto out;
-	attached = true;
+	spin_lock_irqsave(&radio->lock, flags);
+	on_link = radio->scan_on_link;
+	spin_unlock_irqrestore(&radio->lock, flags);
+	/*
+	 * Unassociated, the scan owns the HIF sink for its whole lifetime.
+	 * Associated, the link sink forwards scan events and frames, and the
+	 * lifecycle lock is taken only per command so key, PM and management
+	 * traffic are not held off for the length of the scan.
+	 */
+	if (!on_link) {
+		mutex_lock(&radio->irq->lifecycle_lock);
+		ret = mt6797_wifi_hif_runtime_sink_attach(radio->irq, &sink);
+		if (ret)
+			goto out;
+		attached = true;
+	}
 	while (offset < request->n_channels) {
 		count = min_t(unsigned int, request->n_channels - offset,
 			      ARRAY_SIZE(channels));
@@ -375,7 +398,8 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 			channels[index].number = channel->hw_value;
 		}
 		spin_lock_irqsave(&radio->lock, flags);
-		if (radio->abort_scan || radio->stopping) {
+		if (radio->abort_scan || radio->stopping ||
+		    (on_link && (!radio->connection || radio->connection->cancel))) {
 			ret = -ECANCELED;
 			spin_unlock_irqrestore(&radio->lock, flags);
 			break;
@@ -390,8 +414,12 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 		spin_unlock_irqrestore(&radio->lock, flags);
 		if (ret)
 			break;
+		if (on_link)
+			mutex_lock(&radio->irq->lifecycle_lock);
 		ret = mt6797_wifi_hif_runtime_send(radio->irq,
 			MT6797_WIFI_MCR_WTDR1, command, sizeof(command));
+		if (on_link)
+			mutex_unlock(&radio->irq->lifecycle_lock);
 		sent = !ret;
 		if (!ret && !wait_for_completion_timeout(&radio->scan_done,
 			msecs_to_jiffies(MT6797_WIFI_SCAN_TIMEOUT_MS)))
@@ -407,17 +435,26 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 				++radio->command_sequence, command, sizeof(command));
 
 			spin_unlock_irqrestore(&radio->lock, flags);
+			if (on_link)
+				mutex_lock(&radio->irq->lifecycle_lock);
 			if (!cancel_ret)
 				mt6797_wifi_hif_runtime_send(radio->irq,
 					MT6797_WIFI_MCR_WTDR1, command,
 					MT6797_WIFI_SCAN_CANCEL_LENGTH);
+			if (on_link)
+				mutex_unlock(&radio->irq->lifecycle_lock);
 		} else {
 			spin_unlock_irqrestore(&radio->lock, flags);
 		}
 		if (ret) {
 			/* No cancellation acknowledgement means firmware state is uncertain. */
-			if (needs_fence)
+			if (needs_fence) {
+				if (on_link)
+					mutex_lock(&radio->irq->lifecycle_lock);
 				mt6797_wifi_hif_runtime_fail(radio->irq, ret);
+				if (on_link)
+					mutex_unlock(&radio->irq->lifecycle_lock);
+			}
 			break;
 		}
 		offset += count;
@@ -425,10 +462,12 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 out:
 	if (attached)
 		mt6797_wifi_hif_runtime_sink_detach(radio->irq, radio);
-	mutex_unlock(&radio->irq->lifecycle_lock);
+	if (!on_link)
+		mutex_unlock(&radio->irq->lifecycle_lock);
 	spin_lock_irqsave(&radio->lock, flags);
 	info.aborted = ret || radio->abort_scan || radio->stopping;
 	radio->request = NULL;
+	radio->scan_on_link = false;
 	spin_unlock_irqrestore(&radio->lock, flags);
 	cfg80211_scan_done(request, &info);
 }
@@ -461,11 +500,14 @@ static int mt6797_radio_scan(struct wiphy *wiphy,
 	spin_lock_irqsave(&radio->lock, flags);
 	if (radio->stopping)
 		ret = -ESHUTDOWN;
-	else if (radio->request || radio->connection)
+	/* While a join is in progress it owns the HIF; once associated, share. */
+	else if (radio->request || (radio->connection &&
+		 (!radio->connection->connected || radio->connection->cancel)))
 		ret = -EBUSY;
 	else {
 		radio->request = request;
 		radio->abort_scan = false;
+		radio->scan_on_link = radio->connection;
 		queue_work(system_long_wq, &radio->scan_work);
 	}
 	spin_unlock_irqrestore(&radio->lock, flags);
@@ -517,6 +559,11 @@ static void mt6797_radio_link_abort(void *context, int reason)
 	unsigned long flags;
 
 	spin_lock_irqsave(&radio->lock, flags);
+	if (radio->scan_on_link) {
+		radio->scan_error = reason;
+		radio->abort_scan = true;
+		complete(&radio->scan_done);
+	}
 	if (radio->connection) {
 		radio->connection->cancel = true;
 		mt6797_radio_sa_query_stop(radio);
@@ -549,6 +596,11 @@ static int mt6797_radio_link_event(void *context,
 	int ret = 0;
 
 	spin_lock_irqsave(&radio->lock, flags);
+	ret = mt6797_radio_scan_event(radio, event);
+	if (ret) {
+		spin_unlock_irqrestore(&radio->lock, flags);
+		return ret;
+	}
 	connection = radio->connection;
 	if (connection && connection->management_waiting &&
 	    !connection->management_done && !connection->management_error) {
@@ -808,6 +860,8 @@ static int mt6797_radio_link_frame(void *context,
 	unsigned long flags;
 	u16 control;
 
+	/* A scan while associated collects every beacon and probe response. */
+	mt6797_radio_frame(radio, view);
 	if (view->kind == MT6797_WIFI_RX_ETHERNET ||
 	    view->kind == MT6797_WIFI_RX_NATIVE_DATA)
 		return mt6797_radio_data_frame(radio, view);
@@ -1103,6 +1157,11 @@ cleanup:
 	spin_unlock_irqrestore(&radio->lock, flags);
 	mt6797_radio_purge_tx(radio);
 	if (connection->link_attached) {
+		/*
+		 * A scan admitted while associated receives its events through the
+		 * link sink; cancel is set, so no new one starts. Let it finish.
+		 */
+		flush_work(&radio->scan_work);
 		mutex_lock(&radio->irq->lifecycle_lock);
 		mt6797_wifi_hif_runtime_sink_detach(radio->irq, radio);
 		mutex_unlock(&radio->irq->lifecycle_lock);

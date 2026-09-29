@@ -36,9 +36,9 @@ struct cfg80211_scan_request {
  struct channel **channels;
 };
 struct mt6797_wifi_radio {
- int lock, scan_work; bool stopping, abort_scan;
+ int lock, scan_work; bool stopping, abort_scan, scan_on_link;
  struct cfg80211_scan_request *request;
- void *connection;
+ struct link { bool connected, cancel; } *connection;
 };
 struct wiphy { struct mt6797_wifi_radio *radio; };
 static struct mt6797_wifi_radio *wiphy_priv(struct wiphy *w) { return w->radio; }
@@ -63,7 +63,9 @@ static void check(unsigned flags, unsigned ssids, unsigned ies, unsigned count,
  struct cfg80211_scan_request request={ .n_ssids=ssids, .ie_len=ies,
   .n_channels=count, .flags=flags, .ssids=ssid_list, .channels=channels };
  if (busy==1) radio.request=&request;
- if (busy==2) radio.connection=(void *)1;
+ /* 2: joining, 3: associated, 4: associated but being torn down. */
+ struct link link={ .connected=busy>=3, .cancel=busy==4 };
+ if (busy>=2) radio.connection=&link;
  queued=0;
  int result=mt6797_radio_scan(&wiphy,&request);
  if(result!=expected) {
@@ -71,7 +73,7 @@ static void check(unsigned flags, unsigned ssids, unsigned ies, unsigned count,
  }
  assert(result==expected);
  assert(queued==(expected==0));
- if(!expected) { assert(radio.request==&request); assert(!radio.abort_scan); }
+ if(!expected) { assert(radio.request==&request); assert(!radio.abort_scan); assert(radio.scan_on_link==(busy==3)); }
 }
 int main(void) {
  check(0,0,0,1,0,0,false,false,0);
@@ -96,7 +98,10 @@ int main(void) {
  check(0,0,0,1,0,0,true,false,-ESHUTDOWN);
  check(0,0,0,1,0,0,false,true,-EBUSY);
  check(0,0,0,1,0,0,false,2,-EBUSY);
- puts("PASS: plain/default-iw/wildcard-SSID scans, unsupported flags/named SSID, ignored IEs, channel bounds, stopping and busy; rejected requests never queued");
+ check(0,0,0,1,0,0,false,4,-EBUSY);
+ /* Associated: the scan is admitted and runs through the link sink. */
+ check(0,0,0,1,0,0,false,3,0);
+ puts("PASS: plain/default-iw/wildcard-SSID scans, unsupported flags/named SSID, ignored IEs, channel bounds, stopping, busy/joining/teardown and associated scans; rejected requests never queued");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='mt6797-radio-admission-') as tmp:

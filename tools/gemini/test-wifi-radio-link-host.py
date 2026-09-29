@@ -53,6 +53,7 @@ struct mt6797_radio_connection {
 };
 struct mt6797_wifi_radio {
  int lock,connection_work; bool stopping;
+ bool scan_on_link,abort_scan; int scan_error; struct completion scan_done;
  struct net_device *netdev;
  struct mt6797_radio_connection *connection;
 };
@@ -77,6 +78,8 @@ static unsigned data_calls;
 static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; data_calls++; return 0; }
 static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return false; }
 static int mt6797_radio_beacon(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
+static unsigned scan_frames;
+static int mt6797_radio_frame(void *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; scan_frames++; return 0; }
 '''
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_link_abort',
              'mt6797_radio_link_frame', 'mt6797_radio_disconnect']:
@@ -102,9 +105,14 @@ static void check(const u8 *p,size_t length,bool translated,unsigned header,bool
 int main(void) {
  u8 p[26];
  struct mt6797_wifi_rx_view data_view={.kind=MT6797_WIFI_RX_ETHERNET};
- assert(!mt6797_radio_link_frame(&r,&data_view) && data_calls==1);
+ assert(!mt6797_radio_link_frame(&r,&data_view) && data_calls==1 && scan_frames==1);
  data_view.kind=MT6797_WIFI_RX_NATIVE_DATA;
- assert(!mt6797_radio_link_frame(&r,&data_view) && data_calls==2);
+ assert(!mt6797_radio_link_frame(&r,&data_view) && data_calls==2 && scan_frames==2);
+ /* A link abort also ends a scan running through the link sink. */
+ r.scan_on_link=true; mt6797_radio_link_abort(&r,-EIO);
+ assert(r.scan_done.done && r.abort_scan && r.scan_error==-EIO && connection.cancel);
+ r.scan_on_link=false; r.scan_done.done=false; r.abort_scan=false; r.scan_error=0;
+ mt6797_radio_link_abort(&r,-EIO); assert(!r.scan_done.done && !r.abort_scan);
  frame(p,0xc0); check(p,26,false,24,true);
  frame(p,0xa0); check(p,26,false,24,true);
  for(unsigned type=0;type<2;type++) {

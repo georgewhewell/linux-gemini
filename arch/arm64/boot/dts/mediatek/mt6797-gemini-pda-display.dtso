@@ -237,6 +237,14 @@
  */
 &touchscreen {
 	panel = <&gemini_panel>;
+	/*
+	 * The panel holds the controller in reset until it is prepared, so
+	 * the driver cannot read the firmware's range at probe.  This is the
+	 * range the firmware reports (0x78 block), in the panel's native
+	 * portrait frame; the driver checks it on first start.
+	 */
+	touchscreen-size-x = <1080>;
+	touchscreen-size-y = <2160>;
 };
 
 &dsi0_in {

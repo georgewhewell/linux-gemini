@@ -14,6 +14,7 @@
 #include <linux/platform_device.h>
 #include <linux/mfd/mt6397/core.h>
 #include <linux/mfd/mt6397/rtc.h>
+#include <linux/property.h>
 #include <linux/reboot.h>
 
 struct mt6323_pwrc {
@@ -68,7 +69,7 @@ static int mt6323_pwrc_probe(struct platform_device *pdev)
 
 	ret = devm_register_sys_off_handler(pwrc->dev,
 					    SYS_OFF_MODE_POWER_OFF,
-					    SYS_OFF_PRIO_DEFAULT,
+					    (uintptr_t)device_get_match_data(&pdev->dev),
 					    mt6323_do_pwroff,
 					    pwrc);
 	if (ret)
@@ -78,7 +79,16 @@ static int mt6323_pwrc_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id mt6323_pwrc_dt_match[] = {
-	{ .compatible = "mediatek,mt6323-pwrc" },
+	{ .compatible = "mediatek,mt6323-pwrc", .data = (void *)SYS_OFF_PRIO_DEFAULT },
+	/*
+	 * MT6797 boards pair the MT6351 with a BL31 whose PSCI SYSTEM_OFF only
+	 * parks the calling CPU (the TF-A platform port never implemented it),
+	 * which leaves the PMIC powered and the board unresponsive to its power
+	 * key.  Dropping BBPU through the PMIC RTC is how the vendor kernel
+	 * powers off (mtk_rtc_hal_common.c rtc_bbpu_pwrdown()), so take
+	 * precedence over the firmware handler.
+	 */
+	{ .compatible = "mediatek,mt6351-pwrc", .data = (void *)(SYS_OFF_PRIO_FIRMWARE + 1) },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mt6323_pwrc_dt_match);

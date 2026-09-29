@@ -391,6 +391,15 @@ config COMMON_CLK_MT6797_CAMSYS
 	  camera SMI local arbiter used for DMA traffic through the
 	  multimedia IOMMU.
 
+config COMMON_CLK_MT6797_SENINF_MCLK
+	tristate "Camera sensor master clocks for MediaTek MT6797"
+	depends on COMMON_CLK_MT6797_CAMSYS
+	depends on PM
+	help
+	  This driver exposes the CMMCLK sensor clock outputs of the MT6797
+	  SENINF timing generators, so camera sensor drivers can switch
+	  their external clock on and off.
+
 config COMMON_CLK_MT6797_MFGSYS
 	tristate "Clock driver for MediaTek MT6797 MFGSYS"
 	depends on COMMON_CLK_MT6797

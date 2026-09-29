@@ -35,6 +35,7 @@ obj-$(CONFIG_COMMON_CLK_MT6797_CPU) += clk-mt6797-cpu.o \
 					      clk-mt6797-cpu-core.o
 obj-$(CONFIG_COMMON_CLK_MT6797_CPU_KUNIT_TEST) += clk-mt6797-cpu-test.o
 obj-$(CONFIG_COMMON_CLK_MT6797_CAMSYS) += clk-mt6797-cam.o
+obj-$(CONFIG_COMMON_CLK_MT6797_SENINF_MCLK) += clk-mt6797-seninf-mclk.o
 obj-$(CONFIG_COMMON_CLK_MT6797_IMGSYS) += clk-mt6797-img.o
 obj-$(CONFIG_COMMON_CLK_MT6797_MJCSYS) += clk-mt6797-mjc.o
 obj-$(CONFIG_COMMON_CLK_MT6797_MFGSYS) += clk-mt6797-mfg.o

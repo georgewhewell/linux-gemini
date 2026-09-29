@@ -111,6 +111,7 @@ for name in ['mt6797_wifi_ais_mgmt_require_open', 'mt6797_wifi_ais_mgmt_lease_ma
     program += extract(management, name)
 
 program += 'static void mt6797_radio_authorize_pending(struct mt6797_wifi_radio *radio);\n'
+program += 'static int mt6797_radio_scan_event(struct mt6797_wifi_radio *r, const struct mt6797_wifi_event_view *e) { (void)r; (void)e; return 0; }\n'
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_sa_query_stop', 'mt6797_radio_link_abort',
              'mt6797_radio_link_event', 'mt6797_radio_key_connection',
              'mt6797_radio_key_send', 'mt6797_radio_sta_owner_same',

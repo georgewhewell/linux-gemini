@@ -107,7 +107,7 @@ static struct {
  bool expired;
  int pm_error;
  unsigned pm_finishes,pm_aborts,igtk_cleanups,sae_runs;
- int stop_error; unsigned fences;
+ int stop_error; unsigned fences,scan_flushes;
 } test;
 static int stage(enum stage stage) {
  assert(stage>test.last); test.last=stage; test.stages++;
@@ -224,6 +224,10 @@ static int mt6797_radio_data_frame(struct mt6797_wifi_radio *r, const struct mt6
 static bool mt6797_radio_pmf_frame(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return false; }
 static int mt6797_radio_beacon(struct mt6797_wifi_radio *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
 static void mt6797_radio_authorize_pending(struct mt6797_wifi_radio *r) { (void)r; }
+static int mt6797_radio_scan_event(struct mt6797_wifi_radio *r, const struct mt6797_wifi_event_view *e) { (void)r; (void)e; return 0; }
+static int mt6797_radio_frame(void *r, const struct mt6797_wifi_rx_view *v) { (void)r; (void)v; return 0; }
+/* Teardown waits for an associated scan before the link sink goes away. */
+static void flush_work(struct work_struct *work) { assert(work==&test.radio->scan_work && test.radio->irq->attached && test.radio->connection_lock.held); test.scan_flushes++; }
 static int mt6797_radio_finish_pm(struct mt6797_wifi_radio *r) { assert(r->connection_lock.held && test.success==1); test.pm_finishes++; if(test.pm_error)return test.pm_error; r->connection->pm_started=true; return 0; }
 static int mt6797_radio_igtk_cleanup(struct mt6797_wifi_radio *r) { assert(r->connection_lock.held && !r->irq->attached); test.igtk_cleanups++; return 0; }
 static int mt6797_radio_pm_send(struct mt6797_wifi_radio *r,bool connected) { assert(!connected && r->connection_lock.held && !r->irq->attached); test.pm_aborts++; r->connection->pm_started=false; return 0; }
@@ -281,7 +285,7 @@ int main(void) {
  r.connection->cancel=true; r.connection->reason=3;
  mt6797_radio_connection_work(&r.connection_work);
  assert(test.disconnected==1 && test.detaches==1 && test.stops==1 && r.management_pid==9);
- assert(test.pm_aborts==1 && !test.fences);
+ assert(test.pm_aborts==1 && !test.fences && test.scan_flushes==1);
  check_freed();
  /* A failed BSS leave leaves firmware joined: the transport is fenced once. */
  setup(&r,&irq,NONE,NONE); mt6797_radio_connection_work(&r.connection_work);

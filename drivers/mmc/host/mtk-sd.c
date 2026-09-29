@@ -1312,6 +1312,16 @@ static void msdc_recheck_sdio_irq(struct msdc_host *host)
 
 static void msdc_track_cmd_data(struct msdc_host *host, struct mmc_command *cmd)
 {
+	struct mmc_host *mmc = mmc_from_priv(host);
+
+	/*
+	 * With polled card detection an empty slot is probed every second, and
+	 * each identification command times out; that is how absence is seen,
+	 * not an error worth a line per command.
+	 */
+	if (!mmc->card && cmd->error == -ETIMEDOUT)
+		return;
+
 	if (host->error &&
 	    ((!mmc_op_tuning(cmd->opcode) && !host->hs400_tuning) ||
 	     cmd->error == -ETIMEDOUT))

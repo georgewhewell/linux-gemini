@@ -1236,6 +1236,10 @@ static u8 hci_cc_le_read_local_features(struct hci_dev *hdev, void *data,
 		return rp->status;
 
 	memcpy(hdev->le_features, rp->features, 8);
+	if (hci_test_quirk(hdev, HCI_QUIRK_BROKEN_LE_FEATURES)) {
+		memset(hdev->le_features, 0, sizeof(hdev->le_features));
+		hdev->le_features[0] = rp->features[0] & HCI_LE_ENCRYPTION;
+	}
 
 	return rp->status;
 }

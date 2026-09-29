@@ -375,6 +375,17 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
 
+	/* When this quirk is set, the controller is treated as implementing
+	 * only the Bluetooth 4.0 LE HCI: of its LE features only LE
+	 * Encryption is used, and HCI_OP_LE_SET_EVENT_MASK is skipped so the
+	 * default mask (0x1f, the 4.0 events) stays in place. This is required
+	 * for controllers which report later LE features without implementing
+	 * their HCI commands and reject any event mask bit beyond the 4.0 set.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_BROKEN_LE_FEATURES,
+
 	__HCI_NUM_QUIRKS,
 };
 

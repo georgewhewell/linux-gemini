@@ -298,6 +298,16 @@ static int mt6797_hci_probe(struct platform_device *pdev)
 	hdev->set_bdaddr = btmtk_set_bdaddr;
 	/* close() turns the WMT Bluetooth function off, losing setup state. */
 	hci_set_quirk(hdev, HCI_QUIRK_NON_PERSISTENT_SETUP);
+	/*
+	 * The firmware (LMP subver 0x0307) reports Data Length Extension,
+	 * LL Privacy and Extended Scanner Filter Policies, but answers
+	 * LE Read Maximum Data Length with Unknown Command and rejects any
+	 * LE event mask bit above bit 4 (status 0x20). The vendor kernel's
+	 * BlueZ used it as a Bluetooth 4.0 LE controller.
+	 */
+	hci_set_quirk(hdev, HCI_QUIRK_BROKEN_LE_FEATURES);
+	/* Listed in its supported commands, yet fails with status 0x02. */
+	hci_set_quirk(hdev, HCI_QUIRK_BROKEN_MWS_TRANSPORT_CONFIG);
 	platform_set_drvdata(pdev, bt);
 	ret = hci_register_dev(hdev);
 	if (ret) {

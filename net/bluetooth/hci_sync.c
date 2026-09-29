@@ -4576,6 +4576,11 @@ static int hci_le_set_event_mask_sync(struct hci_dev *hdev)
 		events[6] |= 0x02;	/* LE CS Subevent Result Continue event */
 		events[6] |= 0x04;	/* LE CS Test End Complete event */
 	}
+
+	/* Keep the default mask left by HCI_Reset. */
+	if (hci_test_quirk(hdev, HCI_QUIRK_BROKEN_LE_FEATURES))
+		return 0;
+
 	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_EVENT_MASK,
 				     sizeof(events), events, HCI_CMD_TIMEOUT);
 }

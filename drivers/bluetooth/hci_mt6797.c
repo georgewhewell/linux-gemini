@@ -128,11 +128,47 @@ static int mt6797_hci_flush(struct hci_dev *hdev)
 	return 0;
 }
 
+/* Record which ROM/patch level answered; setup runs on every open. */
+static int mt6797_hci_log_version(struct hci_dev *hdev)
+{
+	struct hci_rp_read_local_version *ver;
+	struct sk_buff *skb;
+	int ret = 0;
+
+	skb = __hci_cmd_sync(hdev, HCI_OP_READ_LOCAL_VERSION, 0, NULL,
+			     HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb)) {
+		bt_dev_err(hdev, "reading local version failed (%ld)",
+			   PTR_ERR(skb));
+		return PTR_ERR(skb);
+	}
+	if (skb->len != sizeof(*ver)) {
+		ret = -EIO;
+		goto out;
+	}
+	ver = (struct hci_rp_read_local_version *)skb->data;
+	if (ver->status) {
+		ret = -bt_to_errno(ver->status);
+		goto out;
+	}
+	bt_dev_info(hdev,
+		    "HCI ver %u rev 0x%04x, LMP ver %u subver 0x%04x, manufacturer %u",
+		    ver->hci_ver, le16_to_cpu(ver->hci_rev), ver->lmp_ver,
+		    le16_to_cpu(ver->lmp_subver), le16_to_cpu(ver->manufacturer));
+out:
+	kfree_skb(skb);
+	return ret;
+}
+
 static int mt6797_hci_setup(struct hci_dev *hdev)
 {
 	struct hci_rp_read_bd_addr *rp;
 	struct sk_buff *skb;
 	int ret;
+
+	ret = mt6797_hci_log_version(hdev);
+	if (ret)
+		return ret;
 
 	skb = __hci_cmd_sync(hdev, HCI_OP_READ_BD_ADDR, 0, NULL,
 			     HCI_INIT_TIMEOUT);
@@ -153,7 +189,14 @@ static int mt6797_hci_setup(struct hci_dev *hdev)
 	}
 	if (!bacmp(&rp->bdaddr, BDADDR_ANY) ||
 	    !bacmp(&rp->bdaddr, &mt6797_hci_default_bdaddr)) {
-		bt_dev_warn(hdev, "unprogrammed BD address %pMR", &rp->bdaddr);
+		/*
+		 * The vendor stack takes the address from NVRAM (APRDEB
+		 * BT_Addr on nvdata), a file the kernel must not parse. Start
+		 * unconfigured so DT local-bd-address or userspace
+		 * (btmgmt public-addr) supplies a stable address.
+		 */
+		bt_dev_info(hdev, "unprogrammed BD address %pMR; waiting for a configured address",
+			    &rp->bdaddr);
 		hci_set_quirk(hdev, HCI_QUIRK_INVALID_BDADDR);
 		hci_set_quirk(hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
 	}

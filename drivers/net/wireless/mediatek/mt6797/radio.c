@@ -1182,6 +1182,15 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 			have_rsnx = true;
 			continue;
 		}
+		/*
+		 * Supported Operating Classes: wpa_supplicant derives it from this
+		 * wiphy's channels once it has the AP's scan result.
+		 */
+		if (sme->ie[offset] == WLAN_EID_SUPPORTED_REGULATORY_CLASSES) {
+			if (!sme->ie[offset + 1])
+				return -EINVAL;
+			continue;
+		}
 		if (sme->ie[offset] != WLAN_EID_RSN && sme->ie[offset] != WLAN_EID_EXT_CAPABILITY)
 			return -EOPNOTSUPP;
 		if (sme->ie[offset] == WLAN_EID_RSN) {

@@ -41,6 +41,7 @@ program += r'''
 #define WLAN_AKM_SUITE_SAE 0x000fac08
 #define WLAN_AKM_SUITE_PSK_SHA256 0x000fac06
 #define WLAN_EID_RSNX 244
+#define WLAN_EID_SUPPORTED_REGULATORY_CLASSES 59
 #define CONNECT_REQ_EXTERNAL_AUTH_SUPPORT 8
 static u32 get_unaligned_be32(const void *p) { const u8 *b=p; return (u32)b[0]<<24|(u32)b[1]<<16|(u32)b[2]<<8|b[3]; }
 static void put_unaligned_be32(u32 v,void *p) { u8 *b=p; b[0]=v>>24; b[1]=v>>16; b[2]=v>>8; b[3]=v; }
@@ -162,6 +163,17 @@ static void wpa3_cases(void) {
  setup(true); ies[23]=3; p.ie=ies; p.ie_len=27; ies[23]=1; memcpy(ies,rsn,22);
  u8 long_rsnx[]={244,3,0x20,0,0}; memcpy(ies+22,long_rsnx,5); assert(connect()==-EOPNOTSUPP && !allocated);
  setup(false); p.ie=rsnx; p.ie_len=3; assert(connect()==-EOPNOTSUPP && !allocated);
+ /* Supported Operating Classes, as wpa_supplicant 2.10 sends with ap_scan=1. */
+ const u8 opclass[]={59,8,0x80,0x51,0x52,0x73,0x76,0x79,0x7c,0x7d};
+ u8 sae_ies[64]; memcpy(sae_ies,sta,22); memcpy(sae_ies+22,opclass,10); memcpy(sae_ies+32,rsnx,3);
+ setup(true); ap_ies(true); p.ie=sae_ies; p.ie_len=35; p.mfp=NL80211_MFP_REQUIRED;
+ p.crypto.akm_suites[0]=WLAN_AKM_SUITE_SAE; p.auth_type=NL80211_AUTHTYPE_SAE;
+ p.flags=CONNECT_REQ_EXTERNAL_AUTH_SUPPORT;
+ assert(!connect() && r.connection->sae && r.connection->join.association.ies_length==9+35); release();
+ const u8 empty_opclass[]={59,0}; memcpy(sae_ies+22,empty_opclass,2);
+ setup(true); p.ie=sae_ies; p.ie_len=24; assert(connect()==-EINVAL && !allocated);
+ const u8 vendor[]={221,4,0,0x50,0xf2,2}; memcpy(sae_ies+22,vendor,6);
+ setup(true); p.ie=sae_ies; p.ie_len=28; assert(connect()==-EOPNOTSUPP && !allocated);
  ap_ies(false);
 }
 int main(void) {
@@ -210,7 +222,7 @@ int main(void) {
  setup(false); bss.ies=NULL; assert(connect()==-ENOENT && freed==1 && bss_puts==1);
  setup(false); r.stopping=true; assert(connect()==-ESHUTDOWN && !queued && freed==1 && bss_puts==1);
  setup(false); r.request=(void *)1; assert(connect()==-EBUSY && !queued && freed==1 && bss_puts==1);
- printf("PASS: production connect admission: open/WPA2 construction, WPA2+PMF, WPA3-SAE external auth (2.10/2.11 versions), RSNXE, control-port support, crypto/IE bounds, MFP/RSN rejection, cached-BSS errors and all allocation/reference cleanup paths\n");
+ printf("PASS: production connect admission: open/WPA2 construction, WPA2+PMF, WPA3-SAE external auth (2.10/2.11 versions), RSNXE, Supported Operating Classes, control-port support, crypto/IE bounds, MFP/RSN rejection, cached-BSS errors and all allocation/reference cleanup paths\n");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-radio-connect-') as temporary:

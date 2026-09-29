@@ -110,10 +110,12 @@ for name in ['mt6797_wifi_ais_mgmt_require_open', 'mt6797_wifi_ais_mgmt_lease_ma
              'mt6797_wifi_ais_mgmt_tx_event_match']:
     program += extract(management, name)
 
+program += 'static void mt6797_radio_authorize_pending(struct mt6797_wifi_radio *radio);\n'
 for name in ['mt6797_radio_connection_cancelled', 'mt6797_radio_sa_query_stop', 'mt6797_radio_link_abort',
              'mt6797_radio_link_event', 'mt6797_radio_key_connection',
              'mt6797_radio_key_send', 'mt6797_radio_sta_owner_same',
              'mt6797_radio_wtbl_same', 'mt6797_radio_igtk_owner', 'mt6797_radio_igtk_ready',
+             'mt6797_radio_keys_ready', 'mt6797_radio_authorize_pending',
              'mt6797_radio_igtk_connection', 'mt6797_radio_igtk_forget',
              'mt6797_radio_igtk_send', 'mt6797_radio_add_igtk',
              'mt6797_radio_del_igtk', 'mt6797_radio_igtk_cleanup',
@@ -302,8 +304,10 @@ static void igtk_tests(void) {
  assert(c.group_key.installed && c.group_key.index==1);
  assert(!del(4,false) && c.group_key.installed && c.group_key.index==1);
  pmf_setup(); params.cipher=WLAN_CIPHER_SUITE_CCMP; assert(!add(0,true)); assert(!add(1,false));
- assert(authorize(true)==-ENOKEY && !c.authorized);
- params.cipher=WLAN_CIPHER_SUITE_AES_CMAC; assert(!add(4,false)); assert(!authorize(true));
+ /* wpa_supplicant authorizes before the IGTK: pending until it is installed. */
+ assert(!authorize(true) && !c.authorized && c.authorize_pending);
+ params.cipher=WLAN_CIPHER_SUITE_AES_CMAC; assert(!add(4,false));
+ assert(c.authorized && !c.authorize_pending); assert(!authorize(true));
  assert(!del(4,false) && !c.authorized);
  puts("PASS: production IGTK callbacks/codecs: PMF gate, IDs4/5, BMC ownership, duplicate IPN preservation, dual-ID overlap, bounded historical reinstall rejection, independent deletion/default key, real generation validation, transport fencing and teardown secret cleanup");
 }
@@ -345,19 +349,25 @@ int main(void) {
   assert(c.cancel && !c.pairwise_key.installed && !c.key_waiting && queued);
   assert(add(0,true)==-ENOTCONN && writes==1);
  }
- setup(); assert(authorize(true)==-ENOKEY && !c.authorized);
- assert(!add(0,true)); assert(authorize(true)==-ENOKEY && !c.authorized);
- assert(!add(1,false)); assert(!authorize(true) && c.authorized);
+ setup(); assert(authorize(true)==-ENOKEY && !c.authorized && !c.authorize_pending);
+ /* After the PTK, authorization waits for the GTK (wpa_supplicant's order). */
+ assert(!add(0,true)); assert(!authorize(true) && !c.authorized && c.authorize_pending);
+ assert(!add(1,false)); assert(c.authorized && !c.authorize_pending);
+ assert(!authorize(true) && c.authorized);
  assert(!mt6797_radio_set_default_key(NULL,r.netdev,-1,1,false,true));
  assert(mt6797_radio_set_default_key(NULL,r.netdev,-1,2,false,true)==-ENOENT);
  assert(mt6797_radio_set_default_key(NULL,r.netdev,-1,1,true,true)==-EOPNOTSUPP);
  assert(!authorize(false) && !c.authorized);
  assert(!authorize(true) && c.authorized);
  assert(!del(1,false) && !c.authorized);
+ /* Deauthorizing cancels a pending authorization. */
+ setup(); assert(!add(0,true)); assert(!authorize(true) && c.authorize_pending);
+ assert(!authorize(false) && !c.authorize_pending);
+ assert(!add(1,false) && !c.authorized);
  setup(); c.join.negotiated.security=MT6797_WIFI_AIS_SECURITY_OPEN;
  assert(!authorize(true) && c.authorized);
  c.cancel=true; assert(authorize(false)==-ENOTCONN);
- puts("PASS: production key callbacks and authorization: immediate/deferred readiness, duplicate suppression, PTK rekey refusal, GTK slot ownership, malformed/foreign events, timeout/transport/abort fencing and lock release");
+ puts("PASS: production key callbacks and authorization: immediate/deferred readiness, authorization pending until the group keys, duplicate suppression, PTK rekey refusal, GTK slot ownership, malformed/foreign events, timeout/transport/abort fencing and lock release");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-radio-key-') as temporary:

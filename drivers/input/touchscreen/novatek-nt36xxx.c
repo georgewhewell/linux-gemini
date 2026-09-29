@@ -42,6 +42,7 @@ struct nvt36xxx_data {
 	 * the controller has been restarted and its IRQ is enabled.
 	 */
 	bool running;
+	bool identified;
 	bool suspended;
 	bool is_panel_follower;
 	bool panel_prepared;
@@ -315,16 +316,83 @@ out:
 	return IRQ_HANDLED;
 }
 
+/*
+ * Identify the controller: match its trim, take it out of reset and read the
+ * firmware's coordinate range.  The caller holds data->lock or has exclusive
+ * access during probe.
+ */
+static int nvt36xxx_identify_controller(struct nvt36xxx_data *data)
+{
+	struct device *dev = &data->client->dev;
+	int ret;
+
+	ret = nvt36xxx_identify(data);
+	if (ret == -ENODEV)
+		return dev_err_probe(dev, ret, "unsupported NT36xxx trim %*ph\n",
+				     NVT36XXX_TRIM_LEN, data->trim);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to read NT36xxx trim\n");
+
+	ret = nvt36xxx_bootloader_reset(data);
+	if (ret)
+		return dev_err_probe(dev, ret, "bootloader reset failed\n");
+
+	ret = nvt36xxx_wait_reset(data, NVT36XXX_RESET_STATE_INIT, NULL);
+	if (ret)
+		return dev_err_probe(dev, ret, "controller did not leave reset\n");
+
+	ret = nvt36xxx_read_fw_info(data);
+	if (ret)
+		return dev_err_probe(dev, ret, "invalid firmware information\n");
+
+	return 0;
+}
+
+/*
+ * A panel follower cannot talk to the controller before the panel has been
+ * prepared, so it identifies the controller on its first start instead of at
+ * probe, as the vendor initialises touch only after the LCM is up.  Its input
+ * device was registered with the DT touchscreen size, which the firmware must
+ * confirm.  The caller holds data->lock.
+ */
+static int nvt36xxx_identify_follower(struct nvt36xxx_data *data)
+{
+	struct device *dev = &data->client->dev;
+	u32 x_max = data->raw_x_max, y_max = data->raw_y_max;
+	int ret;
+
+	ret = nvt36xxx_identify_controller(data);
+	if (!ret && (data->raw_x_max != x_max || data->raw_y_max != y_max)) {
+		dev_err(dev, "firmware range %ux%u does not match DT size %ux%u\n",
+			data->raw_x_max, data->raw_y_max, x_max, y_max);
+		ret = -EINVAL;
+	}
+	/* Event filtering keeps using the registered range. */
+	data->raw_x_max = x_max;
+	data->raw_y_max = y_max;
+	if (ret)
+		return ret;
+
+	data->identified = true;
+	dev_info(dev, "%s trim %*ph detected (%ux%u)\n", data->chip->name,
+		 NVT36XXX_TRIM_LEN, data->trim, x_max, y_max);
+
+	return 0;
+}
+
 /* The caller holds input->mutex. */
 static int nvt36xxx_start(struct nvt36xxx_data *data)
 {
-	int ret;
+	int ret = 0;
 
 	if (data->running)
 		return 0;
 
 	mutex_lock(&data->lock);
-	ret = nvt36xxx_restart(data);
+	if (!data->identified)
+		ret = nvt36xxx_identify_follower(data);
+	if (!ret)
+		ret = nvt36xxx_restart(data);
 	mutex_unlock(&data->lock);
 
 	/*
@@ -500,6 +568,52 @@ static int nvt36xxx_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(nvt36xxx_pm_ops, nvt36xxx_suspend,
 				nvt36xxx_resume);
 
+/* Identify the controller at probe time, when it is not a panel follower. */
+static int nvt36xxx_probe_hw(struct nvt36xxx_data *data)
+{
+	struct device *dev = &data->client->dev;
+	int ret;
+
+	/*
+	 * This is an explicit runtime identity gate for recovery images.  The trim
+	 * protocol is stateful, so restore the controller through the same bounded
+	 * bootloader-reset/reset-state path before declining to bind.  Returning
+	 * -ENODEV leaves no input device or IRQ registered; a later full activation
+	 * must use a DT without novatek,identity-only.
+	 */
+	if (device_property_read_bool(dev, "novatek,identity-only")) {
+		ret = nvt36xxx_identify(data);
+		if (ret == -ENODEV)
+			return dev_err_probe(dev, ret, "unsupported NT36xxx trim %*ph\n",
+					     NVT36XXX_TRIM_LEN, data->trim);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to read NT36xxx trim\n");
+
+		ret = nvt36xxx_bootloader_reset(data);
+		if (!ret)
+			ret = nvt36xxx_wait_reset(data,
+						  NVT36XXX_RESET_STATE_INIT,
+						  NULL);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "identity trim read could not restore controller\n");
+
+		dev_info(dev, "identity-only: %s trim %*ph detected; keeping input and IRQ quiescent\n",
+			 data->chip->name, NVT36XXX_TRIM_LEN, data->trim);
+		return -ENODEV;
+	}
+
+	ret = nvt36xxx_identify_controller(data);
+	if (ret)
+		return ret;
+
+	data->identified = true;
+	dev_info(dev, "%s trim %*ph detected (%ux%u)\n", data->chip->name,
+		 NVT36XXX_TRIM_LEN, data->trim, data->raw_x_max, data->raw_y_max);
+
+	return 0;
+}
+
 static int nvt36xxx_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -520,46 +634,29 @@ static int nvt36xxx_probe(struct i2c_client *client)
 	mutex_init(&data->lock);
 	i2c_set_clientdata(client, data);
 
-	ret = nvt36xxx_identify(data);
-	if (ret == -ENODEV)
-		return dev_err_probe(dev, ret, "unsupported NT36xxx trim %*ph\n",
-				     NVT36XXX_TRIM_LEN, data->trim);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to read NT36xxx trim\n");
-
 	/*
-	 * This is an explicit runtime identity gate for recovery images.  The trim
-	 * protocol is stateful, so restore the controller through the same bounded
-	 * bootloader-reset/reset-state path before declining to bind.  Returning
-	 * -ENODEV leaves no input device or IRQ registered; a later full activation
-	 * must use a DT without novatek,identity-only.
+	 * With a panel reference, the panel's reset sequence also resets the
+	 * controller, and the panel holds it in reset until it is prepared,
+	 * which may be long after probe.  Do not touch the hardware here: take
+	 * the coordinate range from DT and identify the controller when the
+	 * panel is first prepared.
 	 */
-	if (device_property_read_bool(dev, "novatek,identity-only")) {
-		ret = nvt36xxx_bootloader_reset(data);
-		if (!ret)
-			ret = nvt36xxx_wait_reset(data,
-						  NVT36XXX_RESET_STATE_INIT,
-						  NULL);
+	data->is_panel_follower = drm_is_panel_follower(dev);
+	if (data->is_panel_follower) {
+		if (device_property_read_u32(dev, "touchscreen-size-x",
+					     &data->raw_x_max) ||
+		    device_property_read_u32(dev, "touchscreen-size-y",
+					     &data->raw_y_max) ||
+		    !data->raw_x_max || !data->raw_y_max ||
+		    data->raw_x_max > NVT36XXX_MAX_COORD ||
+		    data->raw_y_max > NVT36XXX_MAX_COORD)
+			return dev_err_probe(dev, -EINVAL,
+					     "panel follower needs a valid touchscreen-size-x/y\n");
+	} else {
+		ret = nvt36xxx_probe_hw(data);
 		if (ret)
-			return dev_err_probe(dev, ret,
-					     "identity trim read could not restore controller\n");
-
-		dev_info(dev, "identity-only: %s trim %*ph detected; keeping input and IRQ quiescent\n",
-			 data->chip->name, NVT36XXX_TRIM_LEN, data->trim);
-		return -ENODEV;
+			return ret;
 	}
-
-	ret = nvt36xxx_bootloader_reset(data);
-	if (ret)
-		return dev_err_probe(dev, ret, "bootloader reset failed\n");
-
-	ret = nvt36xxx_wait_reset(data, NVT36XXX_RESET_STATE_INIT, NULL);
-	if (ret)
-		return dev_err_probe(dev, ret, "controller did not leave reset\n");
-
-	ret = nvt36xxx_read_fw_info(data);
-	if (ret)
-		return dev_err_probe(dev, ret, "invalid firmware information\n");
 
 	input = devm_input_allocate_device(dev);
 	if (!input)
@@ -597,12 +694,10 @@ static int nvt36xxx_probe(struct i2c_client *client)
 		return dev_err_probe(dev, ret, "failed to request IRQ\n");
 
 	/*
-	 * With a panel reference, the panel's reset sequence also resets the
-	 * controller, so reporting is started and stopped with the panel.
-	 * Follow it before the input device can be opened.
+	 * Reporting is started and stopped with the panel.  Follow it before
+	 * the input device can be opened.
 	 */
-	if (drm_is_panel_follower(dev)) {
-		data->is_panel_follower = true;
+	if (data->is_panel_follower) {
 		data->panel_follower.funcs = &nvt36xxx_panel_follower_funcs;
 		ret = devm_drm_panel_add_follower(dev, &data->panel_follower);
 		if (ret)
@@ -614,8 +709,9 @@ static int nvt36xxx_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 
-	dev_info(dev, "%s trim %*ph detected (%ux%u)\n", data->chip->name,
-		 NVT36XXX_TRIM_LEN, data->trim, data->raw_x_max, data->raw_y_max);
+	if (data->is_panel_follower)
+		dev_info(dev, "following panel; controller is identified when the panel is prepared (%ux%u from DT)\n",
+			 data->raw_x_max, data->raw_y_max);
 
 	return 0;
 }

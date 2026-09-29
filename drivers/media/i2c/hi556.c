@@ -7,6 +7,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/unaligned.h>
@@ -647,6 +648,7 @@ struct hi556 {
 
 	/* GPIOs, clocks, etc. */
 	struct gpio_desc *reset_gpio;
+	struct gpio_desc *powerdown_gpio;
 	struct clk *clk;
 	struct regulator_bulk_data supplies[ARRAY_SIZE(hi556_supply_names)];
 
@@ -658,6 +660,19 @@ struct hi556 {
 
 	/* True if the device has been identified */
 	bool identified;
+
+	/*
+	 * Devicetree boards: enable the supplies one at a time, in
+	 * hi556_supply_names[] order, instead of all at once.
+	 */
+	bool sequenced_power;
+
+	/*
+	 * The PLL settings in link_freq_configs[] assume HI556_MCLK. With any
+	 * other external clock the sensor can be powered and identified,
+	 * but it must not be streamed.
+	 */
+	bool mclk_supported;
 };
 
 static u64 to_pixel_rate(u32 f_index)
@@ -940,6 +955,8 @@ static int hi556_identify_module(struct hi556 *hi556)
 	}
 
 	hi556->identified = true;
+	dev_info(hi556->dev, "Hi-556 chip id 0x%04x at i2c address 0x%02x\n",
+		 val, to_i2c_client(hi556->dev)->addr);
 
 	return 0;
 }
@@ -1004,6 +1021,13 @@ static int hi556_start_streaming(struct hi556 *hi556)
 	ret = hi556_identify_module(hi556);
 	if (ret)
 		return ret;
+
+	if (!hi556->mclk_supported) {
+		dev_err(hi556->dev,
+			"no PLL settings for a %lu Hz external clock\n",
+			clk_get_rate(hi556->clk));
+		return -EINVAL;
+	}
 
 	link_freq_index = hi556->cur_mode->link_freq_index;
 	reg_list = &link_freq_configs[link_freq_index].reg_list;
@@ -1206,7 +1230,7 @@ static const struct v4l2_subdev_internal_ops hi556_internal_ops = {
 	.open = hi556_open,
 };
 
-static int hi556_check_hwcfg(struct device *dev)
+static int hi556_check_hwcfg(struct device *dev, bool check_link_freq)
 {
 	struct fwnode_handle *ep;
 	struct fwnode_handle *fwnode = dev_fwnode(dev);
@@ -1236,6 +1260,9 @@ static int hi556_check_hwcfg(struct device *dev)
 		ret = -EINVAL;
 		goto check_hwcfg_error;
 	}
+
+	if (!check_link_freq)
+		goto check_hwcfg_error;
 
 	if (!bus_cfg.nr_of_link_frequencies) {
 		dev_err(dev, "no link frequencies defined\n");
@@ -1281,10 +1308,32 @@ static int hi556_suspend(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct hi556 *hi556 = to_hi556(sd);
 
+	gpiod_set_value_cansleep(hi556->powerdown_gpio, 1);
 	gpiod_set_value_cansleep(hi556->reset_gpio, 1);
 	regulator_bulk_disable(ARRAY_SIZE(hi556_supply_names),
 			       hi556->supplies);
 	clk_disable_unprepare(hi556->clk);
+	return 0;
+}
+
+static int hi556_enable_supplies(struct hi556 *hi556)
+{
+	int i, ret;
+
+	if (!hi556->sequenced_power)
+		return regulator_bulk_enable(ARRAY_SIZE(hi556_supply_names),
+					     hi556->supplies);
+
+	for (i = 0; i < ARRAY_SIZE(hi556_supply_names); i++) {
+		ret = regulator_enable(hi556->supplies[i].consumer);
+		if (ret) {
+			while (--i >= 0)
+				regulator_disable(hi556->supplies[i].consumer);
+			return ret;
+		}
+		usleep_range(10000, 11000);
+	}
+
 	return 0;
 }
 
@@ -1298,8 +1347,7 @@ static int hi556_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(hi556_supply_names),
-				    hi556->supplies);
+	ret = hi556_enable_supplies(hi556);
 	if (ret) {
 		dev_err(dev, "failed to enable regulators: %d", ret);
 		clk_disable_unprepare(hi556->clk);
@@ -1312,7 +1360,15 @@ static int hi556_resume(struct device *dev)
 		gpiod_set_value_cansleep(hi556->reset_gpio, 0);
 	}
 
+	if (hi556->powerdown_gpio) {
+		usleep_range(10000, 11000);
+		gpiod_set_value_cansleep(hi556->powerdown_gpio, 0);
+	}
+
 	usleep_range(5000, 5500);
+	if (hi556->sequenced_power)
+		usleep_range(5000, 5500);
+
 	return 0;
 }
 
@@ -1323,10 +1379,6 @@ static int hi556_probe(struct i2c_client *client)
 	bool full_power;
 	int i, ret;
 
-	ret = hi556_check_hwcfg(&client->dev);
-	if (ret)
-		return ret;
-
 	hi556 = devm_kzalloc(&client->dev, sizeof(*hi556), GFP_KERNEL);
 	if (!hi556)
 		return -ENOMEM;
@@ -1335,22 +1387,42 @@ static int hi556_probe(struct i2c_client *client)
 
 	v4l2_i2c_subdev_init(&hi556->sd, client, &hi556_subdev_ops);
 
+	hi556->sequenced_power = is_of_node(dev_fwnode(hi556->dev));
+
+	hi556->clk = devm_v4l2_sensor_clk_get(hi556->dev,
+					      hi556->sequenced_power ?
+					      NULL : "clk");
+	if (IS_ERR(hi556->clk))
+		return dev_err_probe(hi556->dev, PTR_ERR(hi556->clk),
+				     "failed to get clock\n");
+
+	freq = clk_get_rate(hi556->clk);
+	hi556->mclk_supported = freq == HI556_MCLK;
+	if (!hi556->mclk_supported) {
+		if (!hi556->sequenced_power)
+			return dev_err_probe(hi556->dev, -EINVAL,
+					     "external clock %lu is not supported\n",
+					     freq);
+		dev_warn(hi556->dev,
+			 "external clock %lu Hz: identification only, streaming disabled\n",
+			 freq);
+	}
+
+	ret = hi556_check_hwcfg(hi556->dev, hi556->mclk_supported);
+	if (ret)
+		return ret;
+
 	hi556->reset_gpio = devm_gpiod_get_optional(hi556->dev, "reset",
 						    GPIOD_OUT_HIGH);
 	if (IS_ERR(hi556->reset_gpio))
 		return dev_err_probe(hi556->dev, PTR_ERR(hi556->reset_gpio),
 				     "failed to get reset GPIO\n");
 
-	hi556->clk = devm_v4l2_sensor_clk_get(hi556->dev, "clk");
-	if (IS_ERR(hi556->clk))
-		return dev_err_probe(hi556->dev, PTR_ERR(hi556->clk),
-				     "failed to get clock\n");
-
-	freq = clk_get_rate(hi556->clk);
-	if (freq != HI556_MCLK)
-		return dev_err_probe(hi556->dev, -EINVAL,
-				     "external clock %lu is not supported\n",
-				     freq);
+	hi556->powerdown_gpio = devm_gpiod_get_optional(hi556->dev, "powerdown",
+							GPIOD_OUT_HIGH);
+	if (IS_ERR(hi556->powerdown_gpio))
+		return dev_err_probe(hi556->dev, PTR_ERR(hi556->powerdown_gpio),
+				     "failed to get powerdown GPIO\n");
 
 	for (i = 0; i < ARRAY_SIZE(hi556_supply_names); i++)
 		hi556->supplies[i].supply = hi556_supply_names[i];
@@ -1437,10 +1509,17 @@ static const struct acpi_device_id hi556_acpi_ids[] = {
 MODULE_DEVICE_TABLE(acpi, hi556_acpi_ids);
 #endif
 
+static const struct of_device_id hi556_of_match[] = {
+	{ .compatible = "hynix,hi556" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, hi556_of_match);
+
 static struct i2c_driver hi556_i2c_driver = {
 	.driver = {
 		.name = "hi556",
 		.acpi_match_table = ACPI_PTR(hi556_acpi_ids),
+		.of_match_table = hi556_of_match,
 		.pm = pm_sleep_ptr(&hi556_pm_ops),
 	},
 	.probe = hi556_probe,

@@ -20,6 +20,7 @@
 #include <dt-bindings/reset/mt8192-resets.h>
 #include <dt-bindings/reset/mt8195-resets.h>
 #include <linux/delay.h>
+#include <linux/string.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/io.h>
@@ -341,7 +342,14 @@ static int mtk_wdt_restart(struct watchdog_device *wdt_dev,
 	/* Enable reset in order to issue a system reset instead of an IRQ */
 	reg = readl(wdt_base + WDT_MODE);
 	reg &= ~WDT_MODE_IRQ_EN;
-	if (mtk_wdt->use_auto_restart)
+	/*
+	 * AUTO_START tells the MediaTek bootloader to bypass the power key.
+	 * A "charger" restart (power-off with a charger attached) must not:
+	 * the bootloader then shows off-mode charging and waits for the key.
+	 */
+	if (data && !strcmp(data, "charger"))
+		reg &= ~WDT_MODE_AUTO_START;
+	else if (mtk_wdt->use_auto_restart)
 		reg |= WDT_MODE_AUTO_START;
 	writel(reg | WDT_MODE_KEY, wdt_base + WDT_MODE);
 

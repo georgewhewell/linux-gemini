@@ -8,6 +8,7 @@
  *
  */
 
+#include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -22,6 +23,9 @@
 #define RTC_BBPU_AUTO		BIT(3)
 #define RTC_AL_SEC_AUTO_PDN_SEL	BIT(6)
 #define RTC_AL_SEC_2SEC_EN	BIT(8)
+/* MT6351 CHR_CON0 RGS_CHRDET: a charger is attached. */
+#define MT6351_CHR_CON0		0x0f78
+#define MT6351_RGS_CHRDET	BIT(5)
 
 struct mt6323_pwrc_data {
 	int priority;
@@ -29,6 +33,11 @@ struct mt6323_pwrc_data {
 	u16 bbpu;
 	/* Disable the RTC's 2-second reboot before powering off. */
 	bool no_2sec_reboot;
+	/*
+	 * With a charger attached the PMIC keeps the board powered: restart
+	 * with "charger" so the bootloader shows off-mode charging.
+	 */
+	bool restart_on_charger;
 };
 
 struct mt6323_pwrc {
@@ -69,6 +78,20 @@ static int mt6323_do_pwroff(struct sys_off_data *data)
 	ret = mt6323_rtc_commit(pwrc);
 	if (ret)
 		dev_err(pwrc->dev, "failed to write BBPU: %d\n", ret);
+
+	if (pdata->restart_on_charger) {
+		unsigned int chr;
+		int i;
+
+		/* As the vendor mt_power_off(): up to 1 s, then restart anyway. */
+		for (i = 0; i < 10; i++) {
+			mdelay(100);
+			if (!regmap_read(pwrc->regmap, MT6351_CHR_CON0, &chr) &&
+			    (chr & MT6351_RGS_CHRDET))
+				break;
+		}
+		machine_restart("charger");
+	}
 
 	/* Wait some time until system down, otherwise, notice with a warn */
 	mdelay(1000);
@@ -121,12 +144,15 @@ static const struct mt6323_pwrc_data mt6323_pwrc_data = {
  * over the firmware handler, and do it as the vendor does
  * (mt6351/mtk_rtc_hal.c hal_rtc_bbpu_pwdn(), rtc_bbpu_pwrdown(true)): disable
  * the 2 s reboot, then write KEY | AUTO | PWREN, which keeps RTC alarm power-on
- * working.
+ * working. If the board is still powered after that (a charger is attached),
+ * restart with "charger" as the vendor mt_power_off() does, rather than
+ * falling through to a PSCI SYSTEM_OFF that only parks the CPUs.
  */
 static const struct mt6323_pwrc_data mt6351_pwrc_data = {
 	.priority = SYS_OFF_PRIO_FIRMWARE + 1,
 	.bbpu = RTC_BBPU_AUTO | RTC_BBPU_PWREN,
 	.no_2sec_reboot = true,
+	.restart_on_charger = true,
 };
 
 static const struct of_device_id mt6323_pwrc_dt_match[] = {

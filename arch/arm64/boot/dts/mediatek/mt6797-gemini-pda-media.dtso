@@ -3,7 +3,7 @@
  * Planet Computers Gemini PDA multimedia IOMMU and JPEG codec.
  *
  * Enables the MT6797 M4U and every larb with an enabled master: larb0 and
- * larb5 for the display (OVL0_2L and RDMA0 on larb0, OVL1_2L on larb5,
+ * larb5 for the display (RDMA0 on larb0; OVL0_2L and OVL1_2L on larb5,
  * which the M4U cannot register without) and larb3 for the JPEG encoder and
  * decoder in the VENC power domain.
  */

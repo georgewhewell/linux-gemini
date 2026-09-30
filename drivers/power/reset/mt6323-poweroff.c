@@ -29,6 +29,11 @@
 
 struct mt6323_pwrc_data {
 	int priority;
+	/*
+	 * Run from the sleepable power-off prepare phase: PMIC wrapper regmap
+	 * access takes a mutex and polls with usleep_range().
+	 */
+	bool prepare;
 	/* BBPU value written to power off, besides RTC_BBPU_KEY. */
 	u16 bbpu;
 	/* Disable the RTC's 2-second reboot before powering off. */
@@ -122,6 +127,8 @@ static int mt6323_pwrc_probe(struct platform_device *pdev)
 	pwrc->data = device_get_match_data(&pdev->dev);
 
 	ret = devm_register_sys_off_handler(pwrc->dev,
+					    pwrc->data->prepare ?
+					    SYS_OFF_MODE_POWER_OFF_PREPARE :
 					    SYS_OFF_MODE_POWER_OFF,
 					    pwrc->data->priority,
 					    mt6323_do_pwroff,
@@ -146,10 +153,13 @@ static const struct mt6323_pwrc_data mt6323_pwrc_data = {
  * the 2 s reboot, then write KEY | AUTO | PWREN, which keeps RTC alarm power-on
  * working. If the board is still powered after that (a charger is attached),
  * restart with "charger" as the vendor mt_power_off() does, rather than
- * falling through to a PSCI SYSTEM_OFF that only parks the CPUs.
+ * falling through to a PSCI SYSTEM_OFF that only parks the CPUs. All of this
+ * runs in the power-off prepare phase, after device shutdown: the PMIC
+ * wrapper cannot be driven from the atomic power-off chain.
  */
 static const struct mt6323_pwrc_data mt6351_pwrc_data = {
 	.priority = SYS_OFF_PRIO_FIRMWARE + 1,
+	.prepare = true,
 	.bbpu = RTC_BBPU_AUTO | RTC_BBPU_PWREN,
 	.no_2sec_reboot = true,
 	.restart_on_charger = true,

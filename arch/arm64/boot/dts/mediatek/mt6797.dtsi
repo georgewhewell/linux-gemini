@@ -1040,7 +1040,7 @@
 		interrupts = <GIC_SPI 215 IRQ_TYPE_LEVEL_LOW>;
 		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
 		clocks = <&mmsys CLK_MM_DISP_OVL0_2L>;
-		iommus = <&m4u M4U_PORT_DISP_2L_OVL0_LARB0>;
+		iommus = <&m4u M4U_PORT_DISP_2L_OVL0_LARB5>;
 		mediatek,gce-client-reg = <&gce SUBSYS_1400XXXX 0xd000 0x1000>;
 		status = "disabled";
 	};

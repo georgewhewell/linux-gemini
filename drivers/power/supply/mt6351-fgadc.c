@@ -22,6 +22,8 @@
 #include <linux/slab.h>
 
 #define MT6351_FGADC_CLK_PDN_MASK	GENMASK(3, 2)
+/* RG_FGADC_FT_CK_PDN: without this clock the gauge neither counts nor latches. */
+#define MT6351_FGADC_FT_CLK_PDN		BIT(6)
 #define MT6351_FGADC_CON0_LOW_MASK	GENMASK(7, 0)
 #define MT6351_FGADC_CON0_HIGH_MASK	GENMASK(15, 8)
 #define MT6351_FGADC_OSR_MASK		GENMASK(3, 0)
@@ -55,6 +57,7 @@ struct mt6351_fgadc {
 	u32 trim_permille;
 
 	unsigned int saved_clkpdn;
+	unsigned int saved_ft_clkpdn;
 	unsigned int saved_con0;
 	unsigned int saved_osr;
 
@@ -73,6 +76,11 @@ static int mt6351_fgadc_restore(struct mt6351_fgadc *fg)
 
 	ret = regmap_update_bits(fg->regmap, MT6351_FGADC_CON0,
 				 MT6351_FGADC_CON0_LOW_MASK, fg->saved_con0);
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(fg->regmap, MT6351_TOP_CKPDN_CON3,
+				 MT6351_FGADC_FT_CLK_PDN, fg->saved_ft_clkpdn);
 	if (ret)
 		return ret;
 
@@ -100,6 +108,10 @@ static int mt6351_fgadc_initialize(struct mt6351_fgadc *fg)
 	if (ret)
 		return ret;
 
+	ret = regmap_read(fg->regmap, MT6351_TOP_CKPDN_CON3, &fg->saved_ft_clkpdn);
+	if (ret)
+		return ret;
+
 	ret = regmap_read(fg->regmap, MT6351_FGADC_CON0, &fg->saved_con0);
 	if (ret)
 		return ret;
@@ -108,9 +120,18 @@ static int mt6351_fgadc_initialize(struct mt6351_fgadc *fg)
 	if (ret)
 		return ret;
 
-	/* The vendor sequence enables the analog and digital clocks first. */
+	/*
+	 * The vendor sequence enables the analog and digital clocks first. The
+	 * FT clock is left gated on the Gemini at handover (the vendor gauge
+	 * HAL relies on earlier PMIC setup for it), so enable it too.
+	 */
 	ret = regmap_update_bits(fg->regmap, MT6351_TOP_CKPDN_CON2,
 				 MT6351_FGADC_CLK_PDN_MASK, 0);
+	if (ret)
+		goto restore;
+
+	ret = regmap_update_bits(fg->regmap, MT6351_TOP_CKPDN_CON3,
+				 MT6351_FGADC_FT_CLK_PDN, 0);
 	if (ret)
 		goto restore;
 
@@ -147,7 +168,7 @@ restore:
 static void mt6351_fgadc_note_result(struct mt6351_fgadc *fg, int ret,
 				     unsigned int saved_con0)
 {
-	unsigned int con0 = 0, clkpdn = 0, con15 = 0;
+	unsigned int con0 = 0, clkpdn = 0, ft_clkpdn = 0, con15 = 0;
 
 	if (ret != -ETIMEDOUT) {
 		if (!ret && fg->stalled) {
@@ -161,10 +182,11 @@ static void mt6351_fgadc_note_result(struct mt6351_fgadc *fg, int ret,
 	fg->stalled = true;
 	regmap_read(fg->regmap, MT6351_FGADC_CON0, &con0);
 	regmap_read(fg->regmap, MT6351_TOP_CKPDN_CON2, &clkpdn);
+	regmap_read(fg->regmap, MT6351_TOP_CKPDN_CON3, &ft_clkpdn);
 	regmap_read(fg->regmap, MT6351_FGADC_CON15, &con15);
 	dev_warn(fg->dev,
-		 "FGADC latch timed out; con0=%#06x (before %#06x) ckpdn_con2=%#06x con15=%#06x; reads report no data until it recovers\n",
-		 con0, saved_con0, clkpdn, con15);
+		 "FGADC latch timed out; con0=%#06x (before %#06x) ckpdn_con2=%#06x ckpdn_con3=%#06x con15=%#06x; reads report no data until it recovers\n",
+		 con0, saved_con0, clkpdn, ft_clkpdn, con15);
 }
 
 /*

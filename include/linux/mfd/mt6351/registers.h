@@ -25,6 +25,7 @@
 #define MT6351_INT_STATUS3		0x02e6
 
 #define MT6351_TOP_CKPDN_CON2		0x0246
+#define MT6351_TOP_CKPDN_CON3		0x024c
 
 /* Fuel-gauge ADC. */
 #define MT6351_FGADC_CON0		0x0ca4

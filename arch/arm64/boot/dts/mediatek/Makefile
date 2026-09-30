@@ -135,11 +135,6 @@ mt6797-gemini-pda-audio-test-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-audio.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-audio-test.dtb
-dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-jpeg.dtbo
-mt6797-gemini-pda-jpeg-test-dtbs := \
-	mt6797-gemini-pda.dtb \
-	mt6797-gemini-pda-jpeg.dtbo
-dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-jpeg-test.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-cqdma.dtbo
 mt6797-gemini-pda-cqdma-test-dtbs := \
 	mt6797-gemini-pda.dtb \

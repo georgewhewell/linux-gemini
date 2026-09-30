@@ -639,8 +639,8 @@ DEFINE_DRM_GEM_FOPS(mtk_drm_fops);
 static bool mtk_drm_mt6797_ddp_active(struct mtk_drm_private *private)
 {
 	return mtk_ddp_comp_is_enabled(&private->ddp_comp[DDP_COMPONENT_OD0]) &&
+		mtk_ddp_comp_is_enabled(&private->ddp_comp[DDP_COMPONENT_OVL0]) &&
 		mtk_ddp_comp_is_enabled(&private->ddp_comp[DDP_COMPONENT_OVL_2L0]) &&
-		mtk_ddp_comp_is_enabled(&private->ddp_comp[DDP_COMPONENT_OVL_2L1]) &&
 		mtk_ddp_comp_is_enabled(&private->ddp_comp[DDP_COMPONENT_RDMA0]);
 }
 
@@ -661,8 +661,8 @@ static int mtk_drm_mt6797_ddp_state_show(struct seq_file *s, void *unused)
 	seq_puts(s, "MT6797 DDP snapshot (read-only)\n");
 	mtk_mutex_debug_dump(private->mutex_dev, s);
 	mtk_ddp_comp_debug_dump(&private->ddp_comp[DDP_COMPONENT_OD0], s);
+	mtk_ddp_comp_debug_dump(&private->ddp_comp[DDP_COMPONENT_OVL0], s);
 	mtk_ddp_comp_debug_dump(&private->ddp_comp[DDP_COMPONENT_OVL_2L0], s);
-	mtk_ddp_comp_debug_dump(&private->ddp_comp[DDP_COMPONENT_OVL_2L1], s);
 	mtk_ddp_comp_debug_dump(&private->ddp_comp[DDP_COMPONENT_RDMA0], s);
 
 	return 0;

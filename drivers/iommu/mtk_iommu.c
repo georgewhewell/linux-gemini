@@ -153,6 +153,7 @@
 #define CFG_IFA_MASTER_IN_ATF		BIT(20)
 #define DL_WITH_MULTI_LARB		BIT(21)
 #define HAS_LEGACY_MMU_MISC		BIT(22)
+#define HAS_INFRA_M4U_IDLE		BIT(23)
 
 #define MTK_IOMMU_HAS_FLAG_MASK(pdata, _x, mask)	\
 				((((pdata)->flags) & (mask)) == (_x))
@@ -1366,6 +1367,19 @@ static int mtk_iommu_probe(struct platform_device *pdev)
 		if (ret)
 			return ret;
 		data->enable_4GB = !!(val & F_DDR_4GB_SUPPORT_EN);
+
+		/*
+		 * Let the infra bus see the M4U go idle; otherwise power
+		 * transitions that wait for bus idle (CPU cluster power-on)
+		 * stall once the M4U is running.
+		 */
+		if (MTK_IOMMU_HAS_FLAG(data->plat_data, HAS_INFRA_M4U_IDLE)) {
+			ret = regmap_update_bits(infracfg, MT6797_INFRA_M4U_CTRL,
+						 MT6797_INFRA_M4U_IDLE_EN,
+						 MT6797_INFRA_M4U_IDLE_EN);
+			if (ret)
+				return ret;
+		}
 	}
 
 	banks_num = data->plat_data->banks_num;
@@ -1625,6 +1639,7 @@ static const struct mtk_iommu_plat_data mt6797_data = {
 	.m4u_plat     = M4U_MT6797,
 	.flags        = HAS_4GB_MODE | RESET_AXI | WR_THROT_EN |
 			HAS_LEGACY_IVRP_PADDR | HAS_LEGACY_MMU_MISC |
+			HAS_INFRA_M4U_IDLE |
 			MTK_IOMMU_TYPE_MM,
 	.inv_sel_reg  = REG_MMU_INV_SEL_GEN1,
 	.banks_num    = 1,

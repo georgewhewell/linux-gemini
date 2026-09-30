@@ -3096,11 +3096,14 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	i2c->adap.quirks = i2c->dev_comp->quirks;
 	i2c->adap.timeout = 2 * HZ;
 	i2c->adap.retries = 1;
-	i2c->adap.bus_regulator = devm_regulator_get_optional(&pdev->dev, "vbus");
-	if (IS_ERR(i2c->adap.bus_regulator)) {
-		if (PTR_ERR(i2c->adap.bus_regulator) == -ENODEV)
-			i2c->adap.bus_regulator = NULL;
-		else
+	/*
+	 * Only the controller's own vbus-supply powers SCL/SDA. The regulator
+	 * core would otherwise also search the child nodes, and take a client's
+	 * supply (say, a USB-C controller's VBUS) as the bus supply.
+	 */
+	if (of_property_present(pdev->dev.of_node, "vbus-supply")) {
+		i2c->adap.bus_regulator = devm_regulator_get(&pdev->dev, "vbus");
+		if (IS_ERR(i2c->adap.bus_regulator))
 			return PTR_ERR(i2c->adap.bus_regulator);
 	}
 

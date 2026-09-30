@@ -17,26 +17,56 @@
 #include <linux/property.h>
 #include <linux/reboot.h>
 
+/* MT6351 RTC_BBPU/RTC_AL_SEC fields, as the vendor kernel names them. */
+#define RTC_BBPU_PWREN		BIT(0)	/* power on when the RTC alarm fires */
+#define RTC_BBPU_AUTO		BIT(3)
+#define RTC_AL_SEC_AUTO_PDN_SEL	BIT(6)
+#define RTC_AL_SEC_2SEC_EN	BIT(8)
+
+struct mt6323_pwrc_data {
+	int priority;
+	/* BBPU value written to power off, besides RTC_BBPU_KEY. */
+	u16 bbpu;
+	/* Disable the RTC's 2-second reboot before powering off. */
+	bool no_2sec_reboot;
+};
+
 struct mt6323_pwrc {
 	struct device *dev;
 	struct regmap *regmap;
 	u32 base;
+	const struct mt6323_pwrc_data *data;
 };
+
+/* Commit a written RTC register and wait until the RTC has taken it. */
+static int mt6323_rtc_commit(struct mt6323_pwrc *pwrc)
+{
+	unsigned int val;
+
+	regmap_write(pwrc->regmap, pwrc->base + RTC_WRTGR_MT6323, 1);
+	return regmap_read_poll_timeout(pwrc->regmap, pwrc->base + RTC_BBPU,
+					val, !(val & RTC_BBPU_CBUSY),
+					MTK_RTC_POLL_DELAY_US,
+					MTK_RTC_POLL_TIMEOUT);
+}
 
 static int mt6323_do_pwroff(struct sys_off_data *data)
 {
 	struct mt6323_pwrc *pwrc = data->cb_data;
-	unsigned int val;
+	const struct mt6323_pwrc_data *pdata = pwrc->data;
 	int ret;
 
-	regmap_write(pwrc->regmap, pwrc->base + RTC_BBPU, RTC_BBPU_KEY);
-	regmap_write(pwrc->regmap, pwrc->base + RTC_WRTGR_MT6323, 1);
+	if (pdata->no_2sec_reboot) {
+		regmap_clear_bits(pwrc->regmap, pwrc->base + RTC_AL_SEC,
+				  RTC_AL_SEC_2SEC_EN | RTC_AL_SEC_AUTO_PDN_SEL);
+		ret = mt6323_rtc_commit(pwrc);
+		if (ret)
+			dev_err(pwrc->dev, "failed to disable 2 s reboot: %d\n", ret);
+	}
 
-	ret = regmap_read_poll_timeout(pwrc->regmap,
-					pwrc->base + RTC_BBPU, val,
-					!(val & RTC_BBPU_CBUSY),
-					MTK_RTC_POLL_DELAY_US,
-					MTK_RTC_POLL_TIMEOUT);
+	regmap_write(pwrc->regmap, pwrc->base + RTC_BBPU,
+		     RTC_BBPU_KEY | pdata->bbpu);
+	ret = mt6323_rtc_commit(pwrc);
 	if (ret)
 		dev_err(pwrc->dev, "failed to write BBPU: %d\n", ret);
 
@@ -66,10 +96,11 @@ static int mt6323_pwrc_probe(struct platform_device *pdev)
 	pwrc->base = res->start;
 	pwrc->regmap = mt6397_chip->regmap;
 	pwrc->dev = &pdev->dev;
+	pwrc->data = device_get_match_data(&pdev->dev);
 
 	ret = devm_register_sys_off_handler(pwrc->dev,
 					    SYS_OFF_MODE_POWER_OFF,
-					    (uintptr_t)device_get_match_data(&pdev->dev),
+					    pwrc->data->priority,
 					    mt6323_do_pwroff,
 					    pwrc);
 	if (ret)
@@ -78,17 +109,29 @@ static int mt6323_pwrc_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static const struct mt6323_pwrc_data mt6323_pwrc_data = {
+	.priority = SYS_OFF_PRIO_DEFAULT,
+};
+
+/*
+ * MT6797 boards pair the MT6351 with a BL31 whose PSCI SYSTEM_OFF only parks
+ * the calling CPU (the TF-A platform port never implemented it), which leaves
+ * the PMIC powered and the board unresponsive to its power key.  Dropping BBPU
+ * through the PMIC RTC is how the vendor kernel powers off, so take precedence
+ * over the firmware handler, and do it as the vendor does
+ * (mt6351/mtk_rtc_hal.c hal_rtc_bbpu_pwdn(), rtc_bbpu_pwrdown(true)): disable
+ * the 2 s reboot, then write KEY | AUTO | PWREN, which keeps RTC alarm power-on
+ * working.
+ */
+static const struct mt6323_pwrc_data mt6351_pwrc_data = {
+	.priority = SYS_OFF_PRIO_FIRMWARE + 1,
+	.bbpu = RTC_BBPU_AUTO | RTC_BBPU_PWREN,
+	.no_2sec_reboot = true,
+};
+
 static const struct of_device_id mt6323_pwrc_dt_match[] = {
-	{ .compatible = "mediatek,mt6323-pwrc", .data = (void *)SYS_OFF_PRIO_DEFAULT },
-	/*
-	 * MT6797 boards pair the MT6351 with a BL31 whose PSCI SYSTEM_OFF only
-	 * parks the calling CPU (the TF-A platform port never implemented it),
-	 * which leaves the PMIC powered and the board unresponsive to its power
-	 * key.  Dropping BBPU through the PMIC RTC is how the vendor kernel
-	 * powers off (mtk_rtc_hal_common.c rtc_bbpu_pwrdown()), so take
-	 * precedence over the firmware handler.
-	 */
-	{ .compatible = "mediatek,mt6351-pwrc", .data = (void *)(SYS_OFF_PRIO_FIRMWARE + 1) },
+	{ .compatible = "mediatek,mt6323-pwrc", .data = &mt6323_pwrc_data },
+	{ .compatible = "mediatek,mt6351-pwrc", .data = &mt6351_pwrc_data },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mt6323_pwrc_dt_match);

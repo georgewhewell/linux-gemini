@@ -22,7 +22,7 @@
 #include <linux/slab.h>
 
 #define MT6351_FGADC_CLK_PDN_MASK	GENMASK(3, 2)
-/* RG_FGADC_FT_CK_PDN: without this clock the gauge neither counts nor latches. */
+/* RG_FGADC_FT_CK_PDN, the third FGADC clock gate. */
 #define MT6351_FGADC_FT_CLK_PDN		BIT(6)
 #define MT6351_FGADC_CON0_LOW_MASK	GENMASK(7, 0)
 #define MT6351_FGADC_CON0_HIGH_MASK	GENMASK(15, 8)
@@ -122,8 +122,10 @@ static int mt6351_fgadc_initialize(struct mt6351_fgadc *fg)
 
 	/*
 	 * The vendor sequence enables the analog and digital clocks first. The
-	 * FT clock is left gated on the Gemini at handover (the vendor gauge
-	 * HAL relies on earlier PMIC setup for it), so enable it too.
+	 * FT clock is left gated on the Gemini at handover, so enable it too.
+	 * On the Gemini this is not sufficient: with all three FGADC clocks
+	 * ungated and the vendor reset pulse, the gauge still does not latch,
+	 * so reads return -ENODATA.
 	 */
 	ret = regmap_update_bits(fg->regmap, MT6351_TOP_CKPDN_CON2,
 				 MT6351_FGADC_CLK_PDN_MASK, 0);

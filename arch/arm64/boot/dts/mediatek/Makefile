@@ -160,6 +160,11 @@ mt6797-gemini-pda-haptics-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-haptics.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-haptics.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-media.dtbo
+mt6797-gemini-pda-media-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-media.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-media.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-camera.dtbo
 mt6797-gemini-pda-camera-dtbs := \
 	mt6797-gemini-pda.dtb \

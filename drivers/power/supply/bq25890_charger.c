@@ -919,9 +919,8 @@ static irqreturn_t bq25890_irq_handler_thread(int irq, void *private)
 }
 
 /*
- * Some boards have a known charger bus but no safe GPIO-to-IRQ route.  Keep
- * status useful in that narrow case without making the charger a polling
- * control loop: ti,read-only restricts these transactions to the four
+ * For boards whose INT pin is not wired to an interrupt: do what the
+ * interrupt thread would. With ti,read-only this reads only the four
  * non-destructive state fields in bq25890_get_chip_state().
  */
 static void bq25890_status_poll_work(struct work_struct *work)
@@ -1512,20 +1511,19 @@ static int bq25890_fw_probe(struct bq25890_device *bq)
 	const char *str;
 	u32 val;
 
+	ret = device_property_read_u32(bq->dev, "ti,status-poll-interval-ms",
+				       &bq->status_poll_interval_ms);
+	if (ret && ret != -EINVAL)
+		return ret;
+	if (!ret && (bq->status_poll_interval_ms < 1000 ||
+		     bq->status_poll_interval_ms > 3600000))
+		return dev_err_probe(bq->dev, -EINVAL,
+				     "invalid status poll interval\n");
+
 	bq->read_only = device_property_read_bool(bq->dev, "ti,read-only");
 	if (bq->read_only) {
 		bq->read_only_adc = device_property_read_bool(bq->dev,
 							      "ti,read-only-adc");
-		ret = device_property_read_u32(bq->dev,
-					       "ti,status-poll-interval-ms",
-					       &bq->status_poll_interval_ms);
-		if (ret && ret != -EINVAL)
-			return ret;
-
-		if (!ret && (bq->status_poll_interval_ms < 1000 ||
-			     bq->status_poll_interval_ms > 3600000))
-			return dev_err_probe(bq->dev, -EINVAL,
-				"invalid status poll interval\n");
 
 		/*
 		 * Do not require, infer, or program any battery or charge limits in
@@ -1625,9 +1623,9 @@ static int bq25890_probe(struct i2c_client *client)
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "reading device properties\n");
 
-	if (!bq->read_only) {
-		if (client->irq <= 0)
-			client->irq = bq25890_irq_probe(bq);
+	/* Without a described interrupt, ti,status-poll-interval-ms polls. */
+	if (!bq->read_only && client->irq <= 0 && !bq->status_poll_interval_ms) {
+		client->irq = bq25890_irq_probe(bq);
 
 		if (client->irq < 0) {
 			dev_err(dev, "No irq resource found.\n");
@@ -1670,7 +1668,7 @@ static int bq25890_probe(struct i2c_client *client)
 				      msecs_to_jiffies(bq->status_poll_interval_ms));
 	}
 
-	if (!bq->read_only) {
+	if (!bq->read_only && client->irq > 0) {
 		ret = devm_request_threaded_irq(dev, client->irq, NULL,
 						bq25890_irq_handler_thread,
 						IRQF_TRIGGER_FALLING | IRQF_ONESHOT,

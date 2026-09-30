@@ -77,10 +77,10 @@
 };
 
 /*
- * Keep M4U disabled for this bring-up.  The proven Gemini path uses
- * physically contiguous DRM buffers and explicitly powers larb0/common;
- * enabling the still-unvalidated MT6797 translation path here only creates a
- * supplier which can hold every display consumer in deferred probe.
+ * Without the M4U the display uses physically contiguous DRM buffers, and no
+ * IOMMU attach links the OVLs to their SMI larb, so each OVL names its larb
+ * for runtime PM.  Both 2-layer OVLs fetch through larb5 (vendor
+ * M4U_PORT_DISP_2L_OVL0_LARB5 / M4U_PORT_DISP_2L_OVL1); larb0 carries RDMA0.
  */
 
 &mipi_tx0 {
@@ -92,6 +92,10 @@
 };
 
 &larb0 {
+	status = "okay";
+};
+
+&larb5 {
 	status = "okay";
 };
 
@@ -108,8 +112,7 @@
 
 &ovl0_2l {
 	status = "okay";
-	/delete-property/ iommus;
-	mediatek,larb = <&larb0>;
+	mediatek,larb = <&larb5>;
 	ports {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -120,8 +123,7 @@
 
 &ovl1_2l {
 	status = "okay";
-	/delete-property/ iommus;
-	mediatek,larb = <&larb0>;
+	mediatek,larb = <&larb5>;
 	ports {
 		#address-cells = <1>;
 		#size-cells = <0>;

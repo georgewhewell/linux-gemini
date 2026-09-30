@@ -84,42 +84,47 @@ static void mt6797_mclk_write_div(struct mt6797_mclk *m)
 
 static int mt6797_mclk_prepare(struct clk_hw *hw)
 {
-	struct mt6797_mclk *m = to_mclk(hw);
-	struct mt6797_seninf_mclk *priv = m->priv;
-	u32 ph, ck;
-	int ret;
+	struct mt6797_seninf_mclk *priv = to_mclk(hw)->priv;
 
 	/* The clock core already holds our runtime PM (ISP domain). */
-	ret = clk_bulk_prepare_enable(ARRAY_SIZE(priv->clks), priv->clks);
-	if (ret)
-		return ret;
-
-	ph = readl(m->tg + SENINF_TG_PH_CNT);
-	ck = readl(m->tg + SENINF_TG_SEN_CK);
-	mt6797_mclk_write_div(m);
-	writel(ph | PH_CNT_EN | PH_CNT_CLK_EN | PH_CNT_SRC_CAMTG,
-	       m->tg + SENINF_TG_PH_CNT);
-	m->on = true;
-
-	dev_info(priv->dev,
-		 "cmmclk%u on: PH_CNT %#010x->%#010x SEN_CK %#010x->%#010x div %u\n",
-		 m->id, ph, readl(m->tg + SENINF_TG_PH_CNT), ck,
-		 readl(m->tg + SENINF_TG_SEN_CK), m->div);
-
-	return 0;
+	return clk_bulk_prepare_enable(ARRAY_SIZE(priv->clks), priv->clks);
 }
 
 static void mt6797_mclk_unprepare(struct clk_hw *hw)
 {
+	struct mt6797_seninf_mclk *priv = to_mclk(hw)->priv;
+
+	clk_bulk_disable_unprepare(ARRAY_SIZE(priv->clks), priv->clks);
+}
+
+/*
+ * The timing generator registers only take writes while CAMTG, our parent,
+ * is running: programmed from .prepare, when the parent is merely prepared,
+ * PH_CNT and SEN_CK read back 0. The core enables the parent before .enable.
+ */
+static int mt6797_mclk_enable(struct clk_hw *hw)
+{
 	struct mt6797_mclk *m = to_mclk(hw);
-	struct mt6797_seninf_mclk *priv = m->priv;
+	u32 ph = readl(m->tg + SENINF_TG_PH_CNT);
+
+	mt6797_mclk_write_div(m);
+	writel(ph | PH_CNT_EN | PH_CNT_CLK_EN | PH_CNT_SRC_CAMTG,
+	       m->tg + SENINF_TG_PH_CNT);
+	m->on = true;
+	dev_dbg(m->priv->dev, "cmmclk%u on: PH_CNT %#010x SEN_CK %#010x div %u\n",
+		m->id, readl(m->tg + SENINF_TG_PH_CNT),
+		readl(m->tg + SENINF_TG_SEN_CK), m->div);
+	return 0;
+}
+
+static void mt6797_mclk_disable(struct clk_hw *hw)
+{
+	struct mt6797_mclk *m = to_mclk(hw);
 	u32 ph = readl(m->tg + SENINF_TG_PH_CNT);
 
 	/* The vendor kernel clears only bit 29 to stop the pad clock. */
 	writel(ph & ~PH_CNT_CLK_EN, m->tg + SENINF_TG_PH_CNT);
 	m->on = false;
-	clk_bulk_disable_unprepare(ARRAY_SIZE(priv->clks), priv->clks);
-	dev_info(priv->dev, "cmmclk%u off\n", m->id);
 }
 
 static unsigned int mt6797_mclk_div(unsigned long parent, unsigned long rate)
@@ -161,6 +166,8 @@ static int mt6797_mclk_set_rate(struct clk_hw *hw, unsigned long rate,
 static const struct clk_ops mt6797_mclk_ops = {
 	.prepare = mt6797_mclk_prepare,
 	.unprepare = mt6797_mclk_unprepare,
+	.enable = mt6797_mclk_enable,
+	.disable = mt6797_mclk_disable,
 	.recalc_rate = mt6797_mclk_recalc_rate,
 	.determine_rate = mt6797_mclk_determine_rate,
 	.set_rate = mt6797_mclk_set_rate,

@@ -2,10 +2,9 @@
 /*
  * Planet Computers Gemini PDA multimedia IOMMU and JPEG codec.
  *
- * Enables the MT6797 M4U and every larb with an enabled master: larb0 and
- * larb5 for the display (RDMA0 on larb0; OVL0_2L and OVL1_2L on larb5,
- * which the M4U cannot register without) and larb3 for the JPEG encoder and
- * decoder in the VENC power domain.
+ * Enables the MT6797 M4U, which translates the display (larb0 and larb5,
+ * enabled by the display overlay) and larb3 for the JPEG encoder and decoder
+ * in the VENC power domain.
  */
 
 /dts-v1/;
@@ -14,10 +13,6 @@
 #include <dt-bindings/power/mt6797-power.h>
 
 &m4u {
-	status = "okay";
-};
-
-&larb5 {
 	status = "okay";
 };
 

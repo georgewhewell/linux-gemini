@@ -32,6 +32,11 @@ static const struct mtk_clk_desc venc_desc = {
 	.clks = venc_clks,
 	.num_clks = ARRAY_SIZE(venc_clks),
 	.num_clk_ids = CLK_VENC_NR,
+	/*
+	 * VENC_CG lives in the VENC power domain: every gate access,
+	 * including clk_disable_unused(), must hold that domain.
+	 */
+	.need_runtime_pm = true,
 };
 
 static const struct of_device_id of_match_clk_mt6797_venc[] = {

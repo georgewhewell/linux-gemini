@@ -98,6 +98,7 @@ if:
       contains:
         enum:
           - mediatek,mt6797-camsys
+          - mediatek,mt6797-vencsys
           - mediatek,mt8183-mfgcfg
 then:
   properties:

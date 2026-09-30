@@ -14,12 +14,6 @@ allOf:
   - $ref: power-supply.yaml#
   - if:
       required:
-        - ti,status-poll-interval-ms
-    then:
-      required:
-        - ti,read-only
-  - if:
-      required:
         - ti,read-only-adc
     then:
       required:
@@ -29,8 +23,12 @@ allOf:
         required:
           - ti,read-only
     then:
+      anyOf:
+        - required:
+            - interrupts
+        - required:
+            - ti,status-poll-interval-ms
       required:
-        - interrupts
         - ti,battery-regulation-voltage
         - ti,charge-current
         - ti,termination-current
@@ -111,6 +109,14 @@ properties:
   ti,ibatcomp-clamp-microvolt:
     description: max. charging voltage adjustment due to expected voltage drop on in-series resistor
 
+  linux,skip-reset:
+    description: |
+      Do not reset the charger at probe or remove. Registers the firmware left
+      programmed and that no property below overrides keep their values, and
+      charging is enabled explicitly, since firmware may disable it before
+      handing over.
+    type: boolean
+
   ti,read-only:
     description: |
       Do not write any charger register. This is intended for a bounded
@@ -126,10 +132,11 @@ properties:
 
   ti,status-poll-interval-ms:
     description: |
-      Poll the non-destructive charge status fields at this interval and send
-      a power-supply change notification when the status changes. This is for
-      ti,read-only boards whose charger-status interrupt route is not known.
-      It does not enable the charger watchdog, ADC, OTG regulator, or any
+      Poll the charger status at this interval and send a power-supply change
+      notification when it changes, as the interrupt handler would. For boards
+      whose INT pin is not wired to an interrupt; required in that case. With
+      ti,read-only only the non-destructive charge status fields are read, and
+      polling does not enable the charger watchdog, ADC, OTG regulator, or any
       writable power-supply property.
     minimum: 1000
     maximum: 3600000

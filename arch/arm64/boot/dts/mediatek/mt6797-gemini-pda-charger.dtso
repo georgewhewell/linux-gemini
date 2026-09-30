@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA BQ25896 charger.
+ *
+ * SW_CHARGER sits at 0x6b on I2C_CHANNEL_0 (0x11007000); the part ID reads
+ * as BQ25896. The vendor device tree gives it no interrupt and the vendor
+ * charger driver polls it, so this node polls too.
+ *
+ * The limits reproduce what the vendor bootloader leaves programmed before
+ * Linux starts (REG00-REG0A: 7f 06 11 0a 20 12 82 8d 9f 44 73), including its
+ * battery IR compensation. The chip is not reset: a reset would also turn
+ * HVDCP/MaxCharge adapter detection back on (REG02), which the vendor leaves
+ * off. The bootloader clears CHG_CONFIG; the driver sets it again. 2048 mA is
+ * about 0.5C for the 4220 mAh cell; the charger keeps its own safety timer,
+ * termination, 120 C thermal regulation and NTC (JEITA) protection.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	status = "okay";
+
+	charger@6b {
+		compatible = "ti,bq25896", "ti,bq25890";
+		reg = <0x6b>;
+		linux,skip-reset;
+		ti,status-poll-interval-ms = <5000>;
+		ti,battery-regulation-voltage = <4352000>;
+		ti,charge-current = <2048000>;
+		ti,termination-current = <192000>;
+		ti,precharge-current = <128000>;
+		ti,minimum-sys-voltage = <3500000>;
+		ti,boost-voltage = <4998000>;
+		ti,boost-max-current = <1300000>;
+		ti,thermal-regulation-threshold = <120>;
+		ti,ibatcomp-micro-ohms = <80000>;
+		ti,ibatcomp-clamp-microvolt = <224000>;
+		ti,use-ilim-pin;
+	};
+};

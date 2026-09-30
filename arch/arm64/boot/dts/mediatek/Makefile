@@ -155,6 +155,11 @@ mt6797-gemini-pda-hif-dma-test-dtbs := \
 	mt6797-gemini-pda.dtb \
 	mt6797-gemini-pda-hif-dma.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-hif-dma-test.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-charger.dtbo
+mt6797-gemini-pda-charger-dtbs := \
+	mt6797-gemini-pda.dtb \
+	mt6797-gemini-pda-charger.dtbo
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-charger.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-power-observe.dtbo
 mt6797-gemini-pda-power-observe-dtbs := \
 	mt6797-gemini-pda.dtb \

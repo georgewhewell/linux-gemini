@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Planet Computers Gemini PDA multimedia IOMMU and JPEG decoder.
+ *
+ * Enables the MT6797 M4U with the larbs that have users (larb0 for the
+ * display, already enabled by the board; larb3 for the VENC-domain JPEG
+ * codec) and the JPEG decoder, whose resources come from the vendor tree
+ * (JPGDEC at 0x17004000, SPI 239, VENC_0/VENC_3 gates, VENC domain, larb3
+ * JPGDEC_WDMA/BSDMA ports).
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/clock/mt6797-clk.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/memory/mt6797-larb-port.h>
+#include <dt-bindings/power/mt6797-power.h>
+
+/ {
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+};
+
+&m4u {
+	status = "okay";
+};
+
+/* VENC_CG is only accessible with the VENC power domain on. */
+&vencsys {
+	power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+};
+
+&larb3 {
+	status = "okay";
+};
+
+&{/} {
+	jpeg-decoder@17004000 {
+		compatible = "mediatek,mt6797-jpgdec";
+		reg = <0 0x17004000 0 0x1000>;
+		interrupts = <GIC_SPI 239 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vencsys CLK_VENC_0>,
+			 <&vencsys CLK_VENC_3>;
+		clock-names = "jpgdec-smi", "jpgdec";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+		iommus = <&m4u M4U_PORT_JPGDEC_WDMA>,
+			 <&m4u M4U_PORT_JPGDEC_BSDMA>;
+	};
+};

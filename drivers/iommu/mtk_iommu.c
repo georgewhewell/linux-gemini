@@ -1121,7 +1121,12 @@ static int mtk_iommu_hw_init(const struct mtk_iommu_data *data, unsigned int ban
 	}
 
 	if (MTK_IOMMU_HAS_FLAG(data->plat_data, HAS_LEGACY_MMU_MISC)) {
-		writel_relaxed(0x3, bank0->base + REG_MMU_COHERENCE_EN);
+		/*
+		 * The page tables are set up without coherent_walk, so
+		 * io-pgtable cleans them to memory; keep the table walks
+		 * non-snooping to match instead of sending them through CCI.
+		 */
+		writel_relaxed(0, bank0->base + REG_MMU_COHERENCE_EN);
 		writel_relaxed(0, bank0->base + REG_MMU_IN_ORDER_WR_EN);
 		writel_relaxed(0, bank0->base + REG_MMU_TABLE_WALK_DIS);
 	}

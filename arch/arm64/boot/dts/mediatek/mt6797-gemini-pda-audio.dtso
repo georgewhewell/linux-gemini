@@ -78,12 +78,6 @@
 
 /* Audio must share these rails with both USB ports through real consumers. */
 &mt6351regulator {
-	mt6351_va18_reg: ldo-va18 {
-		regulator-name = "va18";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
-	};
-
 	mt6351_vusb33_reg: ldo-vusb33 {
 		regulator-name = "vusb33";
 		regulator-min-microvolt = <3300000>;

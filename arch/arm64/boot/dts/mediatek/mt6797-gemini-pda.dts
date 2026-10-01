@@ -538,6 +538,13 @@
 		regulator-always-on;
 	};
 
+	/* Analog 1.8 V: audio codec, USB PHYs and the FGADC front end. */
+	mt6351_va18_reg: ldo-va18 {
+		regulator-name = "va18";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
 	mt6351_vcn18_reg: ldo-vcn18 {
 		regulator-name = "vcn18";
 		regulator-min-microvolt = <1800000>;

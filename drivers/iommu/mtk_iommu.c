@@ -13,6 +13,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
+#include "dma-iommu.h"
 #include <linux/iopoll.h>
 #include <linux/io-pgtable.h>
 #include <linux/list.h>
@@ -1058,6 +1059,13 @@ static void mtk_iommu_get_resv_regions(struct device *dev,
 
 		list_add_tail(&region->list, head);
 	}
+
+	/*
+	 * Firmware-described regions ("iommu-addresses" on a memory-region),
+	 * e.g. a boot framebuffer that must stay identity-mapped until the
+	 * display driver takes over.
+	 */
+	iommu_dma_get_resv_regions(dev, head);
 }
 
 static const struct iommu_ops mtk_iommu_ops = {

@@ -26,6 +26,8 @@
 &mt6351fgadc {
 	status = "okay";
 	mediatek,initialize-fgadc;
+	/* VA18 (defined with the audio rails) feeds the FGADC analog front end. */
+	vdda-supply = <&mt6351_va18_reg>;
 	mediatek,fgadc-init-control = <0x28>;
 	mediatek,fgadc-osr = <8>;
 	mediatek,fg-resistance-milliohm = <10>;

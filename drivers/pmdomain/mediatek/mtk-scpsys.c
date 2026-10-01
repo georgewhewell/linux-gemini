@@ -1208,7 +1208,11 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.ctl_offs = 0x304,
 		.sram_pdn_bits = GENMASK(11, 8),
 		.sram_pdn_ack_bits = GENMASK(15, 12),
-		.clk_id = {CLK_NONE},
+		/*
+		 * venc_sel clocks the VENC register bus; with it off (its
+		 * CODECPLL parent is off after boot) any VENC access hangs.
+		 */
+		.clk_id = {CLK_VENC},
 	},
 	[MT6797_POWER_DOMAIN_ISP] = {
 		.name = "isp",

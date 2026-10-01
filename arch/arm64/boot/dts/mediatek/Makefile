@@ -193,7 +193,6 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-fuel-gauge-observe.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-fuel-gauge-active.dtbo
 mt6797-gemini-pda-fuel-gauge-active-dtbs := \
 	mt6797-gemini-pda.dtb \
-	mt6797-gemini-pda-audio.dtbo \
 	mt6797-gemini-pda-fuel-gauge-active.dtbo
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-fuel-gauge-active.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-gemini-pda-thermal-hall-observe.dtbo

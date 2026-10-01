@@ -28,6 +28,11 @@ properties:
       reset the hardware coulomb counter.
     type: boolean
 
+  vdda-supply:
+    description:
+      MT6351 VA18 LDO, which powers the FGADC analog front end. Without it
+      the converter never latches a sample.
+
   mediatek,fgadc-init-control:
     description: |
       Lower FGADC_CON0 byte to program before setting FG_ON. Bit 0 must be
@@ -69,6 +74,7 @@ properties:
 required:
   - compatible
   - mediatek,initialize-fgadc
+  - vdda-supply
   - mediatek,fgadc-init-control
   - mediatek,fgadc-osr
   - mediatek,fg-resistance-milliohm

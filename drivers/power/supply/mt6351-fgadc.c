@@ -19,6 +19,7 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 
 #define MT6351_FGADC_CLK_PDN_MASK	GENMASK(3, 2)
@@ -445,6 +446,16 @@ static int mt6351_fgadc_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret,
 				     "missing or unsafe FGADC configuration\n");
+
+	/*
+	 * The FGADC analog front end runs from VA18; without it the gauge
+	 * never latches a sample. Vendor fgauge_initialization() enables it
+	 * ("Enable VA2") before configuring the converter.
+	 */
+	ret = devm_regulator_get_enable(&pdev->dev, "vdda");
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "failed to enable the FGADC analog supply\n");
 
 	mutex_lock(&fg->lock);
 	ret = mt6351_fgadc_initialize(fg);

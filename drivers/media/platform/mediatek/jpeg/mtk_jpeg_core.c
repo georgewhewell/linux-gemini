@@ -1162,7 +1162,9 @@ static int mtk_jpeg_open(struct file *file)
 		goto free;
 	}
 
-	INIT_WORK(&ctx->jpeg_work, jpeg->variant->jpeg_worker);
+	/* Only multi-core variants schedule jobs from a worker. */
+	if (jpeg->variant->jpeg_worker)
+		INIT_WORK(&ctx->jpeg_work, jpeg->variant->jpeg_worker);
 	INIT_LIST_HEAD(&ctx->dst_done_queue);
 	spin_lock_init(&ctx->done_queue_lock);
 	v4l2_fh_init(&ctx->fh, vfd);

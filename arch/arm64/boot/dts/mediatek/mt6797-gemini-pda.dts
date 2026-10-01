@@ -1310,3 +1310,26 @@
 		};
 	};
 };
+
+/*
+ * The display scans out untranslated, from CMA buffers. With the M4U on,
+ * translated scanout (OVL0 larb0/0, OVL0_2L larb5/6, RDMA0 larb0/2) stalls
+ * intermittently (flip_done timeouts with no M4U fault reported), while the
+ * JPEG codec behind the same M4U works. Keep the display off the IOMMU until
+ * that is understood.
+ */
+&ovl0 {
+	/delete-property/ iommus;
+};
+
+&ovl0_2l {
+	/delete-property/ iommus;
+};
+
+&ovl1_2l {
+	/delete-property/ iommus;
+};
+
+&rdma0 {
+	/delete-property/ iommus;
+};

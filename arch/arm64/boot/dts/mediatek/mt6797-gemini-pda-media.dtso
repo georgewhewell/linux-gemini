@@ -16,23 +16,6 @@
 	status = "okay";
 };
 
-/*
- * LK leaves OVL0 scanning its splash from this framebuffer (also reported by
- * LK as mblock-3-framebuffer). Keep it identity-mapped for OVL0 so the M4U
- * does not fault on the boot image before DRM reprograms the plane.
- */
-&{/reserved-memory} {
-	lk_framebuffer: framebuffer@7dfb0000 {
-		reg = <0 0x7dfb0000 0 0x1f90000>;
-		iommu-addresses = <&ovl0 0 0x7dfb0000 0 0x1f90000>;
-		no-map;
-	};
-};
-
-&ovl0 {
-	memory-region = <&lk_framebuffer>;
-};
-
 /* VENC_CG is only accessible with the VENC power domain on. */
 &vencsys {
 	power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;

@@ -31,6 +31,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/reset-controller.h>
+#include <linux/suspend.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
 #include <linux/interrupt.h>
@@ -80,7 +81,10 @@ static unsigned int timeout;
 struct mtk_wdt_dev {
 	struct watchdog_device wdt_dev;
 	void __iomem *wdt_base;
-	spinlock_t lock; /* protects WDT_SWSYSRST reg */
+	spinlock_t lock; /* protects reset bits and watchdog start/stop/PM state */
+	struct notifier_block pm_nb;
+	bool hibernation_paused;
+	bool hibernation_running;
 	struct reset_controller_dev rcdev;
 	bool disable_wdt_extrst;
 	bool reset_by_toprgu;
@@ -317,8 +321,6 @@ static int toprgu_register_reset_controller(struct platform_device *pdev,
 	int ret;
 	struct mtk_wdt_dev *mtk_wdt = platform_get_drvdata(pdev);
 
-	spin_lock_init(&mtk_wdt->lock);
-
 	mtk_wdt->rcdev.owner = THIS_MODULE;
 	mtk_wdt->rcdev.nr_resets = rst_num;
 	mtk_wdt->rcdev.ops = &toprgu_reset_ops;
@@ -435,7 +437,7 @@ static void mtk_wdt_init(struct watchdog_device *wdt_dev)
 			 reg, handoff_length, handoff_status, handoff_interval);
 }
 
-static int mtk_wdt_stop(struct watchdog_device *wdt_dev)
+static int __mtk_wdt_stop(struct watchdog_device *wdt_dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
 	void __iomem *wdt_base = mtk_wdt->wdt_base;
@@ -449,7 +451,7 @@ static int mtk_wdt_stop(struct watchdog_device *wdt_dev)
 	return 0;
 }
 
-static int mtk_wdt_start(struct watchdog_device *wdt_dev)
+static int __mtk_wdt_start(struct watchdog_device *wdt_dev)
 {
 	u32 reg;
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
@@ -475,6 +477,86 @@ static int mtk_wdt_start(struct watchdog_device *wdt_dev)
 	iowrite32(reg, wdt_base + WDT_MODE);
 
 	return 0;
+}
+
+static int mtk_wdt_stop(struct watchdog_device *wdt_dev)
+{
+	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&mtk_wdt->lock, flags);
+	mtk_wdt->hibernation_running = false;
+	ret = __mtk_wdt_stop(wdt_dev);
+	spin_unlock_irqrestore(&mtk_wdt->lock, flags);
+
+	return ret;
+}
+
+static int mtk_wdt_start(struct watchdog_device *wdt_dev)
+{
+	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&mtk_wdt->lock, flags);
+	if (mtk_wdt->hibernation_paused)
+		mtk_wdt->hibernation_running = true;
+	else
+		ret = __mtk_wdt_start(wdt_dev);
+	spin_unlock_irqrestore(&mtk_wdt->lock, flags);
+
+	return ret;
+}
+
+/*
+ * Device freeze/thaw surrounds the memory snapshot, not the image I/O. A
+ * thaw callback must not restart the watchdog before swsusp_write(), and
+ * freeze callbacks in the restore kernel run only after swsusp_read().
+ * Pause before tasks freeze and resume at POST, including abort paths.
+ *
+ * Start/stop requests can still arrive before the freezer stops userspace
+ * or after it thaws. Serialize them with this state transition and defer
+ * hardware starts while paused. Pings do not enable this watchdog.
+ */
+static int mtk_wdt_pm_notify(struct notifier_block *nb, unsigned long action,
+			     void *unused)
+{
+	struct mtk_wdt_dev *mtk_wdt = container_of(nb, struct mtk_wdt_dev, pm_nb);
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&mtk_wdt->lock, flags);
+	switch (action) {
+	case PM_HIBERNATION_PREPARE:
+	case PM_RESTORE_PREPARE:
+		if (!mtk_wdt->hibernation_paused) {
+			mtk_wdt->hibernation_running =
+				readl(mtk_wdt->wdt_base + WDT_MODE) & WDT_MODE_EN;
+			mtk_wdt->hibernation_paused = true;
+			ret = __mtk_wdt_stop(&mtk_wdt->wdt_dev);
+		}
+		break;
+	case PM_POST_HIBERNATION:
+	case PM_POST_RESTORE:
+		if (mtk_wdt->hibernation_paused) {
+			mtk_wdt->hibernation_paused = false;
+			if (mtk_wdt->hibernation_running)
+				ret = __mtk_wdt_start(&mtk_wdt->wdt_dev);
+			mtk_wdt->hibernation_running = false;
+		}
+		break;
+	}
+	spin_unlock_irqrestore(&mtk_wdt->lock, flags);
+
+	return notifier_from_errno(ret);
+}
+
+static void mtk_wdt_unregister_pm_notifier(void *data)
+{
+	struct mtk_wdt_dev *mtk_wdt = data;
+
+	unregister_pm_notifier(&mtk_wdt->pm_nb);
 }
 
 static int mtk_wdt_set_pretimeout(struct watchdog_device *wdd,
@@ -545,6 +627,7 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	if (!mtk_wdt)
 		return -ENOMEM;
 
+	spin_lock_init(&mtk_wdt->lock);
 	platform_set_drvdata(pdev, mtk_wdt);
 
 	wdt_data = of_device_get_match_data(dev);
@@ -601,6 +684,17 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	if (unlikely(err))
 		return err;
 
+	if (IS_ENABLED(CONFIG_HIBERNATION)) {
+		mtk_wdt->pm_nb.notifier_call = mtk_wdt_pm_notify;
+		err = register_pm_notifier(&mtk_wdt->pm_nb);
+		if (err)
+			return err;
+		err = devm_add_action_or_reset(dev, mtk_wdt_unregister_pm_notifier,
+					       mtk_wdt);
+		if (err)
+			return err;
+	}
+
 	dev_info(dev, "Watchdog registered (running=%d, timeout=%d sec, nowayout=%d)\n",
 		 watchdog_hw_running(&mtk_wdt->wdt_dev),
 		 mtk_wdt->wdt_dev.timeout, nowayout);
@@ -643,7 +737,7 @@ static int mtk_wdt_suspend_noirq(struct device *dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
 
-	if (mtk_wdt_is_running(&mtk_wdt->wdt_dev))
+	if (!mtk_wdt->hibernation_paused && mtk_wdt_is_running(&mtk_wdt->wdt_dev))
 		mtk_wdt_stop(&mtk_wdt->wdt_dev);
 
 	return 0;
@@ -653,7 +747,7 @@ static int mtk_wdt_resume_noirq(struct device *dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
 
-	if (mtk_wdt_is_running(&mtk_wdt->wdt_dev)) {
+	if (!mtk_wdt->hibernation_paused && mtk_wdt_is_running(&mtk_wdt->wdt_dev)) {
 		mtk_wdt_start(&mtk_wdt->wdt_dev);
 		mtk_wdt_ping(&mtk_wdt->wdt_dev);
 	}

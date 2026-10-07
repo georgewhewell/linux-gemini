@@ -24,6 +24,8 @@ core = '\n'.join(re.sub(r'^#include .*\n', '', (root / f).read_text(),
     'drivers/clk/mediatek/clk-mt6797-cpu.h',
     'drivers/clk/mediatek/clk-mt6797-cpu-core.c'))
 functions = '\n'.join(extract(s) for s in (
+    'static u32 mt6797_cpuclk_pll_offset(',
+    'static u32 mt6797_cpuclk_fhctl_channel(',
     'static int\nmt6797_cpuclk_write_dcm(',
     'static int mt6797_cpuclk_write_divider(',
     'static int\nmt6797_cpuclk_write_mux(',
@@ -58,6 +60,9 @@ typedef uint64_t u64;
 #define __iomem
 #define MT6797_FHCTL_DDS_MASK GENMASK(20,0)
 #define MT6797_FHCTL_HP_EN 0
+#define MT6797_CPUCLK_MP0_PLL_CON1 0x204
+#define MT6797_CPUCLK_MP1_PLL_CON1 0x214
+#define MT6797_CPUCLK_CCI_PLL_CON1 0x224
 #define MT6797_CPUCLK_MUXSEL 0x270
 #define MT6797_CPUCLK_CLKDIV 0x274
 #define MT6797_CPUCLK_SYNC_DCM 0x744
@@ -100,7 +105,7 @@ static void check(void)
  }
  unsigned long cpu = mt6797_cpuclk_apply_divider(parent, state.divider);
  assert(cpu <= ceiling);
- assert(((live.sync_dcm >> (active_domain ? 17 : 9)) & 31) <= cpu / 70000000);
+ assert(((live.sync_dcm >> (active_domain==3 ? 1 : active_domain ? 17 : 9)) & 31) <= cpu / 70000000);
  checks++;
 }
 static int step(char c)
@@ -116,6 +121,7 @@ static u32 readl(const volatile void *p)
  if (p == mixed + MT6797_CPUCLK_MUXSEL) return live.muxsel;
  if (p == mixed + 0x204) return live.armpll_con1[0];
  if (p == mixed + 0x214) return live.armpll_con1[1];
+ if (p == mixed + 0x224) return live.armpll_con1[3];
  assert(p == cfg + MT6797_CPUCLK_SYNC_DCM); return live.sync_dcm;
 }
 static void writel(u32 value, volatile void *p)
@@ -124,9 +130,9 @@ static void writel(u32 value, volatile void *p)
   if (!step('M')) live.muxsel=value;
   check(); return;
  }
- if (p == mixed + 0x204 || p == mixed + 0x214) {
-  unsigned int d = p == mixed + 0x214;
-  assert(((live.muxsel >> (2 + 2*d)) & 3) == MT6797_CPUCLK_MAINPLL);
+ if (p == mixed + 0x204 || p == mixed + 0x214 || p == mixed + 0x224) {
+  unsigned int d = p == mixed + 0x224 ? 3 : p == mixed + 0x214;
+  assert(((live.muxsel >> (d==3 ? 6 : 2 + 2*d)) & 3) == MT6797_CPUCLK_MAINPLL);
   if (!step('P')) live.armpll_con1[d]=value;
   check(); return;
  }
@@ -145,8 +151,7 @@ static int clk_rate_exclusive_get(void *clk)
 { assert(clk && !rate_refs); if (rate_get_error) return -EBUSY; rate_refs++; return 0; }
 static void clk_rate_exclusive_put(void *clk)
 { assert(clk && rate_refs==1); rate_refs--; }
-static u32 mt6797_cpuclk_pll_offset(enum mt6797_cpuclk_domain d)
-{ assert(d<=1); return d ? 0x214 : 0x204; }
+static u32 mt6797_cpuclk_pll_offset(enum mt6797_cpuclk_domain d);
 static u32 mt6797_cpuclk_fhctl_read(struct mt6797_cpuclk_observer *o, u32 offset)
 { (void)o; assert(offset==MT6797_FHCTL_HP_EN); return hp_en; }
 static int mt6797_topckgen_cpu_read(void *top, u8 *value)
@@ -178,10 +183,9 @@ static int mt6797_cpuclk_read_stable(struct mt6797_cpuclk_observer *o,
  }
  return 0;
 }
-static u32 mt6797_cpuclk_fhctl_channel(enum mt6797_cpuclk_domain d)
-{ return d; }
+static u32 mt6797_cpuclk_fhctl_channel(enum mt6797_cpuclk_domain d);
 static int mt6797_cpuclk_fhctl_init(struct mt6797_cpuclk_observer *o, u32 ch)
-{ (void)o; assert(ch == active_domain); return 0; }
+{ (void)o; assert(ch == (active_domain==3 ? 2 : active_domain)); return 0; }
 static void mutex_lock(int *lock) { assert(!*lock); *lock=1; }
 static void mutex_unlock(int *lock) { assert(*lock); *lock=0; }
 static int mt6797_dvfsp_cspm_transaction(void *handoff,
@@ -247,6 +251,35 @@ static void reset_l(unsigned int i, unsigned int j, unsigned int saved)
  ceiling=(l_rates[i]>l_rates[j] ? l_rates[i] : l_rates[j])*1000000UL;
  assert(!mt6797_cpuclk_plan_transition_mainpll(1,&live,26000000,
   l_rates[j]*1000000UL,fallback_rate,&plan));
+}
+static const unsigned int cci_rates[]={169,234,325,416,481,533,611,676,
+ 754,819,845,884,910,936,975,988};
+static void reset_cci(unsigned int i,unsigned int j)
+{
+ reset(3,3); active_domain=MT6797_CPUCLK_CCI;
+ unsigned int div=i<2 ? 4 : i<6 ? 2 : 1;
+ unsigned long pll=cci_rates[i]*div*1000000UL;
+ live.armpll_con1[3]=BIT(31)|BIT(24)|((u64)pll*32768/26000000);
+ live.armpll_con1[1]=0x800c4000;
+ live.clkdiv=(live.clkdiv & ~(31U<<15))|((div==4 ? 11 : div==2 ? 10 : 8)<<15);
+ live.sync_dcm |= (cci_rates[i]/70<<1)|BIT(6);
+ ceiling=(cci_rates[i]>cci_rates[j] ? cci_rates[i] : cci_rates[j])*1000000UL;
+ assert(!mt6797_cpuclk_plan_transition(3,&live,26000000,
+  cci_rates[j]*1000000UL,&plan));
+ assert(!plan.changes_postdiv);
+ if (i>j) {
+  assert(!(plan.before.value[0] & (31U<<1)));
+  assert(!(plan.after.value[2] & (31U<<1)));
+ }
+}
+static void reset_cci_post(unsigned int saved)
+{
+ reset_cci(15,0); observer.mainpll=observer.topckgen=&observer;
+ fallback_setting=saved;
+ live.armpll_con1[3]=BIT(31)|((u64)988000000*16384/26000000);
+ assert(!mt6797_cpuclk_plan_transition_mainpll(3,&live,26000000,
+  169000000,fallback_rate,&plan));
+ assert(plan.changes_postdiv);
 }
 static void assert_fenced(void)
 {
@@ -383,6 +416,57 @@ int main(void)
    (MT6797_CPUCLK_MAINPLL<<4);
   assert(!run() && fallback_setting==3 && !rate_refs);
  }
+ unsigned int cci_pairs=0,cci_faults=0;
+ branch.domain=MT6797_CPUCLK_CCI;
+ for(unsigned int i=0;i<16;i++) for(unsigned int j=0;j<16;j++) {
+  reset_cci(i,j);
+  struct mt6797_cpuclk_snapshot before=live;
+  unsigned long target=cci_rates[j]*1000000UL;
+  struct clk_rate_request cr={.rate=target,.min_rate=target,.max_rate=target,
+   .best_parent_rate=26000000};
+  assert(!mt6797_cpuclk_branch_determine_rate(&branch.hw,&cr));
+  assert(!mt6797_cpuclk_branch_set_rate(&branch.hw,cr.rate,cr.best_parent_rate));
+  assert(!observer.faulted && releases==1 && !rate_refs);
+  struct mt6797_cpuclk_state state;
+  assert(!mt6797_cpuclk_decode_state(3,&live,26000000,&state));
+  assert(mt6797_cpuclk_apply_divider(state.armpll_rate,state.divider)==target);
+  assert(live.armpll_con1[0]==before.armpll_con1[0]);
+  assert(live.armpll_con1[1]==before.armpll_con1[1]);
+  assert(!((live.clkdiv^before.clkdiv)&~(31U<<15)));
+  assert(!((live.sync_dcm^before.sync_dcm)&~(63U<<1)));
+  cci_pairs++;
+  unsigned int length=operations;
+  char success[64]; strcpy(success,trace);
+  for(unsigned int n=1;n<=length;n++) {
+   if(success[n-1]=='V') continue;
+   reset_cci(i,j); fail_at=n;
+   assert(run()==-EIO && observer.faulted && releases==1);
+   unsigned int old_operations=operations;
+   assert(run()==-EUCLEAN && operations==old_operations);
+   cci_faults++;
+  }
+ }
+ for(unsigned int saved=0;saved<4;saved++) {
+  reset_cci_post(saved); assert(!run());
+  assert(fallback_setting==saved && !rate_refs);
+  unsigned int length=operations;
+  char success[64]; strcpy(success,trace);
+  for(unsigned int n=1;n<=length;n++) {
+   if(success[n-1]=='V') continue;
+   reset_cci_post(saved); fail_at=n;
+   assert(run()==-EIO && operations==n); assert_fenced(); cci_faults++;
+  }
+ }
+ reset_cci_post(0); hp_en=BIT(2);
+ assert(run()==-EBUSY && !operations && !observer.faulted && !rate_refs);
+ reset_cci(15,0); divider_refusals=2;
+ assert(run()==-EIO && observer.faulted && divider_attempts==2);
+ reset_cci(15,0); stale=1;
+ assert(run()==-EAGAIN && !operations && !observer.faulted);
+ reset_cci(0,15); release_error=1;
+ assert(run()==-EUCLEAN && observer.faulted);
+ printf("PASS %u CCI pairs, %u injected failures, sibling registers preserved\n",
+  cci_pairs,cci_faults);
  printf("PASS %u L pairs across 4 fallback states, %u postdivider failures\n",
   l_pairs,post_faults);
  printf("PASS %u pairs, %u injected write failures, %u intermediate checks\n",pairs,faults,checks);

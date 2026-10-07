@@ -323,9 +323,13 @@ static void mt6797_cpuclk_mux_dcm_plan_test(struct kunit *test)
 	KUNIT_EXPECT_TRUE(test, dcm.value[2] & BIT(22));
 	KUNIT_EXPECT_TRUE(test, dcm.value[2] & BIT(14));
 	KUNIT_EXPECT_EQ(test,
-		mt6797_cpuclk_plan_dcm(MT6797_CPUCLK_CCI, 988000000, 0,
+		mt6797_cpuclk_plan_dcm(MT6797_CPUCLK_CCI, 988000000, BIT(22),
 				       &dcm),
-		-EOPNOTSUPP);
+		0);
+	KUNIT_EXPECT_EQ(test, FIELD_GET(GENMASK(5, 1), dcm.value[0]), 14U);
+	KUNIT_EXPECT_FALSE(test, dcm.value[1] & BIT(6));
+	KUNIT_EXPECT_TRUE(test, dcm.value[2] & BIT(6));
+	KUNIT_EXPECT_TRUE(test, dcm.value[2] & BIT(22));
 }
 
 static void mt6797_cpuclk_transition_pairs_test(struct kunit *test)
@@ -406,7 +410,7 @@ static void mt6797_cpuclk_transition_admission_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP2,
 		&snapshot, 26000000, 750000000, &plan), -EOPNOTSUPP);
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_CCI,
-		&snapshot, 26000000, 630000000, &plan), -EOPNOTSUPP);
+		&snapshot, 26000000, 630000000, &plan), -EINVAL);
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP0,
 		&snapshot, 0, 481000000, &plan), -EINVAL);
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP0,

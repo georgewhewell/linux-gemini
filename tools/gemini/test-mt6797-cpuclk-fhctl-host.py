@@ -30,7 +30,8 @@ defines = '\n'.join(line for line in source.splitlines()
                     if line.startswith(('#define MT6797_FHCTL_',
                                         '#define MT6797_ARMPLL_CHG',
                                         '#define MT6797_CPUCLK_MP0_PLL_CON1',
-                                        '#define MT6797_CPUCLK_MP1_PLL_CON1')))
+                                        '#define MT6797_CPUCLK_MP1_PLL_CON1',
+                                        '#define MT6797_CPUCLK_CCI_PLL_CON1')))
 functions = '\n'.join(extract(signature) for signature in (
     'static u32 mt6797_cpuclk_pll_offset(',
     'static u32 mt6797_cpuclk_fhctl_channel(',
@@ -51,7 +52,7 @@ typedef uint32_t u32;
 #define __iomem
 #define BIT(n) (1U << (n))
 #define GENMASK(h, l) (((~0U) << (l)) & (~0U >> (31 - (h))))
-enum mt6797_cpuclk_domain { MT6797_CPUCLK_MP0, MT6797_CPUCLK_MP1 };
+enum mt6797_cpuclk_domain { MT6797_CPUCLK_MP0, MT6797_CPUCLK_MP1, MT6797_CPUCLK_MP2, MT6797_CPUCLK_CCI };
 struct mt6797_cpuclk_observer { unsigned char *mcumixed; u32 fhctl_ready; };
 ''' + defines + r'''
 static u32 regs[0x1000 / 4];
@@ -63,7 +64,8 @@ static unsigned int reg_index(const volatile void *p)
 static u32 channel_of(unsigned int off)
 { return off == MT6797_CPUCLK_MP0_PLL_CON1 ? 0 : 1; }
 static u32 con1_of(u32 ch)
-{ return ch ? MT6797_CPUCLK_MP1_PLL_CON1 : MT6797_CPUCLK_MP0_PLL_CON1; }
+{ return ch == 2 ? MT6797_CPUCLK_CCI_PLL_CON1 :
+ ch ? MT6797_CPUCLK_MP1_PLL_CON1 : MT6797_CPUCLK_MP0_PLL_CON1; }
 /* The PCW the PLL currently outputs. */
 static u32 output(u32 ch)
 {
@@ -82,7 +84,7 @@ static void note(const char *what)
 static u32 readl(const volatile void *p)
 {
  unsigned int off = reg_index(p) * 4;
- for (u32 ch = 0; ch < 2; ch++) {
+ for (u32 ch = 0; ch < 3; ch++) {
   /* The controller slews one step towards DVFS on every MON sample. */
   if (off == MT6797_FHCTL_MON(ch) && (regs[MT6797_FHCTL_HP_EN / 4] & BIT(ch)) &&
       (regs[MT6797_FHCTL_CFG(ch) / 4] & MT6797_FHCTL_CFG_SFSTR_EN) &&
@@ -102,7 +104,7 @@ static void writel(u32 v, volatile void *p)
 {
  unsigned int off = reg_index(p) * 4;
  if (off == MT6797_FHCTL_HP_EN && refuse_hp_en) v = regs[off / 4];
- for (u32 ch = 0; ch < 2; ch++) {
+ for (u32 ch = 0; ch < 3; ch++) {
   if (off == MT6797_FHCTL_CFG(ch) && v == 0) note("cfg0");
   if (off == MT6797_FHCTL_CFG(ch) && v) note("cfg-dvfs");
   if (off == MT6797_FHCTL_DDS(ch) && v) {
@@ -200,6 +202,18 @@ int main(void)
  assert(mt6797_cpuclk_fhctl_init(&observer, 1) == -EBUSY);
  assert(!regs[MT6797_FHCTL_CLK_CON / 4] && !observer.fhctl_ready);
 
+ /* CCI channel 2 must leave both CPU PLLs and their channel bits alone. */
+ for (unsigned int fail=0; fail<2; fail++) {
+  reset(boot_ll,boot_l);
+  regs[MT6797_CPUCLK_CCI_PLL_CON1/4]=0x81114000;
+  assert(!mt6797_cpuclk_fhctl_init(&observer,2));
+  bounds(2,0x114000,0xf0000); stall_at_half=fail;
+  assert(mt6797_cpuclk_fhctl_hop(&observer,MT6797_CPUCLK_CCI,0xf0000)==
+   (fail ? -ETIMEDOUT : 0));
+  assert(regs[MT6797_CPUCLK_MP0_PLL_CON1/4]==boot_ll);
+  assert(regs[MT6797_CPUCLK_MP1_PLL_CON1/4]==boot_l);
+  assert(!(regs[MT6797_FHCTL_HP_EN/4]&BIT(2)));
+ }
  printf("mt6797-cpuclk-fhctl: pass (%d modelled register accesses)\n", accesses);
  return 0;
 }

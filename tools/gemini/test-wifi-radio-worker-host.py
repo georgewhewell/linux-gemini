@@ -36,7 +36,7 @@ program = r'''
 #include <stdio.h>
 #include <errno.h>
 typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64;
-typedef int32_t s32; typedef int64_t s64; typedef int64_t ktime_t; typedef int spinlock_t;
+typedef int8_t s8; typedef int32_t s32; typedef int64_t s64; typedef int64_t ktime_t; typedef int spinlock_t;
 struct completion { bool done; };
 static void complete(struct completion *c) { c->done=true; }
 struct mutex { int held; };
@@ -60,6 +60,7 @@ struct sk_buff_head { unsigned length; };
 static void mutex_lock(void *p) { int *l=p; assert(!*l); *l=1; }
 static void mutex_unlock(void *p) { int *l=p; assert(*l); *l=0; }
 static ktime_t ktime_get(void) { return 100; }
+static u64 ktime_get_boottime_ns(void) { return (u64)ktime_get() * 1000000; }
 static s64 ktime_ms_delta(ktime_t a,ktime_t b) { return a-b; }
 static s64 ktime_to_ms(ktime_t t) { return t; }
 static bool ether_addr_equal(const u8 *a,const u8 *b) { return !memcmp(a,b,6); }

@@ -16,6 +16,15 @@ driver = base['driver']
 program = program.replace('struct mt6797_wifi_hif_irq { int lifecycle_lock; bool attached; };',
                          'struct mt6797_wifi_hif_irq { int lifecycle_lock,mode; bool attached; };')
 program += r'''
+static int metadata_error;
+static s32 signal_mbm = -6300;
+int mt6797_wifi_rx_metadata_decode(const u8 *packet, size_t length,
+                                  struct mt6797_wifi_rx_metadata *metadata) {
+ (void)packet; (void)length;
+ if(metadata_error) return metadata_error;
+ metadata->signal_mbm=signal_mbm;
+ return 0;
+}
 #define WLAN_EID_TIM 5
 #define MT6797_WIFI_HIF_IRQ_RUNTIME 2
 #define MT6797_WIFI_MCR_WTDR1 0x34
@@ -96,8 +105,16 @@ static void rejected(void) {
 int main(void) {
  setup(); assert(!mt6797_radio_finish_pm(&r));
  assert(writes==1 && releases==1 && !fences && c.pm_started && c.beacon_seen);
+ assert(c.signal_valid && c.signal==-63 && c.signal_at_ns==100000000);
  assert(last_timeout==1500 && r.command_sequence==3 && !irq.lifecycle_lock);
  frame[39]=4; assert(!mt6797_radio_beacon(&r,&view)); assert(c.pm.dtim_period==3); /* Duplicate immutable. */
+ now=200; signal_mbm=-7100;
+ assert(!mt6797_radio_beacon(&r,&view));
+ assert(c.signal==-71 && c.signal_at_ns==200000000 && c.pm.dtim_period==3);
+ metadata_error=-EINVAL; now=300;
+ assert(!mt6797_radio_beacon(&r,&view));
+ assert(c.signal==-71 && c.signal_at_ns==200000000);
+ metadata_error=0;
  c.cancel=true; assert(!mt6797_radio_pm_send(&r,false)); /* Abort after cancellation remains valid. */
  assert(writes==2 && !c.pm_started && !irq.lifecycle_lock);
  setup(); memcpy(frame+4,dev.dev_addr,6); assert(!mt6797_radio_finish_pm(&r));

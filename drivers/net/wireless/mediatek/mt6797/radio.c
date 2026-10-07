@@ -3,6 +3,7 @@
 #include <linux/etherdevice.h>
 #include <linux/ieee80211.h>
 #include <linux/if_vlan.h>
+#include <linux/math64.h>
 #include <linux/random.h>
 #include <linux/workqueue.h>
 #include <linux/unaligned.h>
@@ -106,6 +107,12 @@ struct mt6797_radio_connection {
 	u8 ies[MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH];
 	bool cancel;
 	bool connected;
+	u64 connected_at_ns;
+	u64 rx_bytes;
+	u32 rx_packets;
+	u64 signal_at_ns;
+	s8 signal;
+	bool signal_valid;
 	bool link_attached;
 	bool peer_disconnect;
 	u16 reason;
@@ -743,6 +750,8 @@ static int mt6797_radio_data_frame(struct mt6797_wifi_radio *radio,
 	skb_put_data(skb, data.payload, data.length - ETH_HLEN);
 	skb->protocol = eth_type_trans(skb, radio->netdev);
 	skb->ip_summed = CHECKSUM_NONE;
+	connection->rx_packets++;
+	connection->rx_bytes += data.length;
 	spin_unlock_irqrestore(&radio->lock, flags);
 	DEV_STATS_INC(radio->netdev, rx_packets);
 	DEV_STATS_ADD(radio->netdev, rx_bytes, data.length);
@@ -760,6 +769,7 @@ static int mt6797_radio_beacon(struct mt6797_wifi_radio *radio,
 	const struct mt6797_wifi_rx_view *view)
 {
 	struct mt6797_wifi_ais_pm_params params;
+	struct mt6797_wifi_rx_metadata metadata;
 	struct mt6797_radio_connection *connection;
 	const u8 *frame = view->payload;
 	unsigned long flags;
@@ -772,16 +782,23 @@ static int mt6797_radio_beacon(struct mt6797_wifi_radio *radio,
 	spin_lock_irqsave(&radio->lock, flags);
 	connection = radio->connection;
 	if (connection && connection->connected && !connection->cancel && !radio->stopping &&
-	    !connection->beacon_seen &&
 	    band == connection->join.negotiated.channel.band &&
 	    channel == connection->join.negotiated.channel.primary &&
 	    ether_addr_equal(frame + 10, connection->bss->bssid) &&
 	    ether_addr_equal(frame + 16, connection->bss->bssid) &&
 	    (ether_addr_equal(frame + 4, radio->netdev->dev_addr) || is_broadcast_ether_addr(frame + 4))) {
-		params.association_id = connection->join.negotiated.association_id;
-		connection->pm = params;
-		connection->beacon_seen = true;
-		complete(&connection->pm_completion);
+		if (!mt6797_wifi_rx_metadata_decode(view->packet, view->packet_length,
+						  &metadata)) {
+			connection->signal = metadata.signal_mbm / 100;
+			connection->signal_at_ns = ktime_get_boottime_ns();
+			connection->signal_valid = true;
+		}
+		if (!connection->beacon_seen) {
+			params.association_id = connection->join.negotiated.association_id;
+			connection->pm = params;
+			connection->beacon_seen = true;
+			complete(&connection->pm_completion);
+		}
 	}
 	spin_unlock_irqrestore(&radio->lock, flags);
 	return 0;
@@ -1125,8 +1142,10 @@ static void mt6797_radio_connection_work(struct work_struct *work)
 	if (ret)
 		goto cleanup;
 	spin_lock_irqsave(&radio->lock, flags);
-	if (!connection->cancel && !radio->stopping)
+	if (!connection->cancel && !radio->stopping) {
 		connection->connected = true;
+		connection->connected_at_ns = ktime_get_boottime_ns();
+	}
 	connection->authorized = connection->join.negotiated.security == MT6797_WIFI_AIS_SECURITY_OPEN;
 	connected = connection->connected;
 	spin_unlock_irqrestore(&radio->lock, flags);
@@ -2463,6 +2482,79 @@ static int mt6797_radio_external_auth(struct wiphy *wiphy, struct net_device *ne
 	return ret;
 }
 
+/* radio->lock protects the association and these host-observed counters. */
+static void mt6797_radio_station_info(struct mt6797_radio_connection *connection,
+				     struct station_info *sinfo)
+{
+	u64 now = ktime_get_boottime_ns();
+
+	sinfo->filled |= BIT_ULL(NL80211_STA_INFO_CONNECTED_TIME) |
+		BIT_ULL(NL80211_STA_INFO_RX_BYTES64) |
+		BIT_ULL(NL80211_STA_INFO_RX_PACKETS) |
+		BIT_ULL(NL80211_STA_INFO_STA_FLAGS);
+	sinfo->connected_time = div_u64(now - connection->connected_at_ns, NSEC_PER_SEC);
+	sinfo->rx_bytes = connection->rx_bytes;
+	sinfo->rx_packets = connection->rx_packets;
+	sinfo->sta_flags.mask = BIT(NL80211_STA_FLAG_AUTHENTICATED) |
+		BIT(NL80211_STA_FLAG_ASSOCIATED) | BIT(NL80211_STA_FLAG_AUTHORIZED);
+	sinfo->sta_flags.set = BIT(NL80211_STA_FLAG_AUTHENTICATED) |
+		BIT(NL80211_STA_FLAG_ASSOCIATED);
+	if (connection->authorized)
+		sinfo->sta_flags.set |= BIT(NL80211_STA_FLAG_AUTHORIZED);
+
+	/* Firmware may filter beacons after joining; do not report stale RSSI. */
+	if (connection->signal_valid &&
+	    now - connection->signal_at_ns <= 5ULL * NSEC_PER_SEC) {
+		sinfo->signal = connection->signal;
+		sinfo->filled |= BIT_ULL(NL80211_STA_INFO_SIGNAL);
+	}
+}
+
+static int mt6797_radio_get_station(struct wiphy *wiphy, struct wireless_dev *wdev,
+				   const u8 *mac, struct station_info *sinfo)
+{
+	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	struct mt6797_radio_connection *connection;
+	unsigned long flags;
+	int ret = -ENOENT;
+
+	if (wdev != &radio->wdev)
+		return -ENODEV;
+	spin_lock_irqsave(&radio->lock, flags);
+	connection = radio->connection;
+	if (!radio->stopping && connection && connection->connected &&
+	    !connection->cancel && ether_addr_equal(mac, connection->bss->bssid)) {
+		mt6797_radio_station_info(connection, sinfo);
+		ret = 0;
+	}
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return ret;
+}
+
+static int mt6797_radio_dump_station(struct wiphy *wiphy, struct wireless_dev *wdev,
+				    int idx, u8 *mac, struct station_info *sinfo)
+{
+	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	struct mt6797_radio_connection *connection;
+	unsigned long flags;
+	int ret = -ENOENT;
+
+	if (wdev != &radio->wdev)
+		return -ENODEV;
+	if (idx != 0)
+		return -ENOENT;
+	spin_lock_irqsave(&radio->lock, flags);
+	connection = radio->connection;
+	if (!radio->stopping && connection && connection->connected &&
+	    !connection->cancel) {
+		ether_addr_copy(mac, connection->bss->bssid);
+		mt6797_radio_station_info(connection, sinfo);
+		ret = 0;
+	}
+	spin_unlock_irqrestore(&radio->lock, flags);
+	return ret;
+}
+
 static const struct cfg80211_ops mt6797_radio_ops = {
 	.scan = mt6797_radio_scan,
 	.abort_scan = mt6797_radio_abort_scan,
@@ -2473,6 +2565,8 @@ static const struct cfg80211_ops mt6797_radio_ops = {
 	.set_default_key = mt6797_radio_set_default_key,
 	.set_default_mgmt_key = mt6797_radio_set_default_mgmt_key,
 	.change_station = mt6797_radio_change_station,
+	.get_station = mt6797_radio_get_station,
+	.dump_station = mt6797_radio_dump_station,
 	.mgmt_tx = mt6797_radio_mgmt_tx,
 	.external_auth = mt6797_radio_external_auth,
 };

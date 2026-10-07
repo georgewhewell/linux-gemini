@@ -45,6 +45,10 @@ enum usb_role { USB_ROLE_NONE, USB_ROLE_HOST, USB_ROLE_DEVICE };
 struct usb_role_switch { struct mtu3 *mtu; };
 static int pm_error, pm_refs, vbus_events;
 static bool udc_vbus;
+enum { USB_STATE_NOTATTACHED, USB_STATE_POWERED };
+static int gadget_state;
+static void usb_gadget_set_state(int *g, int state)
+{ (void)g; gadget_state = state; }
 static void *usb_role_switch_get_drvdata(struct usb_role_switch *sw) { return sw->mtu; }
 static int pm_runtime_resume_and_get(int dev)
 { (void)dev; if (pm_error) return pm_error; pm_refs++; return 0; }
@@ -156,6 +160,7 @@ int main(void)
     pm_error = 0;
     assert(!mtu3_peripheral_role_set(&sw, USB_ROLE_DEVICE));
     assert(m.vbus_active && udc_vbus && vbus_events == 1 && !pm_refs);
+    assert(gadget_state == USB_STATE_POWERED);
     assert(mac[U3D_MISC_CTRL / 4] == (BIT(30) | VBUS_FRC_EN | VBUS_ON));
     assert(mac[U3D_USB3_CONFIG / 4] & USB3_EN);
     assert(!mtu3_peripheral_role_set(&sw, USB_ROLE_DEVICE));
@@ -166,6 +171,7 @@ int main(void)
     assert(mac[U3D_POWER_MANAGEMENT / 4] & SOFT_CONN);
     assert(!mtu3_peripheral_role_set(&sw, USB_ROLE_NONE));
     assert(!m.vbus_active && !udc_vbus && vbus_events == 2 && !pm_refs);
+    assert(gadget_state == USB_STATE_NOTATTACHED);
     assert(mac[U3D_MISC_CTRL / 4] == (BIT(30) | VBUS_FRC_EN));
     assert(!(mac[U3D_USB3_CONFIG / 4] & USB3_EN));
     assert(!(mac[U3D_POWER_MANAGEMENT / 4] & SOFT_CONN));

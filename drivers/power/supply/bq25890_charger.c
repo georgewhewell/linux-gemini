@@ -1126,7 +1126,10 @@ static const struct power_supply_desc bq25890_read_only_desc = {
 
 static int bq25890_power_supply_init(struct bq25890_device *bq)
 {
-	struct power_supply_config psy_cfg = { .drv_data = bq, };
+	struct power_supply_config psy_cfg = {
+		.drv_data = bq,
+		.fwnode = dev_fwnode(bq->dev),
+	};
 
 	/* Get ID for the device */
 	mutex_lock(&bq25890_id_mutex);

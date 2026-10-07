@@ -184,7 +184,7 @@ config ARCH_MEDIATEK
 
 config ARM64_MT6797_A72_CAPABILITY_PROFILE
 	bool "MT6797 late Cortex-A72 capability support"
-	depends on ARCH_MEDIATEK && SMP && CMDLINE_FORCE
+	depends on ARCH_MEDIATEK && SMP
 	select ARM64_LATE_CPU_PROFILE
 	help
 	  Include the MT6797 Cortex-A72 register set and errata when finalizing

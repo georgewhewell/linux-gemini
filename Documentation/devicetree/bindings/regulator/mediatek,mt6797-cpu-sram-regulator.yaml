@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/mediatek,mt6797-cpu-sram-regulator.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 CPU SRAM LDOs
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  Eight LDOs in INFRACFG supply the A53 CPU SRAM. The LL/L/CCI voltage
+  policy programs them together as one rail, in 25 mV steps from 1.0 to
+  1.2 V. These are separate from the MT6351 PMIC SRAM regulator and the
+  secure-firmware-controlled A72 SRAM LDO. Access requires the stopped
+  DVFSP firmware handoff and its hardware semaphore. All eight LDOs must
+  remain enabled.
+
+allOf:
+  - $ref: regulator.yaml#
+
+properties:
+  compatible:
+    const: mediatek,mt6797-cpu-sram-regulator
+
+  mediatek,infracfg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: INFRACFG syscon containing CPULDO_CTRL0/1/2.
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: i2c
+
+  access-controllers:
+    maxItems: 1
+
+  regulator-min-microvolt:
+    minimum: 1000000
+    maximum: 1200000
+
+  regulator-max-microvolt:
+    minimum: 1000000
+    maximum: 1200000
+
+  regulator-always-on: true
+
+required:
+  - compatible
+  - mediatek,infracfg
+  - clocks
+  - clock-names
+  - access-controllers
+  - regulator-always-on
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+    regulator-cpu-sram {
+        compatible = "mediatek,mt6797-cpu-sram-regulator";
+        mediatek,infracfg = <&infrasys>;
+        clocks = <&infrasys CLK_INFRA_I2C_APPM>;
+        clock-names = "i2c";
+        access-controllers = <&dvfsp_handoff>;
+        regulator-name = "vsram-a53-cci";
+        regulator-min-microvolt = <1000000>;
+        regulator-max-microvolt = <1200000>;
+        regulator-always-on;
+    };

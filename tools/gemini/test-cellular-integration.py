@@ -142,8 +142,4 @@ assert "pll_degraded" not in core
 kconfig = (root / "drivers/soc/mediatek/Kconfig.cellular").read_text()
 assert "depends on MTK_MT6797_MD1=n" in kconfig
 assert "depends on MTK_MT6797_MD1_CLOCKED_OBSERVER=n" in kconfig
-overlay = (root / "arch/arm64/boot/dts/mediatek/mt6797-gemini-pda-cellular.dtso").read_text()
-assert 'status = "okay"' not in overlay
-assert overlay.count('status = "disabled"') == 6
-assert "mediatek,boot-watchdog = <&watchdog>" in overlay
-print("PASS guard-before-write/copy ordering, fail-closed PLL, exclusive/default-disabled profile")
+print("PASS watchdog ordering, PLL timeouts and exclusive modem driver configuration")

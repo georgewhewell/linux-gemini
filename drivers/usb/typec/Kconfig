@@ -112,6 +112,7 @@ config TYPEC_WUSB3801
 config TYPEC_FUSB301
 	tristate "onsemi FUSB301 Type-C port controller driver"
 	depends on I2C
+	depends on USB_ROLE_SWITCH || !USB_ROLE_SWITCH
 	select REGMAP_I2C
 	help
 	  Say Y or M here if your system has an onsemi FUSB301 or FUSB301A

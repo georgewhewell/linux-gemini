@@ -148,6 +148,7 @@
 
 #define U3P_U3_PHYA_REG1	0x004
 #define P3A_RG_CLKDRV_AMP		GENMASK(31, 29)
+#define P3A_RG_VUSB10_ON		BIT(29)
 
 #define U3P_U3_PHYA_REG6	0x018
 #define P3A_RG_TX_EIDLE_CM		GENMASK(31, 28)
@@ -296,6 +297,7 @@ enum mtk_phy_version {
  * @sw_efuse_supported:       Switches off eFuse auto-load from PHY and applies values
  *                            read from different nvmem (usually different eFuse array)
  *                            that is pointed at in the device tree node for this PHY
+ * @u3phya_vusb10:            Software must signal when the USB3 analog supply is ready
  * @slew_ref_clock_mhz:         Default reference clock (in MHz) for slew rate calibration
  * @slew_rate_coefficient:    Coefficient for slew rate calibration
  * @version:                  PHY IP Version
@@ -304,6 +306,7 @@ struct mtk_phy_pdata {
 	bool avoid_rx_sen_degradation;
 	bool sw_pll_48m_to_26m;
 	bool sw_efuse_supported;
+	bool u3phya_vusb10;
 	u8 slew_ref_clock_mhz;
 	u8 slew_rate_coefficient;
 	enum mtk_phy_version version;
@@ -812,6 +815,30 @@ static void u3_phy_instance_init(struct mtk_tphy *tphy,
 	mtk_phy_update_field(phyd + U3P_U3_PHYD_RXDET2, P3D_RG_RXDET_STB2_SET_P3, 0x10);
 
 	dev_dbg(tphy->dev, "%s(%d)\n", __func__, instance->index);
+}
+
+static void u3_phy_instance_power_on(struct mtk_tphy *tphy,
+				     struct mtk_phy_instance *instance)
+{
+	if (!tphy->pdata->u3phya_vusb10)
+		return;
+
+	/* The PHY core has enabled phy-supply before calling power_on. */
+	usleep_range(50, 100);
+	mtk_phy_set_bits(instance->u3_banks.phya + U3P_U3_PHYA_REG1,
+			 P3A_RG_VUSB10_ON);
+}
+
+static void u3_phy_instance_power_off(struct mtk_tphy *tphy,
+				      struct mtk_phy_instance *instance)
+{
+	if (!tphy->pdata->u3phya_vusb10)
+		return;
+
+	/* Clear the indication before the PHY core disables phy-supply. */
+	mtk_phy_clear_bits(instance->u3_banks.phya + U3P_U3_PHYA_REG1,
+			   P3A_RG_VUSB10_ON);
+	udelay(10);
 }
 
 static void u2_phy_pll_26m_set(struct mtk_tphy *tphy,
@@ -1445,6 +1472,8 @@ static int mtk_phy_power_on(struct phy *phy)
 	if (instance->type == PHY_TYPE_USB2) {
 		u2_phy_instance_power_on(tphy, instance);
 		hs_slew_rate_calibrate(tphy, instance);
+	} else if (instance->type == PHY_TYPE_USB3) {
+		u3_phy_instance_power_on(tphy, instance);
 	} else if (instance->type == PHY_TYPE_PCIE) {
 		pcie_phy_instance_power_on(tphy, instance);
 	}
@@ -1459,6 +1488,8 @@ static int mtk_phy_power_off(struct phy *phy)
 
 	if (instance->type == PHY_TYPE_USB2)
 		u2_phy_instance_power_off(tphy, instance);
+	else if (instance->type == PHY_TYPE_USB3)
+		u3_phy_instance_power_off(tphy, instance);
 	else if (instance->type == PHY_TYPE_PCIE)
 		pcie_phy_instance_power_off(tphy, instance);
 
@@ -1589,12 +1620,19 @@ static const struct mtk_phy_pdata mt8195_pdata = {
 	.version = MTK_PHY_V3,
 };
 
+static const struct mtk_phy_pdata mt6797_pdata = {
+	.u3phya_vusb10 = true,
+	.slew_ref_clock_mhz = 26,
+	.slew_rate_coefficient = 28,
+	.version = MTK_PHY_V1,
+};
+
 static const struct of_device_id mtk_tphy_id_table[] = {
 	{ .compatible = "mediatek,mt2701-u3phy", .data = &tphy_v1_pdata },
 	{ .compatible = "mediatek,mt2712-u3phy", .data = &tphy_v2_pdata },
 	{ .compatible = "mediatek,mt8173-u3phy", .data = &mt8173_pdata },
 	{ .compatible = "mediatek,mt8195-tphy", .data = &mt8195_pdata },
-	{ .compatible = "mediatek,mt6797-tphy", .data = &tphy_v1_pdata },
+	{ .compatible = "mediatek,mt6797-tphy", .data = &mt6797_pdata },
 	{ .compatible = "mediatek,generic-tphy-v1", .data = &tphy_v1_pdata },
 	{ .compatible = "mediatek,generic-tphy-v2", .data = &tphy_v2_pdata },
 	{ .compatible = "mediatek,generic-tphy-v3", .data = &tphy_v3_pdata },

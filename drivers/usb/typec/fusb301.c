@@ -210,11 +210,11 @@ static int fusb301_update_status(struct fusb301 *fusb)
 
 	ret = regmap_read(fusb->regmap, FUSB301_REG_STATUS, &status);
 	if (ret)
-		return ret;
+		goto err_disconnect;
 
 	ret = regmap_read(fusb->regmap, FUSB301_REG_TYPE, &type);
 	if (ret)
-		return ret;
+		goto err_disconnect;
 
 	if (!(status & FUSB301_STATUS_ATTACH)) {
 		ret = fusb301_disconnect(fusb);
@@ -229,15 +229,19 @@ static int fusb301_update_status(struct fusb301 *fusb)
 
 	partner_type = type & (FUSB301_TYPE_SINK | FUSB301_TYPE_SOURCE |
 				       FUSB301_TYPE_DEBUG_ACC | FUSB301_TYPE_AUDIO_ACC);
-	if (!partner_type)
-		return -EIO;
+	if (!partner_type) {
+		ret = -EIO;
+		goto err_disconnect;
+	}
 
 	if (partner_type & FUSB301_TYPE_SINK) {
 		pwr_role = TYPEC_SOURCE;
 		usb_role = USB_ROLE_HOST;
 	} else if (partner_type & FUSB301_TYPE_SOURCE) {
 		pwr_role = TYPEC_SINK;
-		usb_role = USB_ROLE_DEVICE;
+		/* CC can attach before the source has made VBUS valid. */
+		if (status & FUSB301_STATUS_VBUSOK)
+			usb_role = USB_ROLE_DEVICE;
 	} else {
 		pwr_role = fusb301_default_role(fusb);
 	}

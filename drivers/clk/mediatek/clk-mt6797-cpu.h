@@ -43,19 +43,10 @@ struct mt6797_cpuclk_dcm_plan {
 	u32 value[3];
 };
 
-struct mt6797_cpuclk_hop_plan {
-	enum mt6797_cpuclk_domain domain;
-	unsigned long clk26m_rate;
-	u64 initial_rate;
-	unsigned long rate;
-	u32 dds;
-	bool dcm_before_hop;
-	struct mt6797_cpuclk_dcm_plan dcm;
-	struct mt6797_cpuclk_snapshot snapshot;
-};
-
 /* One CPU-rate transaction: DCM, optional CKDIV, FHCTL, CKDIV, DCM. */
 struct mt6797_cpuclk_transition_plan {
+	enum mt6797_cpuclk_domain domain;
+	unsigned long clk26m_rate;
 	u64 initial_rate;
 	unsigned long rate;
 	unsigned long pll_rate;
@@ -71,7 +62,8 @@ struct mt6797_cpuclk_transition_plan {
 
 struct mt6797_cpuclk_backend_ops {
 	int (*snapshot)(void *context, struct mt6797_cpuclk_snapshot *snapshot);
-	int (*hop)(void *context, const struct mt6797_cpuclk_hop_plan *plan);
+	int (*transition)(void *context,
+			  const struct mt6797_cpuclk_transition_plan *plan);
 };
 
 struct mt6797_cpuclk_backend {
@@ -99,10 +91,6 @@ int mt6797_cpuclk_plan_mux(enum mt6797_cpuclk_domain domain, u8 source,
 int mt6797_cpuclk_plan_dcm(enum mt6797_cpuclk_domain domain,
 			   unsigned long rate, u32 initial_dcm,
 			   struct mt6797_cpuclk_dcm_plan *plan);
-int mt6797_cpuclk_plan_hop(enum mt6797_cpuclk_domain domain,
-			   const struct mt6797_cpuclk_snapshot *snapshot,
-			   unsigned long clk26m_rate, unsigned long rate,
-			   struct mt6797_cpuclk_hop_plan *plan);
 int mt6797_cpuclk_plan_transition(enum mt6797_cpuclk_domain domain,
 			   const struct mt6797_cpuclk_snapshot *snapshot,
 			   unsigned long clk26m_rate, unsigned long rate,

@@ -104,6 +104,7 @@ struct mt6797_cpuclk {
 	struct mt6797_cpuclk_backend backend;
 	struct mt6797_cpuclk_observer observer;
 	struct mt6797_cpuclk_pll_hw plls[MT6797_CPUCLK_NR_DOMAINS];
+	struct mt6797_cpuclk_pll_hw branches[2];
 	struct mt6797_cpuclk_path_hw paths[MT6797_CPUCLK_NR_DOMAINS];
 	struct clk_hw_onecell_data *clk_data;
 };
@@ -315,12 +316,12 @@ mt6797_cpuclk_observer_snapshot(void *context,
 }
 
 static int
-mt6797_cpuclk_observer_hop(void *context,
-			   const struct mt6797_cpuclk_hop_plan *plan);
+mt6797_cpuclk_observer_transition(void *context,
+			   const struct mt6797_cpuclk_transition_plan *plan);
 
 static const struct mt6797_cpuclk_backend_ops mt6797_cpuclk_observer_ops = {
 	.snapshot = mt6797_cpuclk_observer_snapshot,
-	.hop = mt6797_cpuclk_observer_hop,
+	.transition = mt6797_cpuclk_observer_transition,
 };
 
 static u32 mt6797_cpuclk_pll_offset(enum mt6797_cpuclk_domain domain)
@@ -528,16 +529,31 @@ mt6797_cpuclk_write_dcm(struct mt6797_cpuclk_observer *observer,
 	return 0;
 }
 
-struct mt6797_cpuclk_hop_transaction {
+static int mt6797_cpuclk_write_divider(struct mt6797_cpuclk_observer *observer,
+				      u32 value, u32 mask)
+{
+	unsigned int attempt;
+
+	/* Vendor adjust_clkdiv(): settle for 2 us, read back, retry once. */
+	for (attempt = 0; attempt < 2; attempt++) {
+		writel(value, observer->mcumixed + MT6797_CPUCLK_CLKDIV);
+		udelay(2);
+		if (!((readl(observer->mcumixed + MT6797_CPUCLK_CLKDIV) ^ value) & mask))
+			return 0;
+	}
+	return -EIO;
+}
+
+struct mt6797_cpuclk_transition_transaction {
 	struct mt6797_cpuclk_observer *observer;
-	const struct mt6797_cpuclk_hop_plan *plan;
+	const struct mt6797_cpuclk_transition_plan *plan;
 };
 
-static int mt6797_cpuclk_hop_transaction(void __iomem *cspm, void *context)
+static int mt6797_cpuclk_transition_transaction(void __iomem *cspm, void *context)
 {
-	struct mt6797_cpuclk_hop_transaction *transaction = context;
+	struct mt6797_cpuclk_transition_transaction *transaction = context;
 	struct mt6797_cpuclk_observer *observer = transaction->observer;
-	const struct mt6797_cpuclk_hop_plan *plan = transaction->plan;
+	const struct mt6797_cpuclk_transition_plan *plan = transaction->plan;
 	struct mt6797_cpuclk_snapshot snapshot;
 	struct mt6797_cpuclk_state state;
 	int release_ret;
@@ -561,14 +577,16 @@ static int mt6797_cpuclk_hop_transaction(void __iomem *cspm, void *context)
 		goto out_release;
 
 	/*
-	 * From the first write on, a failure leaves a consistent but possibly
-	 * unplanned rate.  Every rate the hop passes through lies between the
-	 * old and new rates, and the DCM order keeps its divider at or below
-	 * the one required by the lower of the two, so fence further changes
-	 * instead of attempting a speculative repair.
+	 * DCM covers the lowest intermediate rate, including CKDIV steps.
+	 * Once writes begin, fence failures rather than raising a divider or
+	 * attempting a speculative PLL rollback after a partially completed hop.
 	 */
-	if (plan->dcm_before_hop) {
-		ret = mt6797_cpuclk_write_dcm(observer, &plan->dcm);
+	ret = mt6797_cpuclk_write_dcm(observer, &plan->before);
+	if (ret)
+		goto fault;
+	if (plan->divider_before_hop) {
+		ret = mt6797_cpuclk_write_divider(observer, plan->clkdiv,
+						plan->clkdiv_mask);
 		if (ret)
 			goto fault;
 	}
@@ -577,19 +595,24 @@ static int mt6797_cpuclk_hop_transaction(void __iomem *cspm, void *context)
 	if (ret)
 		goto fault;
 
-	if (!plan->dcm_before_hop) {
-		ret = mt6797_cpuclk_write_dcm(observer, &plan->dcm);
+	if (!plan->divider_before_hop && plan->clkdiv != plan->snapshot.clkdiv) {
+		ret = mt6797_cpuclk_write_divider(observer, plan->clkdiv,
+						plan->clkdiv_mask);
 		if (ret)
 			goto fault;
 	}
+	ret = mt6797_cpuclk_write_dcm(observer, &plan->after);
+	if (ret)
+		goto fault;
 
 	ret = mt6797_cpuclk_read_stable(observer, &snapshot);
 	if (!ret)
 		ret = mt6797_cpuclk_decode_state(plan->domain, &snapshot,
 						 plan->clk26m_rate, &state);
-	if (!ret && (state.armpll_rate != plan->rate ||
+	if (!ret && (state.armpll_rate != plan->pll_rate ||
 		     snapshot.muxsel != plan->snapshot.muxsel ||
-		     snapshot.clkdiv != plan->snapshot.clkdiv))
+		     snapshot.clkdiv != plan->clkdiv ||
+		     snapshot.sync_dcm != plan->after.value[2]))
 		ret = -EIO;
 	if (!ret)
 		goto out_release;
@@ -610,11 +633,11 @@ out_release:
 }
 
 static int
-mt6797_cpuclk_observer_hop(void *context,
-			   const struct mt6797_cpuclk_hop_plan *plan)
+mt6797_cpuclk_observer_transition(void *context,
+			   const struct mt6797_cpuclk_transition_plan *plan)
 {
 	struct mt6797_cpuclk_observer *observer = context;
-	struct mt6797_cpuclk_hop_transaction transaction = {
+	struct mt6797_cpuclk_transition_transaction transaction = {
 		.observer = observer,
 		.plan = plan,
 	};
@@ -628,7 +651,7 @@ mt6797_cpuclk_observer_hop(void *context,
 		ret = -EUCLEAN;
 	else
 		ret = mt6797_dvfsp_cspm_transaction(observer->handoff,
-						    mt6797_cpuclk_hop_transaction,
+						    mt6797_cpuclk_transition_transaction,
 						    &transaction);
 	mutex_unlock(&observer->lock);
 
@@ -690,57 +713,76 @@ static unsigned long mt6797_cpuclk_pll_recalc_rate(struct clk_hw *hw,
 	return state.armpll_rate;
 }
 
-static int mt6797_cpuclk_pll_determine_rate(struct clk_hw *hw,
-					    struct clk_rate_request *req)
+/*
+ * LL/L expose a compound ARMPLL+CKDIV branch to CCF. The raw PLL clocks are
+ * read-only observation taps, not rate-changing parents: CCF must never run
+ * a parent PLL set_rate before the CKDIV part of this transaction.
+ */
+static unsigned long mt6797_cpuclk_branch_recalc_rate(struct clk_hw *hw,
+						      unsigned long parent_rate)
 {
-	struct mt6797_cpuclk_pll_hw *pll =
+	struct mt6797_cpuclk_pll_hw *branch =
 		container_of(hw, struct mt6797_cpuclk_pll_hw, hw);
-	unsigned long actual_rate;
-	u32 con1;
+	struct mt6797_cpuclk_state state;
 
-	if (req->rate < req->min_rate || req->rate > req->max_rate)
+	if (mt6797_cpuclk_sample_decode(branch->provider, branch->domain,
+					parent_rate, &state, "branch-rate"))
+		return 0;
+	return mt6797_cpuclk_apply_divider(state.armpll_rate, state.divider);
+}
+
+static int mt6797_cpuclk_branch_determine_rate(struct clk_hw *hw,
+					       struct clk_rate_request *req)
+{
+	struct mt6797_cpuclk_pll_hw *branch =
+		container_of(hw, struct mt6797_cpuclk_pll_hw, hw);
+	struct mt6797_cpuclk_transition_plan plan;
+	struct mt6797_cpuclk_snapshot snapshot;
+	int ret;
+
+	ret = mt6797_cpuclk_snapshot(branch->provider, &snapshot);
+	if (ret)
+		return ret;
+	ret = mt6797_cpuclk_plan_transition(branch->domain, &snapshot,
+				 req->best_parent_rate, req->rate, &plan);
+	if (ret)
+		return ret;
+	if (plan.rate < req->min_rate || plan.rate > req->max_rate)
 		return -ERANGE;
-
-	if (mt6797_cpuclk_plan_pll_rate(pll->domain, req->rate,
-					req->best_parent_rate, 0,
-					&con1, &actual_rate))
-		return -EINVAL;
-
+	req->rate = plan.rate;
 	return 0;
 }
 
-static int mt6797_cpuclk_pll_set_rate(struct clk_hw *hw, unsigned long rate,
-				      unsigned long parent_rate)
+static int mt6797_cpuclk_branch_set_rate(struct clk_hw *hw, unsigned long rate,
+					 unsigned long parent_rate)
 {
-	struct mt6797_cpuclk_pll_hw *pll =
+	struct mt6797_cpuclk_pll_hw *branch =
 		container_of(hw, struct mt6797_cpuclk_pll_hw, hw);
-	struct mt6797_cpuclk_backend *backend = &pll->provider->backend;
+	struct mt6797_cpuclk_backend *backend = &branch->provider->backend;
 	struct mt6797_cpuclk_snapshot snapshot;
-	struct mt6797_cpuclk_hop_plan plan;
+	struct mt6797_cpuclk_transition_plan plan;
 	int ret;
 
-	if (pll->domain != MT6797_CPUCLK_MP0 &&
-	    pll->domain != MT6797_CPUCLK_MP1)
+	if (!backend->ops || !backend->ops->transition)
 		return -EOPNOTSUPP;
-	if (!backend->ops || !backend->ops->hop)
-		return -EOPNOTSUPP;
-
-	ret = mt6797_cpuclk_snapshot(pll->provider, &snapshot);
+	ret = mt6797_cpuclk_snapshot(branch->provider, &snapshot);
 	if (ret)
 		return ret;
-
-	ret = mt6797_cpuclk_plan_hop(pll->domain, &snapshot, parent_rate, rate,
-				     &plan);
+	ret = mt6797_cpuclk_plan_transition(branch->domain, &snapshot,
+					    parent_rate, rate, &plan);
 	if (ret)
 		return ret;
-
-	return backend->ops->hop(backend->context, &plan);
+	return backend->ops->transition(backend->context, &plan);
 }
 
 static const struct clk_ops mt6797_cpuclk_pll_ops = {
 	.recalc_rate = mt6797_cpuclk_pll_recalc_rate,
-	.determine_rate = mt6797_cpuclk_pll_determine_rate,
-	.set_rate = mt6797_cpuclk_pll_set_rate,
+};
+
+static const struct clk_ops mt6797_cpuclk_branch_ops = {
+	.recalc_rate = mt6797_cpuclk_branch_recalc_rate,
+	.determine_rate = mt6797_cpuclk_branch_determine_rate,
+	.set_rate = mt6797_cpuclk_branch_set_rate,
 };
 
 static u8 mt6797_cpuclk_path_get_parent(struct clk_hw *hw)
@@ -1037,6 +1079,33 @@ static int mt6797_cpuclk_register_plls(struct mt6797_cpuclk *provider)
 	return 0;
 }
 
+static int mt6797_cpuclk_register_branches(struct mt6797_cpuclk *provider)
+{
+	static const char *const names[] = {
+		"mt6797_mp0_armpll_div", "mt6797_mp1_armpll_div",
+	};
+	struct clk_parent_data parent = { .fw_name = "clk26m" };
+	struct clk_init_data init = {
+		.ops = &mt6797_cpuclk_branch_ops,
+		.parent_data = &parent,
+		.num_parents = 1,
+		.flags = CLK_GET_RATE_NOCACHE,
+	};
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(provider->branches); i++) {
+		provider->branches[i].provider = provider;
+		provider->branches[i].domain = i;
+		provider->branches[i].hw.init = &init;
+		init.name = names[i];
+		ret = devm_clk_hw_register(provider->dev, &provider->branches[i].hw);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
 static int mt6797_cpuclk_register_paths(struct mt6797_cpuclk *provider)
 {
 	struct clk_init_data init = {
@@ -1053,12 +1122,14 @@ static int mt6797_cpuclk_register_paths(struct mt6797_cpuclk *provider)
 		path->provider = provider;
 		path->domain = i;
 		path->parents[MT6797_CPUCLK_CLK26M].fw_name = "clk26m";
-		path->parents[MT6797_CPUCLK_ARMPLL].hw = &provider->plls[i].hw;
+		path->parents[MT6797_CPUCLK_ARMPLL].hw =
+			i < ARRAY_SIZE(provider->branches) ?
+			&provider->branches[i].hw : &provider->plls[i].hw;
 		path->parents[MT6797_CPUCLK_MAINPLL].fw_name = "mainpll";
 		path->parents[MT6797_CPUCLK_UNIVPLL].fw_name = "univpll";
 		path->hw.init = &init;
 		init.name = mt6797_cpuclk_path_names[i];
-		/* LL and L rate requests retune their ARMPLL in place. */
+		/* LL/L requests are owned by the compound PLL+CKDIV branch. */
 		init.flags = CLK_GET_RATE_NOCACHE;
 		if (i == MT6797_CPUCLK_MP0 || i == MT6797_CPUCLK_MP1)
 			init.flags |= CLK_SET_RATE_PARENT;
@@ -1088,6 +1159,10 @@ static int mt6797_cpuclk_register(struct mt6797_cpuclk *provider)
 	provider->clk_data->num = MT6797_CPUCLK_NR_DOMAINS;
 
 	ret = mt6797_cpuclk_register_plls(provider);
+	if (ret)
+		return ret;
+
+	ret = mt6797_cpuclk_register_branches(provider);
 	if (ret)
 		return ret;
 

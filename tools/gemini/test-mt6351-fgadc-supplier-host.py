@@ -148,3 +148,70 @@ with tempfile.TemporaryDirectory(prefix='mt6351-fgadc-supplier-') as tmp:
                     '-Wextra', '-Werror', '-Wno-sign-compare', str(src),
                     '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True)
+
+# Supplier lookup and core dependency population both need a firmware node on
+# the registered power-supply device, not only its I2C parent.
+bq_source = (root / 'drivers/power/supply/bq25890_charger.c').read_text()
+start = bq_source.index('static int bq25890_power_supply_init(')
+bq_init = bq_source[start:bq_source.index('\n}\n', start) + 3]
+bq_model = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define GFP_KERNEL 0
+#define PTR_ERR_OR_ZERO(p) ((uintptr_t)(p)>=(uintptr_t)-4095 ? (intptr_t)(p) : 0)
+struct device { void *fwnode; };
+struct power_supply_desc { const char *name; const int *properties; unsigned num_properties; };
+struct power_supply { int unused; };
+struct power_supply_config { void *drv_data, *fwnode; char **supplied_to; unsigned num_supplicants; };
+struct bq25890_device {
+ struct device *dev; int id; char name[40]; bool read_only, read_only_adc;
+ struct power_supply_desc desc; struct power_supply *charger;
+};
+static const int normal_props[]={1,2,3}, ro_props[]={1}, adc_props[]={1,2};
+static const struct power_supply_desc bq25890_power_supply_desc={.properties=normal_props,.num_properties=3};
+static const struct power_supply_desc bq25890_read_only_desc={.properties=ro_props,.num_properties=1};
+#define bq25890_read_only_adc_props adc_props
+static char *bq25890_charger_supplied_to[]={"main-battery"};
+static int bq25890_id_mutex, bq25890_id, registrations;
+static struct power_supply supply;
+static void *dev_fwnode(struct device *d) { return d->fwnode; }
+static void mutex_lock(int *m) { assert(!*m); *m=1; }
+static void mutex_unlock(int *m) { assert(*m); *m=0; }
+static int idr_alloc(int *idr,void *bq,int lo,int hi,int flags)
+{ assert(idr==&bq25890_id && bq && !lo && !hi && !flags && bq25890_id_mutex); return 0; }
+static struct power_supply *devm_power_supply_register(struct device *dev,
+ struct power_supply_desc *desc,struct power_supply_config *cfg)
+{
+ struct bq25890_device *bq=cfg->drv_data;
+ assert(bq && bq->dev==dev && !bq25890_id_mutex);
+ assert(cfg->fwnode==dev->fwnode && cfg->fwnode);
+ assert(!strcmp(desc->name,"bq25890-charger-0"));
+ assert(desc->properties==(bq->read_only ? bq->read_only_adc ? adc_props : ro_props : normal_props));
+ assert(desc->num_properties==(bq->read_only ? bq->read_only_adc ? 2 : 1 : 3));
+ assert(cfg->num_supplicants==(bq->read_only ? 0 : 1));
+ registrations++; return &supply;
+}
+'''
+bq_main = r'''
+int main(void)
+{
+ struct device dev={.fwnode=&dev};
+ for (int mode=0;mode<3;mode++) {
+  struct bq25890_device bq={.dev=&dev,.read_only=mode>0,.read_only_adc=mode==2};
+  assert(!bq25890_power_supply_init(&bq) && bq.charger==&supply);
+ }
+ assert(registrations==3);
+ puts("PASS charger firmware-node registration in normal and both read-only modes");
+}
+'''
+with tempfile.TemporaryDirectory(prefix='bq25890-supplier-') as tmp:
+    src, exe = Path(tmp, 'test.c'), Path(tmp, 'test')
+    src.write_text(bq_model + bq_init + bq_main)
+    subprocess.run([os.environ.get('HOSTCC', 'cc'), '-std=gnu11', '-Wall',
+                    '-Wextra', '-Werror', str(src), '-o', str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)

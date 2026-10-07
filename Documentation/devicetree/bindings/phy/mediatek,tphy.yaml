@@ -186,7 +186,8 @@ patternProperties:
           - description: tx_imp_sel efuse for U3/PCIe PHY
         description: |
           Phandles to nvmem cell that contains the efuse data;
-          Available only for U2 PHY or U3/PCIe PHY of version 2/3, these
+          Available for U2 PHY or U3/PCIe PHY of version 2/3 and the MT6797
+          U3 PHY. These
           three items should be provided at the same time for U3/PCIe PHY,
           when use software to load efuse;
           If unspecified, will use hardware auto-load efuse.

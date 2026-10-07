@@ -17,6 +17,7 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/soc/mediatek/mt6797-cpuclk.h>
+#include <linux/soc/mediatek/mt6797-topckgen.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/soc/mediatek/mt6797-dvfsp-handoff.h>
@@ -76,6 +77,7 @@ struct mt6797_cpuclk_observer {
 	void __iomem *mcumixed;
 	void __iomem *mcucfg;
 	struct mt6797_dvfsp_handoff *handoff;
+	struct mt6797_topckgen *topckgen;
 	struct clk *i2c_clk;
 	/* Serializes snapshots and complete reconfiguration transactions. */
 	struct mutex lock;
@@ -1181,6 +1183,14 @@ static int mt6797_cpuclk_backend_init(struct platform_device *pdev,
 	int ret;
 
 	observer->dev = &pdev->dev;
+	observer->topckgen = mt6797_topckgen_get(&pdev->dev);
+	if (IS_ERR(observer->topckgen)) {
+		if (PTR_ERR(observer->topckgen) != -ENOENT)
+			return dev_err_probe(&pdev->dev, PTR_ERR(observer->topckgen),
+					     "cannot acquire TOPCKGEN owner\n");
+		observer->topckgen = NULL;
+	}
+
 	observer->handoff = mt6797_dvfsp_handoff_get(&pdev->dev);
 	if (IS_ERR(observer->handoff))
 		return dev_err_probe(&pdev->dev, PTR_ERR(observer->handoff),

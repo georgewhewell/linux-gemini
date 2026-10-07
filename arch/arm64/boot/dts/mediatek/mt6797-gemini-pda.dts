@@ -1398,6 +1398,21 @@
 	#address-cells = <1>;
 	#size-cells = <0>;
 
+	/* No interrupt is routed by the retained board description. */
+	typec@25 {
+		compatible = "onsemi,fusb301";
+		reg = <0x25>;
+
+		connector {
+			compatible = "usb-c-connector";
+			label = "Gemini left USB-C";
+			power-role = "sink";
+			data-role = "device";
+			typec-power-opmode = "default";
+			pd-disable;
+		};
+	};
+
 	/*
 	 * The vendor driver forces the BMI160 client to 0x69 (SDO high) and
 	 * reads chip ID 0xd1 there.  No interrupt is described: no vendor

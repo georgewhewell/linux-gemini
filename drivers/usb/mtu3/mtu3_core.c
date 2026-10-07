@@ -217,6 +217,8 @@ static void mtu3_intr_enable(struct mtu3 *mtu)
 		/* Enable U3 LTSSM interrupts */
 		value = HOT_RST_INTR | WARM_RST_INTR |
 			ENTER_U3_INTR | EXIT_U3_INTR;
+		if (mtu->manual_u2_fallback)
+			value |= SS_DISABLE_INTR;
 		mtu3_writel(mbase, U3D_LTSSM_INTR_ENABLE, value);
 	}
 
@@ -282,10 +284,15 @@ static void mtu3_csr_init(struct mtu3 *mtu)
 				SW_U1_ACCEPT_ENABLE | SW_U2_ACCEPT_ENABLE);
 		/* device responses to u3_exit from host automatically */
 		mtu3_clrbits(mbase, U3D_LTSSM_CTRL, SOFT_U3_EXIT_EN);
-		/* automatically build U2 link when U3 detect fail */
-		mtu3_setbits(mbase, U3D_USB2_TEST_MODE, U2U3_AUTO_SWITCH);
-		/* auto clear SOFT_CONN when clear USB3_EN if work as HS */
-		mtu3_setbits(mbase, U3D_U3U2_SWITCH_CTRL, SOFTCON_CLR_AUTO_EN);
+		if (mtu->manual_u2_fallback) {
+			/* MT6797 connects USB2 from the SS.Disable interrupt. */
+			mtu3_clrbits(mbase, U3D_USB2_TEST_MODE, U2U3_AUTO_SWITCH);
+		} else {
+			/* automatically build U2 link when U3 detect fail */
+			mtu3_setbits(mbase, U3D_USB2_TEST_MODE, U2U3_AUTO_SWITCH);
+			/* auto clear SOFT_CONN when clear USB3_EN if work as HS */
+			mtu3_setbits(mbase, U3D_U3U2_SWITCH_CTRL, SOFTCON_CLR_AUTO_EN);
+		}
 	}
 
 	/* delay about 0.1us from detecting reset to send chirp-K */
@@ -341,10 +348,14 @@ void mtu3_ep_stall_set(struct mtu3_ep *mep, bool set)
 
 void mtu3_dev_on_off(struct mtu3 *mtu, int is_on)
 {
-	if (mtu->u3_capable && mtu->speed >= USB_SPEED_SUPER)
+	if (mtu->u3_capable && mtu->speed >= USB_SPEED_SUPER) {
 		mtu3_ss_func_set(mtu, is_on);
-	else
+		/* Older IP cannot automatically disconnect the fallback link. */
+		if (!is_on && mtu->manual_u2_fallback)
+			mtu3_hs_softconn_set(mtu, false);
+	} else {
 		mtu3_hs_softconn_set(mtu, is_on);
+	}
 
 	dev_info(mtu->dev, "gadget (%s) pullup D%s\n",
 		usb_speed_string(mtu->speed), is_on ? "+" : "-");
@@ -744,11 +755,19 @@ static irqreturn_t mtu3_u3_ltssm_isr(struct mtu3 *mtu)
 	dev_dbg(mtu->dev, "=== LTSSM[%x] ===\n", ltssm);
 	trace_mtu3_u3_ltssm_isr(ltssm);
 
+	if (mtu->manual_u2_fallback && (ltssm & SS_DISABLE_INTR) &&
+	    !(ltssm & VBUS_FALL_INTR) && mtu->is_active && mtu->softconnect) {
+		mtu3_clrbits(mtu->ippc_base, SSUSB_U2_CTRL(0), SSUSB_U2_PORT_PDN);
+		mtu3_hs_softconn_set(mtu, true);
+	}
+
 	if (ltssm & (HOT_RST_INTR | WARM_RST_INTR))
 		mtu3_gadget_reset(mtu);
 
 	if (ltssm & VBUS_FALL_INTR) {
 		mtu3_ss_func_set(mtu, false);
+		if (mtu->manual_u2_fallback)
+			mtu3_hs_softconn_set(mtu, false);
 		mtu3_gadget_reset(mtu);
 	}
 
@@ -955,6 +974,8 @@ int ssusb_gadget_init(struct ssusb_mtk *ssusb)
 	ssusb->u3d = mtu;
 	mtu->ssusb = ssusb;
 	mtu->max_speed = usb_get_maximum_speed(dev);
+	mtu->manual_u2_fallback =
+		of_device_is_compatible(dev->of_node, "mediatek,mt6797-mtu3");
 
 	dev_dbg(dev, "mac_base=0x%p, ippc_base=0x%p\n",
 		mtu->mac_base, mtu->ippc_base);

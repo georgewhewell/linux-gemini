@@ -327,6 +327,7 @@ static inline struct ssusb_mtk *dev_to_ssusb(struct device *dev)
  *		for GET_STATUS and SET_SEL
  * @setup_buf: ep0 response buffer for GET_STATUS and SET_SEL requests
  * @u3_capable: is capable of supporting USB3
+ * @manual_u2_fallback: needs software USB2 connection after SS.Disable
  */
 struct mtu3 {
 	spinlock_t lock;
@@ -364,6 +365,7 @@ struct mtu3 {
 	unsigned u1_enable:1;
 	unsigned u2_enable:1;
 	unsigned u3_capable:1;
+	unsigned manual_u2_fallback:1;
 	unsigned delayed_status:1;
 	unsigned gen2cp:1;
 	unsigned connected:1;

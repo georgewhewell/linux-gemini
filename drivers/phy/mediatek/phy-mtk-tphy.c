@@ -181,6 +181,12 @@
 #define U3P_U3_PHYA_DA_REG25	0x148
 #define P3A_RG_PLL_DELTA_PE2H		GENMASK(15, 0)
 
+#define U3P_U3_PHYA_DA_REG31	0x160
+#define P3A_RG_EQ_RSTEP1_U3	GENMASK(23, 22)
+
+#define U3P_U3_PHYA_DA_REG32	0x164
+#define P3A_RG_EQ_RSTEP2_U3	GENMASK(1, 0)
+
 #define U3P_U3_PHYD_LFPS1		0x00c
 #define P3D_RG_FWAKE_TH		GENMASK(21, 16)
 
@@ -190,6 +196,8 @@
 
 #define U3P_U3_PHYD_IMPCAL1		0x014
 #define P3D_RG_FORCE_RX_IMPEL		BIT(31)
+#define P3D_RG_RX_IMPCAL_EN		BIT(30)
+#define P3D_RG_FORCE_RX_IMPCAL_EN		BIT(29)
 #define P3D_RG_RX_IMPEL			GENMASK(28, 24)
 
 #define U3P_U3_PHYD_RSV			0x054
@@ -198,6 +206,13 @@
 #define U3P_U3_PHYD_CDR1		0x05c
 #define P3D_RG_CDR_BIR_LTD1		GENMASK(28, 24)
 #define P3D_RG_CDR_BIR_LTD0		GENMASK(12, 8)
+#define P3D_RG_CDR_BIC_LTD1		GENMASK(3, 0)
+
+#define U3P_U3_PHYD_B2_TOP2	0x104
+#define P3D_RG_FORCE_IDEM_3P5DB	BIT(22)
+#define P3D_RG_IDEM_3P5DB		GENMASK(21, 16)
+#define P3D_RG_FORCE_IDRV_3P5DB	BIT(14)
+#define P3D_RG_IDRV_3P5DB		GENMASK(13, 8)
 
 #define U3P_U3_PHYD_TOP1		0x100
 #define P3D_RG_PHY_MODE			GENMASK(2, 1)
@@ -775,6 +790,10 @@ static void u3_phy_instance_init(struct mtk_tphy *tphy,
 	void __iomem *phya = u3_banks->phya;
 	void __iomem *phyd = u3_banks->phyd;
 
+	/* MT6797 tuning is applied after its analog supply is enabled. */
+	if (tphy->pdata->u3phya_vusb10)
+		return;
+
 	if (instance->type_force_mode) {
 		/* force phy as usb mode, default is pcie rc mode */
 		mtk_phy_update_field(phyd + U3P_U3_PHYD_TOP1, P3D_RG_PHY_MODE, 1);
@@ -817,6 +836,53 @@ static void u3_phy_instance_init(struct mtk_tphy *tphy,
 	dev_dbg(tphy->dev, "%s(%d)\n", __func__, instance->index);
 }
 
+static void mt6797_u3_phy_tune(struct mtk_phy_instance *instance)
+{
+	struct u3phy_banks *banks = &instance->u3_banks;
+	void __iomem *phya = banks->phya;
+	void __iomem *phyd = banks->phyd;
+	u32 intr = instance->efuse_intr ?: 0x2d;
+	u32 rx_imp = instance->efuse_rx_imp ?: 0xf;
+	u32 tx_imp = instance->efuse_tx_imp ?: 0x10;
+
+	/* MT6797 20 nm settings from the vendor usb_phy_recover sequence. */
+	mtk_phy_update_field(phya + U3P_U3_PHYA_DA_REG0,
+			     P3A_RG_XTAL_EXT_EN_U3, 2);
+	mtk_phy_set_bits(banks->spllc + U3P_SPLLC_XTALCTL3,
+			 XC3_RG_U3_XTAL_RX_PWD);
+	mtk_phy_update_field(banks->chip + U3P_U3_CHIP_GPIO_CTLE,
+			     GENMASK(3, 0), 0xf);
+
+	mtk_phy_update_bits(phyd + U3P_U3_PHYD_IMPCAL1,
+			    P3D_RG_FORCE_RX_IMPEL | P3D_RG_RX_IMPCAL_EN |
+			    P3D_RG_FORCE_RX_IMPCAL_EN | P3D_RG_RX_IMPEL,
+			    P3D_RG_FORCE_RX_IMPEL |
+			    FIELD_PREP(P3D_RG_RX_IMPEL, rx_imp));
+	mtk_phy_update_bits(phyd + U3P_U3_PHYD_IMPCAL0,
+			    P3D_RG_FORCE_TX_IMPEL | P3D_RG_TX_IMPEL,
+			    P3D_RG_FORCE_TX_IMPEL |
+			    FIELD_PREP(P3D_RG_TX_IMPEL, tx_imp));
+	mtk_phy_update_field(phya + U3P_U3_PHYA_REG0, P3A_RG_IEXT_INTR, intr);
+
+	mtk_phy_update_bits(phyd + U3P_U3_PHYD_B2_TOP2,
+			    P3D_RG_IDRV_3P5DB | P3D_RG_FORCE_IDRV_3P5DB |
+			    P3D_RG_IDEM_3P5DB | P3D_RG_FORCE_IDEM_3P5DB,
+			    FIELD_PREP(P3D_RG_IDRV_3P5DB, 0x2c) |
+			    P3D_RG_FORCE_IDRV_3P5DB |
+			    FIELD_PREP(P3D_RG_IDEM_3P5DB, 0x16) |
+			    P3D_RG_FORCE_IDEM_3P5DB);
+	mtk_phy_update_bits(phyd + U3P_U3_PHYD_CDR1,
+			    P3D_RG_CDR_BIR_LTD1 | P3D_RG_CDR_BIC_LTD1,
+			    FIELD_PREP(P3D_RG_CDR_BIR_LTD1, 2) |
+			    FIELD_PREP(P3D_RG_CDR_BIC_LTD1, 2));
+	mtk_phy_update_field(phya + U3P_U3_PHYA_DA_REG31,
+			     P3A_RG_EQ_RSTEP1_U3, 1);
+	mtk_phy_update_field(phya + U3P_U3_PHYA_DA_REG32,
+			     P3A_RG_EQ_RSTEP2_U3, 1);
+	writel(0, banks->chip + U3P_U3_CHIP_GPIO_CTLD);
+	usleep_range(800, 1000);
+}
+
 static void u3_phy_instance_power_on(struct mtk_tphy *tphy,
 				     struct mtk_phy_instance *instance)
 {
@@ -827,6 +893,7 @@ static void u3_phy_instance_power_on(struct mtk_tphy *tphy,
 	usleep_range(50, 100);
 	mtk_phy_set_bits(instance->u3_banks.phya + U3P_U3_PHYA_REG1,
 			 P3A_RG_VUSB10_ON);
+	mt6797_u3_phy_tune(instance);
 }
 
 static void u3_phy_instance_power_off(struct mtk_tphy *tphy,
@@ -1320,8 +1387,9 @@ static int phy_efuse_get(struct mtk_tphy *tphy, struct mtk_phy_instance *instanc
 	struct device *dev = &instance->phy->dev;
 	int ret = 0;
 
-	/* tphy v1 doesn't support sw efuse, skip it */
-	if (!tphy->pdata->sw_efuse_supported) {
+	/* MT6797 USB3 calibration is applied by its power-on sequence. */
+	if (!tphy->pdata->sw_efuse_supported &&
+	    !(tphy->pdata->u3phya_vusb10 && instance->type == PHY_TYPE_USB3)) {
 		instance->efuse_sw_en = 0;
 		return 0;
 	}
@@ -1366,6 +1434,14 @@ static int phy_efuse_get(struct mtk_tphy *tphy, struct mtk_phy_instance *instanc
 		ret = nvmem_cell_read_variable_le_u32(dev, "tx_imp", &instance->efuse_tx_imp);
 		if (ret) {
 			dev_err(dev, "fail to get u3 tx_imp efuse, %d\n", ret);
+			break;
+		}
+
+		if (tphy->pdata->u3phya_vusb10 &&
+		    (instance->efuse_intr > FIELD_MAX(P3A_RG_IEXT_INTR) ||
+		     instance->efuse_rx_imp > FIELD_MAX(P3D_RG_RX_IMPEL) ||
+		     instance->efuse_tx_imp > FIELD_MAX(P3D_RG_TX_IMPEL))) {
+			ret = -EINVAL;
 			break;
 		}
 
@@ -1436,7 +1512,8 @@ static int mtk_phy_init(struct phy *phy)
 	if (ret)
 		return ret;
 
-	phy_efuse_set(instance);
+	if (!(tphy->pdata->u3phya_vusb10 && instance->type == PHY_TYPE_USB3))
+		phy_efuse_set(instance);
 
 	switch (instance->type) {
 	case PHY_TYPE_USB2:

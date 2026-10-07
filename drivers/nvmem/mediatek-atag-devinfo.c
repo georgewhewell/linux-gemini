@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * MediaTek MT6797 LK devinfo thermal calibration provider.
+ * MediaTek MT6797 LK devinfo calibration provider.
  *
  * The retained MT6797 LK appends an opaque, little-endian 103-word property
- * at /chosen/atag,devinfo.  Only the three words consumed by the MT6797
- * thermal extractor are retained here; the efuse MMIO block is never mapped.
+ * at /chosen/atag,devinfo. Only the calibration fields consumed by native
+ * drivers are retained here; the efuse MMIO block is never mapped.
  */
 
+#include <linux/bitfield.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -30,9 +31,14 @@
 #define MT6797_PTP_WORDS		19
 #define MT6797_PTP_CELL_BYTES		(MT6797_PTP_WORDS * sizeof(u32))
 #define MT6797_EFUSE_IDENTITY_CELL_BYTES	(3 * sizeof(u32))
-#define MT6797_ATAG_CELL_BYTES		(MT6797_THERMAL_CELL_BYTES + \
+#define MT6797_USB3_CELL_OFFSET		(MT6797_THERMAL_CELL_BYTES + \
 					 MT6797_PTP_CELL_BYTES + \
 					 MT6797_EFUSE_IDENTITY_CELL_BYTES)
+#define MT6797_USB3_CELL_BYTES		(3 * sizeof(u32))
+#define MT6797_ATAG_CELL_BYTES		(MT6797_THERMAL_CELL_BYTES + \
+					 MT6797_PTP_CELL_BYTES + \
+					 MT6797_EFUSE_IDENTITY_CELL_BYTES + \
+					 MT6797_USB3_CELL_BYTES)
 
 struct mt6797_atag_devinfo {
 	u8 cells[MT6797_ATAG_CELL_BYTES];
@@ -43,6 +49,17 @@ static const unsigned int mt6797_thermal_word_order[] = { 32, 31, 33 };
 static u32 mt6797_atag_word(const u8 *property, unsigned int index)
 {
 	return get_unaligned_le32(property + index * sizeof(u32));
+}
+
+static void mt6797_atag_usb3_cells(struct mt6797_atag_devinfo *data,
+				 const u8 *property)
+{
+	u32 word = mt6797_atag_word(property, MT6797_ATAG_HEADER_WORDS + 37);
+	u8 *cells = &data->cells[MT6797_USB3_CELL_OFFSET];
+
+	put_unaligned_le32(FIELD_GET(GENMASK(26, 21), word), cells);
+	put_unaligned_le32(FIELD_GET(GENMASK(20, 16), word), cells + sizeof(u32));
+	put_unaligned_le32(FIELD_GET(GENMASK(31, 27), word), cells + 2 * sizeof(u32));
 }
 
 static int mt6797_atag_parse(struct mt6797_atag_devinfo *data)
@@ -104,6 +121,7 @@ static int mt6797_atag_parse(struct mt6797_atag_devinfo *data)
 					MT6797_DVFSP_EFUSE_DATE_WORD_INDEX),
 				   &data->cells[MT6797_THERMAL_CELL_BYTES +
 						MT6797_PTP_CELL_BYTES + 2 * sizeof(u32)]);
+	mt6797_atag_usb3_cells(data, property);
 
 out:
 	of_node_put(chosen);

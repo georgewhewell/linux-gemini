@@ -27,8 +27,8 @@ properties:
     maxItems: 1
     description: |
       Optional charger for the monitored battery. It must report battery-side
-      voltage and battery thermistor temperature through its power-supply
-      interface. These measurements supplement the FGADC current and coulomb
+      voltage, battery thermistor temperature and charging status through its
+      power-supply interface. These measurements supplement the FGADC current and coulomb
       counter; no charger policy is changed by the battery monitor.
 
   mediatek,initialize-fgadc:

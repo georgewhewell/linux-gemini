@@ -18,6 +18,8 @@ import re
 HEADER = Path("drivers/misc/mediatek/include/mt-plat/mt6797/include/mach/"
               "mt_battery_meter_table.h")
 HEADER_SHA256 = "4c9e88e7ba722e9ff2c53373e9a3d2cf851c8f0599aa2748e1d95bbee3715d9d"
+CONFIG_HEADER = HEADER.with_name("mt_battery_meter.h")
+CONFIG_SHA256 = "14ed0f8a50244647deb9ffd2af2f02ae7a6725d6da6181c26d9cd756a1dfc68d"
 TEMPERATURES = (-10, 0, 25, 50)
 
 
@@ -51,7 +53,31 @@ def extract_profile(source, index):
     return result
 
 
-def render(source):
+def extract_resistance(source, index):
+    blocks = re.findall(rf"R_PROFILE_STRUCT r_profile_t{index}\[\]\s*=\s*"
+                        r"\{(.*?)\};", source, re.S)
+    if len(blocks) != 1:
+        raise ValueError("expected one resistance table")
+    pairs = [tuple(map(int, pair)) for pair in
+             re.findall(r"\{\s*(\d+)\s*,\s*(\d+)\s*\}", blocks[0])]
+    if len(pairs) != 96:
+        raise ValueError("unexpected resistance table length")
+    result = []
+    for mohm, mv in pairs:
+        point = (mv * 1000, mohm * 1000)
+        if not 3000 <= mv <= 4500 or not 0 < mohm <= 20000:
+            raise ValueError("invalid resistance table units")
+        if result and result[-1] == point:
+            continue
+        if result and point[0] >= result[-1][0]:
+            raise ValueError("ambiguous or nonmonotonic resistance table")
+        result.append(point)
+    if [v for v, r in result] != [v for v, c in extract_profile(source, index)]:
+        raise ValueError("voltage grids differ")
+    return result
+
+
+def render(source, config):
     lines = [
         "// SPDX-License-Identifier: GPL-2.0-only",
         "/*",
@@ -80,7 +106,23 @@ def render(source):
         for i, (uv, capacity) in enumerate(points):
             suffix = ";" if i == len(points) - 1 else ","
             lines.append(f"\t\t\t<{uv} {capacity}>{suffix}")
-    return "\n".join(lines + ["\t};", "};", ""])
+    lines += ["\t};", "};", "", "&mt6351fgadc {",
+              "\t/* Header Qmax is an estimator input, not charge-full-design. */",
+              "\tmediatek,capacity-model ="]
+    names = ("NEG_10", "POS_0", "POS_25", "POS_50")
+    for i, (temp, name) in enumerate(zip(TEMPERATURES, names)):
+        qmax = int(re.search(rf"^#define Q_MAX_{name}\s+(\d+)\s*$", config, re.M)[1])
+        temp_cell = f"({temp})" if temp < 0 else str(temp)
+        suffix = ";" if i == 3 else ","
+        lines.append(f"\t\t<{temp_cell} {qmax * 1000}>{suffix}")
+    for index, temp in enumerate(TEMPERATURES):
+        points = extract_resistance(source, index)
+        lines += ["", f"\t/* {temp} degrees Celsius: uV, uOhm. */",
+                  f"\tmediatek,resistance-table-{index} ="]
+        for i, (uv, uohm) in enumerate(points):
+            suffix = ";" if i == len(points) - 1 else ","
+            lines.append(f"\t\t<{uv} {uohm}>{suffix}")
+    return "\n".join(lines + ["};", ""])
 
 
 def main():
@@ -90,7 +132,10 @@ def main():
     raw = (args.vendor_source / HEADER).read_bytes()
     if hashlib.sha256(raw).hexdigest() != HEADER_SHA256:
         parser.error("vendor header hash differs; review its provenance first")
-    print(render(raw.decode()), end="")
+    config = (args.vendor_source / CONFIG_HEADER).read_bytes()
+    if hashlib.sha256(config).hexdigest() != CONFIG_SHA256:
+        parser.error("vendor Qmax header hash differs; review its provenance first")
+    print(render(raw.decode(), config.decode()), end="")
 
 
 if __name__ == "__main__":

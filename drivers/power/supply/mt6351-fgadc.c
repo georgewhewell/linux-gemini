@@ -2,11 +2,10 @@
 /*
  * MediaTek MT6351 fuel-gauge ADC.
  *
- * This is deliberately a small battery power-supply. The PMIC can provide a
- * calibrated instantaneous current and a coulomb counter, but it cannot
- * establish a battery's design capacity or an OCV-to-capacity profile. Those
- * values therefore remain absent rather than being guessed from a handset
- * family or a charger configuration.
+ * The PMIC supplies instantaneous current and a coulomb counter. Optional
+ * board-provided battery profiles and a charger supplying terminal voltage,
+ * temperature and status allow software state-of-charge estimation. Model
+ * Qmax is not exposed as measured or design capacity.
  */
 
 #include <linux/bitops.h>
@@ -17,10 +16,15 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <linux/timekeeping.h>
+#include <linux/workqueue.h>
+
+#include "mt6351-fgadc-model.h"
 
 #define MT6351_FGADC_CLK_PDN_MASK	GENMASK(3, 2)
 /* RG_FGADC_FT_CK_PDN, the third FGADC clock gate. */
@@ -49,6 +53,13 @@ struct mt6351_fgadc {
 	struct power_supply *psy;
 	struct power_supply *charger;
 	struct power_supply_desc psy_desc;
+	struct mt6351_fg_model model;
+	struct mt6351_fg_estimate estimate;
+	/* Serializes estimates, publication and work scheduling/stop. */
+	struct mutex model_lock;
+	struct delayed_work model_work;
+	bool model_active;
+	int model_error;
 
 	u32 init_control;
 	u32 osr;
@@ -125,9 +136,7 @@ static int mt6351_fgadc_initialize(struct mt6351_fgadc *fg)
 	/*
 	 * The vendor sequence enables the analog and digital clocks first. The
 	 * FT clock is left gated on the Gemini at handover, so enable it too.
-	 * On the Gemini this is not sufficient: with all three FGADC clocks
-	 * ungated and the vendor reset pulse, the gauge still does not latch,
-	 * so reads return -ENODATA.
+	 * The analog VA18 supply must also be enabled before this sequence.
 	 */
 	ret = regmap_update_bits(fg->regmap, MT6351_TOP_CKPDN_CON2,
 				 MT6351_FGADC_CLK_PDN_MASK, 0);
@@ -330,6 +339,189 @@ static int mt6351_fgadc_read(struct mt6351_fgadc *fg, s64 *current_ua,
 	return 0;
 }
 
+/* Read the charger and one coherent gauge snapshot before publishing. */
+static int mt6351_fgadc_model_sample(struct mt6351_fgadc *fg)
+{
+	struct mt6351_fg_sample sample = {};
+	union power_supply_propval value;
+	s64 current_ua, counter;
+	int ret;
+
+	ret = power_supply_get_property(fg->charger, POWER_SUPPLY_PROP_VOLTAGE_NOW, &value);
+	if (ret)
+		return ret;
+	sample.voltage_uv = value.intval;
+	ret = power_supply_get_property(fg->charger, POWER_SUPPLY_PROP_TEMP, &value);
+	if (ret)
+		return ret;
+	sample.temp = value.intval;
+	ret = power_supply_get_property(fg->charger, POWER_SUPPLY_PROP_STATUS, &value);
+	if (ret)
+		return ret;
+	sample.status = value.intval;
+	ret = mt6351_fgadc_read(fg, &current_ua, &counter);
+	if (ret)
+		return ret == -ETIMEDOUT ? -ENODATA : ret;
+	if (current_ua < INT_MIN || current_ua > INT_MAX || counter < INT_MIN || counter > INT_MAX)
+		return -ERANGE;
+	sample.current_ua = current_ua;
+	sample.counter_uah = counter;
+	sample.seconds = ktime_get_boottime_seconds();
+	return mt6351_model_update(&fg->model, &fg->estimate, &sample);
+}
+
+static void mt6351_fgadc_model_work(struct work_struct *work)
+{
+	struct mt6351_fgadc *fg = container_of(to_delayed_work(work), struct mt6351_fgadc,
+					     model_work);
+	bool changed;
+	int previous_error, previous_capacity;
+
+	mutex_lock(&fg->model_lock);
+	if (!fg->model_active) {
+		mutex_unlock(&fg->model_lock);
+		return;
+	}
+	previous_error = fg->model_error;
+	previous_capacity = fg->estimate.capacity;
+	fg->model_error = mt6351_fgadc_model_sample(fg);
+	changed = previous_error != fg->model_error ||
+		  previous_capacity != fg->estimate.capacity;
+	queue_delayed_work(system_freezable_wq, &fg->model_work, 5 * HZ);
+	mutex_unlock(&fg->model_lock);
+	if (changed)
+		power_supply_changed(fg->psy);
+}
+
+static int mt6351_fgadc_model_property(struct mt6351_fgadc *fg,
+				       enum power_supply_property psp,
+				       union power_supply_propval *val)
+{
+	u64 now;
+	int ret;
+
+	if (!fg->model.count)
+		return -EINVAL;
+	mutex_lock(&fg->model_lock);
+	now = ktime_get_boottime_seconds();
+	ret = fg->model_error;
+	if (!ret && (!fg->estimate.initialized || now < fg->estimate.seconds ||
+		     now - fg->estimate.seconds > MT6351_MODEL_MAX_GAP))
+		ret = -ENODATA;
+	if (!ret) {
+		if (psp == POWER_SUPPLY_PROP_CAPACITY)
+			val->intval = fg->estimate.capacity;
+		else if (fg->estimate.ocv_valid)
+			val->intval = fg->estimate.ocv_uv;
+		else
+			ret = -ENODATA;
+	}
+	mutex_unlock(&fg->model_lock);
+	return ret;
+}
+
+static void mt6351_fgadc_model_schedule(struct mt6351_fgadc *fg)
+{
+	mutex_lock(&fg->model_lock);
+	if (fg->model_active)
+		mod_delayed_work(system_freezable_wq, &fg->model_work, HZ);
+	mutex_unlock(&fg->model_lock);
+}
+
+static void mt6351_fgadc_model_stop(void *data)
+{
+	struct mt6351_fgadc *fg = data;
+
+	mutex_lock(&fg->model_lock);
+	fg->model_active = false;
+	fg->estimate.initialized = false;
+	fg->model_error = -ENODATA;
+	mutex_unlock(&fg->model_lock);
+	cancel_delayed_work_sync(&fg->model_work);
+}
+
+static void mt6351_fgadc_model_start(struct mt6351_fgadc *fg)
+{
+	mutex_lock(&fg->model_lock);
+	if (fg->model.count) {
+		fg->model_active = true;
+		queue_delayed_work(system_freezable_wq, &fg->model_work, 0);
+	}
+	mutex_unlock(&fg->model_lock);
+}
+
+static int mt6351_fgadc_parse_model(struct mt6351_fgadc *fg)
+{
+	struct device *dev = fg->dev;
+	struct device_node *np = dev->of_node;
+	u32 config[MT6351_MODEL_PROFILES * 2];
+	u32 entries[MT6351_MODEL_POINTS * 2];
+	char name[48];
+	int count, i, j, ret;
+
+	if (!of_find_property(np, "mediatek,capacity-model", NULL))
+		return 0;
+	if (!fg->charger || !of_find_property(np, "monitored-battery", NULL))
+		return -EINVAL;
+	count = of_property_count_u32_elems(np, "mediatek,capacity-model");
+	if (count < 2 || count > ARRAY_SIZE(config) || count % 2)
+		return -EINVAL;
+	ret = of_property_read_u32_array(np, "mediatek,capacity-model", config, count);
+	if (ret)
+		return ret;
+	fg->model.count = count / 2;
+	for (i = 0; i < fg->model.count; i++) {
+		struct mt6351_fg_profile *p = &fg->model.profiles[i];
+		struct power_supply_vbat_ri_table *table;
+		s32 celsius = config[2 * i];
+
+		if (celsius < -50 || celsius > 100)
+			return -EINVAL;
+		p->temp = celsius * 10;
+		p->full_uah = config[2 * i + 1];
+		snprintf(name, sizeof(name), "mediatek,resistance-table-%d", i);
+		count = of_property_count_u32_elems(np, name);
+		if (count < 4 || count > ARRAY_SIZE(entries) || count % 2)
+			return -EINVAL;
+		ret = of_property_read_u32_array(np, name, entries, count);
+		if (ret)
+			return ret;
+		p->resistance_count = count / 2;
+		table = devm_kcalloc(dev, p->resistance_count, sizeof(*table), GFP_KERNEL);
+		if (!table)
+			return -ENOMEM;
+		for (j = 0; j < p->resistance_count; j++) {
+			table[j].vbat_uv = entries[2 * j];
+			table[j].ri_uohm = entries[2 * j + 1];
+		}
+		p->resistance = table;
+	}
+	return 0;
+}
+
+static int mt6351_fgadc_model_battery(struct mt6351_fgadc *fg)
+{
+	struct power_supply_battery_info *info = fg->psy->battery_info;
+	int i, j;
+
+	if (!fg->model.count)
+		return 0;
+	if (!info)
+		return -EINVAL;
+	for (i = 0; i < fg->model.count; i++) {
+		struct mt6351_fg_profile *p = &fg->model.profiles[i];
+
+		for (j = 0; j < POWER_SUPPLY_OCV_TEMP_MAX && info->ocv_table[j]; j++) {
+			if (info->ocv_temp[j] != p->temp / 10)
+				continue;
+			p->ocv = info->ocv_table[j];
+			p->ocv_count = info->ocv_table_size[j];
+			break;
+		}
+	}
+	return mt6351_model_validate(&fg->model);
+}
+
 static enum power_supply_property mt6351_fgadc_properties[] = {
 	POWER_SUPPLY_PROP_MANUFACTURER,
 	POWER_SUPPLY_PROP_MODEL_NAME,
@@ -348,6 +540,18 @@ static enum power_supply_property mt6351_fgadc_charger_properties[] = {
 	POWER_SUPPLY_PROP_TEMP,
 };
 
+static enum power_supply_property mt6351_fgadc_model_properties[] = {
+	POWER_SUPPLY_PROP_MANUFACTURER,
+	POWER_SUPPLY_PROP_MODEL_NAME,
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_VOLTAGE_OCV,
+};
+
 static int mt6351_fgadc_get_property(struct power_supply *psy,
 				     enum power_supply_property psp,
 				     union power_supply_propval *val)
@@ -357,6 +561,9 @@ static int mt6351_fgadc_get_property(struct power_supply *psy,
 	int ret;
 
 	switch (psp) {
+	case POWER_SUPPLY_PROP_CAPACITY:
+	case POWER_SUPPLY_PROP_VOLTAGE_OCV:
+		return mt6351_fgadc_model_property(fg, psp, val);
 	case POWER_SUPPLY_PROP_MANUFACTURER:
 		val->strval = "MediaTek";
 		return 0;
@@ -411,6 +618,7 @@ static int mt6351_fgadc_get_property(struct power_supply *psy,
 
 static void mt6351_fgadc_external_power_changed(struct power_supply *psy)
 {
+	mt6351_fgadc_model_schedule(power_supply_get_drvdata(psy));
 	power_supply_changed(psy);
 }
 
@@ -488,6 +696,9 @@ static int mt6351_fgadc_probe(struct platform_device *pdev)
 	fg->dev = &pdev->dev;
 	fg->regmap = mt6351->regmap;
 	mutex_init(&fg->lock);
+	mutex_init(&fg->model_lock);
+	INIT_DELAYED_WORK(&fg->model_work, mt6351_fgadc_model_work);
+	fg->model_error = -ENODATA;
 
 	ret = mt6351_fgadc_parse_dt(fg);
 	if (ret)
@@ -498,6 +709,10 @@ static int mt6351_fgadc_probe(struct platform_device *pdev)
 	ret = mt6351_fgadc_get_charger(fg);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "cannot acquire battery charger\n");
+
+	ret = mt6351_fgadc_parse_model(fg);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "invalid battery model configuration\n");
 
 	/*
 	 * The FGADC analog front end runs from VA18; without it the gauge
@@ -528,6 +743,10 @@ static int mt6351_fgadc_probe(struct platform_device *pdev)
 		fg->psy_desc.properties = mt6351_fgadc_charger_properties;
 		fg->psy_desc.num_properties = ARRAY_SIZE(mt6351_fgadc_charger_properties);
 	}
+	if (fg->model.count) {
+		fg->psy_desc.properties = mt6351_fgadc_model_properties;
+		fg->psy_desc.num_properties = ARRAY_SIZE(mt6351_fgadc_model_properties);
+	}
 	fg->psy_desc.get_property = mt6351_fgadc_get_property;
 	fg->psy_desc.external_power_changed = mt6351_fgadc_external_power_changed;
 	psy_cfg.drv_data = fg;
@@ -537,9 +756,32 @@ static int mt6351_fgadc_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, PTR_ERR(fg->psy),
 				     "failed to register battery power supply\n");
 
+	ret = mt6351_fgadc_model_battery(fg);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "invalid battery model profiles\n");
+	/* Cancel before devres unregisters the power supply or restores hardware. */
+	ret = devm_add_action_or_reset(&pdev->dev, mt6351_fgadc_model_stop, fg);
+	if (ret)
+		return ret;
 	platform_set_drvdata(pdev, fg);
+	mt6351_fgadc_model_start(fg);
 	return 0;
 }
+
+static int mt6351_fgadc_suspend(struct device *dev)
+{
+	mt6351_fgadc_model_stop(dev_get_drvdata(dev));
+	return 0;
+}
+
+static int mt6351_fgadc_resume(struct device *dev)
+{
+	mt6351_fgadc_model_start(dev_get_drvdata(dev));
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(mt6351_fgadc_pm_ops,
+			       mt6351_fgadc_suspend, mt6351_fgadc_resume);
 
 static const struct of_device_id mt6351_fgadc_of_match[] = {
 	{ .compatible = "mediatek,mt6351-fgadc" },
@@ -552,6 +794,7 @@ static struct platform_driver mt6351_fgadc_driver = {
 	.driver = {
 		.name = "mt6351-fgadc",
 		.of_match_table = mt6351_fgadc_of_match,
+		.pm = pm_sleep_ptr(&mt6351_fgadc_pm_ops),
 	},
 };
 module_platform_driver(mt6351_fgadc_driver);

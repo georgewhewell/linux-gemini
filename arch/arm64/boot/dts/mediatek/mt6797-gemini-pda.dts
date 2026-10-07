@@ -9,6 +9,7 @@
 /dts-v1/;
 
 #include "mt6797.dtsi"
+#include "mt6797-gemini-battery.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/gpio-keys.h>
 #include <dt-bindings/input/input.h>
@@ -2400,6 +2401,7 @@
 &mt6351fgadc {
 	status = "okay";
 	power-supplies = <&battery_charger>;
+	monitored-battery = <&gemini_battery>;
 	mediatek,initialize-fgadc;
 	/* VA18 feeds the FGADC analog front end. */
 	vdda-supply = <&mt6351_va18_reg>;

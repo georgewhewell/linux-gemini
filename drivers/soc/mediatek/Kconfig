@@ -884,6 +884,14 @@ config MTK_REGULATOR_COUPLER
 	default ARCH_MEDIATEK
 	depends on REGULATOR
 
+config MTK_MT6797_CPU_REGULATOR_COUPLER
+	bool "MediaTek MT6797 CPU and SRAM regulator coupler"
+	depends on OF && REGULATOR && MTK_MT6797_DVFSP_HANDOFF=y
+	help
+	  Coordinate the shared A53/CCI DA9214 BUCKA supply with CPU SRAM
+	  LDOs, including discrete voltage sequencing and terminal fault
+	  fencing. The two regulators must be explicitly coupled in DT.
+
 config MTK_MMSYS
 	tristate "MediaTek MMSYS Support"
 	default ARCH_MEDIATEK

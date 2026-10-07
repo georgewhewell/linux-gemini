@@ -20,6 +20,7 @@ prelude = r'''
 #include <stdlib.h>
 #include <limits.h>
 typedef uint32_t u32;
+#define current get_current()
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
 #define clamp(a,l,h) min(max(a,l),h)

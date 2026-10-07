@@ -945,6 +945,16 @@ config REGULATOR_MPQ7920
 	  This driver supports the control of different power rails of device
 	  through regulator interface.
 
+config REGULATOR_MT6797_CPU_SRAM
+	tristate "MediaTek MT6797 CPU SRAM LDOs"
+	depends on OF && MTK_MT6797_DVFSP_HANDOFF
+	select MFD_SYSCON
+	help
+	  Adopt the eight CPU SRAM LDOs as one 1.0-1.2 V regulator. Access
+	  uses the DVFSP handoff and hardware semaphore. Partial writes
+	  fence the handoff; coordinated CPU voltage changes require a
+	  rail coupler. The driver never enables or disables individual LDOs.
+
 config REGULATOR_MT6311
 	tristate "MediaTek MT6311 PMIC"
 	depends on I2C

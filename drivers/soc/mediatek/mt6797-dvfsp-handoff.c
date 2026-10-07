@@ -31,6 +31,14 @@
 
 #include "mt6797-dvfsp-cspm-access.h"
 
+#define MT6797_CSPM_POWERON 0x000
+#define MT6797_CSPM_SEMAPHORE 0x440
+#define MT6797_CSPM_POWERON_VALUE 0x0b160001
+#define MT6797_CSPM_SEMAPHORE_REQUEST 1
+#define MT6797_CSPM_SEMAPHORE_HELD BIT(0)
+#define MT6797_CSPM_POLL_US 10
+#define MT6797_CSPM_RETRIES 200
+
 #define CSPM_PCM_CON0			0x018
 #define CSPM_PCM_CON1			0x01c
 #define CSPM_PCM_PWR_IO_EN		0x02c
@@ -1402,6 +1410,47 @@ int mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
 						handoff);
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_cspm_transaction);
+
+int mt6797_dvfsp_cspm_acquire(void __iomem *cspm)
+{
+	unsigned int i;
+
+	writel(MT6797_CSPM_POWERON_VALUE,
+	       cspm + MT6797_CSPM_POWERON);
+	readl(cspm + MT6797_CSPM_POWERON);
+
+	for (i = 0; i < MT6797_CSPM_RETRIES; i++) {
+		writel(MT6797_CSPM_SEMAPHORE_REQUEST,
+		       cspm + MT6797_CSPM_SEMAPHORE);
+		if (readl(cspm + MT6797_CSPM_SEMAPHORE) &
+		    MT6797_CSPM_SEMAPHORE_HELD)
+			return 0;
+		udelay(MT6797_CSPM_POLL_US);
+	}
+
+	return -ETIMEDOUT;
+}
+EXPORT_SYMBOL_GPL(mt6797_dvfsp_cspm_acquire);
+
+int mt6797_dvfsp_cspm_release(void __iomem *cspm)
+{
+	unsigned int i;
+	int ret = -ETIMEDOUT;
+
+	writel(MT6797_CSPM_SEMAPHORE_REQUEST,
+	       cspm + MT6797_CSPM_SEMAPHORE);
+	for (i = 0; i < MT6797_CSPM_RETRIES; i++) {
+		if (!(readl(cspm + MT6797_CSPM_SEMAPHORE) &
+		      MT6797_CSPM_SEMAPHORE_HELD)) {
+			ret = 0;
+			break;
+		}
+		udelay(MT6797_CSPM_POLL_US);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_dvfsp_cspm_release);
 
 bool mt6797_dvfsp_handoff_is_ready_atomic(struct mt6797_dvfsp_handoff *handoff)
 {

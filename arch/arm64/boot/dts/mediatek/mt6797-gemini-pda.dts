@@ -2454,6 +2454,14 @@
 	status = "okay";
 };
 
+&cpu_sram {
+	regulator-name = "vsram-a53-cci";
+	regulator-min-microvolt = <1000000>;
+	regulator-max-microvolt = <1200000>;
+	regulator-always-on;
+	status = "okay";
+};
+
 &cpuclk {
 	status = "okay";
 };

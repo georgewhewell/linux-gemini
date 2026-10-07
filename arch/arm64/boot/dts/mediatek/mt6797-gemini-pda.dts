@@ -115,6 +115,18 @@
 			mt6797_cpu_efuse_identity: cpu-efuse-identity@58 {
 				reg = <88 12>;
 			};
+
+			mt6797_usb3_intr: usb3-intr@64 {
+				reg = <100 4>;
+			};
+
+			mt6797_usb3_rx_imp: usb3-rx-imp@68 {
+				reg = <104 4>;
+			};
+
+			mt6797_usb3_tx_imp: usb3-tx-imp@6c {
+				reg = <108 4>;
+			};
 		};
 	};
 
@@ -975,6 +987,13 @@
 };
 
 &mt6351regulator {
+	/* Shared analog supply of the left USB2 and SuperSpeed PHYs. */
+	mt6351_va10_reg: ldo-va10 {
+		regulator-name = "va10";
+		regulator-min-microvolt = <950000>;
+		regulator-max-microvolt = <950000>;
+	};
+
 	/*
 	 * Despite its PMIC name this buck is the SoC core SRAM rail, which the
 	 * vendor SPM switches with Vcore.  The Cortex-A53 SRAM is fed by on-die
@@ -1738,21 +1757,31 @@
 };
 
 /*
- * The left USB-C connector uses the MTU3 device controller in USB2 mode.
- * SuperSpeed routing and role switching still need implementation.
+ * The left USB-C connector uses the MTU3 device controller. Both PHYs
+ * remain powered for USB2 fallback. Host role switching is not enabled yet.
  */
 &u2port0 {
 	clocks = <&clk26m>;
+	phy-supply = <&mt6351_va10_reg>;
 	mediatek,force-b-session-valid;
+	status = "okay";
+};
+
+&u3port0 {
+	clocks = <&clk26m>;
+	phy-supply = <&mt6351_va10_reg>;
+	nvmem-cells = <&mt6797_usb3_intr>, <&mt6797_usb3_rx_imp>,
+		     <&mt6797_usb3_tx_imp>;
+	nvmem-cell-names = "intr", "rx_imp", "tx_imp";
 	status = "okay";
 };
 
 &ssusb {
 	assigned-clocks = <&topckgen CLK_TOP_MUX_SSUSB_TOP_SYS>;
 	assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL3_D2>;
-	phys = <&u2port0 PHY_TYPE_USB2>;
+	phys = <&u2port0 PHY_TYPE_USB2>, <&u3port0 PHY_TYPE_USB3>;
 	dr_mode = "peripheral";
-	maximum-speed = "high-speed";
+	maximum-speed = "super-speed";
 	vusb33-supply = <&mt6351_vusb33_reg>;
 	status = "okay";
 };

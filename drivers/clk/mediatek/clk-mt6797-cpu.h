@@ -52,6 +52,12 @@ struct mt6797_cpuclk_transition_plan {
 	unsigned long pll_rate;
 	unsigned long minimum_rate;
 	u32 dds;
+	bool changes_postdiv;
+	u32 target_con1;
+	u32 temporary_clkdiv;
+	u32 mainpll_mux;
+	u32 mux_mask;
+	unsigned long mainpll_rate;
 	u32 clkdiv_mask;
 	u32 clkdiv;
 	bool divider_before_hop;
@@ -94,6 +100,12 @@ int mt6797_cpuclk_plan_dcm(enum mt6797_cpuclk_domain domain,
 int mt6797_cpuclk_plan_transition(enum mt6797_cpuclk_domain domain,
 			   const struct mt6797_cpuclk_snapshot *snapshot,
 			   unsigned long clk26m_rate, unsigned long rate,
+			   struct mt6797_cpuclk_transition_plan *plan);
+/* A nonzero measured MAINPLL rate permits a bounded temporary handoff. */
+int mt6797_cpuclk_plan_transition_mainpll(enum mt6797_cpuclk_domain domain,
+			   const struct mt6797_cpuclk_snapshot *snapshot,
+			   unsigned long clk26m_rate, unsigned long rate,
+			   unsigned long mainpll_rate,
 			   struct mt6797_cpuclk_transition_plan *plan);
 
 #endif /* __DRV_CLK_MT6797_CPU_H */

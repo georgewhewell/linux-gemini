@@ -1858,7 +1858,7 @@
 		};
 	};
 
-	charger@6b {
+	battery_charger: charger@6b {
 		compatible = "ti,bq25896", "ti,bq25890";
 		reg = <0x6b>;
 		linux,skip-reset;
@@ -2399,6 +2399,7 @@
 
 &mt6351fgadc {
 	status = "okay";
+	power-supplies = <&battery_charger>;
 	mediatek,initialize-fgadc;
 	/* VA18 feeds the FGADC analog front end. */
 	vdda-supply = <&mt6351_va18_reg>;

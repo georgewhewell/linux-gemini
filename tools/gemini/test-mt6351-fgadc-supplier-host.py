@@ -36,6 +36,7 @@ enum power_supply_property {
  POWER_SUPPLY_PROP_STATUS, POWER_SUPPLY_PROP_CURRENT_NOW,
  POWER_SUPPLY_PROP_CHARGE_COUNTER, POWER_SUPPLY_PROP_VOLTAGE_NOW,
  POWER_SUPPLY_PROP_TEMP, POWER_SUPPLY_PROP_CAPACITY,
+ POWER_SUPPLY_PROP_VOLTAGE_OCV,
 };
 enum {POWER_SUPPLY_STATUS_UNKNOWN, POWER_SUPPLY_STATUS_CHARGING,
  POWER_SUPPLY_STATUS_DISCHARGING, POWER_SUPPLY_STATUS_NOT_CHARGING,
@@ -52,6 +53,11 @@ static int native_current, native_counter, supplied_value;
 static int present, count, acquisitions;
 static struct power_supply *acquired;
 static enum power_supply_property requested;
+static int mt6351_fgadc_model_property(struct mt6351_fgadc *f,
+ enum power_supply_property p, union power_supply_propval *v)
+{ (void)f; (void)p; (void)v; return -EINVAL; }
+static void mt6351_fgadc_model_schedule(struct mt6351_fgadc *f)
+{ assert(f==&fg); }
 static void *power_supply_get_drvdata(struct power_supply *psy)
 { assert(psy==&battery); return psy->data; }
 static int mt6351_fgadc_read(struct mt6351_fgadc *f, s64 *current, s64 *counter)

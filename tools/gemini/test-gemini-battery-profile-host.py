@@ -31,7 +31,7 @@ assert '#include "mt6797-gemini-battery.dtsi"' in board
 fg = re.search(r"&mt6351fgadc\s*\{(.*?)\};", board, re.S)[1]
 assert "monitored-battery = <&gemini_battery>;" in fg
 # The voltage profiles do not establish pack design capacity or charge limits.
-assert set(re.findall(r"([\w,-]+)\s*=", source)) == {
+assert set(re.findall(r"([\w,-]+)\s*=", source.split("&mt6351fgadc")[0])) == {
     "compatible", "ocv-capacity-celsius",
     *(f"ocv-capacity-table-{i}" for i in range(4)),
 }

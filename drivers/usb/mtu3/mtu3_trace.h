@@ -33,21 +33,27 @@ TRACE_EVENT(mtu3_log,
 );
 
 TRACE_EVENT(mtu3_u3_ltssm_isr,
-	TP_PROTO(u32 intr),
-	TP_ARGS(intr),
+	TP_PROTO(u32 intr, u32 raw, u32 enabled),
+	TP_ARGS(intr, raw, enabled),
 	TP_STRUCT__entry(
 		__field(u32, intr)
+		__field(u32, raw)
+		__field(u32, enabled)
 	),
 	TP_fast_assign(
 		__entry->intr = intr;
+		__entry->raw = raw;
+		__entry->enabled = enabled;
 	),
-	TP_printk("(%08x) %s %s %s %s %s %s", __entry->intr,
+	TP_printk("(%08x) raw=%08x enabled=%08x %s %s %s %s %s %s %s",
+		__entry->intr, __entry->raw, __entry->enabled,
 		__entry->intr & HOT_RST_INTR ? "HOT_RST" : "",
 		__entry->intr & WARM_RST_INTR ? "WARM_RST" : "",
 		__entry->intr & ENTER_U3_INTR ? "ENT_U3" : "",
 		__entry->intr & EXIT_U3_INTR ? "EXIT_U3" : "",
 		__entry->intr & VBUS_RISE_INTR ? "VBUS_RISE" : "",
-		__entry->intr & VBUS_FALL_INTR ? "VBUS_FALL" : ""
+		__entry->intr & VBUS_FALL_INTR ? "VBUS_FALL" : "",
+		__entry->intr & SS_DISABLE_INTR ? "SS_DISABLE" : ""
 	)
 );
 

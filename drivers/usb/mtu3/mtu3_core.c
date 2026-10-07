@@ -747,13 +747,14 @@ static irqreturn_t mtu3_link_isr(struct mtu3 *mtu)
 static irqreturn_t mtu3_u3_ltssm_isr(struct mtu3 *mtu)
 {
 	void __iomem *mbase = mtu->mac_base;
-	u32 ltssm;
+	u32 ltssm, raw, enabled;
 
-	ltssm = mtu3_readl(mbase, U3D_LTSSM_INTR);
-	ltssm &= mtu3_readl(mbase, U3D_LTSSM_INTR_ENABLE);
+	raw = mtu3_readl(mbase, U3D_LTSSM_INTR);
+	enabled = mtu3_readl(mbase, U3D_LTSSM_INTR_ENABLE);
+	ltssm = raw & enabled;
 	mtu3_writel(mbase, U3D_LTSSM_INTR, ltssm); /* W1C */
 	dev_dbg(mtu->dev, "=== LTSSM[%x] ===\n", ltssm);
-	trace_mtu3_u3_ltssm_isr(ltssm);
+	trace_mtu3_u3_ltssm_isr(ltssm, raw, enabled);
 
 	if (mtu->manual_u2_fallback && (ltssm & SS_DISABLE_INTR) &&
 	    !(ltssm & VBUS_FALL_INTR) && mtu->is_active && mtu->softconnect) {

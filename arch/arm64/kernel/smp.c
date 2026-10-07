@@ -586,7 +586,6 @@ void __init smp_cpus_done(unsigned int max_cpus)
 {
 	pr_info("SMP: Total of %d processors activated.\n", num_online_cpus());
 	hyp_mode_check();
-	arm64_collect_late_cpu_runtime_identity();
 	arm64_collect_late_cpu_runtime_system_policy();
 	arm64_seal_late_cpu_runtime_evidence();
 	arm64_prepare_late_cpu_profile();

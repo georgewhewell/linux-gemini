@@ -11,13 +11,10 @@
 #define pr_fmt(fmt) "arm64-late-cpu-profile: " fmt
 
 #include <crypto/sha2.h>
-#include <linux/buildid.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/of.h>
 #include <linux/panic.h>
 #include <linux/printk.h>
-#include <linux/sizes.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 
@@ -35,29 +32,13 @@ static bool late_profile_registration_fault __initdata;
 
 /*
  * Runtime observations have a separate owner from profile expectations.
- * A future producer may populate this private record before the seal point;
- * profiles never receive a writable reference to it.
+ * The architecture collects system capabilities and mitigation policy before
+ * finalization; profiles never receive a writable reference to this record.
  */
 enum late_runtime_evidence_state {
 	LATE_RUNTIME_EVIDENCE_OPEN,
-	LATE_RUNTIME_EVIDENCE_SEALED_SYSTEM_POLICY,
-	LATE_RUNTIME_EVIDENCE_SEALED_IDENTITY_SYSTEM_POLICY,
+	LATE_RUNTIME_EVIDENCE_SEALED,
 	LATE_RUNTIME_EVIDENCE_FAULT,
-};
-
-enum late_runtime_identity_state {
-	LATE_RUNTIME_IDENTITY_UNCOLLECTED,
-	LATE_RUNTIME_IDENTITY_VERIFIED,
-	LATE_RUNTIME_IDENTITY_FAILED,
-};
-
-struct late_runtime_identity {
-	struct arm64_late_cpu_runtime_binding binding;
-	char profile_id[ARM64_LATE_CPU_PROFILE_ID_LEN];
-	u32 target_cpu[ARM64_LATE_CPU_MAX_TARGETS];
-	u64 target_mpidr[ARM64_LATE_CPU_MAX_TARGETS];
-	u64 config_input_identity[ARM64_LATE_CPU_ID_WORDS];
-	u64 record_identity[ARM64_LATE_CPU_ID_WORDS];
 };
 
 static struct arm64_late_cpu_evidence late_runtime_evidence __initdata = {
@@ -65,8 +46,6 @@ static struct arm64_late_cpu_evidence late_runtime_evidence __initdata = {
 };
 
 static u32 late_runtime_evidence_state __initdata;
-static struct late_runtime_identity late_runtime_identity __initdata;
-static u32 late_runtime_identity_state __initdata;
 
 static struct arm64_late_cpu_evidence profile_evidence __initdata;
 static struct arm64_late_cpu_plan draft __initdata;
@@ -115,34 +94,10 @@ late_profile_identity_empty(const u64 identity[ARM64_LATE_CPU_ID_WORDS])
 	return true;
 }
 
-static bool __init
-late_profile_runtime_binding_complete(const struct arm64_late_cpu_runtime_binding *binding)
-{
-	if (binding->origin != ARM64_LATE_CPU_BINDING_RUNTIME ||
-	    binding->valid != ARM64_LATE_CPU_BIND_VALID_MASK ||
-	    late_profile_identity_empty(binding->expected_config_identity) ||
-	    late_profile_identity_empty(binding->running_config_identity) ||
-	    late_profile_identity_empty(binding->expected_build_id_identity) ||
-	    late_profile_identity_empty(binding->running_build_id_identity) ||
-	    late_profile_identity_empty(binding->expected_cmdline_identity) ||
-	    late_profile_identity_empty(binding->running_cmdline_identity))
-		return false;
-
-	return !memcmp(binding->expected_config_identity,
-		       binding->running_config_identity,
-		       sizeof(binding->expected_config_identity)) &&
-	       !memcmp(binding->expected_build_id_identity,
-		       binding->running_build_id_identity,
-		       sizeof(binding->expected_build_id_identity)) &&
-	       !memcmp(binding->expected_cmdline_identity,
-		       binding->running_cmdline_identity,
-		       sizeof(binding->expected_cmdline_identity));
-}
-
 static const u8 late_evidence_identity_domain[] __initconst =
-	"gemini-late-cpu-evidence-v1";
+	"gemini-late-cpu-evidence-v2";
 static const u8 late_plan_identity_domain[] __initconst =
-	"gemini-late-cpu-plan-v1";
+	"gemini-late-cpu-plan-v2";
 
 static void __init
 late_canonical_update_u8(struct sha256_ctx *ctx, u8 value)
@@ -287,26 +242,6 @@ late_canonical_update_expected_pair(struct sha256_ctx *ctx,
 }
 
 static void __init
-late_canonical_update_binding(struct sha256_ctx *ctx,
-			      const struct arm64_late_cpu_runtime_binding *binding)
-{
-	late_canonical_update_u32(ctx, binding->valid);
-	late_canonical_update_u32(ctx, binding->origin);
-	late_canonical_update_identity(ctx,
-				       binding->expected_config_identity);
-	late_canonical_update_identity(ctx,
-				       binding->running_config_identity);
-	late_canonical_update_identity(ctx,
-				       binding->expected_build_id_identity);
-	late_canonical_update_identity(ctx,
-				       binding->running_build_id_identity);
-	late_canonical_update_identity(ctx,
-				       binding->expected_cmdline_identity);
-	late_canonical_update_identity(ctx,
-				       binding->running_cmdline_identity);
-}
-
-static void __init
 late_canonical_update_target_cap(struct sha256_ctx *ctx,
 				 const struct arm64_late_cpu_target_cap_evidence *target)
 {
@@ -369,12 +304,7 @@ late_canonical_hash_evidence(const struct arm64_late_cpu_evidence *evidence,
 	sha256_update(&ctx, late_evidence_identity_domain,
 		      sizeof(late_evidence_identity_domain));
 	late_canonical_update_u32(&ctx, evidence->abi);
-	late_canonical_update_identity(&ctx,
-				       evidence->source_parent_identity);
-	late_canonical_update_identity(&ctx,
-				       evidence->config_input_identity);
 	late_canonical_update_expected_pair(&ctx, &evidence->expected_pair);
-	late_canonical_update_binding(&ctx, &evidence->binding);
 	for (target = 0; target < ARM64_LATE_CPU_MAX_TARGETS; target++) {
 		late_canonical_update_u32(&ctx, evidence->target_cpu[target]);
 		late_canonical_update_u64(&ctx,
@@ -549,467 +479,6 @@ late_profile_finalize_plan_identity(struct arm64_late_cpu_plan *plan)
 	return 0;
 }
 
-#ifdef CONFIG_ARM64_LATE_CPU_RUNTIME_IDENTITY
-#define LATE_RUNTIME_IKCONFIG_MAX	SZ_4M
-#define LATE_RUNTIME_NOTES_MAX		SZ_64K
-
-static const char late_runtime_node_name[] __initconst =
-	"gemini-late-cpu-provenance";
-static const char late_runtime_compatible[] __initconst =
-	"planet,gemini-a72-runtime-binding-v1";
-static const char late_runtime_profile_id[] __initconst =
-	"mt6797-a53-a72-a41-v7";
-static const u8 late_runtime_domain[] __initconst =
-	"gemini-a41-runtime-binding-v1";
-static const u8 late_runtime_record_tag[] __initconst = "record";
-static const u8 late_runtime_ikconfig_tag[] __initconst = "ikconfig";
-static const u8 late_runtime_build_id_tag[] __initconst = "gnu-build-id";
-static const u8 late_runtime_cmdline_tag[] __initconst = "cmdline";
-
-enum late_runtime_record_digest {
-	LATE_RECORD_EXPECTED_IKCONFIG,
-	LATE_RECORD_EXPECTED_BUILD_ID,
-	LATE_RECORD_EXPECTED_CMDLINE,
-	LATE_RECORD_UPSTREAM_SOURCE,
-	LATE_RECORD_PATCH_SERIES,
-	LATE_RECORD_CONFIG_INPUTS,
-	LATE_RECORD_RESOLVED_CONFIG,
-	LATE_RECORD_PACKAGE_IMAGE,
-	LATE_RECORD_BUILD_PROVENANCE,
-	LATE_RECORD_DIGEST_COUNT,
-};
-
-enum late_runtime_record_property {
-	LATE_PROP_NAME,
-	LATE_PROP_COMPATIBLE,
-	LATE_PROP_SCHEMA_VERSION,
-	LATE_PROP_PROFILE_ID,
-	LATE_PROP_TARGET_CPUS,
-	LATE_PROP_TARGET_MPIDRS,
-	LATE_PROP_EXPECTED_IKCONFIG,
-	LATE_PROP_EXPECTED_BUILD_ID,
-	LATE_PROP_EXPECTED_CMDLINE,
-	LATE_PROP_UPSTREAM_SOURCE,
-	LATE_PROP_PATCH_SERIES,
-	LATE_PROP_CONFIG_INPUTS,
-	LATE_PROP_RESOLVED_CONFIG,
-	LATE_PROP_PACKAGE_IMAGE,
-	LATE_PROP_BUILD_PROVENANCE,
-	LATE_PROP_RECORD_IDENTITY,
-	LATE_PROP_COUNT,
-};
-
-static const char * const late_runtime_property_name[LATE_PROP_COUNT] __initconst = {
-	[LATE_PROP_NAME] = "name",
-	[LATE_PROP_COMPATIBLE] = "compatible",
-	[LATE_PROP_SCHEMA_VERSION] = "schema-version",
-	[LATE_PROP_PROFILE_ID] = "profile-id",
-	[LATE_PROP_TARGET_CPUS] = "target-cpus",
-	[LATE_PROP_TARGET_MPIDRS] = "target-mpidrs",
-	[LATE_PROP_EXPECTED_IKCONFIG] = "expected-ikconfig-identity",
-	[LATE_PROP_EXPECTED_BUILD_ID] = "expected-gnu-build-id-identity",
-	[LATE_PROP_EXPECTED_CMDLINE] = "expected-cmdline-identity",
-	[LATE_PROP_UPSTREAM_SOURCE] = "upstream-source-sha256",
-	[LATE_PROP_PATCH_SERIES] = "patch-series-sha256",
-	[LATE_PROP_CONFIG_INPUTS] = "config-inputs-sha256",
-	[LATE_PROP_RESOLVED_CONFIG] = "resolved-config-sha256",
-	[LATE_PROP_PACKAGE_IMAGE] = "package-image-sha256",
-	[LATE_PROP_BUILD_PROVENANCE] = "build-provenance-sha256",
-	[LATE_PROP_RECORD_IDENTITY] = "record-identity",
-};
-
-struct late_runtime_expected_record {
-	char profile_id[ARM64_LATE_CPU_PROFILE_ID_LEN];
-	u32 target_cpu[ARM64_LATE_CPU_MAX_TARGETS];
-	u64 target_mpidr[ARM64_LATE_CPU_MAX_TARGETS];
-	u8 digest[LATE_RECORD_DIGEST_COUNT][SHA256_DIGEST_SIZE];
-	u8 record_identity[SHA256_DIGEST_SIZE];
-};
-
-extern const char kernel_config_data;
-extern const char kernel_config_data_end;
-extern const char __start_notes;
-extern const char __stop_notes;
-
-static void __init
-late_runtime_digest_to_identity(const u8 digest[SHA256_DIGEST_SIZE],
-				u64 identity[ARM64_LATE_CPU_ID_WORDS])
-{
-	unsigned int i;
-
-	for (i = 0; i < ARM64_LATE_CPU_ID_WORDS; i++)
-		identity[i] = get_unaligned_be64(digest + i * sizeof(u64));
-}
-
-static void __init
-late_runtime_sha256_update_u16(struct sha256_ctx *ctx, u16 value)
-{
-	__be16 encoded = cpu_to_be16(value);
-
-	sha256_update(ctx, (const u8 *)&encoded, sizeof(encoded));
-}
-
-static void __init
-late_runtime_sha256_update_u32(struct sha256_ctx *ctx, u32 value)
-{
-	__be32 encoded = cpu_to_be32(value);
-
-	sha256_update(ctx, (const u8 *)&encoded, sizeof(encoded));
-}
-
-static void __init
-late_runtime_sha256_update_u64(struct sha256_ctx *ctx, u64 value)
-{
-	__be64 encoded = cpu_to_be64(value);
-
-	sha256_update(ctx, (const u8 *)&encoded, sizeof(encoded));
-}
-
-static void __init
-late_runtime_hash_record(const struct late_runtime_expected_record *record,
-			 u8 digest[SHA256_DIGEST_SIZE])
-{
-	struct sha256_ctx ctx;
-	unsigned int i;
-
-	sha256_init(&ctx);
-	sha256_update(&ctx, late_runtime_domain, sizeof(late_runtime_domain));
-	sha256_update(&ctx, late_runtime_record_tag,
-		      sizeof(late_runtime_record_tag));
-	late_runtime_sha256_update_u32(&ctx, 1);
-	late_runtime_sha256_update_u16(&ctx,
-				       sizeof(late_runtime_profile_id) - 1);
-	sha256_update(&ctx, (const u8 *)record->profile_id,
-		      sizeof(late_runtime_profile_id) - 1);
-	late_runtime_sha256_update_u32(&ctx, ARM64_LATE_CPU_MAX_TARGETS);
-	for (i = 0; i < ARM64_LATE_CPU_MAX_TARGETS; i++)
-		late_runtime_sha256_update_u32(&ctx, record->target_cpu[i]);
-	late_runtime_sha256_update_u32(&ctx, ARM64_LATE_CPU_MAX_TARGETS);
-	for (i = 0; i < ARM64_LATE_CPU_MAX_TARGETS; i++)
-		late_runtime_sha256_update_u64(&ctx, record->target_mpidr[i]);
-	for (i = 0; i < LATE_RECORD_DIGEST_COUNT; i++)
-		sha256_update(&ctx, record->digest[i], SHA256_DIGEST_SIZE);
-	sha256_final(&ctx, digest);
-}
-
-static int __init
-late_runtime_parse_property(struct late_runtime_expected_record *record,
-			    enum late_runtime_record_property index,
-			    const struct property *property)
-{
-	const u8 *value = property->value;
-	unsigned int digest;
-
-	if (!value || property->length < 0)
-		return -EINVAL;
-
-	if (index >= LATE_PROP_EXPECTED_IKCONFIG &&
-	    index <= LATE_PROP_BUILD_PROVENANCE) {
-		digest = index - LATE_PROP_EXPECTED_IKCONFIG;
-		if (property->length != SHA256_DIGEST_SIZE ||
-		    !memchr_inv(value, 0, SHA256_DIGEST_SIZE))
-			return -EINVAL;
-		memcpy(record->digest[digest], value,
-		       SHA256_DIGEST_SIZE);
-		return 0;
-	}
-
-	switch (index) {
-	case LATE_PROP_NAME:
-		return property->length == sizeof(late_runtime_node_name) &&
-		       !memcmp(value, late_runtime_node_name,
-			       sizeof(late_runtime_node_name)) ? 0 : -EINVAL;
-	case LATE_PROP_COMPATIBLE:
-		return property->length == sizeof(late_runtime_compatible) &&
-		       !memcmp(value, late_runtime_compatible,
-			       sizeof(late_runtime_compatible)) ? 0 : -EINVAL;
-	case LATE_PROP_SCHEMA_VERSION:
-		return property->length == sizeof(__be32) &&
-		       get_unaligned_be32(value) == 1 ? 0 : -EINVAL;
-	case LATE_PROP_PROFILE_ID:
-		if (property->length != sizeof(late_runtime_profile_id) ||
-		    memcmp(value, late_runtime_profile_id,
-			   sizeof(late_runtime_profile_id)))
-			return -EINVAL;
-		memcpy(record->profile_id, value,
-		       sizeof(late_runtime_profile_id));
-		return 0;
-	case LATE_PROP_TARGET_CPUS:
-		if (property->length != 2 * sizeof(__be32))
-			return -EINVAL;
-		record->target_cpu[0] = get_unaligned_be32(value);
-		record->target_cpu[1] =
-			get_unaligned_be32(value + sizeof(__be32));
-		return record->target_cpu[0] == 8 &&
-		       record->target_cpu[1] == 9 ? 0 : -EINVAL;
-	case LATE_PROP_TARGET_MPIDRS:
-		if (property->length != 2 * sizeof(__be64))
-			return -EINVAL;
-		record->target_mpidr[0] = get_unaligned_be64(value);
-		record->target_mpidr[1] =
-			get_unaligned_be64(value + sizeof(__be64));
-		return record->target_mpidr[0] == 0x200 &&
-		       record->target_mpidr[1] == 0x201 ? 0 : -EINVAL;
-	case LATE_PROP_RECORD_IDENTITY:
-		if (property->length != SHA256_DIGEST_SIZE ||
-		    !memchr_inv(value, 0, SHA256_DIGEST_SIZE))
-			return -EINVAL;
-		memcpy(record->record_identity, value,
-		       SHA256_DIGEST_SIZE);
-		return 0;
-	default:
-		return -EINVAL;
-	}
-}
-
-static int __init
-late_runtime_parse_expected_record(struct late_runtime_identity *identity)
-{
-	struct late_runtime_expected_record record = {};
-	struct device_node *root = NULL;
-	struct device_node *chosen = NULL;
-	struct device_node *node = NULL;
-	const struct property *property;
-	u8 record_digest[SHA256_DIGEST_SIZE];
-	unsigned long seen = 0;
-	unsigned int matches;
-	unsigned int index;
-	int ret = -EINVAL;
-
-	root = of_find_node_by_path("/");
-	chosen = of_find_node_by_path("/chosen");
-	node = of_find_node_by_path("/chosen/gemini-late-cpu-provenance");
-	if (!root || !chosen || !node || chosen != of_chosen ||
-	    node->parent != chosen ||
-	    of_node_check_flag(chosen, OF_DYNAMIC) ||
-	    of_node_check_flag(chosen, OF_DETACHED) ||
-	    of_node_check_flag(chosen, OF_OVERLAY) ||
-	    of_node_check_flag(node, OF_DYNAMIC) ||
-	    of_node_check_flag(node, OF_DETACHED) ||
-	    of_node_check_flag(node, OF_OVERLAY) || node->deadprops)
-		goto out;
-
-	matches = 0;
-	for_each_child_of_node_scoped(root, child) {
-		if (!of_node_name_eq(child, "chosen"))
-			continue;
-		if (strcmp(kbasename(child->full_name), "chosen") ||
-		    child != chosen || ++matches != 1)
-			goto out;
-	}
-	if (matches != 1)
-		goto out;
-
-	matches = 0;
-	for_each_child_of_node_scoped(chosen, child) {
-		if (!of_node_name_eq(child, late_runtime_node_name))
-			continue;
-		if (strcmp(kbasename(child->full_name), late_runtime_node_name) ||
-		    child != node || ++matches != 1)
-			goto out;
-	}
-	if (matches != 1)
-		goto out;
-
-	for_each_child_of_node_scoped(node, child)
-		goto out;
-
-	matches = 0;
-	for_each_compatible_node_scoped(match, NULL, late_runtime_compatible) {
-		if (match != node || ++matches != 1)
-			goto out;
-	}
-	if (matches != 1)
-		goto out;
-
-	for_each_property_of_node(node, property) {
-#ifdef CONFIG_OF_DYNAMIC
-		if (of_property_check_flag(property, OF_DYNAMIC))
-			goto out;
-#endif
-		if (!property->name ||
-		    !strncmp(property->name, "running-", sizeof("running-") - 1))
-			goto out;
-		for (index = 0; index < LATE_PROP_COUNT; index++)
-			if (!strcmp(property->name,
-				    late_runtime_property_name[index]))
-				break;
-		if (index == LATE_PROP_COUNT || (seen & BIT(index)) ||
-		    late_runtime_parse_property(&record, index, property))
-			goto out;
-		seen |= BIT(index);
-	}
-	if (seen != GENMASK(LATE_PROP_COUNT - 1, 0))
-		goto out;
-
-	late_runtime_hash_record(&record, record_digest);
-	if (memcmp(record_digest, record.record_identity,
-		   sizeof(record_digest)))
-		goto out;
-
-	strscpy(identity->profile_id, record.profile_id,
-		sizeof(identity->profile_id));
-	memcpy(identity->target_cpu, record.target_cpu,
-	       sizeof(identity->target_cpu));
-	memcpy(identity->target_mpidr, record.target_mpidr,
-	       sizeof(identity->target_mpidr));
-	late_runtime_digest_to_identity(record.digest[LATE_RECORD_CONFIG_INPUTS],
-					identity->config_input_identity);
-	late_runtime_digest_to_identity(record.record_identity,
-					identity->record_identity);
-	late_runtime_digest_to_identity(record.digest[LATE_RECORD_EXPECTED_IKCONFIG],
-					identity->binding.expected_config_identity);
-	late_runtime_digest_to_identity(record.digest[LATE_RECORD_EXPECTED_BUILD_ID],
-					identity->binding.expected_build_id_identity);
-	late_runtime_digest_to_identity(record.digest[LATE_RECORD_EXPECTED_CMDLINE],
-					identity->binding.expected_cmdline_identity);
-	ret = 0;
-out:
-	of_node_put(node);
-	of_node_put(chosen);
-	of_node_put(root);
-	return ret;
-}
-
-static void __init
-late_runtime_hash_blob64(const u8 *tag, size_t tag_size, const u8 *data,
-			 size_t data_size, u8 digest[SHA256_DIGEST_SIZE])
-{
-	struct sha256_ctx ctx;
-
-	sha256_init(&ctx);
-	sha256_update(&ctx, late_runtime_domain, sizeof(late_runtime_domain));
-	sha256_update(&ctx, tag, tag_size);
-	late_runtime_sha256_update_u64(&ctx, data_size);
-	sha256_update(&ctx, data, data_size);
-	sha256_final(&ctx, digest);
-}
-
-static void __init
-late_runtime_hash_blob32(const u8 *tag, size_t tag_size, const u8 *data,
-			 u32 data_size, u8 digest[SHA256_DIGEST_SIZE])
-{
-	struct sha256_ctx ctx;
-
-	sha256_init(&ctx);
-	sha256_update(&ctx, late_runtime_domain, sizeof(late_runtime_domain));
-	sha256_update(&ctx, tag, tag_size);
-	late_runtime_sha256_update_u32(&ctx, data_size);
-	sha256_update(&ctx, data, data_size);
-	sha256_final(&ctx, digest);
-}
-
-static int __init
-late_runtime_produce_running_identity(struct late_runtime_identity *identity)
-{
-	const u8 *config = (const u8 *)&kernel_config_data;
-	const u8 *config_end = (const u8 *)&kernel_config_data_end;
-	const u8 *notes = (const u8 *)&__start_notes;
-	const u8 *notes_end = (const u8 *)&__stop_notes;
-	u8 build_id[BUILD_ID_SIZE_MAX];
-	u8 digest[SHA256_DIGEST_SIZE];
-	size_t config_size;
-	size_t notes_size;
-
-	if (config_end <= config)
-		return -EINVAL;
-	config_size = config_end - config;
-	if (!config_size || config_size > LATE_RUNTIME_IKCONFIG_MAX)
-		return -EINVAL;
-	late_runtime_hash_blob64(late_runtime_ikconfig_tag,
-				 sizeof(late_runtime_ikconfig_tag), config,
-				 config_size, digest);
-	late_runtime_digest_to_identity(digest,
-					identity->binding.running_config_identity);
-
-	if (notes_end <= notes)
-		return -EINVAL;
-	notes_size = notes_end - notes;
-	if (!notes_size || notes_size > LATE_RUNTIME_NOTES_MAX ||
-	    build_id_parse_buf_exact(notes, build_id, notes_size,
-				     BUILD_ID_SIZE_MAX))
-		return -EINVAL;
-	late_runtime_hash_blob32(late_runtime_build_id_tag,
-				 sizeof(late_runtime_build_id_tag), build_id,
-				 BUILD_ID_SIZE_MAX, digest);
-	late_runtime_digest_to_identity(digest,
-					identity->binding.running_build_id_identity);
-	memzero_explicit(build_id, sizeof(build_id));
-
-	if (!saved_command_line || !saved_command_line_len ||
-	    saved_command_line_len != sizeof(CONFIG_CMDLINE) - 1 ||
-	    memcmp(saved_command_line, CONFIG_CMDLINE, sizeof(CONFIG_CMDLINE)))
-		return -EINVAL;
-	late_runtime_hash_blob64(late_runtime_cmdline_tag,
-				 sizeof(late_runtime_cmdline_tag),
-				 (const u8 *)saved_command_line,
-				 saved_command_line_len, digest);
-	late_runtime_digest_to_identity(digest,
-					identity->binding.running_cmdline_identity);
-
-	identity->binding.valid = ARM64_LATE_CPU_BIND_VALID_MASK;
-	identity->binding.origin = ARM64_LATE_CPU_BINDING_RUNTIME;
-	return late_profile_runtime_binding_complete(&identity->binding) ?
-		0 : -EINVAL;
-}
-
-static bool __init
-late_runtime_identity_complete(const struct late_runtime_identity *identity)
-{
-	return !strcmp(identity->profile_id, late_runtime_profile_id) &&
-	       identity->target_cpu[0] == 8 && identity->target_cpu[1] == 9 &&
-	       identity->target_mpidr[0] == 0x200 &&
-	       identity->target_mpidr[1] == 0x201 &&
-	       !late_profile_identity_empty(identity->config_input_identity) &&
-	       !late_profile_identity_empty(identity->record_identity) &&
-	       late_profile_runtime_binding_complete(&identity->binding);
-}
-#else
-static bool __init
-late_runtime_identity_complete(const struct late_runtime_identity *identity)
-{
-	(void)identity;
-	return false;
-}
-#endif
-
-void __init arm64_collect_late_cpu_runtime_identity(void)
-{
-	struct late_runtime_identity staged = {};
-
-	if (READ_ONCE(late_runtime_evidence_state) !=
-		    LATE_RUNTIME_EVIDENCE_OPEN ||
-	    READ_ONCE(late_runtime_identity_state) !=
-		    LATE_RUNTIME_IDENTITY_UNCOLLECTED ||
-	    system_capabilities_finalized() ||
-	    cpus_have_cap(ARM64_ALWAYS_SYSTEM)) {
-		WRITE_ONCE(late_runtime_identity_state,
-			   LATE_RUNTIME_IDENTITY_FAILED);
-		WRITE_ONCE(late_runtime_evidence_state,
-			   LATE_RUNTIME_EVIDENCE_FAULT);
-		return;
-	}
-
-	/* A failure leaves every private identity field at its zero value. */
-	WRITE_ONCE(late_runtime_identity_state, LATE_RUNTIME_IDENTITY_FAILED);
-#ifdef CONFIG_ARM64_LATE_CPU_RUNTIME_IDENTITY
-	if (late_runtime_parse_expected_record(&staged)) {
-		pr_warn("static runtime identity record is unavailable or invalid\n");
-		return;
-	}
-	if (late_runtime_produce_running_identity(&staged)) {
-		pr_warn("running config, build-ID, or command-line identity did not match\n");
-		return;
-	}
-
-	late_runtime_identity = staged;
-	WRITE_ONCE(late_runtime_identity_state, LATE_RUNTIME_IDENTITY_VERIFIED);
-	pr_info("verified the pre-finalization runtime identity binding\n");
-#else
-	pr_warn("runtime identity producer is not configured\n");
-#endif
-}
-
 static bool __init late_runtime_evidence_storage_empty(void);
 
 void __init arm64_collect_late_cpu_runtime_system_policy(void)
@@ -1021,8 +490,6 @@ void __init arm64_collect_late_cpu_runtime_system_policy(void)
 
 	if (READ_ONCE(late_runtime_evidence_state) !=
 		    LATE_RUNTIME_EVIDENCE_OPEN ||
-	    READ_ONCE(late_runtime_identity_state) ==
-		    LATE_RUNTIME_IDENTITY_UNCOLLECTED ||
 	    system_capabilities_finalized() ||
 	    cpus_have_cap(ARM64_ALWAYS_SYSTEM) ||
 	    !late_runtime_evidence_storage_empty()) {
@@ -1047,27 +514,13 @@ void __init arm64_collect_late_cpu_runtime_system_policy(void)
 		late_runtime_evidence.target_policy[target] = policy;
 }
 
-static bool __init
-late_profile_binding_empty(const struct arm64_late_cpu_runtime_binding *binding)
-{
-	return !binding->valid &&
-	       binding->origin == ARM64_LATE_CPU_BINDING_NONE &&
-	       late_profile_identity_empty(binding->expected_config_identity) &&
-	       late_profile_identity_empty(binding->running_config_identity) &&
-	       late_profile_identity_empty(binding->expected_build_id_identity) &&
-	       late_profile_identity_empty(binding->running_build_id_identity) &&
-	       late_profile_identity_empty(binding->expected_cmdline_identity) &&
-	       late_profile_identity_empty(binding->running_cmdline_identity);
-}
-
 /* Profile-owned production input may describe expectations, never observations. */
 static bool __init
 late_profile_runtime_fields_empty(const struct arm64_late_cpu_evidence *evidence)
 {
 	unsigned int target;
 
-	if (!late_profile_binding_empty(&evidence->binding) ||
-	    !late_profile_identity_empty(evidence->evidence_identity))
+	if (!late_profile_identity_empty(evidence->evidence_identity))
 		return false;
 
 	for (target = 0; target < ARM64_LATE_CPU_MAX_TARGETS; target++)
@@ -1090,11 +543,8 @@ late_runtime_evidence_storage_empty(void)
 	unsigned int target;
 
 	if (late_runtime_evidence.abi != ARM64_LATE_CPU_PLAN_ABI ||
-	    !late_profile_identity_empty(late_runtime_evidence.source_parent_identity) ||
-	    !late_profile_identity_empty(late_runtime_evidence.config_input_identity) ||
 	    memchr_inv(&late_runtime_evidence.expected_pair, 0,
 		       sizeof(late_runtime_evidence.expected_pair)) ||
-	    !late_profile_binding_empty(&late_runtime_evidence.binding) ||
 	    !late_profile_identity_empty(late_runtime_evidence.evidence_identity) ||
 	    late_runtime_evidence.blocker_mask ||
 	    memchr_inv(&late_runtime_evidence.system_cap, 0,
@@ -1164,11 +614,8 @@ late_runtime_evidence_storage_complete(void)
 	unsigned int target;
 
 	if (late_runtime_evidence.abi != ARM64_LATE_CPU_PLAN_ABI ||
-	    !late_profile_identity_empty(late_runtime_evidence.source_parent_identity) ||
-	    !late_profile_identity_empty(late_runtime_evidence.config_input_identity) ||
 	    memchr_inv(&late_runtime_evidence.expected_pair, 0,
 		       sizeof(late_runtime_evidence.expected_pair)) ||
-	    !late_profile_binding_empty(&late_runtime_evidence.binding) ||
 	    !late_profile_identity_empty(late_runtime_evidence.evidence_identity) ||
 	    late_runtime_evidence.blocker_mask ||
 	    !late_runtime_system_policy_complete())
@@ -1188,37 +635,9 @@ late_runtime_evidence_storage_complete(void)
 	return true;
 }
 
-static bool __init
-late_profile_identity_cross_bound(const struct arm64_late_cpu_evidence *evidence,
-				  const char *profile_id,
-				  const struct cpumask *registered_targets)
-{
-	unsigned int target;
-
-	if (strcmp(late_runtime_identity.profile_id, profile_id) ||
-	    memcmp(late_runtime_identity.config_input_identity,
-		   evidence->config_input_identity,
-		   sizeof(evidence->config_input_identity)) ||
-	    late_profile_identity_empty(late_runtime_identity.record_identity) ||
-	    !late_profile_runtime_binding_complete(&late_runtime_evidence.binding))
-		return false;
-
-	for (target = 0; target < ARM64_LATE_CPU_MAX_TARGETS; target++)
-		if (late_runtime_identity.target_cpu[target] !=
-			    evidence->target_cpu[target] ||
-		    late_runtime_identity.target_mpidr[target] !=
-			    evidence->expected_target_mpidr[target] ||
-		    !cpumask_test_cpu(late_runtime_identity.target_cpu[target],
-				      registered_targets))
-			return false;
-
-	return true;
-}
-
 void __init arm64_seal_late_cpu_runtime_evidence(void)
 {
 	u32 state = READ_ONCE(late_runtime_evidence_state);
-	u32 identity_state = READ_ONCE(late_runtime_identity_state);
 
 	if (state != LATE_RUNTIME_EVIDENCE_OPEN ||
 	    system_capabilities_finalized() ||
@@ -1229,26 +648,7 @@ void __init arm64_seal_late_cpu_runtime_evidence(void)
 		return;
 	}
 
-	if (!late_runtime_evidence_storage_complete() ||
-	    identity_state == LATE_RUNTIME_IDENTITY_UNCOLLECTED) {
-		/* Publish the fault before profile preparation examines state. */
-		smp_store_release(&late_runtime_evidence_state,
-				  LATE_RUNTIME_EVIDENCE_FAULT);
-		return;
-	}
-
-	if (identity_state == LATE_RUNTIME_IDENTITY_FAILED &&
-	    !memchr_inv(&late_runtime_identity, 0,
-		       sizeof(late_runtime_identity))) {
-		late_runtime_evidence.blocker_mask |=
-			ARM64_LATE_CPU_BLOCK_RUNTIME_BINDING;
-		state = LATE_RUNTIME_EVIDENCE_SEALED_SYSTEM_POLICY;
-	} else if (identity_state == LATE_RUNTIME_IDENTITY_VERIFIED &&
-		   late_runtime_identity_complete(&late_runtime_identity)) {
-		late_runtime_evidence.binding = late_runtime_identity.binding;
-		state =
-			LATE_RUNTIME_EVIDENCE_SEALED_IDENTITY_SYSTEM_POLICY;
-	} else {
+	if (!late_runtime_evidence_storage_complete()) {
 		/* Publish the fault before profile preparation examines state. */
 		smp_store_release(&late_runtime_evidence_state,
 				  LATE_RUNTIME_EVIDENCE_FAULT);
@@ -1256,7 +656,8 @@ void __init arm64_seal_late_cpu_runtime_evidence(void)
 	}
 
 	/* Publish every core-owned field before profile planning may consume it. */
-	smp_store_release(&late_runtime_evidence_state, state);
+	smp_store_release(&late_runtime_evidence_state,
+			  LATE_RUNTIME_EVIDENCE_SEALED);
 }
 
 static bool __init
@@ -1436,11 +837,8 @@ void __init arm64_prepare_late_cpu_profile(void)
 	}
 	/* Pairs with the release stores at the architecture seal point. */
 	runtime_state = smp_load_acquire(&late_runtime_evidence_state);
-	if (runtime_state !=
-		    LATE_RUNTIME_EVIDENCE_SEALED_SYSTEM_POLICY &&
-	    runtime_state !=
-		    LATE_RUNTIME_EVIDENCE_SEALED_IDENTITY_SYSTEM_POLICY) {
-		late_profile_block(ARM64_LATE_CPU_BLOCK_RUNTIME_BINDING,
+	if (runtime_state != LATE_RUNTIME_EVIDENCE_SEALED) {
+		late_profile_block(ARM64_LATE_CPU_BLOCK_RUNTIME_POLICY,
 				   "runtime evidence was not sealed");
 		return;
 	}
@@ -1466,49 +864,17 @@ void __init arm64_prepare_late_cpu_profile(void)
 				   "prepare altered evidence ABI");
 		return;
 	}
-	if (profile_evidence.binding.origin ==
-	    ARM64_LATE_CPU_BINDING_RUNTIME) {
-		late_profile_block(ARM64_LATE_CPU_BLOCK_RUNTIME_BINDING,
-				   "profile declared runtime evidence");
-		return;
-	}
-	if (profile_evidence.binding.origin != ARM64_LATE_CPU_BINDING_NONE &&
-	    profile_evidence.binding.origin != ARM64_LATE_CPU_BINDING_FIXTURE) {
-		late_profile_block(ARM64_LATE_CPU_BLOCK_RUNTIME_BINDING,
-				   "profile declared an invalid evidence origin");
+	if (!late_profile_runtime_fields_empty(&profile_evidence)) {
+		late_profile_block(ARM64_LATE_CPU_BLOCK_RUNTIME_POLICY,
+				   "profile supplied runtime observations");
 		return;
 	}
 
 	draft.evidence = profile_evidence;
-	if (profile_evidence.binding.origin == ARM64_LATE_CPU_BINDING_NONE) {
-		if (!late_profile_runtime_fields_empty(&profile_evidence)) {
-			late_profile_block(ARM64_LATE_CPU_BLOCK_RUNTIME_BINDING,
-					   "profile supplied runtime observations");
-			return;
-		}
-		if (runtime_state ==
-		    LATE_RUNTIME_EVIDENCE_SEALED_IDENTITY_SYSTEM_POLICY) {
-			if (!late_profile_identity_cross_bound(&profile_evidence,
-							       draft.profile_id,
-							       &late_profile_targets)) {
-				late_profile_block(ARM64_LATE_CPU_BLOCK_RUNTIME_BINDING,
-						   "runtime identity did not match profile inputs");
-				return;
-			}
-			draft.evidence.binding = late_runtime_evidence.binding;
-			draft.evidence.system_cap =
-				late_runtime_evidence.system_cap;
-			for (target = 0;
-			     target < ARM64_LATE_CPU_MAX_TARGETS; target++)
-				draft.evidence.target_policy[target] =
-					late_runtime_evidence.target_policy[target];
-			draft.evidence.blocker_mask &=
-				~ARM64_LATE_CPU_BLOCK_RUNTIME_BINDING;
-		}
-	}
-	if (!late_profile_runtime_binding_complete(&draft.evidence.binding))
-		draft.evidence.blocker_mask |=
-			ARM64_LATE_CPU_BLOCK_RUNTIME_BINDING;
+	draft.evidence.system_cap = late_runtime_evidence.system_cap;
+	for (target = 0; target < ARM64_LATE_CPU_MAX_TARGETS; target++)
+		draft.evidence.target_policy[target] =
+			late_runtime_evidence.target_policy[target];
 	plan_ret = arm64_plan_late_cpu_capabilities(&draft, &late_profile);
 	effect_ret = plan_ret ? -EAGAIN :
 		arm64_plan_late_cpu_effects(&draft, &late_profile);
@@ -1664,13 +1030,6 @@ void __init arm64_finalize_late_cpu_profile_user(void)
 	cpumask_copy(&late_ready_token.target_cpus, &late_plan.target_cpus);
 	memcpy(late_ready_token.plan_identity, late_plan.identity,
 	       sizeof(late_ready_token.plan_identity));
-	memcpy(late_ready_token.source_parent_identity,
-	       late_plan.evidence.source_parent_identity,
-	       sizeof(late_ready_token.source_parent_identity));
-	memcpy(late_ready_token.config_input_identity,
-	       late_plan.evidence.config_input_identity,
-	       sizeof(late_ready_token.config_input_identity));
-	late_ready_token.binding = late_plan.evidence.binding;
 	memcpy(late_ready_token.evidence_identity,
 	       late_plan.evidence.evidence_identity,
 	       sizeof(late_ready_token.evidence_identity));

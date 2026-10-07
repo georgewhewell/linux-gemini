@@ -183,27 +183,14 @@ config ARCH_MEDIATEK
 	  & MT81xx ARMv8 SoCs
 
 config ARM64_MT6797_A72_CAPABILITY_PROFILE
-	bool "Fail-closed MT6797 late Cortex-A72 capability profile"
+	bool "MT6797 late Cortex-A72 capability support"
 	depends on ARCH_MEDIATEK && SMP && CMDLINE_FORCE
 	select ARM64_LATE_CPU_PROFILE
-	select ARM64_LATE_CPU_RUNTIME_IDENTITY
 	help
-	  Register the exact MT6797 Cortex-A53 plus late Cortex-A72 topology
-	  with the arm64 capability-finalization owner. The production profile
-	  remains blocked until its register, firmware, capability, HWCAP, and
-	  transaction-attestation evidence is complete. This option neither
-	  enables nor admits a CPU boot path; an independent early veto remains
-	  required.
-
-config ARM64_MT6797_A72_FIXTURE_EVIDENCE
-	bool "Exercise the MT6797 late Cortex-A72 evaluator with fixtures"
-	depends on ARM64_MT6797_A72_CAPABILITY_PROFILE
-	default n
-	help
-	  Supply immutable synthetic records to the late Cortex-A72 capability
-	  evaluator. The records are marked FIXTURE and retain the runtime and
-	  unavailable-commit blockers. This option is for source validation only;
-	  it neither describes hardware nor enables a CPU boot path.
+	  Include the MT6797 Cortex-A72 register set and errata when finalizing
+	  capabilities, mitigations and user HWCAPs on the Cortex-A53 boot CPUs.
+	  The A72 cluster starts later, once its power and clock providers are
+	  available. Its live registers are checked before a CPU comes online.
 
 config ARM64_MT6797_A72_P30_PROTOCOL_MODEL
 	bool "Build the dormant MT6797 A72 P30 protocol model"

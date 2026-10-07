@@ -472,10 +472,8 @@ mt6797_a72_ready_token_validate(unsigned int cpu,
 	if (!ready)
 		return -EAGAIN;
 	if (ready->abi != ARM64_LATE_CPU_PLAN_ABI ||
-	    strcmp(ready->profile_id, "mt6797-a53-a72-a41-v7") ||
+	    strcmp(ready->profile_id, "mt6797-a53-a72") ||
 	    !mt6797_a72_identity_nonzero(ready->plan_identity) ||
-	    !mt6797_a72_identity_nonzero(ready->source_parent_identity) ||
-	    !mt6797_a72_identity_nonzero(ready->config_input_identity) ||
 	    !mt6797_a72_identity_nonzero(ready->evidence_identity))
 		return -EPERM;
 

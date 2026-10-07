@@ -2515,23 +2515,12 @@ source "drivers/acpi/Kconfig"
 
 config ARM64_LATE_CPU_PROFILE
 	bool
+	select CRYPTO_LIB_SHA256
 	help
 	  Internal support for a platform to describe CPUs which are expected to
 	  remain offline until after arm64 capability finalization. The evidence
 	  lifecycle is fail closed; it is neither a CPU boot nor admission
 	  mechanism.
-
-config ARM64_LATE_CPU_RUNTIME_IDENTITY
-	bool
-	depends on ARM64_LATE_CPU_PROFILE && OF && CMDLINE_FORCE
-	select CRYPTO_LIB_SHA256
-	select IKCONFIG
-	help
-	  Build the architecture-owned, pre-finalization runtime identity
-	  producer for a late-CPU profile. The producer verifies an exact static
-	  /chosen provenance record against the embedded IKCONFIG payload, the
-	  running vmlinux GNU build ID, and the forced command line. It does not
-	  collect target-CPU evidence or make a late CPU admissible.
 
 config ARM64_LATE_CPU_STARTUP_FAILSTOP
 	bool

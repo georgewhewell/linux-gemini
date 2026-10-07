@@ -9,7 +9,7 @@
 
 #include <asm/cpucaps.h>
 
-#define ARM64_LATE_CPU_PLAN_ABI		7
+#define ARM64_LATE_CPU_PLAN_ABI		8
 #define ARM64_LATE_CPU_PROFILE_ID_LEN	32
 #define ARM64_LATE_CPU_ID_WORDS		4
 #define ARM64_LATE_CPU_MAX_TARGETS	2
@@ -58,7 +58,7 @@ enum arm64_late_cpu_cap_state {
 #define ARM64_LATE_CPU_BLOCK_FIRMWARE_WA3	BIT_ULL(15)
 #define ARM64_LATE_CPU_BLOCK_EFFECT_PLAN		BIT_ULL(16)
 #define ARM64_LATE_CPU_BLOCK_PLAN_VALIDATION	BIT_ULL(17)
-#define ARM64_LATE_CPU_BLOCK_RUNTIME_BINDING	BIT_ULL(18)
+#define ARM64_LATE_CPU_BLOCK_RUNTIME_POLICY	BIT_ULL(18)
 #define ARM64_LATE_CPU_BLOCK_COMMIT_PATH		BIT_ULL(19)
 
 enum arm64_late_cpu_mitigation_state {
@@ -401,37 +401,6 @@ struct arm64_late_cpu_system_cap_evidence {
 	u8 ich_hcr_tdir;
 };
 
-enum arm64_late_cpu_binding_origin {
-	ARM64_LATE_CPU_BINDING_NONE,
-	ARM64_LATE_CPU_BINDING_FIXTURE,
-	ARM64_LATE_CPU_BINDING_RUNTIME,
-};
-
-#define ARM64_LATE_CPU_BIND_EXPECTED_CONFIG_VALID	BIT(0)
-#define ARM64_LATE_CPU_BIND_RUNNING_CONFIG_VALID	BIT(1)
-#define ARM64_LATE_CPU_BIND_EXPECTED_BUILD_ID_VALID	BIT(2)
-#define ARM64_LATE_CPU_BIND_RUNNING_BUILD_ID_VALID	BIT(3)
-#define ARM64_LATE_CPU_BIND_EXPECTED_CMDLINE_VALID	BIT(4)
-#define ARM64_LATE_CPU_BIND_RUNNING_CMDLINE_VALID	BIT(5)
-#define ARM64_LATE_CPU_BIND_VALID_MASK				\
-	(ARM64_LATE_CPU_BIND_EXPECTED_CONFIG_VALID |		\
-	 ARM64_LATE_CPU_BIND_RUNNING_CONFIG_VALID |		\
-	 ARM64_LATE_CPU_BIND_EXPECTED_BUILD_ID_VALID |		\
-	 ARM64_LATE_CPU_BIND_RUNNING_BUILD_ID_VALID |		\
-	 ARM64_LATE_CPU_BIND_EXPECTED_CMDLINE_VALID |		\
-	 ARM64_LATE_CPU_BIND_RUNNING_CMDLINE_VALID)
-
-struct arm64_late_cpu_runtime_binding {
-	u32 valid;
-	u32 origin;
-	u64 expected_config_identity[ARM64_LATE_CPU_ID_WORDS];
-	u64 running_config_identity[ARM64_LATE_CPU_ID_WORDS];
-	u64 expected_build_id_identity[ARM64_LATE_CPU_ID_WORDS];
-	u64 running_build_id_identity[ARM64_LATE_CPU_ID_WORDS];
-	u64 expected_cmdline_identity[ARM64_LATE_CPU_ID_WORDS];
-	u64 running_cmdline_identity[ARM64_LATE_CPU_ID_WORDS];
-};
-
 /* Immutable policy inputs; method choices are derived, never supplied. */
 #define ARM64_LATE_CPU_TARGET_POLICY_CONDUIT_VALID	BIT(0)
 #define ARM64_LATE_CPU_TARGET_POLICY_V2_VALID		BIT(1)
@@ -449,17 +418,10 @@ struct arm64_late_cpu_target_policy_evidence {
 	u8 spectre_v4_policy;
 };
 
-/*
- * Core-sealed runtime observations or an explicit profile fixture. A partial
- * record is never published as a plan.
- */
+/* Board expectations combined with architecture-owned runtime observations. */
 struct arm64_late_cpu_evidence {
 	u32 abi;
-	/* Non-circular inputs; neither field proves the running image/config. */
-	u64 source_parent_identity[ARM64_LATE_CPU_ID_WORDS];
-	u64 config_input_identity[ARM64_LATE_CPU_ID_WORDS];
 	struct arm64_late_cpu_expected_pair expected_pair;
-	struct arm64_late_cpu_runtime_binding binding;
 	u64 evidence_identity[ARM64_LATE_CPU_ID_WORDS];
 	u32 target_cpu[ARM64_LATE_CPU_MAX_TARGETS];
 	u64 expected_target_mpidr[ARM64_LATE_CPU_MAX_TARGETS];
@@ -528,9 +490,6 @@ struct arm64_late_cpu_ready_token {
 	char profile_id[ARM64_LATE_CPU_PROFILE_ID_LEN];
 	cpumask_t target_cpus;
 	u64 plan_identity[ARM64_LATE_CPU_ID_WORDS];
-	u64 source_parent_identity[ARM64_LATE_CPU_ID_WORDS];
-	u64 config_input_identity[ARM64_LATE_CPU_ID_WORDS];
-	struct arm64_late_cpu_runtime_binding binding;
 	u64 evidence_identity[ARM64_LATE_CPU_ID_WORDS];
 	u32 target_cpu[ARM64_LATE_CPU_MAX_TARGETS];
 	u64 expected_target_mpidr[ARM64_LATE_CPU_MAX_TARGETS];
@@ -569,7 +528,6 @@ int arm64_late_cpu_validate_boot_caps(void);
 void __init arm64_activate_late_cpu_profile(const struct arm64_late_cpu_profile *profile);
 void __init arm64_register_late_cpu_target(const struct arm64_late_cpu_profile *profile,
 					   unsigned int cpu);
-void __init arm64_collect_late_cpu_runtime_identity(void);
 void __init arm64_collect_late_cpu_runtime_system_policy(void);
 int __init arm64_late_cpu_collect_system(struct arm64_late_cpu_system_cap_evidence *system);
 int __init
@@ -687,10 +645,6 @@ arm64_activate_late_cpu_profile(const struct arm64_late_cpu_profile *profile)
 static inline void __init
 arm64_register_late_cpu_target(const struct arm64_late_cpu_profile *profile,
 			       unsigned int cpu)
-{
-}
-
-static inline void __init arm64_collect_late_cpu_runtime_identity(void)
 {
 }
 

@@ -18,6 +18,13 @@ description: |
 
 allOf:
   - $ref: power-supply.yaml#
+  - if:
+      required: [mediatek,capacity-model]
+    then:
+      required:
+        - monitored-battery
+        - power-supplies
+        - mediatek,resistance-table-0
 
 properties:
   compatible:
@@ -26,6 +33,26 @@ properties:
   monitored-battery:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: Optional battery characteristics for the monitored pack.
+
+  mediatek,capacity-model:
+    $ref: /schemas/types.yaml#/definitions/int32-matrix
+    minItems: 1
+    maxItems: 4
+    items:
+      items:
+        - minimum: -50
+          maximum: 100
+        - minimum: 100000
+          maximum: 100000000
+    description: |
+      Optional software fuel-gauge model. Each pair gives temperature in
+      degrees Celsius and model full charge (Qmax) in microamp-hours. Pairs
+      must be in increasing temperature order. These are model estimates,
+      not measured aged capacity or the pack's design capacity. Each pair
+      requires a resistance table at the same index and a corresponding
+      OCV table in monitored-battery at exactly that temperature. With all
+      inputs present the driver estimates state of charge using compensated
+      voltage and coulomb-counter changes, without changing charger policy.
 
   power-supplies:
     maxItems: 1
@@ -85,6 +112,23 @@ properties:
     description: PMIC current/coulomb trim factor, with 1000 meaning unity.
     $ref: /schemas/types.yaml#/definitions/uint32
     minimum: 1
+
+patternProperties:
+  '^mediatek,resistance-table-[0-3]$':
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    minItems: 2
+    maxItems: 100
+    items:
+      items:
+        - minimum: 2000000
+          maximum: 5000000
+        - minimum: 1
+          maximum: 20000000
+    description: |
+      Pairs of zero-current battery voltage in microvolts and internal
+      resistance in microohms, ordered by strictly decreasing voltage.
+      The index selects the temperature in mediatek,capacity-model. The
+      resistance model must describe the battery measured by power-supplies.
 
 required:
   - compatible

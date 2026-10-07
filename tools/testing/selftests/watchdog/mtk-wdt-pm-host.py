@@ -53,7 +53,14 @@ struct device { void *priv; };
 #define NOTIFY_OK 1
 #define notifier_from_errno(err) ((err) ? 0x8000 | (NOTIFY_OK - (err)) : NOTIFY_OK)
 static u32 readl(void *p) { return *(u32 *)p; }
-static void iowrite32(u32 value, void *p) { *(u32 *)p = value; }
+static void *mode_addr;
+static unsigned int stop_writes;
+static void iowrite32(u32 value, void *p) {
+    /* WDT_MODE_EN is bit 0. Count even a transient disable followed by start. */
+    if (p == mode_addr && !(value & 1))
+        stop_writes++;
+    *(u32 *)p = value;
+}
 #define ioread32 readl
 #define pm_sleep_ptr(fn) (fn)
 struct dev_pm_ops {
@@ -74,6 +81,9 @@ functions = [
 code = prefix + '\n'.join(re.findall(r'^#define WDT_.*$', source, re.M)) + '\n'
 code += '\n'.join(re.findall(r'^#define PM_(?:POST|HIBERNATION|RESTORE|SUSPEND)_.*$', suspend, re.M)) + '\n'
 code += extract(r'struct mtk_wdt_dev \{.*?^};') + '\n'
+code += extract(r'^static bool suspend_keep_running;') + '\n'
+# The mode is fixed at boot/module load, never changed during a PM transition.
+assert 'module_param(suspend_keep_running, bool, 0400);' in source
 code += extract(r'^#define NOIRQ_SYSTEM_SLEEP_PM_OPS.*?\n\n', pm)
 for name in functions:
     code += extract(r'^static (?:int|bool) ' + name + r'\(.*?^}\n') + '\n'
@@ -92,6 +102,8 @@ static void setup(unsigned int status, bool enabled)
     w.wdt_dev.priv = &w;
     w.wdt_dev.timeout = 31;
     w.wdt_dev.status = status | 4; /* preserve a nowayout-like policy bit */
+    mode_addr = &regs[WDT_MODE / 4];
+    stop_writes = 0;
     regs[WDT_MODE / 4] = enabled ? WDT_MODE_EN : 0;
 }
 static void notify(unsigned long action)
@@ -115,7 +127,12 @@ static void test_suspend(unsigned int status, bool enabled)
     notify(PM_SUSPEND_PREPARE);
     assert(running() == enabled);
     assert(!mtk_wdt_pm_ops.suspend_noirq(&d));
-    assert(!running());
+    assert(running() == (enabled && suspend_keep_running));
+    if (suspend_keep_running) {
+        assert(stop_writes == 0);
+        if (enabled)
+            assert(regs[WDT_RST / 4] == WDT_RST_RELOAD);
+    }
     assert(!mtk_wdt_pm_ops.resume_noirq(&d));
     notify(PM_POST_SUSPEND);
     assert(running() == enabled);
@@ -203,16 +220,19 @@ static void test_duplicate_notifications(void)
 }
 int main(void)
 {
-    for (unsigned int status = 0; status < 4; status++) {
-        test_suspend(status, status != 0);
-        test_hibernation(status, status != 0);
-        test_restore_failure(status, status != 0);
+    for (unsigned int keep_running = 0; keep_running < 2; keep_running++) {
+        suspend_keep_running = keep_running;
+        for (unsigned int status = 0; status < 4; status++) {
+            test_suspend(status, status != 0);
+            test_hibernation(status, status != 0);
+            test_restore_failure(status, status != 0);
+        }
+        test_abort_before_device_freeze();
+        test_start_stop_while_paused();
+        test_restored_snapshot();
+        test_duplicate_notifications();
     }
-    test_abort_before_device_freeze();
-    test_start_stop_while_paused();
-    test_restored_snapshot();
-    test_duplicate_notifications();
-    puts("mtk-wdt-pm-host: PASS (16 PM sequences, real driver functions)");
+    puts("mtk-wdt-pm-host: PASS (32 PM sequences, real driver functions)");
     return 0;
 }
 '''

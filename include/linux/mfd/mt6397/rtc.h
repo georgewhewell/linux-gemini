@@ -65,6 +65,8 @@
 
 struct mtk_rtc_data {
 	u32                     wrtgr;
+	/* Hardware year zero, expressed as years since 1900. */
+	u16                     year_offset;
 };
 
 struct mt6397_rtc {

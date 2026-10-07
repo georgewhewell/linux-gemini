@@ -236,11 +236,28 @@ exit:
 	return ret;
 }
 
+static int mtk_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
+{
+	struct mt6397_rtc *rtc = dev_get_drvdata(dev);
+	int ret;
+
+	mutex_lock(&rtc->lock);
+	ret = regmap_update_bits(rtc->regmap, rtc->addr_base + RTC_IRQ_EN,
+				 RTC_IRQ_EN_ONESHOT_AL,
+				 enabled ? RTC_IRQ_EN_ONESHOT_AL : 0);
+	if (!ret)
+		ret = mtk_rtc_write_trigger(rtc);
+	mutex_unlock(&rtc->lock);
+
+	return ret;
+}
+
 static const struct rtc_class_ops mtk_rtc_ops = {
 	.read_time  = mtk_rtc_read_time,
 	.set_time   = mtk_rtc_set_time,
 	.read_alarm = mtk_rtc_read_alarm,
 	.set_alarm  = mtk_rtc_set_alarm,
+	.alarm_irq_enable = mtk_rtc_alarm_irq_enable,
 };
 
 static int mtk_rtc_probe(struct platform_device *pdev)

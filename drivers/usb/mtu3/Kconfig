@@ -36,6 +36,7 @@ config USB_MTU3_HOST
 config USB_MTU3_GADGET
 	bool "Gadget only mode"
 	depends on USB_GADGET=y || USB_GADGET=USB_MTU3
+	select USB_ROLE_SWITCH
 	help
 	  Select this when you want to use MTU3 in gadget mode only,
 	  thereby the host feature will be regressed.

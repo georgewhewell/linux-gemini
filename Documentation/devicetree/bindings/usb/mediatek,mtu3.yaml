@@ -137,7 +137,10 @@ properties:
 
   usb-role-switch:
     $ref: /schemas/types.yaml#/definitions/flag
-    description: Support role switch.
+    description:
+      Support role switch. In peripheral mode an external connector reports
+      a powered device attachment as device and detachment as none; host
+      requests are not supported.
     type: boolean
 
   role-switch-default-mode:

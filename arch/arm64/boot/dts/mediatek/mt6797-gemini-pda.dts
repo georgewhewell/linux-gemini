@@ -1410,6 +1410,18 @@
 			data-role = "device";
 			typec-power-opmode = "default";
 			pd-disable;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					left_usb_hs: endpoint {
+						remote-endpoint = <&ssusb_role>;
+					};
+				};
+			};
 		};
 	};
 
@@ -1796,9 +1808,16 @@
 	assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL3_D2>;
 	phys = <&u2port0 PHY_TYPE_USB2>, <&u3port0 PHY_TYPE_USB3>;
 	dr_mode = "peripheral";
+	usb-role-switch;
 	maximum-speed = "super-speed";
 	vusb33-supply = <&mt6351_vusb33_reg>;
 	status = "okay";
+
+	port {
+		ssusb_role: endpoint {
+			remote-endpoint = <&left_usb_hs>;
+		};
+	};
 };
 
 &thermal {

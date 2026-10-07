@@ -23,6 +23,10 @@ properties:
   compatible:
     const: mediatek,mt6351-fgadc
 
+  monitored-battery:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Optional battery characteristics for the monitored pack.
+
   power-supplies:
     maxItems: 1
     description: |

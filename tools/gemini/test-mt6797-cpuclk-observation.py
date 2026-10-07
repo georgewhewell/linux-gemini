@@ -21,6 +21,7 @@ def extract(signature):
 callbacks = '\n'.join(extract('static ' + signature) for signature in (
     'int mt6797_cpuclk_sample_decode(',
     'unsigned long mt6797_cpuclk_pll_recalc_rate(',
+    'unsigned long mt6797_cpuclk_branch_recalc_rate(',
     'u8 mt6797_cpuclk_path_get_parent(',
     'unsigned long mt6797_cpuclk_path_recalc_rate(',
 ))
@@ -92,7 +93,7 @@ int main(void)
  struct mt6797_cpuclk provider={0};
  struct mt6797_cpuclk_pll_hw pll={.provider=&provider,.domain=MT6797_CPUCLK_MP2};
  struct mt6797_cpuclk_path_hw path={.provider=&provider,.domain=MT6797_CPUCLK_MP2};
- for (int callback=0; callback<3; callback++) {
+ for (int callback=0; callback<4; callback++) {
   for (int failure=0; failure<3; failure++) {
    reset();
    if (failure==1) sample_error=-EIO;
@@ -100,7 +101,8 @@ int main(void)
    unsigned long result;
    if (callback==0) result=mt6797_cpuclk_pll_recalc_rate(&pll.hw,26000000);
    else if (callback==1) result=mt6797_cpuclk_path_get_parent(&path.hw);
-   else result=mt6797_cpuclk_path_recalc_rate(&path.hw,123);
+   else if (callback==2) result=mt6797_cpuclk_path_recalc_rate(&path.hw,123);
+   else result=mt6797_cpuclk_branch_recalc_rate(&pll.hw,26000000);
    assert(samples==1 && decodes==(failure!=1));
    if (failure) {
     assert(result==(callback==1 ? (u8)-EINVAL : 0)); assert(logs==1);

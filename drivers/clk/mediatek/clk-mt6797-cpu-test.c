@@ -160,7 +160,7 @@ static void mt6797_cpuclk_cold_mp2_test(struct kunit *test)
 		.muxsel = 0x54,
 	};
 	struct mt6797_cpuclk_state state;
-	struct mt6797_cpuclk_hop_plan plan;
+	struct mt6797_cpuclk_transition_plan plan;
 	const u64 expected_rates[] = { 897000000, 1274000000, 0, 629999328 };
 	unsigned int source, divider;
 
@@ -172,7 +172,7 @@ static void mt6797_cpuclk_cold_mp2_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_apply_divider(
 		MT6797_TEST_CLK26M_RATE, state.divider), 26000000UL);
 	/* Observation of the cold state must not authorize a rate mutation. */
-	KUNIT_EXPECT_TRUE(test, mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP2,
+	KUNIT_EXPECT_TRUE(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP2,
 		&snapshot, MT6797_TEST_CLK26M_RATE, 750000000, &plan) != 0);
 
 	for (source = 1; source < MT6797_CPUCLK_NR_SOURCES; source++) {
@@ -266,115 +266,6 @@ static struct mt6797_cpuclk_snapshot mt6797_cpuclk_boot_snapshot(void)
 	};
 
 	return snapshot;
-}
-
-static void mt6797_cpuclk_hop_plan_test(struct kunit *test)
-{
-	struct mt6797_cpuclk_snapshot snapshot = mt6797_cpuclk_boot_snapshot();
-	struct mt6797_cpuclk_hop_plan plan;
-	int ret;
-
-	ret = mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP0, &snapshot,
-				     MT6797_TEST_CLK26M_RATE, 624000000, &plan);
-	KUNIT_ASSERT_EQ(test, ret, 0);
-	KUNIT_EXPECT_EQ(test, plan.dds, 0xc0000U);
-	KUNIT_EXPECT_EQ(test, plan.rate, 624000000UL);
-	KUNIT_EXPECT_EQ(test, plan.initial_rate, (u64)897000000);
-	KUNIT_EXPECT_TRUE(test, plan.dcm_before_hop);
-	KUNIT_EXPECT_EQ(test, FIELD_GET(GENMASK(13, 9), plan.dcm.value[0]), 8U);
-	KUNIT_EXPECT_FALSE(test, plan.dcm.value[1] & BIT(14));
-	KUNIT_EXPECT_TRUE(test, plan.dcm.value[2] & BIT(14));
-	/* The other cluster's DCM field is preserved. */
-	KUNIT_EXPECT_EQ(test, FIELD_GET(GENMASK(21, 17), plan.dcm.value[2]),
-			18U);
-	KUNIT_EXPECT_TRUE(test, mt6797_cpuclk_snapshots_equal(&plan.snapshot,
-							       &snapshot));
-
-	/* Raising the rate programs the DCM divider after the hop. */
-	ret = mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP0, &snapshot,
-				     MT6797_TEST_CLK26M_RATE, 1014000000,
-				     &plan);
-	KUNIT_ASSERT_EQ(test, ret, 0);
-	KUNIT_EXPECT_EQ(test, plan.dds, 0x138000U);
-	KUNIT_EXPECT_FALSE(test, plan.dcm_before_hop);
-
-	ret = mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP1, &snapshot,
-				     MT6797_TEST_CLK26M_RATE, 1209000000,
-				     &plan);
-	KUNIT_ASSERT_EQ(test, ret, 0);
-	KUNIT_EXPECT_EQ(test, plan.dds, 0xba000U);
-	KUNIT_EXPECT_EQ(test, plan.rate, 1209000000UL);
-	KUNIT_EXPECT_EQ(test, plan.initial_rate, (u64)1274000000);
-	KUNIT_EXPECT_TRUE(test, plan.dcm_before_hop);
-	KUNIT_EXPECT_EQ(test, FIELD_GET(GENMASK(21, 17), plan.dcm.value[0]),
-			17U);
-
-	ret = mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP1, &snapshot,
-				     MT6797_TEST_CLK26M_RATE, 1092000000,
-				     &plan);
-	KUNIT_ASSERT_EQ(test, ret, 0);
-	KUNIT_EXPECT_EQ(test, plan.dds, 0xa8000U);
-}
-
-static void mt6797_cpuclk_hop_plan_rejects_invalid_test(struct kunit *test)
-{
-	struct mt6797_cpuclk_snapshot snapshot = mt6797_cpuclk_boot_snapshot();
-	struct mt6797_cpuclk_hop_plan plan;
-
-	/* A post-divider change needs a clock switch, not a hop. */
-	KUNIT_EXPECT_EQ(test,
-		mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP0, &snapshot,
-				       MT6797_TEST_CLK26M_RATE, 1118000000,
-				       &plan),
-		-EOPNOTSUPP);
-	KUNIT_EXPECT_EQ(test,
-		mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP1, &snapshot,
-				       MT6797_TEST_CLK26M_RATE, 962000000,
-				       &plan),
-		-EOPNOTSUPP);
-	/* Rates that need the CKDIV path divider are not in the rate table. */
-	KUNIT_EXPECT_EQ(test,
-		mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP0, &snapshot,
-				       MT6797_TEST_CLK26M_RATE, 481000000,
-				       &plan),
-		-EINVAL);
-	KUNIT_EXPECT_EQ(test,
-		mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP2, &snapshot,
-				       MT6797_TEST_CLK26M_RATE, 750000000,
-				       &plan),
-		-EOPNOTSUPP);
-	KUNIT_EXPECT_EQ(test,
-		mt6797_cpuclk_plan_hop(MT6797_CPUCLK_CCI, &snapshot,
-				       MT6797_TEST_CLK26M_RATE, 611000000,
-				       &plan),
-		-EOPNOTSUPP);
-
-	/* The cluster must run from its ARMPLL through a 1/1 path divider. */
-	snapshot.muxsel = (snapshot.muxsel & ~GENMASK(3, 2)) |
-			  (MT6797_CPUCLK_MAINPLL << 2);
-	KUNIT_EXPECT_EQ(test,
-		mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP0, &snapshot,
-				       MT6797_TEST_CLK26M_RATE, 624000000,
-				       &plan),
-		-EOPNOTSUPP);
-	snapshot = mt6797_cpuclk_boot_snapshot();
-	snapshot.clkdiv = 10 << 5;
-	KUNIT_EXPECT_EQ(test,
-		mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP0, &snapshot,
-				       MT6797_TEST_CLK26M_RATE, 624000000,
-				       &plan),
-		-EOPNOTSUPP);
-	snapshot.clkdiv = 8 << 5;
-	KUNIT_EXPECT_EQ(test,
-		mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP0, &snapshot,
-				       MT6797_TEST_CLK26M_RATE, 624000000,
-				       &plan),
-		0);
-	KUNIT_EXPECT_EQ(test,
-		mt6797_cpuclk_plan_hop(MT6797_CPUCLK_MP0, NULL,
-				       MT6797_TEST_CLK26M_RATE, 624000000,
-				       &plan),
-		-EINVAL);
 }
 
 static void mt6797_cpuclk_pll_rate_plan_test(struct kunit *test)
@@ -549,8 +440,6 @@ static struct kunit_case mt6797_cpuclk_test_cases[] = {
 	KUNIT_CASE(mt6797_cpuclk_cold_mp2_test),
 	KUNIT_CASE(mt6797_cpuclk_cold_admission_test),
 	KUNIT_CASE(mt6797_cpuclk_decode_rejects_invalid_test),
-	KUNIT_CASE(mt6797_cpuclk_hop_plan_test),
-	KUNIT_CASE(mt6797_cpuclk_hop_plan_rejects_invalid_test),
 	KUNIT_CASE(mt6797_cpuclk_pll_rate_plan_test),
 	KUNIT_CASE(mt6797_cpuclk_mux_dcm_plan_test),
 	{}

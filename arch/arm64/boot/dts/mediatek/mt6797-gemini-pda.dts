@@ -138,9 +138,9 @@
 	 *
 	 * vproc-little also supplies the CCI, which Linux does not scale, so the
 	 * rail is held at its boot voltage and only rates at or below it are
-	 * usable.  The clock provider only retunes an ARMPLL within its post
-	 * divider and does not program the CKDIV path divider; rates needing
-	 * either change stay disabled as well.
+	 * usable. The clock provider coordinates ARMPLL and CKDIV changes
+	 * within the current PLL postdivider. Rates requiring a postdivider
+	 * change remain disabled.
 	 */
 	cluster0_opp: opp-table-cluster0 {
 		compatible = "operating-points-v2";
@@ -150,19 +150,16 @@
 		opp-221000000 {
 			opp-hz = /bits/ 64 <221000000>;
 			opp-microvolt = <770000 770000 1200000>;
-			status = "disabled";
 		};
 
 		opp-338000000 {
 			opp-hz = /bits/ 64 <338000000>;
 			opp-microvolt = <800000 800000 1200000>;
-			status = "disabled";
 		};
 
 		opp-481000000 {
 			opp-hz = /bits/ 64 <481000000>;
 			opp-microvolt = <850000 850000 1200000>;
-			status = "disabled";
 		};
 
 		opp-624000000 {

@@ -2455,6 +2455,13 @@ config CMDLINE_FROM_BOOTLOADER
 	  the boot loader doesn't provide any, the default kernel command
 	  string provided in CMDLINE will be used.
 
+config CMDLINE_EXTEND
+	bool "Extend bootloader kernel arguments with the default command string"
+	help
+	  Append the command-line options in CMDLINE to the arguments passed
+	  by the boot loader. This allows firmware with a short command-line
+	  buffer to supply per-boot options while retaining built-in defaults.
+
 config CMDLINE_FORCE
 	bool "Always use the default kernel command string"
 	help

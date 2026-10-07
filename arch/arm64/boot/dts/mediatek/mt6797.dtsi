@@ -850,6 +850,15 @@
 		status = "disabled";
 	};
 
+	cpu_sram: regulator-cpu-sram {
+		compatible = "mediatek,mt6797-cpu-sram-regulator";
+		mediatek,infracfg = <&infrasys>;
+		clocks = <&infrasys CLK_INFRA_I2C_APPM>;
+		clock-names = "i2c";
+		access-controllers = <&dvfsp_handoff>;
+		status = "disabled";
+	};
+
 	cpuclk: clock-controller@1001a000 {
 		compatible = "mediatek,mt6797-mcumixedsys";
 		reg = <0 0x1001a000 0 0x1000>,

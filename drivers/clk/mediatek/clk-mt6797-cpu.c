@@ -39,14 +39,6 @@ struct mt6797_cpuclk;
 #define MT6797_CPUCLK_SYNC_DCM 0x744
 #define MT6797_CPUCLK_SYNC_DCM_PHYS 0x10220744
 
-#define MT6797_CPUCLK_CSPM_POWERON 0x000
-#define MT6797_CPUCLK_CSPM_SEMAPHORE 0x440
-#define MT6797_CPUCLK_CSPM_POWERON_VALUE 0x0b160001
-#define MT6797_CPUCLK_CSPM_SEMAPHORE_REQUEST 1
-#define MT6797_CPUCLK_CSPM_SEMAPHORE_HELD BIT(0)
-#define MT6797_CPUCLK_CSPM_POLL_US 10
-#define MT6797_CPUCLK_CSPM_RETRIES 200
-
 #define MT6797_CPUCLK_SMC_MCUSYS_WRITE 0x82000201UL
 
 #define MT6797_ARMPLL_CHG BIT(31)
@@ -146,47 +138,22 @@ static int
 mt6797_cpuclk_lease_acquire(struct mt6797_cpuclk_observer *observer,
 			    void __iomem *cspm)
 {
-	unsigned int i;
 	int ret;
 
 	ret = clk_prepare_enable(observer->i2c_clk);
 	if (ret)
 		return ret;
-
-	writel(MT6797_CPUCLK_CSPM_POWERON_VALUE,
-	       cspm + MT6797_CPUCLK_CSPM_POWERON);
-	readl(cspm + MT6797_CPUCLK_CSPM_POWERON);
-
-	for (i = 0; i < MT6797_CPUCLK_CSPM_RETRIES; i++) {
-		writel(MT6797_CPUCLK_CSPM_SEMAPHORE_REQUEST,
-		       cspm + MT6797_CPUCLK_CSPM_SEMAPHORE);
-		if (readl(cspm + MT6797_CPUCLK_CSPM_SEMAPHORE) &
-		    MT6797_CPUCLK_CSPM_SEMAPHORE_HELD)
-			return 0;
-		udelay(MT6797_CPUCLK_CSPM_POLL_US);
-	}
-
-	clk_disable_unprepare(observer->i2c_clk);
-	return -ETIMEDOUT;
+	ret = mt6797_dvfsp_cspm_acquire(cspm);
+	if (ret)
+		clk_disable_unprepare(observer->i2c_clk);
+	return ret;
 }
 
 static int
 mt6797_cpuclk_lease_release(struct mt6797_cpuclk_observer *observer,
 			    void __iomem *cspm)
 {
-	unsigned int i;
-	int ret = -ETIMEDOUT;
-
-	writel(MT6797_CPUCLK_CSPM_SEMAPHORE_REQUEST,
-	       cspm + MT6797_CPUCLK_CSPM_SEMAPHORE);
-	for (i = 0; i < MT6797_CPUCLK_CSPM_RETRIES; i++) {
-		if (!(readl(cspm + MT6797_CPUCLK_CSPM_SEMAPHORE) &
-		      MT6797_CPUCLK_CSPM_SEMAPHORE_HELD)) {
-			ret = 0;
-			break;
-		}
-		udelay(MT6797_CPUCLK_CSPM_POLL_US);
-	}
+	int ret = mt6797_dvfsp_cspm_release(cspm);
 
 	clk_disable_unprepare(observer->i2c_clk);
 	return ret;

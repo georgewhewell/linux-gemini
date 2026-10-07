@@ -441,6 +441,13 @@ int mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff);
 int mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
 				  mt6797_dvfsp_cspm_transaction_fn operation,
 				  void *context);
+/*
+ * Only inside a CSPM transaction, with the I2C interface clock enabled.
+ * Every successful acquire needs release. A release failure must become
+ * -EUCLEAN at the transaction boundary.
+ */
+int mt6797_dvfsp_cspm_acquire(void __iomem *cspm);
+int mt6797_dvfsp_cspm_release(void __iomem *cspm);
 int mt6797_dvfsp_handoff_begin_i2c6_transfer(
 	struct mt6797_dvfsp_handoff *handoff,
 	struct mt6797_dvfsp_i2c6_lease *lease);
@@ -535,6 +542,18 @@ static inline int
 mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
 			      mt6797_dvfsp_cspm_transaction_fn operation,
 			      void *context)
+{
+	return -ENODEV;
+}
+
+static inline int
+mt6797_dvfsp_cspm_acquire(void __iomem *cspm)
+{
+	return -ENODEV;
+}
+
+static inline int
+mt6797_dvfsp_cspm_release(void __iomem *cspm)
 {
 	return -ENODEV;
 }

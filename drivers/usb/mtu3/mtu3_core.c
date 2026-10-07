@@ -348,6 +348,9 @@ void mtu3_ep_stall_set(struct mtu3_ep *mep, bool set)
 
 void mtu3_dev_on_off(struct mtu3 *mtu, int is_on)
 {
+	if (mtu->vbus_role_sw && !mtu->vbus_active)
+		is_on = 0;
+
 	if (mtu->u3_capable && mtu->speed >= USB_SPEED_SUPER) {
 		mtu3_ss_func_set(mtu, is_on);
 		/* Older IP cannot automatically disconnect the fallback link. */
@@ -670,8 +673,10 @@ static void mtu3_regs_init(struct mtu3 *mtu)
 
 	/* U2/U3 detected by HW */
 	mtu3_writel(mbase, U3D_DEVICE_CONF, 0);
-	/* vbus detected by HW */
+	/* External connectors report VBUS through the role switch, if present. */
 	mtu3_clrbits(mbase, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
+	if (mtu->vbus_role_sw)
+		mtu3_setbits(mbase, U3D_MISC_CTRL, VBUS_FRC_EN);
 	/* use new QMU format when HW version >= 0x1003 */
 	if (mtu->gen2cp)
 		mtu3_writel(mbase, U3D_QFCR, ~0x0);
@@ -757,7 +762,8 @@ static irqreturn_t mtu3_u3_ltssm_isr(struct mtu3 *mtu)
 	trace_mtu3_u3_ltssm_isr(ltssm, raw, enabled);
 
 	if (mtu->manual_u2_fallback && (ltssm & SS_DISABLE_INTR) &&
-	    !(ltssm & VBUS_FALL_INTR) && mtu->is_active && mtu->softconnect) {
+	    !(ltssm & VBUS_FALL_INTR) && mtu->is_active && mtu->softconnect &&
+	    (!mtu->vbus_role_sw || mtu->vbus_active)) {
 		mtu3_clrbits(mtu->ippc_base, SSUSB_U2_CTRL(0), SSUSB_U2_PORT_PDN);
 		mtu3_hs_softconn_set(mtu, true);
 	}
@@ -939,6 +945,55 @@ static int mtu3_set_dma_mask(struct mtu3 *mtu)
 	return ret;
 }
 
+static int mtu3_peripheral_role_set(struct usb_role_switch *sw, enum usb_role role)
+{
+	struct mtu3 *mtu = usb_role_switch_get_drvdata(sw);
+	bool active = role == USB_ROLE_DEVICE;
+	unsigned long flags;
+	int ret;
+
+	if (role != USB_ROLE_NONE && role != USB_ROLE_DEVICE)
+		return -EINVAL;
+
+	ret = pm_runtime_resume_and_get(mtu->dev);
+	if (ret < 0)
+		return ret;
+
+	spin_lock_irqsave(&mtu->lock, flags);
+	if (mtu->vbus_active != active) {
+		mtu->vbus_active = active;
+		if (active)
+			mtu3_setbits(mtu->mac_base, U3D_MISC_CTRL, VBUS_ON);
+		else
+			mtu3_clrbits(mtu->mac_base, U3D_MISC_CTRL, VBUS_ON);
+
+		/* Also disconnect immediately while the UDC work is pending. */
+		if (mtu->is_active && mtu->softconnect)
+			mtu3_dev_on_off(mtu, active);
+		usb_udc_vbus_handler(&mtu->g, active);
+	}
+	spin_unlock_irqrestore(&mtu->lock, flags);
+	pm_runtime_put(mtu->dev);
+
+	return 0;
+}
+
+static int mtu3_peripheral_role_register(struct mtu3 *mtu)
+{
+	struct usb_role_switch_desc desc = {
+		.fwnode = dev_fwnode(mtu->dev),
+		.set = mtu3_peripheral_role_set,
+		.driver_data = mtu,
+	};
+
+	if (!mtu->vbus_role_sw)
+		return 0;
+
+	usb_udc_vbus_handler(&mtu->g, false);
+	mtu->role_sw = usb_role_switch_register(mtu->dev, &desc);
+	return PTR_ERR_OR_ZERO(mtu->role_sw);
+}
+
 int ssusb_gadget_init(struct ssusb_mtk *ssusb)
 {
 	struct device *dev = ssusb->dev;
@@ -977,6 +1032,8 @@ int ssusb_gadget_init(struct ssusb_mtk *ssusb)
 	mtu->max_speed = usb_get_maximum_speed(dev);
 	mtu->manual_u2_fallback =
 		of_device_is_compatible(dev->of_node, "mediatek,mt6797-mtu3");
+	mtu->vbus_role_sw = ssusb->dr_mode == USB_DR_MODE_PERIPHERAL &&
+		device_property_read_bool(dev, "usb-role-switch");
 
 	dev_dbg(dev, "mac_base=0x%p, ippc_base=0x%p\n",
 		mtu->mac_base, mtu->ippc_base);
@@ -1009,12 +1066,18 @@ int ssusb_gadget_init(struct ssusb_mtk *ssusb)
 		goto gadget_err;
 	}
 
+	ret = mtu3_peripheral_role_register(mtu);
+	if (ret)
+		goto role_err;
+
 	ssusb_dev_debugfs_init(ssusb);
 
 	dev_dbg(dev, " %s() done...\n", __func__);
 
 	return 0;
 
+role_err:
+	mtu3_gadget_cleanup(mtu);
 gadget_err:
 	device_init_wakeup(dev, false);
 
@@ -1031,7 +1094,10 @@ void ssusb_gadget_exit(struct ssusb_mtk *ssusb)
 {
 	struct mtu3 *mtu = ssusb->u3d;
 
+	usb_role_switch_unregister(mtu->role_sw);
 	mtu3_gadget_cleanup(mtu);
+	if (mtu->vbus_role_sw)
+		mtu3_clrbits(mtu->mac_base, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
 	device_init_wakeup(ssusb->dev, false);
 	mtu3_hw_exit(mtu);
 }

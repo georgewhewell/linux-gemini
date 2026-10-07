@@ -328,6 +328,8 @@ static inline struct ssusb_mtk *dev_to_ssusb(struct device *dev)
  * @setup_buf: ep0 response buffer for GET_STATUS and SET_SEL requests
  * @u3_capable: is capable of supporting USB3
  * @manual_u2_fallback: needs software USB2 connection after SS.Disable
+ * @vbus_role_sw: peripheral VBUS is reported by an external role switch user
+ * @vbus_active: external connector reports a powered device attachment
  */
 struct mtu3 {
 	spinlock_t lock;
@@ -352,6 +354,7 @@ struct mtu3 {
 	enum mtu3_g_ep0_state ep0_state;
 	struct usb_gadget g;	/* the gadget */
 	struct usb_gadget_driver *gadget_driver;
+	struct usb_role_switch *role_sw;
 	struct mtu3_request ep0_req;
 	u8 setup_buf[EP0_RESPONSE_BUF];
 	enum usb_device_speed max_speed;
@@ -366,6 +369,8 @@ struct mtu3 {
 	unsigned u2_enable:1;
 	unsigned u3_capable:1;
 	unsigned manual_u2_fallback:1;
+	unsigned vbus_role_sw:1;
+	unsigned vbus_active:1;
 	unsigned delayed_status:1;
 	unsigned gen2cp:1;
 	unsigned connected:1;

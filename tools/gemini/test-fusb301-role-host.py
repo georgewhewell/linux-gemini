@@ -199,12 +199,25 @@ int main(void)
     }
 
     /* An upstream host supplies power; we must not drive VBUS ourselves. */
-    map.status = 1 | 0x10 | 0x6;
+    map.status = 1 | 0x10 | 0x6 | FUSB301_STATUS_VBUSOK;
     map.type = 0x8;
     assert(!fusb301_update_status(&fusb));
     assert(sw.role == USB_ROLE_DEVICE && !vbus.on && partners == 1);
     assert(port.data == TYPEC_DEVICE && port.power == TYPEC_SINK);
     assert(port.opmode == TYPEC_PWR_MODE_3_0A);
+
+    /* CC attachment alone must not assert a peripheral's VBUS session. */
+    map.status &= ~FUSB301_STATUS_VBUSOK;
+    assert(!fusb301_update_status(&fusb));
+    assert(sw.role == USB_ROLE_NONE && !vbus.on && partners == 1);
+    map.status |= FUSB301_STATUS_VBUSOK;
+    assert(!fusb301_update_status(&fusb) && sw.role == USB_ROLE_DEVICE);
+
+    map.type = 0;
+    assert(fusb301_update_status(&fusb) == -EIO);
+    assert(sw.role == USB_ROLE_NONE && !partners && !vbus.on);
+    map.type = FUSB301_TYPE_SOURCE;
+    assert(!fusb301_update_status(&fusb) && sw.role == USB_ROLE_DEVICE);
 
     map.type = 0x1; /* Audio accessory must not start USB data. */
     assert(!fusb301_update_status(&fusb));
@@ -263,15 +276,15 @@ int main(void)
     assert(map.mode == FUSB301_MODE_SINK);
     assert(!fusb301_set_port_type(&port, TYPEC_PORT_SNK));
     map.type = FUSB301_TYPE_SOURCE;
-    map.status = FUSB301_STATUS_ATTACH | FUSB301_ORIENT_CC1;
+    map.status = FUSB301_STATUS_ATTACH | FUSB301_ORIENT_CC1 | FUSB301_STATUS_VBUSOK;
     fusb301_poll(&fusb.poll_work.work);
     assert(poll_pending && sw.role == USB_ROLE_DEVICE && partners == 1 && !vbus.on);
     poll_pending = false;
     map.error = -EIO;
     fusb301_poll(&fusb.poll_work.work);
-    assert(poll_pending && !vbus.on);
+    assert(poll_pending && !vbus.on && !partners && sw.role == USB_ROLE_NONE);
     map.error = 0;
-    map.status = FUSB301_STATUS_ATTACH | FUSB301_ORIENT_CC2;
+    map.status = FUSB301_STATUS_ATTACH | FUSB301_ORIENT_CC2 | FUSB301_STATUS_VBUSOK;
     fusb301_poll(&fusb.poll_work.work);
     assert(port.orientation == TYPEC_ORIENTATION_REVERSE && partners == 1);
     map.status = 0;

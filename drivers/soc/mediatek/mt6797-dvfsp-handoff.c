@@ -23,6 +23,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
+#include <linux/soc/mediatek/mt6797-cpu-rails.h>
 #include <linux/soc/mediatek/mt6797-dvfsp-handoff.h>
 #include <linux/lockdep.h>
 #include <linux/string.h>
@@ -1690,11 +1691,8 @@ mt6797_dvfsp_calibration_state_check(
 
 			if (!entry->frequency_khz ||
 			    entry->frequency_khz <= previous_frequency ||
-			    !entry->vproc_uv || !entry->vsram_uv ||
-			    !entry->ppm_limit_khz || entry->vsram_uv < entry->vproc_uv ||
-			    entry->vsram_uv - entry->vproc_uv < 10000 ||
-			    entry->vsram_uv - entry->vproc_uv > 30000 ||
-			    entry->vsram_uv < 1000000 || entry->vsram_uv > 1200000)
+			    !entry->ppm_limit_khz ||
+			    !mt6797_cpu_rails_valid(entry->vproc_uv, entry->vsram_uv))
 				return -EPROTO;
 			previous_frequency = entry->frequency_khz;
 		}

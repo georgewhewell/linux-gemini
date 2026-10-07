@@ -438,6 +438,8 @@ struct mt6797_dvfsp_i2c6_fw_ops {
 #if IS_REACHABLE(CONFIG_MTK_MT6797_DVFSP_HANDOFF)
 struct mt6797_dvfsp_handoff *mt6797_dvfsp_handoff_get(struct device *consumer);
 int mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff);
+/* Call outside a CSPM transaction after an uncertain external rail update. */
+void mt6797_dvfsp_handoff_rail_fault(struct mt6797_dvfsp_handoff *handoff);
 int mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
 				  mt6797_dvfsp_cspm_transaction_fn operation,
 				  void *context);
@@ -536,6 +538,11 @@ static inline int
 mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff)
 {
 	return -ENODEV;
+}
+
+static inline void
+mt6797_dvfsp_handoff_rail_fault(struct mt6797_dvfsp_handoff *handoff)
+{
 }
 
 static inline int

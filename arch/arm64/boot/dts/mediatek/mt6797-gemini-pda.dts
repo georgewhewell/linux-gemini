@@ -1327,6 +1327,8 @@
 				regulator-name = "vproc-little";
 				regulator-min-microvolt = <1000000>;
 				regulator-max-microvolt = <1000000>;
+				regulator-coupled-with = <&cpu_sram>;
+				regulator-coupled-max-spread = <300000>;
 				regulator-always-on;
 				status = "okay";
 			};
@@ -2458,6 +2460,8 @@
 	regulator-name = "vsram-a53-cci";
 	regulator-min-microvolt = <1000000>;
 	regulator-max-microvolt = <1200000>;
+	regulator-coupled-with = <&da9214_bucka>;
+	regulator-coupled-max-spread = <300000>;
 	regulator-always-on;
 	status = "okay";
 };

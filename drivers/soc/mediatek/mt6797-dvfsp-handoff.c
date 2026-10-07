@@ -1411,6 +1411,17 @@ int mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_cspm_transaction);
 
+void mt6797_dvfsp_handoff_rail_fault(struct mt6797_dvfsp_handoff *handoff)
+{
+	/* Also fence a temporarily blocked owner; resume must not reopen it. */
+	mt6797_dvfsp_cspm_access_lock(&handoff->cspm_access);
+	mutex_lock(&handoff->lock);
+	mt6797_dvfsp_fault_locked(handoff, "cpu-rail-transition-failed");
+	mutex_unlock(&handoff->lock);
+	mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
+}
+EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_rail_fault);
+
 int mt6797_dvfsp_cspm_acquire(void __iomem *cspm)
 {
 	unsigned int i;

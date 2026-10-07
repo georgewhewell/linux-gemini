@@ -81,6 +81,7 @@ obj-$(CONFIG_MTK_MT6797_SPM) += mt6797-spm.o
 mt6797-spm-y := mt6797-spm-drv.o mt6797-spm-fw.o
 obj-$(CONFIG_MTK_PMIC_WRAP) += mtk-pmic-wrap.o
 obj-$(CONFIG_MTK_REGULATOR_COUPLER) += mtk-regulator-coupler.o
+obj-$(CONFIG_MTK_MT6797_CPU_REGULATOR_COUPLER) += mt6797-cpu-regulator-coupler.o
 obj-$(CONFIG_MTK_MMSYS) += mtk-mmsys.o
 obj-$(CONFIG_MTK_MMSYS) += mtk-mutex.o
 obj-$(CONFIG_MTK_SVS) += mtk-svs.o

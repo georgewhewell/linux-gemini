@@ -7,6 +7,7 @@
  * selecting the identification bank therefore does not modify device state.
  */
 
+#include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/mediatek-wdt.h>
 #include <linux/module.h>
@@ -134,9 +135,26 @@ static int da9213_legacy_io_write(void *context, u8 reg, u8 value)
 	return da9213_legacy_raw_write(chip->client, reg, value);
 }
 
+static void da9213_legacy_io_settle(void *context, u8 reg, u8 before, u8 after)
+{
+	struct da9213_legacy *chip = context;
+	unsigned int steps;
+
+	/* Vendor MT6797 DA9214 policy: 10 mV/us, at least 25 us. */
+	if (chip->variant != &da9213_legacy_da9214 ||
+	    (reg != da9213_legacy_vsel_reg[DA9213_LEGACY_BUCKA] &&
+	     reg != da9213_legacy_vsel_reg[DA9213_LEGACY_BUCKB]))
+		return;
+	steps = abs((int)(after & DA9213_LEGACY_VSEL_MASK) -
+		    (int)(before & DA9213_LEGACY_VSEL_MASK));
+	if (steps)
+		udelay(max(steps, 25U));
+}
+
 static const struct da9213_legacy_transaction_io da9213_legacy_io = {
 	.read = da9213_legacy_io_read,
 	.write = da9213_legacy_io_write,
+	.settle = da9213_legacy_io_settle,
 };
 
 int da9213_legacy_update_bits_transaction(const struct da9213_legacy_transaction_io *io,
@@ -161,6 +179,8 @@ int da9213_legacy_update_bits_transaction(const struct da9213_legacy_transaction
 		return 0;
 
 	ret = io->write(context, reg, expected);
+	if (io->settle)
+		io->settle(context, reg, before, expected);
 	if (ret) {
 		primary_ret = ret;
 		goto rollback;
@@ -174,6 +194,8 @@ int da9213_legacy_update_bits_transaction(const struct da9213_legacy_transaction
 
 rollback:
 	ret = io->write(context, reg, before);
+	if (io->settle)
+		io->settle(context, reg, expected, before);
 	if (ret)
 		return -EUCLEAN;
 

@@ -37,8 +37,9 @@ enum power_supply_property {
  POWER_SUPPLY_PROP_CHARGE_COUNTER, POWER_SUPPLY_PROP_VOLTAGE_NOW,
  POWER_SUPPLY_PROP_TEMP, POWER_SUPPLY_PROP_CAPACITY,
 };
-enum {POWER_SUPPLY_STATUS_CHARGING,POWER_SUPPLY_STATUS_DISCHARGING,
- POWER_SUPPLY_STATUS_NOT_CHARGING};
+enum {POWER_SUPPLY_STATUS_UNKNOWN, POWER_SUPPLY_STATUS_CHARGING,
+ POWER_SUPPLY_STATUS_DISCHARGING, POWER_SUPPLY_STATUS_NOT_CHARGING,
+ POWER_SUPPLY_STATUS_FULL};
 union power_supply_propval { int intval; const char *strval; };
 struct device { void *of_node; };
 struct power_supply { void *data; };
@@ -116,7 +117,21 @@ int main(void)
   }
   supplier_error=0;
  }
+ /* All charger states survive gauge sign changes and failed gauge latches. */
+ for (native_current=-2360;native_current<=2360;native_current+=2360)
+ for (supplied_value=POWER_SUPPLY_STATUS_UNKNOWN;
+      supplied_value<=POWER_SUPPLY_STATUS_FULL;supplied_value++) {
+  assert(!mt6351_fgadc_get_property(&battery,POWER_SUPPLY_PROP_STATUS,&value));
+  assert(value.intval==supplied_value && requested==POWER_SUPPLY_PROP_STATUS && !captures);
+ }
+ supplier_error=-EIO;
+ assert(mt6351_fgadc_get_property(&battery,POWER_SUPPLY_PROP_STATUS,&value)==-EIO);
+ supplier_error=-ENODEV;
+ assert(mt6351_fgadc_get_property(&battery,POWER_SUPPLY_PROP_STATUS,&value)==-ENODEV);
+ assert(!captures);
+ supplier_error=0;
  int old_reads=reads;
+ fg.charger=NULL;
  for (int p=POWER_SUPPLY_PROP_STATUS;p<=POWER_SUPPLY_PROP_CHARGE_COUNTER;p++) {
   assert(mt6351_fgadc_get_property(&battery,p,&value)==-ENODATA);
   capture_error=-EIO;
@@ -126,10 +141,12 @@ int main(void)
  capture_error=0;
  for (native_current=-2360;native_current<=2360;native_current+=2360) {
   native_counter=native_current*3;
+  fg.charger=&supplier;
   assert(!mt6351_fgadc_get_property(&battery,POWER_SUPPLY_PROP_CURRENT_NOW,&value));
   assert(value.intval==native_current);
   assert(!mt6351_fgadc_get_property(&battery,POWER_SUPPLY_PROP_CHARGE_COUNTER,&value));
   assert(value.intval==native_counter);
+  fg.charger=NULL;
   assert(!mt6351_fgadc_get_property(&battery,POWER_SUPPLY_PROP_STATUS,&value));
   assert(value.intval==(native_current>0 ? POWER_SUPPLY_STATUS_CHARGING :
    native_current<0 ? POWER_SUPPLY_STATUS_DISCHARGING : POWER_SUPPLY_STATUS_NOT_CHARGING));

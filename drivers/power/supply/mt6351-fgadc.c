@@ -370,6 +370,10 @@ static int mt6351_fgadc_get_property(struct power_supply *psy,
 		/* The charger measures the battery terminals and thermistor. */
 		return power_supply_get_property(fg->charger, psp, val);
 	case POWER_SUPPLY_PROP_STATUS:
+		/* Termination and input state belong to the charger, not ADC noise. */
+		if (fg->charger)
+			return power_supply_get_property(fg->charger, psp, val);
+		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
 		break;

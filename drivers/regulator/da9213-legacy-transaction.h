@@ -13,6 +13,8 @@
 struct da9213_legacy_transaction_io {
 	int (*read)(void *context, u8 reg, u8 *value);
 	int (*write)(void *context, u8 reg, u8 value);
+	/* A write error can follow an effective write; settle either way. */
+	void (*settle)(void *context, u8 reg, u8 before, u8 after);
 };
 
 int da9213_legacy_update_bits_transaction(const struct da9213_legacy_transaction_io *io,

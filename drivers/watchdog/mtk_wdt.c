@@ -76,6 +76,7 @@
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 static bool start_at_boot;
+static bool suspend_keep_running;
 static unsigned int timeout;
 
 struct mtk_wdt_dev {
@@ -731,14 +732,21 @@ static bool mtk_wdt_is_running(struct watchdog_device *wdt_dev)
  * Nothing can pet the watchdog while the system sleeps, so stop it.  Do that
  * in the noirq phase, as late as possible, so that the watchdog still covers
  * the rest of the suspend sequence and is running again as early as possible
- * on resume.
+ * on resume. An explicit boot/module parameter instead keeps the counter
+ * running to bound a short system suspend. Kick it at the noirq boundary so
+ * that the remaining timeout covers the sleeping interval and early resume.
+ * Hibernation image I/O keeps its separate PREPARE/POST pause semantics.
  */
 static int mtk_wdt_suspend_noirq(struct device *dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
 
-	if (!mtk_wdt->hibernation_paused && mtk_wdt_is_running(&mtk_wdt->wdt_dev))
-		mtk_wdt_stop(&mtk_wdt->wdt_dev);
+	if (!mtk_wdt->hibernation_paused && mtk_wdt_is_running(&mtk_wdt->wdt_dev)) {
+		if (suspend_keep_running)
+			mtk_wdt_ping(&mtk_wdt->wdt_dev);
+		else
+			mtk_wdt_stop(&mtk_wdt->wdt_dev);
+	}
 
 	return 0;
 }
@@ -814,6 +822,10 @@ MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 module_param(start_at_boot, bool, 0);
 MODULE_PARM_DESC(start_at_boot,
 		 "Start the watchdog during probe so the core open timeout covers init");
+
+module_param(suspend_keep_running, bool, 0400);
+MODULE_PARM_DESC(suspend_keep_running,
+		 "Keep watchdog running during system suspend; sleep must end before timeout");
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Matthias Brugger <matthias.bgg@gmail.com>");

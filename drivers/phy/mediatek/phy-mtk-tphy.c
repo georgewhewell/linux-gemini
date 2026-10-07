@@ -208,6 +208,10 @@
 #define P3D_RG_CDR_BIR_LTD0		GENMASK(12, 8)
 #define P3D_RG_CDR_BIC_LTD1		GENMASK(3, 0)
 
+#define U3P_U3_PHYD_MON0		0x0a0
+#define U3P_U3_PHYD_MON2		0x0a8
+#define U3P_U3_PHYD_MON5		0x0b4
+
 #define U3P_U3_PHYD_B2_TOP2	0x104
 #define P3D_RG_FORCE_IDEM_3P5DB	BIT(22)
 #define P3D_RG_IDEM_3P5DB		GENMASK(21, 16)
@@ -666,6 +670,9 @@ static int u3_phy_registers_show(struct seq_file *sf, void *unused)
 		{ "PHYD_IMPCAL0", banks->phyd, U3P_U3_PHYD_IMPCAL0 },
 		{ "PHYD_IMPCAL1", banks->phyd, U3P_U3_PHYD_IMPCAL1 },
 		{ "PHYD_CDR1", banks->phyd, U3P_U3_PHYD_CDR1 },
+		{ "PHYD_MON0", banks->phyd, U3P_U3_PHYD_MON0 },
+		{ "PHYD_MON2", banks->phyd, U3P_U3_PHYD_MON2 },
+		{ "PHYD_MON5", banks->phyd, U3P_U3_PHYD_MON5 },
 		{ "PHYD_B2_TOP2", banks->phyd, U3P_U3_PHYD_B2_TOP2 },
 	};
 	int i;

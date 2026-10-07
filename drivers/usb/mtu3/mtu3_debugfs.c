@@ -65,6 +65,8 @@ static const struct debugfs_reg32 mtu3_csr_regs[] = {
 	dump_register(DEV_LINK_INTR_ENABLE),
 	dump_register(DEV_LINK_INTR),
 	dump_register(LTSSM_CTRL),
+	dump_register(LTSSM_INFO),
+	dump_register(LINK_ERR_COUNT),
 	dump_register(USB3_CONFIG),
 	dump_register(LINK_STATE_MACHINE),
 	dump_register(LTSSM_INTR_ENABLE),

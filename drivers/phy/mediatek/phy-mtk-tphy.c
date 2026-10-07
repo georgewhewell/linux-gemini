@@ -645,6 +645,46 @@ static const struct file_operations u3_phy_fops = {
 	.release = single_release,
 };
 
+static int u3_phy_registers_show(struct seq_file *sf, void *unused)
+{
+	struct mtk_phy_instance *inst = sf->private;
+	struct u3phy_banks *banks = &inst->u3_banks;
+	struct {
+		const char *name;
+		void __iomem *base;
+		u32 offset;
+	} regs[] = {
+		{ "CHIP_GPIO_CTLA", banks->chip, 0 },
+		{ "CHIP_GPIO_CTLD", banks->chip, U3P_U3_CHIP_GPIO_CTLD },
+		{ "CHIP_GPIO_CTLE", banks->chip, U3P_U3_CHIP_GPIO_CTLE },
+		{ "SPLLC_XTALCTL3", banks->spllc, U3P_SPLLC_XTALCTL3 },
+		{ "PHYA_REG0", banks->phya, U3P_U3_PHYA_REG0 },
+		{ "PHYA_REG1", banks->phya, U3P_U3_PHYA_REG1 },
+		{ "PHYA_DA_REG0", banks->phya, U3P_U3_PHYA_DA_REG0 },
+		{ "PHYA_DA_REG31", banks->phya, U3P_U3_PHYA_DA_REG31 },
+		{ "PHYA_DA_REG32", banks->phya, U3P_U3_PHYA_DA_REG32 },
+		{ "PHYD_IMPCAL0", banks->phyd, U3P_U3_PHYD_IMPCAL0 },
+		{ "PHYD_IMPCAL1", banks->phyd, U3P_U3_PHYD_IMPCAL1 },
+		{ "PHYD_CDR1", banks->phyd, U3P_U3_PHYD_CDR1 },
+		{ "PHYD_B2_TOP2", banks->phyd, U3P_U3_PHYD_B2_TOP2 },
+	};
+	int i;
+
+	/* Keep the supply and reference clock on for the entire snapshot. */
+	mutex_lock(&inst->phy->mutex);
+	if (!inst->phy->power_count) {
+		mutex_unlock(&inst->phy->mutex);
+		return -EIO;
+	}
+	for (i = 0; i < ARRAY_SIZE(regs); i++)
+		seq_printf(sf, "%s = %#010x\n", regs[i].name,
+			   readl(regs[i].base + regs[i].offset));
+	mutex_unlock(&inst->phy->mutex);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(u3_phy_registers);
+
 static void u3_phy_dbgfs_files_create(struct mtk_phy_instance *inst)
 {
 	u32 count = ARRAY_SIZE(u3_phy_files);
@@ -653,6 +693,8 @@ static void u3_phy_dbgfs_files_create(struct mtk_phy_instance *inst)
 	for (i = 0; i < count; i++)
 		debugfs_create_file_aux_num(u3_phy_files[i], 0644, inst->phy->debugfs,
 				    inst, i, &u3_phy_fops);
+	debugfs_create_file("registers", 0444, inst->phy->debugfs, inst,
+			    &u3_phy_registers_fops);
 }
 
 static int phy_type_show(struct seq_file *sf, void *unused)

@@ -47,6 +47,7 @@ struct mt6351_fgadc {
 	/* Serializes the FGADC latch transaction and configuration restore. */
 	struct mutex lock;
 	struct power_supply *psy;
+	struct power_supply *charger;
 	struct power_supply_desc psy_desc;
 
 	u32 init_control;
@@ -337,6 +338,16 @@ static enum power_supply_property mt6351_fgadc_properties[] = {
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 };
 
+static enum power_supply_property mt6351_fgadc_charger_properties[] = {
+	POWER_SUPPLY_PROP_MANUFACTURER,
+	POWER_SUPPLY_PROP_MODEL_NAME,
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_TEMP,
+};
+
 static int mt6351_fgadc_get_property(struct power_supply *psy,
 				     enum power_supply_property psp,
 				     union power_supply_propval *val)
@@ -352,8 +363,18 @@ static int mt6351_fgadc_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_MODEL_NAME:
 		val->strval = "MT6351 FGADC";
 		return 0;
-	default:
+	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
+	case POWER_SUPPLY_PROP_TEMP:
+		if (!fg->charger)
+			return -ENODATA;
+		/* The charger measures the battery terminals and thermistor. */
+		return power_supply_get_property(fg->charger, psp, val);
+	case POWER_SUPPLY_PROP_STATUS:
+	case POWER_SUPPLY_PROP_CURRENT_NOW:
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
 		break;
+	default:
+		return -EINVAL;
 	}
 
 	ret = mt6351_fgadc_read(fg, &current_ua, &charge_counter_uah);
@@ -382,6 +403,28 @@ static int mt6351_fgadc_get_property(struct power_supply *psy,
 	default:
 		return -EINVAL;
 	}
+}
+
+static void mt6351_fgadc_external_power_changed(struct power_supply *psy)
+{
+	power_supply_changed(psy);
+}
+
+static int mt6351_fgadc_get_charger(struct mt6351_fgadc *fg)
+{
+	struct device *dev = fg->dev;
+	int count;
+
+	if (!of_find_property(dev->of_node, "power-supplies", NULL))
+		return 0;
+	count = of_count_phandle_with_args(dev->of_node, "power-supplies", NULL);
+	if (count != 1)
+		return count < 0 ? count : -EINVAL;
+
+	fg->charger = devm_power_supply_get_by_reference(dev, "power-supplies");
+	if (IS_ERR(fg->charger))
+		return PTR_ERR(fg->charger);
+	return fg->charger ? 0 : -EPROBE_DEFER;
 }
 
 static int mt6351_fgadc_parse_dt(struct mt6351_fgadc *fg)
@@ -447,6 +490,11 @@ static int mt6351_fgadc_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, ret,
 				     "missing or unsafe FGADC configuration\n");
 
+	/* Resolve the supplier before changing any gauge hardware. */
+	ret = mt6351_fgadc_get_charger(fg);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "cannot acquire battery charger\n");
+
 	/*
 	 * The FGADC analog front end runs from VA18; without it the gauge
 	 * never latches a sample. Vendor fgauge_initialization() enables it
@@ -472,7 +520,12 @@ static int mt6351_fgadc_probe(struct platform_device *pdev)
 	fg->psy_desc.type = POWER_SUPPLY_TYPE_BATTERY;
 	fg->psy_desc.properties = mt6351_fgadc_properties;
 	fg->psy_desc.num_properties = ARRAY_SIZE(mt6351_fgadc_properties);
+	if (fg->charger) {
+		fg->psy_desc.properties = mt6351_fgadc_charger_properties;
+		fg->psy_desc.num_properties = ARRAY_SIZE(mt6351_fgadc_charger_properties);
+	}
 	fg->psy_desc.get_property = mt6351_fgadc_get_property;
+	fg->psy_desc.external_power_changed = mt6351_fgadc_external_power_changed;
 	psy_cfg.drv_data = fg;
 	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
 	fg->psy = devm_power_supply_register(&pdev->dev, &fg->psy_desc, &psy_cfg);

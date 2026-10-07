@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2026 Julien Etienne
+ *
+ * Planet Computers Gemini PDA. Hardware settings are described here, without
+ * boot-time overlays or host-side device-tree transformations.
  */
 
 /dts-v1/;
@@ -11,14 +14,24 @@
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/pinctrl/mt6797-pinfunc.h>
+#include <dt-bindings/clock/mt6797-clk.h>
+#include <dt-bindings/power/mt6797-power.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/reset/mt6797-resets.h>
+#include <dt-bindings/thermal/thermal.h>
 
 / {
 	model = "Planet Computers Gemini PDA";
 	chassis-type = "handset";
 	compatible = "planet,gemini-pda", "mediatek,mt6797";
+	#address-cells = <2>;
+	#size-cells = <2>;
 
 	aliases {
 		serial0 = &uart0;
+		mmc0 = "/mmc@11230000";
+		mmc1 = "/mmc@11240000";
 	};
 
 	chosen {
@@ -120,6 +133,7 @@
 	cluster0_opp: opp-table-cluster0 {
 		compatible = "operating-points-v2";
 		opp-shared;
+		status = "okay";
 
 		opp-221000000 {
 			opp-hz = /bits/ 64 <221000000>;
@@ -217,6 +231,7 @@
 	cluster1_opp: opp-table-cluster1 {
 		compatible = "operating-points-v2";
 		opp-shared;
+		status = "okay";
 
 		opp-325000000 {
 			opp-hz = /bits/ 64 <325000000>;
@@ -414,6 +429,428 @@
 			alloc-ranges = <0 0x40000000 0 0x50000000>;
 		};
 	};
+
+	consys: consys@18070000 {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		compatible = "mediatek,mt6797-consys";
+		reg = <0 0x18070000 0 0x200>,
+		      <0 0x10007000 0 0x100>,
+		      <0 0x10000000 0 0x2000>,
+		      <0 0x10006000 0 0x1000>,
+		      <0 0x180b6000 0 0x100>;
+		reg-names = "mcu", "ap-rgu", "topckgen", "spm", "afe";
+		interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 285 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "bgf", "wdt";
+		resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
+		reset-names = "conn-mcu";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+		power-domain-names = "conn";
+		vcn18-supply = <&mt6351_vcn18_reg>;
+		vcn28-supply = <&mt6351_vcn28_reg>;
+		vcn33-bt-supply = <&mt6351_vcn33_bt_reg>;
+		vcn33-wifi-supply = <&mt6351_vcn33_wifi_reg>;
+		memory-region = <&consys_reserved_memory>;
+		memory-region-names = "shared";
+		mediatek,emi-mpu = <&consys_emi_mpu>;
+		mediatek,infracfg = <&infrasys>;
+		mediatek,spm = <&scpsys>;
+		mediatek,btif = <&btif>;
+		status = "okay";
+
+		bluetooth: bluetooth {
+			compatible = "mediatek,mt6797-bluetooth";
+			status = "okay";
+		};
+
+		wifi: wifi@180f0000 {
+			compatible = "mediatek,mt6797-wifi";
+			reg = <0 0x180f0000 0 0x1100>;
+			interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
+			interrupt-names = "hif";
+			status = "okay";
+		};
+	};
+
+	consys_emi_mpu: emi-mpu@10203000 {
+		compatible = "mediatek,mt6797-consys-emi-mpu";
+		reg = <0 0x10203000 0 0x1000>,
+		      <0 0x10000000 0 0x2000>;
+		reg-names = "emi", "topckgen";
+		memory-region = <&consys_reserved_memory>;
+		memory-region-names = "shared";
+		status = "okay";
+		mediatek,experimental-shared-emi-ownership;
+	};
+
+	keyboard_matrix: keyboard-matrix {
+		compatible = "gpio-matrix-keypad";
+		pinctrl-names = "default";
+		gpio-activelow;
+		drive-inactive-cols;
+		pinctrl-0 = <&keyboard_matrix_row_pins
+				     &keyboard_matrix_col_pins>;
+		row-gpios = <&aw9523 0 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 1 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 2 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 3 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 4 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 5 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 6 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 7 GPIO_ACTIVE_HIGH>;
+		col-gpios = <&aw9523 8 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 9 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 10 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 11 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 12 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 13 GPIO_ACTIVE_HIGH>,
+			    <&aw9523 14 GPIO_ACTIVE_HIGH>;
+		linux,keymap = <
+			MATRIX_KEY(0, 0, KEY_1)
+			MATRIX_KEY(1, 0, KEY_U)
+			MATRIX_KEY(2, 0, KEY_S)
+			MATRIX_KEY(3, 0, KEY_Z)
+			MATRIX_KEY(4, 0, KEY_COMMA)
+			MATRIX_KEY(5, 0, KEY_APOSTROPHE)
+			MATRIX_KEY(6, 0, KEY_8)
+			MATRIX_KEY(7, 0, KEY_J)
+			MATRIX_KEY(0, 1, KEY_2)
+			MATRIX_KEY(1, 1, KEY_W)
+			MATRIX_KEY(2, 1, KEY_D)
+			MATRIX_KEY(3, 1, KEY_C)
+			MATRIX_KEY(4, 1, KEY_LEFTALT)
+			MATRIX_KEY(5, 1, KEY_LEFT)
+			MATRIX_KEY(6, 1, KEY_9)
+			MATRIX_KEY(7, 1, KEY_K)
+			MATRIX_KEY(0, 2, KEY_3)
+			MATRIX_KEY(1, 2, KEY_Y)
+			MATRIX_KEY(2, 2, KEY_TAB)
+			MATRIX_KEY(3, 2, KEY_N)
+			MATRIX_KEY(4, 2, KEY_M)
+			MATRIX_KEY(5, 2, KEY_DOWN)
+			MATRIX_KEY(6, 2, KEY_BACKSPACE)
+			MATRIX_KEY(7, 2, KEY_I)
+			MATRIX_KEY(0, 3, KEY_4)
+			MATRIX_KEY(1, 3, KEY_T)
+			MATRIX_KEY(2, 3, KEY_F)
+			MATRIX_KEY(3, 3, KEY_X)
+			MATRIX_KEY(4, 3, KEY_LEFTMETA)
+			MATRIX_KEY(5, 3, KEY_RIGHTSHIFT)
+			MATRIX_KEY(6, 3, KEY_P)
+			MATRIX_KEY(0, 4, KEY_5)
+			MATRIX_KEY(1, 4, KEY_E)
+			MATRIX_KEY(2, 4, KEY_G)
+			MATRIX_KEY(3, 4, KEY_V)
+			MATRIX_KEY(4, 4, KEY_SPACE)
+			MATRIX_KEY(5, 4, KEY_UP)
+			MATRIX_KEY(6, 4, KEY_O)
+			MATRIX_KEY(0, 5, KEY_6)
+			MATRIX_KEY(1, 5, KEY_Q)
+			MATRIX_KEY(2, 5, KEY_A)
+			MATRIX_KEY(3, 5, KEY_B)
+			MATRIX_KEY(4, 5, KEY_DOT)
+			MATRIX_KEY(5, 5, KEY_RIGHT)
+			MATRIX_KEY(6, 5, KEY_ENTER)
+			MATRIX_KEY(0, 6, KEY_7)
+			MATRIX_KEY(1, 6, KEY_R)
+			MATRIX_KEY(2, 6, KEY_H)
+			MATRIX_KEY(3, 6, KEY_LEFTSHIFT)
+			MATRIX_KEY(4, 6, KEY_LEFTCTRL)
+			MATRIX_KEY(5, 6, KEY_L)
+			MATRIX_KEY(6, 6, KEY_0)>;
+		status = "okay";
+		/*
+		 * Keep the successful generic polling contract exact. There is no measured
+		 * bounce interval, so do not invent debounce-delay-ms.
+		 */
+		poll-interval = <20>;
+		col-scan-delay-us = <2>;
+	};
+
+	hall_gpio_keys: gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&hall_pins>;
+		status = "okay";
+
+		hall-switch {
+			/* Vendor hall.c maps raw low to FCOVER_CLOSE/SW_LID=1. */
+			label = "Hall lid";
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			gpios = <&pio 66 GPIO_ACTIVE_LOW>;
+			debounce-interval = <64>;
+			/*
+			 * Opening the lid wakes the system (vendor hall.c keeps
+			 * EINT5 armed as a wake source); closing it does not.
+			 */
+			wakeup-source;
+			wakeup-event-action = <EV_ACT_DEASSERTED>;
+		};
+	};
+
+	/* Vendor usb1_drvvbus: GPIO94 high supplies the USB1 VBUS switch. */
+	usb11_drvvbus: regulator-usb11-drvvbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb11-drvvbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&pio 94 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/* Vendor sw7226_en: GPIO72 is downstream of usb1_drvvbus. */
+	usb11_vbus: regulator-usb11-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb11-vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&pio 72 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&usb11_drvvbus>;
+	};
+
+	/*
+	 * The vendor lcd-backlight LED node (aeon6797_6m_n.dts led@6) uses
+	 * led_mode 5, MT65XX_LED_MODE_CUST_BLS_PWM: brightness is set only by
+	 * the SoC display PWM, with 1024 duty steps and 0 turning the PWM off.
+	 * The panel init table writes DCS brightness 0xff once and never
+	 * changes it.  The MT6797 LK boots the backlight at LED_FULL, which it
+	 * maps to the full 1023/1023 duty, so start at the top level too.
+	 */
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&disp_pwm 0 39385>;
+		brightness-levels = <0 1023>;
+		num-interpolated-steps = <1023>;
+		default-brightness-level = <1023>;
+	};
+
+	gemini_audio: sound {
+		compatible = "planet,gemini-mt6797-mt6351";
+		pinctrl-names = "default";
+		pinctrl-0 = <&gemini_microphone_pins &gemini_speaker_pins>;
+		speaker-enable-gpios = <&pio 243 GPIO_ACTIVE_HIGH>,
+				       <&pio 244 GPIO_ACTIVE_HIGH>;
+		microphone-enable-gpios = <&pio 234 GPIO_ACTIVE_HIGH>;
+		mediatek,platform = <&afe>;
+		mediatek,audio-codec = <&mt6351_sound>;
+		mediatek,headset-jack;
+		status = "okay";
+	};
+
+	vibrator {
+		compatible = "regulator-haptic";
+		haptic-supply = <&mt6351_vibr_reg>;
+		min-microvolt = <2800000>;
+		max-microvolt = <2800000>;
+	};
+
+	/* SENINF timing generators 0/1 provide CMMCLK0/1. */
+	seninf_mclk: clock-controller@1a040000 {
+		compatible = "mediatek,mt6797-seninf-mclk";
+		reg = <0 0x1a040000 0 0x2000>;
+		clocks = <&camsys CLK_CAM_CAMTG>,
+			 <&camsys CLK_CAM_SENINF>,
+			 <&camsys CLK_CAM_CAMSYS>;
+		clock-names = "camtg", "seninf", "camsys";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_ISP>;
+		#clock-cells = <1>;
+		assigned-clocks = <&topckgen CLK_TOP_MUX_CAMTG>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_D26>;
+	};
+
+	thermal-zones {
+		soc-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <40>;
+			thermal-sensors = <&thermal>;
+
+			trips {
+				cpu_throttle: cpu-throttle {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_limit: cpu-limit {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_crit: cpu-critical {
+					temperature = <117000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map-cpu-throttle {
+					trip = <&cpu_throttle>;
+					cooling-device =
+						<&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						<&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				map-cpu-limit {
+					trip = <&cpu_limit>;
+					cooling-device =
+						<&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						<&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+	};
+
+	md1_lk_handoff_probe: modem-lk-handoff-probe {
+		compatible = "mediatek,mt6797-md1-lk-handoff-probe";
+		mediatek,experimental-md1-lk-handoff-probe;
+		mediatek,stage-lk-handoff-read-only;
+		status = "okay";
+	};
+
+	md1_boot_status_observe: modem-boot-status@10201300 {
+		compatible = "mediatek,mt6797-md1-boot-status-observe";
+		reg = <0 0x10201300 0 0x8>,
+		      <0 0x10209000 0 0x1000>,
+		      <0 0x1020a000 0 0x1000>;
+		reg-names = "md1-boot-status", "ap-ccif", "md-ccif";
+		mediatek,spm = <&scpsys>;
+		mediatek,infracfg = <&infrasys>;
+		mediatek,experimental-md1-boot-status;
+		status = "okay";
+	};
+
+	md1_remap_observe: modem-remap-observe@10001000 {
+		compatible = "mediatek,mt6797-md1-remap-observe";
+		reg = <0 0x10001000 0 0x1000>;
+		reg-names = "infracfg-ao";
+		mediatek,experimental-md1-remap-observe;
+		mediatek,stage-lk-remap-observe-read-only;
+		status = "okay";
+	};
+
+	md1_emi_mpu: modem-emi-mpu {
+		compatible = "mediatek,mt6797-md1-emi-mpu";
+		mediatek,experimental-md1-emi-mpu;
+		status = "okay";
+	};
+
+	md1_cold_owner: modem-cold-owner@10001000 {
+		compatible = "mediatek,mt6797-md1-cold-owner";
+		reg = <0 0x10001000 0 0x1000>,
+		      <0 0x10209000 0 0x1000>,
+		      <0 0x1020a000 0 0x1000>,
+		      <0 0x10014000 0 0x1e00>,
+		      <0 0x10219000 0 0x1e00>,
+		      <0 0x1000c000 0 0x1000>,
+		      <0 0x20150000 0 0x118>,
+		      <0 0x20130000 0 0x1004>,
+		      <0 0x20060000 0 0xd0>,
+		      <0 0x260f0000 0 0x200>,
+		      <0 0x20140000 0 0xa0>,
+		      <0 0x20120000 0 0xd0>,
+		      <0 0x200f0100 0 0x300>,
+		      <0 0x26010000 0 0x40>,
+		      <0 0x20000024 0 0x4>,
+		      <0 0x10201300 0 0x8>;
+		reg-names = "infracfg", "ap-ccif", "md-ccif", "ap-cldma-ao",
+			    "ap-cldma-pdn", "apmixed",
+			    "md-clksw", "md-dcm", "md-peri-misc", "md-l1-a0",
+			    "md-top-pll", "md-sys-clk", "md-rgu", "l1-rgu",
+			    "boot-vector", "boot-status";
+		mediatek,experimental-md1-cold-owner;
+		mediatek,stage-cold-reset-held;
+		mediatek,pmic = <&pmic>;
+		mediatek,boot-watchdog = <&watchdog>;
+		resets = <&infrasys MT6797_INFRA_CLDMA_AO_RST>,
+			 <&infrasys MT6797_INFRA_CLDMA_RST>;
+		reset-names = "cldma-ao", "cldma-pdn";
+		mediatek,spm = <&scpsys>;
+		mediatek,emi-mpu = <&md1_emi_mpu>;
+		mediatek,stage-md1-boot-vector-release;
+		status = "okay";
+	};
+
+	md1_ccci: modem@10014000 {
+		compatible = "mediatek,mt6797-ccci";
+		interrupt-parent = <&sysirq>;
+		reg = <0 0x10014000 0 0x1e00>,
+		      <0 0x10015000 0 0x1e00>,
+		      <0 0x10219000 0 0x1e00>,
+		      <0 0x1021a000 0 0x1e00>,
+		      <0 0x10209000 0 0x1000>,
+		      <0 0x1020a000 0 0x1000>;
+		reg-names = "ap-cldma-ao", "md-cldma-ao",
+			    "ap-cldma-pdn", "md-cldma-pdn",
+			    "ap-ccif", "md-ccif";
+		interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 147 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 266 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "cldma", "ap-ccif", "md-wdt";
+		memory-region = <&md1_shared_memory>;
+		memory-region-names = "md-shared";
+		status = "okay";
+
+		rf-clock {
+			/* Compiled Gemian board config; vendor 0.9mA override. */
+			mediatek,configuration = <2 0 1 1>;
+			mediatek,driving = <1 1 1 1>;
+		};
+
+		/* Known-good Gemian DT metadata, not AP IRQ/pin ownership. */
+		sim-eint-1 {
+			mediatek,eint-number = <0>;
+			mediatek,debounce-us = <100000>;
+			mediatek,active-high = <1>;
+			mediatek,edge-triggered = <0>;
+			mediatek,socket-type = <0>;
+			mediatek,dedicated-enable = <0>;
+			mediatek,source-selector = <1>;
+		};
+
+		sim-eint-2 {
+			mediatek,eint-number = <1>;
+			mediatek,debounce-us = <100000>;
+			mediatek,active-high = <1>;
+			mediatek,edge-triggered = <0>;
+			mediatek,socket-type = <0>;
+			mediatek,dedicated-enable = <0>;
+			mediatek,source-selector = <0>;
+		};
+	};
+
+	/*
+	 * The GPU currently uses one tested 238 MHz operating point. The async
+	 * power-domain owner controls its shared supply.
+	 */
+	g3_gpu_opp_table: gpu-g3-opp-table {
+		compatible = "operating-points-v2";
+
+		opp-238000000 {
+			opp-hz = /bits/ 64 <238000000>;
+			opp-microvolt = <846700 846700 850000>;
+			opp-supported-hw = <0x1000>;
+		};
+	};
+
+	spm {
+		compatible = "mediatek,mt6797-spm";
+		mediatek,spm = <&scpsys>;
+	};
+
+	scp@10020000 {
+		compatible = "mediatek,scp";
+		reg = <0 0x10020000 0 0x80000>,
+		      <0 0x100a0000 0 0x1000>,
+		      <0 0x100a4000 0 0x1000>;
+		interrupts = <GIC_SPI 199 IRQ_TYPE_LEVEL_HIGH>;
+		status = "disabled";
+	};
 };
 
 &md1 {
@@ -465,6 +902,16 @@
  */
 &mmsys {
 	mediatek,drm-on-demand;
+
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		gemini_mmsys_out: endpoint@0 {
+			reg = <0>;
+			remote-endpoint = <&gemini_ovl0_in>;
+		};
+	};
 };
 
 &cpu3 {
@@ -519,10 +966,12 @@
 
 &cpu8 {
 	clock-frequency = <2288000000>;
+	status = "okay";
 };
 
 &cpu9 {
 	clock-frequency = <2288000000>;
+	status = "okay";
 };
 
 &mt6351regulator {
@@ -582,6 +1031,52 @@
 		regulator-max-microvolt = <1800000>;
 		regulator-always-on;
 	};
+
+	mt6351_vusb33_reg: ldo-vusb33 {
+		regulator-name = "vusb33";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
+
+	mt6351_vibr_reg: ldo-vibr {
+		regulator-name = "vibr";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-enable-ramp-delay = <44>;
+	};
+
+	mt6351_vcama_reg: ldo-vcama {
+		regulator-name = "vcama";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+	};
+
+	mt6351_vcamd_reg: ldo-vcamd {
+		/* The vendor kernel raises the sensors' 1.2 V request to 1.21 V. */
+		regulator-name = "vcamd";
+		regulator-min-microvolt = <1210000>;
+		regulator-max-microvolt = <1210000>;
+	};
+
+	mt6351_vcamio_reg: ldo-vcamio {
+		regulator-name = "vcamio";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
+	/* Vendor MMC1 card rail: VMCH, constrained to its 3.0 V mode. */
+	mt6351_vmch_reg: ldo-vmch {
+		regulator-name = "vmch";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+	};
+
+	/* Vendor MMC1 signalling rail: VMC, kept out of the 1.8 V UHS mode. */
+	mt6351_vmc_reg: ldo-vmc {
+		regulator-name = "vmc";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+	};
 };
 
 &pmic {
@@ -604,63 +1099,15 @@
 			wakeup-source;
 		};
 	};
-};
 
-/ {
-	consys: consys@18070000 {
-		#address-cells = <2>;
-		#size-cells = <2>;
-		ranges;
-		compatible = "mediatek,mt6797-consys";
-		reg = <0 0x18070000 0 0x200>,
-		      <0 0x10007000 0 0x100>,
-		      <0 0x10000000 0 0x2000>,
-		      <0 0x10006000 0 0x1000>,
-		      <0 0x180b6000 0 0x100>;
-		reg-names = "mcu", "ap-rgu", "topckgen", "spm", "afe";
-		interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>,
-			     <GIC_SPI 285 IRQ_TYPE_LEVEL_LOW>;
-		interrupt-names = "bgf", "wdt";
-		resets = <&watchdog MT6797_TOPRGU_CONMCU_SW_RST>;
-		reset-names = "conn-mcu";
-		power-domains = <&scpsys MT6797_POWER_DOMAIN_CONN>;
-		power-domain-names = "conn";
-		vcn18-supply = <&mt6351_vcn18_reg>;
-		vcn28-supply = <&mt6351_vcn28_reg>;
-		vcn33-bt-supply = <&mt6351_vcn33_bt_reg>;
-		vcn33-wifi-supply = <&mt6351_vcn33_wifi_reg>;
-		memory-region = <&consys_reserved_memory>;
-		memory-region-names = "shared";
-		mediatek,emi-mpu = <&consys_emi_mpu>;
-		mediatek,infracfg = <&infrasys>;
-		mediatek,spm = <&scpsys>;
-		mediatek,btif = <&btif>;
-		status = "disabled";
-
-		bluetooth: bluetooth {
-			compatible = "mediatek,mt6797-bluetooth";
-			status = "disabled";
-		};
-
-		wifi: wifi@180f0000 {
-			compatible = "mediatek,mt6797-wifi";
-			reg = <0 0x180f0000 0 0x1100>;
-			interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
-			interrupt-names = "hif";
-			status = "disabled";
-		};
+	mt6351_sound: mt6351-sound {
+		compatible = "mediatek,mt6351-sound";
+		vusb33-supply = <&mt6351_vusb33_reg>;
+		va18-supply = <&mt6351_va18_reg>;
+		mediatek,jack-detection;
+		mediatek,accdet-pwm-settings = <0x500 0x500 1 0x1f0 0x800 0x800 0x20>;
+		status = "okay";
 	};
-
-	consys_emi_mpu: emi-mpu@10203000 {
-		compatible = "mediatek,mt6797-consys-emi-mpu";
-		reg = <0 0x10203000 0 0x1000>,
-		      <0 0x10000000 0 0x2000>;
-		reg-names = "emi", "topckgen";
-		memory-region = <&consys_reserved_memory>;
-		memory-region-names = "shared";
-		status = "disabled";
-	};
-
 };
 
 &pio {
@@ -713,6 +1160,114 @@
 			pinmux = <MT6797_GPIO88__FUNC_EINT11>;
 		};
 	};
+
+	/*
+	 * GPIO85 is EINT8 in the upstream MT6797 pin-function table.  Do not
+	 * request a bias setting here: the upstream MT6797 pinctrl driver has no
+	 * bias register map, so pinctrl would reject bias-disable with -ENOTSUPP
+	 * when a future, separately enabled touchscreen client selects this state.
+	 */
+	touchscreen_irq_pins: touchscreen-irq-pins {
+		pins-irq {
+			pinmux = <MT6797_GPIO85__FUNC_EINT8>;
+		};
+	};
+
+	aw9120_pins: aw9120-pins {
+		pins-pdn {
+			pinmux = <MT6797_GPIO245__FUNC_GPIO245>;
+		};
+	};
+
+	keyboard_soc_pins: keyboard-soc-pins {
+		pins-reset {
+			pinmux = <MT6797_GPIO58__FUNC_GPIO58>;
+			output-high;
+		};
+
+		pins-irq {
+			pinmux = <MT6797_GPIO87__FUNC_EINT10>;
+		};
+	};
+
+	usb11_fusb301a_pins: usb11-fusb301a-pins {
+		/*
+		 * GPIO64 is EINT3 on mainline MT6797, not EINT64.  Do not add a
+		 * bias setting: the current MT6797 pinctrl descriptor has no pull
+		 * register map and would reject it while selecting this state.
+		 */
+		pins-attach {
+			pinmux = <MT6797_GPIO64__FUNC_EINT3>;
+		};
+
+		/* Vendor initial FUSB301A switch selection: GPIO70=1, GPIO71=0. */
+		pins-data-mux-enable {
+			pinmux = <MT6797_GPIO70__FUNC_GPIO70>;
+			output-high;
+		};
+
+		pins-data-mux-select {
+			pinmux = <MT6797_GPIO71__FUNC_GPIO71>;
+			output-low;
+		};
+	};
+
+	disp_pwm_pins: disp-pwm-pins {
+		pins-pwm {
+			pinmux = <MT6797_GPIO178__FUNC_DISP_PWM>;
+		};
+	};
+
+	gemini_speaker_pins: speaker-pins {
+		pins-enables {
+			pinmux = <MT6797_GPIO243__FUNC_GPIO243>,
+				 <MT6797_GPIO244__FUNC_GPIO244>;
+			output-low;
+		};
+	};
+
+	gemini_microphone_pins: microphone-pins {
+		pins-enable {
+			pinmux = <MT6797_GPIO234__FUNC_GPIO234>;
+			output-low;
+		};
+	};
+
+	camera_main_pins: camera-main-pins {
+		pins-mclk {
+			pinmux = <MT6797_GPIO30__FUNC_CMMCLK0>;
+		};
+
+		pins-ctrl {
+			pinmux = <MT6797_GPIO32__FUNC_GPIO32>,
+				 <MT6797_GPIO28__FUNC_GPIO28>;
+		};
+	};
+
+	camera_sub_pins: camera-sub-pins {
+		pins-mclk {
+			pinmux = <MT6797_GPIO31__FUNC_CMMCLK1>;
+		};
+
+		pins-ctrl {
+			pinmux = <MT6797_GPIO33__FUNC_GPIO33>,
+				 <MT6797_GPIO29__FUNC_GPIO29>;
+		};
+	};
+
+	microsd_mmc1_pins: microsd-mmc1-pins {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>,
+				 <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
+				 <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
+				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>,
+				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
+		};
+	};
 };
 
 &uart0 {
@@ -749,7 +1304,7 @@
 		reg = <0x68>, <0x69>;
 		reg-names = "primary", "page2";
 		mediatek,boot-watchdog = <&watchdog>;
-		status = "disabled";
+		status = "okay";
 
 		regulators {
 			/*
@@ -762,12 +1317,14 @@
 				regulator-min-microvolt = <1000000>;
 				regulator-max-microvolt = <1000000>;
 				regulator-always-on;
+				status = "okay";
 			};
 
 			da9214_buckb: BUCKB {
 				regulator-name = "vproc-big";
 				regulator-min-microvolt = <800000>;
 				regulator-max-microvolt = <1200000>;
+				status = "okay";
 			};
 		};
 	};
@@ -778,22 +1335,25 @@
 	clock-names = "mp2";
 	sram-big-supply = <&vsram_big>;
 	vproc-big-supply = <&da9214_buckb>;
-	status = "disabled";
+	status = "okay";
 };
 
 &dvfsp_handoff {
 	status = "okay";
+	nvmem-cells = <&mt6797_ptp_calibration>,
+		<&mt6797_cpu_efuse_identity>;
+	nvmem-cell-names = "ptp-calibration-data", "cpu-efuse-identity";
 };
 
 &i2c7 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c7_pins_a>;
+	status = "okay";
 
 	/*
 	 * Live Gemian identifies the external GPU buck as RT5735 at 0x1c.
-	 * Keep the provider disabled until the board rail and OPP sequence
-	 * have a recovery-tested runtime bring-up plan.  Overlays which permit
-	 * voltage changes must also provide the measured ramp rate.
+	 * The power-domain owner sequences this rail before enabling the GPU.
+	 * The measured ramp rate is 32000 uV/us.
 	 */
 	rt5735_vgpu: regulator@1c {
 		compatible = "richtek,rt5735";
@@ -802,7 +1362,8 @@
 		regulator-min-microvolt = <600000>;
 		regulator-max-microvolt = <1393750>;
 		regulator-enable-ramp-delay = <350>;
-		status = "disabled";
+		status = "okay";
+		regulator-ramp-delay = <32000>;
 	};
 };
 
@@ -815,6 +1376,8 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c1_pins_a>;
 	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
 
 	/*
 	 * The vendor driver forces the BMI160 client to 0x69 (SDO high) and
@@ -844,12 +1407,29 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&light_sensor_pins>;
 	};
+
+	lcd_bias: regulator@3e {
+		compatible = "mediatek,i2c_lcd_bias";
+		reg = <0x3e>;
+
+		outp: outp {
+			regulator-name = "outp";
+			enable-gpios = <&pio 60 GPIO_ACTIVE_HIGH>;
+		};
+
+		outn: outn {
+			regulator-name = "outn";
+			enable-gpios = <&pio 251 GPIO_ACTIVE_HIGH>;
+		};
+	};
 };
 
 &i2c3 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c3_pins_a>;
 	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
 
 	/*
 	 * Lid LEDs. The five RGB blocks of the lid array are numbered 1 to 5
@@ -1040,6 +1620,27 @@
 			led-max-microamp = <3500>;
 		};
 	};
+
+	camera_sub: camera@20 {
+		compatible = "hynix,hi556";
+		reg = <0x20>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_sub_pins>;
+		clocks = <&seninf_mclk 1>;
+		assigned-clocks = <&seninf_mclk 1>;
+		assigned-clock-rates = <24000000>;
+		dovdd-supply = <&mt6351_vcamio_reg>;
+		avdd-supply = <&mt6351_vcama_reg>;
+		dvdd-supply = <&mt6351_vcamd_reg>;
+		reset-gpios = <&pio 33 GPIO_ACTIVE_LOW>;
+		powerdown-gpios = <&pio 29 GPIO_ACTIVE_LOW>;
+
+		port {
+			endpoint {
+				data-lanes = <1 2>;
+			};
+		};
+	};
 };
 
 &i2c4 {
@@ -1048,15 +1649,12 @@
 	 * NT36772 at 0x62 and GPIO85/EINT8 with a rising edge.  CAP_TOUCH_VDD maps
 	 * to MT6351 VLDO28, a fixed 2.8 V rail, but the current MT6351 provider is
 	 * dynamically registered and has no board-DT phandle.  More importantly,
-	 * GPIO68 reset polarity and timing have not been established.  Keep both
-	 * bus and client disabled in the base DT.  The observer overlay enables
-	 * only the adapter; the separate identity overlay is an explicitly opted-in,
-	 * recovery-gated probe of the already-powered controller and never claims
-	 * ownership of GPIO68 or VLDO28.
+	 * GPIO68 reset polarity and timing have not been established. Linux uses
+	 * the already-powered controller without claiming GPIO68 or VLDO28.
 	 */
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c4_pins_a>;
-	status = "disabled";
+	status = "okay";
 
 	touchscreen: touchscreen@62 {
 		compatible = "novatek,nt36xxx";
@@ -1073,49 +1671,30 @@
 		 */
 		touchscreen-inverted-x;
 		touchscreen-inverted-y;
-		status = "disabled";
+		status = "okay";
+		panel = <&gemini_panel>;
+		/*
+		 * The panel holds the controller in reset until it is prepared, so
+		 * the driver cannot read the firmware's range at probe.  This is the
+		 * range the firmware reports (0x78 block), in the panel's native
+		 * portrait frame; the driver checks it on first start.
+		 */
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <2160>;
+		/delete-property/ novatek,identity-only;
 	};
 };
 
 &watchdog {
-	interrupts = <GIC_SPI 137 IRQ_TYPE_EDGE_FALLING>;
-};
-
-&pio {
-	/*
-	 * GPIO85 is EINT8 in the upstream MT6797 pin-function table.  Do not
-	 * request a bias setting here: the upstream MT6797 pinctrl driver has no
-	 * bias register map, so pinctrl would reject bias-disable with -ENOTSUPP
-	 * when a future, separately enabled touchscreen client selects this state.
-	 */
-	touchscreen_irq_pins: touchscreen-irq-pins {
-		pins-irq {
-			pinmux = <MT6797_GPIO85__FUNC_EINT8>;
-		};
-	};
-
-	aw9120_pins: aw9120-pins {
-		pins-pdn {
-			pinmux = <MT6797_GPIO245__FUNC_GPIO245>;
-		};
-	};
-
-	keyboard_soc_pins: keyboard-soc-pins {
-		pins-reset {
-			pinmux = <MT6797_GPIO58__FUNC_GPIO58>;
-			output-high;
-		};
-
-		pins-irq {
-			pinmux = <MT6797_GPIO87__FUNC_EINT10>;
-		};
-	};
+	/delete-property/ interrupts;
 };
 
 &i2c5 {
-	/* Keep the bus and both consumers disabled until a safe keyboard test. */
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c5_pins_a>;
+	/* The retained successful AW9523/matrix experiment used 400 kHz. */
+	clock-frequency = <400000>;
+	status = "okay";
 
 	aw9523: gpio-expander@5b {
 		compatible = "awinic,aw9523-pinctrl";
@@ -1132,7 +1711,12 @@
 		 * add and validate the complete parent/domain contract explicitly.
 		 */
 		reset-gpios = <&pio 58 GPIO_ACTIVE_HIGH>;
-		status = "disabled";
+		/*
+		 * The base candidate intentionally does not publish the expander's
+		 * untested parent interrupt domain. gpio-matrix-keypad selects polling
+		 * below, so it will not request row GPIO interrupts either.
+		 */
+		status = "okay";
 
 		keyboard_matrix_row_pins: keyboard-matrix-row-pins {
 			pins = "gpio0", "gpio1", "gpio2", "gpio3",
@@ -1153,94 +1737,14 @@
 	};
 };
 
-&{/} {
-	keyboard_matrix: keyboard-matrix {
-		compatible = "gpio-matrix-keypad";
-		pinctrl-names = "default";
-		gpio-activelow;
-		drive-inactive-cols;
-		pinctrl-0 = <&keyboard_matrix_row_pins
-				     &keyboard_matrix_col_pins>;
-		row-gpios = <&aw9523 0 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 1 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 2 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 3 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 4 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 5 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 6 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 7 GPIO_ACTIVE_HIGH>;
-		col-gpios = <&aw9523 8 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 9 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 10 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 11 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 12 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 13 GPIO_ACTIVE_HIGH>,
-			    <&aw9523 14 GPIO_ACTIVE_HIGH>;
-		linux,keymap = <
-			MATRIX_KEY(0, 0, KEY_1)
-			MATRIX_KEY(1, 0, KEY_U)
-			MATRIX_KEY(2, 0, KEY_S)
-			MATRIX_KEY(3, 0, KEY_Z)
-			MATRIX_KEY(4, 0, KEY_COMMA)
-			MATRIX_KEY(5, 0, KEY_APOSTROPHE)
-			MATRIX_KEY(6, 0, KEY_8)
-			MATRIX_KEY(7, 0, KEY_J)
-			MATRIX_KEY(0, 1, KEY_2)
-			MATRIX_KEY(1, 1, KEY_W)
-			MATRIX_KEY(2, 1, KEY_D)
-			MATRIX_KEY(3, 1, KEY_C)
-			MATRIX_KEY(4, 1, KEY_LEFTALT)
-			MATRIX_KEY(5, 1, KEY_LEFT)
-			MATRIX_KEY(6, 1, KEY_9)
-			MATRIX_KEY(7, 1, KEY_K)
-			MATRIX_KEY(0, 2, KEY_3)
-			MATRIX_KEY(1, 2, KEY_Y)
-			MATRIX_KEY(2, 2, KEY_TAB)
-			MATRIX_KEY(3, 2, KEY_N)
-			MATRIX_KEY(4, 2, KEY_M)
-			MATRIX_KEY(5, 2, KEY_DOWN)
-			MATRIX_KEY(6, 2, KEY_BACKSPACE)
-			MATRIX_KEY(7, 2, KEY_I)
-			MATRIX_KEY(0, 3, KEY_4)
-			MATRIX_KEY(1, 3, KEY_T)
-			MATRIX_KEY(2, 3, KEY_F)
-			MATRIX_KEY(3, 3, KEY_X)
-			MATRIX_KEY(4, 3, KEY_LEFTMETA)
-			MATRIX_KEY(5, 3, KEY_RIGHTSHIFT)
-			MATRIX_KEY(6, 3, KEY_P)
-			MATRIX_KEY(0, 4, KEY_5)
-			MATRIX_KEY(1, 4, KEY_E)
-			MATRIX_KEY(2, 4, KEY_G)
-			MATRIX_KEY(3, 4, KEY_V)
-			MATRIX_KEY(4, 4, KEY_SPACE)
-			MATRIX_KEY(5, 4, KEY_UP)
-			MATRIX_KEY(6, 4, KEY_O)
-			MATRIX_KEY(0, 5, KEY_6)
-			MATRIX_KEY(1, 5, KEY_Q)
-			MATRIX_KEY(2, 5, KEY_A)
-			MATRIX_KEY(3, 5, KEY_B)
-			MATRIX_KEY(4, 5, KEY_DOT)
-			MATRIX_KEY(5, 5, KEY_RIGHT)
-			MATRIX_KEY(6, 5, KEY_ENTER)
-			MATRIX_KEY(0, 6, KEY_7)
-			MATRIX_KEY(1, 6, KEY_R)
-			MATRIX_KEY(2, 6, KEY_H)
-			MATRIX_KEY(3, 6, KEY_LEFTSHIFT)
-			MATRIX_KEY(4, 6, KEY_LEFTCTRL)
-			MATRIX_KEY(5, 6, KEY_L)
-			MATRIX_KEY(6, 6, KEY_0)>;
-		status = "disabled";
-	};
-};
-
 /*
- * The left USB-C connector is wired to the MTU3 device controller. Keep the
- * controller disabled in the normal board description; a bounded diagnostic
- * overlay may enable these already-described resources for bring-up.
+ * The left USB-C connector uses the MTU3 device controller in USB2 mode.
+ * SuperSpeed routing and role switching still need implementation.
  */
 &u2port0 {
 	clocks = <&clk26m>;
 	mediatek,force-b-session-valid;
+	status = "okay";
 };
 
 &ssusb {
@@ -1249,20 +1753,23 @@
 	phys = <&u2port0 PHY_TYPE_USB2>;
 	dr_mode = "peripheral";
 	maximum-speed = "high-speed";
+	vusb33-supply = <&mt6351_vusb33_reg>;
+	status = "okay";
 };
 
 &thermal {
 	nvmem-cells = <&mt6797_thermal_calibration>;
 	nvmem-cell-names = "calibration-data";
-};
-
-&dvfsp_handoff {
-	nvmem-cells = <&mt6797_ptp_calibration>,
-		<&mt6797_cpu_efuse_identity>;
-	nvmem-cell-names = "ptp-calibration-data", "cpu-efuse-identity";
+	status = "okay";
 };
 
 &i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	status = "okay";
+
 	/* FAN49101 is populated, but keep the regulator and consumer disabled. */
 	fan49101: regulator@70 {
 		compatible = "onsemi,fan49101";
@@ -1277,38 +1784,53 @@
 			};
 		};
 	};
-};
 
-/* The RT5735 VGPU rail and its consumer remain disabled pending validation. */
-&gpu {
-	mali-supply = <&rt5735_vgpu>;
-	nvmem-cells = <&mt6797_cpu_efuse_identity>;
-	nvmem-cell-names = "gpu-efuse";
-	operating-points-v2 = <&gpu_opp_table>;
-};
-
-&{/} {
-	hall_gpio_keys: gpio-keys {
-		compatible = "gpio-keys";
+	fusb301a: typec@25 {
+		compatible = "onsemi,fusb301a";
+		reg = <0x25>;
+		interrupt-parent = <&pio>;
+		interrupts = <3 IRQ_TYPE_EDGE_BOTH>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&hall_pins>;
-		status = "disabled";
+		pinctrl-0 = <&usb11_fusb301a_pins>;
+		vbus-supply = <&usb11_vbus>;
 
-		hall-switch {
-			/* Vendor hall.c maps raw low to FCOVER_CLOSE/SW_LID=1. */
-			label = "Hall lid";
-			linux,input-type = <EV_SW>;
-			linux,code = <SW_LID>;
-			gpios = <&pio 66 GPIO_ACTIVE_LOW>;
-			debounce-interval = <64>;
-			/*
-			 * Opening the lid wakes the system (vendor hall.c keeps
-			 * EINT5 armed as a wake source); closing it does not.
-			 */
-			wakeup-source;
-			wakeup-event-action = <EV_ACT_DEASSERTED>;
+		connector {
+			compatible = "usb-c-connector";
+			label = "Gemini right USB-C";
+			power-role = "source";
+			data-role = "host";
+			typec-power-opmode = "default";
+			pd-disable;
 		};
 	};
+
+	charger@6b {
+		compatible = "ti,bq25896", "ti,bq25890";
+		reg = <0x6b>;
+		linux,skip-reset;
+		ti,status-poll-interval-ms = <5000>;
+		ti,battery-regulation-voltage = <4352000>;
+		ti,charge-current = <2048000>;
+		ti,termination-current = <192000>;
+		ti,precharge-current = <128000>;
+		ti,minimum-sys-voltage = <3500000>;
+		ti,boost-voltage = <4998000>;
+		ti,boost-max-current = <1300000>;
+		ti,thermal-regulation-threshold = <120>;
+		ti,ibatcomp-micro-ohms = <80000>;
+		ti,ibatcomp-clamp-microvolt = <224000>;
+		ti,use-ilim-pin;
+	};
+};
+
+/* The async power domain owns VGPU; Panfrost must not claim it twice. */
+&gpu {
+	/delete-property/ mali-supply;
+	nvmem-cells = <&mt6797_cpu_efuse_identity>;
+	nvmem-cell-names = "gpu-efuse";
+	operating-points-v2 = <&g3_gpu_opp_table>;
+	status = "okay";
+	mediatek,gemini-gpuldo-owner;
 };
 
 /*
@@ -1320,10 +1842,68 @@
  */
 &ovl0 {
 	/delete-property/ iommus;
+	status = "okay";
+	mediatek,larb = <&larb0>;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			gemini_ovl0_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_mmsys_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			gemini_ovl0_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_ovl0_2l_in>;
+			};
+		};
+	};
 };
 
 &ovl0_2l {
 	/delete-property/ iommus;
+	status = "okay";
+	mediatek,larb = <&larb5>;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			gemini_ovl0_2l_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_ovl0_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			gemini_ovl0_2l_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_color0_in>;
+			};
+		};
+	};
 };
 
 &ovl1_2l {
@@ -1332,4 +1912,494 @@
 
 &rdma0 {
 	/delete-property/ iommus;
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			gemini_rdma0_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_dither0_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			gemini_rdma0_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_ufoe_in>;
+			};
+		};
+	};
+};
+
+&usb11_tphy {
+	status = "okay";
+};
+
+&usb11_u2 {
+	mediatek,force-a-session-valid;
+	status = "okay";
+	phy-supply = <&mt6351_vusb33_reg>;
+};
+
+&usb11 {
+	status = "okay";
+};
+
+/*
+ * The vendor pwm_config is all zero: clock source 0 and divider 0.  The
+ * MT6797 LK writes that source into the topckgen PWM mux (CLK_CFG_1 bits
+ * 1:0), selecting clk26m, and programs a 1024-count period: 39385 ns, or
+ * 25.4 kHz.  Keep that clock explicitly rather than inheriting it.
+ */
+&disp_pwm {
+	pinctrl-names = "default";
+	pinctrl-0 = <&disp_pwm_pins>;
+	assigned-clocks = <&topckgen CLK_TOP_MUX_PWM>;
+	assigned-clock-parents = <&clk26m>;
+	status = "okay";
+};
+
+/*
+ * Primary path as in the vendor driver (ddp_path.c): OVL0 -> OVL0_2L ->
+ * COLOR0 -> ... -> DSI0.  OVL0 is the engine LK leaves scanning out its
+ * splash; owning it here reprograms it on the first modeset instead of
+ * leaving it fetching the LK framebuffer.  OVL0 feeds OVL0_2L's background
+ * input directly (no mmsys mux).
+ *
+ * Without the M4U the display uses physically contiguous DRM buffers, and no
+ * IOMMU attach links the OVLs to their SMI larb, so each OVL names its larb
+ * for runtime PM: OVL0 fetches through larb0, OVL0_2L through larb5 (vendor
+ * M4U_PORT_DISP_OVL0 / M4U_PORT_DISP_2L_OVL0_LARB5).
+ */
+
+&mipi_tx0 {
+	status = "okay";
+};
+
+&smi_common {
+	status = "okay";
+};
+
+&larb0 {
+	status = "okay";
+};
+
+&larb5 {
+	status = "okay";
+};
+
+&color0 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			gemini_color0_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_ovl0_2l_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			gemini_color0_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_ccorr0_in>;
+			};
+		};
+	};
+};
+
+&ccorr0 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			gemini_ccorr0_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_color0_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			gemini_ccorr0_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_aal0_in>;
+			};
+		};
+	};
+};
+
+&aal0 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			gemini_aal0_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_ccorr0_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			gemini_aal0_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_gamma0_in>;
+			};
+		};
+	};
+};
+
+&gamma0 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			gemini_gamma0_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_aal0_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			gemini_gamma0_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_od0_in>;
+			};
+		};
+	};
+};
+
+&od0 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			gemini_od0_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_gamma0_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			gemini_od0_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_dither0_in>;
+			};
+		};
+	};
+};
+
+&dither0 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			gemini_dither0_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_od0_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			gemini_dither0_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_rdma0_in>;
+			};
+		};
+	};
+};
+
+&ufoe {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			gemini_ufoe_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_rdma0_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			gemini_ufoe_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&gemini_dsi0_in>;
+			};
+		};
+	};
+};
+
+&dsi0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	gemini_panel: panel@0 {
+		compatible = "planet,gemini-pda-nt36672";
+		reg = <0>;
+		outp-supply = <&outp>;
+		outn-supply = <&outn>;
+		/* Vendor aeon6797_6m_n.dts identifies GPIO180 as LCM_RST. */
+		reset-gpios = <&pio 180 GPIO_ACTIVE_HIGH>;
+		rotation = <270>;
+		backlight = <&backlight>;
+
+		port {
+			gemini_panel_in: endpoint {
+				remote-endpoint = <&gemini_dsi0_out>;
+			};
+		};
+	};
+};
+
+&dsi0_in {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	gemini_dsi0_in: endpoint@0 {
+		reg = <0>;
+		remote-endpoint = <&gemini_ufoe_out>;
+	};
+};
+
+&dsi0_out {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	gemini_dsi0_out: endpoint@0 {
+		reg = <0>;
+		remote-endpoint = <&gemini_panel_in>;
+	};
+};
+
+&afe {
+	status = "okay";
+};
+
+/*
+ * Cameras. Both slots take the vendor-named "SP5509" module,
+ * whose vendor driver matches the SK Hynix Hi-556 (chip ID 0x0556 at
+ * register 0x0f16, and the same register programme). Wiring from the
+ * vendor DWS and kd_camera_hw.c:
+ *   main: I2C2, CMMCLK0 (GPIO30), reset GPIO32, powerdown GPIO28
+ *   sub:  I2C3, CMMCLK1 (GPIO31), reset GPIO33, powerdown GPIO29
+ * Rails: DOVDD VCAMIO 1.8 V, AVDD VCAMA 2.8 V, DVDD VCAMD 1.21 V, 24 MHz
+ * MCLK, two CSI-2 data lanes. The vendor drivers probe both 8-bit
+ * addresses 0x40 and 0x50 (7-bit 0x20/0x28): the main driver tries 0x50
+ * first and the sub driver 0x40 first; those are the addresses used.
+ * Which physical slot is populated varies by unit. There is no CSI-2
+ * receiver yet, so the endpoints have no remote.
+ */
+&camsys {
+	power-domains = <&scpsys MT6797_POWER_DOMAIN_ISP>;
+	status = "okay";
+};
+
+&i2c2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	/* The vendor DWS runs this bus at 300 kHz. */
+	clock-frequency = <300000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c2_pins_a>;
+	status = "okay";
+
+	camera_main: camera@28 {
+		compatible = "hynix,hi556";
+		reg = <0x28>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_main_pins>;
+		clocks = <&seninf_mclk 0>;
+		assigned-clocks = <&seninf_mclk 0>;
+		assigned-clock-rates = <24000000>;
+		dovdd-supply = <&mt6351_vcamio_reg>;
+		avdd-supply = <&mt6351_vcama_reg>;
+		dvdd-supply = <&mt6351_vcamd_reg>;
+		reset-gpios = <&pio 32 GPIO_ACTIVE_LOW>;
+		powerdown-gpios = <&pio 28 GPIO_ACTIVE_LOW>;
+
+		port {
+			endpoint {
+				data-lanes = <1 2>;
+			};
+		};
+	};
+};
+
+&m4u {
+	status = "okay";
+};
+
+/* VENC_CG is only accessible with the VENC power domain on. */
+&vencsys {
+	power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+};
+
+&larb3 {
+	status = "okay";
+};
+
+&jpeg_encoder {
+	status = "okay";
+};
+
+&jpeg_decoder {
+	status = "okay";
+};
+
+&auxadc {
+	/* Thermal owns indirect AUXADC sampling and its clock. */
+	status = "disabled";
+};
+
+&mt6351fg {
+	status = "disabled";
+};
+
+&mt6351fgadc {
+	status = "okay";
+	mediatek,initialize-fgadc;
+	/* VA18 feeds the FGADC analog front end. */
+	vdda-supply = <&mt6351_va18_reg>;
+	mediatek,fgadc-init-control = <0x28>;
+	mediatek,fgadc-osr = <8>;
+	mediatek,fg-resistance-milliohm = <10>;
+	mediatek,fg-board-base = <1000>;
+	mediatek,fg-board-slope = <1000>;
+	mediatek,car-tune = <118>;
+	mediatek,fg-trim-permille = <1000>;
+};
+
+&mmc1 {
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&microsd_mmc1_pins>;
+	/* No electrical UHS transition is permitted; retain the 3.0 V state. */
+	pinctrl-1 = <&microsd_mmc1_pins>;
+	bus-width = <4>;
+	/* Legacy SD default speed: below the unmodelled high-speed pad contract. */
+	max-frequency = <25000000>;
+	broken-cd;
+	no-1-8-v;
+	vmmc-supply = <&mt6351_vmch_reg>;
+	vqmmc-supply = <&mt6351_vmc_reg>;
+	status = "okay";
+};
+
+/*
+ * Panfrost attaches the four MFG core domains before its OPP setup takes a
+ * regulator vote.  Make the parent MFG transition own the VGPU prerequisite
+ * so the rail is enabled before PWR_ON is asserted and remains ordered for
+ * every later runtime transition.
+ */
+&scpsys {
+	/delete-property/ mfg-supply;
+	mfg_async-supply = <&rt5735_vgpu>;
+	mediatek,gemini-gpuldo-owner;
+};
+
+&mfgsys {
+	status = "okay";
+};
+
+&btif {
+	status = "okay";
+};
+
+&{/t-phy@11290000} {
+	status = "okay";
+};
+
+&cpuclk {
+	status = "okay";
+};
+
+&vsram_big {
+	status = "okay";
 };

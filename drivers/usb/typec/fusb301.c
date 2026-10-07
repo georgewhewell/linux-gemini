@@ -11,6 +11,7 @@
 #include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
+#include <linux/usb/role.h>
 #include <linux/usb/typec.h>
 
 #define FUSB301_REG_DEVICE_ID	0x01
@@ -58,6 +59,7 @@ struct fusb301 {
 	struct typec_capability cap;
 	struct typec_port *port;
 	struct typec_partner *partner;
+	struct usb_role_switch *role_sw;
 	struct fwnode_handle *connector;
 	enum typec_pwr_opmode pwr_opmode;
 	unsigned int partner_type;
@@ -172,12 +174,30 @@ static void fusb301_unregister_partner(struct fusb301 *fusb)
 	fusb->partner = NULL;
 }
 
+static int fusb301_disconnect(struct fusb301 *fusb)
+{
+	int ret, err;
+
+	ret = usb_role_switch_set_role(fusb->role_sw, USB_ROLE_NONE);
+	/* Remove source power even if the data controller failed to stop. */
+	err = fusb301_set_vbus(fusb, false);
+	if (!ret)
+		ret = err;
+
+	err = typec_set_orientation(fusb->port, TYPEC_ORIENTATION_NONE);
+	fusb301_unregister_partner(fusb);
+	fusb->partner_type = 0;
+
+	return ret ?: err;
+}
+
 static int fusb301_update_status(struct fusb301 *fusb)
 {
 	struct typec_partner_desc desc = { };
 	unsigned int status, type, partner_type;
 	enum typec_role pwr_role;
 	enum typec_data_role data_role;
+	enum usb_role usb_role = USB_ROLE_NONE;
 	int ret;
 
 	ret = regmap_read(fusb->regmap, FUSB301_REG_STATUS, &status);
@@ -189,20 +209,14 @@ static int fusb301_update_status(struct fusb301 *fusb)
 		return ret;
 
 	if (!(status & FUSB301_STATUS_ATTACH)) {
-		ret = fusb301_set_vbus(fusb, false);
-		if (ret)
-			return ret;
-
-		fusb301_unregister_partner(fusb);
-		fusb->partner_type = 0;
+		ret = fusb301_disconnect(fusb);
 		pwr_role = fusb301_default_role(fusb);
 		data_role = pwr_role == TYPEC_SOURCE ? TYPEC_HOST : TYPEC_DEVICE;
 		typec_set_data_role(fusb->port, data_role);
 		typec_set_pwr_role(fusb->port, pwr_role);
 		typec_set_vconn_role(fusb->port, pwr_role);
 		typec_set_pwr_opmode(fusb->port, fusb->pwr_opmode);
-		typec_set_orientation(fusb->port, TYPEC_ORIENTATION_NONE);
-		return 0;
+		return ret;
 	}
 
 	partner_type = type & (FUSB301_TYPE_SINK | FUSB301_TYPE_SOURCE |
@@ -210,19 +224,30 @@ static int fusb301_update_status(struct fusb301 *fusb)
 	if (!partner_type)
 		return -EIO;
 
-	if (partner_type & FUSB301_TYPE_SINK)
+	if (partner_type & FUSB301_TYPE_SINK) {
 		pwr_role = TYPEC_SOURCE;
-	else if (partner_type & FUSB301_TYPE_SOURCE)
+		usb_role = USB_ROLE_HOST;
+	} else if (partner_type & FUSB301_TYPE_SOURCE) {
 		pwr_role = TYPEC_SINK;
-	else
+		usb_role = USB_ROLE_DEVICE;
+	} else {
 		pwr_role = fusb301_default_role(fusb);
+	}
+
+	ret = typec_set_orientation(fusb->port, fusb301_orientation(status));
+	if (ret)
+		goto err_disconnect;
 
 	/* A source may apply VBUS only after CC has identified a sink. */
 	ret = fusb301_set_vbus(fusb,
 				pwr_role == TYPEC_SOURCE &&
 				(partner_type & FUSB301_TYPE_SINK));
 	if (ret)
-		return ret;
+		goto err_disconnect;
+
+	ret = usb_role_switch_set_role(fusb->role_sw, usb_role);
+	if (ret)
+		goto err_disconnect;
 
 	if (partner_type & FUSB301_TYPE_AUDIO_ACC)
 		desc.accessory = TYPEC_ACCESSORY_AUDIO;
@@ -235,7 +260,7 @@ static int fusb301_update_status(struct fusb301 *fusb)
 		if (IS_ERR(fusb->partner)) {
 			ret = PTR_ERR(fusb->partner);
 			fusb->partner = NULL;
-			return ret;
+			goto err_disconnect;
 		}
 
 		data_role = pwr_role == TYPEC_SOURCE ? TYPEC_HOST : TYPEC_DEVICE;
@@ -249,10 +274,13 @@ static int fusb301_update_status(struct fusb301 *fusb)
 	else
 		typec_set_pwr_opmode(fusb->port, fusb->pwr_opmode);
 
-	typec_set_orientation(fusb->port, fusb301_orientation(status));
 	fusb->partner_type = partner_type;
 
 	return 0;
+
+err_disconnect:
+	fusb301_disconnect(fusb);
+	return ret;
 }
 
 static irqreturn_t fusb301_irq(int irq, void *data)
@@ -364,14 +392,24 @@ static int fusb301_probe(struct i2c_client *client)
 	fusb->cap.driver_data = fusb;
 	fusb->cap.ops = &fusb301_typec_ops;
 
+	fusb->role_sw = fwnode_usb_role_switch_get(fusb->connector);
+	if (IS_ERR(fusb->role_sw)) {
+		ret = PTR_ERR(fusb->role_sw);
+		if (ret != -ENODEV) {
+			dev_err_probe(dev, ret, "failed to get USB role switch\n");
+			goto err_put_connector;
+		}
+		fusb->role_sw = NULL;
+	}
+
 	ret = fusb301_hw_init(fusb);
 	if (ret)
-		goto err_put_connector;
+		goto err_put_role;
 
 	fusb->port = typec_register_port(dev, &fusb->cap);
 	if (IS_ERR(fusb->port)) {
 		ret = PTR_ERR(fusb->port);
-		goto err_put_connector;
+		goto err_put_role;
 	}
 
 	ret = fusb301_update_status(fusb);
@@ -388,9 +426,10 @@ static int fusb301_probe(struct i2c_client *client)
 	return 0;
 
 err_unregister_port:
-	fusb301_set_vbus(fusb, false);
-	fusb301_unregister_partner(fusb);
+	fusb301_disconnect(fusb);
 	typec_unregister_port(fusb->port);
+err_put_role:
+	usb_role_switch_put(fusb->role_sw);
 err_put_connector:
 	fwnode_handle_put(fusb->connector);
 	return ret;
@@ -400,9 +439,10 @@ static void fusb301_remove(struct i2c_client *client)
 {
 	struct fusb301 *fusb = i2c_get_clientdata(client);
 
-	fusb301_set_vbus(fusb, false);
-	fusb301_unregister_partner(fusb);
+	devm_free_irq(&client->dev, client->irq, fusb);
+	fusb301_disconnect(fusb);
 	typec_unregister_port(fusb->port);
+	usb_role_switch_put(fusb->role_sw);
 }
 
 static const struct of_device_id fusb301_of_match[] = {

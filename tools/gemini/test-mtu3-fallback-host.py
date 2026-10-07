@@ -27,7 +27,9 @@ typedef int irqreturn_t;
 #define USB_SPEED_SUPER 5
 #define dev_dbg(...) ((void)0)
 #define dev_info(...) ((void)0)
-#define trace_mtu3_u3_ltssm_isr(...) ((void)0)
+static u32 traced_intr, traced_raw, traced_enabled;
+static void trace_mtu3_u3_ltssm_isr(u32 intr, u32 raw, u32 enabled)
+{ traced_intr = intr; traced_raw = raw; traced_enabled = enabled; }
 #include "mtu3_hw_regs.h"
 struct mtu3 {
     void *mac_base, *ippc_base;
@@ -84,6 +86,9 @@ int main(void)
                 ippc[SSUSB_U2_CTRL(0) / 4] = BIT(30) | SSUSB_U2_PORT_PDN;
                 mac[U3D_LTSSM_INTR / 4] = SS_DISABLE_INTR | RXDET_SUCCESS_INTR;
                 assert(mtu3_u3_ltssm_isr(&m) == IRQ_HANDLED);
+                assert(traced_raw == (SS_DISABLE_INTR | RXDET_SUCCESS_INTR));
+                assert(traced_enabled == mac[U3D_LTSSM_INTR_ENABLE / 4]);
+                assert(traced_intr == (traced_raw & traced_enabled));
                 bool fallback = manual && active && connect;
                 assert(mac[U3D_POWER_MANAGEMENT / 4] == (BIT(31) |
                        (fallback ? SOFT_CONN | SUSPENDM_ENABLE : 0)));

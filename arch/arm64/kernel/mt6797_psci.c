@@ -22,7 +22,6 @@
 #include <asm/cpufeature.h>
 #include <asm/cputype.h>
 #include <asm/late_cpu_profile.h>
-#include <asm/mt6797_a72_membership.h>
 #include <asm/smp.h>
 
 extern const struct cpu_operations cpu_psci_ops;
@@ -1292,75 +1291,7 @@ static int __init mt6797_psci_cpu_prepare(unsigned int cpu)
 	return cpu_psci_ops.cpu_prepare(cpu);
 }
 
-#ifdef CONFIG_ARM64_MT6797_A72_P24_ADMISSION_HOOKS
-static bool mt6797_psci_is_a72(unsigned int cpu)
-{
-	return cpu == 8 || cpu == 9;
-}
 
-static int mt6797_psci_cpu_up_preflight(unsigned int cpu,
-					enum cpuhp_state target)
-{
-	if (!mt6797_psci_is_a72(cpu))
-		return 0;
-
-	return mt6797_a72_membership_preflight_up(cpu, target);
-}
-
-static int mt6797_psci_cpu_up_validate(unsigned int cpu, int tasks_frozen,
-				       enum cpuhp_state target)
-{
-	if (!mt6797_psci_is_a72(cpu))
-		return 0;
-
-	return mt6797_a72_membership_validate_up(cpu, tasks_frozen, target);
-}
-#endif
-
-#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
-static int mt6797_psci_cpu_up_rollback(unsigned int cpu,
-				       enum cpuhp_state state, int error,
-				       const struct cpu_up_rollback_trace *trace)
-{
-	if (cpu != 8 && cpu != 9)
-		return 0;
-
-	return mt6797_a72_membership_publish_p32(cpu, state, error, trace);
-}
-
-#ifdef CONFIG_HOTPLUG_CPU
-static int mt6797_psci_cpu_disable(unsigned int cpu)
-{
-	int ret;
-
-	ret = mt6797_a72_membership_p32_cpu_disable(cpu);
-	if (ret)
-		return ret;
-
-	return cpu_psci_ops.cpu_disable ? cpu_psci_ops.cpu_disable(cpu) :
-		-EOPNOTSUPP;
-}
-
-static void mt6797_psci_cpu_die(unsigned int cpu)
-{
-	if (mt6797_a72_membership_p32_cpu_die(cpu))
-		cpu_park_loop();
-
-	cpu_psci_ops.cpu_die(cpu);
-}
-
-static int mt6797_psci_cpu_kill(unsigned int cpu)
-{
-	int ret;
-
-	ret = mt6797_a72_membership_p32_cpu_kill(cpu);
-	if (ret)
-		return ret;
-
-	return cpu_psci_ops.cpu_kill ? cpu_psci_ops.cpu_kill(cpu) : 0;
-}
-#endif
-#endif
 
 static int mt6797_psci_cpu_boot(unsigned int cpu)
 {
@@ -1403,7 +1334,6 @@ static bool mt6797_psci_cpu_can_disable(unsigned int cpu)
 	return mt6797_psci_is_late_a72(cpu);
 }
 
-#ifndef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
 static int mt6797_psci_cpu_disable(unsigned int cpu)
 {
 	/*
@@ -1418,26 +1348,14 @@ static int mt6797_psci_cpu_disable(unsigned int cpu)
 	return -EOPNOTSUPP;
 }
 #endif
-#endif
 
 const struct cpu_operations mt6797_psci_ops = {
 	.name		= "mediatek,mt6797-psci",
 	.cpu_init	= mt6797_psci_cpu_init,
 	.cpu_prepare	= mt6797_psci_cpu_prepare,
-#ifdef CONFIG_ARM64_MT6797_A72_P24_ADMISSION_HOOKS
-	.cpu_up_preflight = mt6797_psci_cpu_up_preflight,
-	.cpu_up_validate = mt6797_psci_cpu_up_validate,
-#endif
-#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
-	.cpu_up_rollback = mt6797_psci_cpu_up_rollback,
-#endif
 	.cpu_boot	= mt6797_psci_cpu_boot,
 #ifdef CONFIG_HOTPLUG_CPU
 	.cpu_can_disable = mt6797_psci_cpu_can_disable,
 	.cpu_disable = mt6797_psci_cpu_disable,
-#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
-	.cpu_die = mt6797_psci_cpu_die,
-	.cpu_kill = mt6797_psci_cpu_kill,
-#endif
 #endif
 };

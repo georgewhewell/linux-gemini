@@ -47,12 +47,6 @@
 #include <asm/late_cpu_profile.h>
 #include <asm/mmu_context.h>
 #include <asm/numa.h>
-#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
-#include <asm/mt6797_a72_membership.h>
-#endif
-#ifdef CONFIG_ARM64_MT6797_A72_P30E_WIRE
-#include <asm/mt6797_a72_p30e.h>
-#endif
 #include <asm/processor.h>
 #include <asm/smp_plat.h>
 #include <asm/sections.h>
@@ -98,71 +92,6 @@ static inline int op_cpu_kill(unsigned int cpu)
 }
 #endif
 
-int arch_cpu_up_preflight(unsigned int cpu, enum cpuhp_state target)
-{
-	const struct cpu_operations *ops;
-
-	if (cpu >= nr_cpu_ids)
-		return 0;
-
-	ops = get_cpu_ops(cpu);
-	if (ops && ops->cpu_up_preflight)
-		return ops->cpu_up_preflight(cpu, target);
-
-	return 0;
-}
-
-int arch_cpu_up_validate(unsigned int cpu, int tasks_frozen,
-			 enum cpuhp_state target)
-{
-	const struct cpu_operations *ops;
-
-	if (cpu >= nr_cpu_ids)
-		return 0;
-
-	ops = get_cpu_ops(cpu);
-	if (ops && ops->cpu_up_validate)
-		return ops->cpu_up_validate(cpu, tasks_frozen, target);
-
-	return 0;
-}
-
-int arch_cpu_up_rollback(unsigned int cpu, enum cpuhp_state state, int error,
-				 const struct cpu_up_rollback_trace *trace)
-{
-	const struct cpu_operations *ops;
-
-	if (cpu >= nr_cpu_ids)
-		return 0;
-
-	ops = get_cpu_ops(cpu);
-	if (ops && ops->cpu_up_rollback)
-		return ops->cpu_up_rollback(cpu, state, error, trace);
-
-	return 0;
-}
-
-int arch_cpu_up_rollback_complete(unsigned int cpu, int error,
-					 const struct cpu_up_rollback_trace *trace)
-{
-#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK
-	int ret;
-
-	if (cpu >= nr_cpu_ids)
-		return 0;
-
-	ret = mt6797_a72_membership_consume_p32(cpu, error, trace);
-	if (ret == -EAGAIN)
-		return 0;
-
-	return ret;
-#else
-	(void)cpu;
-	(void)error;
-	(void)trace;
-	return 0;
-#endif
-}
 
 /*
  * Boot a secondary CPU, and assign it the specified idle task.
@@ -340,22 +269,6 @@ asmlinkage notrace void secondary_start_kernel(void)
 	pr_info("CPU%u: Booted secondary processor 0x%010lx [0x%08x]\n",
 					 cpu, (unsigned long)mpidr,
 					 read_cpuid_id());
-#ifdef CONFIG_ARM64_MT6797_A72_P30E_WIRE
-	{
-		int p30e_ret;
-
-		p30e_ret = arm64_mt6797_a72_p30e_target_publish(
-			ARM64_MT6797_A72_P30E_TARGET_PUBLISHED, 0, 0,
-			(u64)__pa_symbol(secondary_entry), 0);
-		if (p30e_ret != -ENODEV && p30e_ret != -EALREADY && p30e_ret) {
-			(void)arm64_mt6797_a72_p30e_target_publish(
-				ARM64_MT6797_A72_P30E_FAILED, (u64)-p30e_ret, 0,
-				(u64)__pa_symbol(secondary_entry), 0);
-			update_cpu_boot_status(CPU_STUCK_IN_KERNEL);
-			cpu_park_loop();
-		}
-	}
-#endif
 	update_cpu_boot_status(CPU_BOOT_SUCCESS);
 	set_cpu_online(cpu, true);
 	complete(&cpu_running);
@@ -367,15 +280,7 @@ asmlinkage notrace void secondary_start_kernel(void)
 	 * as the root irqchip has already been detected and initialized we can
 	 * unmask IRQ and FIQ at the same time.
 	 */
-	if (IS_ENABLED(CONFIG_ARM64_MT6797_A72_CAPABILITY_PROFILE) &&
-	    (cpu == 8 || cpu == 9))
-		pr_info("A72_M10 CPU%u before-daif-restore daif=%lx\n",
-			cpu, (unsigned long)read_sysreg(daif));
 	local_daif_restore(DAIF_PROCCTX);
-	if (IS_ENABLED(CONFIG_ARM64_MT6797_A72_CAPABILITY_PROFILE) &&
-	    (cpu == 8 || cpu == 9))
-		pr_info("A72_M10 CPU%u after-daif-restore daif=%lx\n",
-			cpu, (unsigned long)read_sysreg(daif));
 
 	/*
 	 * OK, it's off to the idle thread for us
@@ -413,49 +318,24 @@ int __cpu_disable(void)
 	unsigned int cpu = smp_processor_id();
 	int ret;
 
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_CPU_OFF_ATTEMPT,
-				    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	ret = op_cpu_disable(cpu);
-	if (ret) {
-		arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_GUARD,
-					    CPU_UP_ROLLBACK_EFFECT_BLOCKED, ret);
+	if (ret)
 		return ret;
-	}
 
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_GUARD,
-				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_TOPOLOGY_REMOVE,
-				    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	remove_cpu_topology(cpu);
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_TOPOLOGY_REMOVE,
-				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_NUMA_REMOVE,
-				    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	numa_remove_cpu(cpu);
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_NUMA_REMOVE,
-				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
 
 	/*
 	 * Take this CPU offline.  Once we clear this, we can't return,
 	 * and we must not schedule until we're ready to give up the cpu.
 	 */
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_ONLINE_CLEAR,
-					    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	set_cpu_online(cpu, false);
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_ONLINE_CLEAR,
-				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_IPI_TEARDOWN,
-				    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	ipi_teardown(cpu);
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_IPI_TEARDOWN,
-				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
 
 	/*
 	 * OK - migrate IRQs away from this CPU
 	 */
 	irq_migrate_all_off_this_cpu();
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_IRQ_MIGRATE,
-				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, 0);
 
 	return 0;
 }
@@ -491,11 +371,7 @@ void arch_cpuhp_cleanup_dead_cpu(unsigned int cpu)
 	 * verify that it has really left the kernel before we consider
 	 * clobbering anything it might still be using.
 	 */
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_KILL_OBSERVED,
-				    CPU_UP_ROLLBACK_EFFECT_BEGIN, 0);
 	err = op_cpu_kill(cpu);
-	arch_cpu_up_rollback_effect(cpu, CPU_UP_ROLLBACK_EFFECT_KILL_OBSERVED,
-				    CPU_UP_ROLLBACK_EFFECT_COMPLETE, err);
 	if (err)
 		pr_warn("CPU%d may not have shut down cleanly: %d\n", cpu, err);
 }
@@ -544,12 +420,6 @@ static void __cpu_try_die(int cpu)
 void __noreturn cpu_die_early(void)
 {
 	int cpu = smp_processor_id();
-
-#ifdef CONFIG_ARM64_MT6797_A72_P30E_WIRE
-	(void)arm64_mt6797_a72_p30e_target_publish(
-		ARM64_MT6797_A72_P30E_FAILED, CPU_KILL_ME, 0,
-		(u64)__pa_symbol(secondary_entry), 0);
-#endif
 
 	pr_crit("CPU%d: will not boot\n", cpu);
 

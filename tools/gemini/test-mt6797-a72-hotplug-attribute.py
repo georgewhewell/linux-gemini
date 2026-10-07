@@ -7,7 +7,6 @@ hooks below are extracted verbatim from the kernel sources and executed on the
 host with the exact CPU numbers the Gemini DT assigns to the Cortex-A72 cores.
 """
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -24,27 +23,23 @@ def extract(source, signature):
     return source[start:end]
 
 
-# The default (non-P32) hotplug hooks must exist and be in the ops table.
-default_hooks = psci[psci.index("#ifndef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK"):]
+# The working hotplug hooks must exist and be in the ops table.
 hooks = "".join(
     extract(source, sig)
     for source, sig in (
         (psci, "static bool mt6797_psci_is_late_a72("),
         (psci, "static bool mt6797_psci_cpu_can_disable("),
-        (default_hooks, "static int mt6797_psci_cpu_disable("),
+        (psci, "static int mt6797_psci_cpu_disable("),
     )
 )
 table = psci[psci.index("const struct cpu_operations mt6797_psci_ops = {"):]
 table = table[: table.index("\n};\n")]
 assert ".cpu_can_disable = mt6797_psci_cpu_can_disable," in table
-# cpu_disable is installed unconditionally under HOTPLUG_CPU, cpu_die only
-# behind the P32 rollback build, so op_cpu_disable() aborts early otherwise.
+# The online attribute is exposed, while the unsupported power-off path has
+# no cpu_die/cpu_kill methods and is rejected before any teardown.
 hotplug = table[table.index("#ifdef CONFIG_HOTPLUG_CPU"):]
-before_p32 = hotplug[: hotplug.index("#ifdef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK")]
-assert ".cpu_disable = mt6797_psci_cpu_disable," in before_p32
-assert ".cpu_die" not in before_p32 and ".cpu_kill" not in before_p32
-# The non-P32 cpu_disable definition must be what the table references.
-assert re.search(r"#ifndef CONFIG_ARM64_MT6797_A72_P32_ROLLBACK\s*\nstatic int mt6797_psci_cpu_disable\(", psci)
+assert ".cpu_disable = mt6797_psci_cpu_disable," in hotplug
+assert ".cpu_die" not in table and ".cpu_kill" not in table
 
 admission = "".join(
     extract(core, sig)

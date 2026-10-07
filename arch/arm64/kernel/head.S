@@ -37,10 +37,6 @@
 #include <asm/virt.h>
 
 #include "efi-header.S"
-#ifdef CONFIG_ARM64_MT6797_A72_P30E_WIRE
-#include <asm/errno.h>
-#include <asm/mt6797_a72_p30e.h>
-#endif
 #ifdef CONFIG_PSTORE_GEMINI_ARM64_ENTRY_LEDGER
 #include "gemini-entry-ledger-head.S"
 #endif
@@ -368,26 +364,6 @@ SYM_FUNC_END(secondary_holding_pen)
 SYM_FUNC_START(secondary_entry)
 	mov	x0, xzr
 	bl	init_kernel_el			// w0=cpu_boot_mode
-#ifdef CONFIG_ARM64_MT6797_A72_P30E_WIRE
-	/*
-	 * No context-id is supplied by PSCI. The target selects its static
-	 * slot from MPIDR and rejects every malformed or ambiguous object.
-	 * EAGAIN/ENODEV are the unchanged unarmed/non-A72 path.
-	 */
-	mov	x20, x0
-	bl	arm64_mt6797_a72_p30e_target_claim
-	cmp	x0, #0
-	b.eq	.Lp30e_secondary_resume
-	cmn	x0, #EAGAIN
-	b.eq	.Lp30e_secondary_resume
-	cmn	x0, #ENODEV
-	b.eq	.Lp30e_secondary_resume
-.Lp30e_secondary_park:
-	wfe
-	b	.Lp30e_secondary_park
-.Lp30e_secondary_resume:
-	mov	x0, x20
-#endif
 	b	secondary_startup
 SYM_FUNC_END(secondary_entry)
 

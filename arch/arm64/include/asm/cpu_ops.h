@@ -5,11 +5,8 @@
 #ifndef __ASM_CPU_OPS_H
 #define __ASM_CPU_OPS_H
 
-#include <linux/cpuhotplug.h>
 #include <linux/init.h>
 #include <linux/threads.h>
-
-struct cpu_up_rollback_trace;
 
 /**
  * struct cpu_operations - Callback operations for hotplugging CPUs.
@@ -23,13 +20,6 @@ struct cpu_up_rollback_trace;
  * @cpu_prepare: Early one-time preparation step for a cpu. If there is a
  *		mechanism for doing so, tests whether it is possible to boot
  *		the given CPU.
- * @cpu_up_preflight: Optional public CPU-up admission check before CPU-map
- *		locking or generic CPUHP work.
- * @cpu_up_validate: Optional leaf-only CPU-up admission check for public and
- *		direct internal paths. Must not sleep or acquire CPU-map, CPUHP, or
- *		outer transition locks.
- * @cpu_up_rollback: Optional controller-side publication before generic CPUHP
- *		outer rollback. It receives the failing callback state, result, and trace.
  * @cpu_boot:	Boots a cpu into the kernel.
  * @cpu_postboot: Optionally, perform any post-boot cleanup or necessary
  *		synchronisation. Called from the cpu being booted.
@@ -46,12 +36,6 @@ struct cpu_operations {
 	const char	*name;
 	int		(*cpu_init)(unsigned int);
 	int		(*cpu_prepare)(unsigned int);
-	int		(*cpu_up_preflight)(unsigned int cpu,
-					    enum cpuhp_state target);
-	int		(*cpu_up_validate)(unsigned int cpu, int tasks_frozen,
-					   enum cpuhp_state target);
-	int		(*cpu_up_rollback)(unsigned int cpu, enum cpuhp_state state,
-					   int error, const struct cpu_up_rollback_trace *trace);
 	int		(*cpu_boot)(unsigned int);
 	void		(*cpu_postboot)(void);
 #ifdef CONFIG_HOTPLUG_CPU

@@ -484,22 +484,6 @@ struct arm64_late_cpu_receipt {
 	u8 user_hwcaps_finalized;
 };
 
-/* The only profile identity available to later admission consumers. */
-struct arm64_late_cpu_ready_token {
-	u32 abi;
-	char profile_id[ARM64_LATE_CPU_PROFILE_ID_LEN];
-	cpumask_t target_cpus;
-	u64 plan_identity[ARM64_LATE_CPU_ID_WORDS];
-	u64 evidence_identity[ARM64_LATE_CPU_ID_WORDS];
-	u32 target_cpu[ARM64_LATE_CPU_MAX_TARGETS];
-	u64 expected_target_mpidr[ARM64_LATE_CPU_MAX_TARGETS];
-	u64 observed_target_mpidr[ARM64_LATE_CPU_MAX_TARGETS];
-	u32 expected_target_midr[ARM64_LATE_CPU_MAX_TARGETS];
-	u32 observed_target_midr[ARM64_LATE_CPU_MAX_TARGETS];
-	u32 observed_target_revidr[ARM64_LATE_CPU_MAX_TARGETS];
-	struct arm64_late_cpu_effect_plan committed;
-};
-
 struct arm64_cpu_capabilities;
 
 struct arm64_late_cpu_profile {
@@ -513,7 +497,7 @@ struct arm64_late_cpu_profile {
 	int (*validate_plan)(const struct arm64_late_cpu_plan *plan);
 	int (*derive_effects)(const struct arm64_late_cpu_plan *plan,
 			      struct arm64_late_cpu_effect_plan *effects);
-	/* Expected-only production input or an explicit FIXTURE; never RUNTIME. */
+	/* Board expectations only; the architecture collects runtime observations. */
 	int (*prepare)(struct arm64_late_cpu_evidence *evidence,
 		       const struct cpumask *registered_targets);
 	int (*verify_system)(const struct arm64_late_cpu_plan *plan,
@@ -634,8 +618,7 @@ arm64_late_cpu_expected_effects(const struct arm64_late_cpu_expected_pair *expec
 				struct arm64_late_cpu_target_effect_plan *effects);
 void __init arm64_verify_late_cpu_profile_system(void);
 void __init arm64_finalize_late_cpu_profile_user(void);
-const struct arm64_late_cpu_ready_token *
-arm64_get_late_cpu_ready_token(void);
+bool arm64_late_cpu_profile_ready(void);
 #else
 static inline void __init
 arm64_activate_late_cpu_profile(const struct arm64_late_cpu_profile *profile)
@@ -685,10 +668,9 @@ static inline void __init arm64_finalize_late_cpu_profile_user(void)
 {
 }
 
-static inline const struct arm64_late_cpu_ready_token *
-arm64_get_late_cpu_ready_token(void)
+static inline bool arm64_late_cpu_profile_ready(void)
 {
-	return NULL;
+	return false;
 }
 #endif
 

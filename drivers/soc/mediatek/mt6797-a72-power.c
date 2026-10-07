@@ -446,7 +446,7 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 	if (preflight->admission_ret)
 		return preflight->admission_ret;
 
-	if (!arm64_get_late_cpu_ready_token())
+	if (!arm64_late_cpu_profile_ready())
 		return -EAGAIN;
 
 	/* Recheck immediately before any Linux-owned rail/reset mutation. */

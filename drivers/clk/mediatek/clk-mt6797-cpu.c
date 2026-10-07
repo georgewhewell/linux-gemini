@@ -78,6 +78,8 @@ struct mt6797_cpuclk_observer {
 	void __iomem *mcucfg;
 	struct mt6797_dvfsp_handoff *handoff;
 	struct mt6797_topckgen *topckgen;
+	struct clk *mainpll;
+	bool mainpll_rate_locked;
 	struct clk *i2c_clk;
 	/* Serializes snapshots and complete reconfiguration transactions. */
 	struct mutex lock;
@@ -321,7 +323,16 @@ static int
 mt6797_cpuclk_observer_transition(void *context,
 			   const struct mt6797_cpuclk_transition_plan *plan);
 
+static unsigned long mt6797_cpuclk_observer_mainpll_rate(void *context)
+{
+	struct mt6797_cpuclk_observer *observer = context;
+
+	return observer->topckgen && observer->mainpll ?
+		clk_get_rate(observer->mainpll) : 0;
+}
+
 static const struct mt6797_cpuclk_backend_ops mt6797_cpuclk_observer_ops = {
+	.mainpll_rate = mt6797_cpuclk_observer_mainpll_rate,
 	.snapshot = mt6797_cpuclk_observer_snapshot,
 	.transition = mt6797_cpuclk_observer_transition,
 };
@@ -546,6 +557,36 @@ static int mt6797_cpuclk_write_divider(struct mt6797_cpuclk_observer *observer,
 	return -EIO;
 }
 
+static int mt6797_cpuclk_write_mux(struct mt6797_cpuclk_observer *observer,
+				  u32 value, u32 mask);
+
+/* Called under the CPU lease, with MAINPLL prepared and rate-protected. */
+static int mt6797_cpuclk_postdivider_switch(struct mt6797_cpuclk_observer *observer,
+				 const struct mt6797_cpuclk_transition_plan *plan)
+{
+	u32 offset = mt6797_cpuclk_pll_offset(plan->domain);
+	u32 mask = MT6797_FHCTL_DDS_MASK | GENMASK(26, 24);
+	int ret;
+
+	ret = mt6797_cpuclk_write_divider(observer, plan->temporary_clkdiv,
+					plan->clkdiv_mask);
+	if (ret)
+		return ret;
+	ret = mt6797_cpuclk_write_mux(observer, plan->mainpll_mux, plan->mux_mask);
+	if (ret)
+		return ret;
+
+	/* The CPU no longer uses ARMPLL. Never switch back after a bad retune. */
+	writel(plan->target_con1, observer->mcumixed + offset);
+	udelay(20); /* Vendor PLL_SETTLE_TIME for a DDS write. */
+	if ((readl(observer->mcumixed + offset) ^ plan->target_con1) & mask)
+		return -EIO;
+	ret = mt6797_cpuclk_write_mux(observer, plan->snapshot.muxsel, plan->mux_mask);
+	if (ret)
+		return ret;
+	return mt6797_cpuclk_write_divider(observer, plan->clkdiv, plan->clkdiv_mask);
+}
+
 struct mt6797_cpuclk_transition_transaction {
 	struct mt6797_cpuclk_observer *observer;
 	const struct mt6797_cpuclk_transition_plan *plan;
@@ -558,6 +599,7 @@ static int mt6797_cpuclk_transition_transaction(void __iomem *cspm, void *contex
 	const struct mt6797_cpuclk_transition_plan *plan = transaction->plan;
 	struct mt6797_cpuclk_snapshot snapshot;
 	struct mt6797_cpuclk_state state;
+	u8 fallback_saved = 0;
 	int release_ret;
 	int ret;
 
@@ -573,10 +615,39 @@ static int mt6797_cpuclk_transition_transaction(void __iomem *cspm, void *contex
 		goto out_release;
 	}
 
-	ret = mt6797_cpuclk_fhctl_init(observer,
+	if (plan->changes_postdiv) {
+		unsigned int domain;
+
+		if (!observer->topckgen || !observer->mainpll_rate_locked) {
+			ret = -EOPNOTSUPP;
+			goto out_release;
+		}
+		if (clk_get_rate(observer->mainpll) != plan->mainpll_rate) {
+			ret = -EAGAIN;
+			goto out_release;
+		}
+		/* Check on every direct retune, even after channel initialization. */
+		if (mt6797_cpuclk_fhctl_read(observer, MT6797_FHCTL_HP_EN) &
+		    BIT(mt6797_cpuclk_fhctl_channel(plan->domain))) {
+			ret = -EBUSY;
+			goto out_release;
+		}
+		ret = mt6797_topckgen_cpu_read(observer->topckgen, &fallback_saved);
+		if (ret)
+			goto out_release;
+		for (domain = 0; domain < MT6797_CPUCLK_NR_DOMAINS; domain++) {
+			if (((snapshot.muxsel >> (domain * 2)) & 3) >= 2 &&
+			    fallback_saved != 3) {
+				ret = -EUCLEAN;
+				goto out_release;
+			}
+		}
+	} else {
+		ret = mt6797_cpuclk_fhctl_init(observer,
 				       mt6797_cpuclk_fhctl_channel(plan->domain));
-	if (ret)
-		goto out_release;
+		if (ret)
+			goto out_release;
+	}
 
 	/*
 	 * DCM covers the lowest intermediate rate, including CKDIV steps.
@@ -586,6 +657,15 @@ static int mt6797_cpuclk_transition_transaction(void __iomem *cspm, void *contex
 	ret = mt6797_cpuclk_write_dcm(observer, &plan->before);
 	if (ret)
 		goto fault;
+	if (plan->changes_postdiv) {
+		ret = mt6797_topckgen_cpu_update(observer->topckgen, fallback_saved, 3);
+		if (ret)
+			goto fault;
+		ret = mt6797_cpuclk_postdivider_switch(observer, plan);
+		if (ret)
+			goto fault;
+		goto final_dcm;
+	}
 	if (plan->divider_before_hop) {
 		ret = mt6797_cpuclk_write_divider(observer, plan->clkdiv,
 						plan->clkdiv_mask);
@@ -603,6 +683,7 @@ static int mt6797_cpuclk_transition_transaction(void __iomem *cspm, void *contex
 		if (ret)
 			goto fault;
 	}
+final_dcm:
 	ret = mt6797_cpuclk_write_dcm(observer, &plan->after);
 	if (ret)
 		goto fault;
@@ -616,6 +697,9 @@ static int mt6797_cpuclk_transition_transaction(void __iomem *cspm, void *contex
 		     snapshot.clkdiv != plan->clkdiv ||
 		     snapshot.sync_dcm != plan->after.value[2]))
 		ret = -EIO;
+	/* Restore the shared setting only after proving every mux is back. */
+	if (!ret && plan->changes_postdiv)
+		ret = mt6797_topckgen_cpu_update(observer->topckgen, 3, fallback_saved);
 	if (!ret)
 		goto out_release;
 
@@ -647,17 +731,31 @@ mt6797_cpuclk_observer_transition(void *context,
 
 	if (!observer || !plan)
 		return -EINVAL;
-	/* The MAINPLL execution path is not installed yet. */
-	if (plan->changes_postdiv)
-		return -EOPNOTSUPP;
 
 	mutex_lock(&observer->lock);
-	if (observer->faulted)
+	if (observer->faulted) {
 		ret = -EUCLEAN;
-	else
-		ret = mt6797_dvfsp_cspm_transaction(observer->handoff,
+		goto out_unlock;
+	}
+	if (plan->changes_postdiv) {
+		if (!observer->mainpll || !observer->topckgen) {
+			ret = -EOPNOTSUPP;
+			goto out_unlock;
+		}
+		ret = clk_rate_exclusive_get(observer->mainpll);
+		if (ret)
+			goto out_unlock;
+		observer->mainpll_rate_locked = true;
+	}
+	ret = mt6797_dvfsp_cspm_transaction(observer->handoff,
 						    mt6797_cpuclk_transition_transaction,
 						    &transaction);
+	/* A fault may leave the CPU on MAINPLL: retain its rate protection. */
+	if (observer->mainpll_rate_locked && !observer->faulted) {
+		clk_rate_exclusive_put(observer->mainpll);
+		observer->mainpll_rate_locked = false;
+	}
+out_unlock:
 	mutex_unlock(&observer->lock);
 
 	return ret;
@@ -736,6 +834,21 @@ static unsigned long mt6797_cpuclk_branch_recalc_rate(struct clk_hw *hw,
 	return mt6797_cpuclk_apply_divider(state.armpll_rate, state.divider);
 }
 
+static int mt6797_cpuclk_provider_plan(struct mt6797_cpuclk *provider,
+				     enum mt6797_cpuclk_domain domain,
+				     const struct mt6797_cpuclk_snapshot *snapshot,
+				     unsigned long parent_rate, unsigned long rate,
+				     struct mt6797_cpuclk_transition_plan *plan)
+{
+	struct mt6797_cpuclk_backend *backend = &provider->backend;
+	unsigned long mainpll_rate = 0;
+
+	if (backend->ops && backend->ops->mainpll_rate)
+		mainpll_rate = backend->ops->mainpll_rate(backend->context);
+	return mt6797_cpuclk_plan_transition_mainpll(domain, snapshot, parent_rate,
+						   rate, mainpll_rate, plan);
+}
+
 static int mt6797_cpuclk_branch_determine_rate(struct clk_hw *hw,
 					       struct clk_rate_request *req)
 {
@@ -748,7 +861,7 @@ static int mt6797_cpuclk_branch_determine_rate(struct clk_hw *hw,
 	ret = mt6797_cpuclk_snapshot(branch->provider, &snapshot);
 	if (ret)
 		return ret;
-	ret = mt6797_cpuclk_plan_transition(branch->domain, &snapshot,
+	ret = mt6797_cpuclk_provider_plan(branch->provider, branch->domain, &snapshot,
 				 req->best_parent_rate, req->rate, &plan);
 	if (ret)
 		return ret;
@@ -773,7 +886,7 @@ static int mt6797_cpuclk_branch_set_rate(struct clk_hw *hw, unsigned long rate,
 	ret = mt6797_cpuclk_snapshot(branch->provider, &snapshot);
 	if (ret)
 		return ret;
-	ret = mt6797_cpuclk_plan_transition(branch->domain, &snapshot,
+	ret = mt6797_cpuclk_provider_plan(branch->provider, branch->domain, &snapshot,
 					    parent_rate, rate, &plan);
 	if (ret)
 		return ret;
@@ -1179,6 +1292,14 @@ static int mt6797_cpuclk_register(struct mt6797_cpuclk *provider)
 					   provider->clk_data);
 }
 
+static void mt6797_cpuclk_release_mainpll_rate(void *context)
+{
+	struct mt6797_cpuclk_observer *observer = context;
+
+	if (observer->mainpll_rate_locked)
+		clk_rate_exclusive_put(observer->mainpll);
+}
+
 static int mt6797_cpuclk_backend_init(struct platform_device *pdev,
 				      struct mt6797_cpuclk *provider)
 {
@@ -1194,6 +1315,16 @@ static int mt6797_cpuclk_backend_init(struct platform_device *pdev,
 		observer->topckgen = NULL;
 	}
 
+	if (observer->topckgen) {
+		observer->mainpll = devm_clk_get_enabled(&pdev->dev, "mainpll");
+		if (IS_ERR(observer->mainpll))
+			return dev_err_probe(&pdev->dev, PTR_ERR(observer->mainpll),
+					     "cannot prepare MAINPLL fallback\n");
+		ret = devm_add_action_or_reset(&pdev->dev,
+				mt6797_cpuclk_release_mainpll_rate, observer);
+		if (ret)
+			return ret;
+	}
 	observer->handoff = mt6797_dvfsp_handoff_get(&pdev->dev);
 	if (IS_ERR(observer->handoff))
 		return dev_err_probe(&pdev->dev, PTR_ERR(observer->handoff),

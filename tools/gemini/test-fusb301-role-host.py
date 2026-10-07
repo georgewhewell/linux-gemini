@@ -24,6 +24,7 @@ code = r'''
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #define BIT(n) (1U << (n))
@@ -32,6 +33,13 @@ code = r'''
 #define IS_ERR(p) ((uintptr_t)(p) > (uintptr_t)-4096)
 #define PTR_ERR(p) ((int)(intptr_t)(p))
 #define dev_info(...) ((void)0)
+#define dev_warn_ratelimited(...) ((void)0)
+#define container_of(p, type, member) ((type *)((char *)(p) - offsetof(type, member)))
+struct work_struct { int unused; };
+struct delayed_work { struct work_struct work; };
+#define to_delayed_work(w) container_of(w, struct delayed_work, work)
+#define msecs_to_jiffies(ms) (ms)
+static int system_freezable_wq;
 enum typec_port_type { TYPEC_PORT_SRC, TYPEC_PORT_SNK, TYPEC_PORT_DRP };
 enum typec_role { TYPEC_SINK, TYPEC_SOURCE };
 enum typec_data_role { TYPEC_DEVICE, TYPEC_HOST };
@@ -42,10 +50,11 @@ enum typec_pwr_opmode { TYPEC_PWR_MODE_USB, TYPEC_PWR_MODE_1_5A,
 enum usb_role { USB_ROLE_NONE, USB_ROLE_HOST, USB_ROLE_DEVICE };
 enum { TYPEC_ACCESSORY_NONE, TYPEC_ACCESSORY_AUDIO, TYPEC_ACCESSORY_DEBUG };
 struct device { int unused; };
-struct regmap { unsigned int status, type; };
+struct regmap { unsigned int status, type, mode, control, mask; int error; };
 struct regulator { bool on; int enable_error; };
 struct typec_capability { enum typec_port_type type; int prefer_role; };
 struct typec_port {
+    void *data_private;
     enum typec_orientation orientation;
     enum typec_data_role data;
     enum typec_role power;
@@ -58,6 +67,7 @@ struct i2c_client { struct device dev; int irq; void *data; };
 static struct typec_partner partner;
 static int partners, orientation_error, partner_error;
 static bool removing, irq_live, port_live, switch_released;
+static bool poll_pending;
 '''
 code += "\n".join(re.findall(r"^#define FUSB301_.*$", source, re.M)) + "\n"
 code += fragment(r"^struct fusb301 \{.*?^};\n")
@@ -65,7 +75,23 @@ code += r'''
 static int regmap_read(struct regmap *map, unsigned reg, unsigned *value)
 {
     assert(reg == FUSB301_REG_STATUS || reg == FUSB301_REG_TYPE);
+    if (map->error) return map->error;
     *value = reg == FUSB301_REG_STATUS ? map->status : map->type;
+    return 0;
+}
+static void *typec_get_drvdata(struct typec_port *p) { return p->data_private; }
+static int regmap_write(struct regmap *map, unsigned reg, unsigned value)
+{
+    if (reg == FUSB301_REG_MODE) map->mode = value;
+    else { assert(reg == FUSB301_REG_MASK); map->mask = value; }
+    return 0;
+}
+static int regmap_update_bits(struct regmap *map, unsigned reg, unsigned mask, unsigned value)
+{
+    unsigned *target;
+    if (reg == FUSB301_REG_MODE) target = &map->mode;
+    else { assert(reg == FUSB301_REG_CONTROL); target = &map->control; }
+    *target = (*target & ~mask) | (value & mask);
     return 0;
 }
 static int regulator_enable(struct regulator *r)
@@ -83,7 +109,7 @@ static int regulator_disable(struct regulator *r)
 }
 static int usb_role_switch_set_role(struct usb_role_switch *sw, enum usb_role role)
 {
-    if (removing) assert(!irq_live);
+    if (removing) assert(!irq_live && !poll_pending);
     if (!sw) return 0;
     if (sw->error) return sw->error;
     sw->role = role;
@@ -124,10 +150,19 @@ static void devm_free_irq(struct device *d, int irq, void *data)
 { (void)d; (void)irq; (void)data; assert(irq_live); irq_live = false; }
 static void usb_role_switch_put(struct usb_role_switch *sw)
 { (void)sw; assert(!port_live); switch_released = true; }
+static void queue_delayed_work(int queue, struct delayed_work *work, unsigned delay)
+{
+    (void)queue; (void)work;
+    assert(port_live && !removing && delay == 500);
+    poll_pending = true;
+}
+static void cancel_delayed_work_sync(struct delayed_work *work)
+{ (void)work; assert(port_live); poll_pending = false; }
 '''
-for name in ("fusb301_set_vbus", "fusb301_default_role", "fusb301_orientation",
+for name in ("fusb301_set_vbus", "fusb301_mode_for_port_type", "fusb301_host_current",
+             "fusb301_set_port_type", "fusb301_hw_init", "fusb301_default_role", "fusb301_orientation",
              "fusb301_sink_opmode", "fusb301_unregister_partner",
-             "fusb301_disconnect", "fusb301_update_status", "fusb301_remove"):
+             "fusb301_disconnect", "fusb301_update_status", "fusb301_poll", "fusb301_remove"):
     code += fragment(r"^static [\w ]+ " + name + r"\(.*?^}\n")
 
 code += r'''
@@ -142,6 +177,7 @@ int main(void)
         .cap.type = TYPEC_PORT_DRP,
     };
     struct i2c_client client = { .data = &fusb };
+    port.data_private = &fusb;
     port_live = true;
     assert(!fusb301_update_status(&fusb));
     assert(sw.role == USB_ROLE_NONE && !vbus.on && !partners);
@@ -214,7 +250,37 @@ int main(void)
     fusb301_remove(&client);
     assert(!irq_live && !port_live && switch_released && !partners && !vbus.on);
     assert(sw.role == USB_ROLE_NONE);
-    puts("PASS: FUSB301 roles, orientations, detach, provider failures and IRQ teardown");
+
+    /* Sink-only polling keeps working after a failed read, then stops before teardown. */
+    removing = switch_released = false;
+    port_live = true;
+    fusb.polling = true;
+    fusb.cap.type = TYPEC_PORT_SNK;
+    assert(!fusb301_hw_init(&fusb));
+    assert(map.mode == FUSB301_MODE_SINK && (map.control & FUSB301_CONTROL_INT_MASK));
+    assert(fusb301_set_port_type(&port, TYPEC_PORT_SRC) == -EOPNOTSUPP);
+    assert(fusb301_set_port_type(&port, TYPEC_PORT_DRP) == -EOPNOTSUPP);
+    assert(map.mode == FUSB301_MODE_SINK);
+    assert(!fusb301_set_port_type(&port, TYPEC_PORT_SNK));
+    map.type = FUSB301_TYPE_SOURCE;
+    map.status = FUSB301_STATUS_ATTACH | FUSB301_ORIENT_CC1;
+    fusb301_poll(&fusb.poll_work.work);
+    assert(poll_pending && sw.role == USB_ROLE_DEVICE && partners == 1 && !vbus.on);
+    poll_pending = false;
+    map.error = -EIO;
+    fusb301_poll(&fusb.poll_work.work);
+    assert(poll_pending && !vbus.on);
+    map.error = 0;
+    map.status = FUSB301_STATUS_ATTACH | FUSB301_ORIENT_CC2;
+    fusb301_poll(&fusb.poll_work.work);
+    assert(port.orientation == TYPEC_ORIENTATION_REVERSE && partners == 1);
+    map.status = 0;
+    fusb301_poll(&fusb.poll_work.work);
+    assert(sw.role == USB_ROLE_NONE && !partners && poll_pending);
+    removing = true;
+    fusb301_remove(&client);
+    assert(!poll_pending && !port_live && switch_released);
+    puts("PASS: FUSB301 roles, orientations, errors, polling and IRQ/work teardown");
     return 0;
 }
 '''

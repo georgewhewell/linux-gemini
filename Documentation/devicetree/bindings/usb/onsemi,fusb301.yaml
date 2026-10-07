@@ -42,7 +42,8 @@ properties:
     unevaluatedProperties: false
     description:
       The managed USB Type-C connector. FUSB301 does not support Power
-      Delivery, so the connector must set pd-disable.
+      Delivery, so the connector must set pd-disable. The connector graph
+      may link a USB role switch and an orientation switch.
     properties:
       compatible:
         const: usb-c-connector

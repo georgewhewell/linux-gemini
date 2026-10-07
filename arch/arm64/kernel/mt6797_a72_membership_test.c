@@ -97,15 +97,13 @@ mt6797_a72_ready_token_for_up(void)
 	struct arm64_late_cpu_ready_token ready = {
 		.abi = ARM64_LATE_CPU_PLAN_ABI,
 		.plan_identity = { 1, 2, 3, 4 },
-		.source_parent_identity = { 5, 6, 7, 8 },
-		.config_input_identity = { 9, 10, 11, 12 },
 		.evidence_identity = { 13, 14, 15, 16 },
 		.target_cpu = { 8, 9 },
 		.expected_target_mpidr = { 0x200, 0x201 },
 		.observed_target_mpidr = { 0x200, 0x201 },
 	};
 
-	strscpy(ready.profile_id, "mt6797-a53-a72-a41-v7",
+	strscpy(ready.profile_id, "mt6797-a53-a72",
 		sizeof(ready.profile_id));
 	cpumask_set_cpu(8, &ready.target_cpus);
 	cpumask_set_cpu(9, &ready.target_cpus);

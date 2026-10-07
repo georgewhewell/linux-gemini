@@ -647,6 +647,9 @@ mt6797_cpuclk_observer_transition(void *context,
 
 	if (!observer || !plan)
 		return -EINVAL;
+	/* The MAINPLL execution path is not installed yet. */
+	if (plan->changes_postdiv)
+		return -EOPNOTSUPP;
 
 	mutex_lock(&observer->lock);
 	if (observer->faulted)

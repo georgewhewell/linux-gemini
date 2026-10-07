@@ -221,6 +221,8 @@ int main(void)
  req.rate=1118000000; req.min_rate=0; req.max_rate=2000000000;
  assert(mt6797_cpuclk_branch_determine_rate(&branch.hw,&req)==-EOPNOTSUPP);
  assert(!operations);
+ reset(3,2); plan.changes_postdiv=true; assert(run()==-EOPNOTSUPP);
+ assert(!operations && !releases);
  reset(3,2); observer.faulted=true; assert(run()==-EUCLEAN);
  assert(!operations && !releases);
  reset(3,2); stale=1; assert(run()==-EAGAIN);

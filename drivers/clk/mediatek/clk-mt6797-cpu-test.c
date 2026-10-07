@@ -429,7 +429,112 @@ static void mt6797_cpuclk_transition_admission_test(struct kunit *test)
 		&snapshot, 26000000, 481000000, &plan), -EOPNOTSUPP);
 }
 
+static void mt6797_cpuclk_postdivider_pairs_test(struct kunit *test)
+{
+	static const unsigned int rates[] = { 325, 468, 650, 832, 962, 1092, 1209 };
+	static const unsigned int divs[] = { 2, 2, 1, 1, 1, 1, 1 };
+	static const unsigned int postdivs[] = { 1, 1, 1, 1, 1, 0, 0 };
+	struct mt6797_cpuclk_snapshot snapshot;
+	struct mt6797_cpuclk_transition_plan plan;
+	unsigned long old_pll, new_pll, minimum, maximum, stages[5];
+	unsigned int i, j, k, dcm, selector, count, hop_div;
+
+	for (i = 0; i < ARRAY_SIZE(rates); i++) {
+		for (j = 0; j < ARRAY_SIZE(rates); j++) {
+			for (dcm = 0; dcm < 32; dcm++) {
+				snapshot = mt6797_cpuclk_boot_snapshot();
+				old_pll = rates[i] * divs[i] * 1000000UL;
+				new_pll = rates[j] * divs[j] * 1000000UL;
+				snapshot.armpll_con1[1] = BIT(31) | (postdivs[i] << 24) |
+					((u64)old_pll * (1U << (14 + postdivs[i])) / 26000000);
+				selector = divs[i] == 2 ? 10 : 8;
+				snapshot.clkdiv = BIT(31) | (8 << 15) | (selector << 10) |
+					(10 << 5) | 8;
+				snapshot.sync_dcm = (snapshot.sync_dcm & ~GENMASK(21, 17)) |
+					(dcm << 17);
+				KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_transition_mainpll(
+					MT6797_CPUCLK_MP1, &snapshot, 26000000,
+					rates[j] * 1000000UL, 1092000000, &plan), 0);
+				KUNIT_EXPECT_EQ(test, plan.changes_postdiv,
+					postdivs[i] != postdivs[j]);
+				KUNIT_EXPECT_EQ(test, plan.initial_rate, rates[i] * 1000000ULL);
+				KUNIT_EXPECT_EQ(test, plan.rate, rates[j] * 1000000UL);
+				KUNIT_EXPECT_EQ(test, plan.pll_rate, new_pll);
+				KUNIT_EXPECT_EQ(test, FIELD_GET(GENMASK(26, 24), plan.target_con1),
+					postdivs[j]);
+				KUNIT_EXPECT_EQ(test,
+					(u64)plan.dds * 26000000 >> (14 + postdivs[j]),
+					(u64)new_pll);
+				stages[0] = rates[i] * 1000000UL;
+				stages[4] = rates[j] * 1000000UL;
+				if (plan.changes_postdiv) {
+					stages[1] = old_pll / 4;
+					stages[2] = 1092000000 / 4;
+					stages[3] = new_pll / 4;
+					KUNIT_EXPECT_EQ(test,
+						FIELD_GET(GENMASK(14, 10), plan.temporary_clkdiv),
+						11U);
+					KUNIT_EXPECT_EQ(test,
+						FIELD_GET(GENMASK(5, 4), plan.mainpll_mux), 2U);
+					KUNIT_EXPECT_EQ(test, plan.mux_mask, (u32)GENMASK(5, 4));
+					KUNIT_EXPECT_EQ(test,
+						(plan.mainpll_mux ^ snapshot.muxsel) &
+						~plan.mux_mask, 0U);
+					count = 5;
+				} else {
+					hop_div = divs[i] > divs[j] ? divs[i] : divs[j];
+					stages[1] = old_pll / hop_div;
+					stages[2] = new_pll / hop_div;
+					stages[3] = stages[4];
+					count = 4;
+				}
+				minimum = stages[0];
+				maximum = (rates[i] > rates[j] ? rates[i] : rates[j]) * 1000000UL;
+				for (k = 0; k < count; k++) {
+					minimum = min(minimum, stages[k]);
+					KUNIT_EXPECT_LE(test, stages[k], maximum);
+				}
+				KUNIT_EXPECT_EQ(test, plan.minimum_rate, minimum);
+				KUNIT_EXPECT_EQ(test,
+					FIELD_GET(GENMASK(21, 17), plan.before.value[2]),
+					min(dcm, minimum / 70000000));
+				KUNIT_EXPECT_EQ(test,
+					FIELD_GET(GENMASK(21, 17), plan.after.value[2]),
+					rates[j] / 70);
+				KUNIT_EXPECT_EQ(test,
+					(plan.clkdiv ^ snapshot.clkdiv) & ~GENMASK(14, 10), 0U);
+				KUNIT_EXPECT_EQ(test,
+					(plan.temporary_clkdiv ^ snapshot.clkdiv) &
+					~GENMASK(14, 10), 0U);
+			}
+		}
+	}
+}
+
+static void mt6797_cpuclk_postdivider_admission_test(struct kunit *test)
+{
+	struct mt6797_cpuclk_snapshot snapshot = mt6797_cpuclk_boot_snapshot();
+	struct mt6797_cpuclk_transition_plan plan;
+
+	/* Zero fallback rate must retain the old postdivider prohibition. */
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition_mainpll(MT6797_CPUCLK_MP1,
+		&snapshot, 26000000, 325000000, 0, &plan), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition_mainpll(MT6797_CPUCLK_MP1,
+		&snapshot, 26000000, 325000000, 3, &plan), -ERANGE);
+	/* A fallback that is too fast must not depend on extra supply voltage. */
+	snapshot.armpll_con1[1] = BIT(31) | 0x64000; /* 650MHz, POS=1 */
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition_mainpll(MT6797_CPUCLK_MP1,
+		&snapshot, 26000000, 325000000, 3000000000UL, &plan), -ERANGE);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition_mainpll(MT6797_CPUCLK_MP1,
+		&snapshot, 26000000, 326000000, 1092000000, &plan), -EINVAL);
+	snapshot.muxsel &= ~GENMASK(5, 4);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition_mainpll(MT6797_CPUCLK_MP1,
+		&snapshot, 26000000, 325000000, 1092000000, &plan), -EOPNOTSUPP);
+}
+
 static struct kunit_case mt6797_cpuclk_test_cases[] = {
+	KUNIT_CASE(mt6797_cpuclk_postdivider_pairs_test),
+	KUNIT_CASE(mt6797_cpuclk_postdivider_admission_test),
 	KUNIT_CASE(mt6797_cpuclk_transition_pairs_test),
 	KUNIT_CASE(mt6797_cpuclk_transition_admission_test),
 	KUNIT_CASE(mt6797_cpuclk_read_fence_test),

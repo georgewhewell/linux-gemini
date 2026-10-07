@@ -362,11 +362,15 @@ static bool mt6797_cpuclk_divider_is_unity(u8 divider)
  * Increasing division precedes FHCTL; decreasing division follows it.
  * Unlike a unity-divider hop, the intermediate CPU rate can fall below both
  * endpoints. Prepare DCM for that minimum, then program the final selector.
- * This planner does not authorize a voltage or ARMPLL postdivider change.
+ * For a postdivider change, use CKDIV=4 while on MAINPLL and programming
+ * the disconnected ARMPLL. Even the fallback CPU rate must stay below the
+ * larger endpoint, independently of the current regulator voltage. DCM
+ * covers both divided ARMPLL endpoints and the temporary MAINPLL rate.
  */
-int mt6797_cpuclk_plan_transition(enum mt6797_cpuclk_domain domain,
+int mt6797_cpuclk_plan_transition_mainpll(enum mt6797_cpuclk_domain domain,
 			   const struct mt6797_cpuclk_snapshot *snapshot,
 			   unsigned long clk26m_rate, unsigned long rate,
+			   unsigned long mainpll_rate,
 			   struct mt6797_cpuclk_transition_plan *plan)
 {
 	struct mt6797_cpuclk_state initial;
@@ -387,9 +391,9 @@ int mt6797_cpuclk_plan_transition(enum mt6797_cpuclk_domain domain,
 		return -EOPNOTSUPP;
 	if (mt6797_cpuclk_divider_is_unity(initial.divider))
 		old_div = 1;
-	else if (domain == MT6797_CPUCLK_MP0 && initial.divider == 10)
+	else if (initial.divider == 10)
 		old_div = 2;
-	else if (domain == MT6797_CPUCLK_MP0 && initial.divider == 11)
+	else if (initial.divider == 11)
 		old_div = 4;
 	else
 		return -EOPNOTSUPP;
@@ -400,14 +404,25 @@ int mt6797_cpuclk_plan_transition(enum mt6797_cpuclk_domain domain,
 		new_div = rate == 221000000 ? 4 : 2;
 		ret = mt6797_cpuclk_encode_pll_rate(rate * new_div,
 				clk26m_rate, 1, con1, &target_con1, &pll_rate);
+	} else if (domain == MT6797_CPUCLK_MP1 &&
+		   (rate == 325000000 || rate == 468000000)) {
+		new_div = 2;
+		ret = mt6797_cpuclk_encode_pll_rate(rate * new_div,
+				clk26m_rate, 1, con1, &target_con1, &pll_rate);
 	} else {
 		ret = mt6797_cpuclk_plan_pll_rate(domain, rate, clk26m_rate,
 						con1, &target_con1, &pll_rate);
 	}
 	if (ret)
 		return ret;
-	if ((con1 ^ target_con1) & MT6797_ARMPLL_POSDIV_MASK)
+	plan->changes_postdiv = !!((con1 ^ target_con1) & MT6797_ARMPLL_POSDIV_MASK);
+	if (plan->changes_postdiv && !mainpll_rate)
 		return -EOPNOTSUPP;
+	plan->target_con1 = target_con1;
+	plan->mainpll_rate = mainpll_rate;
+	plan->temporary_clkdiv = snapshot->clkdiv;
+	plan->mainpll_mux = snapshot->muxsel;
+	plan->mux_mask = 0;
 
 	selector = new_div == 4 ? 11 : new_div == 2 ? 10 : 8;
 	/* Preserve the firmware's equivalent unity encoding if unchanged. */
@@ -425,6 +440,25 @@ int mt6797_cpuclk_plan_transition(enum mt6797_cpuclk_domain domain,
 	before_hop = initial.armpll_rate / (new_div > old_div ? new_div : old_div);
 	after_hop = pll_rate / (new_div > old_div ? new_div : old_div);
 	minimum = min(before_hop, after_hop);
+	if (plan->changes_postdiv) {
+		unsigned long ceiling = plan->initial_rate > plan->rate ?
+					plan->initial_rate : plan->rate;
+
+		if (mainpll_rate / 4 > ceiling || mainpll_rate < 4)
+			return -ERANGE;
+		plan->temporary_clkdiv = (snapshot->clkdiv & ~plan->clkdiv_mask) |
+					(11U << shift);
+		ret = mt6797_cpuclk_plan_mux(domain, MT6797_CPUCLK_MAINPLL,
+					    snapshot->muxsel, &plan->mainpll_mux);
+		if (ret)
+			return ret;
+		shift = mt6797_cpuclk_domains[domain].mux_shift;
+		plan->mux_mask = GENMASK(shift + 1, shift);
+		before_hop = initial.armpll_rate / 4;
+		after_hop = pll_rate / 4;
+		minimum = min(before_hop, after_hop);
+		minimum = min(minimum, mainpll_rate / 4);
+	}
 	plan->minimum_rate = minimum;
 
 	/* Never raise the initial DCM selector before changing the CPU clock. */
@@ -450,4 +484,14 @@ int mt6797_cpuclk_plan_transition(enum mt6797_cpuclk_domain domain,
 	plan->clk26m_rate = clk26m_rate;
 	plan->snapshot = *snapshot;
 	return 0;
+}
+
+/* Existing callers cannot accidentally request an unowned MAINPLL handoff. */
+int mt6797_cpuclk_plan_transition(enum mt6797_cpuclk_domain domain,
+			   const struct mt6797_cpuclk_snapshot *snapshot,
+			   unsigned long clk26m_rate, unsigned long rate,
+			   struct mt6797_cpuclk_transition_plan *plan)
+{
+	return mt6797_cpuclk_plan_transition_mainpll(domain, snapshot,
+					 clk26m_rate, rate, 0, plan);
 }

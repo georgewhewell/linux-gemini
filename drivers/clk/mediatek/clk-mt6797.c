@@ -4,8 +4,13 @@
  * Author: Kevin Chen <kevin-cw.chen@mediatek.com>
  */
 
+#include <linux/bitfield.h>
+#include <linux/io.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
+#include <linux/soc/mediatek/mt6797-topckgen.h>
 
 #include "clk-gate.h"
 #include "clk-mtk.h"
@@ -21,6 +26,93 @@
  */
 
 static DEFINE_SPINLOCK(mt6797_clk_lock);
+
+#define MT6797_CLK_MISC_CFG_0 0x104
+#define MT6797_CPU_FALLBACK_MASK GENMASK(5, 4)
+
+struct mt6797_topckgen {
+	void __iomem *base;
+};
+
+int mt6797_topckgen_cpu_read(struct mt6797_topckgen *top, u8 *value)
+{
+	unsigned long flags;
+	u32 reg;
+
+	if (!top || !value)
+		return -EINVAL;
+	spin_lock_irqsave(&mt6797_clk_lock, flags);
+	reg = readl(top->base + MT6797_CLK_MISC_CFG_0);
+	spin_unlock_irqrestore(&mt6797_clk_lock, flags);
+	*value = FIELD_GET(MT6797_CPU_FALLBACK_MASK, reg);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_topckgen_cpu_read);
+
+int mt6797_topckgen_cpu_update(struct mt6797_topckgen *top,
+			      u8 expected, u8 value)
+{
+	unsigned long flags;
+	u32 reg;
+	int ret = 0;
+
+	if (!top || expected > 3 || value > 3)
+		return -EINVAL;
+	/* The MFG_52M mux occupies bits[2:1] of this same register. */
+	spin_lock_irqsave(&mt6797_clk_lock, flags);
+	reg = readl(top->base + MT6797_CLK_MISC_CFG_0);
+	if (FIELD_GET(MT6797_CPU_FALLBACK_MASK, reg) != expected) {
+		ret = -EAGAIN;
+		goto out;
+	}
+	if (expected == value)
+		goto out;
+	reg = (reg & ~MT6797_CPU_FALLBACK_MASK) |
+	      FIELD_PREP(MT6797_CPU_FALLBACK_MASK, value);
+	writel(reg, top->base + MT6797_CLK_MISC_CFG_0);
+	if (FIELD_GET(MT6797_CPU_FALLBACK_MASK,
+		      readl(top->base + MT6797_CLK_MISC_CFG_0)) != value)
+		ret = -EIO;
+out:
+	spin_unlock_irqrestore(&mt6797_clk_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_topckgen_cpu_update);
+
+struct mt6797_topckgen *mt6797_topckgen_get(struct device *consumer)
+{
+	struct platform_device *supplier;
+	struct mt6797_topckgen *top;
+	struct device_node *node;
+	int ret = 0;
+
+	if (!consumer || !consumer->of_node)
+		return ERR_PTR(-EINVAL);
+	if (!of_find_property(consumer->of_node, "mediatek,topckgen", NULL))
+		return ERR_PTR(-ENOENT);
+	node = of_parse_phandle(consumer->of_node, "mediatek,topckgen", 0);
+	if (!node)
+		return ERR_PTR(-EINVAL);
+	if (!of_device_is_compatible(node, "mediatek,mt6797-topckgen")) {
+		of_node_put(node);
+		return ERR_PTR(-EINVAL);
+	}
+	supplier = of_find_device_by_node(node);
+	of_node_put(node);
+	if (!supplier)
+		return ERR_PTR(-EPROBE_DEFER);
+
+	device_lock(&supplier->dev);
+	top = device_is_bound(&supplier->dev) ? platform_get_drvdata(supplier) : NULL;
+	if (!top)
+		ret = -EPROBE_DEFER;
+	else if (!device_link_add(consumer, &supplier->dev, DL_FLAG_AUTOREMOVE_CONSUMER))
+		ret = -ENOMEM;
+	device_unlock(&supplier->dev);
+	put_device(&supplier->dev);
+	return ret ? ERR_PTR(ret) : top;
+}
+EXPORT_SYMBOL_GPL(mt6797_topckgen_get);
 
 static const struct mtk_fixed_factor top_fixed_divs[] = {
 	FACTOR(CLK_TOP_SYSPLL_CK, "syspll_ck", "mainpll", 1, 1),
@@ -383,12 +475,19 @@ static const struct mtk_composite top_muxes[] = {
 static int mtk_topckgen_init(struct platform_device *pdev)
 {
 	struct clk_hw_onecell_data *clk_data;
+	struct mt6797_topckgen *top;
+	int ret;
 	void __iomem *base;
 	struct device_node *node = pdev->dev.of_node;
 
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
+
+	top = devm_kzalloc(&pdev->dev, sizeof(*top), GFP_KERNEL);
+	if (!top)
+		return -ENOMEM;
+	top->base = base;
 
 	clk_data = mtk_alloc_clk_data(CLK_TOP_NR);
 	if (!clk_data)
@@ -401,7 +500,10 @@ static int mtk_topckgen_init(struct platform_device *pdev)
 				    ARRAY_SIZE(top_muxes), base,
 				    &mt6797_clk_lock, clk_data);
 
-	return of_clk_add_hw_provider(node, of_clk_hw_onecell_get, clk_data);
+	ret = of_clk_add_hw_provider(node, of_clk_hw_onecell_get, clk_data);
+	if (!ret)
+		platform_set_drvdata(pdev, top);
+	return ret;
 }
 
 static const struct mtk_gate_regs infra0_cg_regs = {

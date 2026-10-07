@@ -42,6 +42,13 @@ properties:
       MT6797 DVFSP handoff provider which owns the CSPM mapping and admits a
       CPU-clock transaction only after its handoff validation reaches READY.
 
+  mediatek,topckgen:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      TOPCKGEN provider owning the shared clock configuration required for
+      CPU transitions through MAINPLL or UNIVPLL. Its register also contains
+      the MFG clock mux and must be updated by that provider under its lock.
+
   clocks:
     items:
       - description: 26 MHz reference and safe clock source

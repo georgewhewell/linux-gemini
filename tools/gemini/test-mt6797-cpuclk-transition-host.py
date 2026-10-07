@@ -446,6 +446,13 @@ int main(void)
    cci_faults++;
   }
  }
+ /* The firmware's measured 629999328 Hz is not a vendor table point. */
+ reset_cci(6,6);
+ live.armpll_con1[3]=BIT(31)|BIT(24)|((u64)630000000*32768/26000000);
+ ceiling=630000000;
+ assert(!mt6797_cpuclk_plan_transition(3,&live,26000000,611000000,&plan));
+ assert(plan.initial_rate==629999328 && !plan.changes_postdiv);
+ assert(!run() && !(live.sync_dcm & (31U<<1)));
  for(unsigned int saved=0;saved<4;saved++) {
   reset_cci_post(saved); assert(!run());
   assert(fallback_setting==saved && !rate_refs);

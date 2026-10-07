@@ -55,8 +55,6 @@ static struct arm64_late_cpu_receipt late_receipt __ro_after_init = {
 	.state = ARM64_LATE_CPU_PROFILE_NONE,
 };
 
-static struct arm64_late_cpu_ready_token late_ready_token __ro_after_init;
-
 static void __init late_profile_block(u64 blockers, const char *reason)
 {
 	if (!late_receipt.profile_id[0])
@@ -1024,39 +1022,8 @@ void __init arm64_finalize_late_cpu_profile_user(void)
 	    late_receipt.user_hwcaps_finalized)
 		panic("late CPU profile user verification failed: %d", ret);
 
-	late_ready_token.abi = ARM64_LATE_CPU_PLAN_ABI;
-	strscpy(late_ready_token.profile_id, late_plan.profile_id,
-		sizeof(late_ready_token.profile_id));
-	cpumask_copy(&late_ready_token.target_cpus, &late_plan.target_cpus);
-	memcpy(late_ready_token.plan_identity, late_plan.identity,
-	       sizeof(late_ready_token.plan_identity));
-	memcpy(late_ready_token.evidence_identity,
-	       late_plan.evidence.evidence_identity,
-	       sizeof(late_ready_token.evidence_identity));
-	memcpy(late_ready_token.target_cpu, late_plan.evidence.target_cpu,
-	       sizeof(late_ready_token.target_cpu));
-	memcpy(late_ready_token.expected_target_mpidr,
-	       late_plan.evidence.expected_target_mpidr,
-	       sizeof(late_ready_token.expected_target_mpidr));
-	memcpy(late_ready_token.observed_target_mpidr,
-	       late_plan.evidence.observed_target_mpidr,
-	       sizeof(late_ready_token.observed_target_mpidr));
-	memcpy(late_ready_token.expected_target_midr,
-	       late_plan.evidence.expected_target_midr,
-	       sizeof(late_ready_token.expected_target_midr));
-	memcpy(late_ready_token.observed_target_midr,
-	       late_plan.evidence.observed_target_midr,
-	       sizeof(late_ready_token.observed_target_midr));
-	memcpy(late_ready_token.observed_target_revidr,
-	       late_plan.evidence.observed_target_revidr,
-	       sizeof(late_ready_token.observed_target_revidr));
-	late_ready_token.committed = late_receipt.committed;
-	if (!late_profile_receipt_identity_matches(&late_plan, &late_receipt) ||
-	    !late_profile_effects_match(&late_receipt.committed,
-					&late_plan.effects))
-		panic("late CPU profile receipt changed before READY publication");
 	late_receipt.user_hwcaps_finalized = 1;
-	/* Pairs with smp_load_acquire() in the READY-token accessor. */
+	/* Pairs with smp_load_acquire() in arm64_late_cpu_profile_ready(). */
 	smp_store_release(&late_receipt.state,
 			  ARM64_LATE_CPU_PROFILE_READY);
 	pr_info("%s ready\n", late_receipt.profile_id);
@@ -1167,13 +1134,9 @@ int arm64_validate_late_cpu_expected_target(unsigned int cpu)
 	return late_expected_target_matches(expected, target, info) ? 0 : -ERANGE;
 }
 
-const struct arm64_late_cpu_ready_token *
-arm64_get_late_cpu_ready_token(void)
+bool arm64_late_cpu_profile_ready(void)
 {
-	/* A36 consumers may observe only the immutable READY token. */
-	if (smp_load_acquire(&late_receipt.state) !=
-	    ARM64_LATE_CPU_PROFILE_READY)
-		return NULL;
-
-	return &late_ready_token;
+	/* Pairs with publication after capability and HWCAP finalization. */
+	return smp_load_acquire(&late_receipt.state) ==
+		ARM64_LATE_CPU_PROFILE_READY;
 }

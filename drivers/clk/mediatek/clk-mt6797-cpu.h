@@ -54,6 +54,21 @@ struct mt6797_cpuclk_hop_plan {
 	struct mt6797_cpuclk_snapshot snapshot;
 };
 
+/* One CPU-rate transaction: DCM, optional CKDIV, FHCTL, CKDIV, DCM. */
+struct mt6797_cpuclk_transition_plan {
+	u64 initial_rate;
+	unsigned long rate;
+	unsigned long pll_rate;
+	unsigned long minimum_rate;
+	u32 dds;
+	u32 clkdiv_mask;
+	u32 clkdiv;
+	bool divider_before_hop;
+	struct mt6797_cpuclk_dcm_plan before;
+	struct mt6797_cpuclk_dcm_plan after;
+	struct mt6797_cpuclk_snapshot snapshot;
+};
+
 struct mt6797_cpuclk_backend_ops {
 	int (*snapshot)(void *context, struct mt6797_cpuclk_snapshot *snapshot);
 	int (*hop)(void *context, const struct mt6797_cpuclk_hop_plan *plan);
@@ -88,5 +103,9 @@ int mt6797_cpuclk_plan_hop(enum mt6797_cpuclk_domain domain,
 			   const struct mt6797_cpuclk_snapshot *snapshot,
 			   unsigned long clk26m_rate, unsigned long rate,
 			   struct mt6797_cpuclk_hop_plan *plan);
+int mt6797_cpuclk_plan_transition(enum mt6797_cpuclk_domain domain,
+			   const struct mt6797_cpuclk_snapshot *snapshot,
+			   unsigned long clk26m_rate, unsigned long rate,
+			   struct mt6797_cpuclk_transition_plan *plan);
 
 #endif /* __DRV_CLK_MT6797_CPU_H */

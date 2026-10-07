@@ -67,19 +67,6 @@ static const struct arm64_late_cpu_expected_pair mt6797_a72_expected_pair __init
 	.id_pfr1 = 0x10011011,
 };
 
-static bool __init mt6797_a72_kpti_policy_static(void)
-{
-#ifdef CONFIG_CMDLINE_FORCE
-	return IS_ENABLED(CONFIG_UNMAP_KERNEL_AT_EL0) &&
-	       !IS_ENABLED(CONFIG_RANDOMIZE_BASE) &&
-	       strstr(CONFIG_CMDLINE, "nokaslr") &&
-	       !strstr(CONFIG_CMDLINE, "kpti=") &&
-	       !strcmp(saved_command_line, CONFIG_CMDLINE);
-#else
-	return false;
-#endif
-}
-
 static bool __init
 mt6797_a72_cap_descriptor_shape(const struct arm64_cpu_capabilities *cap,
 				const struct arm64_cpu_capabilities *match)
@@ -137,9 +124,9 @@ mt6797_a72_classify_local_cap(const struct arm64_cpu_capabilities *cap,
 			&evidence->system_cap);
 	case ARM64_UNMAP_KERNEL_AT_EL0:
 		if (cap->type !=
-			    ARM64_CPUCAP_BOOT_RESTRICTED_CPU_LOCAL_FEATURE ||
-		    !mt6797_a72_kpti_policy_static())
+			    ARM64_CPUCAP_BOOT_RESTRICTED_CPU_LOCAL_FEATURE)
 			break;
+		/* The classifier checks the parsed KPTI policy and CPU model. */
 		return arm64_late_cpu_static_feature_state(cap, match,
 							   MIDR_CORTEX_A72);
 	case ARM64_MISMATCHED_CACHE_TYPE:
@@ -1158,7 +1145,6 @@ static bool __init mt6797_a72_profile_config_gates_match(void)
 	       IS_ENABLED(CONFIG_ARM64_LPA2) &&
 	       IS_ENABLED(CONFIG_UNMAP_KERNEL_AT_EL0) &&
 	       IS_ENABLED(CONFIG_ARM_GIC_V3) &&
-	       mt6797_a72_kpti_policy_static() &&
 	       !IS_ENABLED(CONFIG_RANDOMIZE_BASE) &&
 	       !IS_ENABLED(CONFIG_VIRTUALIZATION) &&
 	       !IS_ENABLED(CONFIG_ARM64_PSEUDO_NMI) &&

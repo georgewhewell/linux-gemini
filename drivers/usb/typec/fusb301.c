@@ -13,6 +13,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/usb/role.h>
 #include <linux/usb/typec.h>
+#include <linux/workqueue.h>
 
 #define FUSB301_REG_DEVICE_ID	0x01
 #define FUSB301_REG_MODE	0x02
@@ -23,6 +24,7 @@
 #define FUSB301_REG_INTERRUPT	0x13
 
 #define FUSB301_DEVICE_ID	0x12
+#define FUSB301_POLL_INTERVAL_MS	500
 
 #define FUSB301_MODE_SOURCE	BIT(0)
 #define FUSB301_MODE_SOURCE_ACC	BIT(1)
@@ -65,6 +67,8 @@ struct fusb301 {
 	unsigned int partner_type;
 	struct regulator *vbus;
 	bool vbus_on;
+	bool polling;
+	struct delayed_work poll_work;
 };
 
 static int fusb301_set_vbus(struct fusb301 *fusb, bool on)
@@ -155,6 +159,10 @@ static int fusb301_set_port_type(struct typec_port *port,
 				  enum typec_port_type type)
 {
 	struct fusb301 *fusb = typec_get_drvdata(port);
+
+	/* Polling cannot provide prompt source-power detach handling. */
+	if (fusb->polling && type != TYPEC_PORT_SNK)
+		return -EOPNOTSUPP;
 
 	return regmap_update_bits(fusb->regmap, FUSB301_REG_MODE,
 				  FUSB301_MODE_MASK,
@@ -300,6 +308,21 @@ static irqreturn_t fusb301_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+static void fusb301_poll(struct work_struct *work)
+{
+	struct fusb301 *fusb = container_of(to_delayed_work(work),
+					  struct fusb301, poll_work);
+	int ret;
+
+	ret = fusb301_update_status(fusb);
+	if (ret)
+		dev_warn_ratelimited(fusb->dev,
+				     "failed to poll Type-C status: %d\n", ret);
+
+	queue_delayed_work(system_freezable_wq, &fusb->poll_work,
+			   msecs_to_jiffies(FUSB301_POLL_INTERVAL_MS));
+}
+
 static const struct regmap_config fusb301_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
@@ -318,7 +341,8 @@ static int fusb301_hw_init(struct fusb301 *fusb)
 	ret = regmap_update_bits(fusb->regmap, FUSB301_REG_CONTROL,
 				 FUSB301_CONTROL_HOST_CUR |
 				 FUSB301_CONTROL_INT_MASK,
-				 fusb301_host_current(fusb->pwr_opmode));
+				 fusb301_host_current(fusb->pwr_opmode) |
+				 (fusb->polling ? FUSB301_CONTROL_INT_MASK : 0));
 	if (ret)
 		return ret;
 
@@ -379,11 +403,17 @@ static int fusb301_probe(struct i2c_client *client)
 		goto err_put_connector;
 	}
 	fusb->pwr_opmode = ret;
-	if (client->irq <= 0) {
-		ret = -EINVAL;
-		dev_err_probe(dev, ret, "missing interrupt\n");
+	if (client->irq < 0) {
+		ret = client->irq;
 		goto err_put_connector;
 	}
+	fusb->polling = !client->irq;
+	if (fusb->polling && fusb->cap.type != TYPEC_PORT_SNK) {
+		ret = dev_err_probe(dev, -EINVAL,
+				    "source-capable ports require an interrupt\n");
+		goto err_put_connector;
+	}
+	INIT_DELAYED_WORK(&fusb->poll_work, fusb301_poll);
 
 	fusb->cap.revision = USB_TYPEC_REV_1_1;
 	fusb->cap.accessory[0] = TYPEC_ACCESSORY_AUDIO;
@@ -416,10 +446,15 @@ static int fusb301_probe(struct i2c_client *client)
 	if (ret)
 		goto err_unregister_port;
 
-	ret = devm_request_threaded_irq(dev, client->irq, NULL, fusb301_irq,
-					IRQF_ONESHOT, dev_name(dev), fusb);
-	if (ret)
-		goto err_unregister_port;
+	if (fusb->polling) {
+		queue_delayed_work(system_freezable_wq, &fusb->poll_work,
+				   msecs_to_jiffies(FUSB301_POLL_INTERVAL_MS));
+	} else {
+		ret = devm_request_threaded_irq(dev, client->irq, NULL, fusb301_irq,
+						IRQF_ONESHOT, dev_name(dev), fusb);
+		if (ret)
+			goto err_unregister_port;
+	}
 
 	i2c_set_clientdata(client, fusb);
 	fwnode_handle_put(fusb->connector);
@@ -439,7 +474,10 @@ static void fusb301_remove(struct i2c_client *client)
 {
 	struct fusb301 *fusb = i2c_get_clientdata(client);
 
-	devm_free_irq(&client->dev, client->irq, fusb);
+	if (fusb->polling)
+		cancel_delayed_work_sync(&fusb->poll_work);
+	else
+		devm_free_irq(&client->dev, client->irq, fusb);
 	fusb301_disconnect(fusb);
 	typec_unregister_port(fusb->port);
 	usb_role_switch_put(fusb->role_sw);

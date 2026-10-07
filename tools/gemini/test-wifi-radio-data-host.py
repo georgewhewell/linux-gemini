@@ -67,10 +67,12 @@ static void setup(void) {
 }
 static void rx(bool accept) {
  unsigned before=delivered, drops=dev.rx_dropped;
+ u64 bytes=c.rx_bytes; u32 packets=c.rx_packets;
  memcpy(input.ethernet,ethernet,ETH_HLEN);
  struct mt6797_wifi_rx_view view={0};
  assert(!mt6797_radio_data_frame(&r,&view));
  assert(!r.lock && delivered==before+accept && dev.rx_dropped==drops+!accept);
+ assert(c.rx_packets==packets+accept && c.rx_bytes==bytes+(accept?input.length:0));
 }
 int main(void) {
  setup(); rx(true); assert(c.pairwise_key.rx_pn[0]==1 && dev.rx_bytes==18);

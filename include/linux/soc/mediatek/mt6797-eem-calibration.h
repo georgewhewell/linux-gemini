@@ -7,6 +7,7 @@
 #include <linux/kconfig.h>
 #include <linux/types.h>
 
+#include <linux/soc/mediatek/mt6797-cpu-rails.h>
 #include <linux/soc/mediatek/mt6797-dvfsp-handoff.h>
 #include <linux/soc/mediatek/mt6797-dvfsp-ppm.h>
 #include <linux/soc/mediatek/mt6797-dvfsp-ppm-policy.h>
@@ -20,10 +21,6 @@
 #define MT6797_EEM_CALIBRATION_ENABLE_MASK	0x7
 #define MT6797_EEM_CALIBRATION_MON_STATUS_MASK	GENMASK(23, 16)
 #define MT6797_EEM_CALIBRATION_TEMP_OFFSET_UV	62500
-#define MT6797_EEM_CALIBRATION_VSRAM_MIN_UV	1000000
-#define MT6797_EEM_CALIBRATION_VSRAM_MAX_UV	1200000
-#define MT6797_EEM_CALIBRATION_VSRAM_DELTA_MIN_UV	10000
-#define MT6797_EEM_CALIBRATION_VSRAM_DELTA_MAX_UV	30000
 
 /* Arrays use the packed bank order BIG, L, 2L, CCI and EEM row order. */
 struct mt6797_eem_calibration_input {

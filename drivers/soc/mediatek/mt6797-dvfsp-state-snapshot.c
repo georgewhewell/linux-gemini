@@ -14,6 +14,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 
+#include <linux/soc/mediatek/mt6797-cpu-rails.h>
 #include <linux/soc/mediatek/mt6797-dvfsp-state-snapshot.h>
 
 static int mt6797_dvfsp_snapshot_provenance_check(
@@ -56,11 +57,8 @@ static int mt6797_dvfsp_snapshot_table_match(
 		const struct mt6797_dvfsp_calibration_table_entry *entry =
 			&cluster->table[i];
 
-		if (!entry->frequency_khz || !entry->vproc_uv ||
-		    !entry->vsram_uv || !entry->ppm_limit_khz ||
-		    entry->vsram_uv < entry->vproc_uv ||
-		    entry->vsram_uv - entry->vproc_uv < 10000 ||
-		    entry->vsram_uv - entry->vproc_uv > 30000)
+		if (!entry->frequency_khz || !entry->ppm_limit_khz ||
+		    !mt6797_cpu_rails_valid(entry->vproc_uv, entry->vsram_uv))
 			return -EPROTO;
 		if (entry->frequency_khz == frequency_khz) {
 			*matched_entry = entry;

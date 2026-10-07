@@ -1376,8 +1376,8 @@ int mt6797_eem_calibration_build(
 				input->frequency_pct[bank_index][row - 1]) ||
 			    input->record_vproc_uv[bank_index][row] <
 				input->vmin_uv[bank_index] ||
-			    vsram_uv < MT6797_EEM_CALIBRATION_VSRAM_MIN_UV ||
-			    vsram_uv > MT6797_EEM_CALIBRATION_VSRAM_MAX_UV)
+			    vsram_uv < MT6797_CPU_VSRAM_MIN_UV ||
+			    vsram_uv > MT6797_CPU_VSRAM_MAX_UV)
 				return -EPROTO;
 			if (row % 2 == 0 &&
 			    input->frequency_pct[bank_index][row] !=
@@ -1397,10 +1397,7 @@ int mt6797_eem_calibration_build(
 				input, bank, bank_index, row, &entry->vproc_uv);
 			if (ret)
 				return ret;
-			if (vsram_uv < entry->vproc_uv +
-				MT6797_EEM_CALIBRATION_VSRAM_DELTA_MIN_UV ||
-			    vsram_uv > entry->vproc_uv +
-				MT6797_EEM_CALIBRATION_VSRAM_DELTA_MAX_UV)
+			if (!mt6797_cpu_rails_valid(entry->vproc_uv, vsram_uv))
 				return -EPROTO;
 			entry->frequency_khz = input->frequency_khz[bank_index][row];
 			entry->vsram_uv = vsram_uv;

@@ -310,8 +310,8 @@ static void mt6797_dvfsp_provider_snapshot_keeps_attribution(
 
 		calibration.cluster[i].table_count = 1;
 		entry->frequency_khz = 100000 + i;
-		entry->vproc_uv = 800000;
-		entry->vsram_uv = 820000;
+		entry->vproc_uv = 900000;
+		entry->vsram_uv = 1000000;
 		entry->ppm_limit_khz = 200000;
 		clock.cluster[i].frequency_khz = entry->frequency_khz;
 		input.state_flags[i] = MT6797_DVFSP_STATE_FLAG_PRESENT |

@@ -971,6 +971,8 @@ static int mtu3_peripheral_role_set(struct usb_role_switch *sw, enum usb_role ro
 		if (mtu->is_active && mtu->softconnect)
 			mtu3_dev_on_off(mtu, active);
 		usb_udc_vbus_handler(&mtu->g, active);
+		usb_gadget_set_state(&mtu->g, active ? USB_STATE_POWERED :
+				     USB_STATE_NOTATTACHED);
 	}
 	spin_unlock_irqrestore(&mtu->lock, flags);
 	pm_runtime_put(mtu->dev);

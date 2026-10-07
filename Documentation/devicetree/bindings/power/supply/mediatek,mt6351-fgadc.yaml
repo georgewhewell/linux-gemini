@@ -16,9 +16,20 @@ description: |
   ownership with mediatek,initialize-fgadc.  The properties below are required
   so that Linux never substitutes a battery or factory calibration value.
 
+allOf:
+  - $ref: power-supply.yaml#
+
 properties:
   compatible:
     const: mediatek,mt6351-fgadc
+
+  power-supplies:
+    maxItems: 1
+    description: |
+      Optional charger for the monitored battery. It must report battery-side
+      voltage and battery thermistor temperature through its power-supply
+      interface. These measurements supplement the FGADC current and coulomb
+      counter; no charger policy is changed by the battery monitor.
 
   mediatek,initialize-fgadc:
     description: |

@@ -13,6 +13,7 @@ description: |
   interrupt output; board designs may instead route a controller attach-
   indication output to the interrupt controller. They do not implement USB
   Power Delivery or TCPCI.
+  Sink-only connectors may omit the interrupt and poll status instead.
 
 maintainers:
   - Julien Etienne <julien.etienne@gmail.com>
@@ -53,8 +54,21 @@ properties:
 required:
   - compatible
   - reg
-  - interrupts
   - connector
+
+allOf:
+  - if:
+      properties:
+        connector:
+          properties:
+            power-role:
+              const: sink
+          required:
+            - power-role
+    then: {}
+    else:
+      required:
+        - interrupts
 
 additionalProperties: false
 

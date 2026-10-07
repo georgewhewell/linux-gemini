@@ -437,7 +437,110 @@ static void mt6797_cpuclk_mux_dcm_plan_test(struct kunit *test)
 		-EOPNOTSUPP);
 }
 
+static void mt6797_cpuclk_transition_pairs_test(struct kunit *test)
+{
+	/* Independent vendor fixtures: CPU MHz, physical CKDIV divisor. */
+	static const unsigned int rates[] = { 221, 338, 481, 624, 715, 806, 897 };
+	static const unsigned int divs[] = { 4, 2, 2, 1, 1, 1, 1 };
+	struct mt6797_cpuclk_snapshot snapshot;
+	struct mt6797_cpuclk_transition_plan plan;
+	unsigned long old_pll, new_pll, first, last, minimum, maximum;
+	unsigned int i, j, dcm, hop_div, selector;
+
+	for (i = 0; i < ARRAY_SIZE(rates); i++) {
+		for (j = 0; j < ARRAY_SIZE(rates); j++) {
+			for (dcm = 0; dcm < 32; dcm++) {
+				snapshot = mt6797_cpuclk_boot_snapshot();
+				old_pll = rates[i] * divs[i] * 1000000UL;
+				new_pll = rates[j] * divs[j] * 1000000UL;
+				snapshot.armpll_con1[0] = BIT(31) | BIT(24) |
+					((u64)old_pll * 32768 / 26000000);
+				selector = divs[i] == 4 ? 11 : divs[i] == 2 ? 10 : 8;
+				snapshot.clkdiv = BIT(31) | (8 << 15) | (8 << 10) |
+					(selector << 5) | 8;
+				snapshot.sync_dcm = (snapshot.sync_dcm & ~GENMASK(13, 9)) |
+					(dcm << 9);
+				KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_transition(
+					MT6797_CPUCLK_MP0, &snapshot, 26000000,
+					rates[j] * 1000000UL, &plan), 0);
+				KUNIT_EXPECT_EQ(test, plan.initial_rate, rates[i] * 1000000ULL);
+				KUNIT_EXPECT_EQ(test, plan.rate, rates[j] * 1000000UL);
+				KUNIT_EXPECT_EQ(test, plan.pll_rate, new_pll);
+				KUNIT_EXPECT_EQ(test, (u64)plan.dds * 26000000 / 32768,
+					(u64)new_pll);
+				KUNIT_EXPECT_EQ(test, plan.divider_before_hop, divs[j] > divs[i]);
+				hop_div = divs[i] > divs[j] ? divs[i] : divs[j];
+				first = old_pll / hop_div;
+				last = new_pll / hop_div;
+				minimum = min(first, last);
+				KUNIT_EXPECT_EQ(test, plan.minimum_rate, minimum);
+				maximum = (rates[i] > rates[j] ? rates[i] : rates[j]) * 1000000UL;
+				KUNIT_EXPECT_LE(test, first, maximum);
+				KUNIT_EXPECT_LE(test, last, maximum);
+				KUNIT_EXPECT_EQ(test,
+					FIELD_GET(GENMASK(13, 9), plan.before.value[2]),
+					min(dcm, minimum / 70000000));
+				KUNIT_EXPECT_EQ(test,
+					FIELD_GET(GENMASK(13, 9), plan.after.value[2]),
+					rates[j] / 70);
+				KUNIT_EXPECT_EQ(test,
+					(plan.clkdiv ^ snapshot.clkdiv) & ~GENMASK(9, 5), 0U);
+				selector = divs[j] == 4 ? 11 : divs[j] == 2 ? 10 : 8;
+				KUNIT_EXPECT_EQ(test,
+					FIELD_GET(GENMASK(9, 5), plan.clkdiv), selector);
+				KUNIT_EXPECT_EQ(test, (plan.after.value[2] ^ snapshot.sync_dcm) &
+					~(GENMASK(13, 9) | BIT(14)), 0U);
+				KUNIT_EXPECT_FALSE(test, plan.before.value[1] & BIT(14));
+				KUNIT_EXPECT_TRUE(test, plan.before.value[2] & BIT(14));
+				KUNIT_EXPECT_FALSE(test, plan.after.value[1] & BIT(14));
+				KUNIT_EXPECT_TRUE(test, plan.after.value[2] & BIT(14));
+				KUNIT_EXPECT_TRUE(test,
+					mt6797_cpuclk_snapshots_equal(&snapshot, &plan.snapshot));
+			}
+		}
+	}
+}
+
+static void mt6797_cpuclk_transition_admission_test(struct kunit *test)
+{
+	struct mt6797_cpuclk_snapshot snapshot = mt6797_cpuclk_boot_snapshot();
+	struct mt6797_cpuclk_transition_plan plan;
+
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP0,
+		&snapshot, 26000000, 1118000000, &plan), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP1,
+		&snapshot, 26000000, 962000000, &plan), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP1,
+		&snapshot, 26000000, 481000000, &plan), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP2,
+		&snapshot, 26000000, 750000000, &plan), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_CCI,
+		&snapshot, 26000000, 630000000, &plan), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP0,
+		&snapshot, 0, 481000000, &plan), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP0,
+		NULL, 26000000, 481000000, &plan), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP0,
+		&snapshot, 26000000, 481000000, NULL), -EINVAL);
+	KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP1,
+		&snapshot, 26000000, 1092000000, &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.rate, 1092000000UL);
+	KUNIT_EXPECT_EQ(test, plan.clkdiv, snapshot.clkdiv);
+	KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP0,
+		&snapshot, 26000000, 624000000, &plan), 0);
+	KUNIT_EXPECT_EQ(test, plan.clkdiv, snapshot.clkdiv);
+	snapshot.clkdiv = 9 << 5; /* Fractional CKDIV is observation-only. */
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP0,
+		&snapshot, 26000000, 481000000, &plan), -EOPNOTSUPP);
+	snapshot.clkdiv = 0;
+	snapshot.muxsel &= ~GENMASK(3, 2);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_transition(MT6797_CPUCLK_MP0,
+		&snapshot, 26000000, 481000000, &plan), -EOPNOTSUPP);
+}
+
 static struct kunit_case mt6797_cpuclk_test_cases[] = {
+	KUNIT_CASE(mt6797_cpuclk_transition_pairs_test),
+	KUNIT_CASE(mt6797_cpuclk_transition_admission_test),
 	KUNIT_CASE(mt6797_cpuclk_read_fence_test),
 	KUNIT_CASE(mt6797_cpuclk_snapshot_equality_test),
 	KUNIT_CASE(mt6797_cpuclk_decode_fields_test),

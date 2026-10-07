@@ -263,34 +263,44 @@ mt6797_cpuclk_find_rate(enum mt6797_cpuclk_domain domain, unsigned long rate)
 	return NULL;
 }
 
-int mt6797_cpuclk_plan_pll_rate(enum mt6797_cpuclk_domain domain,
-				unsigned long rate,
-				unsigned long parent_rate, u32 initial_con1,
-				u32 *target_con1, unsigned long *actual_rate)
+static int mt6797_cpuclk_encode_pll_rate(unsigned long rate,
+		unsigned long parent_rate, u8 postdiv, u32 initial_con1,
+		u32 *target_con1, unsigned long *actual_rate)
 {
-	const struct mt6797_cpuclk_rate_data *rate_data;
 	u64 pcw;
 
 	if (!parent_rate || !target_con1 || !actual_rate)
 		return -EINVAL;
 
-	rate_data = mt6797_cpuclk_find_rate(domain, rate);
-	if (!rate_data)
-		return -EINVAL;
-
-	pcw = (u64)rate << (14 + rate_data->postdiv);
+	pcw = (u64)rate << (14 + postdiv);
 	pcw = div_u64(pcw, parent_rate);
 	if (!pcw || pcw > MT6797_ARMPLL_PCW_MASK)
 		return -ERANGE;
 
 	*target_con1 = initial_con1 &
 		~(MT6797_ARMPLL_PCW_MASK | MT6797_ARMPLL_POSDIV_MASK);
-	*target_con1 |= FIELD_PREP(MT6797_ARMPLL_POSDIV_MASK,
-				  rate_data->postdiv) | (u32)pcw | BIT(31);
+	*target_con1 |= FIELD_PREP(MT6797_ARMPLL_POSDIV_MASK, postdiv) |
+		       (u32)pcw | BIT(31);
 	*actual_rate = (u64)parent_rate * pcw >> 14;
-	*actual_rate >>= rate_data->postdiv;
+	*actual_rate >>= postdiv;
 
 	return 0;
+}
+
+int mt6797_cpuclk_plan_pll_rate(enum mt6797_cpuclk_domain domain,
+				unsigned long rate,
+				unsigned long parent_rate, u32 initial_con1,
+				u32 *target_con1, unsigned long *actual_rate)
+{
+	const struct mt6797_cpuclk_rate_data *rate_data;
+
+	rate_data = mt6797_cpuclk_find_rate(domain, rate);
+	if (!rate_data)
+		return -EINVAL;
+
+	return mt6797_cpuclk_encode_pll_rate(rate, parent_rate,
+					   rate_data->postdiv, initial_con1,
+					   target_con1, actual_rate);
 }
 
 int mt6797_cpuclk_plan_mux(enum mt6797_cpuclk_domain domain, u8 source,
@@ -406,5 +416,98 @@ int mt6797_cpuclk_plan_hop(enum mt6797_cpuclk_domain domain,
 	plan->dcm_before_hop = actual_rate < initial.armpll_rate;
 	plan->snapshot = *snapshot;
 
+	return 0;
+}
+
+/*
+ * Vendor LL CPU_LEVEL_1 low points keep POS=2 and use CKDIV=2 or 4.
+ * Increasing division precedes FHCTL; decreasing division follows it.
+ * Unlike a unity-divider hop, the intermediate CPU rate can fall below both
+ * endpoints. Prepare DCM for that minimum, then program the final selector.
+ * This planner does not authorize a voltage or ARMPLL postdivider change.
+ */
+int mt6797_cpuclk_plan_transition(enum mt6797_cpuclk_domain domain,
+			   const struct mt6797_cpuclk_snapshot *snapshot,
+			   unsigned long clk26m_rate, unsigned long rate,
+			   struct mt6797_cpuclk_transition_plan *plan)
+{
+	struct mt6797_cpuclk_state initial;
+	unsigned long pll_rate, minimum, before_hop, after_hop;
+	u32 con1, target_con1, shift, dcm_shift, dcm_limit;
+	u8 old_div, new_div = 1, selector;
+	int ret;
+
+	if (!snapshot || !plan || !clk26m_rate)
+		return -EINVAL;
+	if (domain != MT6797_CPUCLK_MP0 && domain != MT6797_CPUCLK_MP1)
+		return -EOPNOTSUPP;
+	ret = mt6797_cpuclk_decode_state(domain, snapshot, clk26m_rate,
+					 &initial);
+	if (ret)
+		return ret;
+	if (initial.source != MT6797_CPUCLK_ARMPLL)
+		return -EOPNOTSUPP;
+	if (mt6797_cpuclk_divider_is_unity(initial.divider))
+		old_div = 1;
+	else if (domain == MT6797_CPUCLK_MP0 && initial.divider == 10)
+		old_div = 2;
+	else if (domain == MT6797_CPUCLK_MP0 && initial.divider == 11)
+		old_div = 4;
+	else
+		return -EOPNOTSUPP;
+
+	con1 = snapshot->armpll_con1[domain];
+	if (domain == MT6797_CPUCLK_MP0 &&
+	    (rate == 221000000 || rate == 338000000 || rate == 481000000)) {
+		new_div = rate == 221000000 ? 4 : 2;
+		ret = mt6797_cpuclk_encode_pll_rate(rate * new_div,
+				clk26m_rate, 1, con1, &target_con1, &pll_rate);
+	} else {
+		ret = mt6797_cpuclk_plan_pll_rate(domain, rate, clk26m_rate,
+						con1, &target_con1, &pll_rate);
+	}
+	if (ret)
+		return ret;
+	if ((con1 ^ target_con1) & MT6797_ARMPLL_POSDIV_MASK)
+		return -EOPNOTSUPP;
+
+	selector = new_div == 4 ? 11 : new_div == 2 ? 10 : 8;
+	/* Preserve the firmware's equivalent unity encoding if unchanged. */
+	if (new_div == 1 && old_div == 1)
+		selector = initial.divider;
+	shift = mt6797_cpuclk_domains[domain].divider_shift;
+	plan->clkdiv_mask = GENMASK(shift + 4, shift);
+	plan->clkdiv = (snapshot->clkdiv & ~plan->clkdiv_mask) |
+		      ((u32)selector << shift);
+	plan->divider_before_hop = new_div > old_div;
+	plan->initial_rate = initial.armpll_rate / old_div;
+	plan->rate = pll_rate / new_div;
+	plan->pll_rate = pll_rate;
+	plan->dds = FIELD_GET(MT6797_ARMPLL_PCW_MASK, target_con1);
+	before_hop = initial.armpll_rate / (new_div > old_div ? new_div : old_div);
+	after_hop = pll_rate / (new_div > old_div ? new_div : old_div);
+	minimum = min(before_hop, after_hop);
+	plan->minimum_rate = minimum;
+
+	/* Never raise the initial DCM selector before changing the CPU clock. */
+	dcm_shift = domain == MT6797_CPUCLK_MP0 ? 9 : 17;
+	dcm_limit = (snapshot->sync_dcm >> dcm_shift) & 0x1f;
+	ret = mt6797_cpuclk_plan_dcm(domain, minimum, snapshot->sync_dcm,
+				     &plan->before);
+	if (ret)
+		return ret;
+	if (dcm_limit < ((plan->before.value[0] >> dcm_shift) & 0x1f)) {
+		/* Any positive rate below70 MHz encodes selector zero. */
+		ret = mt6797_cpuclk_plan_dcm(domain,
+				 dcm_limit ? dcm_limit * 70000000UL : 1,
+				 snapshot->sync_dcm, &plan->before);
+		if (ret)
+			return ret;
+	}
+	ret = mt6797_cpuclk_plan_dcm(domain, plan->rate,
+				     plan->before.value[2], &plan->after);
+	if (ret)
+		return ret;
+	plan->snapshot = *snapshot;
 	return 0;
 }

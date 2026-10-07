@@ -60,6 +60,20 @@ static const struct mt6797_cpuclk_rate_data mt6797_mp1_rates[] = {
 	{ 1950000000, 0 },
 };
 
+/* Vendor CPU_LEVEL_1 CCI points with a unity path divider. */
+static const struct mt6797_cpuclk_rate_data mt6797_cci_rates[] = {
+	{ 611000000, 1 },
+	{ 676000000, 1 },
+	{ 754000000, 1 },
+	{ 819000000, 1 },
+	{ 845000000, 1 },
+	{ 884000000, 1 },
+	{ 910000000, 1 },
+	{ 936000000, 1 },
+	{ 975000000, 1 },
+	{ 988000000, 1 },
+};
+
 static bool mt6797_cpuclk_domain_valid(enum mt6797_cpuclk_domain domain)
 {
 	return domain >= MT6797_CPUCLK_MP0 && domain < MT6797_CPUCLK_NR_DOMAINS;
@@ -252,6 +266,10 @@ mt6797_cpuclk_find_rate(enum mt6797_cpuclk_domain domain, unsigned long rate)
 		rates = mt6797_mp1_rates;
 		count = ARRAY_SIZE(mt6797_mp1_rates);
 		break;
+	case MT6797_CPUCLK_CCI:
+		rates = mt6797_cci_rates;
+		count = ARRAY_SIZE(mt6797_cci_rates);
+		break;
 	default:
 		return NULL;
 	}
@@ -338,6 +356,10 @@ int mt6797_cpuclk_plan_dcm(enum mt6797_cpuclk_domain domain,
 		shift = 17;
 		toggle = BIT(22);
 		break;
+	case MT6797_CPUCLK_CCI:
+		shift = 1;
+		toggle = BIT(6);
+		break;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -377,11 +399,13 @@ int mt6797_cpuclk_plan_transition_mainpll(enum mt6797_cpuclk_domain domain,
 	unsigned long pll_rate, minimum, before_hop, after_hop;
 	u32 con1, target_con1, shift, dcm_shift, dcm_limit;
 	u8 old_div, new_div = 1, selector;
+	bool cci_down;
 	int ret;
 
 	if (!snapshot || !plan || !clk26m_rate)
 		return -EINVAL;
-	if (domain != MT6797_CPUCLK_MP0 && domain != MT6797_CPUCLK_MP1)
+	if (domain != MT6797_CPUCLK_MP0 && domain != MT6797_CPUCLK_MP1 &&
+	    domain != MT6797_CPUCLK_CCI)
 		return -EOPNOTSUPP;
 	ret = mt6797_cpuclk_decode_state(domain, snapshot, clk26m_rate,
 					 &initial);
@@ -407,6 +431,13 @@ int mt6797_cpuclk_plan_transition_mainpll(enum mt6797_cpuclk_domain domain,
 	} else if (domain == MT6797_CPUCLK_MP1 &&
 		   (rate == 325000000 || rate == 468000000)) {
 		new_div = 2;
+		ret = mt6797_cpuclk_encode_pll_rate(rate * new_div,
+				clk26m_rate, 1, con1, &target_con1, &pll_rate);
+	} else if (domain == MT6797_CPUCLK_CCI &&
+		   (rate == 169000000 || rate == 234000000 ||
+		    rate == 325000000 || rate == 416000000 ||
+		    rate == 481000000 || rate == 533000000)) {
+		new_div = rate <= 234000000 ? 4 : 2;
 		ret = mt6797_cpuclk_encode_pll_rate(rate * new_div,
 				clk26m_rate, 1, con1, &target_con1, &pll_rate);
 	} else {
@@ -462,7 +493,12 @@ int mt6797_cpuclk_plan_transition_mainpll(enum mt6797_cpuclk_domain domain,
 	plan->minimum_rate = minimum;
 
 	/* Never raise the initial DCM selector before changing the CPU clock. */
-	dcm_shift = domain == MT6797_CPUCLK_MP0 ? 9 : 17;
+	dcm_shift = domain == MT6797_CPUCLK_CCI ? 1 :
+		    domain == MT6797_CPUCLK_MP0 ? 9 : 17;
+	/* Vendor CCI downshifts disable synchronous division first. */
+	cci_down = domain == MT6797_CPUCLK_CCI && plan->rate < plan->initial_rate;
+	if (cci_down)
+		minimum = 1;
 	dcm_limit = (snapshot->sync_dcm >> dcm_shift) & 0x1f;
 	ret = mt6797_cpuclk_plan_dcm(domain, minimum, snapshot->sync_dcm,
 				     &plan->before);
@@ -476,7 +512,7 @@ int mt6797_cpuclk_plan_transition_mainpll(enum mt6797_cpuclk_domain domain,
 		if (ret)
 			return ret;
 	}
-	ret = mt6797_cpuclk_plan_dcm(domain, plan->rate,
+	ret = mt6797_cpuclk_plan_dcm(domain, cci_down ? 1 : plan->rate,
 				     plan->before.value[2], &plan->after);
 	if (ret)
 		return ret;

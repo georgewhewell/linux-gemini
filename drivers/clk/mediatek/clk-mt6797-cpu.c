@@ -108,7 +108,7 @@ struct mt6797_cpuclk {
 	struct mt6797_cpuclk_backend backend;
 	struct mt6797_cpuclk_observer observer;
 	struct mt6797_cpuclk_pll_hw plls[MT6797_CPUCLK_NR_DOMAINS];
-	struct mt6797_cpuclk_pll_hw branches[2];
+	struct mt6797_cpuclk_pll_hw branches[3];
 	struct mt6797_cpuclk_path_hw paths[MT6797_CPUCLK_NR_DOMAINS];
 	struct clk_hw_onecell_data *clk_data;
 };
@@ -344,6 +344,8 @@ static u32 mt6797_cpuclk_pll_offset(enum mt6797_cpuclk_domain domain)
 		return MT6797_CPUCLK_MP0_PLL_CON1;
 	case MT6797_CPUCLK_MP1:
 		return MT6797_CPUCLK_MP1_PLL_CON1;
+	case MT6797_CPUCLK_CCI:
+		return MT6797_CPUCLK_CCI_PLL_CON1;
 	default:
 		return 0;
 	}
@@ -351,12 +353,13 @@ static u32 mt6797_cpuclk_pll_offset(enum mt6797_cpuclk_domain domain)
 
 /*
  * MCU frequency-hopping controller registers.  They share the MCUMIXED window
- * and its CSPM hardware semaphore with the ARMPLLs.  Vendor channels 0 and 1
- * (MCU_FH_PLL0/1) retune the LL and L ARMPLLs.
+ * and its CSPM hardware semaphore with the ARMPLLs.  Vendor channels 0, 1 and 2
+ * (MCU_FH_PLL0/1/2) retune the LL, L and CCI ARMPLLs.
  */
 static u32 mt6797_cpuclk_fhctl_channel(enum mt6797_cpuclk_domain domain)
 {
-	return domain == MT6797_CPUCLK_MP0 ? 0 : 1;
+	return domain == MT6797_CPUCLK_CCI ? 2 :
+	       domain == MT6797_CPUCLK_MP0 ? 0 : 1;
 }
 
 /* The vendor driver reads MCU FHCTL registers twice after a settle delay. */
@@ -1201,6 +1204,7 @@ static int mt6797_cpuclk_register_branches(struct mt6797_cpuclk *provider)
 {
 	static const char *const names[] = {
 		"mt6797_mp0_armpll_div", "mt6797_mp1_armpll_div",
+		"mt6797_cci_armpll_div",
 	};
 	struct clk_parent_data parent = { .fw_name = "clk26m" };
 	struct clk_init_data init = {
@@ -1214,7 +1218,7 @@ static int mt6797_cpuclk_register_branches(struct mt6797_cpuclk *provider)
 
 	for (i = 0; i < ARRAY_SIZE(provider->branches); i++) {
 		provider->branches[i].provider = provider;
-		provider->branches[i].domain = i;
+		provider->branches[i].domain = i == 2 ? MT6797_CPUCLK_CCI : i;
 		provider->branches[i].hw.init = &init;
 		init.name = names[i];
 		ret = devm_clk_hw_register(provider->dev, &provider->branches[i].hw);
@@ -1241,15 +1245,16 @@ static int mt6797_cpuclk_register_paths(struct mt6797_cpuclk *provider)
 		path->domain = i;
 		path->parents[MT6797_CPUCLK_CLK26M].fw_name = "clk26m";
 		path->parents[MT6797_CPUCLK_ARMPLL].hw =
-			i < ARRAY_SIZE(provider->branches) ?
-			&provider->branches[i].hw : &provider->plls[i].hw;
+			i == MT6797_CPUCLK_CCI ? &provider->branches[2].hw :
+			i < 2 ? &provider->branches[i].hw : &provider->plls[i].hw;
 		path->parents[MT6797_CPUCLK_MAINPLL].fw_name = "mainpll";
 		path->parents[MT6797_CPUCLK_UNIVPLL].fw_name = "univpll";
 		path->hw.init = &init;
 		init.name = mt6797_cpuclk_path_names[i];
-		/* LL/L requests are owned by the compound PLL+CKDIV branch. */
+		/* LL/L/CCI requests use the compound PLL+CKDIV branch. */
 		init.flags = CLK_GET_RATE_NOCACHE;
-		if (i == MT6797_CPUCLK_MP0 || i == MT6797_CPUCLK_MP1)
+		if (i == MT6797_CPUCLK_MP0 || i == MT6797_CPUCLK_MP1 ||
+		    i == MT6797_CPUCLK_CCI)
 			init.flags |= CLK_SET_RATE_PARENT;
 		init.parent_data = path->parents;
 

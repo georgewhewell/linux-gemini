@@ -67,6 +67,7 @@ struct mt6797_cpuclk_transition_plan {
 };
 
 struct mt6797_cpuclk_backend_ops {
+	unsigned long (*mainpll_rate)(void *context);
 	int (*snapshot)(void *context, struct mt6797_cpuclk_snapshot *snapshot);
 	int (*transition)(void *context,
 			  const struct mt6797_cpuclk_transition_plan *plan);

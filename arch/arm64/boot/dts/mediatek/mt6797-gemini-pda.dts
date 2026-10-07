@@ -2408,7 +2408,8 @@
 	mediatek,fg-resistance-milliohm = <10>;
 	mediatek,fg-board-base = <1000>;
 	mediatek,fg-board-slope = <1000>;
-	mediatek,car-tune = <118>;
+	/* Active vendor MT6351 header default; its generic DTS is not used. */
+	mediatek,car-tune = <115>;
 	mediatek,fg-trim-permille = <1000>;
 };
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run actual SRAM provider API functions against ownership/SMC boundary doubles."""
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -14,11 +15,14 @@ def function(name):
 functions = "\n".join(function(n) for n in [
     "mt6797_bigidvfs_sram_secure_read_word", "mt6797_bigidvfs_sram_secure_set",
     "mt6797_bigidvfs_sram_io_set", "mt6797_sram_first_start",
+    "mt6797_sram_record_off", "mt6797_sram_restart",
     "mt6797_sram_read_sample", "mt6797_sram_settle",
     "mt6797_sram_lock_consumer", "mt6797_sram_unlock_consumer",
-    "mt6797_sram_read_boot_sample", "mt6797_sram_prepare_cpu8",
+    "mt6797_sram_read_boot_sample", "mt6797_sram_record_cpu8_off",
+    "mt6797_sram_prepare_cpu8",
     "mt6797_sram_set_voltage_sel",
 ])
+header = re.sub(r'^#include .*\n', '', (root / 'drivers/regulator/mt6797-bigidvfs-sram.h').read_text(), flags=re.MULTILINE)
 c = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -48,9 +52,7 @@ struct regulator_desc { int id; };
 struct regulator_dev { struct device dev; const struct regulator_desc *desc; int exclusive,open_count; void *data; };
 struct regulator { struct device *dev; struct regulator_dev *rdev; };
 struct mt6797_sram_sample {u32 control,calibration;};
-struct mt6797_sram_first_state {bool attempted,ready,faulted;int error;struct mt6797_sram_sample samples[2];};
-struct mt6797_sram_first_io { int (*set_voltage)(void *,unsigned);void (*settle)(void *,unsigned);int (*read_sample)(void *,struct mt6797_sram_sample *); };
-struct mt6797_sram_io { int dummy; };
+''' + header + r'''
 struct mt6797_bigidvfs_sram {struct device *dev;struct mutex lock;bool faulted;struct mt6797_sram_first_state first;};
 static struct { int driver; } mt6797_bigidvfs_sram_driver;
 static const struct regulator_desc mt6797_bigidvfs_sram_desc={1};
@@ -70,21 +72,25 @@ static struct mt6797_bigidvfs_sram sram;
 static int compatible,refs,missing,wrong_node,spm_error,reg_error,affinity_error;
 static unsigned nr_cpu_ids=10;
 static bool online[10],cpus_held;
-static u32 isolation;
+static u32 isolation, status, status_second, power;
+static int reg_reads, fail_reg_at, affinity_calls;
 static struct regmap {int unused;} spm;
 static int of_device_is_compatible(struct device_node *n,const char *s) {assert(n==consumer.of_node);assert(!strcmp(s,"mediatek,mt6797-a72-power"));return compatible;}
 static struct device_node *of_parse_phandle(struct device_node *n,const char *s,int index) {assert(n==consumer.of_node && index==0);assert(!strcmp(s,"sram-big-supply"));if(missing)return NULL;refs++;return &nodes[wrong_node?2:1];}
 static void of_node_put(struct device_node *n) {assert(n && refs>0);refs--;}
 static struct regmap *syscon_regmap_lookup_by_phandle(struct device_node *n,const char *s) {assert(n==consumer.of_node);assert(!strcmp(s,"mediatek,spm"));return spm_error?(void *)(intptr_t)-ENODEV:&spm;}
-static int regmap_read(struct regmap *m,u32 reg,u32 *value) {assert(m==&spm && reg==0x290);*value=isolation;return reg_error;}
+static int regmap_read(struct regmap *m,u32 reg,u32 *value) {assert(m==&spm);reg_reads++;
+ switch(reg) { case 0x290:*value=isolation;break;case 0x188:*value=status;break;
+ case 0x18c:*value=status_second;break;case 0x218:*value=power;break;default:assert(0); }
+ return reg_reads==fail_reg_at ? -EIO : reg_error;}
 static void lockdep_assert_cpus_held(void) {assert(cpus_held);}
 static bool cpu_online(unsigned cpu) {assert(cpu<10);return online[cpu];}
 static unsigned cpu_logical_map(unsigned cpu) {return cpu;}
-static int affinity(unsigned cpu,unsigned level) {assert(cpu>=8 && cpu<=9 && level==0);return affinity_error?:1;}
+static int affinity(unsigned cpu,unsigned level) {assert(cpu>=8 && cpu<=9 && level==0);affinity_calls++;return affinity_error?:1;}
 static struct {int (*affinity_info)(unsigned,unsigned);} psci_ops={affinity};
 static unsigned reads,sets,waits,ordinary_sets;
 static int fail_read_at,set_error;
-static u32 words[4];
+static u32 words[8];
 struct arm_smccc_res {unsigned long a0;};
 static void arm_smccc_smc(unsigned long fid,unsigned long arg,unsigned long a2,unsigned long a3,unsigned long a4,unsigned long a5,unsigned long a6,unsigned long a7,struct arm_smccc_res *res)
 {
@@ -93,18 +99,18 @@ static void arm_smccc_smc(unsigned long fid,unsigned long arg,unsigned long a2,u
   assert(arg==110000 && sram.first.attempted && mt6797_sram_boot_attempted);
   sets++;res->a0=set_error;return;
  }
- assert(fid==MT6797_BIGIDVFS_FID_READ && reads<4);
+ assert(fid==MT6797_BIGIDVFS_FID_READ && reads<8);
  assert(arg==(reads%2?MT6797_BIGIDVFS_SRAM_CALIBRATION:MT6797_BIGIDVFS_SRAM_SELECTOR));
  res->a0=(int)reads==fail_read_at?~0UL:words[reads];reads++;
 }
-static void usleep_range(unsigned min,unsigned max) {assert(sets==1 && min==240 && max==290);waits++;}
+static void usleep_range(unsigned min,unsigned max) {assert(sets && min==240 && max==290);waits++;}
 static int mt6797_bigidvfs_sram_io_set(void *,unsigned);
 static void mt6797_sram_settle(void *,unsigned);
 static int mt6797_sram_read_sample(void *,struct mt6797_sram_sample *);
 static const struct mt6797_sram_first_io mt6797_sram_boot_io={mt6797_bigidvfs_sram_io_set,mt6797_sram_settle,mt6797_sram_read_sample};
 static const struct mt6797_sram_io mt6797_bigidvfs_sram_io={0};
 static const unsigned mt6797_bigidvfs_sram_voltages[16]={0};
-static int mt6797_sram_set_transaction(const struct mt6797_sram_io *io,void *ctx,const unsigned *v,unsigned count,unsigned selector)
+int mt6797_sram_set_transaction(const struct mt6797_sram_io *io,void *ctx,const unsigned *v,unsigned count,unsigned selector)
 {assert(io && ctx==&sram && v && count==16 && selector==11);ordinary_sets++;return 0;}
 ''' + functions + r'''
 static void reset(void)
@@ -117,7 +123,8 @@ static void reset(void)
  refs=missing=wrong_node=spm_error=reg_error=affinity_error=0;compatible=1;
  mt6797_sram_boot_attempted=0;mt6797_sram_boot_lock.held=false;
  reads=sets=waits=ordinary_sets=0;fail_read_at=-1;set_error=0;
- words[0]=words[2]=0x4008fb;words[1]=words[3]=0x8967;
+ for(int i=0;i<8;i++) words[i]=i%2?0x8967:0x4008fb;
+ isolation=status=status_second=0;power=BIT(4);reg_reads=0;fail_reg_at=-1;affinity_calls=0;
  memset(online,0,sizeof(online));online[4]=true;nr_cpu_ids=10;cpus_held=true;
  psci_ops.affinity_info=affinity;
 }
@@ -151,11 +158,73 @@ int main(void)
  memset(&sram.first,0,sizeof(sram.first));assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);assert(sets==1);released();
  for(int i=0;i<5;i++){reset();if(i==0)set_error=-1;else fail_read_at=i-1;assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);assert(sram.faulted && sets==1);released();assert(mt6797_sram_set_voltage_sel(&rdev,11)==-EUCLEAN);assert(ordinary_sets==0);released();}
  reset();assert(mt6797_sram_set_voltage_sel(&rdev,11)==0);assert(ordinary_sets==1);released();
+ /* Repeated completed shutdowns each authorize exactly one full restart. */
+ for(int cold=0;cold<2;cold++) {
+  reset();assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));
+  for(int cycle=0;cycle<3;cycle++) {
+   reads=0;isolation=BIT(1);
+   for(int i=0;i<8;i++) words[i]=cold?0:(i%2?0x8967:0x4008fb);
+   status=status_second=(u32)~(BIT(7)|BIT(6)|BIT(17));
+   int saved_affinity=affinity_calls;
+   assert(!mt6797_sram_record_cpu8_off(&consumer,&supply));released();
+   assert(affinity_calls==saved_affinity);
+   assert(sram.first.restart_armed && !sram.first.ready && mt6797_sram_boot_attempted);
+   assert(mt6797_sram_record_cpu8_off(&consumer,&supply)==-EUCLEAN);released();
+   reads=0;isolation=0;
+   for(int i=4;i<8;i++) words[i]=i%2?0x8967:0x4008fb;
+   assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));released();
+   assert(reads==8 && sets==(unsigned)cycle+2 && waits==(unsigned)cycle+2);
+   assert(sram.first.ready && !sram.first.restart_armed && mt6797_sram_boot_attempted);
+  }
+ }
+ /* A powered core, incomplete cluster shutdown or changed SRAM cannot arm. */
+ for(int n=0;n<13;n++) {
+  reset();assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));
+  reads=0;isolation=BIT(1);
+  switch(n) {
+  case 0:online[8]=true;break;case 1:online[9]=true;break;
+  case 2:status=BIT(7);break;case 3:status_second=BIT(6);break;
+  case 4:status=BIT(17);break;case 5:power|=BIT(0);break;
+  case 6:power=0;break;case 7:isolation=0;break;
+  case 8:words[2]^=1;break;case 9:words[3]^=1;break;
+  case 10:words[0]=words[2]=0x4008fa;break;
+  case 11:words[1]=words[3]=0x1234;break;case 12:spm_error=1;break;
+  }
+  assert(mt6797_sram_record_cpu8_off(&consumer,&supply)<0);released();
+  assert(!sram.first.restart_armed && sets==1);
+  if(n>=2) assert(sram.faulted && sram.first.faulted);
+ }
+ for(int n=1;n<=12;n++) {
+  reset();assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));
+  reads=0;reg_reads=0;isolation=BIT(1);
+  if(n<=8) fail_reg_at=n; else fail_read_at=n-9;
+  assert(mt6797_sram_record_cpu8_off(&consumer,&supply)==-EUCLEAN);released();
+  assert(sram.faulted && !sram.first.restart_armed && sets==1);
+ }
+ /* Failure or mismatch anywhere during restart permanently consumes permission. */
+ for(int n=0;n<17;n++) {
+  reset();assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));
+  reads=0;isolation=BIT(1);
+  assert(!mt6797_sram_record_cpu8_off(&consumer,&supply));
+  reads=0;isolation=0;
+  if(n<8) fail_read_at=n;
+  else if(n==8) set_error=-1;
+  else words[n-9]^=1;
+  assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);released();
+  assert(sram.faulted && sram.first.faulted && !sram.first.restart_armed);
+  unsigned saved_reads=reads,saved_sets=sets;
+  assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);released();
+  assert(reads==saved_reads && sets==saved_sets && mt6797_sram_boot_attempted);
+ }
+ reset();mt6797_sram_boot_attempted=1;isolation=BIT(1);
+ assert(mt6797_sram_record_cpu8_off(&consumer,&supply)==-EUCLEAN);
+ assert(!reads && !sets);released();
+ puts("PASS SRAM restart: 6 cycles, 13 invalid shutdowns, 12 shutdown I/O failures, 17 restart failures, one-use authorization and permanent latch");
  puts("PASS SRAM provider ownership, full-word reads, CPU/PSCI/isolation gates, reprobe latch, and ordinary-setter exclusion");
 }
 '''
 with tempfile.TemporaryDirectory(prefix="gemini-sram-api-") as tmp:
     src,exe=Path(tmp,"test.c"),Path(tmp,"test")
     src.write_text(c)
-    subprocess.run([os.environ.get("HOSTCC","cc"),"-std=gnu11","-Wall","-Wextra","-Werror","-Wno-unused-parameter","-Wno-sign-compare",str(src),"-o",str(exe)],check=True)
+    subprocess.run([os.environ.get("HOSTCC","cc"),"-std=gnu11","-Wall","-Wextra","-Werror","-Wno-unused-parameter","-Wno-sign-compare","-fsanitize=undefined",str(src),"-o",str(exe)],check=True)
     subprocess.run([str(exe)],check=True)

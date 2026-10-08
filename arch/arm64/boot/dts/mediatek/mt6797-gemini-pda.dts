@@ -866,15 +866,16 @@
 				map-cpu-throttle {
 					trip = <&cpu_throttle>;
 					/*
-					 * With sixteen OPPs, state 3 caps LL/L at
-					 * 1.391/1.820 GHz (1.15 V). Keep the three
-					 * hotter OPPs out of the passive cooling
-					 * range even when the measured trend dips.
+					 * Ten-core load exceeds 90 C with a state-3 floor.
+					 * State 8 caps LL/L/A72 at 1.014/1.352/1.677 GHz,
+					 * allowing CCI to fall to 845 MHz and its shared
+					 * CPU rail vote to 1.13 V. Retain this reduction
+					 * while hot, including brief falling trends.
 					 */
 					cooling-device =
-						<&cpu0 3 THERMAL_NO_LIMIT>,
-						<&cpu4 3 THERMAL_NO_LIMIT>,
-						<&cpu8 3 THERMAL_NO_LIMIT>;
+						<&cpu0 8 THERMAL_NO_LIMIT>,
+						<&cpu4 8 THERMAL_NO_LIMIT>,
+						<&cpu8 8 THERMAL_NO_LIMIT>;
 				};
 
 				map-cpu-limit {

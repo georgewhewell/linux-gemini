@@ -125,7 +125,9 @@ static int mt6797_cci_target(struct device *dev, unsigned long *freq, u32 flags)
 		return -EBUSY;
 	if (READ_ONCE(cci->state.faulted))
 		return -EHOSTDOWN;
-	cpus_read_lock();
+	/* Do not wait for a CPUHP writer while holding devfreq->lock. */
+	if (!cpus_read_trylock())
+		return -EAGAIN;
 	selected = mt6797_cci_sample_policy(cci);
 	if (selected < 0) {
 		ret = selected;
@@ -173,7 +175,9 @@ static int mt6797_cci_governor_target(struct devfreq *devfreq, unsigned long *fr
 	unsigned long minimum, maximum;
 	int selected;
 
-	cpus_read_lock();
+	/* Do not wait for a CPUHP writer while holding devfreq->lock. */
+	if (!cpus_read_trylock())
+		return -EAGAIN;
 	selected = mt6797_cci_sample_policy(cci);
 	cpus_read_unlock();
 	if (selected < 0)

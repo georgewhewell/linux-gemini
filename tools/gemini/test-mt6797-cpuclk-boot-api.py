@@ -217,7 +217,13 @@ int main(void)
  snap.mp2_armpll_con1 ^= BIT(4);
  assert(mt6797_cpuclk_check_mp2_restart(&consumer,&clk)==-EBUSY); clean();
  snap.mp2_armpll_con1 ^= BIT(4);
- snap.mp2_armpll_con0 |= BIT(0); snap.muxsel |= BIT(0); writes=0;
+ /* The rail-off reset tuple needs the same saved shutdown receipt. */
+ snap.mp2_armpll_con0=snap.mp2_armpll_con1=0;
+ assert(!mt6797_cpuclk_check_mp2_restart(&consumer,&clk)); clean();
+ assert(mt6797_cpuclk_check_mp2_boot(&consumer,&clk)==-EBUSY); clean();
+ snap.mp2_armpll_con0=BIT(4);
+ assert(mt6797_cpuclk_check_mp2_restart(&consumer,&clk)==-EBUSY); clean();
+ snap=provider.observer.mp2_running; writes=0;
  assert(!mt6797_cpuclk_set_mp2_sync_dcm(&consumer,&clk,true)); clean();
  assert(!provider.observer.mp2_restart_valid);
  assert(mt6797_cpuclk_check_mp2_restart(&consumer,&clk)==-EAGAIN); clean();

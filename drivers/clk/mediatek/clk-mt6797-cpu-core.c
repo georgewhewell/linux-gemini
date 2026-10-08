@@ -170,11 +170,13 @@ int mt6797_cpuclk_decode_state(enum mt6797_cpuclk_domain domain,
 	 * The offline MP2 path uses clk26m with an uninitialized, unselected
 	 * PLL. Secure PSCI owns initial PLL/mux programming during CPU_ON.
 	 * Preserve the zero PLL observation; it is not a synthesized rate.
-	 * Admit only the complete cold tuple observed on Gemini, not arbitrary
-	 * malformed PLL state or a zero-rate PLL selected by the mux.
+	 * Rail removal also clears both PLL words, while the divider survives.
+	 * Decode that reference-clock path with any valid divider. Cold/restart
+	 * admission separately checks the divider and shutdown ownership; neither
+	 * malformed PLL state nor a zero-rate selected PLL is accepted here.
 	 */
 	if (domain == MT6797_CPUCLK_MP2 &&
-	    state->source == MT6797_CPUCLK_CLK26M && !state->divider &&
+	    state->source == MT6797_CPUCLK_CLK26M &&
 	    !snapshot->mp2_armpll_con0 && !snapshot->mp2_armpll_con1) {
 		state->armpll_rate = 0;
 		return 0;
@@ -211,7 +213,10 @@ int mt6797_cpuclk_validate_cold_mp2(const struct mt6797_cpuclk_snapshot *snapsho
 /*
  * ATF power_off_cl3() clears MP2 mux bit 0 and PLL enable bit 0, retaining
  * the PLL programming and divider. Compare against the owner's pre-off
- * snapshot, not an assumed power-on default. Other clusters can change.
+ * snapshot, not an assumed power-on default. Removing BUCKB then clears
+ * both PLL words on Gemini, while the mux and divider survive. Accept that
+ * complete reset pair as well as exact retention, never a partial reset.
+ * Other clusters can change.
  * This proves only the clock transition; power/SRAM state and ownership of
  * the shutdown receipt must be checked separately before authorizing CPU_ON.
  */
@@ -235,8 +240,11 @@ int mt6797_cpuclk_validate_stopped_mp2(
 	    !(running->mp2_armpll_con0 & BIT(0)))
 		return -EBUSY;
 	if ((stopped->muxsel & GENMASK(1, 0)) != MT6797_CPUCLK_CLK26M ||
-	    (stopped->clkdiv & GENMASK(4, 0)) != state.divider ||
-	    stopped->mp2_armpll_con0 != (running->mp2_armpll_con0 & ~BIT(0)) ||
+	    (stopped->clkdiv & GENMASK(4, 0)) != state.divider)
+		return -EBUSY;
+	if (!stopped->mp2_armpll_con0 && !stopped->mp2_armpll_con1)
+		return 0;
+	if (stopped->mp2_armpll_con0 != (running->mp2_armpll_con0 & ~BIT(0)) ||
 	    stopped->mp2_armpll_con1 != running->mp2_armpll_con1)
 		return -EBUSY;
 	return 0;

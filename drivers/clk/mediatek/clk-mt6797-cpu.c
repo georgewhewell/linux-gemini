@@ -224,6 +224,47 @@ static int mt6797_cpuclk_read_stable(struct mt6797_cpuclk_observer *observer,
 	return mt6797_cpuclk_snapshots_equal(snapshot, &second) ? 0 : -EAGAIN;
 }
 
+/* Read only the registers used to decode this domain. In particular, A53
+ * and CCI observations must not enter firmware to sample the MP2 PLL while
+ * the A72 power owner may be resetting that block.
+ */
+static int mt6797_cpuclk_read_domain(struct mt6797_cpuclk_observer *observer,
+				    enum mt6797_cpuclk_domain domain,
+				    struct mt6797_cpuclk_snapshot *snapshot)
+{
+	u32 reg;
+	int ret;
+
+	if (domain >= MT6797_CPUCLK_NR_DOMAINS)
+		return -EINVAL;
+	memset(snapshot, 0, sizeof(*snapshot));
+	snapshot->muxsel = readl_relaxed(observer->mcumixed + MT6797_CPUCLK_MUXSEL);
+	snapshot->clkdiv = readl_relaxed(observer->mcumixed + MT6797_CPUCLK_CLKDIV);
+	if (domain == MT6797_CPUCLK_MP2) {
+		ret = mt6797_cpuclk_secure_read(MT6797_CPUCLK_SMC_REG_READ,
+				MT6797_CPUCLK_MP2_PLL_CON1, &snapshot->mp2_armpll_con1);
+		if (ret)
+			return ret;
+		return mt6797_cpuclk_secure_read(MT6797_CPUCLK_SMC_REG_READ,
+				MT6797_CPUCLK_MP2_PLL_CON0, &snapshot->mp2_armpll_con0);
+	}
+	switch (domain) {
+	case MT6797_CPUCLK_MP0:
+		reg = MT6797_CPUCLK_MP0_PLL_CON1;
+		break;
+	case MT6797_CPUCLK_MP1:
+		reg = MT6797_CPUCLK_MP1_PLL_CON1;
+		break;
+	case MT6797_CPUCLK_CCI:
+		reg = MT6797_CPUCLK_CCI_PLL_CON1;
+		break;
+	default:
+		return -EINVAL;
+	}
+	snapshot->armpll_con1[domain] = readl_relaxed(observer->mcumixed + reg);
+	return 0;
+}
+
 /* Firmware may change MP2 during CPU_ON without taking this driver's mutex.
  * An A53/CCI observation must not depend on that unrelated path settling.
  * Transactions and lifecycle admission continue to require full snapshots.
@@ -235,10 +276,10 @@ static int mt6797_cpuclk_read_observation(struct mt6797_cpuclk_observer *observe
 	struct mt6797_cpuclk_snapshot second;
 	int ret;
 
-	ret = mt6797_cpuclk_read_once(observer, snapshot);
+	ret = mt6797_cpuclk_read_domain(observer, domain, snapshot);
 	if (ret)
 		return ret;
-	ret = mt6797_cpuclk_read_once(observer, &second);
+	ret = mt6797_cpuclk_read_domain(observer, domain, &second);
 	if (ret)
 		return ret;
 	return mt6797_cpuclk_observations_equal(domain, snapshot, &second) ?

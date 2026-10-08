@@ -34,6 +34,17 @@ struct mt6797_cpuclk_snapshot {
 	u32 sync_dcm;
 };
 
+/* Expected PLL readback only; does not authorize a rail or clock write. */
+struct mt6797_cpuclk_mp2_pll_plan {
+	u32 firmware_mhz;
+	unsigned long actual_rate;
+	struct mt6797_cpuclk_snapshot expected;
+};
+
+int mt6797_cpuclk_plan_mp2_pll(const struct mt6797_cpuclk_snapshot *initial,
+		unsigned long reference_rate, unsigned long requested_rate,
+		struct mt6797_cpuclk_mp2_pll_plan *plan);
+
 struct mt6797_cpuclk_state {
 	u64 armpll_rate;
 	u8 source;

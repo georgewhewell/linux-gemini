@@ -582,7 +582,7 @@ int mt6797_sram_set_running_voltage(struct device *consumer,
 	if (!mt6797_a72_power_owns_dvfs(consumer))
 		return -EPERM;
 	/* CPU8 anchors this cluster's lifetime. Never query a live CPU via PSCI. */
-	if (nr_cpu_ids <= 9 || !cpu_online(4) || !cpu_online(8))
+	if (nr_cpu_ids <= 9 || !cpu_online(8))
 		return -EBUSY;
 	ret = mt6797_sram_lock_consumer(consumer, supply, &sram);
 	if (ret)

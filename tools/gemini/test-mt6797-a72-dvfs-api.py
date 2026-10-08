@@ -118,7 +118,7 @@ int main(void) {
  assert(mt6797_a72_power_set_opp(8,1495000001,1,1100000)==-EINVAL);
  assert(mt6797_a72_power_set_opp(8,1495000000,0,1100000)==-EINVAL);
  assert(!step);clean();
- setup(false);cpus_held=false;assert(!change(false));clean();
+ setup(false);cpus_held=false;online[4]=false;assert(!change(false));clean();
  mt6797_a72_dvfs_consumer=p.dev;mt6797_a72_dvfs_task=current;
  assert(mt6797_a72_power_owns_dvfs(p.dev));
  assert(!mt6797_a72_power_owns_dvfs(NULL));
@@ -140,7 +140,7 @@ int main(void) {
   setup(false);
   switch(n) {
   case 0:mt6797_a72_owner=NULL;break;case 1:p.faulted=true;break;
-  case 2:online[4]=false;break;case 3:online[8]=false;break;case 4:p.started=false;break;
+  case 2:p.boot_vproc_uv=0;break;case 3:online[8]=false;break;case 4:p.started=false;break;
   case 5:p.committed[0]=false;break;case 6:online[9]=true;break;
   case 7:p.off_armed[0]=true;break;case 8:p.off_armed[1]=true;break;
   case 9:p.cpu8_armed=true;break;case 10:p.guarded=true;break;

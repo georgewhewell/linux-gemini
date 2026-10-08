@@ -156,7 +156,7 @@ int main(void)
  running();owns_dvfs=false;
  assert(mt6797_sram_set_running_voltage(&consumer,&supply,1200000,&sample)==-EPERM);
  assert(!reads && !sets && !idvfs_reads);released();
- running();cpus_held=false;
+ running();cpus_held=false;online[4]=false;
  assert(!mt6797_sram_set_running_voltage(&consumer,&supply,1200000,&sample));
  assert(reads==8 && sets==1 && waits==1 && sample.control==0x4008ff);
  assert(!affinity_calls && idvfs_reads==2);released();
@@ -167,7 +167,7 @@ int main(void)
   case 2:rdev.exclusive=0;break;case 3:rdev.open_count=2;break;
   case 4:missing=1;break;case 5:wrong_node=1;break;
   case 6:provider.driver=NULL;break;case 7:sram.faulted=true;break;
-  case 8:online[8]=false;break;case 9:online[4]=false;break;
+  case 8:online[8]=false;break;case 9:rdev.desc=NULL;break;
   case 10:mt6797_sram_boot_attempted=0;break;case 11:sram.first.ready=false;break;
   case 12:sram.first.faulted=true;break;case 13:sram.first.restart_armed=true;break;
   case 14:spm_error=1;break;case 15:reg_error=-EIO;break;

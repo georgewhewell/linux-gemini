@@ -59,10 +59,10 @@ static void dev_info_ratelimited(void *dev, const char *format, ...)
  va_list ap; (void)dev; logs++;
  va_start(ap,format); vsnprintf(message,sizeof(message),format,ap); va_end(ap);
 }
-static int mt6797_cpuclk_snapshot(struct mt6797_cpuclk *p,
+static int mt6797_cpuclk_observe(struct mt6797_cpuclk *p, enum mt6797_cpuclk_domain d,
  struct mt6797_cpuclk_snapshot *s)
 {
- (void)p; samples++;
+ (void)p; assert(d==MT6797_CPUCLK_MP2); samples++;
  /* Poison even a failed partial read: diagnostics must not print it. */
  memset(s,0xa5,sizeof(*s)); return sample_error;
 }

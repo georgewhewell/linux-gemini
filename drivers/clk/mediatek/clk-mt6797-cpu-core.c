@@ -99,6 +99,25 @@ bool mt6797_cpuclk_snapshots_equal(const struct mt6797_cpuclk_snapshot *first,
 	return first && second && !memcmp(first, second, sizeof(*first));
 }
 
+/* Read-only rate/source decoding depends only on the requested clock path. */
+bool mt6797_cpuclk_observations_equal(enum mt6797_cpuclk_domain domain,
+		const struct mt6797_cpuclk_snapshot *first,
+		const struct mt6797_cpuclk_snapshot *second)
+{
+	const struct mt6797_cpuclk_domain_data *data;
+
+	if (!mt6797_cpuclk_domain_valid(domain) || !first || !second)
+		return false;
+	data = &mt6797_cpuclk_domains[domain];
+	if (((first->muxsel ^ second->muxsel) & (0x3U << data->mux_shift)) ||
+	    ((first->clkdiv ^ second->clkdiv) & (0x1fU << data->divider_shift)))
+		return false;
+	if (domain == MT6797_CPUCLK_MP2)
+		return first->mp2_armpll_con0 == second->mp2_armpll_con0 &&
+		       first->mp2_armpll_con1 == second->mp2_armpll_con1;
+	return first->armpll_con1[domain] == second->armpll_con1[domain];
+}
+
 static bool mt6797_cpuclk_divider_valid(u8 divider)
 {
 	switch (divider) {

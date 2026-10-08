@@ -98,7 +98,11 @@ static int da9213_legacy_raw_read(struct i2c_client *client, u8 reg, u8 *value)
 	};
 	int ret;
 
+	if (reg == 0x5e)
+		dev_dbg(&client->dev, "BUCKB read transfer-enter\n");
 	ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
+	if (reg == 0x5e)
+		dev_dbg(&client->dev, "BUCKB read transfer-return ret=%d\n", ret);
 	if (ret < 0)
 		return ret;
 	if (ret != ARRAY_SIZE(msgs))
@@ -112,7 +116,11 @@ static int da9213_legacy_raw_write(struct i2c_client *client, u8 reg, u8 value)
 	u8 data[] = { reg, value };
 	int ret;
 
+	if (reg == 0x5e)
+		dev_dbg(&client->dev, "BUCKB write transfer-enter\n");
 	ret = i2c_master_send(client, data, ARRAY_SIZE(data));
+	if (reg == 0x5e)
+		dev_dbg(&client->dev, "BUCKB write transfer-return ret=%d\n", ret);
 	if (ret < 0)
 		return ret;
 	if (ret != ARRAY_SIZE(data))
@@ -223,7 +231,11 @@ static int da9213_legacy_update_primary(struct da9213_legacy *chip, u8 reg,
 {
 	int ret;
 
+	if (reg == 0x5e)
+		dev_dbg(&chip->client->dev, "BUCKB update lock-enter\n");
 	mutex_lock(&chip->lock);
+	if (reg == 0x5e)
+		dev_dbg(&chip->client->dev, "BUCKB update lock-acquired\n");
 	ret = da9213_legacy_update_bits_transaction(&da9213_legacy_io, chip,
 						    reg, mask, value);
 	mutex_unlock(&chip->lock);
@@ -275,6 +287,9 @@ static int da9213_legacy_is_enabled(struct regulator_dev *rdev)
 static int da9213_legacy_enable(struct regulator_dev *rdev)
 {
 	struct da9213_legacy *chip = rdev_get_drvdata(rdev);
+
+	dev_dbg(&chip->client->dev, "enable provider-enter buck=%u\n",
+		rdev_get_id(rdev));
 
 	return da9213_legacy_update_primary(chip,
 			da9213_legacy_cont_reg[rdev_get_id(rdev)],

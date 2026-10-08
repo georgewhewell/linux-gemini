@@ -45,6 +45,32 @@ int mt6797_cpuclk_plan_mp2_pll(const struct mt6797_cpuclk_snapshot *initial,
 		unsigned long reference_rate, unsigned long requested_rate,
 		struct mt6797_cpuclk_mp2_pll_plan *plan);
 
+enum mt6797_cpuclk_mp2_step {
+	MT6797_MP2_DIVIDE,
+	MT6797_MP2_PARK,
+	MT6797_MP2_PROGRAM_PLL,
+	MT6797_MP2_UNPARK,
+	MT6797_MP2_RESTORE_DIVIDER,
+	MT6797_MP2_NR_STEPS,
+};
+
+/* Clock-only plan; the power owner must admit rails and serialize hotplug. */
+struct mt6797_cpuclk_mp2_plan {
+	struct mt6797_cpuclk_snapshot initial;
+	struct mt6797_cpuclk_snapshot step[MT6797_MP2_NR_STEPS];
+	u32 firmware_mhz;
+	unsigned long initial_rate;
+	unsigned long rate;
+	unsigned long minimum_rate;
+	unsigned long ceiling_rate;
+};
+
+int mt6797_cpuclk_plan_mp2_transition(
+		const struct mt6797_cpuclk_snapshot *initial,
+		unsigned long reference_rate, unsigned long requested_rate,
+		unsigned int target_divisor, unsigned long mainpll_rate,
+		struct mt6797_cpuclk_mp2_plan *plan);
+
 struct mt6797_cpuclk_state {
 	u64 armpll_rate;
 	u8 source;

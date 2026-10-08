@@ -713,7 +713,113 @@ static void mt6797_cpuclk_mp2_pll_plan_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, memcmp(&plan, &sentinel, sizeof(plan)), 0);
 }
 
+static void mt6797_cpuclk_mp2_transition_test(struct kunit *test)
+{
+	static const unsigned int mhz[] = {
+		338, 676, 750, 845, 1001, 1131, 1378, 1495, 1677,
+		1885, 2093, 2158, 2223, 2262, 2327, 2431, 2587,
+	};
+	static const u8 unity[] = { 0, 8, 16, 24 };
+	struct mt6797_cpuclk_snapshot initial, preserved;
+	struct mt6797_cpuclk_mp2_pll_plan pll;
+	struct mt6797_cpuclk_mp2_plan plan;
+	struct mt6797_cpuclk_state state;
+	unsigned long parent, rate;
+	unsigned int i, j, k, u, divisor;
+
+	for (u = 0; u < ARRAY_SIZE(unity); u++) {
+		for (i = 0; i < ARRAY_SIZE(mhz); i++) {
+			memset(&initial, 0xa5, sizeof(initial));
+			initial.muxsel = (initial.muxsel & ~3U) | MT6797_CPUCLK_ARMPLL;
+			divisor = mhz[i] == 338 ? 2 : 1;
+			initial.clkdiv = (initial.clkdiv & ~31U) |
+				(divisor == 2 ? 10 : unity[u]);
+			KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_mp2_pll(&initial,
+				26000000, mhz[i] * divisor * 1000000UL, &pll), 0);
+			initial = pll.expected;
+			for (j = 0; j < ARRAY_SIZE(mhz); j++) {
+				divisor = mhz[j] == 338 ? 2 : 1;
+				KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_mp2_transition(
+					&initial, 26000000, mhz[j] * 1000000UL,
+					divisor, 1092000000, &plan), 0);
+				KUNIT_EXPECT_TRUE(test, mt6797_cpuclk_snapshots_equal(
+					&plan.initial, &initial));
+				KUNIT_EXPECT_EQ(test, plan.firmware_mhz, mhz[j] * divisor);
+				for (k = 0; k < MT6797_MP2_NR_STEPS; k++) {
+					KUNIT_ASSERT_EQ(test, mt6797_cpuclk_decode_state(
+						MT6797_CPUCLK_MP2, &plan.step[k], 26000000, &state), 0);
+					KUNIT_EXPECT_EQ(test, state.source,
+						(k == MT6797_MP2_PARK || k == MT6797_MP2_PROGRAM_PLL) ?
+						MT6797_CPUCLK_MAINPLL : MT6797_CPUCLK_ARMPLL);
+					parent = state.source == MT6797_CPUCLK_MAINPLL ?
+						1092000000 : state.armpll_rate;
+					rate = mt6797_cpuclk_apply_divider(parent, state.divider);
+					KUNIT_EXPECT_LE(test, rate, plan.ceiling_rate);
+					KUNIT_EXPECT_LE(test, plan.minimum_rate, rate);
+					preserved = plan.step[k];
+					KUNIT_EXPECT_EQ(test, preserved.mp2_armpll_con0 & ~GENMASK(14, 12),
+						initial.mp2_armpll_con0 & ~GENMASK(14, 12));
+					preserved.mp2_armpll_con0 = initial.mp2_armpll_con0;
+					preserved.mp2_armpll_con1 = initial.mp2_armpll_con1;
+					preserved.muxsel = (preserved.muxsel & ~3U) | (initial.muxsel & 3U);
+					preserved.clkdiv = (preserved.clkdiv & ~31U) | (initial.clkdiv & 31U);
+					KUNIT_EXPECT_TRUE(test, mt6797_cpuclk_snapshots_equal(&preserved, &initial));
+				}
+				KUNIT_EXPECT_EQ(test, rate, plan.rate);
+				KUNIT_EXPECT_LE(test, plan.rate, mhz[j] * 1000000UL);
+				KUNIT_EXPECT_LE(test, mhz[j] * 1000000UL - plan.rate, 2);
+			}
+		}
+	}
+}
+
+static void mt6797_cpuclk_mp2_transition_admission_test(struct kunit *test)
+{
+	struct mt6797_cpuclk_snapshot initial = mt6797_cpuclk_test_snapshot(), bad;
+	struct mt6797_cpuclk_mp2_pll_plan pll;
+	struct mt6797_cpuclk_mp2_plan plan, sentinel;
+
+	initial.muxsel |= MT6797_CPUCLK_ARMPLL;
+	KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_mp2_pll(&initial,
+		26000000, 750000000, &pll), 0);
+	initial = pll.expected;
+	memset(&plan, 0x5a, sizeof(plan));
+	sentinel = plan;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(NULL,
+		26000000, 750000000, 1, 1092000000, &plan), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&initial,
+		26000000, 750000000, 1, 1092000000, NULL), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&initial,
+		26000000, 750000000, 3, 1092000000, &plan), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&initial,
+		25000000, 750000000, 1, 1092000000, &plan), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&initial,
+		26000000, 3000000000UL, 2, 1092000000, &plan), -ERANGE);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&initial,
+		26000000, 750000000, 1, 0, &plan), -ERANGE);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&initial,
+		26000000, 338000000, 2, 3100000000UL, &plan), -ERANGE);
+	bad = initial; bad.mp2_armpll_con0 &= ~BIT(0);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&bad,
+		26000000, 750000000, 1, 1092000000, &plan), -EBUSY);
+	bad = initial; bad.mp2_armpll_con1 |= BIT(31);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&bad,
+		26000000, 750000000, 1, 1092000000, &plan), -EBUSY);
+	bad = initial; bad.mp2_armpll_con0 |= GENMASK(14, 12);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&bad,
+		26000000, 750000000, 1, 1092000000, &plan), -EBUSY);
+	bad = initial; bad.muxsel &= ~3U;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&bad,
+		26000000, 750000000, 1, 1092000000, &plan), -EBUSY);
+	bad = initial; bad.clkdiv = (bad.clkdiv & ~31U) | 9;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&bad,
+		26000000, 750000000, 1, 1092000000, &plan), -EBUSY);
+	KUNIT_EXPECT_EQ(test, memcmp(&plan, &sentinel, sizeof(plan)), 0);
+}
+
 static struct kunit_case mt6797_cpuclk_test_cases[] = {
+	KUNIT_CASE(mt6797_cpuclk_mp2_transition_test),
+	KUNIT_CASE(mt6797_cpuclk_mp2_transition_admission_test),
 	KUNIT_CASE(mt6797_cpuclk_mp2_pll_plan_test),
 	KUNIT_CASE(mt6797_cpuclk_postdivider_pairs_test),
 	KUNIT_CASE(mt6797_cpuclk_postdivider_admission_test),

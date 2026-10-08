@@ -440,6 +440,15 @@ struct mt6797_dvfsp_handoff *mt6797_dvfsp_handoff_get(struct device *consumer);
 int mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff);
 /* Call outside a CSPM transaction after an uncertain external rail update. */
 void mt6797_dvfsp_handoff_rail_fault(struct mt6797_dvfsp_handoff *handoff);
+/*
+ * Claim once after CCI clock adoption, verified voltage vote and lifetime
+ * cleanup are installed. The vote must outlive ownership: fence before any
+ * release, including probe failure. There is no unfenced ownership release.
+ * Call claim outside regulator/CSPM transactions. Status is safe with the
+ * coupled regulator locks held: 0 pending, 1 claimed, negative when blocked.
+ */
+int mt6797_dvfsp_handoff_cci_claim(struct mt6797_dvfsp_handoff *handoff);
+int mt6797_dvfsp_handoff_cci_status(struct mt6797_dvfsp_handoff *handoff);
 int mt6797_dvfsp_cspm_transaction(struct mt6797_dvfsp_handoff *handoff,
 				  mt6797_dvfsp_cspm_transaction_fn operation,
 				  void *context);
@@ -543,6 +552,18 @@ mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *handoff)
 static inline void
 mt6797_dvfsp_handoff_rail_fault(struct mt6797_dvfsp_handoff *handoff)
 {
+}
+
+static inline int
+mt6797_dvfsp_handoff_cci_claim(struct mt6797_dvfsp_handoff *handoff)
+{
+	return -ENODEV;
+}
+
+static inline int
+mt6797_dvfsp_handoff_cci_status(struct mt6797_dvfsp_handoff *handoff)
+{
+	return -ENODEV;
 }
 
 static inline int

@@ -104,6 +104,9 @@ static int mt6797_cci_sample_policy(struct mt6797_cci *cci)
 		cpus[i].available = true;
 		if (i == 2)
 			continue;
+		/* cpufreq-dt can register later; avoid noisy lookups while absent. */
+		if (dev_pm_opp_get_opp_count(cci->cpu_dev[i]) <= 0)
+			return -EAGAIN;
 		opp = dev_pm_opp_find_freq_ceil(cci->cpu_dev[i], &hz);
 		if (IS_ERR(opp))
 			return -EAGAIN;
@@ -412,6 +415,9 @@ static int mt6797_cci_probe(struct platform_device *pdev)
 	ret = devm_add_action_or_reset(dev, mt6797_cci_stop, cci);
 	if (ret)
 		return ret;
+	ret = mt6797_dvfsp_handoff_cci_claim(cci->handoff);
+	if (ret)
+		goto fault;
 	mt6797_cci_queue(cci, 0);
 	dev_info(dev, "adopted CCI at %u Hz, vote %u uV\n", cci->state.hz, cci->state.vote_uv);
 	return 0;

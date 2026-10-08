@@ -222,9 +222,10 @@
 	 * vproc-little rail, which may run up to the vendor 1.2 V ceiling.
 	 *
 	 * vproc-little also supplies the CCI. Its voltage consumer now follows
-	 * CPU activity, but the rail remains at its boot voltage pending
-	 * physical voltage-transition qualification. The clock provider coordinates ARMPLL and CKDIV changes,
-	 * using a divided MAINPLL fallback for PLL postdivider changes.
+	 * CPU activity. The coupler holds the inherited voltage until CCI owns
+	 * its vote, then coordinates CPU/SRAM changes. The clock provider
+	 * coordinates ARMPLL and CKDIV, using a divided MAINPLL fallback for
+	 * PLL postdivider changes.
 	 */
 	cluster0_opp: opp-table-cluster0 {
 		compatible = "operating-points-v2";

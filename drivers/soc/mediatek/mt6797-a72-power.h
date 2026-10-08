@@ -14,6 +14,9 @@
 					 BIT(8) | BIT(12) | BIT(16) | \
 					 BIT(19))
 #define MT6797_A72_BIG_BUCK_ISO		BIT(1)
+#define MT6797_A72_CORE0_POWER_ACK	BIT(7)
+#define MT6797_A72_CORE1_POWER_ACK	BIT(6)
+#define MT6797_A72_CLUSTER_POWER_ACK	BIT(17)
 
 #define MT6797_A72_SRAM_BOOT_UV		1100000
 #define MT6797_A72_VPROC_MIN_UV		800000
@@ -110,5 +113,40 @@ int mt6797_a72_transaction_begin(struct mt6797_a72_transaction *transaction,
 				  unsigned long capabilities);
 int mt6797_a72_transaction_abort(struct mt6797_a72_transaction *transaction);
 int mt6797_a72_transaction_commit(struct mt6797_a72_transaction *transaction);
+
+/*
+ * The surviving CPU calls this only after the target has left Linux and
+ * entered PSCI CPU_OFF. AFFINITY_INFO is an effectful firmware kill on MT6797,
+ * never a harmless query of a running target. CPU9 must leave before CPU8.
+ */
+struct mt6797_a72_off_sample {
+	u32 online_mask;
+	u32 power_status;
+	u32 power_status_second;
+	u32 mp2_pwr_con;
+	u32 ext_buck_iso;
+	u32 idvfs_control;
+	int vproc_enabled;
+};
+
+struct mt6797_a72_off_io {
+	int (*sample)(void *context, struct mt6797_a72_off_sample *sample);
+	int (*sync_dcm_off)(void *context);
+	int (*firmware_kill)(void *context, unsigned int cpu);
+	int (*vproc_disable)(void *context);
+	void (*fence)(void *context);
+};
+
+struct mt6797_a72_off_state {
+	struct mt6797_a72_off_sample final;
+	bool completed;
+	bool cluster_off;
+	bool faulted;
+	int error;
+};
+
+int mt6797_a72_finish_cpu_off(struct mt6797_a72_off_state *state,
+			     const struct mt6797_a72_off_io *io,
+			     void *context, unsigned int cpu);
 
 #endif /* __SOC_MEDIATEK_MT6797_A72_POWER_H */

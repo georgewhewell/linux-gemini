@@ -140,6 +140,15 @@ config ARM_MEDIATEK_CCI_DEVFREQ
 	  buck voltages and update a proper CCI frequency. Use the notification
 	  to get the regulator status.
 
+config ARM_MT6797_CCI_DEVFREQ
+	bool "MediaTek MT6797 native CCI frequency and voltage policy"
+	depends on OF && COMMON_CLK && CPU_FREQ && REGULATOR
+	depends on MTK_MT6797_DVFSP_HANDOFF=y
+	help
+	  Manage the native MT6797 compound CCI clock with a shared CPU
+	  regulator vote, following A53 frequency changes and CPU hotplug.
+	  The unmanaged A72 cluster contributes its current clock frequency.
+
 config ARM_RK3399_DMC_DEVFREQ
 	tristate "ARM RK3399 DMC DEVFREQ Driver"
 	depends on (ARCH_ROCKCHIP && HAVE_ARM_SMCCC) || \

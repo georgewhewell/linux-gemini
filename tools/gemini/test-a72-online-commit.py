@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Exercise the actual online commit with DCM setup and unplug cancellation, without affinity queries."""
 from pathlib import Path
 import os, subprocess, tempfile

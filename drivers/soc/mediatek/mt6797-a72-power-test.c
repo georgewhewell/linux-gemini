@@ -41,6 +41,30 @@ static struct mt6797_a72_fake mt6797_a72_new_fake(void)
 	};
 }
 
+static struct mt6797_a72_fake mt6797_a72_stopped_fake(bool retained)
+{
+	struct mt6797_a72_fake fake = mt6797_a72_new_fake();
+
+	if (retained) {
+		fake.state.vsram_uv = 1100000;
+		fake.state.vsram_selector = 11;
+		fake.state.vsram_control = 0x4008fb;
+		fake.state.vsram_calibration = 0x8967;
+	}
+	return fake;
+}
+
+static struct mt6797_a72_off_state
+mt6797_a72_test_off_record(const struct mt6797_a72_state *state)
+{
+	return (struct mt6797_a72_off_state) {
+		.completed = true,
+		.cluster_off = true,
+		.final.mp2_pwr_con = state->mp2_pwr_con,
+		.final.ext_buck_iso = state->ext_buck_iso,
+	};
+}
+
 static int mt6797_a72_fake_snapshot(void *context,
 				     struct mt6797_a72_state *state)
 {
@@ -386,7 +410,7 @@ static void mt6797_a72_transaction_orders_and_aborts_test(struct kunit *test)
 }
 
 /* Apply failures before/after effects, plus readback failures at every step. */
-static void mt6797_a72_all_step_failures_test(struct kunit *test)
+static void mt6797_a72_step_failures(struct kunit *test, unsigned int start)
 {
 	struct mt6797_a72_plan plan;
 	unsigned int i, mode, j;
@@ -394,7 +418,9 @@ static void mt6797_a72_all_step_failures_test(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, mt6797_a72_build_plan(&plan), 0);
 	for (mode = 0; mode < 3; mode++) {
 		for (i = 0; i < plan.count; i++) {
-			struct mt6797_a72_fake fake = mt6797_a72_new_fake();
+			struct mt6797_a72_fake fake = mt6797_a72_stopped_fake(start == 2);
+			struct mt6797_a72_state stopped = fake.state;
+			struct mt6797_a72_off_state off = mt6797_a72_test_off_record(&stopped);
 			struct mt6797_a72_fake expected = fake;
 			struct mt6797_a72_transaction transaction = { };
 			unsigned int calls;
@@ -406,7 +432,10 @@ static void mt6797_a72_all_step_failures_test(struct kunit *test)
 				fake.fail_verify_at = i;
 			else
 				fake.fail_apply_at = i;
-			ret = mt6797_a72_transaction_begin(&transaction, &plan,
+			ret = start ? mt6797_a72_transaction_restart(&transaction, &plan,
+				&mt6797_a72_fake_ops, &fake, MT6797_A72_REQUIRED_CAPS,
+				&off, &stopped) :
+				mt6797_a72_transaction_begin(&transaction, &plan,
 				&mt6797_a72_fake_ops, &fake, MT6797_A72_REQUIRED_CAPS);
 			KUNIT_EXPECT_EQ(test, fake.apply_calls, i + 1);
 			KUNIT_EXPECT_FALSE(test, fake.state.transaction_guarded);
@@ -445,6 +474,14 @@ static void mt6797_a72_all_step_failures_test(struct kunit *test)
 			KUNIT_EXPECT_EQ(test, fake.state.vsram_calibration, expected.state.vsram_calibration);
 		}
 	}
+}
+
+static void mt6797_a72_all_step_failures_test(struct kunit *test)
+{
+	/* Cold boot, restart with reset SRAM, restart with retained SRAM. */
+	mt6797_a72_step_failures(test, 0);
+	mt6797_a72_step_failures(test, 1);
+	mt6797_a72_step_failures(test, 2);
 }
 
 static void mt6797_a72_requires_isolated_start_test(struct kunit *test)
@@ -514,8 +551,134 @@ static void mt6797_a72_commit_forgets_rollback_state_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_a72_transaction_abort(&transaction), -EINVAL);
 }
 
+static void mt6797_a72_restart_admission_test(struct kunit *test)
+{
+	struct mt6797_a72_plan plan;
+	unsigned int n;
+
+	KUNIT_ASSERT_EQ(test, mt6797_a72_build_plan(&plan), 0);
+	for (n = 0; n < 32; n++) {
+		struct mt6797_a72_fake fake = mt6797_a72_stopped_fake(n != 31);
+		struct mt6797_a72_state stopped = fake.state;
+		struct mt6797_a72_off_state off = mt6797_a72_test_off_record(&stopped);
+		struct mt6797_a72_transaction transaction = {};
+		unsigned long caps = MT6797_A72_REQUIRED_CAPS;
+		int ret;
+
+		switch (n) {
+		case 0:
+			off.completed = false;
+			break;
+		case 1:
+			off.cluster_off = false;
+			break;
+		case 2:
+			off.faulted = true;
+			break;
+		case 3:
+			off.error = -EIO;
+			break;
+		case 4:
+			off.final.online_mask = 1;
+			break;
+		case 5:
+			off.final.power_status = BIT(7);
+			break;
+		case 6:
+			off.final.power_status_second = BIT(17);
+			break;
+		case 7:
+			off.final.idvfs_control = 1;
+			break;
+		case 8:
+			off.final.vproc_enabled = 1;
+			break;
+		case 9:
+			off.final.ext_buck_iso = 0;
+			break;
+		case 10:
+			off.final.mp2_pwr_con |= BIT(0);
+			break;
+		case 11:
+			off.final.mp2_pwr_con &= ~BIT(4);
+			break;
+		case 12:
+			fake.state.a72_online = true;
+			break;
+		case 13:
+			fake.state.transaction_guarded = true;
+			break;
+		case 14:
+			fake.state.vproc_enabled = 1;
+			break;
+		case 15:
+			fake.state.pwrap_reset_asserted = 1;
+			break;
+		case 16:
+			fake.state.mp2_pwr_con ^= BIT(16);
+			break;
+		case 17:
+			fake.state.ext_buck_iso = 0;
+			break;
+		case 18:
+			fake.state.vproc_uv += 10000;
+			break;
+		case 19:
+			fake.state.vsram_uv -= 25000;
+			break;
+		case 20:
+			fake.state.vsram_selector ^= 1;
+			break;
+		case 21:
+			fake.state.vsram_control ^= BIT(22);
+			break;
+		case 22:
+			fake.state.vsram_calibration ^= 1;
+			break;
+		case 23:
+			stopped.a72_online = true;
+			break;
+		case 24:
+			stopped.vproc_enabled = 1;
+			break;
+		case 25:
+			stopped.vsram_uv = 1200000;
+			break;
+		case 26:
+			caps = 0;
+			break;
+		case 27:
+			fake.state.vsram_calibration = stopped.vsram_calibration = 0;
+			break;
+		case 28:
+			fake.state.vsram_calibration = stopped.vsram_calibration = BIT(16);
+			break;
+		case 29:
+			fake.state.vsram_control = stopped.vsram_control = 0;
+			break;
+		default:
+			break;
+		}
+		/* The little-cluster isolation bit is independently owned. */
+		fake.state.ext_buck_iso ^= BIT(0);
+		fake.transaction = &transaction;
+		ret = mt6797_a72_transaction_restart(&transaction, &plan,
+			&mt6797_a72_fake_ops, &fake, caps, &off, &stopped);
+		if (n < 30) {
+			KUNIT_EXPECT_TRUE(test, ret < 0);
+			KUNIT_EXPECT_EQ(test, fake.apply_calls, 0U);
+		} else {
+			KUNIT_EXPECT_EQ(test, ret, 0);
+			KUNIT_EXPECT_EQ(test, fake.apply_calls, 12U);
+			KUNIT_EXPECT_EQ(test, fake.state.vsram_uv, 1100000);
+			KUNIT_EXPECT_EQ(test, mt6797_a72_transaction_commit(&transaction), 0);
+		}
+	}
+}
+
 static struct kunit_case mt6797_a72_power_test_cases[] = {
 	KUNIT_CASE(mt6797_a72_plan_matches_vendor_boundary_test),
+	KUNIT_CASE(mt6797_a72_restart_admission_test),
 	KUNIT_CASE(mt6797_a72_admission_requires_live_backends_test),
 	KUNIT_CASE(mt6797_a72_admission_fences_online_cpu_test),
 	KUNIT_CASE(mt6797_a72_admission_requires_full_cold_sram_test),

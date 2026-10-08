@@ -48,7 +48,8 @@ struct device { void *of_node, *driver; };
 struct platform_device { struct device dev; };
 struct clk_hw { int tag; };
 struct clk { struct clk_hw *hw; };
-struct mt6797_cpuclk_observer { struct clk *i2c_clk; int lock; void *handoff; bool faulted; };
+struct mt6797_cpuclk_observer { struct clk *i2c_clk; int lock; void *handoff; bool faulted;
+ struct mt6797_cpuclk_snapshot mp2_running; bool mp2_restart_valid; };
 struct mt6797_cpuclk {
  struct mt6797_cpuclk_observer observer;
  struct { struct clk_hw hw; } paths[4];
@@ -174,6 +175,7 @@ int main(void)
    int expected=n==1?-EBUSY:n<5?-EIO:-EUCLEAN;
    assert(mt6797_cpuclk_set_mp2_sync_dcm(&consumer,&clk,on)==expected); clean();
    assert(provider.observer.faulted==(n>=5)); assert(global_fault==(n>=5));
+   assert(!provider.observer.mp2_restart_valid);
    if(n>=5) { int before=step;
     assert(mt6797_cpuclk_set_mp2_sync_dcm(&consumer,&clk,on)==-EUCLEAN);
     assert(step==before); clean(); }
@@ -203,6 +205,23 @@ int main(void)
   assert(mt6797_cpuclk_set_mp2_sync_dcm(&consumer,&clk,on)==-EBUSY);
   assert(!writes); clean();
  }
+ reset(true);
+ assert(mt6797_cpuclk_check_mp2_restart(&consumer,&clk)==-EAGAIN); clean();
+ assert(!mt6797_cpuclk_set_mp2_sync_dcm(&consumer,&clk,false)); clean();
+ assert(provider.observer.mp2_restart_valid);
+ assert(mt6797_cpuclk_set_mp2_sync_dcm(&consumer,&clk,false)==-EALREADY); clean();
+ assert(writes==2 && !global_fault);
+ assert(mt6797_cpuclk_check_mp2_restart(&consumer,&clk)==-EBUSY); clean();
+ snap.mp2_armpll_con0 &= ~BIT(0); snap.muxsel &= ~BIT(0);
+ assert(!mt6797_cpuclk_check_mp2_restart(&consumer,&clk)); clean();
+ snap.mp2_armpll_con1 ^= BIT(4);
+ assert(mt6797_cpuclk_check_mp2_restart(&consumer,&clk)==-EBUSY); clean();
+ snap.mp2_armpll_con1 ^= BIT(4);
+ snap.mp2_armpll_con0 |= BIT(0); snap.muxsel |= BIT(0); writes=0;
+ assert(!mt6797_cpuclk_set_mp2_sync_dcm(&consumer,&clk,true)); clean();
+ assert(!provider.observer.mp2_restart_valid);
+ assert(mt6797_cpuclk_check_mp2_restart(&consumer,&clk)==-EAGAIN); clean();
+ puts("PASS MP2 saved running state, duplicate-stop refusal, stopped-state validation and invalidation after DCM enable");
  puts("mt6797-cpuclk-boot-api: pass (lookup, lock order, DCM toggle, 36 I/O failures, 8 readback corruptions, full-width SMC errors, fencing)");
 }
 '''

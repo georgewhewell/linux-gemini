@@ -178,8 +178,7 @@ int mt6797_a72_build_plan(struct mt6797_a72_plan *plan)
 	return 0;
 }
 
-int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
-				  unsigned long capabilities)
+static int mt6797_a72_validate_base(const struct mt6797_a72_state *state)
 {
 	if (!state)
 		return -EINVAL;
@@ -199,6 +198,16 @@ int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
 	    state->vsram_uv < MT6797_A72_SRAM_MIN_UV ||
 	    state->vsram_uv > MT6797_A72_SRAM_MAX_UV)
 		return -ERANGE;
+	return 0;
+}
+
+int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
+				  unsigned long capabilities)
+{
+	int ret = mt6797_a72_validate_base(state);
+
+	if (ret)
+		return ret;
 	/* First-start only: full cold sample, not equivalent nominal voltage. */
 	if (state->vsram_selector || state->vsram_control || state->vsram_calibration)
 		return -EBUSY;
@@ -209,6 +218,46 @@ int mt6797_a72_validate_admission(const struct mt6797_a72_state *state,
 	    MT6797_A72_REQUIRED_CAPS)
 		return -EOPNOTSUPP;
 
+	return 0;
+}
+
+static int mt6797_a72_validate_restart(const struct mt6797_a72_state *state,
+				     const struct mt6797_a72_off_state *off,
+				     const struct mt6797_a72_state *stopped,
+				     unsigned long capabilities)
+{
+	bool cold, retained;
+	int ret;
+
+	if (!off || !stopped)
+		return -EINVAL;
+	if (!off->completed || !off->cluster_off || off->faulted || off->error ||
+	    !mt6797_a72_off_sample_valid(&off->final, 8, true))
+		return -EUCLEAN;
+	ret = mt6797_a72_validate_base(state);
+	if (ret)
+		return ret;
+	ret = mt6797_a72_validate_base(stopped);
+	if (ret)
+		return ret;
+	if (state->vproc_enabled || stopped->vproc_enabled ||
+	    state->mp2_pwr_con != off->final.mp2_pwr_con ||
+	    stopped->mp2_pwr_con != off->final.mp2_pwr_con ||
+	    state->vproc_uv != stopped->vproc_uv ||
+	    state->vsram_uv != stopped->vsram_uv ||
+	    state->vsram_selector != stopped->vsram_selector ||
+	    state->vsram_control != stopped->vsram_control ||
+	    state->vsram_calibration != stopped->vsram_calibration)
+		return -EBUSY;
+	cold = !state->vsram_selector && !state->vsram_control &&
+	       !state->vsram_calibration && state->vsram_uv == 1050000;
+	retained = state->vsram_selector == 11 && state->vsram_uv == 1100000 &&
+		   (state->vsram_control & 0xfff) == 0x8fb &&
+		   state->vsram_calibration && !(state->vsram_calibration & 0xffff0000);
+	if (!cold && !retained)
+		return -EUCLEAN;
+	if ((capabilities & MT6797_A72_REQUIRED_CAPS) != MT6797_A72_REQUIRED_CAPS)
+		return -EOPNOTSUPP;
 	return 0;
 }
 
@@ -317,11 +366,12 @@ mt6797_a72_transaction_rollback(struct mt6797_a72_transaction *transaction)
 	return ret;
 }
 
-int mt6797_a72_transaction_begin(struct mt6797_a72_transaction *transaction,
+static int mt6797_a72_transaction_start(struct mt6797_a72_transaction *transaction,
 				  const struct mt6797_a72_plan *plan,
 				  const struct mt6797_a72_backend_ops *ops,
-				  void *context,
-				  unsigned long capabilities)
+				  void *context, unsigned long capabilities,
+				  const struct mt6797_a72_off_state *off,
+				  const struct mt6797_a72_state *stopped)
 {
 	const struct mt6797_a72_step *step;
 	int rollback_ret;
@@ -345,8 +395,12 @@ int mt6797_a72_transaction_begin(struct mt6797_a72_transaction *transaction,
 	ret = ops->snapshot(context, &transaction->initial);
 	if (ret)
 		return ret;
-	ret = mt6797_a72_validate_admission(&transaction->initial,
-					    capabilities);
+	if (off || stopped)
+		ret = mt6797_a72_validate_restart(&transaction->initial,
+						 off, stopped, capabilities);
+	else
+		ret = mt6797_a72_validate_admission(&transaction->initial,
+						   capabilities);
 	if (ret)
 		return ret;
 
@@ -369,6 +423,29 @@ int mt6797_a72_transaction_begin(struct mt6797_a72_transaction *transaction,
 
 	transaction->active = true;
 	return 0;
+}
+
+int mt6797_a72_transaction_begin(struct mt6797_a72_transaction *transaction,
+				  const struct mt6797_a72_plan *plan,
+				  const struct mt6797_a72_backend_ops *ops,
+				  void *context,
+				  unsigned long capabilities)
+{
+	return mt6797_a72_transaction_start(transaction, plan, ops, context,
+					    capabilities, NULL, NULL);
+}
+
+int mt6797_a72_transaction_restart(struct mt6797_a72_transaction *transaction,
+				  const struct mt6797_a72_plan *plan,
+				  const struct mt6797_a72_backend_ops *ops,
+				  void *context, unsigned long capabilities,
+				  const struct mt6797_a72_off_state *off,
+				  const struct mt6797_a72_state *stopped)
+{
+	if (!off || !stopped)
+		return -EINVAL;
+	return mt6797_a72_transaction_start(transaction, plan, ops, context,
+					    capabilities, off, stopped);
 }
 
 int mt6797_a72_transaction_abort(struct mt6797_a72_transaction *transaction)

@@ -80,6 +80,9 @@ struct mt6797_cpuclk_observer {
 	/* FHCTL channels initialized by this driver. */
 	u32 fhctl_ready;
 	struct mt6797_cpuclk_snapshot probe_snapshot;
+	/* Saved only by successful last-core DCM disable, under lock. */
+	struct mt6797_cpuclk_snapshot mp2_running;
+	bool mp2_restart_valid;
 };
 
 struct mt6797_cpuclk_pll_hw {
@@ -1389,6 +1392,7 @@ static struct platform_driver mt6797_cpuclk_driver = {
 };
 enum mt6797_cpuclk_mp2_operation {
 	MT6797_MP2_CHECK_BOOT,
+	MT6797_MP2_CHECK_RESTART,
 	MT6797_MP2_DCM_ENABLE,
 	MT6797_MP2_DCM_DISABLE,
 };
@@ -1433,6 +1437,17 @@ static int mt6797_cpuclk_mp2_transaction(void __iomem *cspm, void *context)
 	if (transaction->operation == MT6797_MP2_CHECK_BOOT) {
 		ret = mt6797_cpuclk_validate_cold_mp2(&snapshot,
 						transaction->reference_rate);
+		goto release;
+	}
+	if (transaction->operation == MT6797_MP2_CHECK_RESTART) {
+		ret = observer->mp2_restart_valid ?
+			mt6797_cpuclk_validate_stopped_mp2(&observer->mp2_running,
+				&snapshot, transaction->reference_rate) : -EAGAIN;
+		goto release;
+	}
+	if (transaction->operation == MT6797_MP2_DCM_DISABLE &&
+	    observer->mp2_restart_valid) {
+		ret = -EALREADY;
 		goto release;
 	}
 	ret = mt6797_cpuclk_decode_state(MT6797_CPUCLK_MP2, &snapshot,
@@ -1481,6 +1496,12 @@ release:
 		observer->faulted = true;
 		/* The handoff transaction also fences the shared hardware owner. */
 		return -EUCLEAN;
+	}
+	if (!ret && transaction->operation == MT6797_MP2_DCM_DISABLE) {
+		observer->mp2_running = snapshot;
+		observer->mp2_restart_valid = true;
+	} else if (!ret && transaction->operation == MT6797_MP2_DCM_ENABLE) {
+		observer->mp2_restart_valid = false;
 	}
 	return ret;
 }
@@ -1572,6 +1593,15 @@ int mt6797_cpuclk_set_mp2_sync_dcm(struct device *consumer, struct clk *clk,
 			enable ? MT6797_MP2_DCM_ENABLE : MT6797_MP2_DCM_DISABLE);
 }
 EXPORT_SYMBOL_GPL(mt6797_cpuclk_set_mp2_sync_dcm);
+
+int mt6797_cpuclk_check_mp2_restart(struct device *consumer, struct clk *clk)
+{
+	if (!consumer || !consumer->of_node ||
+	    !of_device_is_compatible(consumer->of_node, "mediatek,mt6797-a72-power"))
+		return -EINVAL;
+	return mt6797_cpuclk_mp2_access(consumer, clk, MT6797_MP2_CHECK_RESTART);
+}
+EXPORT_SYMBOL_GPL(mt6797_cpuclk_check_mp2_restart);
 
 module_platform_driver(mt6797_cpuclk_driver);
 

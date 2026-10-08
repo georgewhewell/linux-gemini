@@ -15,6 +15,8 @@ int mt6797_cpuclk_check_mp2_boot(struct device *consumer, struct clk *clk);
 /* A72 power owner only; serialize against CPU_ON/OFF in the caller. */
 int mt6797_cpuclk_set_mp2_sync_dcm(struct device *consumer, struct clk *clk,
 				 bool enable);
+/* Requires this owner to have completed last-core DCM disable and power-off. */
+int mt6797_cpuclk_check_mp2_restart(struct device *consumer, struct clk *clk);
 #else
 static inline int mt6797_cpuclk_check_mp2_boot(struct device *consumer,
 					    struct clk *clk)
@@ -23,6 +25,11 @@ static inline int mt6797_cpuclk_check_mp2_boot(struct device *consumer,
 }
 static inline int mt6797_cpuclk_set_mp2_sync_dcm(struct device *consumer,
 					      struct clk *clk, bool enable)
+{
+	return -EOPNOTSUPP;
+}
+static inline int mt6797_cpuclk_check_mp2_restart(struct device *consumer,
+					       struct clk *clk)
 {
 	return -EOPNOTSUPP;
 }

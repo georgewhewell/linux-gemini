@@ -207,6 +207,40 @@ int mt6797_cpuclk_validate_cold_mp2(const struct mt6797_cpuclk_snapshot *snapsho
 	return 0;
 }
 
+/*
+ * ATF power_off_cl3() clears MP2 mux bit 0 and PLL enable bit 0, retaining
+ * the PLL programming and divider. Compare against the owner's pre-off
+ * snapshot, not an assumed power-on default. Other clusters can change.
+ * This proves only the clock transition; power/SRAM state and ownership of
+ * the shutdown receipt must be checked separately before authorizing CPU_ON.
+ */
+int mt6797_cpuclk_validate_stopped_mp2(
+		const struct mt6797_cpuclk_snapshot *running,
+		const struct mt6797_cpuclk_snapshot *stopped,
+		unsigned long reference_rate)
+{
+	struct mt6797_cpuclk_state state;
+	int ret;
+
+	if (!running || !stopped)
+		return -EINVAL;
+	if (reference_rate != 26000000)
+		return -ERANGE;
+	ret = mt6797_cpuclk_decode_state(MT6797_CPUCLK_MP2, running,
+					 reference_rate, &state);
+	if (ret)
+		return ret;
+	if (state.source != MT6797_CPUCLK_ARMPLL ||
+	    !(running->mp2_armpll_con0 & BIT(0)))
+		return -EBUSY;
+	if ((stopped->muxsel & GENMASK(1, 0)) != MT6797_CPUCLK_CLK26M ||
+	    (stopped->clkdiv & GENMASK(4, 0)) != state.divider ||
+	    stopped->mp2_armpll_con0 != (running->mp2_armpll_con0 & ~BIT(0)) ||
+	    stopped->mp2_armpll_con1 != running->mp2_armpll_con1)
+		return -EBUSY;
+	return 0;
+}
+
 unsigned long mt6797_cpuclk_apply_divider(unsigned long parent_rate, u8 divider)
 {
 	u8 numerator, denominator;

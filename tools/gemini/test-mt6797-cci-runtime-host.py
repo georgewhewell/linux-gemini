@@ -197,15 +197,17 @@ static struct dev_pm_opp *dev_pm_opp_find_freq_exact(struct device *d,unsigned l
 static struct dev_pm_opp *dev_pm_opp_find_freq_ceil(struct device *d,unsigned long *hz)
 {
  assert(cpu_read && opp_ready);
- /* CPU boundaries stand in for their OPP framework tables. */
- unsigned long uv;
- if(d->id<4){
-  if(*hz>1222000000)return ERR_PTR(-ERANGE);
-  uv=*hz<=221000000?770000:*hz<=806000000?970000:*hz<=897000000?1000000:*hz<=1014000000?1040000:*hz<=1118000000?1070000:1100000;
- }else{
-  if(*hz>1625000000)return ERR_PTR(-ERANGE);
-  uv=*hz<=325000000?770000:*hz<=1092000000?970000:*hz<=1209000000?1000000:*hz<=1352000000?1040000:*hz<=1495000000?1070000:1100000;
- }
+ /* Full vendor SB CPU tables, including upper points not yet enabled in DT. */
+ static const unsigned long cpu_hz[2][16]={
+  {221000000,338000000,481000000,624000000,715000000,806000000,897000000,1014000000,
+   1118000000,1222000000,1274000000,1339000000,1391000000,1443000000,1495000000,1547000000},
+  {325000000,468000000,650000000,832000000,962000000,1092000000,1209000000,1352000000,
+   1495000000,1625000000,1703000000,1755000000,1820000000,1885000000,1950000000,2002000000}};
+ unsigned int cluster=d->id<4?0:1, index=0;
+ while(index<16 && cpu_hz[cluster][index]<*hz)index++;
+ if(index==16)return ERR_PTR(-ERANGE);
+ *hz=cpu_hz[cluster][index];
+ unsigned long uv=mt6797_cci_opps[index].uv;
  opp=(struct dev_pm_opp){*hz,uv};opp_refs++;return &opp;
 }
 static int devfreq_update_target(struct devfreq *d,unsigned long ignored)
@@ -268,15 +270,21 @@ int main(void)
  minimum_hz=169000000;peer_uv=770000;mt6797_cci_queue(c,0);work_once(c);
  assert(clocks[0].rate==416000000 && supply.vote==900000 && regulator_get_voltage(&supply)==900000);
  /* Each newly enabled CPU OPP must raise CCI to its shared-rail budget. */
- static const unsigned long upper_cpu[2][3]={{1014000000,1118000000,1222000000},
-                                            {1352000000,1495000000,1625000000}};
- static const unsigned long upper_cci[]={676000000,754000000,819000000};
- static const unsigned int upper_uv[]={1040000,1070000,1100000};
- for(unsigned int cluster=1;cluster<=2;cluster++) for(unsigned int point=0;point<3;point++) {
+ static const unsigned long upper_cpu[2][9]={{1014000000,1118000000,1222000000,1274000000,1339000000,1391000000,1443000000,1495000000,1547000000},
+                                            {1352000000,1495000000,1625000000,1703000000,1755000000,1820000000,1885000000,1950000000,2002000000}};
+ /* L1703/L1885 require the next CCI OPP to satisfy the half-rate floor. */
+ static const unsigned long upper_cci[2][9]={
+  {676000000,754000000,819000000,845000000,884000000,910000000,936000000,975000000,988000000},
+  {676000000,754000000,819000000,884000000,884000000,910000000,975000000,975000000,988000000}};
+ static const unsigned int cci_uv[2][9]={
+  {1040000,1070000,1100000,1130000,1140000,1150000,1170000,1190000,1200000},
+  {1040000,1070000,1100000,1140000,1140000,1150000,1190000,1190000,1200000}};
+ static const unsigned int upper_uv[]={1040000,1070000,1100000,1130000,1140000,1150000,1170000,1190000,1200000};
+ for(unsigned int cluster=1;cluster<=2;cluster++) for(unsigned int point=0;point<sizeof(upper_uv)/sizeof(upper_uv[0]);point++) {
   unsigned long saved=clocks[cluster].rate;
   clocks[cluster].rate=upper_cpu[cluster-1][point];peer_uv=upper_uv[point];
   mt6797_cci_frequency_event(&c->frequency_nb,CPUFREQ_POSTCHANGE,NULL);work_once(c);
-  assert(clocks[0].rate==upper_cci[point] && supply.vote==upper_uv[point] && !owner.faulted);
+  assert(clocks[0].rate==upper_cci[cluster-1][point] && supply.vote==cci_uv[cluster-1][point] && (unsigned int)regulator_get_voltage(&supply)==cci_uv[cluster-1][point] && !owner.faulted);
   clocks[cluster].rate=saved;peer_uv=770000;
   mt6797_cci_frequency_event(&c->frequency_nb,CPUFREQ_POSTCHANGE,NULL);work_once(c);
   assert(clocks[0].rate==416000000 && supply.vote==900000 && !owner.faulted);

@@ -64,9 +64,10 @@ typedef uint32_t u32;
 #define for_each_possible_cpu(c) for((c)=0;(c)<10;(c)++)
 struct mutex { int held; };
 static int cpu_read,cpu_write;
-static void cpus_read_lock(void) { assert(!cpu_write);cpu_read++; }
+static bool hotplug_between_callbacks;
+static int cpus_read_trylock(void) { if(cpu_write)return 0;cpu_read++;return 1; }
 static void cpus_read_unlock(void) { assert(cpu_read>0);cpu_read--; }
-static void mutex_lock(struct mutex *m) { assert(!m->held && !cpu_write);m->held=1; }
+static void mutex_lock(struct mutex *m) { assert(!m->held);m->held=1; }
 static void mutex_unlock(struct mutex *m) { assert(m->held);m->held=0; }
 typedef struct { unsigned int bits; } cpumask_t;
 static cpumask_t online={1023};
@@ -214,7 +215,9 @@ static int devfreq_update_target(struct devfreq *d,unsigned long ignored)
 {
  (void)ignored;assert(d->lock.held);unsigned long hz;
  int ret=mt6797_cci_governor_target(d,&hz);
- return ret?ret:d->profile->target(d->parent,&hz,0);
+ if(ret)return ret;
+ if(hotplug_between_callbacks)cpu_write=1;
+ return d->profile->target(d->parent,&hz,0);
 }
 static int devfreq_suspend_device(struct devfreq *d)
 { if(++d->suspend_count==1)return mt6797_cci_governor_event(d,DEVFREQ_GOV_SUSPEND,NULL);return 0; }
@@ -249,6 +252,17 @@ int main(void)
  assert(c->cpus[0].bits==15 && c->cpus[1].bits==240 && c->cpus[2].bits==768);
  assert(freq_registered && policy_registered && hp_instance && c->work.pending);
  work_once(c);assert(clocks[0].rate==611000000);
+ /* A hotplug writer may already exist, or arrive between both callbacks. */
+ for(int between=0;between<2;between++) {
+  unsigned prior_writes=rate_writes,prior_votes=votes,prior_fences=fences;
+  mt6797_cci_queue(c,0);hotplug_between_callbacks=between;cpu_write=!between;
+  work_once(c);
+  assert(cpu_write && !cpu_read && !df.lock.held && c->work.pending);
+  assert(rate_writes==prior_writes && votes==prior_votes && fences==prior_fences);
+  cpu_write=0;hotplug_between_callbacks=false;work_once(c);
+  assert(!c->work.pending && !cpu_read && !df.lock.held);
+ }
+ puts("PASS CCI hotplug contention: governor/target try-lock refusal, no hardware writes, retry after writer release");
  clocks[1].rate=221000000;clocks[2].rate=325000000;
  assert(!mt6797_cci_frequency_event(&c->frequency_nb,CPUFREQ_POSTCHANGE,NULL));
  work_once(c);assert(clocks[0].rate==416000000 && supply.vote==900000); /* A72, no CPUFreq policy. */

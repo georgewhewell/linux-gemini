@@ -42,6 +42,9 @@ static const struct mt6797_cpuclk_rate_data mt6797_mp0_rates[] = {
 	{ 1274000000, 0 },
 	{ 1339000000, 0 },
 	{ 1391000000, 0 },
+	{ 1443000000, 0 },
+	{ 1495000000, 0 },
+	{ 1547000000, 0 },
 };
 
 static const struct mt6797_cpuclk_rate_data mt6797_mp1_rates[] = {
@@ -58,6 +61,7 @@ static const struct mt6797_cpuclk_rate_data mt6797_mp1_rates[] = {
 	{ 1820000000, 0 },
 	{ 1885000000, 0 },
 	{ 1950000000, 0 },
+	{ 2002000000, 0 },
 };
 
 /* Vendor CPU_LEVEL_1 CCI points with a unity path divider. */

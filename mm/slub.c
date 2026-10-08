@@ -7764,10 +7764,19 @@ static unsigned int calculate_sheaf_capacity(struct kmem_cache *s,
  */
 static int calculate_sizes(struct kmem_cache_args *args, struct kmem_cache *s)
 {
-	slab_flags_t flags = s->flags;
+	slab_flags_t flags;
 	unsigned int size = s->object_size;
 	unsigned int aligned_size;
 	unsigned int order;
+
+	/*
+	 * kmem_cache_open() calls this again after dropping debug flags for
+	 * slub_debug=O. Do not keep the red-zone padding or in-object
+	 * slabobj_ext placement computed for the debug layout.
+	 */
+	s->red_left_pad = 0;
+	s->flags &= ~SLAB_OBJ_EXT_IN_OBJ;
+	flags = s->flags;
 
 	/*
 	 * Round up object size to the next word boundary. We can only

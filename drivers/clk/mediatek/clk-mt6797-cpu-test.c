@@ -727,16 +727,19 @@ static void mt6797_cpuclk_mp2_transition_test(struct kunit *test)
 	unsigned long parent, rate;
 	unsigned int i, j, k, u, divisor;
 
-	for (u = 0; u < ARRAY_SIZE(unity); u++) {
+	for (u = 0; u < 2 * ARRAY_SIZE(unity); u++) {
 		for (i = 0; i < ARRAY_SIZE(mhz); i++) {
 			memset(&initial, 0xa5, sizeof(initial));
 			initial.muxsel = (initial.muxsel & ~3U) | MT6797_CPUCLK_ARMPLL;
 			divisor = mhz[i] == 338 ? 2 : 1;
 			initial.clkdiv = (initial.clkdiv & ~31U) |
-				(divisor == 2 ? 10 : unity[u]);
+				(divisor == 2 ? 10 : unity[u % ARRAY_SIZE(unity)]);
 			KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_mp2_pll(&initial,
 				26000000, mhz[i] * divisor * 1000000UL, &pll), 0);
 			initial = pll.expected;
+			/* CPU_ON can leave the PCW strobe high; it is not a busy bit. */
+			if (u >= ARRAY_SIZE(unity))
+				initial.mp2_armpll_con1 |= BIT(31);
 			for (j = 0; j < ARRAY_SIZE(mhz); j++) {
 				divisor = mhz[j] == 338 ? 2 : 1;
 				KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_mp2_transition(
@@ -800,9 +803,6 @@ static void mt6797_cpuclk_mp2_transition_admission_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&initial,
 		26000000, 338000000, 2, 3100000000UL, &plan), -ERANGE);
 	bad = initial; bad.mp2_armpll_con0 &= ~BIT(0);
-	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&bad,
-		26000000, 750000000, 1, 1092000000, &plan), -EBUSY);
-	bad = initial; bad.mp2_armpll_con1 |= BIT(31);
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&bad,
 		26000000, 750000000, 1, 1092000000, &plan), -EBUSY);
 	bad = initial; bad.mp2_armpll_con0 |= GENMASK(14, 12);
@@ -896,7 +896,7 @@ static void mt6797_cpuclk_mp2_executor_test(struct kunit *test)
 
 	initial.muxsel |= MT6797_CPUCLK_ARMPLL;
 	initial.mp2_armpll_con0 = 0x1001;
-	initial.mp2_armpll_con1 = 0x39b13b13; /* Firmware's 750MHz encoding. */
+	initial.mp2_armpll_con1 = 0xb9b13b14; /* Inherited CPU_ON 750MHz state. */
 	KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&initial,
 		26000000, 338000000, 2, 1092000000, &plan), 0);
 	fake = (struct mt6797_mp2_fake) { .registers = initial, .dcm = 0xa5a58000 };

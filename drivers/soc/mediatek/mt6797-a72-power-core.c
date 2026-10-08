@@ -8,6 +8,105 @@
 #include "mt6797-a72-power.h"
 
 /*
+ * Vendor psci.c cpu_psci_cpu_kill(): on the last MP2 core, stop sync DCM,
+ * let AFFINITY_INFO finish firmware power-off, then disable DA9214 BUCK B.
+ * BigiDVFSSRAMLDODisable() in that source is a no-op, not another MMIO step.
+ * Both SPM acknowledgment words and external isolation must confirm the
+ * last-core shutdown before Linux may remove the external rail. We do not
+ * duplicate the firmware's MTCMOS, snoop, SCU, PLL or isolation writes.
+ */
+static bool mt6797_a72_off_sample_valid(const struct mt6797_a72_off_sample *s,
+				      unsigned int cpu, bool rail_off)
+{
+	u32 mask = MT6797_A72_CORE0_POWER_ACK | MT6797_A72_CORE1_POWER_ACK |
+		   MT6797_A72_CLUSTER_POWER_ACK;
+	u32 expected = cpu == 9 ? MT6797_A72_CORE0_POWER_ACK |
+				 MT6797_A72_CLUSTER_POWER_ACK : 0;
+
+	if (s->online_mask != (cpu == 9 ? BIT(0) : 0) ||
+	    (s->power_status & mask) != expected ||
+	    (s->power_status_second & mask) != expected ||
+	    (s->idvfs_control & BIT(0)) ||
+	    s->vproc_enabled != !rail_off)
+		return false;
+	if (cpu == 9)
+		return !rail_off && !(s->ext_buck_iso & MT6797_A72_BIG_BUCK_ISO) &&
+		       (s->mp2_pwr_con & MT6797_A72_MP2_PWR_RST_B) &&
+		       !(s->mp2_pwr_con & BIT(4));
+	return (s->ext_buck_iso & MT6797_A72_BIG_BUCK_ISO) &&
+	       !(s->mp2_pwr_con & MT6797_A72_MP2_PWR_RST_B) &&
+	       (s->mp2_pwr_con & BIT(4));
+}
+
+int mt6797_a72_finish_cpu_off(struct mt6797_a72_off_state *state,
+			     const struct mt6797_a72_off_io *io,
+			     void *context, unsigned int cpu)
+{
+	struct mt6797_a72_off_sample sample;
+	unsigned int i;
+	int ret;
+
+	if (!state || !io || !io->sample || !io->sync_dcm_off ||
+	    !io->firmware_kill || !io->vproc_disable || !io->fence ||
+	    (cpu != 8 && cpu != 9))
+		return -EINVAL;
+	if (state->faulted || state->completed)
+		return -EUCLEAN;
+
+	/* Refuse an effectful firmware query while either target may be online. */
+	ret = io->sample(context, &sample);
+	if (ret)
+		goto fault;
+	if (sample.online_mask != (cpu == 9 ? BIT(0) : 0) ||
+	    sample.vproc_enabled != 1 || (sample.idvfs_control & BIT(0))) {
+		ret = -EBUSY;
+		goto fault;
+	}
+	if (cpu == 8) {
+		ret = io->sync_dcm_off(context);
+		if (ret)
+			goto fault;
+	}
+	ret = io->firmware_kill(context, cpu);
+	if (ret)
+		goto fault;
+	for (i = 0; i < 2; i++) {
+		ret = io->sample(context, &sample);
+		if (ret)
+			goto fault;
+		if (!mt6797_a72_off_sample_valid(&sample, cpu, false)) {
+			ret = -EIO;
+			goto fault;
+		}
+	}
+	if (cpu == 8) {
+		ret = io->vproc_disable(context);
+		if (ret)
+			goto fault;
+		for (i = 0; i < 2; i++) {
+			ret = io->sample(context, &sample);
+			if (ret)
+				goto fault;
+			if (!mt6797_a72_off_sample_valid(&sample, cpu, true)) {
+				ret = -EIO;
+				goto fault;
+			}
+		}
+	}
+	state->final = sample;
+	state->cluster_off = cpu == 8;
+	state->completed = true;
+	state->error = 0;
+	return 0;
+fault:
+	/* The target already left Linux. Never attempt to restart or undo this. */
+	state->faulted = true;
+	state->error = ret;
+	io->fence(context);
+	return -EUCLEAN;
+}
+
+/*
  * Gemian's MT6797 vendor tree at 51e705e4e7b1, arch/arm64/kernel/psci.c,
  * cpu_power_on_buck(), is the pinned evidence for this order.  CPU_ON and the
  * later MP2 DCM/iDVFS operations are intentionally outside this plan.

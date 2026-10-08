@@ -677,7 +677,74 @@ static void mt6797_a72_restart_admission_test(struct kunit *test)
 	}
 }
 
+static void mt6797_a72_rail_matrix_test(struct kunit *test)
+{
+	unsigned int cpu, sram, target, i;
+
+	for (cpu = 800000; cpu <= 1200000; cpu += 10000)
+		for (sram = 1000000; sram <= 1200000; sram += 25000) {
+			if (sram < cpu || sram - cpu > 300000)
+				continue;
+			for (target = 800000; target <= 1200000; target += 10000) {
+				struct mt6797_a72_rail_plan plan;
+				unsigned int last_cpu = cpu, last_sram = sram;
+				unsigned int end_sram = ((target + 124999) / 25000) * 25000;
+
+				if (end_sram < 1000000) end_sram = 1000000;
+				if (end_sram > 1200000) end_sram = 1200000;
+				KUNIT_ASSERT_EQ(test, mt6797_a72_plan_rails(cpu, sram, target, &plan), 0);
+				KUNIT_EXPECT_EQ(test, plan.initial.vproc_uv, cpu);
+				KUNIT_EXPECT_EQ(test, plan.initial.vsram_uv, sram);
+				KUNIT_EXPECT_LE(test, plan.count, MT6797_A72_RAIL_MAX_STEPS);
+				for (i = 0; i < plan.count; i++) {
+					unsigned int c = plan.steps[i].vproc_uv;
+					unsigned int r = plan.steps[i].vsram_uv;
+
+					KUNIT_EXPECT_TRUE(test, (c != last_cpu) != (r != last_sram));
+					KUNIT_EXPECT_TRUE(test, c >= 800000 && c <= 1200000 && !(c % 10000));
+					KUNIT_EXPECT_TRUE(test, r >= 1000000 && r <= 1200000 && !(r % 25000));
+					KUNIT_EXPECT_TRUE(test, r >= c && r - c <= 300000);
+					KUNIT_EXPECT_TRUE(test, target >= cpu ? c >= last_cpu && c <= target :
+						c <= last_cpu && c >= target);
+					KUNIT_EXPECT_TRUE(test, end_sram >= sram ? r >= last_sram && r <= end_sram :
+						r <= last_sram && r >= end_sram);
+					if (c < last_cpu || r > last_sram)
+						KUNIT_EXPECT_LE(test, r - c, 275000U);
+					last_cpu = c;
+					last_sram = r;
+				}
+				KUNIT_EXPECT_EQ(test, last_cpu, target);
+				KUNIT_EXPECT_EQ(test, last_sram, end_sram);
+			}
+		}
+}
+
+static void mt6797_a72_rail_admission_test(struct kunit *test)
+{
+	static const unsigned int invalid[][3] = {
+		{ 799999, 1100000, 1000000 }, { 1200001, 1200000, 1000000 },
+		{ 1000001, 1100000, 1000000 }, { 1000000, 999999, 1000000 },
+		{ 1000000, 1200001, 1000000 }, { 1000000, 1100001, 1000000 },
+		{ 1100000, 1000000, 1000000 }, { 800000, 1200000, 1000000 },
+		{ 1000000, 1100000, 799999 }, { 1000000, 1100000, 1200001 },
+		{ 1000000, 1100000, 1000001 }, { U32_MAX, U32_MAX, U32_MAX },
+	};
+	struct mt6797_a72_rail_plan plan, before;
+	unsigned int i;
+
+	memset(&before, 0xa5, sizeof(before));
+	for (i = 0; i < ARRAY_SIZE(invalid); i++) {
+		plan = before;
+		KUNIT_EXPECT_EQ(test, mt6797_a72_plan_rails(invalid[i][0], invalid[i][1],
+			invalid[i][2], &plan), -EINVAL);
+		KUNIT_EXPECT_EQ(test, memcmp(&plan, &before, sizeof(plan)), 0);
+	}
+	KUNIT_EXPECT_EQ(test, mt6797_a72_plan_rails(1000000, 1100000, 1000000, NULL), -EINVAL);
+}
+
 static struct kunit_case mt6797_a72_power_test_cases[] = {
+	KUNIT_CASE(mt6797_a72_rail_matrix_test),
+	KUNIT_CASE(mt6797_a72_rail_admission_test),
 	KUNIT_CASE(mt6797_a72_plan_matches_vendor_boundary_test),
 	KUNIT_CASE(mt6797_a72_restart_admission_test),
 	KUNIT_CASE(mt6797_a72_admission_requires_live_backends_test),

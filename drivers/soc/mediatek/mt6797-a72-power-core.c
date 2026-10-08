@@ -464,7 +464,7 @@ static int mt6797_a72_validate_restart(const struct mt6797_a72_state *state,
 	       !state->vsram_calibration && state->vsram_uv == 1050000;
 	/* The full retained sample must still match the verified shutdown above. */
 	retained = state->vsram_selector >= 7 && state->vsram_selector <= 15 &&
-		   state->vsram_uv == 900000 + (state->vsram_selector - 3) * 25000 &&
+		   state->vsram_uv == 900000 + ((int)state->vsram_selector - 3) * 25000 &&
 		   (state->vsram_control & 0xfff) == (0x8f0 | state->vsram_selector) &&
 		   state->vsram_calibration && !(state->vsram_calibration & 0xffff0000);
 	if (!cold && !retained)

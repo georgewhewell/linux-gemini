@@ -5,6 +5,7 @@
 #include <linux/atomic.h>
 #include <linux/cpu.h>
 #include <linux/cpuhplock.h>
+#include <linux/soc/mediatek/mt6797-a72-power.h>
 #include <linux/delay.h>
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
@@ -578,7 +579,8 @@ int mt6797_sram_set_running_voltage(struct device *consumer,
 
 	if (!sample || uv < 1000000 || uv > 1200000 || uv % 25000)
 		return -EINVAL;
-	lockdep_assert_cpus_held();
+	if (!mt6797_a72_power_owns_dvfs(consumer))
+		return -EPERM;
 	/* CPU8 anchors this cluster's lifetime. Never query a live CPU via PSCI. */
 	if (nr_cpu_ids <= 9 || !cpu_online(4) || !cpu_online(8))
 		return -EBUSY;

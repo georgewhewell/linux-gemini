@@ -29,6 +29,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
 #include <linux/smp.h>
+#include <linux/sched.h>
 #include <linux/soc/mediatek/mt6797-a72-power.h>
 #include <linux/soc/mediatek/mt6797-cpuclk.h>
 #include <uapi/linux/psci.h>
@@ -77,6 +78,7 @@ struct mt6797_a72_preflight {
 	bool cpu8_available;
 	bool cpu9_available;
 	bool cpu8_armed;
+	bool cpu9_starting;
 	bool started;
 	bool committed[MT6797_A72_CPU_COUNT];
 	bool off_armed[MT6797_A72_CPU_COUNT];
@@ -92,9 +94,20 @@ struct mt6797_a72_preflight {
 static DEFINE_MUTEX(mt6797_a72_owner_lock);
 static struct mt6797_a72_preflight *mt6797_a72_owner;
 
+static struct task_struct *mt6797_a72_dvfs_task;
+static struct device *mt6797_a72_dvfs_consumer;
+
+bool mt6797_a72_power_owns_dvfs(struct device *consumer)
+{
+	/* Only the task inside set_opp can observe its own active ownership. */
+	return READ_ONCE(mt6797_a72_dvfs_task) == current &&
+		READ_ONCE(mt6797_a72_dvfs_consumer) == consumer;
+}
+EXPORT_SYMBOL_GPL(mt6797_a72_power_owns_dvfs);
+
 static int mt6797_a72_secure_read(u32 address, u32 *value);
 
-/* DVFS callers already hold CPU hotplug serialization, including CPUHP paths. */
+/* Owner locking and startup/shutdown flags exclude concurrent MP2 power work. */
 static int mt6797_a72_dvfs_read(void *context, struct mt6797_a72_rail_step *state)
 {
 	struct mt6797_a72_preflight *p = context;
@@ -192,7 +205,6 @@ int mt6797_a72_power_set_opp(unsigned int cpu, unsigned long rate,
 
 	if (cpu != 8 && cpu != 9)
 		return -EINVAL;
-	lockdep_assert_cpus_held();
 	mutex_lock(&mt6797_a72_owner_lock);
 	p = mt6797_a72_owner;
 	if (!p) {
@@ -209,12 +221,16 @@ int mt6797_a72_power_set_opp(unsigned int cpu, unsigned long rate,
 	    !cpu_online(4) || !cpu_online(8) || !cpu_online(cpu) ||
 	    !p->started || !p->committed[0] ||
 	    (cpu_online(9) && !p->committed[1]) ||
-	    p->off_armed[0] || p->off_armed[1] || p->cpu8_armed ||
+	    p->off_armed[0] || p->off_armed[1] || p->cpu8_armed || p->cpu9_starting ||
 	    p->guarded || p->transaction.active || !p->vproc_vote_owned) {
 		ret = -EBUSY;
 		goto unlock;
 	}
+	WRITE_ONCE(mt6797_a72_dvfs_consumer, p->dev);
+	WRITE_ONCE(mt6797_a72_dvfs_task, current);
 	ret = mt6797_a72_change_opp(&mt6797_a72_dvfs_ops, p, rate, divisor, uv, &p->faulted);
+	WRITE_ONCE(mt6797_a72_dvfs_task, NULL);
+	WRITE_ONCE(mt6797_a72_dvfs_consumer, NULL);
 	if (ret == -EUCLEAN)
 		WRITE_ONCE(p->faulted, true);
 	if (!ret)
@@ -752,7 +768,7 @@ out:
 }
 EXPORT_SYMBOL_GPL(mt6797_a72_power_cpu_kill);
 
-static int mt6797_a72_cpu_off_prepare(unsigned int cpu, struct hlist_node *node)
+static int mt6797_a72_cpu_off_prepare_locked(unsigned int cpu, struct hlist_node *node)
 {
 	struct mt6797_a72_preflight *p;
 	unsigned int index;
@@ -773,6 +789,16 @@ static int mt6797_a72_cpu_off_prepare(unsigned int cpu, struct hlist_node *node)
 	return 0;
 }
 
+static int mt6797_a72_cpu_off_prepare(unsigned int cpu, struct hlist_node *node)
+{
+	int ret;
+
+	mutex_lock(&mt6797_a72_owner_lock);
+	ret = mt6797_a72_cpu_off_prepare_locked(cpu, node);
+	mutex_unlock(&mt6797_a72_owner_lock);
+	return ret;
+}
+
 static int
 mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 {
@@ -790,10 +816,15 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 	 * is never disabled while a big core is on, and no rail is touched
 	 * here; CPU8 online is the proof that VPROC/VSRAM/ISO are in place.
 	 */
-	if (cpu == MT6797_A72_FIRST_CPU + 1)
-		return mt6797_a72_validate_cpu9_boot(cpu,
-				cpu_online(MT6797_A72_FIRST_CPU),
-				preflight->faulted);
+	if (cpu == MT6797_A72_FIRST_CPU + 1) {
+		mutex_lock(&mt6797_a72_owner_lock);
+		ret = mt6797_a72_validate_cpu9_boot(cpu,
+				cpu_online(MT6797_A72_FIRST_CPU), preflight->faulted);
+		if (!ret)
+			preflight->cpu9_starting = true;
+		mutex_unlock(&mt6797_a72_owner_lock);
+		return ret;
+	}
 	if (cpu != MT6797_A72_FIRST_CPU)
 		return -EPERM;
 	if (!cpu_online(4))
@@ -880,6 +911,12 @@ mt6797_a72_cpu_on_abort(unsigned int cpu, struct hlist_node *node)
 	int ret;
 
 	preflight = hlist_entry(node, struct mt6797_a72_preflight, cpuhp_node);
+	if (cpu == MT6797_A72_FIRST_CPU + 1) {
+		mutex_lock(&mt6797_a72_owner_lock);
+		preflight->cpu9_starting = false;
+		mutex_unlock(&mt6797_a72_owner_lock);
+		return 0;
+	}
 	if (cpu != MT6797_A72_FIRST_CPU)
 		return 0;
 
@@ -896,7 +933,7 @@ mt6797_a72_cpu_on_abort(unsigned int cpu, struct hlist_node *node)
 }
 
 static int
-mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
+mt6797_a72_cpu_online_commit_locked(unsigned int cpu, struct hlist_node *node)
 {
 	struct mt6797_a72_preflight *preflight;
 	bool cpu4_online;
@@ -936,6 +973,7 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 			preflight->faulted = true;
 		else {
 			preflight->committed[1] = true;
+			preflight->cpu9_starting = false;
 			dev_info(preflight->dev,
 				 "CPU9 PSCI CPU_ON committed with CPU8 prerequisite\n");
 		}
@@ -964,15 +1002,23 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 		preflight->off[0].completed = false;
 	}
 disarm:
-	mutex_lock(&mt6797_a72_owner_lock);
 	preflight->cpu8_armed = false;
-	mutex_unlock(&mt6797_a72_owner_lock);
 	if (ret)
 		preflight->faulted = true;
 	else
 		dev_info(preflight->dev,
 			 "CPU8 PSCI CPU_ON committed with CPU4 prerequisite\n");
 
+	return ret;
+}
+
+static int mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
+{
+	int ret;
+
+	mutex_lock(&mt6797_a72_owner_lock);
+	ret = mt6797_a72_cpu_online_commit_locked(cpu, node);
+	mutex_unlock(&mt6797_a72_owner_lock);
 	return ret;
 }
 

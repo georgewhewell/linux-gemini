@@ -75,7 +75,8 @@ static struct regulator supply;
 static struct mt6797_bigidvfs_sram sram;
 static int compatible,refs,missing,wrong_node,spm_error,reg_error,affinity_error;
 static unsigned nr_cpu_ids=10;
-static bool online[10],cpus_held;
+static bool online[10],cpus_held,owns_dvfs;
+static bool mt6797_a72_power_owns_dvfs(struct device *d) {assert(d==&consumer);return owns_dvfs;}
 static u32 isolation, status, status_second, power;
 static int reg_reads, fail_reg_at, affinity_calls;
 static struct regmap {int unused;} spm;
@@ -126,7 +127,7 @@ int mt6797_sram_set_transaction(const struct mt6797_sram_io *io,void *ctx,const 
 ''' + functions + r'''
 static void reset(void)
 {
- memset(&sram,0,sizeof(sram));memset(&provider,0,sizeof(provider));
+ memset(&sram,0,sizeof(sram));memset(&provider,0,sizeof(provider));owns_dvfs=true;
  provider.driver=&mt6797_bigidvfs_sram_driver.driver;provider.data=&sram;
  consumer=(struct device){.of_node=&nodes[0]};sram.dev=&provider;
  rdev=(struct regulator_dev){.dev={.parent=&provider,.of_node=&nodes[1]},.desc=&mt6797_bigidvfs_sram_desc,.exclusive=1,.open_count=1,.data=&sram};
@@ -152,7 +153,10 @@ static void running(void)
 int main(void)
 {
  struct mt6797_sram_sample sample;
- running();
+ running();owns_dvfs=false;
+ assert(mt6797_sram_set_running_voltage(&consumer,&supply,1200000,&sample)==-EPERM);
+ assert(!reads && !sets && !idvfs_reads);released();
+ running();cpus_held=false;
  assert(!mt6797_sram_set_running_voltage(&consumer,&supply,1200000,&sample));
  assert(reads==8 && sets==1 && waits==1 && sample.control==0x4008ff);
  assert(!affinity_calls && idvfs_reads==2);released();

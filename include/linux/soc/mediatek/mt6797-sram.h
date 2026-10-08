@@ -25,8 +25,8 @@ int mt6797_sram_prepare_cpu8(struct device *consumer, struct regulator *supply,
 			   unsigned int cpu, struct mt6797_sram_sample *sample);
 int mt6797_sram_record_cpu8_off(struct device *consumer, struct regulator *supply);
 /*
- * Exclusive A72 power owner only, with CPU hotplug lock held. Serialize against
- * other voltage/clock/power operations and provision VPROC for the requested
+ * Only callable inside the A72 owner's active DVFS transaction. The owner
+ * serializes voltage/clock/power operations and provisions VPROC for the requested
  * SRAM voltage. -EUCLEAN fences this provider; do not lower either rail then.
  */
 int mt6797_sram_set_running_voltage(struct device *consumer,

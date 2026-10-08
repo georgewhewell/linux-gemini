@@ -30,6 +30,9 @@ prelude=r'''
 #include <string.h>
 typedef uint32_t u32;
 #define U32_MAX UINT32_MAX
+#define min(a,b) ((a)<(b)?(a):(b))
+#define EXPORT_SYMBOL_GPL(x)
+#define DEFINE_MUTEX(n) struct mutex n
 #define EPROBE_DEFER 517
 #define current get_current()
 #define GFP_KERNEL 0
@@ -78,6 +81,9 @@ struct cpufreq_policy { cpumask_t *related_cpus; };
 struct clk { unsigned long rate; int id; };
 struct regulator { unsigned int vote,enabled; };
 struct device { void *data; int id; };
+static struct device a72_consumer;
+static bool a72_active;
+static bool mt6797_a72_power_owns_dvfs(struct device *d) {return a72_active && d==&a72_consumer;}
 struct platform_device { struct device dev; };
 struct dev_pm_opp { unsigned long hz,uv; };
 struct mt6797_dvfsp_handoff { bool faulted,claimed; };
@@ -93,7 +99,7 @@ struct devfreq_dev_profile {
  int (*target)(struct device*,unsigned long*,u32);
  int (*get_cur_freq)(struct device*,unsigned long*);
 };
-struct devfreq { struct mutex lock; void *data; struct device *parent; struct devfreq_dev_profile *profile; int suspend_count; };
+struct devfreq { struct mutex lock; void *data; struct device *parent; struct devfreq_dev_profile *profile; int suspend_count; unsigned long previous_freq; };
 struct devfreq_governor { const char *name; unsigned int flags;
  int (*get_target_freq)(struct devfreq*,unsigned long*);
  int (*event_handler)(struct devfreq*,unsigned int,void*); };
@@ -217,7 +223,8 @@ static int devfreq_update_target(struct devfreq *d,unsigned long ignored)
  int ret=mt6797_cci_governor_target(d,&hz);
  if(ret)return ret;
  if(hotplug_between_callbacks)cpu_write=1;
- return d->profile->target(d->parent,&hz,0);
+ ret=d->profile->target(d->parent,&hz,0);
+ if(!ret)d->previous_freq=hz;return ret;
 }
 static int devfreq_suspend_device(struct devfreq *d)
 { if(++d->suspend_count==1)return mt6797_cci_governor_event(d,DEVFREQ_GOV_SUSPEND,NULL);return 0; }
@@ -226,6 +233,8 @@ static int devfreq_resume_device(struct devfreq *d)
 static struct platform_device pdev;
 static void reset(void)
 {
+ a72_active=false;
+ assert(!mt6797_cci_owner && !mt6797_cci_owner_lock.held);
  assert(!allocation && !nactions && !cpu_read && !cpu_write && !opp_refs && !clk_refs);
  clocks[0]=(struct clk){629999328,0};clocks[1]=(struct clk){897000000,1};
  clocks[2]=(struct clk){1209000000,2};clocks[3]=(struct clk){750000000,3};
@@ -244,9 +253,54 @@ static void cleanup(void)
 }
 static void work_once(struct mt6797_cci *c)
 { assert(c->work.pending);c->work.pending=false;c->work.fn(&c->work.work); }
+static unsigned a72_calls;
+static int a72_error;
+static unsigned long a72_requested,a72_minimum;
+static int a72_change(void *ctx) {
+ assert(ctx==&a72_consumer && df.lock.held && mt6797_cci_owner_lock.held && !cpu_read);
+ assert(clocks[0].rate>=a72_minimum && df.previous_freq==clocks[0].rate);
+ a72_calls++;if(!a72_error)clocks[3].rate=a72_requested;return a72_error;
+}
+static void a72_tests(void) {
+ static const unsigned long rates[]={338000000,676000000,750000000,845000000,1001000000,1131000000,1378000000,1495000000,1677000000,1885000000,2093000000,2158000000,2223000000,2262000000,2327000000,2431000000,2587000000};
+ for(unsigned initial=0;initial<16;initial++)for(unsigned r=0;r<17;r++)for(int hotplug=0;hotplug<2;hotplug++) {
+  reset();assert(!mt6797_cci_probe(&pdev));struct mt6797_cci *c=pdev.dev.data;
+  supported_uv=1200000;assert(!mt6797_cci_transition(&c->state,&mt6797_cci_io,c,initial));
+  clocks[1].rate=221000000;clocks[2].rate=325000000;clocks[3].rate=338000000;
+  a72_active=true;a72_calls=0;a72_error=0;a72_requested=rates[r];
+  a72_minimum=rates[r]/2;if(a72_minimum>988000000)a72_minimum=988000000;
+  if(a72_minimum<clocks[0].rate)a72_minimum=clocks[0].rate;
+  cpu_write=hotplug;
+  assert(!mt6797_cci_run_a72(&a72_consumer,rates[r],a72_change,&a72_consumer));
+  assert(a72_calls==1 && c->a72_target==-1 && !df.lock.held && !cpu_read);
+  cpu_write=0;cleanup();
+ }
+ for(int mode=0;mode<9;mode++) {
+  reset();assert(!mt6797_cci_probe(&pdev));struct mt6797_cci *c=pdev.dev.data;
+  supported_uv=1200000;a72_active=true;a72_calls=0;a72_error=0;
+  a72_requested=2587000000;a72_minimum=988000000;
+  switch(mode) {
+  case 0:a72_active=false;break;case 1:c->suspended=true;break;
+  case 2:c->stopping=true;break;case 3:maximum_hz=975000000;break;
+  case 4:supported_uv=1000000;break;case 5:voltage_fail=1;break;
+  case 6:clock_fail=1;break;case 7:a72_error=-EIO;break;
+  case 8:a72_error=-EUCLEAN;break;
+  }
+  assert(mt6797_cci_run_a72(&a72_consumer,a72_requested,a72_change,&a72_consumer)<0);
+  assert(a72_calls==(mode>=7) && c->a72_target==-1 && !df.lock.held && !mt6797_cci_owner_lock.held);
+  if(mode==5 || mode==6 || mode==8)assert(c->state.faulted && owner.faulted);
+  if(mode>=7)assert(clocks[0].rate==988000000 && supply.vote==1200000);
+  cleanup();
+ }
+ a72_active=true;a72_calls=0;
+ assert(mt6797_cci_run_a72(&a72_consumer,750000000,a72_change,&a72_consumer)==-EPROBE_DEFER);
+ assert(!a72_calls);a72_active=false;
+ puts("PASS synchronous CCI/A72: 544 paths, CPUHP writer context, devfreq accounting, admission/QoS/fault handling and retained pre-raise");
+}
 int main(void)
 {
  assert(!mt6797_cci_init());
+ a72_tests();
  reset();assert(!mt6797_cci_probe(&pdev));struct mt6797_cci *c=pdev.dev.data;
  assert(owner.claimed && c->state.ready && clocks[0].rate==611000000 && supply.vote==1000000 && supply.enabled==1);
  assert(c->cpus[0].bits==15 && c->cpus[1].bits==240 && c->cpus[2].bits==768);

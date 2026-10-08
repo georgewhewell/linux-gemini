@@ -11,6 +11,8 @@
 #include <linux/pm_opp.h>
 #include <linux/regulator/consumer.h>
 #include <linux/soc/mediatek/mt6797-cci-policy.h>
+#include <linux/soc/mediatek/mt6797-cci.h>
+#include <linux/soc/mediatek/mt6797-a72-power.h>
 #include <linux/soc/mediatek/mt6797-dvfsp-handoff.h>
 #include <linux/workqueue.h>
 
@@ -30,9 +32,14 @@ struct mt6797_cci {
 	struct notifier_block policy_nb;
 	struct hlist_node hotplug_node;
 	int hotplug_state;
+	/* Nonnegative only while the serialized A72 pre-raise is in progress. */
+	int a72_target;
 	bool stopping;
 	bool suspended;
 };
+
+static DEFINE_MUTEX(mt6797_cci_owner_lock);
+static struct mt6797_cci *mt6797_cci_owner;
 
 static int mt6797_cci_get_hz(void *context, u32 *hz)
 {
@@ -120,15 +127,22 @@ static int mt6797_cci_target(struct device *dev, unsigned long *freq, u32 flags)
 {
 	struct mt6797_cci *cci = dev_get_drvdata(dev);
 	int selected, requested, ret;
+	bool cpus_locked = false;
 
 	if (READ_ONCE(cci->stopping) || READ_ONCE(cci->suspended))
 		return -EBUSY;
 	if (READ_ONCE(cci->state.faulted))
 		return -EHOSTDOWN;
-	/* Do not wait for a CPUHP writer while holding devfreq->lock. */
-	if (!cpus_read_trylock())
-		return -EAGAIN;
-	selected = mt6797_cci_sample_policy(cci);
+	if (cci->a72_target >= 0) {
+		/* The A72 owner excludes MP2 power changes for this transaction. */
+		selected = cci->a72_target;
+	} else {
+		/* Do not wait for a CPUHP writer while holding devfreq->lock. */
+		if (!cpus_read_trylock())
+			return -EAGAIN;
+		cpus_locked = true;
+		selected = mt6797_cci_sample_policy(cci);
+	}
 	if (selected < 0) {
 		ret = selected;
 		goto out;
@@ -154,7 +168,8 @@ static int mt6797_cci_target(struct device *dev, unsigned long *freq, u32 flags)
 	selected = requested;
 	ret = mt6797_cci_transition(&cci->state, &mt6797_cci_io, cci, selected);
 out:
-	cpus_read_unlock();
+	if (cpus_locked)
+		cpus_read_unlock();
 	return ret;
 }
 
@@ -175,11 +190,15 @@ static int mt6797_cci_governor_target(struct devfreq *devfreq, unsigned long *fr
 	unsigned long minimum, maximum;
 	int selected;
 
-	/* Do not wait for a CPUHP writer while holding devfreq->lock. */
-	if (!cpus_read_trylock())
-		return -EAGAIN;
-	selected = mt6797_cci_sample_policy(cci);
-	cpus_read_unlock();
+	if (cci->a72_target >= 0) {
+		selected = cci->a72_target;
+	} else {
+		/* Do not wait for a CPUHP writer while holding devfreq->lock. */
+		if (!cpus_read_trylock())
+			return -EAGAIN;
+		selected = mt6797_cci_sample_policy(cci);
+		cpus_read_unlock();
+	}
 	if (selected < 0)
 		return selected;
 	devfreq_get_freq_range(devfreq, &minimum, &maximum);
@@ -222,6 +241,67 @@ static void mt6797_cci_queue(struct mt6797_cci *cci, unsigned long delay)
 	    !READ_ONCE(cci->state.faulted))
 		mod_delayed_work(system_unbound_wq, &cci->work, delay);
 }
+
+int mt6797_cci_run_a72(struct device *consumer, unsigned long rate,
+		     int (*change)(void *), void *context)
+{
+	struct mt6797_cci *cci;
+	unsigned long minimum;
+	unsigned int selected = 0;
+	int ret;
+
+	if (!change || !rate || rate > 3000000000UL)
+		return -EINVAL;
+	if (!mt6797_a72_power_owns_dvfs(consumer))
+		return -EPERM;
+	mutex_lock(&mt6797_cci_owner_lock);
+	cci = mt6797_cci_owner;
+	if (!cci) {
+		ret = -EPROBE_DEFER;
+		goto out;
+	}
+	mutex_lock(&cci->devfreq->lock);
+	if (cci->stopping || cci->suspended) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	if (!cci->state.ready || cci->state.faulted) {
+		ret = cci->state.faulted ? -EUCLEAN : -EAGAIN;
+		goto unlock;
+	}
+	/* Never reduce an existing fabric vote before the CPU change. */
+	minimum = min(rate / 2 + rate % 2, 988000000UL);
+	if (minimum < cci->state.hz)
+		minimum = cci->state.hz;
+	while (selected + 1 < MT6797_CCI_OPP_COUNT &&
+	       mt6797_cci_opps[selected].hz < minimum)
+		selected++;
+	if (mt6797_cci_opps[selected].hz < minimum) {
+		ret = -EUCLEAN;
+		goto fence;
+	}
+	cci->a72_target = selected;
+	/* Use devfreq's normal accounting and frequency constraints. */
+	ret = devfreq_update_target(cci->devfreq, 0);
+	cci->a72_target = -1;
+	if (!ret)
+		ret = change(context);
+	if (cci->state.faulted || ret == -EUCLEAN) {
+		ret = -EUCLEAN;
+		goto fence;
+	}
+	mt6797_cci_queue(cci, 0);
+	goto unlock;
+fence:
+	cci->state.faulted = true;
+	mt6797_cci_fence(cci);
+unlock:
+	mutex_unlock(&cci->devfreq->lock);
+out:
+	mutex_unlock(&mt6797_cci_owner_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_cci_run_a72);
 
 static void mt6797_cci_update(struct work_struct *work)
 {
@@ -282,6 +362,10 @@ static void mt6797_cci_stop(void *context)
 {
 	struct mt6797_cci *cci = context;
 
+	mutex_lock(&mt6797_cci_owner_lock);
+	if (mt6797_cci_owner == cci)
+		mt6797_cci_owner = NULL;
+	mutex_unlock(&mt6797_cci_owner_lock);
 	WRITE_ONCE(cci->stopping, true);
 	cpuhp_state_remove_instance_nocalls(cci->hotplug_state, &cci->hotplug_node);
 	cpuhp_remove_multi_state(cci->hotplug_state);
@@ -342,6 +426,7 @@ static int mt6797_cci_probe(struct platform_device *pdev)
 	cci = devm_kzalloc(dev, sizeof(*cci), GFP_KERNEL);
 	if (!cci)
 		return -ENOMEM;
+	cci->a72_target = -1;
 	cci->dev = dev;
 	platform_set_drvdata(pdev, cci);
 	INIT_DELAYED_WORK(&cci->work, mt6797_cci_update);
@@ -420,6 +505,14 @@ static int mt6797_cci_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 	ret = mt6797_dvfsp_handoff_cci_claim(cci->handoff);
+	if (ret)
+		goto fault;
+	mutex_lock(&mt6797_cci_owner_lock);
+	if (mt6797_cci_owner)
+		ret = -EBUSY;
+	else
+		mt6797_cci_owner = cci;
+	mutex_unlock(&mt6797_cci_owner_lock);
 	if (ret)
 		goto fault;
 	mt6797_cci_queue(cci, 0);

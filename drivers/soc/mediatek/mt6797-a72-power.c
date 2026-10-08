@@ -32,6 +32,7 @@
 #include <linux/sched.h>
 #include <linux/soc/mediatek/mt6797-a72-power.h>
 #include <linux/soc/mediatek/mt6797-cpuclk.h>
+#include <linux/soc/mediatek/mt6797-cci.h>
 #include <uapi/linux/psci.h>
 
 #include <asm/cputype.h>
@@ -197,13 +198,31 @@ static const struct mt6797_a72_dvfs_io mt6797_a72_dvfs_ops = {
 	.set_clock = mt6797_a72_dvfs_clock,
 };
 
+struct mt6797_a72_dvfs_request {
+	struct mt6797_a72_preflight *owner;
+	unsigned long rate;
+	unsigned int divisor, uv;
+};
+
+static int mt6797_a72_dvfs_change(void *context)
+{
+	struct mt6797_a72_dvfs_request *r = context;
+
+	return mt6797_a72_change_opp(&mt6797_a72_dvfs_ops, r->owner,
+				   r->rate, r->divisor, r->uv, &r->owner->faulted);
+}
+
 int mt6797_a72_power_set_opp(unsigned int cpu, unsigned long rate,
 			   unsigned int divisor, unsigned int uv)
 {
 	struct mt6797_a72_preflight *p;
+	struct mt6797_a72_dvfs_request request;
 	int ret;
 
-	if (cpu != 8 && cpu != 9)
+	if ((cpu != 8 && cpu != 9) || !rate || rate % 1000000 ||
+	    (divisor != 1 && divisor != 2) ||
+	    rate < 250000000 || rate > 3000000000UL / divisor ||
+	    uv < 800000 || uv > 1200000 || uv % 10000)
 		return -EINVAL;
 	mutex_lock(&mt6797_a72_owner_lock);
 	p = mt6797_a72_owner;
@@ -228,7 +247,8 @@ int mt6797_a72_power_set_opp(unsigned int cpu, unsigned long rate,
 	}
 	WRITE_ONCE(mt6797_a72_dvfs_consumer, p->dev);
 	WRITE_ONCE(mt6797_a72_dvfs_task, current);
-	ret = mt6797_a72_change_opp(&mt6797_a72_dvfs_ops, p, rate, divisor, uv, &p->faulted);
+	request = (struct mt6797_a72_dvfs_request) { p, rate, divisor, uv };
+	ret = mt6797_cci_run_a72(p->dev, rate, mt6797_a72_dvfs_change, &request);
 	WRITE_ONCE(mt6797_a72_dvfs_task, NULL);
 	WRITE_ONCE(mt6797_a72_dvfs_consumer, NULL);
 	if (ret == -EUCLEAN)

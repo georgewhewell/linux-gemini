@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Run actual SRAM provider API functions against ownership/SMC boundary doubles."""
 import os
 import re
@@ -33,6 +34,7 @@ c = r'''
 typedef uint32_t u32; typedef int32_t s32;
 #define U32_MAX UINT32_MAX
 #define BIT(n) (1UL<<(n))
+#define dev_err(dev,fmt,...) ((void)(dev),(void)snprintf(NULL,0,fmt,__VA_ARGS__))
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define IS_ERR(p) ((intptr_t)(p)<0 && (intptr_t)(p)>-4096)
 #define IS_ERR_OR_NULL(p) (!(p) || IS_ERR(p))

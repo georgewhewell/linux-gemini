@@ -661,6 +661,18 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 		ret = mt6797_a72_transaction_begin(&preflight->transaction,
 				&preflight->plan, &mt6797_a72_live_ops, preflight,
 				MT6797_A72_REQUIRED_CAPS);
+	if (ret) {
+		const struct mt6797_a72_state *s = &preflight->transaction.initial;
+
+		dev_err(preflight->dev,
+			"CPU8 preparation failed: warm=%u err=%d applied=%u isolation-attempted=%u transaction-faulted=%u initial-mp2=%08x iso=%08x vproc=%d/%d sram=%d/%08x/%08x stopped-sram=%08x/%08x\n",
+			preflight->started, ret, preflight->transaction.applied,
+			preflight->transaction.isolation_attempted,
+			preflight->transaction.faulted, s->mp2_pwr_con, s->ext_buck_iso,
+			s->vproc_enabled, s->vproc_uv, s->vsram_uv, s->vsram_control,
+			s->vsram_calibration, preflight->stopped.vsram_control,
+			preflight->stopped.vsram_calibration);
+	}
 	if (ret == -EUCLEAN) {
 		preflight->faulted = true;
 		return ret;

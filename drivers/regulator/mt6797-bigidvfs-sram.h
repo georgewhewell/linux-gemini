@@ -31,6 +31,9 @@ struct mt6797_sram_first_state {
 	struct mt6797_sram_sample off_sample;
 	int error;
 	struct mt6797_sram_sample samples[2];
+	/* Failure diagnostics only; reads may be partial when the backend fails. */
+	const char *restart_phase;
+	struct mt6797_sram_sample restart_observed[2];
 };
 
 /*

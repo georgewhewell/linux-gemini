@@ -60,6 +60,17 @@ int mt6797_a72_execute_rails(const struct mt6797_a72_rail_plan *plan,
 		unsigned int target_uv, const struct mt6797_a72_rail_io *io,
 		void *context, bool *faulted);
 
+struct mt6797_a72_dvfs_io {
+	struct mt6797_a72_rail_io rails;
+	/* Must verify the complete clock transition before returning success. */
+	int (*set_clock)(void *context, unsigned long rate, unsigned int divisor);
+};
+
+/* Caller supplies a qualified OPP and serializes all clock/rail/hotplug owners. */
+int mt6797_a72_change_opp(const struct mt6797_a72_dvfs_io *io, void *context,
+		unsigned long rate, unsigned int divisor, unsigned int vproc_uv,
+		bool *faulted);
+
 enum mt6797_a72_action {
 	MT6797_A72_TRANSACTION_GUARD_ENTER,
 	MT6797_A72_SPM_UPDATE,

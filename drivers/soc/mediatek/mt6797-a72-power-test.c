@@ -747,6 +747,10 @@ struct mt6797_a72_rail_fake {
 	unsigned int reads, writes, waits, fail_read, fail_write, corrupt_read;
 	unsigned int corrupt_bit, minimum_delay;
 	bool effect, pending;
+	unsigned int required_uv, target_uv, clocks;
+	unsigned long target_rate;
+	unsigned int target_divisor;
+	bool fail_clock, unsafe;
 };
 
 static int mt6797_a72_rail_fake_read(void *context, struct mt6797_a72_rail_step *state)
@@ -782,6 +786,8 @@ static int mt6797_a72_rail_fake_write(void *context, unsigned int uv, bool sram)
 		if (sram) f->state.vsram_uv = uv;
 		else f->state.vproc_uv = uv;
 	}
+	if (f->state.vproc_uv < f->required_uv)
+		f->unsafe = true;
 	f->pending = true;
 	return fail ? -EIO : 0;
 }
@@ -878,7 +884,92 @@ static void mt6797_a72_rail_executor_test(struct kunit *test)
 	}
 }
 
+static int mt6797_a72_dvfs_fake_clock(void *context, unsigned long rate,
+				     unsigned int divisor)
+{
+	struct mt6797_a72_rail_fake *f = context;
+
+	f->clocks++;
+	if (f->pending || f->state.vproc_uv < f->target_uv ||
+	    rate != f->target_rate || divisor != f->target_divisor)
+		f->unsafe = true;
+	if (!f->fail_clock || f->effect)
+		f->required_uv = f->target_uv;
+	return f->fail_clock ? -EIO : 0;
+}
+
+static void mt6797_a72_dvfs_sequence_test(struct kunit *test)
+{
+	/*
+	 * Board-selected nominal TT points; the synthetic 750MHz case uses
+	 * the 845MHz point's voltage. This is not startup-voltage qualification.
+	 */
+	static const unsigned int mhz[] = {
+		338, 676, 750, 845, 1001, 1131, 1378, 1495, 1677,
+		1885, 2093, 2158, 2223, 2262, 2327, 2431, 2587,
+	};
+	static const unsigned int uv[] = {
+		800000, 850000, 880000, 880000, 900000, 930000, 980000,
+		1000000, 1040000, 1080000, 1110000, 1130000, 1140000,
+		1150000, 1160000, 1180000, 1200000,
+	};
+	const struct mt6797_a72_dvfs_io io = {
+		.rails = mt6797_a72_rail_fake_io,
+		.set_clock = mt6797_a72_dvfs_fake_clock,
+	};
+	unsigned int from, to, n, mode;
+
+	for (from = 0; from < ARRAY_SIZE(uv); from++)
+		for (to = 0; to < ARRAY_SIZE(uv); to++) {
+			struct mt6797_a72_rail_plan initial;
+			struct mt6797_a72_rail_fake baseline, f;
+			unsigned int reads, writes;
+			bool faulted = false;
+
+			KUNIT_ASSERT_EQ(test, mt6797_a72_plan_rails(1000000, 1100000, uv[from], &initial), 0);
+			baseline = (struct mt6797_a72_rail_fake) {
+				.state = initial.count ? initial.steps[initial.count - 1] : initial.initial,
+				.required_uv = uv[from], .target_uv = uv[to],
+				.target_rate = (unsigned long)mhz[to] * 1000000,
+				.target_divisor = to ? 1 : 2,
+			};
+			f = baseline;
+			KUNIT_ASSERT_EQ(test, mt6797_a72_change_opp(&io, &f, f.target_rate,
+				f.target_divisor, f.target_uv, &faulted), 0);
+			KUNIT_EXPECT_FALSE(test, f.unsafe);
+			KUNIT_EXPECT_FALSE(test, faulted);
+			KUNIT_EXPECT_EQ(test, f.clocks, 1U);
+			KUNIT_EXPECT_EQ(test, f.state.vproc_uv, uv[to]);
+			reads = f.reads;
+			writes = f.writes;
+			for (mode = 0; mode < 4; mode++)
+				for (n = 1; n <= (mode == 0 ? reads : mode == 1 ? writes : 1); n++) {
+					f = baseline;
+					faulted = false;
+					if (mode == 0) f.fail_read = n;
+					if (mode == 1) f.fail_write = n;
+					if (mode >= 2) f.fail_clock = true;
+					f.effect = mode == 3;
+					KUNIT_EXPECT_TRUE(test, mt6797_a72_change_opp(&io, &f, f.target_rate,
+						f.target_divisor, f.target_uv, &faulted) < 0);
+					KUNIT_EXPECT_FALSE(test, f.unsafe);
+					KUNIT_EXPECT_EQ(test, faulted, !!(f.clocks || f.writes));
+					if (f.fail_clock)
+						KUNIT_EXPECT_EQ(test, f.state.vproc_uv,
+							uv[to] > uv[from] ? uv[to] : uv[from]);
+					if (faulted) {
+						unsigned int events = f.clocks + f.reads + f.writes;
+
+						KUNIT_EXPECT_EQ(test, mt6797_a72_change_opp(&io, &f, f.target_rate,
+							f.target_divisor, f.target_uv, &faulted), -EUCLEAN);
+						KUNIT_EXPECT_EQ(test, f.clocks + f.reads + f.writes, events);
+					}
+				}
+		}
+}
+
 static struct kunit_case mt6797_a72_power_test_cases[] = {
+	KUNIT_CASE(mt6797_a72_dvfs_sequence_test),
 	KUNIT_CASE(mt6797_a72_rail_executor_test),
 	KUNIT_CASE(mt6797_a72_rail_matrix_test),
 	KUNIT_CASE(mt6797_a72_rail_admission_test),

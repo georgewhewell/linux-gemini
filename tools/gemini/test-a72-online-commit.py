@@ -25,6 +25,7 @@ struct mt6797_a72_preflight {
 };
 #define hlist_entry(p,t,m) ((t *)((char *)(p)-offsetof(t,m)))
 #define dev_info(...) ((void)0)
+#define dev_dbg(dev,...) ((void)(dev),(void)snprintf(NULL,0,__VA_ARGS__))
 static unsigned running, online, midr, commits, identity_checks, boot8_checks, boot9_checks;
 static int commit_error,mt6797_a72_owner_lock,dcm_error,dcm_calls;
 static int mt6797_cpuclk_set_mp2_sync_dcm(void *dev,void *clk,bool on)

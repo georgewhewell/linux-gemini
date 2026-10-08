@@ -40,6 +40,7 @@ typedef uint32_t u32; typedef uint64_t u64;
 #define MT6797_A72_IDVFS_CONTROL_REG 0x10222470U
 #define MT6797_A72_IDVFS_FENCE_REG 0x102224a0U
 #define dev_info(...) ((void)0)
+#define dev_dbg(dev,...) ((void)(dev),(void)snprintf(NULL,0,__VA_ARGS__))
 #define dev_err(dev,fmt,...) ((void)(dev),(void)snprintf(NULL,0,fmt,__VA_ARGS__))
 typedef unsigned cpumask_t;
 struct device {int tag;}; struct clk {int tag;}; struct regulator {int tag;};

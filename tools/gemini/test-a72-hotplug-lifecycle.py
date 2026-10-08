@@ -19,7 +19,7 @@ core='\n'.join(re.sub(r'^#include .*\n','',(root/f).read_text(),flags=re.M) for 
 struct=block('struct mt6797_a72_preflight {','static DEFINE_MUTEX(')
 live=block('static int mt6797_a72_snapshot(', 'static int mt6797_a72_preflight_parse_cpus(')
 off=block('struct mt6797_a72_off_context {','static int\nmt6797_a72_cpu_on_prepare(')
-callbacks='\n'.join(function(n) for n in ('mt6797_a72_cpu_on_prepare','mt6797_a72_cpu_on_abort','mt6797_a72_cpu_online_commit'))
+callbacks='\n'.join(function(n) for n in ('mt6797_a72_cpu_on_prepare','mt6797_a72_cpu_on_abort','mt6797_a72_cpu_online_commit_locked','mt6797_a72_cpu_online_commit'))
 c=r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -128,9 +128,9 @@ static void reset(void)
 static int prepare(unsigned cpu){return mt6797_a72_cpu_on_prepare(cpu,&owner.cpuhp_node);}
 static void up(unsigned cpu)
 {
- running=0;assert(!prepare(cpu));online|=BIT(cpu);status|=BIT(17)|BIT(cpu==8?7:6);
+ running=0;assert(!prepare(cpu));assert(cpu!=9 || owner.cpu9_starting);online|=BIT(cpu);status|=BIT(17)|BIT(cpu==8?7:6);
  clock_running=true;power=BIT(0)|BIT(2);running=cpu;
- assert(!mt6797_a72_cpu_online_commit(cpu,&owner.online_node));running=0;
+ assert(!mt6797_a72_cpu_online_commit(cpu,&owner.online_node));assert(!owner.cpu9_starting);running=0;
 }
 static void arm(unsigned cpu)
 {running=cpu;assert(!mt6797_a72_cpu_off_prepare(cpu,&owner.online_node));
@@ -142,6 +142,8 @@ static void clean(void){assert(!owner.operation_lock.held&&!mt6797_a72_owner_loc
 static void pair(void){reset();up(8);up(9);}
 int main(void)
 {
+ reset();up(8);assert(!prepare(9) && owner.cpu9_starting);
+ assert(!mt6797_a72_cpu_on_abort(9,&owner.cpuhp_node) && !owner.cpu9_starting);clean();
  pair();unsigned saved=calls;running=8;
  assert(mt6797_a72_cpu_off_prepare(8,&owner.online_node)==-EBUSY);
  assert(calls==saved&&!owner.off_armed[0]);running=9;

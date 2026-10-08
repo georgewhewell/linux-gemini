@@ -13,7 +13,7 @@ core = '\n'.join(strip((root / p).read_text()) for p in (
     'drivers/soc/mediatek/mt6797-a72-power.h',
     'drivers/soc/mediatek/mt6797-a72-power-core.c'))
 source = (root / 'drivers/soc/mediatek/mt6797-a72-power.c').read_text()
-a = source.index('static int mt6797_a72_dvfs_read(')
+a = source.index('static struct task_struct *mt6797_a72_dvfs_task;')
 b = source.index('\nstatic int mt6797_a72_overlay_notify(', a)
 api = source[a:b]
 prefix = r'''
@@ -27,11 +27,17 @@ typedef uint8_t u8; typedef uint32_t u32; typedef uint64_t u64;
 #define BIT(n) (1UL << (n))
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define static_assert _Static_assert
+#define READ_ONCE(p) (p)
 #define WRITE_ONCE(p,v) ((p)=(v))
 #define EXPORT_SYMBOL_GPL(x)
 #define MT6797_A72_IDVFS_CONTROL_REG 0x10222470U
 '''
 stubs = r'''
+struct device { int tag; };
+struct task_struct { int tag; };
+static struct task_struct task, other_task;
+static struct task_struct *test_current=&task;
+#define current test_current
 struct mutex { bool held; };
 struct mt6797_sram_sample { u32 control, calibration; };
 struct mt6797_a72_preflight {
@@ -39,6 +45,7 @@ struct mt6797_a72_preflight {
  struct mutex operation_lock;
  struct mt6797_sram_sample sram_boot;
  unsigned int boot_vproc_uv; bool dvfs_used;
+ bool cpu9_starting;
  bool faulted, started, committed[2], off_armed[2], cpu8_armed, guarded, vproc_vote_owned;
  struct { bool active; } transaction;
 };
@@ -48,17 +55,16 @@ static bool online[10], cpus_held, effect;
 static int step, fail_step, writes, clock_calls, enabled, reset_status, vproc, waits;
 static u32 idvfs, isolation, power;
 static struct mt6797_sram_sample sample;
-static void lockdep_assert_cpus_held(void) { assert(cpus_held); }
 static bool cpu_online(unsigned cpu) { assert(cpu<10); return online[cpu]; }
 static void mutex_lock(struct mutex *m) {
- assert(cpus_held && !m->held);
+ assert(!m->held);
  if(m==&p.operation_lock) assert(mt6797_a72_owner_lock.held);
  m->held=true;
 }
 static void mutex_unlock(struct mutex *m) { assert(m->held);m->held=false; }
 static void lockdep_assert_held(struct mutex *m) { assert(m->held); }
 static bool boundary(void) {
- assert(cpus_held && mt6797_a72_owner_lock.held && p.operation_lock.held);
+ assert(mt6797_a72_owner_lock.held && p.operation_lock.held);
  return ++step==fail_step;
 }
 static int regulator_is_enabled(void *s) { assert(s==p.vproc_big);return boundary()?-EIO:enabled; }
@@ -77,8 +83,9 @@ static int regulator_set_voltage(void *s,int low,int high) {
  assert(s==p.vproc_big && low==high);bool bad=boundary();writes++;
  if(!bad || effect)vproc=low;return bad?-EIO:0;
 }
+bool mt6797_a72_power_owns_dvfs(struct device *consumer);
 static int mt6797_sram_set_running_voltage(void *d,void *s,unsigned uv,struct mt6797_sram_sample *v) {
- assert(d==p.dev && s==p.sram_big);bool bad=boundary();writes++;
+ assert(d==p.dev && s==p.sram_big && mt6797_a72_power_owns_dvfs(d));bool bad=boundary();writes++;
  if(!bad || effect)sample.control=(sample.control & ~15U) | ((uv-900000)/25000+3);
  if(!bad)*v=sample;return bad?-EIO:0;
 }
@@ -99,9 +106,16 @@ static void setup(bool down) {
  effect=false;step=fail_step=writes=clock_calls=waits=0;enabled=1;reset_status=0;
  vproc=down?1200000:1000000;idvfs=isolation=0;power=BIT(7)|BIT(17);
 }
-static void clean(void) { assert(!p.operation_lock.held && !mt6797_a72_owner_lock.held); }
+static void clean(void) { assert(!p.operation_lock.held && !mt6797_a72_owner_lock.held);assert(!mt6797_a72_power_owns_dvfs(p.dev)); }
 static int change(bool down) { return mt6797_a72_power_set_opp(8,down?338000000:1495000000,down?2:1,down?800000:1100000); }
 int main(void) {
+ setup(false);cpus_held=false;assert(!change(false));clean();
+ mt6797_a72_dvfs_consumer=p.dev;mt6797_a72_dvfs_task=current;
+ assert(mt6797_a72_power_owns_dvfs(p.dev));
+ assert(!mt6797_a72_power_owns_dvfs(NULL));
+ test_current=&other_task;assert(!mt6797_a72_power_owns_dvfs(p.dev));
+ test_current=&task;mt6797_a72_dvfs_task=NULL;mt6797_a72_dvfs_consumer=NULL;
+
  for(int down=0;down<2;down++) {
   setup(down);assert(!change(down));clean();int count=step;
   assert(vproc==(down?800000:1100000) && clock_calls==1 && waits==writes);
@@ -113,7 +127,7 @@ int main(void) {
   }
   printf("PASS owner DVFS %s: %d hardware failure boundaries, both write-effect models\n",down?"down":"up",count);
  }
- for(int n=0;n<24;n++) {
+ for(int n=0;n<25;n++) {
   setup(false);
   switch(n) {
   case 0:mt6797_a72_owner=NULL;break;case 1:p.faulted=true;break;
@@ -126,7 +140,7 @@ int main(void) {
   case 16:isolation=2;break;case 17:power=0;break;case 18:sample.control^=1;break;
   case 19:sample.calibration^=1;break;case 20:sample.control=p.sram_boot.control=0x4008f6;break;
   case 21:p.boot_vproc_uv=790000;break;case 22:p.boot_vproc_uv=1110000;break;
-  case 23:p.boot_vproc_uv=1000001;break;
+  case 23:p.boot_vproc_uv=1000001;break;case 24:p.cpu9_starting=true;break;
   }
   assert(change(false)<0);assert(!writes && !clock_calls);clean();
  }

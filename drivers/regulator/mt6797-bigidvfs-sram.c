@@ -268,10 +268,13 @@ int mt6797_sram_restart(const struct mt6797_sram_first_io *io, void *context,
 		return -EUCLEAN;
 	/* Consume once, including on read failure; never clear the boot latch. */
 	state->restart_armed = false;
+	state->restart_phase = "precheck";
+	memset(state->restart_observed, 0, sizeof(state->restart_observed));
 	for (i = 0; i < 2; i++) {
 		ret = io->read_sample(context, &sample);
 		if (ret)
 			goto fault;
+		state->restart_observed[i] = sample;
 		if (sample.control != state->off_sample.control ||
 		    sample.calibration != state->off_sample.calibration) {
 			ret = -EIO;
@@ -279,8 +282,10 @@ int mt6797_sram_restart(const struct mt6797_sram_first_io *io, void *context,
 		}
 	}
 	/* Replay the full vendor SRAM service, including calibration and settle. */
+	state->restart_phase = "first-start";
 	ret = mt6797_sram_first_start(io, context, &next);
 	if (ret) {
+		memcpy(state->restart_observed, next.samples, sizeof(next.samples));
 		ret = next.error;
 		goto fault;
 	}
@@ -504,10 +509,20 @@ int mt6797_sram_prepare_cpu8(struct device *consumer, struct regulator *supply,
 		ret = mt6797_sram_restart(&mt6797_sram_boot_io, sram, &sram->first);
 	else
 		ret = mt6797_sram_first_start(&mt6797_sram_boot_io, sram, &sram->first);
-	if (ret)
+	if (ret) {
 		sram->faulted = true;
-	else
+		dev_err(sram->dev,
+			"CPU8 SRAM preparation failed: err=%d source-error=%d phase=%s armed=%u off=%08x/%08x observed=%08x/%08x,%08x/%08x\n",
+			ret, sram->first.error, sram->first.restart_phase ?: "first-start",
+			sram->first.restart_armed, sram->first.off_sample.control,
+			sram->first.off_sample.calibration,
+			sram->first.restart_observed[0].control,
+			sram->first.restart_observed[0].calibration,
+			sram->first.restart_observed[1].control,
+			sram->first.restart_observed[1].calibration);
+	} else {
 		*sample = sram->first.samples[1];
+	}
 out:
 	mt6797_sram_unlock_consumer(sram);
 	return ret;

@@ -347,6 +347,47 @@ mt6797_cpuclk_find_rate(enum mt6797_cpuclk_domain domain, unsigned long rate)
 	return NULL;
 }
 
+/*
+ * The audited 0xc20003b8 firmware ABI accepts integral MHz and assumes a
+ * 26 MHz reference. It always returns zero, so a future transaction must
+ * verify these words, not treat the SMC return as completion evidence.
+ * This models its PLL result only: OPP/voltage admission, parking on a
+ * safe parent, DCM and power-owner serialization remain caller duties.
+ */
+int mt6797_cpuclk_plan_mp2_pll(const struct mt6797_cpuclk_snapshot *initial,
+		unsigned long reference_rate, unsigned long requested_rate,
+		struct mt6797_cpuclk_mp2_pll_plan *plan)
+{
+	struct mt6797_cpuclk_mp2_pll_plan result;
+	u64 pcw;
+	u32 mhz, postdiv;
+
+	if (!initial || !plan || reference_rate != 26000000 ||
+	    requested_rate % 1000000)
+		return -EINVAL;
+	/* Vendor API bounds, not a claim that every rate is a board OPP. */
+	if (requested_rate < 250000000 || requested_rate > 3000000000UL)
+		return -ERANGE;
+
+	mhz = requested_rate / 1000000;
+	postdiv = mhz <= 500 ? 2 : mhz <= 1000 ? 1 : 0;
+	pcw = div_u64((u64)mhz << (24 + postdiv), 26);
+	if (!pcw || pcw > MT6797_MP2_ARMPLL_PCW_MASK)
+		return -ERANGE;
+
+	memset(&result, 0, sizeof(result));
+	result.firmware_mhz = mhz;
+	result.actual_rate = ((u64)reference_rate * pcw >> 24) >> postdiv;
+	result.expected = *initial;
+	result.expected.mp2_armpll_con0 =
+		(initial->mp2_armpll_con0 & ~MT6797_MP2_ARMPLL_POSDIV_MASK) |
+		FIELD_PREP(MT6797_MP2_ARMPLL_POSDIV_MASK, postdiv) | BIT(0);
+	/* Firmware finishes its PCW latch sequence with bit 31 clear. */
+	result.expected.mp2_armpll_con1 = pcw;
+	*plan = result;
+	return 0;
+}
+
 static int mt6797_cpuclk_encode_pll_rate(unsigned long rate,
 		unsigned long parent_rate, u8 postdiv, u32 initial_con1,
 		u32 *target_con1, unsigned long *actual_rate)

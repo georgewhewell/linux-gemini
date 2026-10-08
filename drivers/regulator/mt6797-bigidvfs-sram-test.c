@@ -428,7 +428,136 @@ static void mt6797_sram_first_requires_complete_backend(struct kunit *test)
 	}
 }
 
+static struct mt6797_sram_first_state mt6797_sram_running_state(unsigned int uv)
+{
+	struct mt6797_sram_first_state state = {
+		.attempted = true,
+		.ready = true,
+		.power_on_sample = { 0x400ff9, 0 },
+	};
+
+	state.samples[0].control = 0x4008f0 | ((uv - 900000) / 25000 + 3);
+	state.samples[0].calibration = 0x8967;
+	state.samples[1] = state.samples[0];
+	return state;
+}
+
+static struct mt6797_sram_first_fake
+mt6797_sram_running_fake(struct mt6797_sram_first_state *state, unsigned int uv)
+{
+	struct mt6797_sram_first_fake fake = mt6797_sram_first_new_fake(state);
+	struct mt6797_sram_first_state target = mt6797_sram_running_state(uv);
+
+	fake.baseline[0] = fake.baseline[1] = state->samples[1];
+	fake.samples[0] = fake.samples[1] = target.samples[1];
+	return fake;
+}
+
+static void mt6797_sram_running_matrix(struct kunit *test)
+{
+	unsigned int from, to;
+
+	for (from = 1000000; from <= 1200000; from += 25000)
+		for (to = 1000000; to <= 1200000; to += 25000) {
+			struct mt6797_sram_first_state state = mt6797_sram_running_state(from);
+			struct mt6797_sram_first_fake fake = mt6797_sram_running_fake(&state, to);
+			struct mt6797_sram_sample off[2];
+
+			KUNIT_ASSERT_EQ(test, mt6797_sram_set_running(&mt6797_sram_first_fake_io,
+				&fake, &state, to), 0);
+			KUNIT_EXPECT_EQ(test, fake.sets, from != to);
+			KUNIT_EXPECT_EQ(test, fake.reads, from == to ? 2U : 4U);
+			if (from != to) {
+				KUNIT_EXPECT_EQ(test, fake.argument, to / 10);
+				KUNIT_EXPECT_EQ(test, fake.delay, 240U);
+			}
+			KUNIT_EXPECT_EQ(test, state.samples[1].control, fake.samples[1].control);
+			KUNIT_EXPECT_EQ(test, state.power_on_sample.control, 0x400ff9U);
+			/* Last-core shutdown must recognize the new live voltage. */
+			off[0] = off[1] = state.samples[1];
+			KUNIT_ASSERT_EQ(test, mt6797_sram_record_off(&state, off), 0);
+			fake = mt6797_sram_running_fake(&state, 1100000);
+			KUNIT_ASSERT_EQ(test, mt6797_sram_restart(&mt6797_sram_first_fake_io,
+				&fake, &state), 0);
+			KUNIT_EXPECT_EQ(test, state.samples[1].control, 0x4008fbU);
+			KUNIT_EXPECT_EQ(test, state.power_on_sample.control, 0x400ff9U);
+		}
+}
+
+static void mt6797_sram_running_faults(struct kunit *test)
+{
+	unsigned int n, bit;
+
+	for (n = 0; n < 5; n++) {
+		struct mt6797_sram_first_state state = mt6797_sram_running_state(1100000);
+		struct mt6797_sram_first_fake fake = mt6797_sram_running_fake(&state, 1200000);
+
+		if (n < 4)
+			fake.fail_read = n;
+		else
+			fake.set_error = -EOPNOTSUPP;
+		KUNIT_EXPECT_EQ(test, mt6797_sram_set_running(&mt6797_sram_first_fake_io,
+			&fake, &state, 1200000), n < 2 ? -EIO : -EUCLEAN);
+		KUNIT_EXPECT_EQ(test, state.faulted, n >= 2);
+		KUNIT_EXPECT_EQ(test, state.samples[1].control, 0x4008fbU);
+	}
+	/* Every bit of every full-word sample must be accounted for. */
+	for (n = 0; n < 4; n++)
+		for (bit = 0; bit < 64; bit++) {
+			struct mt6797_sram_first_state state = mt6797_sram_running_state(1100000);
+			struct mt6797_sram_first_fake fake = mt6797_sram_running_fake(&state, 1200000);
+			struct mt6797_sram_sample *sample = n < 2 ? &fake.baseline[n] :
+				&fake.samples[n - 2];
+			unsigned int reads, sets;
+
+			if (bit < 32)
+				sample->control ^= BIT(bit);
+			else
+				sample->calibration ^= BIT(bit - 32);
+			KUNIT_EXPECT_EQ(test, mt6797_sram_set_running(&mt6797_sram_first_fake_io,
+				&fake, &state, 1200000), -EUCLEAN);
+			KUNIT_EXPECT_TRUE(test, state.faulted);
+			KUNIT_EXPECT_EQ(test, state.samples[1].control, 0x4008fbU);
+			reads = fake.reads;
+			sets = fake.sets;
+			KUNIT_EXPECT_EQ(test, mt6797_sram_set_running(&mt6797_sram_first_fake_io,
+				&fake, &state, 1200000), -EUCLEAN);
+			KUNIT_EXPECT_EQ(test, fake.reads, reads);
+			KUNIT_EXPECT_EQ(test, fake.sets, sets);
+		}
+}
+
+static void mt6797_sram_running_admission(struct kunit *test)
+{
+	unsigned int n;
+
+	for (n = 0; n < 10; n++) {
+		struct mt6797_sram_first_state state = mt6797_sram_running_state(1100000);
+		struct mt6797_sram_first_fake fake = mt6797_sram_running_fake(&state, 1200000);
+		struct mt6797_sram_first_io io = mt6797_sram_first_fake_io;
+		unsigned int uv = 1200000;
+
+		if (n == 0) state.attempted = false;
+		if (n == 1) state.ready = false;
+		if (n == 2) state.faulted = true;
+		if (n == 3) state.restart_armed = true;
+		if (n == 4) uv = 999999;
+		if (n == 5) uv = 1200001;
+		if (n == 6) uv = 1100001;
+		if (n == 7) io.set_voltage = NULL;
+		if (n == 8) io.settle = NULL;
+		if (n == 9) io.read_sample = NULL;
+		KUNIT_EXPECT_EQ(test, mt6797_sram_set_running(&io, &fake, &state, uv),
+			n < 4 ? -EUCLEAN : -EINVAL);
+		KUNIT_EXPECT_EQ(test, fake.sets, 0U);
+		KUNIT_EXPECT_EQ(test, fake.reads, 0U);
+	}
+}
+
 static struct kunit_case mt6797_bigidvfs_sram_test_cases[] = {
+	KUNIT_CASE(mt6797_sram_running_matrix),
+	KUNIT_CASE(mt6797_sram_running_faults),
+	KUNIT_CASE(mt6797_sram_running_admission),
 	KUNIT_CASE(mt6797_sram_first_commits_full_samples),
 	KUNIT_CASE(mt6797_sram_first_failures_never_retry),
 	KUNIT_CASE(mt6797_sram_first_requires_unused_state),

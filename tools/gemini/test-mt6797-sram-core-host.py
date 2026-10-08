@@ -46,7 +46,7 @@ struct kunit_suite { const char *name; struct kunit_case *test_cases; };
 int main(void) { struct kunit t={0}; unsigned n=0; \
 for (struct kunit_case *c=(s).test_cases; c->run; c++) { \
 c->run(&t); printf("PASS %s\n", c->name); n++; } \
-assert(n==14); printf("PASS %u cases, %u assertions\n",n,t.assertions); }
+assert(n==17); printf("PASS %u cases, %u assertions\n",n,t.assertions); }
 '''
 def strip_includes(text):
     return re.sub(r"^#include .*\n", "", text, flags=re.MULTILINE)
@@ -61,6 +61,9 @@ body += strip_includes((root / "drivers/regulator/mt6797-bigidvfs-sram.h").read_
 body += function("mt6797_sram_set_transaction")
 body += function("mt6797_sram_start_service")
 body += function("mt6797_sram_first_start")
+body += function("mt6797_sram_set_running")
+body += function("mt6797_sram_record_off")
+body += function("mt6797_sram_restart")
 body += strip_includes((root / "drivers/regulator/mt6797-bigidvfs-sram-test.c").read_text())
 with tempfile.TemporaryDirectory(prefix="gemini-sram-core-") as tmp:
     path = Path(tmp)

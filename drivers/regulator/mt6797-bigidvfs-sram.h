@@ -46,6 +46,10 @@ struct mt6797_sram_first_state {
 int mt6797_sram_first_start(const struct mt6797_sram_first_io *io,
 			  void *context, struct mt6797_sram_first_state *state);
 
+/* Caller serializes power/hotplug and provisions VPROC for this SRAM voltage. */
+int mt6797_sram_set_running(const struct mt6797_sram_first_io *io, void *context,
+			   struct mt6797_sram_first_state *state, unsigned int uv);
+
 /* Caller proves both CPUs and cluster powered off before recording samples. */
 int mt6797_sram_record_off(struct mt6797_sram_first_state *state,
 			 const struct mt6797_sram_sample samples[2]);

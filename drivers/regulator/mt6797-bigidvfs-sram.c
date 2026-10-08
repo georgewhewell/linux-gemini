@@ -255,6 +255,62 @@ fault:
 	return -EUCLEAN;
 }
 
+/*
+ * Live A72 SRAM changes retain the first-start ownership record. The caller
+ * serializes hotplug and coordinates VPROC; this function never rolls back an
+ * uncertain firmware write, since doing so could undervolt a running CPU.
+ */
+int mt6797_sram_set_running(const struct mt6797_sram_first_io *io, void *context,
+			   struct mt6797_sram_first_state *state, unsigned int uv)
+{
+	struct mt6797_sram_sample observed[2], expected;
+	unsigned int i;
+	int ret;
+
+	if (!io || !io->set_voltage || !io->settle || !io->read_sample || !state)
+		return -EINVAL;
+	/* Vendor SRAM range and the exact 25mV firmware selector grid. */
+	if (uv < 1000000 || uv > 1200000 || uv % 25000)
+		return -EINVAL;
+	if (!state->attempted || !state->ready || state->faulted || state->restart_armed)
+		return -EUCLEAN;
+	for (i = 0; i < ARRAY_SIZE(observed); i++) {
+		ret = io->read_sample(context, &observed[i]);
+		if (ret)
+			return ret;
+		if (observed[i].control != state->samples[1].control ||
+		    observed[i].calibration != state->samples[1].calibration) {
+			ret = -EIO;
+			goto fault;
+		}
+	}
+	expected = observed[1];
+	expected.control = (expected.control & ~0xfU) | ((uv - 900000) / 25000 + 3);
+	if (expected.control == observed[1].control)
+		return 0;
+	ret = io->set_voltage(context, uv / 10);
+	if (ret)
+		goto fault;
+	io->settle(context, 240);
+	for (i = 0; i < ARRAY_SIZE(observed); i++) {
+		ret = io->read_sample(context, &observed[i]);
+		if (ret)
+			goto fault;
+		if (observed[i].control != expected.control ||
+		    observed[i].calibration != expected.calibration) {
+			ret = -EIO;
+			goto fault;
+		}
+	}
+	memcpy(state->samples, observed, sizeof(observed));
+	state->error = 0;
+	return 0;
+fault:
+	state->error = ret;
+	state->faulted = true;
+	return -EUCLEAN;
+}
+
 int mt6797_sram_record_off(struct mt6797_sram_first_state *state,
 			 const struct mt6797_sram_sample samples[2])
 {

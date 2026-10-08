@@ -227,6 +227,71 @@ fault:
 	return -EUCLEAN;
 }
 
+int mt6797_sram_record_off(struct mt6797_sram_first_state *state,
+			 const struct mt6797_sram_sample samples[2])
+{
+	bool retained, cold;
+
+	if (!state || !samples)
+		return -EINVAL;
+	if (!state->attempted || !state->ready || state->faulted ||
+	    state->restart_armed)
+		return -EUCLEAN;
+	retained = samples[0].control == state->samples[1].control &&
+		   samples[0].calibration == state->samples[1].calibration;
+	cold = !samples[0].control && !samples[0].calibration;
+	if (samples[0].control != samples[1].control ||
+	    samples[0].calibration != samples[1].calibration ||
+	    (!retained && !cold)) {
+		state->faulted = true;
+		state->error = -EIO;
+		return -EUCLEAN;
+	}
+	state->off_sample = samples[1];
+	state->ready = false;
+	state->restart_armed = true;
+	return 0;
+}
+
+int mt6797_sram_restart(const struct mt6797_sram_first_io *io, void *context,
+		       struct mt6797_sram_first_state *state)
+{
+	struct mt6797_sram_first_state next = {};
+	struct mt6797_sram_sample sample;
+	unsigned int i;
+	int ret;
+
+	if (!io || !io->set_voltage || !io->settle || !io->read_sample || !state)
+		return -EINVAL;
+	if (!state->attempted || state->ready || state->faulted ||
+	    !state->restart_armed)
+		return -EUCLEAN;
+	/* Consume once, including on read failure; never clear the boot latch. */
+	state->restart_armed = false;
+	for (i = 0; i < 2; i++) {
+		ret = io->read_sample(context, &sample);
+		if (ret)
+			goto fault;
+		if (sample.control != state->off_sample.control ||
+		    sample.calibration != state->off_sample.calibration) {
+			ret = -EIO;
+			goto fault;
+		}
+	}
+	/* Replay the full vendor SRAM service, including calibration and settle. */
+	ret = mt6797_sram_first_start(io, context, &next);
+	if (ret) {
+		ret = next.error;
+		goto fault;
+	}
+	*state = next;
+	return 0;
+fault:
+	state->error = ret;
+	state->faulted = true;
+	return -EUCLEAN;
+}
+
 #if IS_BUILTIN(CONFIG_REGULATOR_MT6797_BIGIDVFS_SRAM)
 static int mt6797_sram_read_sample(void *context, struct mt6797_sram_sample *sample)
 {
@@ -332,6 +397,71 @@ int mt6797_sram_read_boot_sample(struct device *consumer, struct regulator *supp
 }
 EXPORT_SYMBOL_GPL(mt6797_sram_read_boot_sample);
 
+/* Called by the A72 power owner after its verified last-core rail shutdown. */
+int mt6797_sram_record_cpu8_off(struct device *consumer, struct regulator *supply)
+{
+	struct mt6797_bigidvfs_sram *sram;
+	struct mt6797_sram_sample samples[2];
+	struct regmap *spm;
+	u32 status, second, power, isolation;
+	unsigned int i;
+	int ret;
+
+	lockdep_assert_cpus_held();
+	if (nr_cpu_ids <= 9 || cpu_online(8) || cpu_online(9))
+		return -EBUSY;
+	ret = mt6797_sram_lock_consumer(consumer, supply, &sram);
+	if (ret)
+		return ret;
+	if (!atomic_read(&mt6797_sram_boot_attempted) || !sram->first.ready ||
+	    sram->first.faulted || sram->first.restart_armed) {
+		ret = -EUCLEAN;
+		goto out;
+	}
+	spm = syscon_regmap_lookup_by_phandle(consumer->of_node, "mediatek,spm");
+	if (IS_ERR(spm)) {
+		ret = PTR_ERR(spm);
+		goto fault;
+	}
+	/* No AFFINITY_INFO here: firmware completion belongs to the power owner. */
+	for (i = 0; i < ARRAY_SIZE(samples); i++) {
+		ret = regmap_read(spm, 0x188, &status);
+		if (ret)
+			goto fault;
+		ret = regmap_read(spm, 0x18c, &second);
+		if (ret)
+			goto fault;
+		ret = regmap_read(spm, 0x218, &power);
+		if (ret)
+			goto fault;
+		ret = regmap_read(spm, 0x290, &isolation);
+		if (ret)
+			goto fault;
+		if (((status | second) & (BIT(7) | BIT(6) | BIT(17))) ||
+		    !(isolation & BIT(1)) || (power & BIT(0)) || !(power & BIT(4))) {
+			ret = -EBUSY;
+			goto fault;
+		}
+		ret = mt6797_sram_read_sample(sram, &samples[i]);
+		if (ret)
+			goto fault;
+	}
+	ret = mt6797_sram_record_off(&sram->first, samples);
+	if (ret)
+		goto fault;
+	goto out;
+fault:
+	sram->faulted = true;
+	if (!sram->first.faulted)
+		sram->first.error = ret;
+	sram->first.faulted = true;
+	ret = -EUCLEAN;
+out:
+	mt6797_sram_unlock_consumer(sram);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_sram_record_cpu8_off);
+
 int mt6797_sram_prepare_cpu8(struct device *consumer, struct regulator *supply,
 			   unsigned int cpu, struct mt6797_sram_sample *sample)
 {
@@ -369,11 +499,10 @@ int mt6797_sram_prepare_cpu8(struct device *consumer, struct regulator *supply,
 		goto out;
 	}
 	/* Persist across provider reprobe; ordinary setters are now excluded. */
-	if (atomic_cmpxchg(&mt6797_sram_boot_attempted, 0, 1)) {
-		ret = -EUCLEAN;
-		goto out;
-	}
-	ret = mt6797_sram_first_start(&mt6797_sram_boot_io, sram, &sram->first);
+	if (atomic_cmpxchg(&mt6797_sram_boot_attempted, 0, 1))
+		ret = mt6797_sram_restart(&mt6797_sram_boot_io, sram, &sram->first);
+	else
+		ret = mt6797_sram_first_start(&mt6797_sram_boot_io, sram, &sram->first);
 	if (ret)
 		sram->faulted = true;
 	else

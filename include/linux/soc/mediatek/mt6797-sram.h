@@ -17,9 +17,13 @@ struct mt6797_sram_sample {
 /* Caller retains the exclusive regulator handle throughout either operation. */
 int mt6797_sram_read_boot_sample(struct device *consumer, struct regulator *supply,
 			       struct mt6797_sram_sample *sample);
-/* CPU hotplug lock must be held; only first CPU8 preparation may call this. */
+/*
+ * CPU hotplug lock must be held. First CPU8 preparation, or one restart
+ * authorized by record_cpu8_off after the power owner verified BUCKB off.
+ */
 int mt6797_sram_prepare_cpu8(struct device *consumer, struct regulator *supply,
 			   unsigned int cpu, struct mt6797_sram_sample *sample);
+int mt6797_sram_record_cpu8_off(struct device *consumer, struct regulator *supply);
 #else
 static inline int mt6797_sram_read_boot_sample(struct device *consumer,
 		struct regulator *supply, struct mt6797_sram_sample *sample)
@@ -29,6 +33,11 @@ static inline int mt6797_sram_read_boot_sample(struct device *consumer,
 static inline int mt6797_sram_prepare_cpu8(struct device *consumer,
 		struct regulator *supply, unsigned int cpu,
 		struct mt6797_sram_sample *sample)
+{
+	return -EOPNOTSUPP;
+}
+static inline int mt6797_sram_record_cpu8_off(struct device *consumer,
+					   struct regulator *supply)
 {
 	return -EOPNOTSUPP;
 }

@@ -27,6 +27,8 @@ struct mt6797_sram_first_state {
 	bool attempted;
 	bool ready;
 	bool faulted;
+	bool restart_armed;
+	struct mt6797_sram_sample off_sample;
 	int error;
 	struct mt6797_sram_sample samples[2];
 };
@@ -38,5 +40,11 @@ struct mt6797_sram_first_state {
  */
 int mt6797_sram_first_start(const struct mt6797_sram_first_io *io,
 			  void *context, struct mt6797_sram_first_state *state);
+
+/* Caller proves both CPUs and cluster powered off before recording samples. */
+int mt6797_sram_record_off(struct mt6797_sram_first_state *state,
+			 const struct mt6797_sram_sample samples[2]);
+int mt6797_sram_restart(const struct mt6797_sram_first_io *io, void *context,
+		       struct mt6797_sram_first_state *state);
 
 #endif /* __MT6797_BIGIDVFS_SRAM_H */

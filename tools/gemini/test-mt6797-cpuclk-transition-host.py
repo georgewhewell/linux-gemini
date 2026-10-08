@@ -84,7 +84,8 @@ struct mt6797_cpuclk_pll_hw {
  struct clk_hw hw; struct mt6797_cpuclk *provider; enum mt6797_cpuclk_domain domain;
 };
 #define container_of(p,t,m) ((t *)((char *)(p)-offsetof(t,m)))
-static struct mt6797_cpuclk_snapshot live;
+static struct mt6797_cpuclk_snapshot live, preserved;
+static bool check_preservation;
 static unsigned char mixed[0x800], cfg[0x800];
 static unsigned int operations, fail_at, release_error, acquire_error;
 static unsigned int divider_refusals, divider_attempts, releases, stale, checks;
@@ -96,6 +97,17 @@ static unsigned int final_corruption;
 static char trace[64];
 static void check(void)
 {
+ if (check_preservation) {
+  unsigned int mux_shift=active_domain ? 4 : 2;
+  unsigned int div_shift=active_domain ? 10 : 5;
+  unsigned int dcm_shift=active_domain ? 17 : 9;
+  assert(!((live.muxsel ^ preserved.muxsel) & ~(3U<<mux_shift)));
+  assert(!((live.clkdiv ^ preserved.clkdiv) & ~(31U<<div_shift)));
+  assert(!((live.sync_dcm ^ preserved.sync_dcm) & ~(63U<<dcm_shift)));
+  for(unsigned int d=0;d<4;d++) if(d!=active_domain) {
+   assert(live.armpll_con1[d]==preserved.armpll_con1[d]);
+  }
+ }
  struct mt6797_cpuclk_state state;
  assert(!mt6797_cpuclk_decode_state(active_domain, &live, 26000000, &state));
  unsigned long parent = state.source == MT6797_CPUCLK_MAINPLL ?
@@ -216,7 +228,7 @@ static struct mt6797_cpuclk_observer observer;
 static struct mt6797_cpuclk_transition_plan plan;
 static void reset(unsigned int i, unsigned int j)
 {
- active_domain=0; fallback_rate=1092000000;
+ check_preservation=false; active_domain=0; fallback_rate=1092000000;
  refuse_final_divider=cspm_error=top_partial=0;
  fallback_setting=rate_refs=rate_get_error=hp_en=top_read_error=top_updates=0;
  memset(&live,0,sizeof(live));
@@ -237,7 +249,7 @@ static int run(void)
  int ret=mt6797_cpuclk_observer_transition(&observer,&plan);
  assert(!observer.lock); return ret;
 }
-static const unsigned int l_rates[] = {325,468,650,832,962,1092,1209};
+static const unsigned int l_rates[] = {325,468,650,832,962,1092,1209,1352,1495,1625};
 static void reset_l(unsigned int i, unsigned int j, unsigned int saved)
 {
  reset(3,3); active_domain=1; fallback_setting=saved;
@@ -251,7 +263,25 @@ static void reset_l(unsigned int i, unsigned int j, unsigned int saved)
  ceiling=(l_rates[i]>l_rates[j] ? l_rates[i] : l_rates[j])*1000000UL;
  assert(!mt6797_cpuclk_plan_transition_mainpll(1,&live,26000000,
   l_rates[j]*1000000UL,fallback_rate,&plan));
+ preserved=live; check_preservation=true;
 }
+static const unsigned int ll_post_rates[] = {221,338,481,624,715,806,897,1014,1118,1222};
+static void reset_ll_post(unsigned int i,unsigned int j,unsigned int saved)
+{
+ reset(3,3); fallback_setting=saved;
+ observer.mainpll=observer.topckgen=&observer;
+ unsigned int div=i==0 ? 4 : i<3 ? 2 : 1, pos=i<8 ? 1 : 0;
+ unsigned long pll=ll_post_rates[i]*div*1000000UL;
+ live.armpll_con1[0]=BIT(31)|(pos<<24)|((u64)pll*(1U<<(14+pos))/26000000);
+ live.clkdiv=(live.clkdiv & ~(31U<<5))|((div==4 ? 11 : div==2 ? 10 : 8)<<5);
+ live.sync_dcm=(live.sync_dcm & ~(31U<<9))|(ll_post_rates[i]/70<<9);
+ ceiling=(ll_post_rates[i]>ll_post_rates[j] ? ll_post_rates[i] : ll_post_rates[j])*1000000UL;
+ assert(!mt6797_cpuclk_plan_transition_mainpll(0,&live,26000000,
+  ll_post_rates[j]*1000000UL,fallback_rate,&plan));
+ preserved=live; check_preservation=true;
+}
+static void reset_cpu(unsigned int domain,unsigned int i,unsigned int j,unsigned int saved)
+{ if(domain)reset_l(i,j,saved);else reset_ll_post(i,j,saved); }
 static const unsigned int cci_rates[]={169,234,325,416,481,533,611,676,
  754,819,845,884,910,936,975,988};
 static void reset_cci(unsigned int i,unsigned int j)
@@ -342,12 +372,13 @@ int main(void)
  reset(3,2); acquire_error=1; assert(run()==-EBUSY);
  assert(!operations && !observer.faulted && !releases);
  reset(3,2); release_error=1; assert(run()==-EUCLEAN && observer.faulted);
- unsigned int l_pairs=0, post_faults=0;
- branch.domain=MT6797_CPUCLK_MP1;
+ unsigned int cpu_pairs=0, post_faults=0;
+ for(unsigned int domain=0;domain<2;domain++) {
+ branch.domain=domain;
  for (unsigned int saved=0;saved<4;saved++)
- for (unsigned int i=0;i<7;i++) for (unsigned int j=0;j<7;j++) {
-  reset_l(i,j,saved);
-  unsigned long target=l_rates[j]*1000000UL;
+ for (unsigned int i=0;i<10;i++) for (unsigned int j=0;j<10;j++) {
+  reset_cpu(domain,i,j,saved);
+  unsigned long target=(domain ? l_rates[j] : ll_post_rates[j])*1000000UL;
   struct clk_rate_request lr={.rate=target,.min_rate=target,.max_rate=target,
    .best_parent_rate=26000000};
   assert(!mt6797_cpuclk_branch_determine_rate(&branch.hw,&lr));
@@ -356,29 +387,37 @@ int main(void)
   assert(fallback_setting==saved && releases==1);
   assert(top_updates==(plan.changes_postdiv ? 2 : 0));
   struct mt6797_cpuclk_state state;
-  assert(!mt6797_cpuclk_decode_state(1,&live,26000000,&state));
+  assert(!mt6797_cpuclk_decode_state(domain,&live,26000000,&state));
   assert(state.source==MT6797_CPUCLK_ARMPLL);
   assert(mt6797_cpuclk_apply_divider(state.armpll_rate,state.divider)==target);
-  l_pairs++;
+  cpu_pairs++;
   if (!plan.changes_postdiv) continue;
   assert(!strcmp(trace,"DDDTVMPMVDDDT"));
   unsigned int length=operations;
   char success[64]; strcpy(success,trace);
   for (unsigned int n=1;n<=length;n++) {
    if (success[n-1]=='V') continue;
-   reset_l(i,j,saved); fail_at=n; assert(run()==-EIO);
+   reset_cpu(domain,i,j,saved); fail_at=n; assert(run()==-EIO);
    assert(operations==n && releases==1);
    if (n>4) assert(fallback_setting==3);
    assert_fenced(); post_faults++;
   }
-  reset_l(i,j,saved); divider_refusals=1;
-  assert(!run() && divider_attempts==3 && !rate_refs);
-  reset_l(i,j,saved); divider_refusals=2;
-  assert(run()==-EIO && divider_attempts==2 && fallback_setting==3);
+  bool temporary_changes=plan.temporary_clkdiv!=plan.snapshot.clkdiv;
+  /* LL221 already uses /4: refusing that identical write cannot be detected. */
+  reset_cpu(domain,i,j,saved); divider_refusals=1;
+  assert(!run() && divider_attempts==(temporary_changes ? 3 : 2) && !rate_refs);
+  reset_cpu(domain,i,j,saved); divider_refusals=temporary_changes ? 2 : 3;
+  assert(run()==-EIO && divider_attempts==(temporary_changes ? 2 : 3) && fallback_setting==3);
   assert_fenced(); post_faults++;
-  reset_l(i,j,saved); refuse_final_divider=1;
-  assert(run()==-EIO && divider_attempts==3 && fallback_setting==3);
-  assert_fenced(); post_faults++;
+  reset_cpu(domain,i,j,saved); refuse_final_divider=1;
+  if (plan.clkdiv==plan.temporary_clkdiv) {
+   /* Returning to LL221 also requests the already selected /4 divider. */
+   assert(!run() && divider_attempts==2 && fallback_setting==saved && !rate_refs);
+  } else {
+   assert(run()==-EIO && divider_attempts==3 && fallback_setting==3);
+   assert_fenced(); post_faults++;
+  }
+ }
  }
  for (unsigned int n=4;n<=13;n+=9) {
   reset_l(6,0,0); top_partial=1; fail_at=n;
@@ -408,11 +447,11 @@ int main(void)
   if (mux==2) continue; /* The active MP1 path must start on ARMPLL. */
   reset_l(6,0,0);
   live.muxsel=(live.muxsel & ~(3U<<(2*mux))) | (2U<<(2*mux));
-  plan.snapshot=live;
+  preserved=live; plan.snapshot=live;
   assert(run()==-EUCLEAN && !operations && !rate_refs && !observer.faulted);
   reset_l(6,0,3);
   live.muxsel=(live.muxsel & ~(3U<<(2*mux))) | (2U<<(2*mux));
-  plan.snapshot=live; plan.mainpll_mux=(live.muxsel & ~plan.mux_mask) |
+  preserved=live; plan.snapshot=live; plan.mainpll_mux=(live.muxsel & ~plan.mux_mask) |
    (MT6797_CPUCLK_MAINPLL<<4);
   assert(!run() && fallback_setting==3 && !rate_refs);
  }
@@ -474,8 +513,8 @@ int main(void)
  assert(run()==-EUCLEAN && observer.faulted);
  printf("PASS %u CCI pairs, %u injected failures, sibling registers preserved\n",
   cci_pairs,cci_faults);
- printf("PASS %u L pairs across 4 fallback states, %u postdivider failures\n",
-  l_pairs,post_faults);
+ printf("PASS %u LL/L pairs across 4 fallback states, %u postdivider failures\n",
+  cpu_pairs,post_faults);
  printf("PASS %u pairs, %u injected write failures, %u intermediate checks\n",pairs,faults,checks);
 }
 '''
@@ -483,6 +522,7 @@ with tempfile.TemporaryDirectory(prefix='gemini-cpu-transition-') as tmp:
     src, exe = Path(tmp, 'test.c'), Path(tmp, 'test')
     src.write_text(prefix + core + model + functions + main)
     subprocess.run([os.environ.get('HOSTCC', 'cc'), '-std=gnu11', '-Wall',
-                    '-Wextra', '-Werror', '-Wno-sign-compare', str(src),
+                    '-Wextra', '-Werror', '-Wno-sign-compare',
+                    '-fsanitize=undefined', '-fno-sanitize-recover=all', str(src),
                     '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True)

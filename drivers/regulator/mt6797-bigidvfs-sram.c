@@ -403,7 +403,7 @@ int mt6797_sram_record_cpu8_off(struct device *consumer, struct regulator *suppl
 	struct mt6797_bigidvfs_sram *sram;
 	struct mt6797_sram_sample samples[2];
 	struct regmap *spm;
-	u32 status, second, power, isolation;
+	u32 status, power, isolation;
 	unsigned int i;
 	int ret;
 
@@ -423,12 +423,13 @@ int mt6797_sram_record_cpu8_off(struct device *consumer, struct regulator *suppl
 		ret = PTR_ERR(spm);
 		goto fault;
 	}
-	/* No AFFINITY_INFO here: firmware completion belongs to the power owner. */
+	/*
+	 * ATF uses primary CPU_PWR_STATUS bits 7/6/17 for MP2 power-off.
+	 * CPU_PWR_STATUS_2ND does not mirror MP2 acknowledgments on Gemini.
+	 * No AFFINITY_INFO here: completion belongs to the power owner.
+	 */
 	for (i = 0; i < ARRAY_SIZE(samples); i++) {
 		ret = regmap_read(spm, 0x188, &status);
-		if (ret)
-			goto fault;
-		ret = regmap_read(spm, 0x18c, &second);
 		if (ret)
 			goto fault;
 		ret = regmap_read(spm, 0x218, &power);
@@ -437,7 +438,7 @@ int mt6797_sram_record_cpu8_off(struct device *consumer, struct regulator *suppl
 		ret = regmap_read(spm, 0x290, &isolation);
 		if (ret)
 			goto fault;
-		if (((status | second) & (BIT(7) | BIT(6) | BIT(17))) ||
+		if ((status & (BIT(7) | BIT(6) | BIT(17))) ||
 		    !(isolation & BIT(1)) || (power & BIT(0)) || !(power & BIT(4))) {
 			ret = -EBUSY;
 			goto fault;

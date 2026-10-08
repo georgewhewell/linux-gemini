@@ -122,7 +122,7 @@ int mt6797_a72_transaction_commit(struct mt6797_a72_transaction *transaction);
 struct mt6797_a72_off_sample {
 	u32 online_mask;
 	u32 power_status;
-	u32 power_status_second;
+	u32 power_status_second; /* Diagnostic only; not MP2 acknowledgments. */
 	u32 mp2_pwr_con;
 	u32 ext_buck_iso;
 	u32 idvfs_control;

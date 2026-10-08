@@ -77,7 +77,7 @@ static int regulator_is_enabled(struct regulator *r){assert(r==&vp);int e=io();r
 static int regulator_get_voltage(struct regulator *r){int e=io();return e?e:r==&vp?1000000:sram_control?1100000:1050000;}
 static int regulator_enable(struct regulator *r){assert(r==&vp);int e=io();if(!e||effect)vproc_enabled=1;return e;}
 static int regulator_disable(struct regulator *r){assert(r==&vp);int e=io();rail_disables++;
- assert(!(status&(BIT(7)|BIT(6)|BIT(17))) && !(status2&(BIT(7)|BIT(6)|BIT(17))) && (iso&BIT(1)));
+ assert(!(status&(BIT(7)|BIT(6)|BIT(17))) && (iso&BIT(1)));
  if(!e||effect)vproc_enabled=0;return e;}
 static int reset_control_status(struct reset_control *r){assert(r==&resetctl);int e=io();return e?:reset_asserted;}
 static int reset_control_assert(struct reset_control *r){assert(r==&resetctl);int e=io();if(!e||effect)reset_asserted=true;return e;}
@@ -89,7 +89,7 @@ static int mt6797_sram_prepare_cpu8(struct device *d,struct regulator *r,unsigne
 {assert(d==&dev&&r==&vs&&c==8&&!cpu_online(8)&&!cpu_online(9));assert(!owner.started||sram_armed);
  int e=io();sram_starts++;sram_armed=false;if(!e||effect){sram_control=0x4008fb;sram_cal=0x8967;*v=(struct mt6797_sram_sample){sram_control,sram_cal};}return e;}
 static int mt6797_sram_record_cpu8_off(struct device *d,struct regulator *r)
-{assert(d==&dev&&r==&vs&&!vproc_enabled&&!status&&!status2&&(iso&BIT(1)));int e=io();if(!e)sram_armed=true;return e;}
+{assert(d==&dev&&r==&vs&&!vproc_enabled&&!status&&(iso&BIT(1)));int e=io();if(!e)sram_armed=true;return e;}
 static int mt6797_cpuclk_check_mp2_boot(struct device *d,struct clk *c)
 {assert(d==&dev&&c==&clk);int e=io();return e?:clock_running?-EBUSY:0;}
 static int mt6797_cpuclk_check_mp2_restart(struct device *d,struct clk *c)
@@ -102,8 +102,8 @@ static int firmware(unsigned cpu)
 {
  assert(!cpu_online(cpu));if(cpu==8)assert(!dcm_on && clock_saved);
  int e=io();firmwares++;if(e&&!effect)return e;
- status&=~BIT(cpu==8?7:6);status2=status;
- if(cpu==8){status=status2=0;iso|=BIT(1);power=BIT(4);clock_running=false;}
+ status&=~BIT(cpu==8?7:6);
+ if(cpu==8){status=0;iso|=BIT(1);power=BIT(4);clock_running=false;}
  return e;
 }
 static void reset(void)
@@ -114,12 +114,12 @@ static void reset(void)
  assert(!mt6797_a72_build_plan(&owner.plan));
  online=BIT(0)|BIT(4);running=0;calls=fail_at=firmwares=dcms=rail_disables=sram_starts=0;
  effect=reset_asserted=sram_armed=clock_saved=clock_running=dcm_on=false;
- status=status2=idvfs=sram_control=sram_cal=0;iso=BIT(1);power=BIT(4);vproc_enabled=0;
+ status=idvfs=sram_control=sram_cal=0;status2=0x003980ff;iso=BIT(1);power=BIT(4);vproc_enabled=0;
 }
 static int prepare(unsigned cpu){return mt6797_a72_cpu_on_prepare(cpu,&owner.cpuhp_node);}
 static void up(unsigned cpu)
 {
- running=0;assert(!prepare(cpu));online|=BIT(cpu);status|=BIT(17)|BIT(cpu==8?7:6);status2=status;
+ running=0;assert(!prepare(cpu));online|=BIT(cpu);status|=BIT(17)|BIT(cpu==8?7:6);
  clock_running=true;power=BIT(0)|BIT(2);running=cpu;
  assert(!mt6797_a72_cpu_online_commit(cpu,&owner.online_node));running=0;
 }

@@ -25,6 +25,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/psci.h>
+#include <linux/pm_opp.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
@@ -54,6 +55,7 @@ static_assert(MT6797_A72_R0P1_MIDR ==
 
 struct mt6797_a72_preflight {
 	struct device *dev;
+	struct device *opp_cpu;
 	struct regulator *vproc_big;
 	struct regulator *sram_big;
 	struct reset_control *pwrap_reset;
@@ -698,6 +700,12 @@ static int mt6797_a72_off_vproc(void *context)
 	ret = regulator_get_voltage(p->vproc_big);
 	if (ret != p->boot_vproc_uv)
 		return ret < 0 ? ret : -EUCLEAN;
+	if (p->opp_cpu) {
+		/* Firmware restarts at 750MHz; discard OPP's previous live cache. */
+		ret = dev_pm_opp_set_rate(p->opp_cpu, 0);
+		if (ret)
+			return ret;
+	}
 	p->dvfs_used = false;
 	return 0;
 }
@@ -1150,6 +1158,73 @@ mt6797_a72_remove_cpu_on_gate(struct mt6797_a72_preflight *preflight)
 	}
 }
 
+static int mt6797_a72_opp_clocks(struct device *dev, struct opp_table *table,
+		struct dev_pm_opp *opp, void *data, bool scaling_down)
+{
+	unsigned long rate, uv;
+
+	if (!dev || (dev->id != 8 && dev->id != 9) || get_cpu_device(dev->id) != dev || !opp)
+		return -EINVAL;
+	rate = dev_pm_opp_get_freq(opp);
+	uv = dev_pm_opp_get_voltage(opp);
+	if (uv > 1200000)
+		return -EINVAL;
+	return mt6797_a72_power_set_opp(dev->id, rate, rate == 338000000 ? 2 : 1, uv);
+}
+
+static void mt6797_a72_clear_opp_config(void *token)
+{
+	dev_pm_opp_clear_config((unsigned long)token);
+}
+
+static int mt6797_a72_configure_opps(struct mt6797_a72_preflight *p)
+{
+	static const char * const names[] = { NULL, NULL };
+	struct dev_pm_opp_config config = {
+		.clk_names = names,
+		.config_clks = mt6797_a72_opp_clocks,
+	};
+	struct device *cpus[2];
+	struct device_node *tables[2];
+	struct clk *clk;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < 2; i++) {
+		cpus[i] = get_cpu_device(8 + i);
+		if (!cpus[i])
+			return -EPROBE_DEFER;
+	}
+	tables[0] = of_parse_phandle(cpus[0]->of_node, "operating-points-v2", 0);
+	tables[1] = of_parse_phandle(cpus[1]->of_node, "operating-points-v2", 0);
+	if (!tables[0] && !tables[1])
+		return 0;
+	ret = tables[0] && tables[0] == tables[1] &&
+		of_property_present(tables[0], "opp-shared") ? 0 : -EINVAL;
+	of_node_put(tables[0]);
+	of_node_put(tables[1]);
+	if (ret)
+		return ret;
+	for (i = 0; i < 2; i++) {
+		/* The native owner retains both exclusive regulator handles. */
+		if (of_property_present(cpus[i]->of_node, "cpu-supply"))
+			return -EINVAL;
+		clk = clk_get(cpus[i], NULL);
+		if (IS_ERR(clk))
+			return PTR_ERR(clk);
+		ret = clk_is_match(clk, p->mp2_clk) ? 0 : -EINVAL;
+		clk_put(clk);
+		if (ret)
+			return ret;
+	}
+	ret = dev_pm_opp_set_config(cpus[0], &config);
+	if (ret < 0)
+		return ret;
+	p->opp_cpu = cpus[0];
+	return devm_add_action_or_reset(p->dev, mt6797_a72_clear_opp_config,
+				       (void *)(unsigned long)ret);
+}
+
 static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1302,6 +1377,9 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	if (transaction_ret)
 		return dev_err_probe(dev, transaction_ret,
 				     "A72 transaction admission failed\n");
+	ret = mt6797_a72_configure_opps(preflight);
+	if (ret)
+		return dev_err_probe(dev, ret, "cannot configure A72 OPP ownership\n");
 	preflight->boot_vproc_uv = vproc_uv;
 	preflight->plan = plan;
 	preflight->admission_ret = transaction_ret;

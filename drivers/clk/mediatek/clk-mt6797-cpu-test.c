@@ -197,9 +197,18 @@ static void mt6797_cpuclk_cold_mp2_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_decode_state(MT6797_CPUCLK_MP2,
 		&snapshot, MT6797_TEST_CLK26M_RATE, &state), -ERANGE);
 	snapshot.mp2_armpll_con1 = 0;
-	snapshot.clkdiv = 8;
-	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_decode_state(MT6797_CPUCLK_MP2,
-		&snapshot, MT6797_TEST_CLK26M_RATE, &state), -ERANGE);
+	/* Full rail removal clears PLL words but retains the divider. */
+	for (divider = 0; divider < 32; divider++) {
+		bool valid = divider == 0 || (divider >= 8 && divider <= 11) ||
+			(divider >= 16 && divider <= 20) ||
+			(divider >= 24 && divider <= 29);
+
+		snapshot.clkdiv = divider;
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_decode_state(MT6797_CPUCLK_MP2,
+			&snapshot, MT6797_TEST_CLK26M_RATE, &state), valid ? 0 : -ERANGE);
+		if (valid)
+			KUNIT_EXPECT_EQ(test, state.armpll_rate, (u64)0);
+	}
 
 	/* Unknown selectors remain rejected, including with a running PLL. */
 	snapshot.muxsel = 0x55;
@@ -248,6 +257,10 @@ static void mt6797_cpuclk_cold_admission_test(struct kunit *test)
 	snapshot.muxsel = 0xfffffffc;
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&snapshot,
 		26000000), 0);
+	/* A warm reset observation is not permission to take the cold path. */
+	snapshot.clkdiv = 8;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&snapshot,
+		26000000), -EBUSY);
 	snapshot.muxsel = 0x55;
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&snapshot,
 		26000000), -ERANGE);
@@ -272,7 +285,7 @@ static void mt6797_cpuclk_stopped_mp2_test(struct kunit *test)
 		.muxsel = 0x55,
 		.clkdiv = 8,
 	};
-	struct mt6797_cpuclk_snapshot stopped = running, changed;
+	struct mt6797_cpuclk_snapshot stopped = running, changed, corrupt;
 	unsigned int bit;
 
 	stopped.mp2_armpll_con0 &= ~BIT(0);
@@ -310,6 +323,34 @@ static void mt6797_cpuclk_stopped_mp2_test(struct kunit *test)
 	changed.sync_dcm = 0xffffffff;
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
 		&changed, 26000000), 0);
+	/* Trial04: mux=0x54, divider=0x42108, both PLL words reset by rail-off. */
+	changed = stopped;
+	changed.muxsel = 0x54;
+	changed.clkdiv = 0x42108;
+	changed.mp2_armpll_con0 = 0;
+	changed.mp2_armpll_con1 = 0;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+		&changed, 26000000), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&changed,
+		26000000), -EBUSY);
+	for (bit = 0; bit < 32; bit++) {
+		corrupt = changed;
+		corrupt.mp2_armpll_con0 ^= BIT(bit);
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+			&corrupt, 26000000), -EBUSY);
+		corrupt = changed;
+		corrupt.mp2_armpll_con1 ^= BIT(bit);
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+			&corrupt, 26000000), -EBUSY);
+		corrupt = changed;
+		corrupt.muxsel ^= BIT(bit);
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+			&corrupt, 26000000), bit < 2 ? -EBUSY : 0);
+		corrupt = changed;
+		corrupt.clkdiv ^= BIT(bit);
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+			&corrupt, 26000000), bit < 5 ? -EBUSY : 0);
+	}
 	/* A disabled PLL, another parent or malformed programming is no receipt. */
 	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&stopped,
 		&stopped, 26000000), -EBUSY);

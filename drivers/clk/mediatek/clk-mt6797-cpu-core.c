@@ -527,6 +527,10 @@ int mt6797_cpuclk_plan_mp2_transition(
 
 	memset(&result, 0, sizeof(result));
 	result.initial = *initial;
+	result.reference_rate = reference_rate;
+	result.requested_rate = requested_rate;
+	result.target_divisor = target_divisor;
+	result.mainpll_rate = mainpll_rate;
 	result.initial_rate = mt6797_cpuclk_apply_divider(state.armpll_rate,
 							state.divider);
 	result.rate = pll.actual_rate / target_divisor;
@@ -556,6 +560,66 @@ int mt6797_cpuclk_plan_mp2_transition(
 	result.step[MT6797_MP2_RESTORE_DIVIDER] = current;
 	*plan = result;
 	return 0;
+}
+
+int mt6797_cpuclk_execute_mp2_plan(const struct mt6797_cpuclk_mp2_plan *plan,
+		const struct mt6797_cpuclk_mp2_io *io, void *context,
+		unsigned long mainpll_rate, bool *faulted)
+{
+	struct mt6797_cpuclk_mp2_plan checked;
+	struct mt6797_cpuclk_snapshot snapshot;
+	u32 dcm, initial_dcm;
+	int ret, step;
+
+	if (!plan || !io || !faulted || !io->snapshot || !io->write_divider ||
+	    !io->write_mux || !io->set_pll)
+		return -EINVAL;
+	if (*faulted)
+		return -EUCLEAN;
+	ret = mt6797_cpuclk_plan_mp2_transition(&plan->initial,
+		plan->reference_rate, plan->requested_rate, plan->target_divisor,
+		mainpll_rate, &checked);
+	if (ret)
+		return ret;
+	/* Planner zeroes padding too; only its exact output is executable. */
+	if (memcmp(plan, &checked, sizeof(checked)))
+		return -EINVAL;
+	ret = io->snapshot(context, &snapshot, &initial_dcm);
+	if (ret)
+		return ret < 0 ? ret : -EIO;
+	if (!mt6797_cpuclk_snapshots_equal(&snapshot, &plan->initial))
+		return -EAGAIN;
+	if (initial_dcm & GENMASK(6, 0))
+		return -EBUSY;
+
+	for (step = 0; step < MT6797_MP2_NR_STEPS; step++) {
+		switch (step) {
+		case MT6797_MP2_DIVIDE:
+		case MT6797_MP2_RESTORE_DIVIDER:
+			ret = io->write_divider(context, plan->step[step].clkdiv);
+			break;
+		case MT6797_MP2_PARK:
+		case MT6797_MP2_UNPARK:
+			ret = io->write_mux(context, plan->step[step].muxsel);
+			break;
+		case MT6797_MP2_PROGRAM_PLL:
+			ret = io->set_pll(context, plan->firmware_mhz);
+			break;
+		default:
+			return -EINVAL;
+		}
+		/* A callback error can follow a hardware effect. Never retry it. */
+		if (ret)
+			goto fault;
+		ret = io->snapshot(context, &snapshot, &dcm);
+		if (ret || dcm != initial_dcm ||
+		    !mt6797_cpuclk_snapshots_equal(&snapshot, &plan->step[step]))
+			goto fault;
+	}
+	return 0;
+fault:
+	*faulted = true;
+	return -EUCLEAN;
 }
 
 /*

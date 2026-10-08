@@ -161,6 +161,50 @@ fault:
 	return -EUCLEAN;
 }
 
+int mt6797_a72_change_opp(const struct mt6797_a72_dvfs_io *io, void *context,
+		unsigned long rate, unsigned int divisor, unsigned int vproc_uv,
+		bool *faulted)
+{
+	struct mt6797_a72_rail_step initial;
+	struct mt6797_a72_rail_plan plan;
+	bool raise;
+	int ret;
+
+	if (!io || !io->set_clock || !io->rails.read || !io->rails.set_vproc ||
+	    !io->rails.set_vsram || !io->rails.settle || !faulted ||
+	    !rate || rate % 1000000 ||
+	    (divisor != 1 && divisor != 2) ||
+	    rate < 250000000 || rate > 3000000000UL / divisor)
+		return -EINVAL;
+	if (*faulted)
+		return -EUCLEAN;
+	ret = io->rails.read(context, &initial);
+	if (ret)
+		return ret;
+	ret = mt6797_a72_plan_rails(initial.vproc_uv, initial.vsram_uv, vproc_uv, &plan);
+	if (ret)
+		return ret;
+	raise = vproc_uv > initial.vproc_uv;
+	if (raise) {
+		ret = mt6797_a72_execute_rails(&plan, vproc_uv, &io->rails, context, faulted);
+		if (ret)
+			return ret;
+	}
+	ret = io->set_clock(context, rate, divisor);
+	if (ret)
+		goto fault;
+	if (!raise) {
+		ret = mt6797_a72_execute_rails(&plan, vproc_uv, &io->rails, context, faulted);
+		if (ret)
+			goto fault;
+	}
+	return 0;
+fault:
+	/* Clock or voltage may have changed; retain rails and forbid retry. */
+	*faulted = true;
+	return -EUCLEAN;
+}
+
 /*
  * Vendor psci.c cpu_psci_cpu_kill(): on the last MP2 core, stop sync DCM,
  * let AFFINITY_INFO finish firmware power-off, then disable DA9214 BUCK B.

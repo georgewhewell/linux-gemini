@@ -275,13 +275,11 @@
 		opp-1118000000 {
 			opp-hz = /bits/ 64 <1118000000>;
 			opp-microvolt = <1070000 1070000 1200000>;
-			status = "disabled";
 		};
 
 		opp-1222000000 {
 			opp-hz = /bits/ 64 <1222000000>;
 			opp-microvolt = <1100000 1100000 1200000>;
-			status = "disabled";
 		};
 
 		opp-1274000000 {
@@ -369,13 +367,11 @@
 		opp-1495000000 {
 			opp-hz = /bits/ 64 <1495000000>;
 			opp-microvolt = <1070000 1070000 1200000>;
-			status = "disabled";
 		};
 
 		opp-1625000000 {
 			opp-hz = /bits/ 64 <1625000000>;
 			opp-microvolt = <1100000 1100000 1200000>;
-			status = "disabled";
 		};
 
 		opp-1703000000 {

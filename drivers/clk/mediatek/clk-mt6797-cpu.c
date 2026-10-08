@@ -39,6 +39,9 @@ struct mt6797_cpuclk;
 #define MT6797_CPUCLK_SYNC_DCM 0x744
 #define MT6797_CPUCLK_SYNC_DCM_PHYS 0x10220744
 
+/* Snapshot selectors above the per-domain read-only observation range. */
+#define MT6797_CPUCLK_FULL_SNAPSHOT (MT6797_CPUCLK_NR_DOMAINS + 1)
+
 #define MT6797_CPUCLK_SMC_MCUSYS_WRITE 0x82000201UL
 
 #define MT6797_ARMPLL_CHG BIT(31)
@@ -224,6 +227,37 @@ static int mt6797_cpuclk_read_stable(struct mt6797_cpuclk_observer *observer,
 	return mt6797_cpuclk_snapshots_equal(snapshot, &second) ? 0 : -EAGAIN;
 }
 
+/* A53/CCI transitions own the AP PLLs and shared mux/divider/DCM words.
+ * MP2 PLL words belong to firmware and are not transition-plan inputs.
+ * Retain every shared field, including MP2 mux/divider bits, without issuing
+ * secure reads into the A72 block while its power owner may hold reset.
+ */
+static int mt6797_cpuclk_read_ap_once(struct mt6797_cpuclk_observer *observer,
+				     struct mt6797_cpuclk_snapshot *snapshot)
+{
+	memset(snapshot, 0, sizeof(*snapshot));
+	snapshot->muxsel = readl_relaxed(observer->mcumixed + MT6797_CPUCLK_MUXSEL);
+	snapshot->clkdiv = readl_relaxed(observer->mcumixed + MT6797_CPUCLK_CLKDIV);
+	snapshot->armpll_con1[MT6797_CPUCLK_MP0] =
+		readl_relaxed(observer->mcumixed + MT6797_CPUCLK_MP0_PLL_CON1);
+	snapshot->armpll_con1[MT6797_CPUCLK_MP1] =
+		readl_relaxed(observer->mcumixed + MT6797_CPUCLK_MP1_PLL_CON1);
+	snapshot->armpll_con1[MT6797_CPUCLK_CCI] =
+		readl_relaxed(observer->mcumixed + MT6797_CPUCLK_CCI_PLL_CON1);
+	snapshot->sync_dcm = readl_relaxed(observer->mcucfg + MT6797_CPUCLK_SYNC_DCM);
+	return 0;
+}
+
+static int mt6797_cpuclk_read_ap_stable(struct mt6797_cpuclk_observer *observer,
+				       struct mt6797_cpuclk_snapshot *snapshot)
+{
+	struct mt6797_cpuclk_snapshot second;
+
+	mt6797_cpuclk_read_ap_once(observer, snapshot);
+	mt6797_cpuclk_read_ap_once(observer, &second);
+	return mt6797_cpuclk_snapshots_equal(snapshot, &second) ? 0 : -EAGAIN;
+}
+
 /* Read only the registers used to decode this domain. In particular, A53
  * and CCI observations must not enter firmware to sample the MP2 PLL while
  * the A72 power owner may be resetting that block.
@@ -267,7 +301,7 @@ static int mt6797_cpuclk_read_domain(struct mt6797_cpuclk_observer *observer,
 
 /* Firmware may change MP2 during CPU_ON without taking this driver's mutex.
  * An A53/CCI observation must not depend on that unrelated path settling.
- * Transactions and lifecycle admission continue to require full snapshots.
+ * AP transitions retain all shared words; A72 admission retains full snapshots.
  */
 static int mt6797_cpuclk_read_observation(struct mt6797_cpuclk_observer *observer,
 					enum mt6797_cpuclk_domain domain,
@@ -303,8 +337,10 @@ static int mt6797_cpuclk_snapshot_transaction(void __iomem *cspm, void *context)
 	if (ret)
 		return ret;
 
-	if (transaction->domain == MT6797_CPUCLK_NR_DOMAINS)
+	if (transaction->domain == MT6797_CPUCLK_FULL_SNAPSHOT)
 		ret = mt6797_cpuclk_read_stable(observer, transaction->snapshot);
+	else if (transaction->domain == MT6797_CPUCLK_NR_DOMAINS)
+		ret = mt6797_cpuclk_read_ap_stable(observer, transaction->snapshot);
 	else
 		ret = mt6797_cpuclk_read_observation(observer, transaction->domain,
 						   transaction->snapshot);
@@ -668,7 +704,7 @@ static int mt6797_cpuclk_transition_transaction(void __iomem *cspm, void *contex
 	if (ret)
 		return ret;
 
-	ret = mt6797_cpuclk_read_stable(observer, &snapshot);
+	ret = mt6797_cpuclk_read_ap_stable(observer, &snapshot);
 	if (ret)
 		goto out_release;
 	if (!mt6797_cpuclk_snapshots_equal(&snapshot, &plan->snapshot)) {
@@ -749,7 +785,7 @@ final_dcm:
 	if (ret)
 		goto fault;
 
-	ret = mt6797_cpuclk_read_stable(observer, &snapshot);
+	ret = mt6797_cpuclk_read_ap_stable(observer, &snapshot);
 	if (!ret)
 		ret = mt6797_cpuclk_decode_state(plan->domain, &snapshot,
 						 plan->clk26m_rate, &state);
@@ -1105,7 +1141,7 @@ static int mt6797_cpuclk_parent_transaction(void __iomem *cspm, void *context)
 		return ret;
 	leased = true;
 
-	ret = mt6797_cpuclk_read_stable(observer, &snapshot);
+	ret = mt6797_cpuclk_read_ap_stable(observer, &snapshot);
 	if (ret)
 		goto out_release;
 	initial_mux = snapshot.muxsel;
@@ -1174,7 +1210,7 @@ static int mt6797_cpuclk_parent_transaction(void __iomem *cspm, void *context)
 			goto rollback;
 	}
 
-	ret = mt6797_cpuclk_read_stable(observer, &snapshot);
+	ret = mt6797_cpuclk_read_ap_stable(observer, &snapshot);
 	if (ret)
 		goto rollback;
 	if (((snapshot.muxsel ^ target_mux) & mux_mask) ||
@@ -1426,7 +1462,7 @@ static int mt6797_cpuclk_backend_init(struct platform_device *pdev,
 	mutex_lock(&observer->lock);
 	ret = mt6797_cpuclk_snapshot_locked(observer,
 					    &observer->probe_snapshot,
-					    MT6797_CPUCLK_NR_DOMAINS);
+					    MT6797_CPUCLK_FULL_SNAPSHOT);
 	mutex_unlock(&observer->lock);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret,

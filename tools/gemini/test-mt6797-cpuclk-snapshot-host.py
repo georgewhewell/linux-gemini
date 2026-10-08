@@ -39,10 +39,10 @@ typedef uint8_t u8; typedef uint32_t u32; typedef uint64_t u64;
 #define mult_frac(x,n,d) (((x)/(d))*(n)+(((x)%(d))*(n))/(d))
 #define EXPORT_SYMBOL_GPL(x)
 '''
-prefix += '\n'.join(line for line in source.splitlines() if line.startswith('#define MT6797_CPUCLK_') and any(key in line for key in ('MP0_PLL_CON1 ', 'MP1_PLL_CON1 ', 'CCI_PLL_CON1 ', 'MUXSEL ', 'CLKDIV '))) + '\n'
+prefix += '\n'.join(line for line in source.splitlines() if line.startswith('#define MT6797_CPUCLK_') and any(key in line for key in ('MP0_PLL_CON1 ', 'MP1_PLL_CON1 ', 'CCI_PLL_CON1 ', 'MUXSEL ', 'CLKDIV ', 'SYNC_DCM ', 'FULL_SNAPSHOT '))) + '\n'
 stubs = r'''
 struct mt6797_cpuclk_observer {
- void *mcumixed; int lock; bool faulted, probe_snapshot_valid; void *handoff;
+ void *mcumixed, *mcucfg; int lock; bool faulted, probe_snapshot_valid; void *handoff;
  struct mt6797_cpuclk_snapshot probe_snapshot;
 };
 static struct mt6797_cpuclk_observer owner;
@@ -58,6 +58,7 @@ static u32 readl_relaxed(void *address)
  switch(reg){
  case MT6797_CPUCLK_MUXSEL: assert(calls<2); calls++; word=6; break;
  case MT6797_CPUCLK_CLKDIV: word=7; break;
+ case MT6797_CPUCLK_SYNC_DCM: word=8; break;
  case MT6797_CPUCLK_MP0_PLL_CON1: word=0; break;
  case MT6797_CPUCLK_MP1_PLL_CON1: word=1; break;
  case MT6797_CPUCLK_CCI_PLL_CON1: word=3; break;
@@ -65,7 +66,7 @@ static u32 readl_relaxed(void *address)
  }
  assert(calls); seen|=BIT(word);
  if(word<4)return reads[calls-1].armpll_con1[word];
- return word==6 ? reads[calls-1].muxsel : reads[calls-1].clkdiv;
+ return word==6 ? reads[calls-1].muxsel : word==7 ? reads[calls-1].clkdiv : reads[calls-1].sync_dcm;
 }
 static int mt6797_cpuclk_secure_read(unsigned long fid,u32 address,u32 *value)
 {
@@ -92,6 +93,8 @@ static int mt6797_dvfsp_cspm_transaction(void *handoff, int (*run)(void *,void *
 { assert(handoff==&owner && owner.lock); transactions++; return transaction_error ? transaction_error : run(&owner,ctx); }
 '''
 functions = extract('static int mt6797_cpuclk_read_stable(') + '\n'
+functions += extract('static int mt6797_cpuclk_read_ap_once(') + '\n'
+functions += extract('static int mt6797_cpuclk_read_ap_stable(') + '\n'
 functions += extract('static int mt6797_cpuclk_read_domain(') + '\n'
 functions += extract('static int mt6797_cpuclk_read_observation(') + '\n'
 start = source.index('struct mt6797_cpuclk_snapshot_transaction {')
@@ -105,7 +108,7 @@ for signature in ('static int mt6797_cpuclk_snapshot_transaction(',
 main = r'''
 static void reset(void)
 {
- owner=(struct mt6797_cpuclk_observer){.handoff=&owner,.mcumixed=registers};
+ owner=(struct mt6797_cpuclk_observer){.handoff=&owner,.mcumixed=registers,.mcucfg=registers};
  memset(reads,0,sizeof(reads));
  calls=leases=releases=transactions=fail_read=seen=secure_calls=fail_secure=0;
  acquire_error=release_error=transaction_error=0;
@@ -133,7 +136,7 @@ int main(void)
   assert(seen==(BIT(6)|BIT(7)|(domain==2 ? BIT(4)|BIT(5) : BIT(domain))));
   assert(secure_calls==(domain==2 ? 4U : 0U));
   reset();*word(&reads[1],i)^=1U<<bit;
-  assert(mt6797_cpuclk_observer_snapshot(&owner,&out)==-EAGAIN);
+  assert(mt6797_cpuclk_observer_sample(&owner,&out,MT6797_CPUCLK_FULL_SNAPSHOT)==-EAGAIN);
   assert(calls==2 && releases==1 && !owner.lock && !owner.faulted);cases++;
  }
  for(unsigned int domain=0;domain<=4;domain++)for(unsigned int failure=1;failure<=5;failure++){
@@ -143,10 +146,26 @@ int main(void)
   if(failure==3)acquire_error=-EIO;
   if(failure==4){release_error=-EIO;expected=-EUCLEAN;}
   if(failure==5)transaction_error=-EIO;
-  int ret=domain==4 ? mt6797_cpuclk_observer_snapshot(&owner,&out) : mt6797_cpuclk_observer_observe(&owner,domain,&out);
+  int ret=domain==4 ? mt6797_cpuclk_observer_sample(&owner,&out,MT6797_CPUCLK_FULL_SNAPSHOT) : mt6797_cpuclk_observer_observe(&owner,domain,&out);
   assert(ret==expected && !owner.lock && owner.faulted==(failure==4));
   assert(calls==(failure<=2 ? failure : failure==4 ? 2U : 0U));
   assert(releases==(failure<=2 || failure==4));
+ }
+ for(unsigned int i=0;i<9;i++)for(unsigned int bit=0;bit<32;bit++){
+  reset();*word(&reads[1],i)^=1U<<bit;fail_secure=1;
+  bool relevant=i!=2 && i!=4 && i!=5;
+  assert(mt6797_cpuclk_observer_snapshot(&owner,&out)==(relevant ? -EAGAIN : 0));
+  assert(calls==2 && !secure_calls && seen==(BIT(0)|BIT(1)|BIT(3)|BIT(6)|BIT(7)|BIT(8)));
+  assert(releases==1 && !owner.lock && !owner.faulted);
+ }
+ for(unsigned int failure=3;failure<=5;failure++){
+  reset();int expected=-EIO;
+  if(failure==3)acquire_error=-EIO;
+  if(failure==4){release_error=-EIO;expected=-EUCLEAN;}
+  if(failure==5)transaction_error=-EIO;
+  assert(mt6797_cpuclk_observer_snapshot(&owner,&out)==expected);
+  assert(!secure_calls && !owner.lock && owner.faulted==(failure==4));
+  assert(calls==(failure==4?2U:0U) && releases==(failure==4));
  }
  for(unsigned int failure=1;failure<=4;failure++){
   reset();fail_secure=failure;
@@ -165,7 +184,7 @@ int main(void)
  reset();assert(mt6797_cpuclk_observer_observe(&owner,4,&out)==-EINVAL && !calls && !transactions);
  assert(!mt6797_cpuclk_observations_equal(0,NULL,&out));
  assert(!mt6797_cpuclk_observations_equal(4,&out,&out));
- printf("PASS %u single-bit domain isolation cases, exact domain register access, strict full snapshots,23 injected errors and ownership checks\n",cases);
+ printf("PASS %u single-bit domain isolation cases, exact domain register access,288 AP shared-field cases, strict full snapshots,26 injected errors and ownership checks\n",cases);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='mt6797-clock-snapshot-') as tmp:

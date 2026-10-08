@@ -183,7 +183,7 @@ static int mt6797_cpuclk_lease_acquire(struct mt6797_cpuclk_observer *o, void *c
 { (void)o; (void)c; return acquire_error ? -EBUSY : 0; }
 static int mt6797_cpuclk_lease_release(struct mt6797_cpuclk_observer *o, void *c)
 { (void)o; (void)c; releases++; return release_error ? -EIO : 0; }
-static int mt6797_cpuclk_read_stable(struct mt6797_cpuclk_observer *o,
+static int mt6797_cpuclk_read_ap_stable(struct mt6797_cpuclk_observer *o,
  struct mt6797_cpuclk_snapshot *s)
 {
  (void)o; *s = live; if (stale) s->muxsel ^= BIT(6);
@@ -216,7 +216,7 @@ static int mt6797_cpuclk_fhctl_hop(struct mt6797_cpuclk_observer *o,
 '''
 main = r'''
 static int sample(void *context, struct mt6797_cpuclk_snapshot *s)
-{ return mt6797_cpuclk_read_stable(context,s); }
+{ return mt6797_cpuclk_read_ap_stable(context,s); }
 static unsigned long mainpll_rate(void *context)
 { struct mt6797_cpuclk_observer *o=context; return o->mainpll ? fallback_rate : 0; }
 static const struct mt6797_cpuclk_backend_ops backend_ops = {

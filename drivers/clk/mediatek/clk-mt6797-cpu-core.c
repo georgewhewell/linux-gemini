@@ -487,6 +487,78 @@ static bool mt6797_cpuclk_divider_is_unity(u8 divider)
 }
 
 /*
+ * MP2 has no FHCTL hop. Park on MAINPLL/4 while firmware reprograms its
+ * PLL. The power owner must admit both endpoint voltages, serialize hotplug
+ * and quiesce/restore MP2 DCM around this clock-only sequence.
+ */
+int mt6797_cpuclk_plan_mp2_transition(
+		const struct mt6797_cpuclk_snapshot *initial,
+		unsigned long reference_rate, unsigned long requested_rate,
+		unsigned int target_divisor, unsigned long mainpll_rate,
+		struct mt6797_cpuclk_mp2_plan *plan)
+{
+	struct mt6797_cpuclk_mp2_plan result;
+	struct mt6797_cpuclk_mp2_pll_plan pll;
+	struct mt6797_cpuclk_snapshot current;
+	struct mt6797_cpuclk_state state;
+	unsigned long floor;
+	u8 divider;
+	int ret;
+
+	if (!initial || !plan || reference_rate != 26000000 ||
+	    (target_divisor != 1 && target_divisor != 2))
+		return -EINVAL;
+	if (requested_rate > 3000000000UL / target_divisor || mainpll_rate < 4)
+		return -ERANGE;
+	ret = mt6797_cpuclk_decode_state(MT6797_CPUCLK_MP2, initial,
+					reference_rate, &state);
+	if (ret)
+		return ret;
+	if (state.source != MT6797_CPUCLK_ARMPLL ||
+	    !(initial->mp2_armpll_con0 & BIT(0)) ||
+	    (initial->mp2_armpll_con1 & BIT(31)) ||
+	    FIELD_GET(MT6797_MP2_ARMPLL_POSDIV_MASK, initial->mp2_armpll_con0) > 2 ||
+	    (!mt6797_cpuclk_divider_is_unity(state.divider) && state.divider != 10))
+		return -EBUSY;
+	ret = mt6797_cpuclk_plan_mp2_pll(initial, reference_rate,
+			requested_rate * target_divisor, &pll);
+	if (ret)
+		return ret;
+
+	memset(&result, 0, sizeof(result));
+	result.initial = *initial;
+	result.initial_rate = mt6797_cpuclk_apply_divider(state.armpll_rate,
+							state.divider);
+	result.rate = pll.actual_rate / target_divisor;
+	result.ceiling_rate = result.initial_rate > result.rate ?
+		result.initial_rate : result.rate;
+	if (mainpll_rate / 4 > result.ceiling_rate)
+		return -ERANGE;
+	floor = min((unsigned long)state.armpll_rate / 4, pll.actual_rate / 4);
+	result.minimum_rate = min(floor, mainpll_rate / 4);
+	if (!result.minimum_rate)
+		return -ERANGE;
+	result.firmware_mhz = pll.firmware_mhz;
+
+	current = *initial;
+	current.clkdiv = (current.clkdiv & ~31U) | 11;
+	result.step[MT6797_MP2_DIVIDE] = current;
+	current.muxsel = (current.muxsel & ~3U) | MT6797_CPUCLK_MAINPLL;
+	result.step[MT6797_MP2_PARK] = current;
+	current.mp2_armpll_con0 = pll.expected.mp2_armpll_con0;
+	current.mp2_armpll_con1 = pll.expected.mp2_armpll_con1;
+	result.step[MT6797_MP2_PROGRAM_PLL] = current;
+	current.muxsel = initial->muxsel;
+	result.step[MT6797_MP2_UNPARK] = current;
+	divider = target_divisor == 2 ? 10 :
+		mt6797_cpuclk_divider_is_unity(state.divider) ? state.divider : 8;
+	current.clkdiv = (current.clkdiv & ~31U) | divider;
+	result.step[MT6797_MP2_RESTORE_DIVIDER] = current;
+	*plan = result;
+	return 0;
+}
+
+/*
  * Vendor LL CPU_LEVEL_1 low points keep POS=2 and use CKDIV=2 or 4.
  * Increasing division precedes FHCTL; decreasing division follows it.
  * Unlike a unity-divider hop, the intermediate CPU rate can fall below both

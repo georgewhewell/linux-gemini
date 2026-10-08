@@ -5,7 +5,7 @@ from pathlib import Path
 import os, subprocess, tempfile
 root=Path(__file__).resolve().parents[2]
 s=(root/'drivers/soc/mediatek/mt6797-a72-power.c').read_text()
-a=s.index('mt6797_a72_cpu_online_commit(')
+a=s.index('mt6797_a72_cpu_online_commit_locked(')
 b=s.index('\nstatic int mt6797_a72_install_cpu_on_gate',a)
 function=s[a:b]
 c=r'''
@@ -19,7 +19,7 @@ c=r'''
 struct hlist_node { int unused; };
 struct transaction { bool active; };
 struct mt6797_a72_preflight {
- struct hlist_node online_node; unsigned cpu_mask; bool faulted,cpu8_armed;
+ struct hlist_node online_node; unsigned cpu_mask; bool faulted,cpu8_armed,cpu9_starting;
  struct transaction transaction; void *dev,*mp2_clk;
  bool started,committed[2],off_armed[2];struct {bool completed;} off[2];
 };
@@ -27,15 +27,15 @@ struct mt6797_a72_preflight {
 #define dev_info(...) ((void)0)
 #define dev_dbg(dev,...) ((void)(dev),(void)snprintf(NULL,0,__VA_ARGS__))
 static unsigned running, online, midr, commits, identity_checks, boot8_checks, boot9_checks;
-static int commit_error,mt6797_a72_owner_lock,dcm_error,dcm_calls;
+static int commit_error,mt6797_a72_owner_lock,dcm_error,dcm_calls,lock_depth;
 static int mt6797_cpuclk_set_mp2_sync_dcm(void *dev,void *clk,bool on)
 {(void)dev;(void)clk;assert(on);dcm_calls++;return dcm_error;}
 static bool cpumask_test_cpu(unsigned c,const unsigned *mask){return !!(*mask & (1u<<c));}
 static unsigned raw_smp_processor_id(void){return running;}
 static bool cpu_online(unsigned c){return !!(online & (1u<<c));}
 static unsigned read_cpuid_id(void){return midr;}
-static void mutex_lock(int *p){assert(p==&mt6797_a72_owner_lock);}
-static void mutex_unlock(int *p){assert(p==&mt6797_a72_owner_lock);}
+static void mutex_lock(int *p){assert(p==&mt6797_a72_owner_lock && !lock_depth);lock_depth++;}
+static void mutex_unlock(int *p){assert(p==&mt6797_a72_owner_lock && lock_depth==1);lock_depth--;}
 static int mt6797_a72_validate_cpu8_identity(unsigned value){identity_checks++;return value==0x410fd081?0:-ENODEV;}
 static int mt6797_a72_validate_cpu8_boot(unsigned cpu,bool cpu4,bool active,bool faulted){
  boot8_checks++;assert(cpu==8);return cpu4 && active && !faulted?0:-EPERM;
@@ -54,7 +54,7 @@ static struct mt6797_a72_preflight fresh(unsigned cpu){
  commits=identity_checks=boot8_checks=boot9_checks=0;commit_error=dcm_error=dcm_calls=0;
  return (struct mt6797_a72_preflight){.cpu_mask=(1u<<8)|(1u<<9),.cpu8_armed=true,.transaction={.active=true}};
 }
-static int run(unsigned cpu,struct mt6797_a72_preflight *p){return mt6797_a72_cpu_online_commit(cpu,&p->online_node);}
+static int run(unsigned cpu,struct mt6797_a72_preflight *p){int ret=mt6797_a72_cpu_online_commit(cpu,&p->online_node);assert(!lock_depth);return ret;}
 int main(void){
  struct mt6797_a72_preflight p=fresh(8);
  assert(run(8,&p)==0 && commits==1 && identity_checks==1 && boot8_checks==1);

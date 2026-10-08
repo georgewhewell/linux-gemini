@@ -232,6 +232,7 @@ static void mt6797_bigidvfs_sram_propagates_initial_read_error(struct kunit *tes
 
 struct mt6797_sram_first_fake {
 	struct mt6797_sram_first_state *state;
+	struct mt6797_sram_sample baseline[2];
 	struct mt6797_sram_sample samples[2];
 	unsigned int sets, waits, reads, argument, delay;
 	bool latched_at_set;
@@ -263,11 +264,12 @@ static int mt6797_sram_first_fake_read(void *context,
 	struct mt6797_sram_first_fake *fake = context;
 	unsigned int index = fake->reads++;
 
-	if (fake->sets != 1 || fake->waits != 1 || index > 1)
+	if (index > 3 || (index < 2 ? fake->sets || fake->waits :
+			 fake->sets != 1 || fake->waits != 1))
 		return -EPROTO;
 	if (index == fake->fail_read)
 		return -EIO;
-	*sample = fake->samples[index];
+	*sample = index < 2 ? fake->baseline[index] : fake->samples[index - 2];
 	return 0;
 }
 
@@ -282,6 +284,7 @@ mt6797_sram_first_new_fake(struct mt6797_sram_first_state *state)
 {
 	return (struct mt6797_sram_first_fake) {
 		.state = state,
+		.baseline = { { 0x400ff9, 0 }, { 0x400ff9, 0 } },
 		.samples = { { 0x4008fb, 0x8967 }, { 0x4008fb, 0x8967 } },
 		.fail_read = -1,
 	};
@@ -300,50 +303,91 @@ static void mt6797_sram_first_commits_full_samples(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, fake.sets, 1U);
 	KUNIT_EXPECT_EQ(test, fake.argument, 110000U);
 	KUNIT_EXPECT_EQ(test, fake.delay, 240U);
-	KUNIT_EXPECT_EQ(test, fake.reads, 2U);
+	KUNIT_EXPECT_EQ(test, fake.reads, 4U);
+	KUNIT_EXPECT_EQ(test, state.power_on_sample.control, 0x400ff9U);
+	KUNIT_EXPECT_EQ(test, state.power_on_sample.calibration, 0U);
 	KUNIT_EXPECT_EQ(test, state.samples[1].control, 0x4008fbU);
 	KUNIT_EXPECT_EQ(test, state.samples[1].calibration, 0x8967U);
 	KUNIT_EXPECT_EQ(test, mt6797_sram_first_start(&mt6797_sram_first_fake_io,
 		&fake, &state), -EUCLEAN);
 	KUNIT_EXPECT_EQ(test, fake.sets, 1U);
-	KUNIT_EXPECT_EQ(test, fake.reads, 2U);
+	KUNIT_EXPECT_EQ(test, fake.reads, 4U);
 }
 
 static void mt6797_sram_first_failures_never_retry(struct kunit *test)
 {
 	unsigned int i;
 
-	for (i = 0; i < 10; i++) {
+	for (i = 0; i < 14; i++) {
 		struct mt6797_sram_first_state state = { };
 		struct mt6797_sram_first_fake fake = mt6797_sram_first_new_fake(&state);
 		unsigned int reads;
 		int expected = -EIO;
 
 		switch (i) {
-		case 0: fake.set_error = -EIO; break;
-		case 1: fake.set_error = -EOPNOTSUPP; expected = -EOPNOTSUPP; break;
-		case 2: fake.fail_read = 0; break;
-		case 3: fake.fail_read = 1; break;
-		case 4: fake.samples[1].control ^= BIT(22); expected = -EAGAIN; break;
-		case 5: fake.samples[1].calibration ^= 1; expected = -EAGAIN; break;
-		case 6: fake.samples[0].control = fake.samples[1].control = 0xb; break;
-		case 7: fake.samples[0].calibration = fake.samples[1].calibration = 0; break;
-		case 8: fake.samples[0].calibration = fake.samples[1].calibration = 0x10001; break;
-		case 9: fake.samples[0].control = fake.samples[1].control = 0x8fa; break;
+		case 0:
+			fake.set_error = -EIO;
+			break;
+		case 1:
+			fake.set_error = -EOPNOTSUPP;
+			expected = -EOPNOTSUPP;
+			break;
+		case 2:
+			fake.fail_read = 2;
+			break;
+		case 3:
+			fake.fail_read = 3;
+			break;
+		case 4:
+			fake.samples[1].control ^= BIT(22);
+			expected = -EAGAIN;
+			break;
+		case 5:
+			fake.samples[1].calibration ^= 1;
+			expected = -EAGAIN;
+			break;
+		case 6:
+			fake.samples[0].control = fake.samples[1].control = 0xb;
+			break;
+		case 7:
+			fake.samples[0].calibration = fake.samples[1].calibration = 0;
+			break;
+		case 8:
+			fake.samples[0].calibration = fake.samples[1].calibration = 0x10001;
+			break;
+		case 9:
+			fake.samples[0].control = fake.samples[1].control = 0x8fa;
+			break;
+		case 10:
+			fake.fail_read = 0;
+			break;
+		case 11:
+			fake.fail_read = 1;
+			break;
+		case 12:
+			fake.baseline[1].control ^= 1;
+			expected = -EAGAIN;
+			break;
+		case 13:
+			fake.baseline[1].calibration ^= 1;
+			expected = -EAGAIN;
+			break;
 		}
 		KUNIT_EXPECT_EQ(test, mt6797_sram_first_start(&mt6797_sram_first_fake_io,
 			&fake, &state), -EUCLEAN);
 		KUNIT_EXPECT_EQ(test, state.error, expected);
 		KUNIT_EXPECT_TRUE(test, state.faulted);
 		KUNIT_EXPECT_FALSE(test, state.ready);
-		KUNIT_EXPECT_TRUE(test, fake.latched_at_set);
-		KUNIT_EXPECT_EQ(test, fake.sets, 1U);
-		KUNIT_EXPECT_EQ(test, fake.waits, i < 2 ? 0U : 1U);
+		KUNIT_EXPECT_TRUE(test, state.attempted);
+		KUNIT_EXPECT_EQ(test, fake.latched_at_set, i < 10);
+		KUNIT_EXPECT_EQ(test, fake.sets, i < 10 ? 1U : 0U);
+		KUNIT_EXPECT_EQ(test, fake.waits, i >= 2 && i < 10 ? 1U : 0U);
 		reads = fake.reads;
-		KUNIT_EXPECT_EQ(test, reads, i < 2 ? 0U : i == 2 ? 1U : 2U);
+		KUNIT_EXPECT_EQ(test, reads, i < 2 ? 2U : i == 2 ? 3U :
+			i < 10 ? 4U : i == 10 ? 1U : 2U);
 		KUNIT_EXPECT_EQ(test, mt6797_sram_first_start(&mt6797_sram_first_fake_io,
 			&fake, &state), -EUCLEAN);
-		KUNIT_EXPECT_EQ(test, fake.sets, 1U);
+		KUNIT_EXPECT_EQ(test, fake.sets, i < 10 ? 1U : 0U);
 		KUNIT_EXPECT_EQ(test, fake.reads, reads);
 	}
 }

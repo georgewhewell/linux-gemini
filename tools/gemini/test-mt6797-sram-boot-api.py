@@ -16,11 +16,11 @@ def function(name):
 functions = "\n".join(function(n) for n in [
     "mt6797_bigidvfs_sram_secure_read_word", "mt6797_bigidvfs_sram_secure_set",
     "mt6797_bigidvfs_sram_io_set", "mt6797_sram_start_service", "mt6797_sram_first_start",
-    "mt6797_sram_record_off", "mt6797_sram_restart",
+    "mt6797_sram_record_off", "mt6797_sram_restart", "mt6797_sram_set_running",
     "mt6797_sram_read_sample", "mt6797_sram_settle",
     "mt6797_sram_lock_consumer", "mt6797_sram_unlock_consumer",
     "mt6797_sram_read_boot_sample", "mt6797_sram_record_cpu8_off",
-    "mt6797_sram_prepare_cpu8",
+    "mt6797_sram_prepare_cpu8", "mt6797_sram_set_running_voltage",
     "mt6797_sram_set_voltage_sel",
 ])
 header = re.sub(r'^#include .*\n', '', (root / 'drivers/regulator/mt6797-bigidvfs-sram.h').read_text(), flags=re.MULTILINE)
@@ -45,6 +45,7 @@ typedef uint32_t u32; typedef int32_t s32;
 #define MT6797_BIGIDVFS_FID_READ 0xc200035fUL
 #define MT6797_BIGIDVFS_FID_SRAM_SET 0xc20003bfUL
 #define MT6797_BIGIDVFS_SRAM_SELECTOR 0x102222b0U
+#define MT6797_BIGIDVFS_IDVFS_CONTROL 0x10222470U
 #define MT6797_BIGIDVFS_SRAM_CALIBRATION 0x102222b4U
 struct mutex { bool held; };
 static void mutex_lock(struct mutex *m) { assert(!m->held);m->held=true; }
@@ -93,16 +94,23 @@ static int affinity(unsigned cpu,unsigned level) {assert(cpu>=8 && cpu<=9 && lev
 static struct {int (*affinity_info)(unsigned,unsigned);} psci_ops={affinity};
 static unsigned reads,sets,waits,ordinary_sets;
 static int fail_read_at,set_error;
-static u32 words[8];
+static u32 words[8], idvfs[2];
+static int idvfs_reads, fail_idvfs;
+static unsigned expected_uv;
 struct arm_smccc_res {unsigned long a0;};
 static void arm_smccc_smc(unsigned long fid,unsigned long arg,unsigned long a2,unsigned long a3,unsigned long a4,unsigned long a5,unsigned long a6,unsigned long a7,struct arm_smccc_res *res)
 {
  assert(mt6797_sram_boot_lock.held && sram.lock.held);
  if(fid==MT6797_BIGIDVFS_FID_SRAM_SET) {
-  assert(arg==110000 && sram.first.attempted && mt6797_sram_boot_attempted);
+  assert(arg==expected_uv && sram.first.attempted && mt6797_sram_boot_attempted);
   sets++;res->a0=set_error;return;
  }
- assert(fid==MT6797_BIGIDVFS_FID_READ && reads<8);
+ assert(fid==MT6797_BIGIDVFS_FID_READ);
+ if(arg==MT6797_BIGIDVFS_IDVFS_CONTROL) {
+  assert(idvfs_reads<2); idvfs_reads++;
+  res->a0=idvfs_reads==fail_idvfs ? (1UL<<32) : idvfs[idvfs_reads-1]; return;
+ }
+ assert(reads<8);
  assert(arg==(reads%2?MT6797_BIGIDVFS_SRAM_CALIBRATION:MT6797_BIGIDVFS_SRAM_SELECTOR));
  res->a0=(int)reads==fail_read_at?~0UL:words[reads];reads++;
 }
@@ -123,6 +131,7 @@ static void reset(void)
  consumer=(struct device){.of_node=&nodes[0]};sram.dev=&provider;
  rdev=(struct regulator_dev){.dev={.parent=&provider,.of_node=&nodes[1]},.desc=&mt6797_bigidvfs_sram_desc,.exclusive=1,.open_count=1,.data=&sram};
  supply=(struct regulator){&consumer,&rdev};
+ idvfs[0]=idvfs[1]=0;idvfs_reads=fail_idvfs=0;expected_uv=110000;
  refs=missing=wrong_node=spm_error=reg_error=affinity_error=0;compatible=1;
  mt6797_sram_boot_attempted=0;mt6797_sram_boot_lock.held=false;
  reads=sets=waits=ordinary_sets=0;fail_read_at=-1;set_error=0;
@@ -132,9 +141,58 @@ static void reset(void)
  psci_ops.affinity_info=affinity;
 }
 static void released(void) {assert(!refs && !provider.lock.held && !sram.lock.held && !mt6797_sram_boot_lock.held);}
+static void running(void)
+{
+ struct mt6797_sram_sample sample;
+ reset();assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));
+ online[8]=true;reads=sets=waits=0;affinity_calls=0;
+ expected_uv=120000;
+ words[4]=words[6]=0x4008ff;
+}
 int main(void)
 {
  struct mt6797_sram_sample sample;
+ running();
+ assert(!mt6797_sram_set_running_voltage(&consumer,&supply,1200000,&sample));
+ assert(reads==8 && sets==1 && waits==1 && sample.control==0x4008ff);
+ assert(!affinity_calls && idvfs_reads==2);released();
+ for(int n=0;n<22;n++) {
+  running();sample.control=123;
+  switch(n) {
+  case 0:compatible=0;break;case 1:supply.dev=&provider;break;
+  case 2:rdev.exclusive=0;break;case 3:rdev.open_count=2;break;
+  case 4:missing=1;break;case 5:wrong_node=1;break;
+  case 6:provider.driver=NULL;break;case 7:sram.faulted=true;break;
+  case 8:online[8]=false;break;case 9:online[4]=false;break;
+  case 10:mt6797_sram_boot_attempted=0;break;case 11:sram.first.ready=false;break;
+  case 12:sram.first.faulted=true;break;case 13:sram.first.restart_armed=true;break;
+  case 14:spm_error=1;break;case 15:reg_error=-EIO;break;
+  case 16:idvfs[0]=idvfs[1]=1;break;case 17:idvfs[1]=2;break;
+  case 18:isolation=BIT(1);break;case 19:fail_idvfs=1;break;
+  case 20:fail_idvfs=2;break;case 21:nr_cpu_ids=9;break;
+  }
+  assert(mt6797_sram_set_running_voltage(&consumer,&supply,1200000,&sample)<0);
+  assert(!sets && !reads && !affinity_calls && sample.control==123);released();
+ }
+ for(int n=0;n<10;n++) {
+  running();sample.control=123;
+  if(n<8)fail_read_at=n;else set_error=n==8?-1:1;
+  assert(mt6797_sram_set_running_voltage(&consumer,&supply,1200000,&sample)==
+   (n<4?-EOPNOTSUPP:-EUCLEAN));
+  assert(sram.faulted==(n>=4) && !affinity_calls && sample.control==123);released();
+  if(n>=4) {
+   unsigned before=sets;
+   assert(mt6797_sram_set_running_voltage(&consumer,&supply,1200000,&sample)==-EUCLEAN);
+   assert(sets==before);released();
+  }
+ }
+ running();words[2]^=1;
+ assert(mt6797_sram_set_running_voltage(&consumer,&supply,1200000,&sample)==-EUCLEAN);
+ assert(sram.faulted && !sets);released();
+ running();
+ assert(mt6797_sram_set_running_voltage(&consumer,&supply,1100001,&sample)==-EINVAL);
+ assert(!reads && !sets && !idvfs_reads);released();
+ puts("PASS SRAM live API: exclusive ownership, online CPU, iDVFS/isolation gates, 10 I/O/status failures, no live PSCI query");
  reset();assert(mt6797_sram_read_boot_sample(&consumer,&supply,&sample)==0);assert(reads==4 && sets==0 && sample.control==0x4008fb);released();
  for(int i=0;i<4;i++){reset();fail_read_at=i;sample.control=123;assert(mt6797_sram_read_boot_sample(&consumer,&supply,&sample)==-EOPNOTSUPP);assert(sample.control==123 && sets==0);released();}
  reset();words[2]^=BIT(22);assert(mt6797_sram_read_boot_sample(&consumer,&supply,&sample)==-EAGAIN);released();

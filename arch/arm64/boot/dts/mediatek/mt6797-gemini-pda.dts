@@ -735,7 +735,8 @@
 
 	thermal-zones {
 		soc-thermal {
-			polling-delay = <1000>;
+			/* Full-rate load can reheat faster than a one-second poll. */
+			polling-delay = <100>;
 			polling-delay-passive = <40>;
 			thermal-sensors = <&thermal>;
 

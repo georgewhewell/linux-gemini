@@ -70,6 +70,8 @@ struct mt6797_cpuclk_transition_plan {
 struct mt6797_cpuclk_backend_ops {
 	unsigned long (*mainpll_rate)(void *context);
 	int (*snapshot)(void *context, struct mt6797_cpuclk_snapshot *snapshot);
+	int (*observe)(void *context, enum mt6797_cpuclk_domain domain,
+		       struct mt6797_cpuclk_snapshot *snapshot);
 	int (*transition)(void *context,
 			  const struct mt6797_cpuclk_transition_plan *plan);
 };
@@ -78,6 +80,10 @@ struct mt6797_cpuclk_backend {
 	const struct mt6797_cpuclk_backend_ops *ops;
 	void *context;
 };
+
+bool mt6797_cpuclk_observations_equal(enum mt6797_cpuclk_domain domain,
+		const struct mt6797_cpuclk_snapshot *first,
+		const struct mt6797_cpuclk_snapshot *second);
 
 int mt6797_cpuclk_decode_state(enum mt6797_cpuclk_domain domain,
 			       const struct mt6797_cpuclk_snapshot *snapshot,

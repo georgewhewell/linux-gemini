@@ -224,7 +224,29 @@ static int mt6797_cpuclk_read_stable(struct mt6797_cpuclk_observer *observer,
 	return mt6797_cpuclk_snapshots_equal(snapshot, &second) ? 0 : -EAGAIN;
 }
 
+/* Firmware may change MP2 during CPU_ON without taking this driver's mutex.
+ * An A53/CCI observation must not depend on that unrelated path settling.
+ * Transactions and lifecycle admission continue to require full snapshots.
+ */
+static int mt6797_cpuclk_read_observation(struct mt6797_cpuclk_observer *observer,
+					enum mt6797_cpuclk_domain domain,
+					struct mt6797_cpuclk_snapshot *snapshot)
+{
+	struct mt6797_cpuclk_snapshot second;
+	int ret;
+
+	ret = mt6797_cpuclk_read_once(observer, snapshot);
+	if (ret)
+		return ret;
+	ret = mt6797_cpuclk_read_once(observer, &second);
+	if (ret)
+		return ret;
+	return mt6797_cpuclk_observations_equal(domain, snapshot, &second) ?
+		0 : -EAGAIN;
+}
+
 struct mt6797_cpuclk_snapshot_transaction {
+	enum mt6797_cpuclk_domain domain;
 	struct mt6797_cpuclk_observer *observer;
 	struct mt6797_cpuclk_snapshot *snapshot;
 };
@@ -240,7 +262,11 @@ static int mt6797_cpuclk_snapshot_transaction(void __iomem *cspm, void *context)
 	if (ret)
 		return ret;
 
-	ret = mt6797_cpuclk_read_stable(observer, transaction->snapshot);
+	if (transaction->domain == MT6797_CPUCLK_NR_DOMAINS)
+		ret = mt6797_cpuclk_read_stable(observer, transaction->snapshot);
+	else
+		ret = mt6797_cpuclk_read_observation(observer, transaction->domain,
+						   transaction->snapshot);
 	release_ret = mt6797_cpuclk_lease_release(observer, cspm);
 	if (release_ret) {
 		observer->faulted = true;
@@ -252,9 +278,11 @@ static int mt6797_cpuclk_snapshot_transaction(void __iomem *cspm, void *context)
 
 static int
 mt6797_cpuclk_snapshot_locked(struct mt6797_cpuclk_observer *observer,
-			      struct mt6797_cpuclk_snapshot *snapshot)
+			      struct mt6797_cpuclk_snapshot *snapshot,
+			      enum mt6797_cpuclk_domain domain)
 {
 	struct mt6797_cpuclk_snapshot_transaction transaction = {
+		.domain = domain,
 		.observer = observer,
 		.snapshot = snapshot,
 	};
@@ -268,8 +296,9 @@ mt6797_cpuclk_snapshot_locked(struct mt6797_cpuclk_observer *observer,
 }
 
 static int
-mt6797_cpuclk_observer_snapshot(void *context,
-				struct mt6797_cpuclk_snapshot *snapshot)
+mt6797_cpuclk_observer_sample(void *context,
+			      struct mt6797_cpuclk_snapshot *snapshot,
+			      enum mt6797_cpuclk_domain domain)
 {
 	struct mt6797_cpuclk_observer *observer = context;
 	int ret;
@@ -282,11 +311,28 @@ mt6797_cpuclk_observer_snapshot(void *context,
 		*snapshot = observer->probe_snapshot;
 		ret = 0;
 	} else {
-		ret = mt6797_cpuclk_snapshot_locked(observer, snapshot);
+		ret = mt6797_cpuclk_snapshot_locked(observer, snapshot, domain);
 	}
 	mutex_unlock(&observer->lock);
 
 	return ret;
+}
+
+static int
+mt6797_cpuclk_observer_snapshot(void *context,
+				struct mt6797_cpuclk_snapshot *snapshot)
+{
+	return mt6797_cpuclk_observer_sample(context, snapshot,
+					    MT6797_CPUCLK_NR_DOMAINS);
+}
+
+static int
+mt6797_cpuclk_observer_observe(void *context, enum mt6797_cpuclk_domain domain,
+			       struct mt6797_cpuclk_snapshot *snapshot)
+{
+	if (domain < MT6797_CPUCLK_MP0 || domain >= MT6797_CPUCLK_NR_DOMAINS)
+		return -EINVAL;
+	return mt6797_cpuclk_observer_sample(context, snapshot, domain);
 }
 
 static int
@@ -304,6 +350,7 @@ static unsigned long mt6797_cpuclk_observer_mainpll_rate(void *context)
 static const struct mt6797_cpuclk_backend_ops mt6797_cpuclk_observer_ops = {
 	.mainpll_rate = mt6797_cpuclk_observer_mainpll_rate,
 	.snapshot = mt6797_cpuclk_observer_snapshot,
+	.observe = mt6797_cpuclk_observer_observe,
 	.transition = mt6797_cpuclk_observer_transition,
 };
 
@@ -744,6 +791,16 @@ static int mt6797_cpuclk_snapshot(struct mt6797_cpuclk *provider,
 					       snapshot);
 }
 
+static int mt6797_cpuclk_observe(struct mt6797_cpuclk *provider,
+			       enum mt6797_cpuclk_domain domain,
+			       struct mt6797_cpuclk_snapshot *snapshot)
+{
+	if (!provider->backend.ops || !provider->backend.ops->observe)
+		return -EOPNOTSUPP;
+	return provider->backend.ops->observe(provider->backend.context, domain,
+					      snapshot);
+}
+
 /* Report the existing sample/decode failure without taking another sample. */
 static int mt6797_cpuclk_sample_decode(struct mt6797_cpuclk *provider,
 				      enum mt6797_cpuclk_domain domain,
@@ -754,7 +811,7 @@ static int mt6797_cpuclk_sample_decode(struct mt6797_cpuclk *provider,
 	struct mt6797_cpuclk_snapshot snapshot;
 	int ret;
 
-	ret = mt6797_cpuclk_snapshot(provider, &snapshot);
+	ret = mt6797_cpuclk_observe(provider, domain, &snapshot);
 	if (ret) {
 		dev_info_ratelimited(provider->dev,
 			"CPUCLK_OBSERVE callback=%s domain=%u stage=snapshot status=%d ref_hz=%lu\n",
@@ -1327,7 +1384,8 @@ static int mt6797_cpuclk_backend_init(struct platform_device *pdev,
 	mutex_init(&observer->lock);
 	mutex_lock(&observer->lock);
 	ret = mt6797_cpuclk_snapshot_locked(observer,
-					    &observer->probe_snapshot);
+					    &observer->probe_snapshot,
+					    MT6797_CPUCLK_NR_DOMAINS);
 	mutex_unlock(&observer->lock);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret,

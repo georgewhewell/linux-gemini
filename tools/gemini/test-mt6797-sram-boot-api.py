@@ -15,7 +15,7 @@ def function(name):
     return source[start:end]
 functions = "\n".join(function(n) for n in [
     "mt6797_bigidvfs_sram_secure_read_word", "mt6797_bigidvfs_sram_secure_set",
-    "mt6797_bigidvfs_sram_io_set", "mt6797_sram_first_start",
+    "mt6797_bigidvfs_sram_io_set", "mt6797_sram_start_service", "mt6797_sram_first_start",
     "mt6797_sram_record_off", "mt6797_sram_restart",
     "mt6797_sram_read_sample", "mt6797_sram_settle",
     "mt6797_sram_lock_consumer", "mt6797_sram_unlock_consumer",
@@ -34,6 +34,7 @@ c = r'''
 typedef uint32_t u32; typedef int32_t s32;
 #define U32_MAX UINT32_MAX
 #define BIT(n) (1UL<<(n))
+#define dev_info(dev,fmt,...) ((void)(dev),(void)snprintf(NULL,0,fmt,__VA_ARGS__))
 #define dev_err(dev,fmt,...) ((void)(dev),(void)snprintf(NULL,0,fmt,__VA_ARGS__))
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define IS_ERR(p) ((intptr_t)(p)<0 && (intptr_t)(p)>-4096)
@@ -153,12 +154,23 @@ int main(void)
  reset();reg_error=-EIO;assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EIO);assert(sets==0);released();
  reset();affinity_error=2;assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EBUSY);assert(sets==0);released();
  reset();psci_ops.affinity_info=NULL;assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EOPNOTSUPP);assert(sets==0);released();
- reset();assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==0);assert(sets==1 && reads==4 && waits==1);released();
+ reset();assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==0);assert(sets==1 && reads==8 && waits==1);released();
  assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);assert(sets==1);released();
  assert(mt6797_sram_set_voltage_sel(&rdev,11)==-EUCLEAN);assert(ordinary_sets==0);released();
  /* Simulate replacement driver data: the boot latch must still refuse effects. */
  memset(&sram.first,0,sizeof(sram.first));assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);assert(sets==1);released();
- for(int i=0;i<5;i++){reset();if(i==0)set_error=-1;else fail_read_at=i-1;assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);assert(sram.faulted && sets==1);released();assert(mt6797_sram_set_voltage_sel(&rdev,11)==-EUCLEAN);assert(ordinary_sets==0);released();}
+ for(int i=0;i<9;i++) {
+  reset();if(i==0)set_error=-1;else fail_read_at=i-1;
+  assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);
+  assert(sram.faulted && sets==(unsigned)(i==0 || i>=5));released();
+  assert(mt6797_sram_set_voltage_sel(&rdev,11)==-EUCLEAN);
+  assert(ordinary_sets==0);released();
+ }
+ for(int word=2;word<=3;word++) {
+  reset();words[word]^=1;
+  assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);
+  assert(!sets && sram.first.attempted && sram.first.error==-EAGAIN);released();
+ }
  reset();assert(mt6797_sram_set_voltage_sel(&rdev,11)==0);assert(ordinary_sets==1);released();
  /* Repeated completed shutdowns each authorize exactly one full restart. */
  for(int cold=0;cold<2;cold++) {
@@ -203,6 +215,42 @@ int main(void)
   assert(mt6797_sram_record_cpu8_off(&consumer,&supply)==-EUCLEAN);released();
   assert(sram.faulted && !sram.first.restart_armed && sets==1);
  }
+ /* Actual rail-off zero -> powered 0x00400ff9/0 -> initialized 0x004008fb. */
+ for(int retained=0;retained<2;retained++) {
+  reset();for(int i=0;i<4;i++)words[i]=i%2?0:0x00400ff9;
+  assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));
+  assert(sram.first.power_on_sample.control==0x00400ff9 && !sram.first.power_on_sample.calibration);
+  for(int cycle=0;cycle<3;cycle++) {
+   reads=0;isolation=BIT(1);
+   for(int i=0;i<4;i++)words[i]=retained?(i%2?0x8967:0x4008fb):0;
+   assert(!mt6797_sram_record_cpu8_off(&consumer,&supply));released();
+   reads=0;isolation=0;for(int i=0;i<4;i++)words[i]=i%2?0:0x00400ff9;
+   assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));released();
+   assert(reads==8 && sets==(unsigned)cycle+2);
+   assert(sram.first.power_on_sample.control==0x00400ff9 && !sram.first.power_on_sample.calibration);
+  }
+ }
+ /* Every single-bit change to the captured powered baseline is rejected. */
+ for(int field=0;field<2;field++)for(unsigned bit=0;bit<32;bit++) {
+  reset();for(int i=0;i<4;i++)words[i]=i%2?0:0x00400ff9;
+  assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));
+  reads=0;isolation=BIT(1);for(int i=0;i<4;i++)words[i]=0;
+  assert(!mt6797_sram_record_cpu8_off(&consumer,&supply));
+  reads=0;isolation=0;for(int i=0;i<4;i++)words[i]=i%2?0:0x00400ff9;
+  words[field]^=1U<<bit;
+  assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);released();
+  assert(sets==1 && sram.faulted && !sram.first.restart_armed);
+ }
+ /* Two individually allowed but different samples are not stable evidence. */
+ for(int order=0;order<2;order++) {
+  reset();for(int i=0;i<4;i++)words[i]=i%2?0:0x00400ff9;
+  assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));
+  reads=0;isolation=BIT(1);for(int i=0;i<4;i++)words[i]=0;
+  assert(!mt6797_sram_record_cpu8_off(&consumer,&supply));
+  reads=0;isolation=0;words[order?2:0]=0x00400ff9;
+  assert(mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample)==-EUCLEAN);released();
+  assert(sets==1 && sram.first.error==-EIO && !sram.first.restart_armed);
+ }
  /* Failure or mismatch anywhere during restart permanently consumes permission. */
  for(int n=0;n<17;n++) {
   reset();assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));
@@ -221,6 +269,7 @@ int main(void)
  reset();mt6797_sram_boot_attempted=1;isolation=BIT(1);
  assert(mt6797_sram_record_cpu8_off(&consumer,&supply)==-EUCLEAN);
  assert(!reads && !sets);released();
+ puts("PASS SRAM powered baseline: six reset/retained cycles, 64 corruptions, two unstable observations, nine cold I/O failures and two unstable cold samples");
  puts("PASS SRAM restart: 6 cycles, 13 invalid shutdowns, 10 shutdown I/O failures, 17 restart failures, one-use authorization and permanent latch");
  puts("PASS SRAM provider ownership, full-word reads, CPU/PSCI/isolation gates, reprobe latch, and ordinary-setter exclusion");
 }

@@ -29,6 +29,8 @@ struct mt6797_sram_first_state {
 	bool faulted;
 	bool restart_armed;
 	struct mt6797_sram_sample off_sample;
+	/* Stable powered state observed before the first successful initialization. */
+	struct mt6797_sram_sample power_on_sample;
 	int error;
 	struct mt6797_sram_sample samples[2];
 	/* Failure diagnostics only; reads may be partial when the backend fails. */

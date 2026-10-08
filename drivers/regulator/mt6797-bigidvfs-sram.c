@@ -182,19 +182,15 @@ rollback:
  * not just a voltage selector.  Once called, there is no proven inverse here.
  * Its zero return is not completion evidence; verify both full words twice.
  */
-int mt6797_sram_first_start(const struct mt6797_sram_first_io *io,
-			  void *context, struct mt6797_sram_first_state *state)
+static int mt6797_sram_start_service(const struct mt6797_sram_first_io *io,
+				    void *context, struct mt6797_sram_first_state *state)
 {
 	unsigned int i;
 	int ret;
 
-	if (!io || !io->set_voltage || !io->settle || !io->read_sample || !state)
-		return -EINVAL;
-	if (state->attempted || state->ready || state->faulted)
-		return -EUCLEAN;
-
 	/* Even an unsupported/error return may follow a dispatched effect. */
 	state->attempted = true;
+	state->restart_phase = "first-start";
 	ret = io->set_voltage(context, 110000);
 	if (ret)
 		goto fault;
@@ -221,6 +217,38 @@ int mt6797_sram_first_start(const struct mt6797_sram_first_io *io,
 	state->error = 0;
 	return 0;
 
+fault:
+	memcpy(state->restart_observed, state->samples, sizeof(state->samples));
+	state->error = ret;
+	state->faulted = true;
+	return -EUCLEAN;
+}
+
+int mt6797_sram_first_start(const struct mt6797_sram_first_io *io,
+			  void *context, struct mt6797_sram_first_state *state)
+{
+	unsigned int i;
+	int ret;
+
+	if (!io || !io->set_voltage || !io->settle || !io->read_sample || !state)
+		return -EINVAL;
+	if (state->attempted || state->ready || state->faulted)
+		return -EUCLEAN;
+	state->attempted = true;
+	state->restart_phase = "power-on-baseline";
+	for (i = 0; i < ARRAY_SIZE(state->restart_observed); i++) {
+		ret = io->read_sample(context, &state->restart_observed[i]);
+		if (ret)
+			goto fault;
+	}
+	if (state->restart_observed[0].control != state->restart_observed[1].control ||
+	    state->restart_observed[0].calibration != state->restart_observed[1].calibration) {
+		ret = -EAGAIN;
+		goto fault;
+	}
+	state->power_on_sample = state->restart_observed[1];
+	state->restart_phase = "first-start";
+	return mt6797_sram_start_service(io, context, state);
 fault:
 	state->error = ret;
 	state->faulted = true;
@@ -271,19 +299,32 @@ int mt6797_sram_restart(const struct mt6797_sram_first_io *io, void *context,
 	state->restart_phase = "precheck";
 	memset(state->restart_observed, 0, sizeof(state->restart_observed));
 	for (i = 0; i < 2; i++) {
+		bool off, power_on;
+
 		ret = io->read_sample(context, &sample);
 		if (ret)
 			goto fault;
 		state->restart_observed[i] = sample;
-		if (sample.control != state->off_sample.control ||
-		    sample.calibration != state->off_sample.calibration) {
+		off = sample.control == state->off_sample.control &&
+		      sample.calibration == state->off_sample.calibration;
+		power_on = sample.control == state->power_on_sample.control &&
+			   sample.calibration == state->power_on_sample.calibration;
+		if ((!off && !power_on) ||
+		    (i && (sample.control != state->restart_observed[0].control ||
+			   sample.calibration != state->restart_observed[0].calibration))) {
 			ret = -EIO;
 			goto fault;
 		}
 	}
-	/* Replay the full vendor SRAM service, including calibration and settle. */
+	/*
+	 * Rail-off reads can be zero while re-powering exposes reset defaults.
+	 * Only the baseline preceding this owner's first successful initialization
+	 * or its recorded shutdown state is accepted, with two matching reads.
+	 * Preserve that original baseline across all subsequent service calls.
+	 */
+	next.power_on_sample = state->power_on_sample;
 	state->restart_phase = "first-start";
-	ret = mt6797_sram_first_start(io, context, &next);
+	ret = mt6797_sram_start_service(io, context, &next);
 	if (ret) {
 		memcpy(state->restart_observed, next.samples, sizeof(next.samples));
 		ret = next.error;
@@ -507,8 +548,13 @@ int mt6797_sram_prepare_cpu8(struct device *consumer, struct regulator *supply,
 	/* Persist across provider reprobe; ordinary setters are now excluded. */
 	if (atomic_cmpxchg(&mt6797_sram_boot_attempted, 0, 1))
 		ret = mt6797_sram_restart(&mt6797_sram_boot_io, sram, &sram->first);
-	else
+	else {
 		ret = mt6797_sram_first_start(&mt6797_sram_boot_io, sram, &sram->first);
+		if (!ret)
+			dev_info(sram->dev, "CPU8 SRAM powered baseline: control=%08x calibration=%08x\n",
+				 sram->first.power_on_sample.control,
+				 sram->first.power_on_sample.calibration);
+	}
 	if (ret) {
 		sram->faulted = true;
 		dev_err(sram->dev,

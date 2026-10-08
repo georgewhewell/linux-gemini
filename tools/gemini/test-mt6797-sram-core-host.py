@@ -59,6 +59,7 @@ def function(name):
 body = "struct mt6797_sram_sample { u32 control; u32 calibration; };\n"
 body += strip_includes((root / "drivers/regulator/mt6797-bigidvfs-sram.h").read_text())
 body += function("mt6797_sram_set_transaction")
+body += function("mt6797_sram_start_service")
 body += function("mt6797_sram_first_start")
 body += strip_includes((root / "drivers/regulator/mt6797-bigidvfs-sram-test.c").read_text())
 with tempfile.TemporaryDirectory(prefix="gemini-sram-core-") as tmp:

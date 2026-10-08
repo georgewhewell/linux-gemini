@@ -48,7 +48,7 @@ struct device { void *of_node, *driver; };
 struct platform_device { struct device dev; };
 struct clk_hw { int tag; };
 struct clk { struct clk_hw *hw; };
-struct mt6797_cpuclk_observer { struct clk *i2c_clk; int lock; void *handoff; bool faulted;
+struct mt6797_cpuclk_observer { struct clk *i2c_clk, *mainpll; void *topckgen; bool mainpll_rate_locked; int lock; void *handoff; bool faulted;
  struct mt6797_cpuclk_snapshot mp2_running; bool mp2_restart_valid; };
 struct mt6797_cpuclk {
  struct mt6797_cpuclk_observer observer;
@@ -60,11 +60,12 @@ static struct { int driver; } mt6797_cpuclk_driver;
 static struct mt6797_cpuclk provider;
 static struct platform_device pdev;
 static struct clk_hw ref, wrong;
-static struct clk bus;
+static struct clk bus, mainpll;
+static int pins;
 static struct mt6797_cpuclk_snapshot snap;
 static int fail, locked, node_puts, device_puts, prepared, software, lease;
-static int step, fail_step, corrupt_step, writes, global_fault, effect, high_status;
-static u32 dcm, written[2];
+static int step, fail_step, corrupt_step, writes, global_fault, effect, high_status, corrupted;
+static u32 dcm, written[4];
 static bool boundary(void) { step++; return step == fail_step; }
 static void ccf(void) { assert(locked && !provider.observer.lock && !software && !lease); }
 static int of_property_match_string(void *n,const char *p,const char *v)
@@ -87,6 +88,12 @@ static struct clk_hw *clk_hw_get_parent_by_index(struct clk_hw *h,int i)
 { ccf(); assert(h==&provider.paths[2].hw && i==0); return fail==9?NULL:&ref; }
 static unsigned long clk_hw_get_rate(struct clk_hw *h)
 { ccf(); assert(h==&ref); return fail==10?0:26000000; }
+static int clk_rate_exclusive_get(struct clk *c)
+{ ccf(); assert(c==&mainpll); if(fail==15) return -EBUSY; pins++; return 0; }
+static void clk_rate_exclusive_put(struct clk *c)
+{ ccf(); assert(c==&mainpll && pins); pins--; }
+static unsigned long clk_get_rate(struct clk *c)
+{ ccf(); assert(c==&mainpll && pins); return 1092000000; }
 static int clk_prepare_enable(struct clk *c)
 { ccf(); assert(c==&bus && !prepared); if(fail==11) return -EIO; prepared=1; return 0; }
 static void clk_disable_unprepare(struct clk *c)
@@ -107,16 +114,34 @@ static int mt6797_cpuclk_read_stable(struct mt6797_cpuclk_observer *o,
  struct mt6797_cpuclk_snapshot *s)
 { assert(o==&provider.observer && lease && software && o->lock);
  if(boundary()) return -EIO; *s=snap; return 0; }
+static int mt6797_cpuclk_write_divider(struct mt6797_cpuclk_observer *o,u32 v,u32 mask)
+{ assert(o==&provider.observer && lease && mask==31); bool bad=boundary();
+ if(!bad || effect) snap.clkdiv=v; return bad?-EIO:0; }
+static int mt6797_cpuclk_write_mux(struct mt6797_cpuclk_observer *o,u32 v,u32 mask)
+{ assert(o==&provider.observer && lease && mask==3); bool bad=boundary();
+ if(!bad || effect) snap.muxsel=v; return bad?-EIO:0; }
 static void arm_smccc_smc(unsigned long fid,u32 addr,u32 v,int a,int b,int c,int d,int e,
  struct arm_smccc_res *r)
 { assert(lease && software && provider.observer.lock && prepared);
- assert(addr==MT6797_CPUCLK_MP2_SYNC_DCM && !a && !b && !c && !d && !e);
+ assert(!a && !b && !c && !d && !e);
  bool bad=boundary();
+ if(fid==0xc20003b8UL) {
+  assert(addr>=250 && addr<=3000 && !v && pins);
+  if(!bad || effect) {
+   unsigned pd=addr<=500?2:addr<=1000?1:0;
+   snap.mp2_armpll_con0=(snap.mp2_armpll_con0 & ~0x7000U) | (pd<<12) | 1;
+   snap.mp2_armpll_con1=((uint64_t)addr << (24+pd))/26;
+  }
+  r->a0=bad ? (high_status ? (1UL<<32) : (unsigned long)-EIO) : 0;
+  return;
+ }
+ assert(addr==MT6797_CPUCLK_MP2_SYNC_DCM);
  if(fid==MT6797_CPUCLK_SMC_MCUSYS_WRITE) {
-  assert(writes<2); written[writes++]=v; if(!bad || effect) dcm=v;
+  assert(writes<4); written[writes++]=v; if(!bad || effect) dcm=v;
   r->a0=bad ? (high_status ? (1UL<<32) : (unsigned long)-EIO) : 0;
  } else {
   assert(fid==MT6797_CPUCLK_SMC_REG_READ);
+  if(step==corrupt_step) corrupted=1;
   r->a0=bad ? (1UL<<32) : dcm ^ (step==corrupt_step ? BIT(8) : 0);
  }
 }
@@ -127,11 +152,12 @@ static struct clk clk;
 static void reset(bool running)
 {
  memset(&provider,0,sizeof(provider)); memset(&snap,0,sizeof(snap));
+ provider.observer.mainpll=&mainpll; provider.observer.topckgen=&provider; pins=0;
  provider.observer.i2c_clk=&bus; provider.observer.handoff=&provider;
  consumer.of_node=&consumer; clk.hw=&provider.paths[2].hw;
  pdev.dev.driver=&mt6797_cpuclk_driver.driver;
  locked=node_puts=device_puts=prepared=software=lease=step=writes=global_fault=0;
- fail=fail_step=corrupt_step=effect=high_status=0; dcm=0xabcd008d;
+ fail=fail_step=corrupt_step=effect=high_status=corrupted=0; dcm=0xabcd008d;
  if(running) { snap.mp2_armpll_con0=0x00ff1101; snap.mp2_armpll_con1=0xb9b13b14;
   snap.muxsel=0x55; snap.clkdiv=8; }
 }
@@ -139,6 +165,51 @@ static void clean(void)
 { assert(!locked && !prepared && !software && !lease && !provider.observer.lock); }
 int main(void)
 {
+ /* Actual rate API: endpoint, DCM restoration, lock/pin lifetime and every
+  * hardware error boundary, both before and after a write takes effect. */
+ reset(true);
+ assert(!mt6797_cpuclk_set_mp2_rate(&consumer,&clk,1001000000,1)); clean();
+ int rate_steps=step;
+ assert(writes==4 && dcm==0xabcd008d && !pins && !provider.observer.faulted);
+ assert(!provider.observer.mp2_restart_valid && (snap.clkdiv & 31)==8);
+ for(int n=1;n<=rate_steps;n++) for(int applied=0;applied<2;applied++) {
+  reset(true); fail_step=n; effect=applied; high_status=applied;
+  int r=mt6797_cpuclk_set_mp2_rate(&consumer,&clk,1001000000,1); clean();
+  assert(r<0);
+  bool fault=writes || n==rate_steps;
+  assert(provider.observer.faulted==fault && global_fault==fault);
+  assert(pins==fault && provider.observer.mainpll_rate_locked==fault);
+  assert(!provider.observer.mp2_restart_valid);
+  if(fault) {
+   assert(r==-EUCLEAN); int before=step;
+   assert(mt6797_cpuclk_set_mp2_rate(&consumer,&clk,1001000000,1)==-EUCLEAN);
+   assert(step==before && pins==1); clean();
+  }
+ }
+ for(int n=1;n<=rate_steps;n++) {
+  reset(true); corrupt_step=n;
+  int r=mt6797_cpuclk_set_mp2_rate(&consumer,&clk,1001000000,1); clean();
+  if(corrupted) {
+   assert(r<0 && provider.observer.faulted==!!writes);
+   assert(pins==!!writes);
+  } else assert(!r && !pins);
+ }
+ reset(true); fail=15;
+ assert(mt6797_cpuclk_set_mp2_rate(&consumer,&clk,1001000000,1)==-EBUSY);
+ assert(!pins && !step); clean();
+ reset(true); provider.observer.mp2_restart_valid=true;
+ assert(mt6797_cpuclk_set_mp2_rate(&consumer,&clk,1001000000,1)==-EBUSY);
+ assert(!pins && !writes); clean();
+ reset(true); dcm |= 2;
+ assert(mt6797_cpuclk_set_mp2_rate(&consumer,&clk,1001000000,1)==-EBUSY);
+ assert(!pins && !writes); clean();
+ reset(true);
+ assert(mt6797_cpuclk_set_mp2_rate(&consumer,&clk,1001000001,1)==-EINVAL);
+ assert(!pins && !writes); clean();
+ reset(true);
+ assert(!mt6797_cpuclk_set_mp2_rate(&consumer,&clk,338000000,2)); clean();
+ assert((snap.clkdiv & 31)==10 && !pins && dcm==0xabcd008d);
+ printf("MP2 hardware rate API: %d error boundaries, retained fallback pin, DCM restore passed\n",rate_steps);
  const int results[]={0,-ENOENT,-EINVAL,-EPROBE_DEFER,-EPROBE_DEFER,
   -EPROBE_DEFER,-EINVAL,-EINVAL,-EINVAL,-ENOENT,-ERANGE,-EIO,-EUCLEAN,-EHOSTDOWN};
  reset(false);

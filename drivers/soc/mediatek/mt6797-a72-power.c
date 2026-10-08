@@ -239,7 +239,7 @@ int mt6797_a72_power_set_opp(unsigned int cpu, unsigned long rate,
 	}
 	if (p->boot_vproc_uv < 800000 || p->boot_vproc_uv > 1100000 ||
 	    p->boot_vproc_uv % 10000 ||
-	    !cpu_online(4) || !cpu_online(8) || !cpu_online(cpu) ||
+	    !cpu_online(8) || !cpu_online(cpu) ||
 	    !p->started || !p->committed[0] ||
 	    (cpu_online(9) && !p->committed[1]) ||
 	    p->off_armed[0] || p->off_armed[1] || p->cpu8_armed || p->cpu9_starting ||

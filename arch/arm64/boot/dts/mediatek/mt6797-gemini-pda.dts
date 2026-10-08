@@ -215,6 +215,108 @@
 		};
 	};
 
+	/* MT6797 CPU_LEVEL_1, 0119 TT: nominal vendor voltages, no PTP offsets. */
+	cluster2_opp: opp-table-cluster2 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-338000000 {
+			opp-hz = /bits/ 64 <338000000>;
+			opp-microvolt = <800000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-676000000 {
+			opp-hz = /bits/ 64 <676000000>;
+			opp-microvolt = <850000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-845000000 {
+			opp-hz = /bits/ 64 <845000000>;
+			opp-microvolt = <880000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-1001000000 {
+			opp-hz = /bits/ 64 <1001000000>;
+			opp-microvolt = <900000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-1131000000 {
+			opp-hz = /bits/ 64 <1131000000>;
+			opp-microvolt = <930000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-1378000000 {
+			opp-hz = /bits/ 64 <1378000000>;
+			opp-microvolt = <980000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-1495000000 {
+			opp-hz = /bits/ 64 <1495000000>;
+			opp-microvolt = <1000000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-1677000000 {
+			opp-hz = /bits/ 64 <1677000000>;
+			opp-microvolt = <1040000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-1885000000 {
+			opp-hz = /bits/ 64 <1885000000>;
+			opp-microvolt = <1080000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-2093000000 {
+			opp-hz = /bits/ 64 <2093000000>;
+			opp-microvolt = <1110000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-2158000000 {
+			opp-hz = /bits/ 64 <2158000000>;
+			opp-microvolt = <1130000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-2223000000 {
+			opp-hz = /bits/ 64 <2223000000>;
+			opp-microvolt = <1140000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-2262000000 {
+			opp-hz = /bits/ 64 <2262000000>;
+			opp-microvolt = <1150000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-2327000000 {
+			opp-hz = /bits/ 64 <2327000000>;
+			opp-microvolt = <1160000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-2431000000 {
+			opp-hz = /bits/ 64 <2431000000>;
+			opp-microvolt = <1180000>;
+			clock-latency-ns = <5000000>;
+		};
+
+		opp-2587000000 {
+			opp-hz = /bits/ 64 <2587000000>;
+			opp-microvolt = <1200000>;
+			clock-latency-ns = <5000000>;
+		};
+	};
+
 	/*
 	 * Vendor CPU_LEVEL_1 (SB) tables: mt_cpufreq.c OPP_TBL(LL, SB) and
 	 * OPP_TBL(L, SB), selected on Gemini by the function-code efuse.  Each
@@ -771,14 +873,16 @@
 					 */
 					cooling-device =
 						<&cpu0 3 THERMAL_NO_LIMIT>,
-						<&cpu4 3 THERMAL_NO_LIMIT>;
+						<&cpu4 3 THERMAL_NO_LIMIT>,
+						<&cpu8 3 THERMAL_NO_LIMIT>;
 				};
 
 				map-cpu-limit {
 					trip = <&cpu_limit>;
 					cooling-device =
 						<&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-						<&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+						<&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						<&cpu8 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 				};
 			};
 		};
@@ -1044,11 +1148,17 @@
 
 &cpu8 {
 	clock-frequency = <2288000000>;
+	/* Both rails remain exclusively owned by a72-power. */
+	operating-points-v2 = <&cluster2_opp>;
+	#cooling-cells = <2>;
 	status = "okay";
 };
 
 &cpu9 {
 	clock-frequency = <2288000000>;
+	/* Both rails remain exclusively owned by a72-power. */
+	operating-points-v2 = <&cluster2_opp>;
+	#cooling-cells = <2>;
 	status = "okay";
 };
 

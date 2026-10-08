@@ -38,6 +38,7 @@ struct mt6797_a72_preflight {
  void *dev, *vproc_big, *sram_big, *pwrap_reset, *spm, *mp2_clk;
  struct mutex operation_lock;
  struct mt6797_sram_sample sram_boot;
+ unsigned int boot_vproc_uv; bool dvfs_used;
  bool faulted, started, committed[2], off_armed[2], cpu8_armed, guarded, vproc_vote_owned;
  struct { bool active; } transaction;
 };
@@ -91,6 +92,7 @@ tests = r'''
 static void setup(bool down) {
  memset(&p,0,sizeof(p));mt6797_a72_owner=&p;mt6797_a72_owner_lock.held=false;
  p.dev=&p;p.vproc_big=&vproc;p.sram_big=&sample;p.pwrap_reset=&reset_status;p.spm=&power;p.mp2_clk=&clock_calls;
+ p.boot_vproc_uv=1000000;
  p.started=p.committed[0]=p.vproc_vote_owned=true;
  sample=(struct mt6797_sram_sample){down?0x4008ff:0x4008fb,0x8967};p.sram_boot=sample;
  memset(online,0,sizeof(online));online[4]=online[8]=true;cpus_held=true;
@@ -103,7 +105,7 @@ int main(void) {
  for(int down=0;down<2;down++) {
   setup(down);assert(!change(down));clean();int count=step;
   assert(vproc==(down?800000:1100000) && clock_calls==1 && waits==writes);
-  assert(sample.control==p.sram_boot.control);
+  assert(sample.control==p.sram_boot.control && p.dvfs_used);
   for(int n=1;n<=count;n++) for(int applied=0;applied<2;applied++) {
    setup(down);fail_step=n;effect=applied;int r=change(down);assert(r<0);clean();
    assert(p.faulted==!!(writes || clock_calls));
@@ -111,7 +113,7 @@ int main(void) {
   }
   printf("PASS owner DVFS %s: %d hardware failure boundaries, both write-effect models\n",down?"down":"up",count);
  }
- for(int n=0;n<21;n++) {
+ for(int n=0;n<24;n++) {
   setup(false);
   switch(n) {
   case 0:mt6797_a72_owner=NULL;break;case 1:p.faulted=true;break;
@@ -123,6 +125,8 @@ int main(void) {
   case 13:enabled=0;break;case 14:reset_status=1;break;case 15:idvfs=1;break;
   case 16:isolation=2;break;case 17:power=0;break;case 18:sample.control^=1;break;
   case 19:sample.calibration^=1;break;case 20:sample.control=p.sram_boot.control=0x4008f6;break;
+  case 21:p.boot_vproc_uv=790000;break;case 22:p.boot_vproc_uv=1110000;break;
+  case 23:p.boot_vproc_uv=1000001;break;
   }
   assert(change(false)<0);assert(!writes && !clock_calls);clean();
  }

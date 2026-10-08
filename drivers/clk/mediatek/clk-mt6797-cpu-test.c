@@ -817,7 +817,164 @@ static void mt6797_cpuclk_mp2_transition_admission_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, memcmp(&plan, &sentinel, sizeof(plan)), 0);
 }
 
+struct mt6797_mp2_fake {
+	struct mt6797_cpuclk_snapshot registers;
+	u32 dcm;
+	unsigned int reads, writes, fail_read, fail_write, corrupt_read;
+	unsigned int corrupt_word, corrupt_bit, corrupt_dcm_read;
+	u32 dcm_flip;
+	u8 order[MT6797_MP2_NR_STEPS];
+};
+
+static int mt6797_mp2_fake_snapshot(void *context,
+		struct mt6797_cpuclk_snapshot *snapshot, u32 *dcm)
+{
+	struct mt6797_mp2_fake *fake = context;
+
+	fake->reads++;
+	if (fake->reads == fake->fail_read)
+		return -EIO;
+	*snapshot = fake->registers;
+	*dcm = fake->dcm;
+	if (fake->reads == fake->corrupt_read)
+		((u32 *)snapshot)[fake->corrupt_word] ^= BIT(fake->corrupt_bit);
+	if (fake->reads == fake->corrupt_dcm_read)
+		*dcm ^= fake->dcm_flip;
+	return 0;
+}
+
+static int mt6797_mp2_fake_written(struct mt6797_mp2_fake *fake, u8 action)
+{
+	fake->order[fake->writes++] = action;
+	return fake->writes == fake->fail_write ? -EIO : 0;
+}
+
+static int mt6797_mp2_fake_divider(void *context, u32 value)
+{
+	struct mt6797_mp2_fake *fake = context;
+
+	fake->registers.clkdiv = value;
+	return mt6797_mp2_fake_written(fake, 0);
+}
+
+static int mt6797_mp2_fake_mux(void *context, u32 value)
+{
+	struct mt6797_mp2_fake *fake = context;
+
+	fake->registers.muxsel = value;
+	return mt6797_mp2_fake_written(fake, 1);
+}
+
+static int mt6797_mp2_fake_pll(void *context, u32 mhz)
+{
+	struct mt6797_mp2_fake *fake = context;
+	u32 posdiv = mhz <= 500 ? 2 : mhz <= 1000 ? 1 : 0;
+
+	fake->registers.mp2_armpll_con0 =
+		(fake->registers.mp2_armpll_con0 & ~GENMASK(14, 12)) |
+		(posdiv << 12) | 1;
+	fake->registers.mp2_armpll_con1 = div_u64((u64)mhz << (24 + posdiv), 26);
+	return mt6797_mp2_fake_written(fake, 2);
+}
+
+static const struct mt6797_cpuclk_mp2_io mt6797_mp2_fake_io = {
+	.snapshot = mt6797_mp2_fake_snapshot,
+	.write_divider = mt6797_mp2_fake_divider,
+	.write_mux = mt6797_mp2_fake_mux,
+	.set_pll = mt6797_mp2_fake_pll,
+};
+
+static void mt6797_cpuclk_mp2_executor_test(struct kunit *test)
+{
+	static const u8 order[] = { 0, 1, 2, 1, 0 };
+	struct mt6797_cpuclk_snapshot initial = mt6797_cpuclk_test_snapshot();
+	struct mt6797_cpuclk_mp2_plan plan, bad;
+	struct mt6797_mp2_fake fake;
+	bool faulted;
+	unsigned int i, word, bit, writes;
+	int ret;
+
+	initial.muxsel |= MT6797_CPUCLK_ARMPLL;
+	initial.mp2_armpll_con0 = 0x1001;
+	initial.mp2_armpll_con1 = 0x39b13b13; /* Firmware's 750MHz encoding. */
+	KUNIT_ASSERT_EQ(test, mt6797_cpuclk_plan_mp2_transition(&initial,
+		26000000, 338000000, 2, 1092000000, &plan), 0);
+	fake = (struct mt6797_mp2_fake) { .registers = initial, .dcm = 0xa5a58000 };
+	faulted = false;
+	KUNIT_ASSERT_EQ(test, mt6797_cpuclk_execute_mp2_plan(&plan,
+		&mt6797_mp2_fake_io, &fake, 1092000000, &faulted), 0);
+	KUNIT_EXPECT_FALSE(test, faulted);
+	KUNIT_EXPECT_EQ(test, fake.reads, 6);
+	KUNIT_EXPECT_EQ(test, fake.writes, 5);
+	KUNIT_EXPECT_EQ(test, memcmp(fake.order, order, sizeof(order)), 0);
+	KUNIT_EXPECT_TRUE(test, mt6797_cpuclk_snapshots_equal(&fake.registers,
+		&plan.step[MT6797_MP2_RESTORE_DIVIDER]));
+
+	for (i = 1; i <= 6; i++) {
+		fake = (struct mt6797_mp2_fake) { .registers = initial, .fail_read = i };
+		faulted = false;
+		ret = mt6797_cpuclk_execute_mp2_plan(&plan, &mt6797_mp2_fake_io, &fake, 1092000000, &faulted);
+		KUNIT_EXPECT_EQ(test, ret, i == 1 ? -EIO : -EUCLEAN);
+		KUNIT_EXPECT_EQ(test, faulted, i != 1);
+		KUNIT_EXPECT_EQ(test, fake.writes, i - 1);
+	}
+	for (i = 1; i <= 5; i++) {
+		fake = (struct mt6797_mp2_fake) { .registers = initial, .fail_write = i };
+		faulted = false;
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_execute_mp2_plan(&plan,
+			&mt6797_mp2_fake_io, &fake, 1092000000, &faulted), -EUCLEAN);
+		KUNIT_EXPECT_TRUE(test, faulted);
+		KUNIT_EXPECT_EQ(test, fake.writes, i);
+		KUNIT_EXPECT_EQ(test, fake.reads, i);
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_execute_mp2_plan(&plan,
+			&mt6797_mp2_fake_io, &fake, 1092000000, &faulted), -EUCLEAN);
+		KUNIT_EXPECT_EQ(test, fake.writes, i);
+	}
+	/* Corrupt each bit of every shared or PLL word at every read boundary. */
+	for (i = 1; i <= 6; i++)
+		for (word = 0; word < sizeof(initial) / sizeof(u32); word++)
+			for (bit = 0; bit < 32; bit++) {
+				fake = (struct mt6797_mp2_fake) { .registers = initial,
+					.corrupt_read = i, .corrupt_word = word, .corrupt_bit = bit };
+				faulted = false;
+				KUNIT_EXPECT_EQ(test, mt6797_cpuclk_execute_mp2_plan(&plan,
+					&mt6797_mp2_fake_io, &fake, 1092000000, &faulted), i == 1 ? -EAGAIN : -EUCLEAN);
+				KUNIT_EXPECT_EQ(test, faulted, i != 1);
+				KUNIT_EXPECT_EQ(test, fake.writes, i - 1);
+			}
+	for (i = 2; i <= 6; i++)
+		for (bit = 0; bit < 32; bit++) {
+			fake = (struct mt6797_mp2_fake) { .registers = initial,
+				.corrupt_dcm_read = i, .dcm_flip = BIT(bit) };
+			faulted = false;
+			KUNIT_EXPECT_EQ(test, mt6797_cpuclk_execute_mp2_plan(&plan,
+				&mt6797_mp2_fake_io, &fake, 1092000000, &faulted), -EUCLEAN);
+			KUNIT_EXPECT_TRUE(test, faulted);
+			KUNIT_EXPECT_EQ(test, fake.writes, i - 1);
+		}
+	for (bit = 0; bit < 7; bit++) {
+		fake = (struct mt6797_mp2_fake) { .registers = initial, .dcm = BIT(bit) };
+		faulted = false;
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_execute_mp2_plan(&plan,
+			&mt6797_mp2_fake_io, &fake, 1092000000, &faulted), -EBUSY);
+		KUNIT_EXPECT_EQ(test, fake.writes, 0);
+		KUNIT_EXPECT_FALSE(test, faulted);
+	}
+	for (i = 0; i < sizeof(plan); i++) {
+		bad = plan;
+		((u8 *)&bad)[i] ^= 1;
+		fake = (struct mt6797_mp2_fake) { .registers = initial };
+		faulted = false;
+		ret = mt6797_cpuclk_execute_mp2_plan(&bad, &mt6797_mp2_fake_io, &fake, 1092000000, &faulted);
+		KUNIT_EXPECT_TRUE(test, ret < 0);
+		writes = fake.writes;
+		KUNIT_EXPECT_EQ(test, writes, 0);
+		KUNIT_EXPECT_FALSE(test, faulted);
+	}
+}
+
 static struct kunit_case mt6797_cpuclk_test_cases[] = {
+	KUNIT_CASE(mt6797_cpuclk_mp2_executor_test),
 	KUNIT_CASE(mt6797_cpuclk_mp2_transition_test),
 	KUNIT_CASE(mt6797_cpuclk_mp2_transition_admission_test),
 	KUNIT_CASE(mt6797_cpuclk_mp2_pll_plan_test),

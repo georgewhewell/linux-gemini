@@ -59,6 +59,10 @@ struct mt6797_cpuclk_mp2_plan {
 	struct mt6797_cpuclk_snapshot initial;
 	struct mt6797_cpuclk_snapshot step[MT6797_MP2_NR_STEPS];
 	u32 firmware_mhz;
+	unsigned int target_divisor;
+	unsigned long reference_rate;
+	unsigned long requested_rate;
+	unsigned long mainpll_rate;
 	unsigned long initial_rate;
 	unsigned long rate;
 	unsigned long minimum_rate;
@@ -70,6 +74,24 @@ int mt6797_cpuclk_plan_mp2_transition(
 		unsigned long reference_rate, unsigned long requested_rate,
 		unsigned int target_divisor, unsigned long mainpll_rate,
 		struct mt6797_cpuclk_mp2_plan *plan);
+
+/* Callbacks run with the power owner, observer and CSPM exclusion held. */
+struct mt6797_cpuclk_mp2_io {
+	/* Return a stable full snapshot and stable MP2 DCM word. */
+	int (*snapshot)(void *context, struct mt6797_cpuclk_snapshot *snapshot,
+			u32 *mp2_dcm);
+	int (*write_divider)(void *context, u32 value);
+	int (*write_mux)(void *context, u32 value);
+	int (*set_pll)(void *context, u32 mhz);
+};
+
+/*
+ * Caller pins the independently measured MAINPLL rate throughout execution
+ * and must keep endpoint rails provisioned after a sticky fault.
+ */
+int mt6797_cpuclk_execute_mp2_plan(const struct mt6797_cpuclk_mp2_plan *plan,
+		const struct mt6797_cpuclk_mp2_io *io, void *context,
+		unsigned long mainpll_rate, bool *faulted);
 
 struct mt6797_cpuclk_state {
 	u64 armpll_rate;

@@ -92,6 +92,75 @@ int mt6797_a72_plan_rails(unsigned int cpu, unsigned int sram,
 	return 0;
 }
 
+/* Vendor DA9214/LDO slew formulas, in microvolts, rounded conservatively. */
+static unsigned int mt6797_a72_rail_settle(
+		const struct mt6797_a72_rail_step *before,
+		const struct mt6797_a72_rail_step *after)
+{
+	unsigned int delta, usec;
+
+	if (before->vproc_uv != after->vproc_uv) {
+		delta = before->vproc_uv > after->vproc_uv ?
+			before->vproc_uv - after->vproc_uv : after->vproc_uv - before->vproc_uv;
+		usec = (delta + 9999) / 10000;
+	} else if (after->vsram_uv > before->vsram_uv) {
+		delta = after->vsram_uv - before->vsram_uv;
+		usec = (delta + 12499) / 12500 + 5;
+	} else {
+		delta = before->vsram_uv - after->vsram_uv;
+		usec = (delta * 2 + 6249) / 6250 + 5;
+	}
+	return usec < 25 ? 25 : usec;
+}
+
+int mt6797_a72_execute_rails(const struct mt6797_a72_rail_plan *plan,
+		unsigned int target, const struct mt6797_a72_rail_io *io,
+		void *context, bool *faulted)
+{
+	struct mt6797_a72_rail_plan checked;
+	struct mt6797_a72_rail_step actual, previous;
+	unsigned int i;
+	int ret;
+
+	if (!plan || !io || !io->read || !io->set_vproc || !io->set_vsram ||
+	    !io->settle || !faulted)
+		return -EINVAL;
+	if (*faulted)
+		return -EUCLEAN;
+	ret = mt6797_a72_plan_rails(plan->initial.vproc_uv,
+				  plan->initial.vsram_uv, target, &checked);
+	if (ret)
+		return ret;
+	if (memcmp(plan, &checked, sizeof(checked)))
+		return -EINVAL;
+	ret = io->read(context, &actual);
+	if (ret)
+		return ret;
+	if (memcmp(&actual, &plan->initial, sizeof(actual)))
+		return -EAGAIN;
+	previous = actual;
+	for (i = 0; i < plan->count; i++) {
+		const struct mt6797_a72_rail_step *next = &plan->steps[i];
+
+		if (next->vproc_uv != previous.vproc_uv)
+			ret = io->set_vproc(context, next->vproc_uv);
+		else
+			ret = io->set_vsram(context, next->vsram_uv);
+		if (ret)
+			goto fault;
+		io->settle(context, mt6797_a72_rail_settle(&previous, next));
+		ret = io->read(context, &actual);
+		if (ret || memcmp(&actual, next, sizeof(actual)))
+			goto fault;
+		previous = actual;
+	}
+	return 0;
+fault:
+	/* No rollback or further writes: either rail may have changed. */
+	*faulted = true;
+	return -EUCLEAN;
+}
+
 /*
  * Vendor psci.c cpu_psci_cpu_kill(): on the last MP2 core, stop sync DCM,
  * let AFFINITY_INFO finish firmware power-off, then disable DA9214 BUCK B.

@@ -48,6 +48,18 @@ struct mt6797_a72_rail_plan {
 int mt6797_a72_plan_rails(unsigned int vproc_uv, unsigned int vsram_uv,
 			 unsigned int target_uv, struct mt6797_a72_rail_plan *plan);
 
+struct mt6797_a72_rail_io {
+	int (*read)(void *context, struct mt6797_a72_rail_step *state);
+	int (*set_vproc)(void *context, unsigned int uv);
+	int (*set_vsram)(void *context, unsigned int uv);
+	void (*settle)(void *context, unsigned int usec);
+};
+
+/* Caller owns power/hotplug/clock serialization and orders the clock change. */
+int mt6797_a72_execute_rails(const struct mt6797_a72_rail_plan *plan,
+		unsigned int target_uv, const struct mt6797_a72_rail_io *io,
+		void *context, bool *faulted);
+
 enum mt6797_a72_action {
 	MT6797_A72_TRANSACTION_GUARD_ENTER,
 	MT6797_A72_SPM_UPDATE,

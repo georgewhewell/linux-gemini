@@ -742,7 +742,144 @@ static void mt6797_a72_rail_admission_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mt6797_a72_plan_rails(1000000, 1100000, 1000000, NULL), -EINVAL);
 }
 
+struct mt6797_a72_rail_fake {
+	struct mt6797_a72_rail_step state;
+	unsigned int reads, writes, waits, fail_read, fail_write, corrupt_read;
+	unsigned int corrupt_bit, minimum_delay;
+	bool effect, pending;
+};
+
+static int mt6797_a72_rail_fake_read(void *context, struct mt6797_a72_rail_step *state)
+{
+	struct mt6797_a72_rail_fake *f = context;
+
+	if (f->pending)
+		return -EBUSY;
+	if (++f->reads == f->fail_read)
+		return -EIO;
+	*state = f->state;
+	if (f->reads == f->corrupt_read) {
+		if (f->corrupt_bit < 32)
+			state->vproc_uv ^= BIT(f->corrupt_bit);
+		else
+			state->vsram_uv ^= BIT(f->corrupt_bit - 32);
+	}
+	return 0;
+}
+
+static int mt6797_a72_rail_fake_write(void *context, unsigned int uv, bool sram)
+{
+	struct mt6797_a72_rail_fake *f = context;
+	bool fail = ++f->writes == f->fail_write;
+	unsigned int old = sram ? f->state.vsram_uv : f->state.vproc_uv;
+	unsigned int delta = old > uv ? old - uv : uv - old;
+	unsigned int slew = !sram ? 10000 : uv > old ? 12500 : 3125;
+
+	f->minimum_delay = (delta + slew - 1) / slew + (sram ? 5 : 0);
+	if (f->minimum_delay < 25)
+		f->minimum_delay = 25;
+	if (!fail || f->effect) {
+		if (sram) f->state.vsram_uv = uv;
+		else f->state.vproc_uv = uv;
+	}
+	f->pending = true;
+	return fail ? -EIO : 0;
+}
+
+static int mt6797_a72_rail_fake_cpu(void *context, unsigned int uv)
+{
+	return mt6797_a72_rail_fake_write(context, uv, false);
+}
+
+static int mt6797_a72_rail_fake_sram(void *context, unsigned int uv)
+{
+	return mt6797_a72_rail_fake_write(context, uv, true);
+}
+
+static void mt6797_a72_rail_fake_settle(void *context, unsigned int usec)
+{
+	struct mt6797_a72_rail_fake *f = context;
+
+	if (usec < f->minimum_delay || usec > 69 || !f->pending)
+		return;
+	f->waits++;
+	f->pending = false;
+}
+
+static const struct mt6797_a72_rail_io mt6797_a72_rail_fake_io = {
+	.read = mt6797_a72_rail_fake_read,
+	.set_vproc = mt6797_a72_rail_fake_cpu,
+	.set_vsram = mt6797_a72_rail_fake_sram,
+	.settle = mt6797_a72_rail_fake_settle,
+};
+
+static void mt6797_a72_rail_executor_test(struct kunit *test)
+{
+	unsigned int from, to, n, bit;
+
+	for (from = 800000; from <= 1200000; from += 10000)
+		for (to = 800000; to <= 1200000; to += 10000) {
+			struct mt6797_a72_rail_plan plan, origin;
+			struct mt6797_a72_rail_fake f;
+			bool faulted;
+
+			KUNIT_ASSERT_EQ(test, mt6797_a72_plan_rails(1000000, 1100000, from, &origin), 0);
+			origin.initial = origin.count ? origin.steps[origin.count - 1] : origin.initial;
+			KUNIT_ASSERT_EQ(test, mt6797_a72_plan_rails(from, origin.initial.vsram_uv, to, &plan), 0);
+			f = (struct mt6797_a72_rail_fake) { .state = plan.initial };
+			faulted = false;
+			KUNIT_EXPECT_EQ(test, mt6797_a72_execute_rails(&plan, to,
+				&mt6797_a72_rail_fake_io, &f, &faulted), 0);
+			KUNIT_EXPECT_FALSE(test, faulted);
+			KUNIT_EXPECT_EQ(test, f.writes, plan.count);
+			KUNIT_EXPECT_EQ(test, f.waits, plan.count);
+			for (n = 1; n <= plan.count + 1; n++) {
+				f = (struct mt6797_a72_rail_fake) { .state = plan.initial, .fail_read = n };
+				faulted = false;
+				KUNIT_EXPECT_EQ(test, mt6797_a72_execute_rails(&plan, to,
+					&mt6797_a72_rail_fake_io, &f, &faulted), n == 1 ? -EIO : -EUCLEAN);
+				KUNIT_EXPECT_EQ(test, f.writes, n - 1);
+				KUNIT_EXPECT_EQ(test, faulted, n != 1);
+			}
+			for (n = 1; n <= plan.count; n++) for (bit = 0; bit < 2; bit++) {
+				f = (struct mt6797_a72_rail_fake) { .state = plan.initial,
+					.fail_write = n, .effect = bit };
+				faulted = false;
+				KUNIT_EXPECT_EQ(test, mt6797_a72_execute_rails(&plan, to,
+					&mt6797_a72_rail_fake_io, &f, &faulted), -EUCLEAN);
+				KUNIT_EXPECT_TRUE(test, faulted);
+				KUNIT_EXPECT_EQ(test, f.writes, n);
+				KUNIT_EXPECT_EQ(test, mt6797_a72_execute_rails(&plan, to,
+					&mt6797_a72_rail_fake_io, &f, &faulted), -EUCLEAN);
+				KUNIT_EXPECT_EQ(test, f.writes, n);
+			}
+			for (n = 1; n <= plan.count + 1; n++) for (bit = 0; bit < 64; bit++) {
+				f = (struct mt6797_a72_rail_fake) { .state = plan.initial,
+					.corrupt_read = n, .corrupt_bit = bit };
+				faulted = false;
+				KUNIT_EXPECT_EQ(test, mt6797_a72_execute_rails(&plan, to,
+					&mt6797_a72_rail_fake_io, &f, &faulted), n == 1 ? -EAGAIN : -EUCLEAN);
+				KUNIT_EXPECT_EQ(test, f.writes, n - 1);
+				KUNIT_EXPECT_EQ(test, faulted, n != 1);
+			}
+		}
+	/* Reject changes to the full plan, including unused entries, before I/O. */
+	for (n = 0; n < sizeof(struct mt6797_a72_rail_plan); n++) {
+		struct mt6797_a72_rail_plan plan;
+		struct mt6797_a72_rail_fake f = { };
+		bool faulted = false;
+
+		KUNIT_ASSERT_EQ(test, mt6797_a72_plan_rails(800000, 1000000, 1200000, &plan), 0);
+		((u8 *)&plan)[n] ^= 1;
+		KUNIT_EXPECT_TRUE(test, mt6797_a72_execute_rails(&plan, 1200000,
+			&mt6797_a72_rail_fake_io, &f, &faulted) < 0);
+		KUNIT_EXPECT_EQ(test, f.reads, 0U);
+		KUNIT_EXPECT_EQ(test, f.writes, 0U);
+	}
+}
+
 static struct kunit_case mt6797_a72_power_test_cases[] = {
+	KUNIT_CASE(mt6797_a72_rail_executor_test),
 	KUNIT_CASE(mt6797_a72_rail_matrix_test),
 	KUNIT_CASE(mt6797_a72_rail_admission_test),
 	KUNIT_CASE(mt6797_a72_plan_matches_vendor_boundary_test),

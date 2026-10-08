@@ -164,7 +164,7 @@ int main(void)
   for(int cycle=0;cycle<3;cycle++) {
    reads=0;isolation=BIT(1);
    for(int i=0;i<8;i++) words[i]=cold?0:(i%2?0x8967:0x4008fb);
-   status=status_second=(u32)~(BIT(7)|BIT(6)|BIT(17));
+   status=(u32)~(BIT(7)|BIT(6)|BIT(17));status_second=0x003dc0ff;
    int saved_affinity=affinity_calls;
    assert(!mt6797_sram_record_cpu8_off(&consumer,&supply));released();
    assert(affinity_calls==saved_affinity);
@@ -183,7 +183,7 @@ int main(void)
   reads=0;isolation=BIT(1);
   switch(n) {
   case 0:online[8]=true;break;case 1:online[9]=true;break;
-  case 2:status=BIT(7);break;case 3:status_second=BIT(6);break;
+  case 2:status=BIT(7);break;case 3:status=BIT(6);break;
   case 4:status=BIT(17);break;case 5:power|=BIT(0);break;
   case 6:power=0;break;case 7:isolation=0;break;
   case 8:words[2]^=1;break;case 9:words[3]^=1;break;
@@ -194,10 +194,10 @@ int main(void)
   assert(!sram.first.restart_armed && sets==1);
   if(n>=2) assert(sram.faulted && sram.first.faulted);
  }
- for(int n=1;n<=12;n++) {
+ for(int n=1;n<=10;n++) {
   reset();assert(!mt6797_sram_prepare_cpu8(&consumer,&supply,8,&sample));
   reads=0;reg_reads=0;isolation=BIT(1);
-  if(n<=8) fail_reg_at=n; else fail_read_at=n-9;
+  if(n<=6) fail_reg_at=n; else fail_read_at=n-7;
   assert(mt6797_sram_record_cpu8_off(&consumer,&supply)==-EUCLEAN);released();
   assert(sram.faulted && !sram.first.restart_armed && sets==1);
  }
@@ -219,7 +219,7 @@ int main(void)
  reset();mt6797_sram_boot_attempted=1;isolation=BIT(1);
  assert(mt6797_sram_record_cpu8_off(&consumer,&supply)==-EUCLEAN);
  assert(!reads && !sets);released();
- puts("PASS SRAM restart: 6 cycles, 13 invalid shutdowns, 12 shutdown I/O failures, 17 restart failures, one-use authorization and permanent latch");
+ puts("PASS SRAM restart: 6 cycles, 13 invalid shutdowns, 10 shutdown I/O failures, 17 restart failures, one-use authorization and permanent latch");
  puts("PASS SRAM provider ownership, full-word reads, CPU/PSCI/isolation gates, reprobe latch, and ordinary-setter exclusion");
 }
 '''

@@ -60,6 +60,7 @@ mt6797_a72_test_off_record(const struct mt6797_a72_state *state)
 	return (struct mt6797_a72_off_state) {
 		.completed = true,
 		.cluster_off = true,
+		.final.power_status_second = 0x003dc0ff,
 		.final.mp2_pwr_con = state->mp2_pwr_con,
 		.final.ext_buck_iso = state->ext_buck_iso,
 	};
@@ -585,7 +586,7 @@ static void mt6797_a72_restart_admission_test(struct kunit *test)
 			off.final.power_status = BIT(7);
 			break;
 		case 6:
-			off.final.power_status_second = BIT(17);
+			off.final.power_status = BIT(17);
 			break;
 		case 7:
 			off.final.idvfs_control = 1;

@@ -38,9 +38,9 @@ static int sample(void *context,struct mt6797_a72_off_sample *out)
  if(f->calls==f->corrupt) switch(f->field) {
  case 0:out->online_mask|=f->cpu==8?1:2;break;
  case 1:out->power_status^=BIT(7);break;
- case 2:out->power_status_second^=BIT(6);break;
+ case 2:out->power_status^=BIT(6);break;
  case 3:out->power_status|=BIT(17);break;
- case 4:out->power_status_second|=BIT(17);break;
+ case 4:out->power_status^=BIT(17);break;
  case 5:out->ext_buck_iso^=BIT(1);break;
  case 6:out->mp2_pwr_con^=BIT(0);break;
  case 7:out->mp2_pwr_con^=BIT(4);break;
@@ -59,7 +59,7 @@ static int kill(void *context,unsigned int cpu)
  assert(f->live.vproc_enabled==1 && !f->disables);f->firmware++;
  int ret=event(f,'F');if(ret && !f->effective)return ret;
  u32 mask=cpu==8?BIT(7)|BIT(6)|BIT(17):BIT(6);
- f->live.power_status&=~mask;f->live.power_status_second&=~mask;
+ f->live.power_status&=~mask; /* Secondary word is not an MP2 ack. */
  if(cpu==8){f->live.mp2_pwr_con=BIT(4);f->live.ext_buck_iso|=BIT(1);}
  return ret;
 }
@@ -67,7 +67,6 @@ static int disable(void *context)
 {
  struct fake *f=context;assert(f->cpu==8 && f->firmware==1 && !f->live.online_mask);
  assert(!(f->live.power_status&(BIT(7)|BIT(6)|BIT(17))));
- assert(!(f->live.power_status_second&(BIT(7)|BIT(6)|BIT(17))));
  assert(f->live.ext_buck_iso&BIT(1));assert(!f->disables++);
  int ret=event(f,'V');if(!ret || f->effective)f->live.vproc_enabled=0;return ret;
 }
@@ -78,7 +77,7 @@ static struct fake reset(unsigned int cpu)
  struct fake f={.cpu=cpu};
  f.live=(struct mt6797_a72_off_sample){.online_mask=cpu==9?1:0,
   .power_status=BIT(7)|BIT(17)|(cpu==9?BIT(6):0),
-  .power_status_second=BIT(7)|BIT(17)|(cpu==9?BIT(6):0),
+  .power_status_second=0x003980ff, /* Observed with both A72s running. */
   .mp2_pwr_con=BIT(0)|BIT(2),.vproc_enabled=1};
  return f;
 }
@@ -92,6 +91,17 @@ static void terminal(struct fake *f,struct mt6797_a72_off_state *state)
 int main(void)
 {
  unsigned int faults=0,corruptions=0;
+ /* Exact CPU9 before/after sample from diagnostic boot 11eaa14c. */
+ {
+  struct fake observed=reset(9);struct mt6797_a72_off_state result={0};
+  observed.live.power_status=0x003fc0c8;
+  observed.live.power_status_second=0x003dc0ff;
+  observed.live.mp2_pwr_con=0x00010127;
+  assert(!mt6797_a72_finish_cpu_off(&result,&io,&observed,9));
+  assert(result.final.power_status==0x003fc088);
+  assert(result.final.power_status_second==0x003dc0ff);
+  assert(!observed.disables && result.final.vproc_enabled==1);
+ }
  for(unsigned int cpu=8;cpu<=9;cpu++) {
   struct fake f=reset(cpu);struct mt6797_a72_off_state state={0};
   assert(!mt6797_a72_finish_cpu_off(&state,&io,&f,cpu));
@@ -108,7 +118,7 @@ int main(void)
   for(unsigned int call=(cpu==8?4:3);call<=total;call++) {
    if(cpu==8 && call==6)continue;
    for(unsigned int field=0;field<=10;field++) {
-    if(cpu==9 && (field==3 || field==4))continue;
+    if(cpu==9 && field==3)continue;
     f=reset(cpu);f.corrupt=call;f.field=field;state=(struct mt6797_a72_off_state){0};
     assert(mt6797_a72_finish_cpu_off(&state,&io,&f,cpu)==-EUCLEAN);
     assert(f.calls==call);terminal(&f,&state);
@@ -135,6 +145,20 @@ int main(void)
   f.live.ext_buck_iso|=BIT(0);f.live.idvfs_control|=BIT(12);
   assert(!mt6797_a72_finish_cpu_off(&state,&io,&f,cpu));
   assert(state.final.ext_buck_iso&BIT(0));
+  /* Secondary SPM values cannot authorize or veto MP2 power completion. */
+  const u32 secondary[]={0,0x003980ff,~0U};
+  for(unsigned int n=0;n<ARRAY_SIZE(secondary);n++) {
+   f=reset(cpu);state=(struct mt6797_a72_off_state){0};
+   f.live.power_status_second=secondary[n];
+   assert(!mt6797_a72_finish_cpu_off(&state,&io,&f,cpu));
+   assert(state.final.power_status_second==secondary[n]);
+   /* A matching secondary word must not hide a live target in primary. */
+   f=reset(cpu);state=(struct mt6797_a72_off_state){0};
+   f.live.power_status_second=cpu==9?BIT(7)|BIT(17):0;
+   f.corrupt=cpu==8?4:3;f.field=2;
+   assert(mt6797_a72_finish_cpu_off(&state,&io,&f,cpu)==-EUCLEAN);
+   terminal(&f,&state);assert(!f.disables);
+  }
  }
  struct fake f=reset(8);struct mt6797_a72_off_state state={0};
  for(unsigned int cpu=0;cpu<12;cpu++)if(cpu!=8 && cpu!=9)

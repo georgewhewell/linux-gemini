@@ -11,8 +11,11 @@
  * Vendor psci.c cpu_psci_cpu_kill(): on the last MP2 core, stop sync DCM,
  * let AFFINITY_INFO finish firmware power-off, then disable DA9214 BUCK B.
  * BigiDVFSSRAMLDODisable() in that source is a no-op, not another MMIO step.
- * Both SPM acknowledgment words and external isolation must confirm the
- * last-core shutdown before Linux may remove the external rail. We do not
+ * ATF power_off_big()/power_off_cl3() poll CPU_PWR_STATUS bits 7/6/17.
+ * CPU_PWR_STATUS_2ND does not mirror these MP2 acknowledgments: on Gemini
+ * its core bits remain set after shutdown and its cluster bit is clear even
+ * while MP2 runs. Keep it for diagnostics only. Primary acknowledgments and
+ * external isolation must confirm shutdown before removing the rail. We do not
  * duplicate the firmware's MTCMOS, snoop, SCU, PLL or isolation writes.
  */
 static bool mt6797_a72_off_sample_valid(const struct mt6797_a72_off_sample *s,
@@ -25,7 +28,6 @@ static bool mt6797_a72_off_sample_valid(const struct mt6797_a72_off_sample *s,
 
 	if (s->online_mask != (cpu == 9 ? BIT(0) : 0) ||
 	    (s->power_status & mask) != expected ||
-	    (s->power_status_second & mask) != expected ||
 	    (s->idvfs_control & BIT(0)) ||
 	    s->vproc_enabled != !rail_off)
 		return false;

@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/interconnect/mediatek,mt6797-cci.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 CCI frequency and shared voltage policy
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  The MT6797 CCI shares DA9214 BUCKA with the two Cortex-A53 clusters.
+  CPU SRAM voltage tracking is provided by their regulator coupler.
+  The native CCI clock provider owns PLL and divider transitions, so this
+  consumer must not reparent or directly program the raw CCI PLL. The
+  Cortex-A72 cluster contributes its frequency to the CCI policy but has
+  a separate voltage supply and may have no CPUFreq policy.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-cci
+
+  clocks:
+    items:
+      - description: Native compound CCI clock
+      - description: Cortex-A53 LL cluster clock
+      - description: Cortex-A53 L cluster clock
+      - description: Cortex-A72 cluster clock
+
+  clock-names:
+    items:
+      - const: cci
+      - const: ll
+      - const: l
+      - const: a72
+
+  proc-supply:
+    description: Shared A53 and CCI voltage regulator, coupled to CPU SRAM.
+
+  operating-points-v2: true
+
+  access-controllers:
+    maxItems: 1
+
+required:
+  - compatible
+  - clocks
+  - clock-names
+  - proc-supply
+  - operating-points-v2
+  - access-controllers
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt6797-clk.h>
+    cci {
+        compatible = "mediatek,mt6797-cci";
+        clocks = <&cpuclk CLK_MCU_CCI>, <&cpuclk CLK_MCU_MP0>,
+                 <&cpuclk CLK_MCU_MP1>, <&cpuclk CLK_MCU_MP2>;
+        clock-names = "cci", "ll", "l", "a72";
+        proc-supply = <&da9214_bucka>;
+        operating-points-v2 = <&cci_opp>;
+        access-controllers = <&dvfsp_handoff>;
+    };

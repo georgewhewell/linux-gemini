@@ -131,15 +131,99 @@
 		};
 	};
 
+	cci_opp: opp-table-cci {
+		compatible = "operating-points-v2";
+
+		opp-169000000 {
+			opp-hz = /bits/ 64 <169000000>;
+			opp-microvolt = <770000 770000 1200000>;
+		};
+
+		opp-234000000 {
+			opp-hz = /bits/ 64 <234000000>;
+			opp-microvolt = <800000 800000 1200000>;
+		};
+
+		opp-325000000 {
+			opp-hz = /bits/ 64 <325000000>;
+			opp-microvolt = <850000 850000 1200000>;
+		};
+
+		opp-416000000 {
+			opp-hz = /bits/ 64 <416000000>;
+			opp-microvolt = <900000 900000 1200000>;
+		};
+
+		opp-481000000 {
+			opp-hz = /bits/ 64 <481000000>;
+			opp-microvolt = <940000 940000 1200000>;
+		};
+
+		opp-533000000 {
+			opp-hz = /bits/ 64 <533000000>;
+			opp-microvolt = <970000 970000 1200000>;
+		};
+
+		opp-611000000 {
+			opp-hz = /bits/ 64 <611000000>;
+			opp-microvolt = <1000000 1000000 1200000>;
+		};
+
+		opp-676000000 {
+			opp-hz = /bits/ 64 <676000000>;
+			opp-microvolt = <1040000 1040000 1200000>;
+		};
+
+		opp-754000000 {
+			opp-hz = /bits/ 64 <754000000>;
+			opp-microvolt = <1070000 1070000 1200000>;
+		};
+
+		opp-819000000 {
+			opp-hz = /bits/ 64 <819000000>;
+			opp-microvolt = <1100000 1100000 1200000>;
+		};
+
+		opp-845000000 {
+			opp-hz = /bits/ 64 <845000000>;
+			opp-microvolt = <1130000 1130000 1200000>;
+		};
+
+		opp-884000000 {
+			opp-hz = /bits/ 64 <884000000>;
+			opp-microvolt = <1140000 1140000 1200000>;
+		};
+
+		opp-910000000 {
+			opp-hz = /bits/ 64 <910000000>;
+			opp-microvolt = <1150000 1150000 1200000>;
+		};
+
+		opp-936000000 {
+			opp-hz = /bits/ 64 <936000000>;
+			opp-microvolt = <1170000 1170000 1200000>;
+		};
+
+		opp-975000000 {
+			opp-hz = /bits/ 64 <975000000>;
+			opp-microvolt = <1190000 1190000 1200000>;
+		};
+
+		opp-988000000 {
+			opp-hz = /bits/ 64 <988000000>;
+			opp-microvolt = <1200000 1200000 1200000>;
+		};
+	};
+
 	/*
 	 * Vendor CPU_LEVEL_1 (SB) tables: mt_cpufreq.c OPP_TBL(LL, SB) and
 	 * OPP_TBL(L, SB), selected on Gemini by the function-code efuse.  Each
 	 * voltage is the uncalibrated minimum for its rate on the shared
 	 * vproc-little rail, which may run up to the vendor 1.2 V ceiling.
 	 *
-	 * vproc-little also supplies the CCI, which Linux does not scale, so the
-	 * rail is held at its boot voltage and only rates at or below it are
-	 * usable. The clock provider coordinates ARMPLL and CKDIV changes,
+	 * vproc-little also supplies the CCI. Its voltage consumer now follows
+	 * CPU activity, but the rail remains at its boot voltage pending
+	 * physical voltage-transition qualification. The clock provider coordinates ARMPLL and CKDIV changes,
 	 * using a divided MAINPLL fallback for PLL postdivider changes.
 	 */
 	cluster0_opp: opp-table-cluster0 {
@@ -1320,8 +1404,8 @@
 		regulators {
 			/*
 			 * Vproc of both Cortex-A53 clusters and of the CCI.
-			 * The CCI clock is not scaled, so keep the rail at
-			 * the 1.00 V the boot loader programs for it.
+			 * Keep the rail at the inherited 1.00 V during CCI
+			 * consumer adoption, before qualifying voltage scaling.
 			 */
 			da9214_bucka: BUCKA {
 				regulator-name = "vproc-little";
@@ -2471,5 +2555,11 @@
 };
 
 &vsram_big {
+	status = "okay";
+};
+
+&cci_dvfs {
+	proc-supply = <&da9214_bucka>;
+	operating-points-v2 = <&cci_opp>;
 	status = "okay";
 };

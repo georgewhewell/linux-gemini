@@ -850,6 +850,15 @@
 		status = "disabled";
 	};
 
+	cci_dvfs: cci {
+		compatible = "mediatek,mt6797-cci";
+		clocks = <&cpuclk CLK_MCU_CCI>, <&cpuclk CLK_MCU_MP0>,
+			 <&cpuclk CLK_MCU_MP1>, <&cpuclk CLK_MCU_MP2>;
+		clock-names = "cci", "ll", "l", "a72";
+		access-controllers = <&dvfsp_handoff>;
+		status = "disabled";
+	};
+
 	cpu_sram: regulator-cpu-sram {
 		compatible = "mediatek,mt6797-cpu-sram-regulator";
 		mediatek,infracfg = <&infrasys>;

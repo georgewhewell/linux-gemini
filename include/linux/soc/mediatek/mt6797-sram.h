@@ -24,6 +24,14 @@ int mt6797_sram_read_boot_sample(struct device *consumer, struct regulator *supp
 int mt6797_sram_prepare_cpu8(struct device *consumer, struct regulator *supply,
 			   unsigned int cpu, struct mt6797_sram_sample *sample);
 int mt6797_sram_record_cpu8_off(struct device *consumer, struct regulator *supply);
+/*
+ * Exclusive A72 power owner only, with CPU hotplug lock held. Serialize against
+ * other voltage/clock/power operations and provision VPROC for the requested
+ * SRAM voltage. -EUCLEAN fences this provider; do not lower either rail then.
+ */
+int mt6797_sram_set_running_voltage(struct device *consumer,
+		struct regulator *supply, unsigned int uv,
+		struct mt6797_sram_sample *sample);
 #else
 static inline int mt6797_sram_read_boot_sample(struct device *consumer,
 		struct regulator *supply, struct mt6797_sram_sample *sample)
@@ -38,6 +46,12 @@ static inline int mt6797_sram_prepare_cpu8(struct device *consumer,
 }
 static inline int mt6797_sram_record_cpu8_off(struct device *consumer,
 					   struct regulator *supply)
+{
+	return -EOPNOTSUPP;
+}
+static inline int mt6797_sram_set_running_voltage(struct device *consumer,
+		struct regulator *supply, unsigned int uv,
+		struct mt6797_sram_sample *sample)
 {
 	return -EOPNOTSUPP;
 }

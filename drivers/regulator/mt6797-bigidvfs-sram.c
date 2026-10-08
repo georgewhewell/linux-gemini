@@ -28,6 +28,7 @@
 #define MT6797_BIGIDVFS_FID_READ		0xc200035fUL
 #define MT6797_BIGIDVFS_SRAM_SELECTOR	0x102222b0U
 #define MT6797_BIGIDVFS_SRAM_CALIBRATION	0x102222b4U
+#define MT6797_BIGIDVFS_IDVFS_CONTROL	0x10222470U
 #define MT6797_BIGIDVFS_SRAM_VSEL_MASK	0xf
 
 struct mt6797_bigidvfs_sram {
@@ -57,7 +58,8 @@ static int mt6797_bigidvfs_sram_secure_read_word(u32 address, u32 *value)
 	u32 raw;
 
 	if (!value || (address != MT6797_BIGIDVFS_SRAM_SELECTOR &&
-		       address != MT6797_BIGIDVFS_SRAM_CALIBRATION))
+		       address != MT6797_BIGIDVFS_SRAM_CALIBRATION &&
+		       address != MT6797_BIGIDVFS_IDVFS_CONTROL))
 		return -EINVAL;
 
 	arm_smccc_smc(MT6797_BIGIDVFS_FID_READ,
@@ -97,7 +99,7 @@ static int mt6797_bigidvfs_sram_secure_set(unsigned int firmware_uv_div10)
 	status = result.a0;
 	if (status < 0)
 		return status == SMCCC_RET_NOT_SUPPORTED ? -EOPNOTSUPP : -EIO;
-	if (result.a0 >> 32)
+	if (result.a0)
 		return -EIO;
 
 	return 0;
@@ -564,6 +566,60 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_sram_record_cpu8_off);
+
+int mt6797_sram_set_running_voltage(struct device *consumer,
+		struct regulator *supply, unsigned int uv,
+		struct mt6797_sram_sample *sample)
+{
+	struct mt6797_bigidvfs_sram *sram;
+	struct regmap *spm;
+	u32 idvfs, second, isolation;
+	int ret;
+
+	if (!sample || uv < 1000000 || uv > 1200000 || uv % 25000)
+		return -EINVAL;
+	lockdep_assert_cpus_held();
+	/* CPU8 anchors this cluster's lifetime. Never query a live CPU via PSCI. */
+	if (nr_cpu_ids <= 9 || !cpu_online(4) || !cpu_online(8))
+		return -EBUSY;
+	ret = mt6797_sram_lock_consumer(consumer, supply, &sram);
+	if (ret)
+		return ret;
+	if (!atomic_read(&mt6797_sram_boot_attempted) || !sram->first.ready ||
+	    sram->first.faulted || sram->first.restart_armed) {
+		ret = -EUCLEAN;
+		goto out;
+	}
+	spm = syscon_regmap_lookup_by_phandle(consumer->of_node, "mediatek,spm");
+	if (IS_ERR(spm)) {
+		ret = PTR_ERR(spm);
+		goto out;
+	}
+	ret = mt6797_bigidvfs_sram_secure_read_word(MT6797_BIGIDVFS_IDVFS_CONTROL,
+						 &idvfs);
+	if (ret)
+		goto out;
+	ret = regmap_read(spm, 0x290, &isolation);
+	if (ret)
+		goto out;
+	ret = mt6797_bigidvfs_sram_secure_read_word(MT6797_BIGIDVFS_IDVFS_CONTROL,
+						 &second);
+	if (ret)
+		goto out;
+	if (idvfs != second || (idvfs & BIT(0)) || (isolation & BIT(1))) {
+		ret = -EBUSY;
+		goto out;
+	}
+	ret = mt6797_sram_set_running(&mt6797_sram_boot_io, sram, &sram->first, uv);
+	if (ret == -EUCLEAN)
+		sram->faulted = true;
+	if (!ret)
+		*sample = sram->first.samples[1];
+out:
+	mt6797_sram_unlock_consumer(sram);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_sram_set_running_voltage);
 
 int mt6797_sram_prepare_cpu8(struct device *consumer, struct regulator *supply,
 			   unsigned int cpu, struct mt6797_sram_sample *sample)

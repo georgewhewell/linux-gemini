@@ -82,6 +82,8 @@ struct mt6797_a72_preflight {
 	bool off_armed[MT6797_A72_CPU_COUNT];
 	struct mt6797_a72_off_state off[MT6797_A72_CPU_COUNT];
 	struct mt6797_a72_state stopped;
+	unsigned int boot_vproc_uv;
+	bool dvfs_used;
 	bool vproc_vote_owned;
 	bool vproc_vote_added;
 	bool overlay_nb_registered;
@@ -202,7 +204,9 @@ int mt6797_a72_power_set_opp(unsigned int cpu, unsigned long rate,
 		ret = -EUCLEAN;
 		goto unlock;
 	}
-	if (!cpu_online(4) || !cpu_online(8) || !cpu_online(cpu) ||
+	if (p->boot_vproc_uv < 800000 || p->boot_vproc_uv > 1100000 ||
+	    p->boot_vproc_uv % 10000 ||
+	    !cpu_online(4) || !cpu_online(8) || !cpu_online(cpu) ||
 	    !p->started || !p->committed[0] ||
 	    (cpu_online(9) && !p->committed[1]) ||
 	    p->off_armed[0] || p->off_armed[1] || p->cpu8_armed ||
@@ -213,6 +217,8 @@ int mt6797_a72_power_set_opp(unsigned int cpu, unsigned long rate,
 	ret = mt6797_a72_change_opp(&mt6797_a72_dvfs_ops, p, rate, divisor, uv, &p->faulted);
 	if (ret == -EUCLEAN)
 		WRITE_ONCE(p->faulted, true);
+	if (!ret)
+		p->dvfs_used = true;
 unlock:
 	mutex_unlock(&p->operation_lock);
 out:
@@ -638,7 +644,26 @@ static int mt6797_a72_off_vproc(void *context)
 		p->vproc_vote_owned = false;
 		p->vproc_vote_added = false;
 	}
-	return ret;
+	if (ret || !p->dvfs_used)
+		return ret;
+	/* Firmware has verified cluster-off and isolation before this callback.
+	 * Restore the proven startup VPROC while BUCKB is disabled, so the next
+	 * firmware 750MHz / 1.1V SRAM startup cannot inherit a DVFS voltage.
+	 */
+	ret = regulator_is_enabled(p->vproc_big);
+	if (ret)
+		return ret < 0 ? ret : -EUCLEAN;
+	ret = regulator_set_voltage(p->vproc_big, p->boot_vproc_uv, p->boot_vproc_uv);
+	if (ret)
+		return ret;
+	ret = regulator_get_voltage(p->vproc_big);
+	if (ret != p->boot_vproc_uv)
+		return ret < 0 ? ret : -EUCLEAN;
+	ret = regulator_get_voltage(p->vproc_big);
+	if (ret != p->boot_vproc_uv)
+		return ret < 0 ? ret : -EUCLEAN;
+	p->dvfs_used = false;
+	return 0;
 }
 
 static void mt6797_a72_off_fence(void *context)
@@ -1211,6 +1236,7 @@ static int mt6797_a72_preflight_probe(struct platform_device *pdev)
 	if (transaction_ret)
 		return dev_err_probe(dev, transaction_ret,
 				     "A72 transaction admission failed\n");
+	preflight->boot_vproc_uv = vproc_uv;
 	preflight->plan = plan;
 	preflight->admission_ret = transaction_ret;
 

@@ -83,7 +83,8 @@ static int regulator_disable(struct regulator *r){assert(r==&vp);int e=io();rail
 static int reset_control_status(struct reset_control *r){assert(r==&resetctl);int e=io();return e?:reset_asserted;}
 static int reset_control_assert(struct reset_control *r){assert(r==&resetctl);int e=io();if(!e||effect)reset_asserted=true;return e;}
 static int reset_control_deassert(struct reset_control *r){assert(r==&resetctl);int e=io();if(!e||effect)reset_asserted=false;return e;}
-static void usleep_range(unsigned a,unsigned b){assert(b==a+50);}
+static void usleep_range(unsigned a,unsigned b){assert(b==a+50);assert(!reset_asserted);}
+static void udelay(unsigned us){assert(us==1000 && reset_asserted && owner.guarded);}
 static int mt6797_sram_read_boot_sample(struct device *d,struct regulator *r,struct mt6797_sram_sample *v)
 {assert(d==&dev&&r==&vs);int e=io();if(!e)*v=(struct mt6797_sram_sample){sram_control,sram_cal};return e;}
 static int mt6797_sram_prepare_cpu8(struct device *d,struct regulator *r,unsigned c,struct mt6797_sram_sample *v)

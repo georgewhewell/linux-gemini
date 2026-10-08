@@ -232,7 +232,16 @@ mt6797_a72_apply(void *context, const struct mt6797_a72_step *step)
 		}
 		return ret;
 	case MT6797_A72_DELAY_US:
-		usleep_range(step->value, step->value + 50);
+		/*
+		 * Vendor cpu_power_on_buck() busy-waits 1ms between BUCKB
+		 * enable and isolation release while PWRAP reset is latched.
+		 * Do not voluntarily schedule inside that reset-held interval.
+		 * The validated plan bounds this guarded delay to 1000us.
+		 */
+		if (preflight->guarded)
+			udelay(step->value);
+		else
+			usleep_range(step->value, step->value + 50);
 		return 0;
 	case MT6797_A72_PWRAP_RESET_DEASSERT:
 		return reset_control_deassert(preflight->pwrap_reset);

@@ -1404,13 +1404,13 @@
 		regulators {
 			/*
 			 * Vproc of both Cortex-A53 clusters and of the CCI.
-			 * Keep the rail at the inherited 1.00 V during CCI
-			 * consumer adoption, before qualifying voltage scaling.
+			 * The coupler preserves the inherited voltage until CCI
+			 * owns a verified vote, then coordinates CPU/SRAM changes.
 			 */
 			da9214_bucka: BUCKA {
 				regulator-name = "vproc-little";
-				regulator-min-microvolt = <1000000>;
-				regulator-max-microvolt = <1000000>;
+				regulator-min-microvolt = <770000>;
+				regulator-max-microvolt = <1200000>;
 				regulator-coupled-with = <&cpu_sram>;
 				regulator-coupled-max-spread = <300000>;
 				regulator-always-on;

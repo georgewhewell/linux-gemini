@@ -19,10 +19,13 @@ core='\n'.join(function('drivers/regulator/core.c',sig) for sig in
 fault=function('drivers/soc/mediatek/mt6797-dvfsp-cspm-access.c',
  'int mt6797_dvfsp_cspm_access_set(')
 fault+='\n'+'\n'.join(function('drivers/soc/mediatek/mt6797-dvfsp-handoff.c',sig) for sig in (
+ 'static int mt6797_dvfsp_permission(',
  'static int mt6797_dvfsp_set_permission(',
  'static void __mt6797_dvfsp_fault_locked(',
  'static void mt6797_dvfsp_fault_locked(',
- 'void mt6797_dvfsp_handoff_rail_fault('))
+ 'void mt6797_dvfsp_handoff_rail_fault(',
+ 'int mt6797_dvfsp_handoff_cci_claim(',
+ 'int mt6797_dvfsp_handoff_cci_status('))
 driver=stripped('drivers/soc/mediatek/mt6797-cpu-regulator-coupler.c')
 prelude=r'''
 #include <assert.h>
@@ -36,6 +39,8 @@ prelude=r'''
 #include <string.h>
 typedef uint32_t u32;
 #define current get_current()
+#define smp_store_release(p,v) (*(p)=(v))
+#define smp_load_acquire(p) (*(p))
 typedef int suspend_state_t;
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
@@ -69,7 +74,7 @@ struct regulator_coupler {
 struct mutex { int held; };
 struct mt6797_dvfsp_cspm_access { int held,permission; };
 struct mt6797_dvfsp_handoff { struct mutex lock; struct mt6797_dvfsp_cspm_access cspm_access;
- int state,fault_count,terminal; const char *reason; struct device *dev; };
+ bool cci_claimed; int state,fault_count,terminal; const char *reason; struct device *dev; };
 static struct mt6797_dvfsp_handoff owner;
 static void mutex_lock(struct mutex *m) { assert(!m->held && owner.cspm_access.held);m->held=1; }
 static void mutex_unlock(struct mutex *m) { assert(m->held);m->held=0; }
@@ -80,6 +85,7 @@ static void mt6797_dvfsp_cspm_access_unlock(struct mt6797_dvfsp_cspm_access *a)
 #define MT6797_DVFSP_PERMISSION_FAULTED (-1)
 #define MT6797_DVFSP_PERMISSION_READY 1
 #define MT6797_DVFSP_FAULTED 3
+#define MT6797_DVFSP_READY 2
 #define dev_err(...) ((void)0)
 static void complete_all(int *done) { *done=1; }
 static int mt6797_dvfsp_cspm_access_read(const struct mt6797_dvfsp_cspm_access *a)
@@ -131,7 +137,8 @@ static void reset(unsigned int vp,unsigned int vs,unsigned int target)
  p.consumer_list[0].voltage[0]=(struct regulator_voltage){target,1200000};
  pc.min_uV=770000;pc.max_uV=1200000;pc.change=true;
  sc.min_uV=1000000;sc.max_uV=1200000;sc.change=true;
- owner=(struct mt6797_dvfsp_handoff){.cspm_access.permission=1};
+ owner=(struct mt6797_dvfsp_handoff){.cspm_access.permission=1,
+  .state=MT6797_DVFSP_READY,.cci_claimed=true};
  volts[0]=vp;volts[1]=vs;reads=writes=fail_read=fail_write=ignore_write=0;effective=false;
 }
 static int run(void) { return mt6797_cpu_coupler_balance(&cpu.coupler,&p,0); }
@@ -172,6 +179,45 @@ int main(void)
    }
   }
  }
+ /* Every valid inherited pair retains Vproc until the CCI vote exists. */
+ unsigned int startup_paths=0;
+ for(unsigned int vp=770000;vp<=1200000;vp+=10000)
+ for(unsigned int vs=1000000;vs<=1200000;vs+=25000) {
+  if(vs<vp || vs-vp>300000)continue;
+  for(unsigned int target=770000;target<=1200000;target+=10000) {
+   reset(vp,vs,target);owner.cci_claimed=false;
+   assert(!mt6797_dvfsp_handoff_cci_status(&owner));
+   assert(!run() && volts[0]==max(vp,target));
+   /* A real consumer vote precedes publication; lower CPU votes cannot win. */
+   p.consumer_list[2].voltage[0]=(struct regulator_voltage){volts[0],1200000};
+   assert(!mt6797_dvfsp_handoff_cci_claim(&owner));
+   assert(mt6797_dvfsp_handoff_cci_status(&owner)==1);
+   assert(mt6797_dvfsp_handoff_cci_claim(&owner)==-EBUSY);
+   p.consumer_list[0].voltage[0].min_uV=770000;
+   assert(!run() && volts[0]==max(vp,target));
+   /* After CCI lowers its clock and vote, the rail can follow. */
+   p.consumer_list[2].voltage[0].min_uV=770000;
+   assert(!run() && volts[0]==770000 && volts[1]==1000000);
+   startup_paths++;
+  }
+ }
+ reset(1000000,1100000,770000);owner.cci_claimed=false;
+ p.consumer_list[0].voltage[0].max_uV=900000;
+ assert(run()==-EINVAL && !writes); /* A conflicting max cannot defeat the floor. */
+ for(int permission=-1;permission<=0;permission++) {
+  reset(1000000,1100000,770000);owner.cci_claimed=false;
+  owner.cspm_access.permission=permission;
+  assert(mt6797_dvfsp_handoff_cci_claim(&owner)==-EHOSTDOWN);
+  assert(!owner.cci_claimed && run()==-EHOSTDOWN && !reads && !writes);
+ }
+ reset(1000000,1100000,770000);
+ mt6797_dvfsp_handoff_rail_fault(&owner);
+ assert(run()==-EHOSTDOWN && !reads && !writes && !cpu.faulted);
+ assert(mt6797_dvfsp_handoff_cci_status(&owner)==-EHOSTDOWN);
+ assert(mt6797_dvfsp_handoff_cci_claim(&owner)==-EHOSTDOWN);
+ assert(mt6797_dvfsp_handoff_cci_claim(NULL)==-EINVAL);
+ assert(mt6797_dvfsp_handoff_cci_status(NULL)==-EINVAL);
+ printf("PASS CCI startup ownership: %u inherited/target paths, pending floor, shared vote, duplicate claim and blocked/faulted admission\n",startup_paths);
  /* Three A53/CCI requests merge through the actual regulator core helper. */
  reset(1000000,1100000,770000);
  p.consumer_list[1].voltage[0]=(struct regulator_voltage){900000,1200000};

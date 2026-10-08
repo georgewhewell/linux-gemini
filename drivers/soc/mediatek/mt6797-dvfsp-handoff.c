@@ -137,6 +137,8 @@ struct mt6797_dvfsp_snapshot {
 
 struct mt6797_dvfsp_handoff {
 	struct device *dev;
+	/* Set once, after the native CCI consumer has installed its rail vote. */
+	bool cci_claimed;
 	void __iomem *cspm;
 	struct regmap *infracfg;
 	struct clk *i2c_clk;
@@ -1421,6 +1423,40 @@ void mt6797_dvfsp_handoff_rail_fault(struct mt6797_dvfsp_handoff *handoff)
 	mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
 }
 EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_rail_fault);
+
+int mt6797_dvfsp_handoff_cci_claim(struct mt6797_dvfsp_handoff *handoff)
+{
+	int ret = 0;
+
+	if (!handoff)
+		return -EINVAL;
+	/* Serialize publication with permanent fault fencing and PM admission. */
+	mt6797_dvfsp_cspm_access_lock(&handoff->cspm_access);
+	mutex_lock(&handoff->lock);
+	if (handoff->state != MT6797_DVFSP_READY ||
+	    mt6797_dvfsp_permission(handoff) != MT6797_DVFSP_PERMISSION_READY)
+		ret = -EHOSTDOWN;
+	else if (handoff->cci_claimed)
+		ret = -EBUSY;
+	else
+		/* Publish the installed vote before allowing the coupler to lower. */
+		smp_store_release(&handoff->cci_claimed, true);
+	mutex_unlock(&handoff->lock);
+	mt6797_dvfsp_cspm_access_unlock(&handoff->cspm_access);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_cci_claim);
+
+int mt6797_dvfsp_handoff_cci_status(struct mt6797_dvfsp_handoff *handoff)
+{
+	if (!handoff)
+		return -EINVAL;
+	if (mt6797_dvfsp_permission(handoff) != MT6797_DVFSP_PERMISSION_READY)
+		return -EHOSTDOWN;
+	/* Pair with claim publication before relying on the consumer vote. */
+	return smp_load_acquire(&handoff->cci_claimed);
+}
+EXPORT_SYMBOL_GPL(mt6797_dvfsp_handoff_cci_status);
 
 int mt6797_dvfsp_cspm_acquire(void __iomem *cspm)
 {

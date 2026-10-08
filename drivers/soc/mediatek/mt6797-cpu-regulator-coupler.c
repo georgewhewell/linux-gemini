@@ -65,7 +65,7 @@ static int mt6797_cpu_coupler_balance(struct regulator_coupler *coupler,
 					struct mt6797_cpu_coupler, coupler);
 	struct mt6797_cpu_rail_pair from, next, actual, target;
 	struct regulator_dev *changed;
-	int pmin, pmax, smin, smax, voltage, high, ret;
+	int pmin, pmax, smin, smax, voltage, high, ret, cci_owned;
 	unsigned int step;
 
 	if (state != PM_SUSPEND_ON)
@@ -75,6 +75,9 @@ static int mt6797_cpu_coupler_balance(struct regulator_coupler *coupler,
 		return -ENODEV;
 	if (cpu->faulted)
 		return -EHOSTDOWN;
+	cci_owned = mt6797_dvfsp_handoff_cci_status(cpu->handoff);
+	if (cci_owned < 0)
+		return cci_owned;
 	ret = mt6797_cpu_coupler_read(cpu, &from);
 	if (ret)
 		return ret == -EUCLEAN || ret == -EPROTO ?
@@ -82,6 +85,9 @@ static int mt6797_cpu_coupler_balance(struct regulator_coupler *coupler,
 	ret = mt6797_cpu_coupler_range(cpu->vproc, &pmin, &pmax, from.vproc_uv);
 	if (ret)
 		return ret;
+	/* No boot-order assumption: preserve the inherited rail until CCI votes. */
+	if (!cci_owned)
+		pmin = max(pmin, (int)from.vproc_uv);
 	ret = mt6797_cpu_coupler_range(cpu->vsram, &smin, &smax, 0);
 	if (ret)
 		return ret;

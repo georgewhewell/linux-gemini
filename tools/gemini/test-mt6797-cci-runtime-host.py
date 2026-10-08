@@ -79,7 +79,7 @@ struct regulator { unsigned int vote,enabled; };
 struct device { void *data; int id; };
 struct platform_device { struct device dev; };
 struct dev_pm_opp { unsigned long hz,uv; };
-struct mt6797_dvfsp_handoff { bool faulted; };
+struct mt6797_dvfsp_handoff { bool faulted,claimed; };
 struct work_struct { int unused; };
 struct delayed_work { struct work_struct work; bool pending; void (*fn)(struct work_struct*); };
 #define to_delayed_work(w) container_of(w,struct delayed_work,work)
@@ -105,7 +105,7 @@ static struct device cpudev[10];
 static struct mt6797_dvfsp_handoff owner;
 static struct devfreq df;
 static unsigned long minimum_hz,maximum_hz;
-static unsigned int votes,rate_writes,fences,queues,cancels,opp_refs,clk_refs,peer_uv;
+static unsigned int votes,rate_writes,fences,queues,cancels,opp_refs,clk_refs,peer_uv,supported_uv;
 static int regfail,resourcefail,opp_ready=1,voltage_fail,clock_fail,bad_opp;
 static bool freq_registered,policy_registered,hp_registered,hp_instance;
 static struct { void (*fn)(void*);void *data; } actions[8];
@@ -119,6 +119,10 @@ static struct mt6797_dvfsp_handoff *mt6797_dvfsp_handoff_get(struct device *d)
 { (void)d;return resourcefail==1?ERR_PTR(-EPROBE_DEFER):&owner; }
 static int mt6797_dvfsp_handoff_require_ready(struct mt6797_dvfsp_handoff *o) { return o->faulted?-EHOSTDOWN:0; }
 static void mt6797_dvfsp_handoff_rail_fault(struct mt6797_dvfsp_handoff *o) { o->faulted=true;fences++; }
+static int mt6797_dvfsp_handoff_cci_claim(struct mt6797_dvfsp_handoff *o)
+{ assert(o==&owner && supply.enabled && supply.vote==1000000 && clocks[0].rate==611000000);
+ assert(freq_registered && policy_registered && hp_instance && nactions==2);
+ if(regfail==9)return -EHOSTDOWN;assert(!o->claimed);o->claimed=true;return 0; }
 static struct clk *devm_clk_get(struct device *d,const char *name)
 { (void)d;const char *names[]={"cci","ll","l","a72"};
  if(resourcefail==2)return ERR_PTR(-EPROBE_DEFER);
@@ -138,11 +142,12 @@ static int regulator_get_voltage(struct regulator *r)
 static int regulator_set_voltage(struct regulator *r,int lo,int hi)
 { assert(!owner.faulted && r==&supply && hi==1200000);votes++;if(voltage_fail)return -EIO;r->vote=lo;return 0; }
 static int regulator_is_supported_voltage(struct regulator *r,int lo,int hi)
-{ assert(r==&supply && hi==1200000);return lo<=1000000; }
+{ assert(r==&supply && hi==1200000);return lo<=(int)supported_uv; }
 static int regulator_enable(struct regulator *r) { if(regfail==7)return -EIO;r->enabled++;return 0; }
 static int regulator_disable(struct regulator *r) { assert(r->enabled && owner.faulted);r->enabled--;return 0; }
 static int devm_pm_opp_of_add_table(struct device *d) { (void)d;return resourcefail==4?-EINVAL:0; }
-static int dev_pm_opp_get_opp_count(struct device *d) { (void)d;return bad_opp?15:16; }
+static int dev_pm_opp_get_opp_count(struct device *d)
+{ for(int i=0;i<10;i++)if(d==&cpudev[i])return opp_ready?7:0;return bad_opp?15:16; }
 static struct dev_pm_opp opp;
 static struct dev_pm_opp *dev_pm_opp_find_freq_exact(struct device*,unsigned long,bool);
 static struct dev_pm_opp *dev_pm_opp_find_freq_ceil(struct device*,unsigned long*);
@@ -191,7 +196,7 @@ static struct dev_pm_opp *dev_pm_opp_find_freq_exact(struct device *d,unsigned l
 }
 static struct dev_pm_opp *dev_pm_opp_find_freq_ceil(struct device *d,unsigned long *hz)
 {
- assert(cpu_read);if(!opp_ready)return ERR_PTR(-ERANGE);
+ assert(cpu_read && opp_ready);
  /* CPU boundaries stand in for their OPP framework tables. */
  unsigned long uv;
  if(d->id<4)uv=*hz<=221000000?770000:*hz<=806000000?970000:1000000;
@@ -216,7 +221,7 @@ static void reset(void)
  clocks[0]=(struct clk){629999328,0};clocks[1]=(struct clk){897000000,1};
  clocks[2]=(struct clk){1209000000,2};clocks[3]=(struct clk){750000000,3};
  for(int i=0;i<10;i++)cpudev[i].id=i;
- supply=(struct regulator){1000000,0};owner.faulted=false;peer_uv=1000000;
+ supply=(struct regulator){1000000,0};owner=(struct mt6797_dvfsp_handoff){0};peer_uv=1000000;supported_uv=1000000;
  memset(&df,0,sizeof(df));memset(&pdev,0,sizeof(pdev));online.bits=1023;
  votes=rate_writes=fences=queues=cancels=0;minimum_hz=169000000;maximum_hz=988000000;regfail=resourcefail=voltage_fail=clock_fail=bad_opp=0;opp_ready=1;
  assert(!freq_registered && !policy_registered && !hp_registered && !hp_instance);
@@ -234,7 +239,7 @@ int main(void)
 {
  assert(!mt6797_cci_init());
  reset();assert(!mt6797_cci_probe(&pdev));struct mt6797_cci *c=pdev.dev.data;
- assert(c->state.ready && clocks[0].rate==611000000 && supply.vote==1000000 && supply.enabled==1);
+ assert(owner.claimed && c->state.ready && clocks[0].rate==611000000 && supply.vote==1000000 && supply.enabled==1);
  assert(c->cpus[0].bits==15 && c->cpus[1].bits==240 && c->cpus[2].bits==768);
  assert(freq_registered && policy_registered && hp_instance && c->work.pending);
  work_once(c);assert(clocks[0].rate==611000000);
@@ -253,6 +258,11 @@ int main(void)
  assert(!c->work.pending && !fences && rate_writes==writes);maximum_hz=988000000;
  minimum_hz=676000000;mt6797_cci_queue(c,0);work_once(c);
  assert(!c->work.pending && !fences && rate_writes==writes);minimum_hz=169000000;
+ /* With the board voltage range enabled, a higher valid QoS vote works. */
+ supported_uv=1200000;minimum_hz=676000000;mt6797_cci_queue(c,0);work_once(c);
+ assert(clocks[0].rate==676000000 && supply.vote==1040000 && regulator_get_voltage(&supply)==1040000);
+ minimum_hz=169000000;peer_uv=770000;mt6797_cci_queue(c,0);work_once(c);
+ assert(clocks[0].rate==416000000 && supply.vote==900000 && regulator_get_voltage(&supply)==900000);
  devfreq_suspend_device(&df);assert(c->suspended);assert(!mt6797_cci_suspend(&pdev.dev));
  assert(df.suspend_count==2 && !c->work.pending);
  mt6797_cci_frequency_event(&c->frequency_nb,CPUFREQ_POSTCHANGE,NULL);assert(!c->work.pending);
@@ -262,7 +272,7 @@ int main(void)
  cpu_write=1;mt6797_cci_policy_event(&c->policy_nb,CPUFREQ_REMOVE_POLICY,&policy);cpu_write=0;
  assert(c->stopping && owner.faulted);queues=0;mt6797_cci_queue(c,0);assert(!queues);
  cleanup();
- for(int i=1;i<=8;i++) { reset();regfail=i;assert(mt6797_cci_probe(&pdev)<0);assert(owner.faulted);cleanup(); }
+ for(int i=1;i<=9;i++) { reset();regfail=i;assert(mt6797_cci_probe(&pdev)<0);assert(owner.faulted && !owner.claimed);cleanup(); }
  for(int i=1;i<=4;i++) { reset();resourcefail=i;assert(mt6797_cci_probe(&pdev)<0);assert(!votes && !rate_writes && !fences);cleanup(); }
  reset();bad_opp=1;assert(mt6797_cci_probe(&pdev)==-EINVAL && !votes && !rate_writes);cleanup();
  for(int fault=0;fault<2;fault++) {
@@ -272,7 +282,7 @@ int main(void)
   mt6797_cci_queue(c,0);work_once(c);assert(c->state.faulted && owner.faulted && !c->work.pending);
   queues=0;mt6797_cci_queue(c,0);assert(!queues);cleanup();
  }
- puts("PASS CCI runtime: native clock/vote callbacks, A72 and hotplug, OPP readiness, stale targets, nested PM, policy removal, 8 post-adoption unwind failures and 5 preflight failures");
+ puts("PASS CCI runtime: native clock/vote callbacks, A72 and hotplug, OPP readiness, stale targets, nested PM, policy removal, 9 post-adoption unwind failures, ownership after vote/cleanup and 5 preflight failures");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='mt6797-cci-runtime-') as tmp:

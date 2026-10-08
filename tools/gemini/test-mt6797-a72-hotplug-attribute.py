@@ -30,16 +30,18 @@ hooks = "".join(
         (psci, "static bool mt6797_psci_is_late_a72("),
         (psci, "static bool mt6797_psci_cpu_can_disable("),
         (psci, "static int mt6797_psci_cpu_disable("),
+        (psci, "static void mt6797_psci_cpu_die("),
+        (psci, "static int mt6797_psci_cpu_kill("),
     )
 )
 table = psci[psci.index("const struct cpu_operations mt6797_psci_ops = {"):]
 table = table[: table.index("\n};\n")]
 assert ".cpu_can_disable = mt6797_psci_cpu_can_disable," in table
-# The online attribute is exposed, while the unsupported power-off path has
-# no cpu_die/cpu_kill methods and is rejected before any teardown.
+# The online attribute and native owner-gated shutdown hooks are exposed.
 hotplug = table[table.index("#ifdef CONFIG_HOTPLUG_CPU"):]
 assert ".cpu_disable = mt6797_psci_cpu_disable," in hotplug
-assert ".cpu_die" not in table and ".cpu_kill" not in table
+assert ".cpu_die = mt6797_psci_cpu_die," in table
+assert ".cpu_kill = mt6797_psci_cpu_kill," in table
 
 admission = "".join(
     extract(core, sig)
@@ -54,6 +56,15 @@ c = r'''
 #include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
+static int admitted,psci_disabled,died,killed,firmware_result;
+static int mt6797_a72_power_cpu_disable_admit(unsigned cpu)
+{return cpu<8||cpu>9?-EOPNOTSUPP:admitted?0:-EPERM;}
+static int standard_disable(unsigned cpu){assert(cpu==8||cpu==9);psci_disabled++;return firmware_result;}
+static void standard_die(unsigned cpu){assert(cpu==8||cpu==9);died++;}
+static int standard_kill(unsigned cpu){assert(cpu==8||cpu==9);killed++;return firmware_result;}
+static struct {int (*cpu_disable)(unsigned);void (*cpu_die)(unsigned);int (*cpu_kill)(unsigned);} cpu_psci_ops={standard_disable,standard_die,standard_kill};
+static int mt6797_a72_power_cpu_kill(unsigned cpu,int (*fn)(unsigned))
+{assert(fn==standard_kill);return fn(cpu);}
 ''' + hooks + admission + r'''
 int main(void)
 {
@@ -66,10 +77,16 @@ int main(void)
 	/* The online attribute must exist for both late A72 cores... */
 	assert(mt6797_psci_cpu_can_disable(8));
 	assert(mt6797_psci_cpu_can_disable(9));
-	/* ...while hot-unplug of them stays refused, fail closed. */
+	/* Teardown requires owner admission before reaching standard PSCI. */
 	assert(mt6797_psci_cpu_disable(8) == -EPERM);
 	assert(mt6797_psci_cpu_disable(9) == -EPERM);
 	assert(!mt6797_psci_cpu_can_disable(10));
+	assert(!psci_disabled);admitted=1;
+	assert(!mt6797_psci_cpu_disable(8) && psci_disabled==1);
+	firmware_result=-EPERM;assert(mt6797_psci_cpu_disable(9)==-EPERM);
+	mt6797_psci_cpu_die(8);assert(died==1);
+	firmware_result=-EIO;assert(mt6797_psci_cpu_kill(8)==-EIO && killed==1);
+	firmware_result=0;assert(!mt6797_psci_cpu_kill(9) && killed==2);
 
 	/* CPU8: CPU4 online and an armed transaction, never faulted. */
 	assert(mt6797_a72_validate_cpu8_boot(8, true, true, false) == 0);

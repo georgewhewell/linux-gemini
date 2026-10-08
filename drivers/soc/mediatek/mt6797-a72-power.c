@@ -42,6 +42,7 @@
 #define MT6797_A72_FIRST_MPIDR		0x200
 #define MT6797_A72_BOOT_CPU_LIMIT	8
 #define MT6797_A72_IDVFS_READ_FID	0xc200035fUL
+#define MT6797_A72_IDVFS_CONTROL_REG	0x10222470U
 #define MT6797_A72_IDVFS_FENCE_REG	0x102224a0U
 #define MT6797_A72_SRAM_SELECTOR_REG	0x102222b0U
 #define MT6797_A72_SRAM_BOOT_SELECTOR	11
@@ -76,6 +77,11 @@ struct mt6797_a72_preflight {
 	bool cpu8_available;
 	bool cpu9_available;
 	bool cpu8_armed;
+	bool started;
+	bool committed[MT6797_A72_CPU_COUNT];
+	bool off_armed[MT6797_A72_CPU_COUNT];
+	struct mt6797_a72_off_state off[MT6797_A72_CPU_COUNT];
+	struct mt6797_a72_state stopped;
 	bool vproc_vote_owned;
 	bool vproc_vote_added;
 	bool overlay_nb_registered;
@@ -132,7 +138,8 @@ static int mt6797_a72_secure_read(u32 address, u32 *value)
 	struct arm_smccc_res result;
 
 	if (!value || (address != MT6797_A72_IDVFS_FENCE_REG &&
-		       address != MT6797_A72_SRAM_SELECTOR_REG))
+		       address != MT6797_A72_SRAM_SELECTOR_REG &&
+		       address != MT6797_A72_IDVFS_CONTROL_REG))
 		return -EINVAL;
 
 	arm_smccc_smc(MT6797_A72_IDVFS_READ_FID, address, 0, 0, 0, 0, 0, 0,
@@ -418,6 +425,162 @@ invalid_cpu:
 	return 0;
 }
 
+struct mt6797_a72_off_context {
+	struct mt6797_a72_preflight *preflight;
+	int (*firmware_kill)(unsigned int cpu);
+};
+
+static int mt6797_a72_off_sample(void *context, struct mt6797_a72_off_sample *sample)
+{
+	struct mt6797_a72_off_context *off = context;
+	struct mt6797_a72_preflight *p = off->preflight;
+	int ret;
+
+	sample->online_mask = cpu_online(8) | (cpu_online(9) << 1);
+	ret = regmap_read(p->spm, 0x188, &sample->power_status);
+	if (ret)
+		return ret;
+	ret = regmap_read(p->spm, 0x18c, &sample->power_status_second);
+	if (ret)
+		return ret;
+	ret = regmap_read(p->spm, MT6797_A72_SPM_MP2_PWR_CON, &sample->mp2_pwr_con);
+	if (ret)
+		return ret;
+	ret = regmap_read(p->spm, MT6797_A72_SPM_EXT_BUCK_ISO, &sample->ext_buck_iso);
+	if (ret)
+		return ret;
+	ret = mt6797_a72_secure_read(MT6797_A72_IDVFS_CONTROL_REG, &sample->idvfs_control);
+	if (ret)
+		return ret;
+	sample->vproc_enabled = regulator_is_enabled(p->vproc_big);
+	return sample->vproc_enabled < 0 ? sample->vproc_enabled : 0;
+}
+
+static int mt6797_a72_off_dcm(void *context)
+{
+	struct mt6797_a72_preflight *p = ((struct mt6797_a72_off_context *)context)->preflight;
+
+	return mt6797_cpuclk_set_mp2_sync_dcm(p->dev, p->mp2_clk, false);
+}
+
+static int mt6797_a72_off_firmware(void *context, unsigned int cpu)
+{
+	struct mt6797_a72_off_context *off = context;
+
+	return off->firmware_kill(cpu);
+}
+
+static int mt6797_a72_off_vproc(void *context)
+{
+	struct mt6797_a72_preflight *p = ((struct mt6797_a72_off_context *)context)->preflight;
+	int ret;
+
+	if (!p->vproc_vote_owned)
+		return -EUCLEAN;
+	ret = regulator_disable(p->vproc_big);
+	if (!ret) {
+		p->vproc_vote_owned = false;
+		p->vproc_vote_added = false;
+	}
+	return ret;
+}
+
+static void mt6797_a72_off_fence(void *context)
+{
+	struct mt6797_a72_preflight *p = ((struct mt6797_a72_off_context *)context)->preflight;
+
+	WRITE_ONCE(p->faulted, true);
+}
+
+static const struct mt6797_a72_off_io mt6797_a72_off_ops = {
+	.sample = mt6797_a72_off_sample,
+	.sync_dcm_off = mt6797_a72_off_dcm,
+	.firmware_kill = mt6797_a72_off_firmware,
+	.vproc_disable = mt6797_a72_off_vproc,
+	.fence = mt6797_a72_off_fence,
+};
+
+/* Target CPU, atomic context. Removal holds cpus_write_lock(), so owner lives. */
+int mt6797_a72_power_cpu_disable_admit(unsigned int cpu)
+{
+	struct mt6797_a72_preflight *p = READ_ONCE(mt6797_a72_owner);
+
+	if (cpu != 8 && cpu != 9)
+		return -EOPNOTSUPP;
+	if (!p || !READ_ONCE(p->off_armed[cpu - 8]))
+		return -EPERM;
+	if (READ_ONCE(p->faulted))
+		return -EUCLEAN;
+	if ((cpu == 8 && cpu_online(9)) || (cpu == 9 && !cpu_online(8)))
+		return -EBUSY;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_a72_power_cpu_disable_admit);
+
+/* Controller CPU, after the target reported dead; never a live health query. */
+int mt6797_a72_power_cpu_kill(unsigned int cpu, int (*firmware_kill)(unsigned int))
+{
+	struct mt6797_a72_off_context context = { .firmware_kill = firmware_kill };
+	struct mt6797_a72_preflight *p;
+	unsigned int index;
+	int ret = -EUCLEAN;
+
+	if ((cpu != 8 && cpu != 9) || !firmware_kill)
+		return -EINVAL;
+	lockdep_assert_cpus_held();
+	index = cpu - 8;
+	mutex_lock(&mt6797_a72_owner_lock);
+	p = mt6797_a72_owner;
+	if (!p)
+		goto out;
+	if (p->faulted || !p->off_armed[index] || !p->committed[index] || cpu_online(cpu))
+		goto fault;
+	context.preflight = p;
+	WRITE_ONCE(p->off_armed[index], false);
+	ret = mt6797_a72_finish_cpu_off(&p->off[index], &mt6797_a72_off_ops, &context, cpu);
+	if (ret)
+		goto fault;
+	p->committed[index] = false;
+	if (cpu == 8) {
+		ret = mt6797_sram_record_cpu8_off(p->dev, p->sram_big);
+		if (ret)
+			goto fault;
+		ret = mt6797_a72_snapshot(p, &p->stopped);
+		if (ret)
+			goto fault;
+	}
+	goto out;
+fault:
+	WRITE_ONCE(p->faulted, true);
+	p->off[index].faulted = true;
+	ret = -EUCLEAN;
+out:
+	mutex_unlock(&mt6797_a72_owner_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_a72_power_cpu_kill);
+
+static int mt6797_a72_cpu_off_prepare(unsigned int cpu, struct hlist_node *node)
+{
+	struct mt6797_a72_preflight *p;
+	unsigned int index;
+
+	p = hlist_entry(node, struct mt6797_a72_preflight, online_node);
+	if (!cpumask_test_cpu(cpu, &p->cpu_mask))
+		return 0;
+	index = cpu - 8;
+	if (raw_smp_processor_id() != cpu || !cpu_online(cpu))
+		return -EPERM;
+	if (p->faulted || !p->committed[index] || p->off_armed[index] ||
+	    p->guarded || p->transaction.active || p->cpu8_armed)
+		return -EUCLEAN;
+	if ((cpu == 8 && cpu_online(9)) || (cpu == 9 && !cpu_online(8)))
+		return -EBUSY;
+	memset(&p->off[index], 0, sizeof(p->off[index]));
+	WRITE_ONCE(p->off_armed[index], true);
+	return 0;
+}
+
 static int
 mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 {
@@ -450,15 +613,33 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 		return -EAGAIN;
 
 	/* Recheck immediately before any Linux-owned rail/reset mutation. */
-	ret = mt6797_cpuclk_check_mp2_boot(preflight->dev, preflight->mp2_clk);
+	if (preflight->started) {
+		struct mt6797_a72_off_context context = { .preflight = preflight };
+		struct mt6797_a72_off_sample sample;
+		unsigned int i;
+
+		for (i = 0; i < 2; i++) {
+			ret = mt6797_a72_off_sample(&context, &sample);
+			if (!ret)
+				ret = mt6797_a72_check_cluster_off(&preflight->off[0], &sample);
+			if (ret)
+				return ret;
+		}
+		ret = mt6797_cpuclk_check_mp2_restart(preflight->dev, preflight->mp2_clk);
+	} else {
+		ret = mt6797_cpuclk_check_mp2_boot(preflight->dev, preflight->mp2_clk);
+	}
 	if (ret)
 		return ret;
 
-	ret = mt6797_a72_transaction_begin(&preflight->transaction,
-					   &preflight->plan,
-					   &mt6797_a72_live_ops,
-					   preflight,
-					   MT6797_A72_REQUIRED_CAPS);
+	if (preflight->started)
+		ret = mt6797_a72_transaction_restart(&preflight->transaction,
+				&preflight->plan, &mt6797_a72_live_ops, preflight,
+				MT6797_A72_REQUIRED_CAPS, &preflight->off[0], &preflight->stopped);
+	else
+		ret = mt6797_a72_transaction_begin(&preflight->transaction,
+				&preflight->plan, &mt6797_a72_live_ops, preflight,
+				MT6797_A72_REQUIRED_CAPS);
 	if (ret == -EUCLEAN) {
 		preflight->faulted = true;
 		return ret;
@@ -524,6 +705,13 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 		preflight->faulted = true;
 		return -EPERM;
 	}
+	/* A later teardown veto replays startup: cancel, without touching hardware. */
+	if (preflight->off_armed[cpu - MT6797_A72_FIRST_CPU]) {
+		if (preflight->faulted || !preflight->committed[cpu - MT6797_A72_FIRST_CPU])
+			return -EUCLEAN;
+		WRITE_ONCE(preflight->off_armed[cpu - MT6797_A72_FIRST_CPU], false);
+		return 0;
+	}
 	if (cpu == MT6797_A72_FIRST_CPU + 1) {
 		ret = mt6797_a72_validate_cpu9_boot(cpu,
 				cpu_online(MT6797_A72_FIRST_CPU),
@@ -533,9 +721,11 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 
 		if (ret)
 			preflight->faulted = true;
-		else
+		else {
+			preflight->committed[1] = true;
 			dev_info(preflight->dev,
 				 "CPU9 PSCI CPU_ON committed with CPU8 prerequisite\n");
+		}
 		return ret;
 	}
 	if (cpu != MT6797_A72_FIRST_CPU)
@@ -551,8 +741,15 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 	if (ret)
 		goto disarm;
 
-
+	ret = mt6797_cpuclk_set_mp2_sync_dcm(preflight->dev, preflight->mp2_clk, true);
+	if (ret)
+		goto disarm;
 	ret = mt6797_a72_transaction_commit(&preflight->transaction);
+	if (!ret) {
+		preflight->committed[0] = true;
+		preflight->started = true;
+		preflight->off[0].completed = false;
+	}
 disarm:
 	mutex_lock(&mt6797_a72_owner_lock);
 	preflight->cpu8_armed = false;
@@ -630,7 +827,8 @@ static int mt6797_a72_install_cpu_on_gate(struct device *dev,
 	preflight->online_state =
 		cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN,
 					"soc/mediatek:mt6797-a72-commit",
-					mt6797_a72_cpu_online_commit, NULL);
+					mt6797_a72_cpu_online_commit,
+					mt6797_a72_cpu_off_prepare);
 	if (preflight->online_state < 0) {
 		ret = preflight->online_state;
 		goto remove_prepare_instance;

@@ -9,6 +9,14 @@
 int mt6797_a72_power_cpu_boot_admit(unsigned int cpu);
 int mt6797_a72_power_cpu_disable_admit(unsigned int cpu);
 int mt6797_a72_power_cpu_kill(unsigned int cpu, int (*firmware_kill)(unsigned int));
+/*
+ * Caller holds CPU hotplug serialization; may be called from a CPUHP callback.
+ * Supply a qualified OPP and arrange CCI bandwidth before increasing MP2.
+ * Restore startup-compatible clock/rails before last-core shutdown.
+ * -EUCLEAN permanently fences this owner and retains the current rails.
+ */
+int mt6797_a72_power_set_opp(unsigned int cpu, unsigned long rate,
+			   unsigned int divisor, unsigned int uv);
 #else
 static inline int mt6797_a72_power_cpu_boot_admit(unsigned int cpu)
 {
@@ -24,6 +32,12 @@ static inline int mt6797_a72_power_cpu_kill(unsigned int cpu,
 {
 	return -EOPNOTSUPP;
 }
+static inline int mt6797_a72_power_set_opp(unsigned int cpu, unsigned long rate,
+					 unsigned int divisor, unsigned int uv)
+{
+	return -EOPNOTSUPP;
+}
+
 #endif
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_A72_POWER_H */

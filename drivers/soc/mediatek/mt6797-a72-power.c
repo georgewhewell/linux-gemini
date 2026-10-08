@@ -90,6 +90,137 @@ struct mt6797_a72_preflight {
 static DEFINE_MUTEX(mt6797_a72_owner_lock);
 static struct mt6797_a72_preflight *mt6797_a72_owner;
 
+static int mt6797_a72_secure_read(u32 address, u32 *value);
+
+/* DVFS callers already hold CPU hotplug serialization, including CPUHP paths. */
+static int mt6797_a72_dvfs_read(void *context, struct mt6797_a72_rail_step *state)
+{
+	struct mt6797_a72_preflight *p = context;
+	struct mt6797_sram_sample sample;
+	const u32 mask = MT6797_A72_CORE0_POWER_ACK | MT6797_A72_CORE1_POWER_ACK |
+		MT6797_A72_CLUSTER_POWER_ACK;
+	u32 idvfs, isolation, power, expected;
+	int first, second, ret;
+
+	ret = regulator_is_enabled(p->vproc_big);
+	if (ret != 1)
+		return ret < 0 ? ret : -EBUSY;
+	ret = reset_control_status(p->pwrap_reset);
+	if (ret)
+		return ret < 0 ? ret : -EBUSY;
+	ret = mt6797_a72_secure_read(MT6797_A72_IDVFS_CONTROL_REG, &idvfs);
+	if (ret)
+		return ret;
+	ret = regmap_read(p->spm, MT6797_A72_SPM_EXT_BUCK_ISO, &isolation);
+	if (ret)
+		return ret;
+	ret = regmap_read(p->spm, 0x188, &power);
+	if (ret)
+		return ret;
+	expected = MT6797_A72_CORE0_POWER_ACK | MT6797_A72_CLUSTER_POWER_ACK;
+	if (cpu_online(9))
+		expected |= MT6797_A72_CORE1_POWER_ACK;
+	if ((idvfs & BIT(0)) || (isolation & MT6797_A72_BIG_BUCK_ISO) ||
+	    (power & mask) != expected)
+		return -EBUSY;
+	first = regulator_get_voltage(p->vproc_big);
+	if (first < 0)
+		return first;
+	ret = mt6797_sram_read_boot_sample(p->dev, p->sram_big, &sample);
+	if (ret)
+		return ret;
+	second = regulator_get_voltage(p->vproc_big);
+	if (second < 0)
+		return second;
+	if (first != second)
+		return -EAGAIN;
+	if (sample.control != p->sram_boot.control ||
+	    sample.calibration != p->sram_boot.calibration ||
+	    (sample.control & 0xff0) != 0x8f0 || (sample.control & 0xf) < 7)
+		return -EUCLEAN;
+	state->vproc_uv = first;
+	state->vsram_uv = 900000 + ((sample.control & 0xf) - 3) * 25000;
+	return 0;
+}
+
+static int mt6797_a72_dvfs_vproc(void *context, unsigned int uv)
+{
+	struct mt6797_a72_preflight *p = context;
+
+	return regulator_set_voltage(p->vproc_big, uv, uv);
+}
+
+static int mt6797_a72_dvfs_vsram(void *context, unsigned int uv)
+{
+	struct mt6797_a72_preflight *p = context;
+
+	return mt6797_sram_set_running_voltage(p->dev, p->sram_big, uv, &p->sram_boot);
+}
+
+static void mt6797_a72_dvfs_settle(void *context, unsigned int usec)
+{
+	struct mt6797_a72_preflight *p = context;
+
+	lockdep_assert_held(&p->operation_lock);
+	usleep_range(usec, usec + 50);
+}
+
+static int mt6797_a72_dvfs_clock(void *context, unsigned long rate, unsigned int divisor)
+{
+	struct mt6797_a72_preflight *p = context;
+
+	return mt6797_cpuclk_set_mp2_rate(p->dev, p->mp2_clk, rate, divisor);
+}
+
+static const struct mt6797_a72_dvfs_io mt6797_a72_dvfs_ops = {
+	.rails = {
+		.read = mt6797_a72_dvfs_read,
+		.set_vproc = mt6797_a72_dvfs_vproc,
+		.set_vsram = mt6797_a72_dvfs_vsram,
+		.settle = mt6797_a72_dvfs_settle,
+	},
+	.set_clock = mt6797_a72_dvfs_clock,
+};
+
+int mt6797_a72_power_set_opp(unsigned int cpu, unsigned long rate,
+			   unsigned int divisor, unsigned int uv)
+{
+	struct mt6797_a72_preflight *p;
+	int ret;
+
+	if (cpu != 8 && cpu != 9)
+		return -EINVAL;
+	lockdep_assert_cpus_held();
+	mutex_lock(&mt6797_a72_owner_lock);
+	p = mt6797_a72_owner;
+	if (!p) {
+		ret = -EAGAIN;
+		goto out;
+	}
+	mutex_lock(&p->operation_lock);
+	if (p->faulted) {
+		ret = -EUCLEAN;
+		goto unlock;
+	}
+	if (!cpu_online(4) || !cpu_online(8) || !cpu_online(cpu) ||
+	    !p->started || !p->committed[0] ||
+	    (cpu_online(9) && !p->committed[1]) ||
+	    p->off_armed[0] || p->off_armed[1] || p->cpu8_armed ||
+	    p->guarded || p->transaction.active || !p->vproc_vote_owned) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	ret = mt6797_a72_change_opp(&mt6797_a72_dvfs_ops, p, rate, divisor, uv, &p->faulted);
+	if (ret == -EUCLEAN)
+		WRITE_ONCE(p->faulted, true);
+unlock:
+	mutex_unlock(&p->operation_lock);
+out:
+	mutex_unlock(&mt6797_a72_owner_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_a72_power_set_opp);
+
 static int mt6797_a72_overlay_notify(struct notifier_block *nb,
 				     unsigned long action, void *data)
 {

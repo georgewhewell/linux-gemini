@@ -31,6 +31,23 @@
 #define MT6797_A72_REQUIRED_CAPS		(MT6797_A72_CAP_EXCLUSIVE_GUARD | \
 					 MT6797_A72_CAP_IDVFS_FENCE)
 
+/* A single-rail write, followed by verification of both voltages. */
+struct mt6797_a72_rail_step {
+	unsigned int vproc_uv;
+	unsigned int vsram_uv;
+};
+
+#define MT6797_A72_RAIL_MAX_STEPS 48
+struct mt6797_a72_rail_plan {
+	struct mt6797_a72_rail_step initial;
+	struct mt6797_a72_rail_step steps[MT6797_A72_RAIL_MAX_STEPS];
+	unsigned int count;
+};
+
+/* Clock ordering and per-write settling/readback belong to the executor. */
+int mt6797_a72_plan_rails(unsigned int vproc_uv, unsigned int vsram_uv,
+			 unsigned int target_uv, struct mt6797_a72_rail_plan *plan);
+
 enum mt6797_a72_action {
 	MT6797_A72_TRANSACTION_GUARD_ENTER,
 	MT6797_A72_SPM_UPDATE,

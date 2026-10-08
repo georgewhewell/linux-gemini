@@ -53,7 +53,7 @@ struct kunit_suite { const char *name; struct kunit_case *test_cases; };
 int main(void) { struct kunit t={0}; unsigned n=0; \
 for (struct kunit_case *c=(s).test_cases; c->run; c++) { \
 c->run(&t); printf("PASS %s\n", c->name); n++; } \
-verify_live_release(); assert(n==15); printf("PASS %u cases, %u assertions\n",n,t.assertions); }
+verify_live_release(); assert(n==17); printf("PASS %u cases, %u assertions\n",n,t.assertions); }
 '''
 body = "\n".join(re.sub(r"^#include .*\n", "", (root / f).read_text(),
                          flags=re.MULTILINE) for f in files)

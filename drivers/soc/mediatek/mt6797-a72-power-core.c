@@ -7,6 +7,91 @@
 
 #include "mt6797-a72-power.h"
 
+static bool mt6797_a72_rails_valid(unsigned int cpu, unsigned int sram)
+{
+	return cpu >= 800000 && cpu <= 1200000 && !(cpu % 10000) &&
+		sram >= 1000000 && sram <= 1200000 && !(sram % 25000) &&
+		sram >= cpu && sram - cpu <= 300000;
+}
+
+static int mt6797_a72_append_rails(struct mt6797_a72_rail_plan *plan,
+				 unsigned int cpu, unsigned int sram)
+{
+	if (!mt6797_a72_rails_valid(cpu, sram) ||
+	    plan->count == MT6797_A72_RAIL_MAX_STEPS)
+		return -ERANGE;
+	plan->steps[plan->count++] = (struct mt6797_a72_rail_step) { cpu, sram };
+	return 0;
+}
+
+int mt6797_a72_plan_rails(unsigned int cpu, unsigned int sram,
+			 unsigned int target, struct mt6797_a72_rail_plan *plan)
+{
+	struct mt6797_a72_rail_plan result = { .initial = { cpu, sram } };
+	unsigned int target_sram, next, before;
+	int ret;
+
+	if (!plan || !mt6797_a72_rails_valid(cpu, sram) ||
+	    target < 800000 || target > 1200000 || target % 10000)
+		return -EINVAL;
+	/* Nominal +100mV, rounded up to the LDO grid, clamped at its limits. */
+	target_sram = ((target + 100000 + 24999) / 25000) * 25000;
+	if (target_sram < 1000000)
+		target_sram = 1000000;
+	if (target_sram > 1200000)
+		target_sram = 1200000;
+
+	while (cpu != target || sram != target_sram) {
+		before = result.count;
+		/* Lower CPU first, reserving the vendor's 25mV gap margin. */
+		if (cpu > target) {
+			next = ((sram - 275000 + 9999) / 10000) * 10000;
+			if (next < target)
+				next = target;
+			if (next < cpu) {
+				cpu = next;
+				ret = mt6797_a72_append_rails(&result, cpu, sram);
+				if (ret)
+					return ret;
+			}
+		}
+		if (sram < target_sram) {
+			next = ((cpu + 275000) / 25000) * 25000;
+			if (next > target_sram)
+				next = target_sram;
+			/* An inherited 300mV gap need not be increased. */
+			if (next < sram)
+				next = sram;
+		} else {
+			next = ((cpu + 24999) / 25000) * 25000;
+			if (next < target_sram)
+				next = target_sram;
+		}
+		if (next != sram) {
+			sram = next;
+			ret = mt6797_a72_append_rails(&result, cpu, sram);
+			if (ret)
+				return ret;
+		}
+		/* Raise CPU only after SRAM is high enough. */
+		if (cpu < target) {
+			next = (sram / 10000) * 10000;
+			if (next > target)
+				next = target;
+			if (next > cpu) {
+				cpu = next;
+				ret = mt6797_a72_append_rails(&result, cpu, sram);
+				if (ret)
+					return ret;
+			}
+		}
+		if (result.count == before)
+			return -ERANGE;
+	}
+	*plan = result;
+	return 0;
+}
+
 /*
  * Vendor psci.c cpu_psci_cpu_kill(): on the last MP2 core, stop sync DCM,
  * let AFFINITY_INFO finish firmware power-off, then disable DA9214 BUCK B.

@@ -199,9 +199,13 @@ static struct dev_pm_opp *dev_pm_opp_find_freq_ceil(struct device *d,unsigned lo
  assert(cpu_read && opp_ready);
  /* CPU boundaries stand in for their OPP framework tables. */
  unsigned long uv;
- if(d->id<4)uv=*hz<=221000000?770000:*hz<=806000000?970000:1000000;
- else uv=*hz<=325000000?770000:*hz<=1092000000?970000:1000000;
- if(*hz>1209000000)return ERR_PTR(-ERANGE);
+ if(d->id<4){
+  if(*hz>1014000000)return ERR_PTR(-ERANGE);
+  uv=*hz<=221000000?770000:*hz<=806000000?970000:*hz<=897000000?1000000:1040000;
+ }else{
+  if(*hz>1352000000)return ERR_PTR(-ERANGE);
+  uv=*hz<=325000000?770000:*hz<=1092000000?970000:*hz<=1209000000?1000000:1040000;
+ }
  opp=(struct dev_pm_opp){*hz,uv};opp_refs++;return &opp;
 }
 static int devfreq_update_target(struct devfreq *d,unsigned long ignored)
@@ -263,6 +267,17 @@ int main(void)
  assert(clocks[0].rate==676000000 && supply.vote==1040000 && regulator_get_voltage(&supply)==1040000);
  minimum_hz=169000000;peer_uv=770000;mt6797_cci_queue(c,0);work_once(c);
  assert(clocks[0].rate==416000000 && supply.vote==900000 && regulator_get_voltage(&supply)==900000);
+ /* Each newly enabled CPU OPP must raise CCI to its shared-rail budget. */
+ for(unsigned int cluster=1;cluster<=2;cluster++) {
+  unsigned long saved=clocks[cluster].rate;
+  clocks[cluster].rate=cluster==1?1014000000:1352000000;
+  peer_uv=1040000;
+  mt6797_cci_frequency_event(&c->frequency_nb,CPUFREQ_POSTCHANGE,NULL);work_once(c);
+  assert(clocks[0].rate==676000000 && supply.vote==1040000 && !owner.faulted);
+  clocks[cluster].rate=saved;peer_uv=770000;
+  mt6797_cci_frequency_event(&c->frequency_nb,CPUFREQ_POSTCHANGE,NULL);work_once(c);
+  assert(clocks[0].rate==416000000 && supply.vote==900000 && !owner.faulted);
+ }
  devfreq_suspend_device(&df);assert(c->suspended);assert(!mt6797_cci_suspend(&pdev.dev));
  assert(df.suspend_count==2 && !c->work.pending);
  mt6797_cci_frequency_event(&c->frequency_nb,CPUFREQ_POSTCHANGE,NULL);assert(!c->work.pending);

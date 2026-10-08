@@ -37,6 +37,27 @@ static int mtk_rtc_write_trigger(struct mt6397_rtc *rtc)
 	return ret;
 }
 
+/*
+ * The alarm status latches on a match even while the alarm interrupt is
+ * disabled. Disable the alarm, then read-to-clear IRQ_STA so a cancelled or
+ * replaced alarm cannot raise an interrupt when an alarm is next enabled.
+ */
+static int mtk_rtc_disable_alarm(struct mt6397_rtc *rtc)
+{
+	u32 irqsta;
+	int ret;
+
+	ret = regmap_update_bits(rtc->regmap, rtc->addr_base + RTC_IRQ_EN,
+				 RTC_IRQ_EN_ONESHOT_AL, 0);
+	if (ret < 0)
+		return ret;
+	ret = mtk_rtc_write_trigger(rtc);
+	if (ret < 0)
+		return ret;
+
+	return regmap_read(rtc->regmap, rtc->addr_base + RTC_IRQ_STA, &irqsta);
+}
+
 static irqreturn_t mtk_rtc_irq_handler_thread(int irq, void *data)
 {
 	struct mt6397_rtc *rtc = data;
@@ -45,12 +66,16 @@ static irqreturn_t mtk_rtc_irq_handler_thread(int irq, void *data)
 
 	ret = regmap_read(rtc->regmap, rtc->addr_base + RTC_IRQ_STA, &irqsta);
 	if ((ret >= 0) && (irqsta & RTC_IRQ_STA_AL)) {
-		rtc_update_irq(rtc->rtc_dev, 1, RTC_IRQF | RTC_AF);
+		/*
+		 * Acknowledge before reporting: rtc_update_irq() lets the RTC
+		 * core program the next alarm, which must not be disabled here.
+		 */
 		mutex_lock(&rtc->lock);
 		if (regmap_update_bits(rtc->regmap, rtc->addr_base + RTC_IRQ_EN,
 				       RTC_IRQ_EN_AL, 0) == 0)
 			mtk_rtc_write_trigger(rtc);
 		mutex_unlock(&rtc->lock);
+		rtc_update_irq(rtc->rtc_dev, 1, RTC_IRQF | RTC_AF);
 
 		return IRQ_HANDLED;
 	}
@@ -185,6 +210,10 @@ static int mtk_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	tm->tm_mon++;
 
 	mutex_lock(&rtc->lock);
+	ret = mtk_rtc_disable_alarm(rtc);
+	if (ret < 0 || !alm->enabled)
+		goto exit;
+
 	ret = regmap_bulk_read(rtc->regmap, rtc->addr_base + RTC_AL_SEC,
 			       data, RTC_OFFSET_COUNT);
 	if (ret < 0)
@@ -204,29 +233,18 @@ static int mtk_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 				((tm->tm_year - rtc->data->year_offset) &
 				 RTC_AL_YEA_MASK));
 
-	if (alm->enabled) {
-		ret = regmap_bulk_write(rtc->regmap,
-					rtc->addr_base + RTC_AL_SEC,
-					data, RTC_OFFSET_COUNT);
-		if (ret < 0)
-			goto exit;
-		ret = regmap_write(rtc->regmap, rtc->addr_base + RTC_AL_MASK,
-				   RTC_AL_MASK_DOW);
-		if (ret < 0)
-			goto exit;
-		ret = regmap_update_bits(rtc->regmap,
-					 rtc->addr_base + RTC_IRQ_EN,
-					 RTC_IRQ_EN_ONESHOT_AL,
-					 RTC_IRQ_EN_ONESHOT_AL);
-		if (ret < 0)
-			goto exit;
-	} else {
-		ret = regmap_update_bits(rtc->regmap,
-					 rtc->addr_base + RTC_IRQ_EN,
-					 RTC_IRQ_EN_ONESHOT_AL, 0);
-		if (ret < 0)
-			goto exit;
-	}
+	ret = regmap_bulk_write(rtc->regmap, rtc->addr_base + RTC_AL_SEC,
+				data, RTC_OFFSET_COUNT);
+	if (ret < 0)
+		goto exit;
+	ret = regmap_write(rtc->regmap, rtc->addr_base + RTC_AL_MASK,
+			   RTC_AL_MASK_DOW);
+	if (ret < 0)
+		goto exit;
+	ret = regmap_update_bits(rtc->regmap, rtc->addr_base + RTC_IRQ_EN,
+				 RTC_IRQ_EN_ONESHOT_AL, RTC_IRQ_EN_ONESHOT_AL);
+	if (ret < 0)
+		goto exit;
 
 	/* All alarm time register write to hardware after calling
 	 * mtk_rtc_write_trigger. This can avoid race condition if alarm
@@ -244,11 +262,15 @@ static int mtk_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
 	int ret;
 
 	mutex_lock(&rtc->lock);
-	ret = regmap_update_bits(rtc->regmap, rtc->addr_base + RTC_IRQ_EN,
-				 RTC_IRQ_EN_ONESHOT_AL,
-				 enabled ? RTC_IRQ_EN_ONESHOT_AL : 0);
-	if (!ret)
-		ret = mtk_rtc_write_trigger(rtc);
+	if (enabled) {
+		ret = regmap_update_bits(rtc->regmap, rtc->addr_base + RTC_IRQ_EN,
+					 RTC_IRQ_EN_ONESHOT_AL,
+					 RTC_IRQ_EN_ONESHOT_AL);
+		if (!ret)
+			ret = mtk_rtc_write_trigger(rtc);
+	} else {
+		ret = mtk_rtc_disable_alarm(rtc);
+	}
 	mutex_unlock(&rtc->lock);
 
 	return ret;

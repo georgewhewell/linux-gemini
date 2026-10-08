@@ -843,9 +843,17 @@
 			thermal-sensors = <&thermal>;
 
 			trips {
+				/*
+				 * step_wise releases a trip completely once the
+				 * temperature falls below trip - hysteresis while
+				 * the state sits at the map's lower bound. With a
+				 * narrow band, sensor noise under ten-core load
+				 * toggles between full rate and the floor. Hold
+				 * the cooling until the SoC is actually cool.
+				 */
 				cpu_throttle: cpu-throttle {
-					temperature = <85000>;
-					hysteresis = <2000>;
+					temperature = <80000>;
+					hysteresis = <15000>;
 					type = "passive";
 				};
 
@@ -866,11 +874,9 @@
 				map-cpu-throttle {
 					trip = <&cpu_throttle>;
 					/*
-					 * Ten-core load exceeds 90 C with a state-3 floor.
 					 * State 8 caps LL/L/A72 at 1.014/1.352/1.677 GHz,
 					 * allowing CCI to fall to 845 MHz and its shared
-					 * CPU rail vote to 1.13 V. Retain this reduction
-					 * while hot, including brief falling trends.
+					 * CPU rail vote to 1.13 V.
 					 */
 					cooling-device =
 						<&cpu0 8 THERMAL_NO_LIMIT>,

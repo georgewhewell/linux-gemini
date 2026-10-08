@@ -14,7 +14,7 @@ int mt6797_a72_power_cpu_disable_admit(unsigned int cpu);
 int mt6797_a72_power_cpu_kill(unsigned int cpu, int (*firmware_kill)(unsigned int));
 /*
  * Serializes internally against MP2 power transitions; callable during CPUHP.
- * Supply a qualified OPP and arrange CCI bandwidth before increasing MP2.
+ * Supply a qualified OPP; CCI is raised and held across the MP2 transition.
  * Last-core shutdown restores the captured startup VPROC with BUCKB disabled.
  * -EUCLEAN permanently fences this owner and retains the current rails.
  */

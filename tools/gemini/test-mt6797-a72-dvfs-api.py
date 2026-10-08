@@ -93,6 +93,10 @@ static int mt6797_cpuclk_set_mp2_rate(void *d,void *c,unsigned long rate,unsigne
  assert(d==p.dev && c==p.mp2_clk && rate && (div==1 || div==2));clock_calls++;
  return boundary()?-EIO:0;
 }
+static int mt6797_cci_run_a72(void *d,unsigned long rate,int (*change)(void *),void *ctx) {
+ assert(d==p.dev && rate && mt6797_a72_power_owns_dvfs(d));
+ assert(mt6797_a72_owner_lock.held && p.operation_lock.held);return change(ctx);
+}
 static void usleep_range(unsigned low,unsigned high) { assert(high==low+50 && low>=25);waits++; }
 '''
 tests = r'''
@@ -109,6 +113,11 @@ static void setup(bool down) {
 static void clean(void) { assert(!p.operation_lock.held && !mt6797_a72_owner_lock.held);assert(!mt6797_a72_power_owns_dvfs(p.dev)); }
 static int change(bool down) { return mt6797_a72_power_set_opp(8,down?338000000:1495000000,down?2:1,down?800000:1100000); }
 int main(void) {
+ setup(false);
+ assert(mt6797_a72_power_set_opp(8,1495000000,1,1100001)==-EINVAL);
+ assert(mt6797_a72_power_set_opp(8,1495000001,1,1100000)==-EINVAL);
+ assert(mt6797_a72_power_set_opp(8,1495000000,0,1100000)==-EINVAL);
+ assert(!step);clean();
  setup(false);cpus_held=false;assert(!change(false));clean();
  mt6797_a72_dvfs_consumer=p.dev;mt6797_a72_dvfs_task=current;
  assert(mt6797_a72_power_owns_dvfs(p.dev));

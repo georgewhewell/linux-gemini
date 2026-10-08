@@ -1270,8 +1270,22 @@ static int mt6797_cpuclk_path_set_parent(struct clk_hw *hw, u8 index)
 	return ret;
 }
 
+static int mt6797_cpuclk_path_determine_rate(struct clk_hw *hw,
+					   struct clk_rate_request *req)
+{
+	struct mt6797_cpuclk_path_hw *path =
+		container_of(hw, struct mt6797_cpuclk_path_hw, hw);
+
+	/* MP2 rates belong to the power owner's OPP callback, not CCF set_rate.
+	 * Let OPP keep its requested rate instead of rounding to the live rate.
+	 */
+	if (path->domain == MT6797_CPUCLK_MP2)
+		return -EOPNOTSUPP;
+	return clk_hw_determine_rate_no_reparent(hw, req);
+}
+
 static const struct clk_ops mt6797_cpuclk_path_ops = {
-	.determine_rate = clk_hw_determine_rate_no_reparent,
+	.determine_rate = mt6797_cpuclk_path_determine_rate,
 	.get_parent = mt6797_cpuclk_path_get_parent,
 	.recalc_rate = mt6797_cpuclk_path_recalc_rate,
 	.set_parent = mt6797_cpuclk_path_set_parent,

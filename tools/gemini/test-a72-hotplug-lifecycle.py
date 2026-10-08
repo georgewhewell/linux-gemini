@@ -58,7 +58,7 @@ static unsigned online,running,calls,fail_at,firmwares,dcms,rail_disables,sram_s
 static bool effect,reset_asserted,sram_armed,clock_saved,clock_running,dcm_on;
 static u32 power,status,status2,iso,idvfs,sram_control,sram_cal;
 static int vproc_enabled,vproc_uv;
-static unsigned restores;
+static unsigned restores, opp_disables;
 static bool ignore_restore;
 static int io(void) {return ++calls==fail_at?-EIO:0;}
 static void mutex_lock(struct mutex *m){assert(!m->held);m->held=true;}
@@ -78,6 +78,8 @@ static int regmap_update_bits(struct regmap *m,u32 r,u32 mask,u32 v){assert(m==&
 static int mt6797_a72_secure_read(u32 r,u32 *v){int e=io();assert(r==MT6797_A72_IDVFS_CONTROL_REG||r==MT6797_A72_IDVFS_FENCE_REG);if(!e)*v=r==MT6797_A72_IDVFS_CONTROL_REG?idvfs:0x00ff1100;return e;}
 static int regulator_is_enabled(struct regulator *r){assert(r==&vp);int e=io();return e?:vproc_enabled;}
 static int regulator_get_voltage(struct regulator *r){int e=io();return e?e:r==&vp?vproc_uv:sram_control?900000+((sram_control&15)-3)*25000:1050000;}
+static int dev_pm_opp_set_rate(struct device *d,unsigned long rate)
+{assert(d==&dev && !rate && !vproc_enabled && !status);opp_disables++;return io();}
 static int regulator_set_voltage(struct regulator *r,int low,int high)
 {assert(r==&vp && low==high && low==owner.boot_vproc_uv);
  assert(!cpu_online(8)&&!cpu_online(9)&&!vproc_enabled&&!status&&(iso&BIT(1)));
@@ -117,7 +119,7 @@ static int firmware(unsigned cpu)
 static void reset(void)
 {
  memset(&owner,0,sizeof(owner));mt6797_a72_owner=&owner;
- owner.boot_vproc_uv=vproc_uv=1000000;restores=0;ignore_restore=false;
+ owner.boot_vproc_uv=vproc_uv=1000000;restores=opp_disables=0;ignore_restore=false;
  owner.dev=&dev;owner.mp2_clk=&clk;owner.vproc_big=&vp;owner.sram_big=&vs;
  owner.pwrap_reset=&resetctl;owner.spm=&spm;owner.cpu_mask=BIT(8)|BIT(9);
  assert(!mt6797_a72_build_plan(&owner.plan));
@@ -172,27 +174,27 @@ int main(void)
   if(owner.faulted){saved=calls;assert(prepare(8)==-EUCLEAN);assert(calls==saved);}
  }
  printf("PASS native warm startup: %u I/O boundaries, errors before/after effect\n",count);
- pair();owner.dvfs_used=true;vproc_uv=1200000;sram_control=0x4008ff;
+ pair();owner.opp_cpu=&dev;owner.dvfs_used=true;vproc_uv=1200000;sram_control=0x4008ff;
  down(9);assert(!restores && owner.dvfs_used && vproc_uv==1200000);
  down(8);assert(restores==1 && !owner.dvfs_used && vproc_uv==1000000);clean();
  /* All valid DVFS rail pairs restore startup VPROC only after rail-off. */
  for(unsigned cpu_uv=800000;cpu_uv<=1200000;cpu_uv+=10000)
   for(unsigned sram_uv=1000000;sram_uv<=1200000;sram_uv+=25000) {
    if(sram_uv<cpu_uv || sram_uv-cpu_uv>300000)continue;
-   pair();down(9);owner.dvfs_used=true;vproc_uv=cpu_uv;
+   pair();down(9);owner.opp_cpu=&dev;owner.dvfs_used=true;vproc_uv=cpu_uv;
    sram_control=0x4008f0 | ((sram_uv-900000)/25000+3);
-   down(8);assert(restores==1 && vproc_uv==1000000 && !owner.dvfs_used);
+   down(8);assert(restores==1 && opp_disables==1 && vproc_uv==1000000 && !owner.dvfs_used);
    assert(owner.stopped.vsram_uv==(int)sram_uv && owner.stopped.vproc_uv==1000000);
    up(8);assert(vproc_uv==1000000 && sram_control==0x4008fb);clean();
   }
- pair();down(9);owner.dvfs_used=true;vproc_uv=800000;arm(8);calls=0;
+ pair();down(9);owner.opp_cpu=&dev;owner.dvfs_used=true;vproc_uv=800000;arm(8);calls=0;
  assert(!mt6797_a72_power_cpu_kill(8,firmware));unsigned dvfs_count=calls;
  for(unsigned n=1;n<=dvfs_count;n++)for(unsigned applied=0;applied<2;applied++) {
-  pair();down(9);owner.dvfs_used=true;vproc_uv=800000;arm(8);calls=0;fail_at=n;effect=applied;
+  pair();down(9);owner.opp_cpu=&dev;owner.dvfs_used=true;vproc_uv=800000;arm(8);calls=0;fail_at=n;effect=applied;
   assert(mt6797_a72_power_cpu_kill(8,firmware)==-EUCLEAN);
   assert(owner.faulted && owner.off[0].faulted);clean();
  }
- pair();down(9);owner.dvfs_used=true;vproc_uv=800000;ignore_restore=true;arm(8);
+ pair();down(9);owner.opp_cpu=&dev;owner.dvfs_used=true;vproc_uv=800000;ignore_restore=true;arm(8);
  assert(mt6797_a72_power_cpu_kill(8,firmware)==-EUCLEAN);
  assert(owner.faulted && !vproc_enabled && restores==1);clean();
  printf("PASS DVFS shutdown: 251 rail pairs, %u failure boundaries, ignored voltage write rejected\n",dvfs_count);

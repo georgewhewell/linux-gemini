@@ -40,7 +40,7 @@ typedef uint32_t u32;
 struct device { void *priv; };
 struct rtc_device { struct { struct device *parent; } dev; };
 struct mtk_rtc_data { u32 wrtgr; };
-struct regmap { u32 pending, live; int update_error, write_error, poll_error, writes; };
+struct regmap { u32 pending, live, sta; int update_error, write_error, poll_error, writes, sta_reads; };
 struct mt6397_rtc {
     struct rtc_device *rtc_dev;
     int lock;
@@ -54,13 +54,19 @@ static struct mt6397_rtc rtc;
 static void mutex_lock(int *lock) { assert(!*lock); *lock = 1; }
 static void mutex_unlock(int *lock) { assert(*lock); *lock = 0; }
 '''
-code += '\n'.join(re.findall(r'^#define (?:RTC_(?:BBPU|WRTGR|IRQ_EN)\w*|MTK_RTC_POLL_\w*)\s+.*$', header, re.M))+'\n'
+code += '\n'.join(re.findall(r'^#define (?:RTC_(?:BBPU|WRTGR|IRQ_EN|IRQ_STA)\w*|MTK_RTC_POLL_\w*)\s+.*$', header, re.M))+'\n'
 code += r'''
 static int regmap_update_bits(struct regmap *map, u32 reg, u32 mask, u32 value)
 {
     assert(rtc.lock && reg == rtc.addr_base + RTC_IRQ_EN);
     if (map->update_error) return map->update_error;
     map->pending = (map->pending & ~mask) | (value & mask);
+    return 0;
+}
+static int regmap_read(struct regmap *map, u32 reg, u32 *value)
+{
+    assert(rtc.lock && reg == rtc.addr_base + RTC_IRQ_STA);
+    *value = map->sta; map->sta = 0; map->sta_reads++;  /* read-to-clear */
     return 0;
 }
 static int regmap_write(struct regmap *map, u32 reg, u32 value)
@@ -80,7 +86,7 @@ static int poll_register(struct regmap *map, u32 reg, unsigned delay, unsigned t
 #define regmap_read_poll_timeout(map, reg, data, condition, delay, timeout) \
     ((data) = 0, assert(condition), poll_register(map, reg, delay, timeout))
 '''
-for name in ('mtk_rtc_write_trigger', 'mtk_rtc_alarm_irq_enable'):
+for name in ('mtk_rtc_write_trigger', 'mtk_rtc_disable_alarm', 'mtk_rtc_alarm_irq_enable'):
     code += extract(r'^static int '+name+r'\(.*?^}\n', source)+'\n'
 code += r'''
 int main(void)
@@ -98,6 +104,7 @@ int main(void)
                 memset(&rtc, 0, sizeof(rtc));
                 rtc.regmap = &map; rtc.addr_base = 0xe000; rtc.data = &variants[variant];
                 map.live = map.pending = RTC_IRQ_EN_LP | (enabled ? 0 : RTC_IRQ_EN_ONESHOT_AL);
+                map.sta = RTC_IRQ_STA_AL;  /* a match latched while disabled */
                 u32 old = map.live;
                 if (fault == 1) map.update_error = -EIO;
                 if (fault == 2) map.write_error = -EIO;
@@ -106,6 +113,9 @@ int main(void)
                 assert(!rtc.lock);
                 assert(result == (fault == 0 ? 0 : fault == 3 ? -ETIMEDOUT : -EIO));
                 assert(map.writes == (fault == 1 ? 0 : 1));
+                // Only a completed disable clears a latched status.
+                assert(map.sta_reads == (!enabled && fault == 0));
+                assert(map.sta == (!enabled && fault == 0 ? 0 : RTC_IRQ_STA_AL));
                 if (fault == 0) {
                     assert(map.live == (RTC_IRQ_EN_LP | (enabled ? RTC_IRQ_EN_ONESHOT_AL : 0)));
                     assert(!mtk_rtc_alarm_irq_enable(&device, enabled));

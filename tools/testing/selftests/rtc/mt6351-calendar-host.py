@@ -78,7 +78,11 @@ static unsigned index_of(u32 reg)
 }
 static int regmap_read(struct regmap *map, u32 reg, u32 *value)
 {
-    *value = map->live[index_of(reg)]; return 0;
+    unsigned index = index_of(reg);
+    *value = map->live[index];
+    if (index == RTC_IRQ_STA / 2)  /* read-to-clear */
+        map->live[index] = map->pending[index] = 0;
+    return 0;
 }
 static int regmap_bulk_read(struct regmap *map, u32 reg, u16 *values, unsigned count)
 {
@@ -139,7 +143,7 @@ static void rtc_time64_to_tm(time64_t secs, struct rtc_time *rtc_tm)
         .tm_sec = tm.tm_sec, .tm_wday = tm.tm_wday };
 }
 '''
-for name in ('mtk_rtc_write_trigger', '__mtk_rtc_read_time', 'mtk_rtc_read_time',
+for name in ('mtk_rtc_write_trigger', 'mtk_rtc_disable_alarm', '__mtk_rtc_read_time', 'mtk_rtc_read_time',
              'mtk_rtc_set_time', 'mtk_rtc_read_alarm', 'mtk_rtc_set_alarm'):
     code += extract(r'^static int '+name+r'\(.*?^}\n', source)+'\n'
 for name in ('mt6358_rtc_data', 'mt6397_rtc_data', 'mt6351_rtc_data'):
@@ -199,10 +203,13 @@ int main(void)
             for (unsigned j = 0; j < RTC_OFFSET_COUNT; j++)
                 map.live[RTC_AL_SEC / 2 + j] = map.pending[RTC_AL_SEC / 2 + j] = 0xa580;
             map.live[RTC_IRQ_EN / 2] = map.pending[RTC_IRQ_EN / 2] = RTC_IRQ_EN_LP;
+            // A match latched while the alarm was disabled must not survive.
+            map.live[RTC_IRQ_STA / 2] = RTC_IRQ_STA_AL;
             struct rtc_wkalrm alarm = { .enabled = true, .time = date }, got = {0};
             assert(!mtk_rtc_set_alarm(&device, &alarm));
+            assert(map.live[RTC_IRQ_STA / 2] == 0);
             assert(!mtk_rtc_read_alarm(&device, &got)); same_date(&date, &got.time);
-            assert(got.enabled && !got.pending && !rtc.lock.held && map.writes == 2);
+            assert(got.enabled && !got.pending && !rtc.lock.held && map.writes == 3);
             assert(map.live[RTC_IRQ_EN / 2] == (RTC_IRQ_EN_LP | RTC_IRQ_EN_ONESHOT_AL));
             assert(map.live[RTC_AL_MASK / 2] == RTC_AL_MASK_DOW);
             const unsigned masks[] = { RTC_AL_SEC_MASK, RTC_AL_MIN_MASK, RTC_AL_HOU_MASK,

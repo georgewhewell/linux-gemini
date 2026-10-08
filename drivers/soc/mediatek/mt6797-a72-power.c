@@ -428,6 +428,10 @@ invalid_cpu:
 struct mt6797_a72_off_context {
 	struct mt6797_a72_preflight *preflight;
 	int (*firmware_kill)(unsigned int cpu);
+	struct mt6797_a72_off_sample first;
+	struct mt6797_a72_off_sample last;
+	unsigned int cpu;
+	unsigned int samples;
 };
 
 static int mt6797_a72_off_sample(void *context, struct mt6797_a72_off_sample *sample)
@@ -453,7 +457,13 @@ static int mt6797_a72_off_sample(void *context, struct mt6797_a72_off_sample *sa
 	if (ret)
 		return ret;
 	sample->vproc_enabled = regulator_is_enabled(p->vproc_big);
-	return sample->vproc_enabled < 0 ? sample->vproc_enabled : 0;
+	if (sample->vproc_enabled < 0)
+		return sample->vproc_enabled;
+	if (!off->samples)
+		off->first = *sample;
+	off->last = *sample;
+	off->samples++;
+	return 0;
 }
 
 static int mt6797_a72_off_dcm(void *context)
@@ -487,9 +497,17 @@ static int mt6797_a72_off_vproc(void *context)
 
 static void mt6797_a72_off_fence(void *context)
 {
-	struct mt6797_a72_preflight *p = ((struct mt6797_a72_off_context *)context)->preflight;
+	struct mt6797_a72_off_context *off = context;
+	struct mt6797_a72_preflight *p = off->preflight;
+	const struct mt6797_a72_off_sample *s = &off->last;
 
 	WRITE_ONCE(p->faulted, true);
+	dev_err(p->dev,
+		"CPU%u shutdown verification failed: err=%d samples=%u online=%x pwr=%08x/%08x mp2=%08x iso=%08x idvfs=%08x vproc=%d initial-pwr=%08x/%08x\n",
+		off->cpu, p->off[off->cpu - 8].error, off->samples, s->online_mask,
+		s->power_status, s->power_status_second, s->mp2_pwr_con,
+		s->ext_buck_iso, s->idvfs_control, s->vproc_enabled,
+		off->first.power_status, off->first.power_status_second);
 }
 
 static const struct mt6797_a72_off_io mt6797_a72_off_ops = {
@@ -520,7 +538,10 @@ EXPORT_SYMBOL_GPL(mt6797_a72_power_cpu_disable_admit);
 /* Controller CPU, after the target reported dead; never a live health query. */
 int mt6797_a72_power_cpu_kill(unsigned int cpu, int (*firmware_kill)(unsigned int))
 {
-	struct mt6797_a72_off_context context = { .firmware_kill = firmware_kill };
+	struct mt6797_a72_off_context context = {
+		.firmware_kill = firmware_kill,
+		.cpu = cpu,
+	};
 	struct mt6797_a72_preflight *p;
 	unsigned int index;
 	int ret = -EUCLEAN;

@@ -762,9 +762,15 @@
 			cooling-maps {
 				map-cpu-throttle {
 					trip = <&cpu_throttle>;
+					/*
+					 * With sixteen OPPs, state 3 caps LL/L at
+					 * 1.391/1.820 GHz (1.15 V). Keep the three
+					 * hotter OPPs out of the passive cooling
+					 * range even when the measured trend dips.
+					 */
 					cooling-device =
-						<&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-						<&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+						<&cpu0 3 THERMAL_NO_LIMIT>,
+						<&cpu4 3 THERMAL_NO_LIMIT>;
 				};
 
 				map-cpu-limit {

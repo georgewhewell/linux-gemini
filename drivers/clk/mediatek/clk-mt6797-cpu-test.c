@@ -255,6 +255,73 @@ static void mt6797_cpuclk_cold_admission_test(struct kunit *test)
 		26000000), -EBUSY);
 }
 
+/* Validate every retained MP2 bit against a saved running observation. */
+static void mt6797_cpuclk_stopped_mp2_test(struct kunit *test)
+{
+	struct mt6797_cpuclk_snapshot running = {
+		.mp2_armpll_con0 = 0x00ff1101,
+		.mp2_armpll_con1 = 0xb9b13b14,
+		.muxsel = 0x55,
+		.clkdiv = 8,
+	};
+	struct mt6797_cpuclk_snapshot stopped = running, changed;
+	unsigned int bit;
+
+	stopped.mp2_armpll_con0 &= ~BIT(0);
+	stopped.muxsel &= ~BIT(0);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+		&stopped, 26000000), 0);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_cold_mp2(&stopped,
+		26000000), -EBUSY);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(NULL,
+		&stopped, 26000000), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+		NULL, 26000000), -EINVAL);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+		&stopped, 25000000), -ERANGE);
+	for (bit = 0; bit < 32; bit++) {
+		changed = stopped;
+		changed.mp2_armpll_con0 ^= BIT(bit);
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+			&changed, 26000000), -EBUSY);
+		changed = stopped;
+		changed.mp2_armpll_con1 ^= BIT(bit);
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+			&changed, 26000000), -EBUSY);
+		changed = stopped;
+		changed.muxsel ^= BIT(bit);
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+			&changed, 26000000), bit < 2 ? -EBUSY : 0);
+		changed = stopped;
+		changed.clkdiv ^= BIT(bit);
+		KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+			&changed, 26000000), bit < 5 ? -EBUSY : 0);
+	}
+	changed = stopped;
+	memset(changed.armpll_con1, 0xff, sizeof(changed.armpll_con1));
+	changed.sync_dcm = 0xffffffff;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+		&changed, 26000000), 0);
+	/* A disabled PLL, another parent or malformed programming is no receipt. */
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&stopped,
+		&stopped, 26000000), -EBUSY);
+	running.mp2_armpll_con0 &= ~BIT(0);
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+		&stopped, 26000000), -EBUSY);
+	running.mp2_armpll_con0 |= BIT(0);
+	running.muxsel = 0x56;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+		&stopped, 26000000), -EBUSY);
+	running.muxsel = 0x55;
+	running.clkdiv = 1;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+		&stopped, 26000000), -ERANGE);
+	running.clkdiv = 8;
+	running.mp2_armpll_con1 = 0;
+	KUNIT_EXPECT_EQ(test, mt6797_cpuclk_validate_stopped_mp2(&running,
+		&stopped, 26000000), -ERANGE);
+}
+
 /* Gemini LK hand-off: LL 897 MHz (/2), L 1274 MHz (/1), both on ARMPLL. */
 static struct mt6797_cpuclk_snapshot mt6797_cpuclk_boot_snapshot(void)
 {
@@ -548,6 +615,7 @@ static struct kunit_case mt6797_cpuclk_test_cases[] = {
 	KUNIT_CASE(mt6797_cpuclk_divider_test),
 	KUNIT_CASE(mt6797_cpuclk_cold_mp2_test),
 	KUNIT_CASE(mt6797_cpuclk_cold_admission_test),
+	KUNIT_CASE(mt6797_cpuclk_stopped_mp2_test),
 	KUNIT_CASE(mt6797_cpuclk_decode_rejects_invalid_test),
 	KUNIT_CASE(mt6797_cpuclk_pll_rate_plan_test),
 	KUNIT_CASE(mt6797_cpuclk_mux_dcm_plan_test),

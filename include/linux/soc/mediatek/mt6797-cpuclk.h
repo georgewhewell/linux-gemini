@@ -17,6 +17,14 @@ int mt6797_cpuclk_set_mp2_sync_dcm(struct device *consumer, struct clk *clk,
 				 bool enable);
 /* Requires this owner to have completed last-core DCM disable and power-off. */
 int mt6797_cpuclk_check_mp2_restart(struct device *consumer, struct clk *clk);
+/*
+ * A72 owner only: serialize power/hotplug, keep a core online, and provision
+ * CPU/SRAM rails for both endpoints before calling. iDVFS must be disabled.
+ * On -EUCLEAN retain those rails: the clock state is uncertain and fenced.
+ * divisor is 1, or 2 for the vendor 338MHz point (676MHz PLL).
+ */
+int mt6797_cpuclk_set_mp2_rate(struct device *consumer, struct clk *clk,
+			      unsigned long rate, unsigned int divisor);
 #else
 static inline int mt6797_cpuclk_check_mp2_boot(struct device *consumer,
 					    struct clk *clk)
@@ -30,6 +38,11 @@ static inline int mt6797_cpuclk_set_mp2_sync_dcm(struct device *consumer,
 }
 static inline int mt6797_cpuclk_check_mp2_restart(struct device *consumer,
 					       struct clk *clk)
+{
+	return -EOPNOTSUPP;
+}
+static inline int mt6797_cpuclk_set_mp2_rate(struct device *consumer,
+		struct clk *clk, unsigned long rate, unsigned int divisor)
 {
 	return -EOPNOTSUPP;
 }

@@ -202,6 +202,9 @@ mt6797_a72_apply(void *context, const struct mt6797_a72_step *step)
 	struct mt6797_a72_preflight *preflight = context;
 	int ret;
 
+	dev_dbg(preflight->dev, "CPU8 startup apply: action=%u reg=%08x value=%08x\n",
+		step->action, step->reg, step->value);
+
 	switch (step->action) {
 	case MT6797_A72_TRANSACTION_GUARD_ENTER:
 		mutex_lock(&preflight->operation_lock);
@@ -256,6 +259,9 @@ mt6797_a72_verify(void *context, const struct mt6797_a72_step *step)
 	struct mt6797_sram_sample sample;
 	u32 value;
 	int ret;
+
+	dev_dbg(preflight->dev, "CPU8 startup verify: action=%u reg=%08x value=%08x\n",
+		step->action, step->reg, step->value);
 
 	switch (step->action) {
 	case MT6797_A72_TRANSACTION_GUARD_ENTER:
@@ -611,6 +617,8 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 	preflight = hlist_entry(node, struct mt6797_a72_preflight, cpuhp_node);
 	if (!cpumask_test_cpu(cpu, &preflight->cpu_mask))
 		return 0;
+	dev_dbg(preflight->dev, "CPU%u startup prepare: warm=%u faulted=%u\n",
+		cpu, preflight->started, preflight->faulted);
 	/*
 	 * CPU9 shares the MP2 cluster rails that the CPU8 transaction
 	 * committed.  Safety invariants (vendor mt_cpufreq.c/da9214.c): BUCK B
@@ -640,19 +648,23 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 		unsigned int i;
 
 		for (i = 0; i < 2; i++) {
+			dev_dbg(preflight->dev, "CPU8 startup off-sample: pass=%u\n", i);
 			ret = mt6797_a72_off_sample(&context, &sample);
 			if (!ret)
 				ret = mt6797_a72_check_cluster_off(&preflight->off[0], &sample);
 			if (ret)
 				return ret;
 		}
+		dev_dbg(preflight->dev, "CPU8 startup clock-restart-check\n");
 		ret = mt6797_cpuclk_check_mp2_restart(preflight->dev, preflight->mp2_clk);
 	} else {
+		dev_dbg(preflight->dev, "CPU8 startup clock-boot-check\n");
 		ret = mt6797_cpuclk_check_mp2_boot(preflight->dev, preflight->mp2_clk);
 	}
 	if (ret)
 		return ret;
 
+	dev_dbg(preflight->dev, "CPU8 startup transaction-begin\n");
 	if (preflight->started)
 		ret = mt6797_a72_transaction_restart(&preflight->transaction,
 				&preflight->plan, &mt6797_a72_live_ops, preflight,
@@ -680,6 +692,7 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 	if (ret)
 		return ret;
 
+	dev_dbg(preflight->dev, "CPU8 startup transaction-complete\n");
 	mutex_lock(&mt6797_a72_owner_lock);
 	if (mt6797_a72_owner != preflight) {
 		mutex_unlock(&mt6797_a72_owner_lock);
@@ -691,6 +704,7 @@ mt6797_a72_cpu_on_prepare(unsigned int cpu, struct hlist_node *node)
 	preflight->cpu8_armed = true;
 	mutex_unlock(&mt6797_a72_owner_lock);
 
+	dev_dbg(preflight->dev, "CPU8 startup prepare-complete\n");
 	return ret;
 }
 
@@ -728,6 +742,7 @@ mt6797_a72_cpu_online_commit(unsigned int cpu, struct hlist_node *node)
 	preflight = hlist_entry(node, struct mt6797_a72_preflight, online_node);
 	if (!cpumask_test_cpu(cpu, &preflight->cpu_mask))
 		return 0;
+	dev_dbg(preflight->dev, "CPU%u startup online-commit-enter\n", cpu);
 	/*
 	 * This AP callback executing on the checked, online target proves it
 	 * is alive. Do not query PSCI AFFINITY_INFO here or from another CPU:

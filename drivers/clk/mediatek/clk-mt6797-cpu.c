@@ -1387,14 +1387,115 @@ static struct platform_driver mt6797_cpuclk_driver = {
 		.of_match_table = mt6797_cpuclk_of_match,
 	},
 };
-int mt6797_cpuclk_check_mp2_boot(struct device *consumer, struct clk *clk)
+enum mt6797_cpuclk_mp2_operation {
+	MT6797_MP2_CHECK_BOOT,
+	MT6797_MP2_DCM_ENABLE,
+	MT6797_MP2_DCM_DISABLE,
+};
+
+struct mt6797_cpuclk_mp2_transaction {
+	struct mt6797_cpuclk_observer *observer;
+	enum mt6797_cpuclk_mp2_operation operation;
+	unsigned long reference_rate;
+};
+
+static int mt6797_cpuclk_mp2_write_dcm(u32 value)
 {
+	struct arm_smccc_res result;
+	s32 status;
+
+	arm_smccc_smc(MT6797_CPUCLK_SMC_MCUSYS_WRITE,
+		      MT6797_CPUCLK_MP2_SYNC_DCM, value, 0,
+		      0, 0, 0, 0, &result);
+	status = result.a0;
+	if (result.a0)
+		return status < 0 ? status : -EIO;
+	return 0;
+}
+
+/* The caller enables the interface clock before taking either mutex. */
+static int mt6797_cpuclk_mp2_transaction(void __iomem *cspm, void *context)
+{
+	struct mt6797_cpuclk_mp2_transaction *transaction = context;
+	struct mt6797_cpuclk_observer *observer = transaction->observer;
 	struct mt6797_cpuclk_snapshot snapshot;
+	struct mt6797_cpuclk_state state;
+	u32 first, second, target, value;
+	bool wrote = false;
+	int ret, release_ret, i;
+
+	ret = mt6797_dvfsp_cspm_acquire(cspm);
+	if (ret)
+		return ret;
+	ret = mt6797_cpuclk_read_stable(observer, &snapshot);
+	if (ret)
+		goto release;
+	if (transaction->operation == MT6797_MP2_CHECK_BOOT) {
+		ret = mt6797_cpuclk_validate_cold_mp2(&snapshot,
+						transaction->reference_rate);
+		goto release;
+	}
+	ret = mt6797_cpuclk_decode_state(MT6797_CPUCLK_MP2, &snapshot,
+					transaction->reference_rate, &state);
+	if (ret)
+		goto release;
+	if (state.source != MT6797_CPUCLK_ARMPLL ||
+	    !(snapshot.mp2_armpll_con0 & BIT(0))) {
+		ret = -EBUSY;
+		goto release;
+	}
+	ret = mt6797_cpuclk_secure_read(MT6797_CPUCLK_SMC_REG_READ,
+				       MT6797_CPUCLK_MP2_SYNC_DCM, &first);
+	if (ret)
+		goto release;
+	ret = mt6797_cpuclk_secure_read(MT6797_CPUCLK_SMC_REG_READ,
+				       MT6797_CPUCLK_MP2_SYNC_DCM, &second);
+	if (ret)
+		goto release;
+	if (first != second) {
+		ret = -EAGAIN;
+		goto release;
+	}
+	/* Vendor dcm_mcusys_mp2_sync_dcm(): divide by four, toggle high/low. */
+	target = first & ~GENMASK(6, 0);
+	if (transaction->operation == MT6797_MP2_DCM_ENABLE)
+		target |= BIT(0) | (3 << 2);
+	for (i = 0; i < 2; i++) {
+		value = target | (i ? 0 : BIT(1));
+		wrote = true;
+		ret = mt6797_cpuclk_mp2_write_dcm(value);
+		if (ret)
+			goto release;
+		ret = mt6797_cpuclk_secure_read(MT6797_CPUCLK_SMC_REG_READ,
+					       MT6797_CPUCLK_MP2_SYNC_DCM, &second);
+		if (ret)
+			goto release;
+		if (second != value) {
+			ret = -EIO;
+			goto release;
+		}
+	}
+release:
+	release_ret = mt6797_dvfsp_cspm_release(cspm);
+	if (release_ret || (wrote && ret)) {
+		observer->faulted = true;
+		/* The handoff transaction also fences the shared hardware owner. */
+		return -EUCLEAN;
+	}
+	return ret;
+}
+
+static int mt6797_cpuclk_mp2_access(struct device *consumer, struct clk *clk,
+				  enum mt6797_cpuclk_mp2_operation operation)
+{
+	struct mt6797_cpuclk_mp2_transaction transaction = {
+		.operation = operation,
+	};
+	struct mt6797_cpuclk_observer *observer;
 	struct of_phandle_args args;
 	struct platform_device *pdev;
 	struct mt6797_cpuclk *provider;
 	struct clk_hw *reference;
-	unsigned long reference_rate;
 	int index, ret;
 
 	if (!consumer || !consumer->of_node || IS_ERR_OR_NULL(clk))
@@ -1429,16 +1530,48 @@ int mt6797_cpuclk_check_mp2_boot(struct device *consumer, struct clk *clk)
 		ret = -ENOENT;
 		goto out;
 	}
-	reference_rate = clk_hw_get_rate(reference);
-	ret = mt6797_cpuclk_snapshot(provider, &snapshot);
-	if (!ret)
-		ret = mt6797_cpuclk_validate_cold_mp2(&snapshot, reference_rate);
+	transaction.reference_rate = clk_hw_get_rate(reference);
+	if (transaction.reference_rate != 26000000) {
+		ret = -ERANGE;
+		goto out;
+	}
+	observer = &provider->observer;
+	transaction.observer = observer;
+	/* CCF callbacks take the prepare lock before observer/CSPM locks. */
+	ret = clk_prepare_enable(observer->i2c_clk);
+	if (ret)
+		goto out;
+	mutex_lock(&observer->lock);
+	if (observer->faulted)
+		ret = -EUCLEAN;
+	else
+		ret = mt6797_dvfsp_cspm_transaction(observer->handoff,
+						  mt6797_cpuclk_mp2_transaction,
+						  &transaction);
+	mutex_unlock(&observer->lock);
+	clk_disable_unprepare(observer->i2c_clk);
 out:
 	device_unlock(&pdev->dev);
 	put_device(&pdev->dev);
 	return ret;
 }
+
+int mt6797_cpuclk_check_mp2_boot(struct device *consumer, struct clk *clk)
+{
+	return mt6797_cpuclk_mp2_access(consumer, clk, MT6797_MP2_CHECK_BOOT);
+}
 EXPORT_SYMBOL_GPL(mt6797_cpuclk_check_mp2_boot);
+
+int mt6797_cpuclk_set_mp2_sync_dcm(struct device *consumer, struct clk *clk,
+				 bool enable)
+{
+	if (!consumer || !consumer->of_node ||
+	    !of_device_is_compatible(consumer->of_node, "mediatek,mt6797-a72-power"))
+		return -EINVAL;
+	return mt6797_cpuclk_mp2_access(consumer, clk,
+			enable ? MT6797_MP2_DCM_ENABLE : MT6797_MP2_DCM_DISABLE);
+}
+EXPORT_SYMBOL_GPL(mt6797_cpuclk_set_mp2_sync_dcm);
 
 module_platform_driver(mt6797_cpuclk_driver);
 

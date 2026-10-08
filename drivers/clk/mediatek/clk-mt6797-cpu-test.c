@@ -33,6 +33,14 @@ static void mt6797_cpuclk_read_fence_test(struct kunit *test)
 	KUNIT_EXPECT_TRUE(test, allowed);
 	allowed = mt6797_cpuclk_secure_read_allowed(fid, con1);
 	KUNIT_EXPECT_TRUE(test, allowed);
+	allowed = mt6797_cpuclk_secure_read_allowed(fid, MT6797_CPUCLK_MP2_SYNC_DCM);
+	KUNIT_EXPECT_TRUE(test, allowed);
+	allowed = mt6797_cpuclk_secure_read_allowed(fid, MT6797_CPUCLK_MP2_SYNC_DCM + 4);
+	KUNIT_EXPECT_FALSE(test, allowed);
+	allowed = mt6797_cpuclk_secure_read_allowed(fid, MT6797_CPUCLK_MP2_SYNC_DCM - 4);
+	KUNIT_EXPECT_FALSE(test, allowed);
+	allowed = mt6797_cpuclk_secure_read_allowed(fid + 1, MT6797_CPUCLK_MP2_SYNC_DCM);
+	KUNIT_EXPECT_FALSE(test, allowed);
 	allowed = mt6797_cpuclk_secure_read_allowed(fid + 1, con0);
 	KUNIT_EXPECT_FALSE(test, allowed);
 	allowed = mt6797_cpuclk_secure_read_allowed(fid, con1 + 4);

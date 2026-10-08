@@ -85,7 +85,8 @@ bool mt6797_cpuclk_secure_read_allowed(unsigned long fid, u32 address)
 		return false;
 
 	return address == MT6797_CPUCLK_MP2_PLL_CON0 ||
-	       address == MT6797_CPUCLK_MP2_PLL_CON1;
+	       address == MT6797_CPUCLK_MP2_PLL_CON1 ||
+	       address == MT6797_CPUCLK_MP2_SYNC_DCM;
 }
 
 bool mt6797_cpuclk_snapshots_equal(const struct mt6797_cpuclk_snapshot *first,

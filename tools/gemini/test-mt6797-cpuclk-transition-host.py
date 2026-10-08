@@ -249,7 +249,7 @@ static int run(void)
  int ret=mt6797_cpuclk_observer_transition(&observer,&plan);
  assert(!observer.lock); return ret;
 }
-static const unsigned int l_rates[] = {325,468,650,832,962,1092,1209,1352,1495,1625};
+static const unsigned int l_rates[] = {325,468,650,832,962,1092,1209,1352,1495,1625,1703,1755,1820,1885,1950,2002};
 static void reset_l(unsigned int i, unsigned int j, unsigned int saved)
 {
  reset(3,3); active_domain=1; fallback_setting=saved;
@@ -265,7 +265,7 @@ static void reset_l(unsigned int i, unsigned int j, unsigned int saved)
   l_rates[j]*1000000UL,fallback_rate,&plan));
  preserved=live; check_preservation=true;
 }
-static const unsigned int ll_post_rates[] = {221,338,481,624,715,806,897,1014,1118,1222};
+static const unsigned int ll_post_rates[] = {221,338,481,624,715,806,897,1014,1118,1222,1274,1339,1391,1443,1495,1547};
 static void reset_ll_post(unsigned int i,unsigned int j,unsigned int saved)
 {
  reset(3,3); fallback_setting=saved;
@@ -375,8 +375,9 @@ int main(void)
  unsigned int cpu_pairs=0, post_faults=0;
  for(unsigned int domain=0;domain<2;domain++) {
  branch.domain=domain;
+ unsigned int count=domain ? ARRAY_SIZE(l_rates) : ARRAY_SIZE(ll_post_rates);
  for (unsigned int saved=0;saved<4;saved++)
- for (unsigned int i=0;i<10;i++) for (unsigned int j=0;j<10;j++) {
+ for (unsigned int i=0;i<count;i++) for (unsigned int j=0;j<count;j++) {
   reset_cpu(domain,i,j,saved);
   unsigned long target=(domain ? l_rates[j] : ll_post_rates[j])*1000000UL;
   struct clk_rate_request lr={.rate=target,.min_rate=target,.max_rate=target,

@@ -516,7 +516,6 @@ int mt6797_cpuclk_plan_mp2_transition(
 		return ret;
 	if (state.source != MT6797_CPUCLK_ARMPLL ||
 	    !(initial->mp2_armpll_con0 & BIT(0)) ||
-	    (initial->mp2_armpll_con1 & BIT(31)) ||
 	    FIELD_GET(MT6797_MP2_ARMPLL_POSDIV_MASK, initial->mp2_armpll_con0) > 2 ||
 	    (!mt6797_cpuclk_divider_is_unity(state.divider) && state.divider != 10))
 		return -EBUSY;

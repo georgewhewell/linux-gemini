@@ -3253,8 +3253,11 @@ int regulator_enable(struct regulator *regulator)
 	struct ww_acquire_ctx ww_ctx;
 	int ret;
 
+	rdev_dbg(rdev, "enable: dependency-lock-enter\n");
 	regulator_lock_dependent(rdev, &ww_ctx);
+	rdev_dbg(rdev, "enable: dependency-lock-acquired\n");
 	ret = _regulator_enable(regulator);
+	rdev_dbg(rdev, "enable: provider-sequence-return ret=%d\n", ret);
 	regulator_unlock_dependent(rdev, &ww_ctx);
 
 	return ret;

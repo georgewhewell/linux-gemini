@@ -43,7 +43,8 @@ typedef uint8_t u8;
 #define DA9213_LEGACY_BUCKA 0
 #define DA9213_LEGACY_BUCKB 1
 struct mutex { int held; };
-struct i2c_client { int unused; };
+struct i2c_client { int dev; };
+#define dev_dbg(dev,...) ((void)(dev),(void)snprintf(NULL,0,__VA_ARGS__))
 static void mutex_lock(struct mutex *m) { assert(!m->held); m->held=1; }
 static void mutex_unlock(struct mutex *m) { assert(m->held); m->held=0; }
 '''

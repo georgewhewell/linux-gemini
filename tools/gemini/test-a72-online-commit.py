@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the actual online commit without a PSCI/SMC observer interface."""
+"""Exercise the actual online commit with DCM setup and unplug cancellation, without affinity queries."""
 from pathlib import Path
 import os, subprocess, tempfile
 root=Path(__file__).resolve().parents[2]
@@ -14,16 +14,20 @@ c=r'''
 #include <errno.h>
 #include <stdio.h>
 #define MT6797_A72_FIRST_CPU 8
+#define WRITE_ONCE(v,x) ((v)=(x))
 struct hlist_node { int unused; };
 struct transaction { bool active; };
 struct mt6797_a72_preflight {
  struct hlist_node online_node; unsigned cpu_mask; bool faulted,cpu8_armed;
- struct transaction transaction; void *dev;
+ struct transaction transaction; void *dev,*mp2_clk;
+ bool started,committed[2],off_armed[2];struct {bool completed;} off[2];
 };
 #define hlist_entry(p,t,m) ((t *)((char *)(p)-offsetof(t,m)))
 #define dev_info(...) ((void)0)
 static unsigned running, online, midr, commits, identity_checks, boot8_checks, boot9_checks;
-static int commit_error,mt6797_a72_owner_lock;
+static int commit_error,mt6797_a72_owner_lock,dcm_error,dcm_calls;
+static int mt6797_cpuclk_set_mp2_sync_dcm(void *dev,void *clk,bool on)
+{(void)dev;(void)clk;assert(on);dcm_calls++;return dcm_error;}
 static bool cpumask_test_cpu(unsigned c,const unsigned *mask){return !!(*mask & (1u<<c));}
 static unsigned raw_smp_processor_id(void){return running;}
 static bool cpu_online(unsigned c){return !!(online & (1u<<c));}
@@ -45,7 +49,7 @@ c+='static int '+function+'\n'
 c+=r'''
 static struct mt6797_a72_preflight fresh(unsigned cpu){
  running=cpu;online=(1u<<4)|(1u<<8)|(1u<<9);midr=0x410fd081;
- commits=identity_checks=boot8_checks=boot9_checks=0;commit_error=0;
+ commits=identity_checks=boot8_checks=boot9_checks=0;commit_error=dcm_error=dcm_calls=0;
  return (struct mt6797_a72_preflight){.cpu_mask=(1u<<8)|(1u<<9),.cpu8_armed=true,.transaction={.active=true}};
 }
 static int run(unsigned cpu,struct mt6797_a72_preflight *p){return mt6797_a72_cpu_online_commit(cpu,&p->online_node);}
@@ -65,7 +69,13 @@ int main(void){
  p=fresh(9);online &= ~(1u<<8);assert(run(9,&p)==-EPERM && !commits);
  p=fresh(8);commit_error=-EIO;assert(run(8,&p)==-EIO && p.faulted && !p.cpu8_armed && p.transaction.active);
  p=fresh(4);assert(run(4,&p)==0 && !commits && !identity_checks && !p.faulted);
- puts("PASS actual online commit: CPU8/9 identity/context/prerequisites/failure handling; no PSCI/SMC interface");
+ p=fresh(8);dcm_error=-EIO;assert(run(8,&p)==-EIO && p.faulted && !commits && !p.cpu8_armed);
+ for(unsigned cpu=8;cpu<=9;cpu++) {
+  p=fresh(cpu);p.transaction.active=false;p.cpu8_armed=false;
+  p.committed[cpu-8]=true;p.off_armed[cpu-8]=true;
+  assert(!run(cpu,&p) && !commits && !dcm_calls && !p.off_armed[cpu-8]);
+ }
+ puts("PASS actual online commit: CPU8/9 identity/context/prerequisites/failure handling, DCM setup and unplug cancellation; no affinity query");
 }
 '''
 with tempfile.TemporaryDirectory() as d:

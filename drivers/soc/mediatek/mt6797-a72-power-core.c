@@ -38,6 +38,17 @@ static bool mt6797_a72_off_sample_valid(const struct mt6797_a72_off_sample *s,
 	       (s->mp2_pwr_con & BIT(4));
 }
 
+int mt6797_a72_check_cluster_off(const struct mt6797_a72_off_state *off,
+				 const struct mt6797_a72_off_sample *sample)
+{
+	if (!off || !sample)
+		return -EINVAL;
+	if (!off->completed || !off->cluster_off || off->faulted || off->error ||
+	    !mt6797_a72_off_sample_valid(&off->final, 8, true))
+		return -EUCLEAN;
+	return mt6797_a72_off_sample_valid(sample, 8, true) ? 0 : -EBUSY;
+}
+
 int mt6797_a72_finish_cpu_off(struct mt6797_a72_off_state *state,
 			     const struct mt6797_a72_off_io *io,
 			     void *context, unsigned int cpu)

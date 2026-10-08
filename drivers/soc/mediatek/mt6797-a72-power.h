@@ -149,6 +149,9 @@ int mt6797_a72_finish_cpu_off(struct mt6797_a72_off_state *state,
 			     const struct mt6797_a72_off_io *io,
 			     void *context, unsigned int cpu);
 
+int mt6797_a72_check_cluster_off(const struct mt6797_a72_off_state *off,
+				 const struct mt6797_a72_off_sample *sample);
+
 /* The owner retains both observations from the same completed shutdown. */
 int mt6797_a72_transaction_restart(struct mt6797_a72_transaction *transaction,
 				  const struct mt6797_a72_plan *plan,

@@ -7,11 +7,22 @@
 
 #if IS_ENABLED(CONFIG_MTK_MT6797_A72_POWER)
 int mt6797_a72_power_cpu_boot_admit(unsigned int cpu);
+int mt6797_a72_power_cpu_disable_admit(unsigned int cpu);
+int mt6797_a72_power_cpu_kill(unsigned int cpu, int (*firmware_kill)(unsigned int));
 #else
 static inline int mt6797_a72_power_cpu_boot_admit(unsigned int cpu)
 {
 	(void)cpu;
 	return -EAGAIN;
+}
+static inline int mt6797_a72_power_cpu_disable_admit(unsigned int cpu)
+{
+	return -EOPNOTSUPP;
+}
+static inline int mt6797_a72_power_cpu_kill(unsigned int cpu,
+					 int (*firmware_kill)(unsigned int))
+{
+	return -EOPNOTSUPP;
 }
 #endif
 

@@ -53,11 +53,6 @@
 #define MT6797_MD1_LIVE_MD3_BLOCK_BASE	0xbe000000ULL
 #define MT6797_MD1_LIVE_MD3_BLOCK_SIZE	0x00c00000ULL
 
-static bool enable_experimental_md1_lk_handoff_probe;
-module_param_named(enable_experimental_md1_lk_handoff_probe,
-			   enable_experimental_md1_lk_handoff_probe, bool, 0400);
-MODULE_PARM_DESC(enable_experimental_md1_lk_handoff_probe,
-	"allow the explicitly gated, read-only MT6797 MD1 LK hand-off probe");
 
 static bool mt6797_md1_lk_handoff_image_loaded_attested;
 static DEFINE_MUTEX(mt6797_md1_lk_handoff_plan_lock);
@@ -337,12 +332,11 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 	int chosen_len;
 	int ret;
 
-	if (!READ_ONCE(enable_experimental_md1_lk_handoff_probe) ||
-	    !device_property_read_bool(dev,
+	if (!device_property_read_bool(dev,
 			"mediatek,experimental-md1-lk-handoff-probe") ||
 	    !device_property_read_bool(dev, "mediatek,stage-lk-handoff-read-only"))
 		return dev_err_probe(dev, -EPERM,
-			"LK probe requires independent module and read-only DT gates\n");
+			"LK probe requires read-only DT configuration\n");
 
 	chosen = of_find_node_by_path("/chosen");
 	if (!chosen)

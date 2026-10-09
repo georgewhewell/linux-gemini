@@ -24,7 +24,6 @@ struct device_node { int off; } nodes[4096];
 struct device { struct device_node *of_node; };
 struct property { const char *name; int off; } props[16384];
 struct resource { uint64_t start,size; };
-static bool mt6797_gpuldo_owner_enable;
 static struct device_node *make_node(int off) {
  if(off<0) return NULL;
  for(unsigned i=0;i<4096;i++) {
@@ -104,15 +103,14 @@ static struct device_node *child_next(struct device_node *p,struct device_node *
 '''
 main = r'''
 int main(int argc,char **argv) {
- if(argc!=4) return 2;
+ if(argc!=3) return 2;
  FILE *f=fopen(argv[1],"rb"); if(!f)return 2;
  fseek(f,0,SEEK_END); long len=ftell(f); rewind(f); blob=malloc(len);
  if(!blob||fread(blob,1,len,f)!=(size_t)len)return 2; fclose(f);
  if(fdt_check_header(blob))return 2;
  struct device d={make_node(fdt_path_offset(blob,"/power-controller@10006000"))};
- mt6797_gpuldo_owner_enable=atoi(argv[2]);
  int ret=scpsys_gpuldo_validate_dt(&d); printf("%d\n",ret);
- return (ret==atoi(argv[3]))?0:1;
+ return (ret==atoi(argv[2]))?0:1;
 }
 '''
 
@@ -152,18 +150,17 @@ def main_test():
           "-Wno-misleading-indentation","-I",str(libfdt),str(path/"test.c"),
           str(libfdt/"fdt.c"),str(libfdt/"fdt_ro.c"),
           "-o",str(path/"test")],check=True)
-        def run(file, enabled, expected):
-            subprocess.run([str(path/"test"),str(file),str(enabled),str(expected)],check=True,stdout=subprocess.DEVNULL)
-        run(args.carrier,0,0)
-        run(args.derivative,1,1)
-        run(args.derivative,0,-1)
+        def run(file, expected):
+            subprocess.run([str(path/"test"),str(file),str(expected)],check=True,stdout=subprocess.DEVNULL)
+        run(args.carrier,0)
+        run(args.derivative,1)
         for index,(node,prop,kind,values) in enumerate(cases):
             target=path/f"bad-{index}.dtb"
             target.write_bytes(args.derivative.read_bytes())
             cmd=[put]+(["-t",kind] if kind else [])+[str(target),node,prop]+values
             subprocess.run(cmd,check=True)
-            run(target,1,-1 if index==0 else -22)
-        print(f"actual DT admission via libfdt: valid/default/disabled + {len(cases)} corruptions PASS")
+            run(target,-1 if index==0 else -22)
+        print(f"actual DT admission via libfdt: valid/default + {len(cases)} corruptions PASS")
 
 if __name__ == "__main__":
     main_test()

@@ -138,6 +138,7 @@ static void mt6797_ccci_diag_rx_save(void *d,const void *p,size_t n,unsigned q,u
 static void mt6797_ccci_first_fatal(struct mt6797_ccci *p,const char *s){(void)p;(void)s;assert(!stop_locked);}
 #define dev_err(...) assert(!stop_locked)
 #define dev_info(d, ...) do { (void)(d); (void)snprintf(NULL, 0, __VA_ARGS__); assert(!stop_locked); } while (0)
+#define dev_dbg dev_info
 #define dev_info_ratelimited(...) assert(!stop_locked)
 static void mt6797_ccci_frontend_ready(struct mt6797_ccci *p,bool ready){p->ready=ready;}
 static void mt6797_md1_hs_crash(int *p,int why){(void)p;(void)why;assert(!stop_locked);}

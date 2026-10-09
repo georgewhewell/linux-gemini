@@ -29,11 +29,6 @@
 #include <linux/soc/mediatek/mt6797-md1-lk-handoff.h>
 #include <linux/soc/mediatek/mt6797-md1-remap-observe.h>
 
-static bool enable_experimental_md1_emi_mpu;
-module_param_named(enable_experimental_md1_emi_mpu,
-		   enable_experimental_md1_emi_mpu, bool, 0400);
-MODULE_PARM_DESC(enable_experimental_md1_emi_mpu,
-	"allow the default-disabled one-way MT6797 MD1 EMI-MPU provider");
 
 struct mt6797_md1_emi_mpu {
 	struct device *dev;
@@ -188,11 +183,10 @@ static int mt6797_md1_emi_mpu_probe(struct platform_device *pdev)
 {
 	struct mt6797_md1_emi_mpu *mpu;
 
-	if (!READ_ONCE(enable_experimental_md1_emi_mpu) ||
-	    !device_property_read_bool(&pdev->dev,
+	if (!device_property_read_bool(&pdev->dev,
 				       "mediatek,experimental-md1-emi-mpu"))
 		return dev_err_probe(&pdev->dev, -EPERM,
-			"MD1 EMI-MPU needs explicit module and DT gates\n");
+			"MD1 EMI-MPU needs DT configuration\n");
 	if (mt6797_md1_emi_mpu_is_fatal())
 		return dev_err_probe(&pdev->dev, -EUCLEAN,
 			"MD1 EMI-MPU boot latch is fatal; reboot required\n");

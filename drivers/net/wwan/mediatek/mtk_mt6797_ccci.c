@@ -178,10 +178,6 @@ struct mt6797_ccci {
 	bool started;
 };
 
-static bool enable_mt6797_ccci;
-module_param_named(enable, enable_mt6797_ccci, bool, 0400);
-MODULE_PARM_DESC(enable, "allow MT6797 CCCI to take active CLDMA ownership");
-
 static u16 mt6797_ccci_next_sequence(struct mt6797_ccci *ccci, u16 channel)
 {
 	return (u16)atomic_fetch_inc(&ccci->tx_sequence[channel]);
@@ -1163,7 +1159,7 @@ static void mt6797_ccci_fs_work(struct work_struct *work)
 		index_released = !ret;
 	}
 	if (atomic_add_unless(&ccci->fs_logs, 1, 128))
-		dev_info(ccci->dev,
+		dev_dbg(ccci->dev,
 			 "CCCI FS op=0x%x reply_channel=15 status=%d tx_result=%d bytes=%zu\n",
 			 mt6797_fs_read32(job->frame + 16), status, ret, sent);
 	mt6797_fs_diag_end(&ccci->fs_diag, diagnostic_sequence, status, ret, sent);
@@ -1872,9 +1868,6 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	struct resource smem_res;
 	int ret;
 
-	if (!enable_mt6797_ccci)
-		return dev_err_probe(&pdev->dev, -EPERM,
-				     "active CLDMA ownership is not enabled\n");
 	ret = mt6797_ccci_validate_resources(pdev);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret,

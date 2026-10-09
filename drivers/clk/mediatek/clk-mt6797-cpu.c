@@ -1526,6 +1526,27 @@ static int mt6797_cpuclk_probe(struct platform_device *pdev)
 	return ret;
 }
 
+/*
+ * After a hibernation image is restored, firmware and the boot kernel have
+ * reset the FHCTL hopping channels this kernel had initialized. Forget them
+ * so each channel is set up again before its next hop. Everything else is
+ * read back from the hardware for each transaction.
+ */
+static int mt6797_cpuclk_restore(struct device *dev)
+{
+	struct mt6797_cpuclk *provider = dev_get_drvdata(dev);
+
+	mutex_lock(&provider->observer.lock);
+	provider->observer.fhctl_ready = 0;
+	mutex_unlock(&provider->observer.lock);
+
+	return 0;
+}
+
+static const struct dev_pm_ops mt6797_cpuclk_pm_ops = {
+	.restore = mt6797_cpuclk_restore,
+};
+
 static const struct of_device_id mt6797_cpuclk_of_match[] = {
 	{ .compatible = "mediatek,mt6797-mcumixedsys" },
 	{}
@@ -1537,6 +1558,7 @@ static struct platform_driver mt6797_cpuclk_driver = {
 	.driver = {
 		.name = "clk-mt6797-cpu",
 		.of_match_table = mt6797_cpuclk_of_match,
+		.pm = pm_sleep_ptr(&mt6797_cpuclk_pm_ops),
 	},
 };
 enum mt6797_cpuclk_mp2_operation {

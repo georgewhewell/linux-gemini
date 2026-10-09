@@ -19,6 +19,7 @@ struct mt6797_cpu_coupler {
 
 static int mt6797_cpu_coupler_fault(struct mt6797_cpu_coupler *cpu)
 {
+	pr_err("mt6797-cpu-coupler: fencing CPU DVFS: invalid or unreadable VPROC/VSRAM pair\n");
 	cpu->faulted = true;
 	mt6797_dvfsp_handoff_rail_fault(cpu->handoff);
 	return -EUCLEAN;

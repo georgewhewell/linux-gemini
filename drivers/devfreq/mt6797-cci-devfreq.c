@@ -319,7 +319,8 @@ static void mt6797_cci_update(struct work_struct *work)
 	/* Initial CPU OPP registration and concurrent frequency changes retry. */
 	if (ret == -EAGAIN)
 		mt6797_cci_queue(cci, msecs_to_jiffies(20));
-	else if (ret)
+	/* -EBUSY: a PM transition began after the check; resume requeues us. */
+	else if (ret && ret != -EBUSY)
 		dev_err_ratelimited(cci->dev, "CCI update failed: %d\n", ret);
 }
 

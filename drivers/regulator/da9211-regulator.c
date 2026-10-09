@@ -58,6 +58,17 @@ static bool da9211_volatile_reg(struct device *dev, unsigned int reg)
 	case DA9211_REG_STATUS_B:
 	case DA9211_REG_EVENT_A:
 	case DA9211_REG_EVENT_B:
+	/*
+	 * Boot firmware, and the boot kernel before a hibernation image is
+	 * restored, can change the enable and voltage selection behind the
+	 * cache: always read them from the device.
+	 */
+	case DA9211_REG_BUCKA_CONT:
+	case DA9211_REG_BUCKB_CONT:
+	case DA9211_REG_VBUCKA_A:
+	case DA9211_REG_VBUCKA_B:
+	case DA9211_REG_VBUCKB_A:
+	case DA9211_REG_VBUCKB_B:
 		return true;
 	}
 	return false;

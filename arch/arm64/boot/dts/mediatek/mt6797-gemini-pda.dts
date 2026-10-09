@@ -2572,6 +2572,14 @@
 	power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
 };
 
+&larb1 {
+	status = "okay";
+};
+
+&vcodec_decoder {
+	status = "okay";
+};
+
 &larb3 {
 	status = "okay";
 };

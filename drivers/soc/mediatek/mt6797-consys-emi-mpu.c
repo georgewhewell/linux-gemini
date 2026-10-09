@@ -42,12 +42,6 @@
  */
 #define MT6797_CONSYS_EMI_REGION19_PERMISSION	0x00b6da28
 
-static bool enable_experimental_ownership;
-module_param_named(enable_experimental_ownership, enable_experimental_ownership,
-		   bool, 0400);
-MODULE_PARM_DESC(enable_experimental_ownership,
-		 "allow the MT6797 CONSYS persistent shared-EMI ownership experiment");
-
 struct mt6797_consys_emi_mpu_resource {
 	const char *name;
 	resource_size_t start;
@@ -245,9 +239,6 @@ static int
 mt6797_consys_emi_mpu_claim_provider(struct mt6797_consys_emi_mpu *mpu)
 {
 	int ret;
-
-	if (!enable_experimental_ownership)
-		return -EPERM;
 
 	/*
 	 * protect() can have changed hardware before returning an error and the
@@ -451,10 +442,6 @@ static int mt6797_consys_emi_mpu_probe(struct platform_device *pdev)
 				   "mediatek,experimental-shared-emi-ownership"))
 		return dev_err_probe(&pdev->dev, -EPERM,
 					 "shared-EMI ownership needs explicit DT opt-in\n");
-	if (!enable_experimental_ownership)
-		return dev_err_probe(&pdev->dev, -EPERM,
-					 "shared-EMI ownership needs explicit boot opt-in\n");
-
 	mpu = devm_kzalloc(&pdev->dev, sizeof(*mpu), GFP_KERNEL);
 	if (!mpu)
 		return -ENOMEM;

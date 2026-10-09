@@ -235,8 +235,6 @@ struct mt6797_md1_cold_owner_backend {
 	u32 rf_afc_latest;
 };
 
-static bool enable_experimental_md1_cold_owner;
-static bool enable_experimental_md1_boot_vector_release;
 static bool enable_experimental_md1_firmware_load;
 /* A failed post-observation transaction may have changed MD1 state. */
 static atomic_t mt6797_md1_cold_owner_fatal_latch = ATOMIC_INIT(0);
@@ -255,14 +253,6 @@ static struct device *mt6797_md1_stage2_dev;
 static struct mt6797_md1_mpu_remap_plan mt6797_md1_stage2_plan;
 static bool mt6797_md1_stage2_armed;
 static bool mt6797_md1_stage2_complete;
-module_param_named(enable_experimental_md1_cold_owner,
-			   enable_experimental_md1_cold_owner, bool, 0400);
-MODULE_PARM_DESC(enable_experimental_md1_cold_owner,
-	"run the one-shot, source-backed MT6797 MD1 cold owner (default: false)");
-module_param_named(enable_experimental_md1_boot_vector_release,
-			enable_experimental_md1_boot_vector_release, bool, 0400);
-MODULE_PARM_DESC(enable_experimental_md1_boot_vector_release,
-	"allow the separately gated MT6797 MD1 WDT/boot-vector candidate (default: false)");
 module_param_named(enable_experimental_md1_firmware_load,
 			enable_experimental_md1_firmware_load, bool, 0400);
 MODULE_PARM_DESC(enable_experimental_md1_firmware_load,
@@ -1629,9 +1619,7 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	unsigned int i;
 	int ret;
 
-	if (!READ_ONCE(enable_experimental_md1_cold_owner) ||
-	    !READ_ONCE(enable_experimental_md1_boot_vector_release) ||
-	    !device_property_read_bool(&pdev->dev,
+	if (!device_property_read_bool(&pdev->dev,
 				       "mediatek,experimental-md1-cold-owner") ||
 	    !device_property_read_bool(&pdev->dev,
 				       "mediatek,stage-cold-reset-held") ||

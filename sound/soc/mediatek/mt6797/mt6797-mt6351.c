@@ -539,8 +539,7 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
 
 	ret = devm_snd_soc_register_card(&pdev->dev, card);
 	if (ret)
-		dev_err(&pdev->dev, "%s snd_soc_register_card fail %d\n",
-			__func__, ret);
+		ret = dev_err_probe(&pdev->dev, ret, "failed to register sound card\n");
 
 	of_node_put(codec_node);
 put_platform_node:

@@ -66,11 +66,6 @@
 #define MT6797_MD1_PROTECT_MASK			(BIT(3) | BIT(4) | BIT(5) | \
 						 BIT(7) | BIT(10) | BIT(16))
 
-static bool enable_experimental_boot_status;
-module_param_named(enable_experimental_boot_status,
-			   enable_experimental_boot_status, bool, 0400);
-MODULE_PARM_DESC(enable_experimental_boot_status,
-		 "allow the one-shot MT6797 MD1 boot-status observation (default: false)");
 
 static DEFINE_MUTEX(mt6797_md1_boot_status_evidence_lock);
 static struct mt6797_md1_boot_status_evidence mt6797_md1_boot_status_evidence;
@@ -232,11 +227,10 @@ static int mt6797_md1_boot_status_probe(struct platform_device *pdev)
 	unsigned int i;
 	int ret;
 
-	if (!READ_ONCE(enable_experimental_boot_status) ||
-	    !device_property_read_bool(dev,
+	if (!device_property_read_bool(dev,
 				       "mediatek,experimental-md1-boot-status"))
 		return dev_err_probe(dev, -EPERM,
-			"refusing MD1 boot-status observation without both explicit gates\n");
+			"refusing MD1 boot-status observation without DT configuration\n");
 	/*
 	 * This observer is meaningful only after the LK hand-off probe has verified
 	 * the native v2 table, image/load evidence and live CCCI mblock contract.

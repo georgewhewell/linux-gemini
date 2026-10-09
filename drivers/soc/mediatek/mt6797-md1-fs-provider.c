@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Opt-in, boot-lifetime MD1 filesystem authority. Legacy Z is read-only
+/* Boot-lifetime MD1 filesystem authority. Legacy Z is read-only
  * ext4 or bounded tmpfs; atomic Z/X/Y mode retains three distinct tmpfs roots.
  */
 #include <linux/capability.h>
@@ -26,14 +26,6 @@
 #include "mt6797-md1-fs-state.h"
 #include "mt6797-md1-fs-archive.h"
 
-static bool enable;
-module_param(enable, bool, 0400);
-MODULE_PARM_DESC(enable, "Require explicit read-only MD1 filesystem authority before cold boot");
-
-static bool enable_volatile;
-module_param(enable_volatile, bool, 0400);
-MODULE_PARM_DESC(enable_volatile, "Allow experimental bounded writable tmpfs backing only");
-
 static DEFINE_SPINLOCK(provider_lock);
 static struct mt6797_fs_state provider_state;
 static struct file *provider_file; /* Z, including legacy registration */
@@ -45,7 +37,7 @@ static struct device *provider_cold;
 
 bool mt6797_md1_fs_provider_enabled(void)
 {
-	return READ_ONCE(enable);
+	return true;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_enabled);
 
@@ -110,8 +102,6 @@ int mt6797_md1_fs_provider_require(struct device *cold)
 	unsigned long flags;
 	int ret;
 
-	if (!enable)
-		return 0;
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = mt6797_fs_require(&provider_state);
 	if (!ret && (provider_cold != cold || !mt6797_fs_roots_accessible()))
@@ -125,8 +115,6 @@ int mt6797_md1_fs_provider_claim(struct device *cold)
 	unsigned long flags;
 	int ret;
 
-	if (!enable)
-		return 0;
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = provider_cold == cold && mt6797_fs_roots_accessible() ?
 		mt6797_fs_claim(&provider_state) : -EPERM;
@@ -1192,8 +1180,6 @@ static int mt6797_fs_register_archive(int fd)
 	int seals, ret;
 	const int required = F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL;
 
-	if (!enable_volatile)
-		return -EPERM;
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = 0;
 	if (provider_state.stage != MT6797_FS_EMPTY || provider_archive.data)
@@ -1268,8 +1254,6 @@ static int mt6797_fs_register_fds(const int *fds, unsigned int count, bool ram)
 
 	if (count != 1 && (count != 3 || !ram))
 		return -EINVAL;
-	if (ram && !enable_volatile)
-		return -EPERM;
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = archive_installing ? -EBUSY :
 	      provider_archive.data && !ram ? -EINVAL :
@@ -1357,7 +1341,7 @@ static long mt6797_fs_ioctl(struct file *file, unsigned int cmd, unsigned long a
 	struct mt6797_md1_fs_registration registration;
 	struct mt6797_md1_fs_ram_roots roots;
 
-	if (!enable || !ns_capable(&init_user_ns, CAP_SYS_ADMIN))
+	if (!ns_capable(&init_user_ns, CAP_SYS_ADMIN))
 		return -EPERM;
 	if (cmd == MT6797_MD1_FS_CANCEL)
 		return mt6797_fs_cancel_registration();
@@ -1397,7 +1381,7 @@ static struct miscdevice mt6797_fs_device = {
 
 static int __init mt6797_fs_init(void)
 {
-	return enable ? misc_register(&mt6797_fs_device) : 0;
+	return misc_register(&mt6797_fs_device);
 }
 device_initcall(mt6797_fs_init);
 /* Built-in only. A consumed provider pins its authority until this boot ends. */

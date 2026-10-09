@@ -852,7 +852,8 @@
 				 * the cooling until the SoC is actually cool.
 				 */
 				cpu_throttle: cpu-throttle {
-					temperature = <80000>;
+					/* Vendor CPU thermal policy starts cooling at 85 C. */
+					temperature = <85000>;
 					hysteresis = <15000>;
 					type = "passive";
 				};

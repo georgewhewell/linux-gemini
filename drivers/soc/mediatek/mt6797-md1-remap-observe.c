@@ -31,11 +31,6 @@
 #define MT6797_MD1_INFRACFG_AO_BASE	0x10001000
 #define MT6797_MD1_INFRACFG_AO_SIZE	0x1000
 
-static bool enable_experimental_md1_remap_observe;
-module_param_named(enable_experimental_md1_remap_observe,
-			   enable_experimental_md1_remap_observe, bool, 0400);
-MODULE_PARM_DESC(enable_experimental_md1_remap_observe,
-	"allow one explicitly gated, read-only MT6797 MD1 remap/lock observation");
 
 struct mt6797_md1_remap_observe_io {
 	struct device *dev;
@@ -93,13 +88,12 @@ static int mt6797_md1_remap_observe_probe(struct platform_device *pdev)
 	void __iomem *base;
 	int ret;
 
-	if (!READ_ONCE(enable_experimental_md1_remap_observe) ||
-	    !device_property_read_bool(dev,
+	if (!device_property_read_bool(dev,
 		"mediatek,experimental-md1-remap-observe") ||
 	    !device_property_read_bool(dev,
 		"mediatek,stage-lk-remap-observe-read-only"))
 		return dev_err_probe(dev, -EPERM,
-			"remap observer requires independent cmdline and read-only DT gates\n");
+			"remap observer requires read-only DT configuration\n");
 
 	/* Do not map or read infracfg until the other gate has validated LK data. */
 	ret = mt6797_md1_lk_handoff_plan_get(&plan);

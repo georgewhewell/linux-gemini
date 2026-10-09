@@ -45,7 +45,7 @@ struct inode {struct super_block *i_sb;};struct dentry {bool dir;};
 struct path {struct vfsmount *mnt;struct dentry *dentry;};
 struct file {struct path f_path;int f_mode,refs;struct inode inode;};
 struct device {int refs;};
-static bool enable=true,locked,enable_volatile,provider_volatile;
+static bool locked,provider_volatile;
 static void might_sleep(void){assert(!locked);}
 static int mode,attaches,stats_calls,file_puts,unlock_count;
 static struct device target;
@@ -114,7 +114,7 @@ static int device_attach(struct device *d){
  assert(!mt6797_md1_fs_provider_require(d));assert(!mt6797_md1_fs_provider_claim(d));return 1;
 }
 static void reset(int m){
- assert(!locked);archive_installing=false;provider_archive=(struct mt6797_fs_archive){0};archive_frees=0;enable_volatile=false;provider_volatile=false;mode=m;attaches=stats_calls=file_puts=unlock_count=0;
+ assert(!locked);archive_installing=false;provider_archive=(struct mt6797_fs_archive){0};archive_frees=0;provider_volatile=false;mode=m;attaches=stats_calls=file_puts=unlock_count=0;
  mount=(struct vfsmount){MNT_READONLY};sb=(struct super_block){SB_RDONLY,EXT4_SUPER_MAGIC};dent.dir=true;
  backing=(struct file){.f_path={&mount,&dent},.inode={&sb}};target.refs=0;
  observed=(struct kstatfs){4096,12345,6789,4096,EXT4_SUPER_MAGIC,4096};
@@ -126,7 +126,7 @@ static void fail_check(int expected){
  assert(provider_state.stage==MT6797_FS_CANCELLED&&mt6797_fs_register_fd(7,false)==-EALREADY);
 }
 static void reset_roots(int mode){
- reset(mode);enable_volatile=true;mount.mnt_flags=0;sb.s_flags=0;sb.s_magic=TMPFS_MAGIC;
+ reset(mode);mount.mnt_flags=0;sb.s_flags=0;sb.s_magic=TMPFS_MAGIC;
  observed.f_type=TMPFS_MAGIC;observed.f_blocks=16384;observed.f_files=4096;
  for(int i=0;i<2;i++){extra_sb[i]=sb;extra_mount[i]=mount;}
 }
@@ -173,13 +173,13 @@ int main(void){
  assert(!mt6797_fs_cancel_registration()&&!backing.refs&&!target.refs);
 
  /* The new authority cannot turn writable ext4 into an accepted backing. */
- reset(0);assert(mt6797_fs_register_fd(7,true)==-EPERM&&!backing.refs&&!target.refs);
- reset(0);enable_volatile=true;mount.mnt_flags=0;sb.s_flags=0;
+ reset(0);assert(mt6797_fs_register_fd(7,true)==-EROFS&&!backing.refs&&!target.refs);
+ reset(0);mount.mnt_flags=0;sb.s_flags=0;
  assert(mt6797_fs_register_fd(7,true)==-EROFS&&!backing.refs&&!target.refs);
- reset(0);enable_volatile=true;sb.s_magic=TMPFS_MAGIC;observed.f_type=TMPFS_MAGIC;
+ reset(0);sb.s_magic=TMPFS_MAGIC;observed.f_type=TMPFS_MAGIC;
  assert(mt6797_fs_register_fd(7,true)==-EROFS&&!backing.refs&&!target.refs);
  for(int failure=0;failure<7;failure++){
-   reset(0);enable_volatile=true;mount.mnt_flags=0;sb.s_flags=0;sb.s_magic=TMPFS_MAGIC;
+   reset(0);mount.mnt_flags=0;sb.s_flags=0;sb.s_magic=TMPFS_MAGIC;
    observed.f_type=TMPFS_MAGIC;observed.f_blocks=16384;observed.f_files=4096;
    if(failure==0)observed.f_blocks=16385;
    if(failure==1)observed.f_blocks=0;
@@ -190,14 +190,14 @@ int main(void){
    if(failure==6)observed.f_blocks=UINT64_MAX;
    assert(mt6797_fs_register_fd(7,true)==-EFBIG&&!backing.refs&&!target.refs);
  }
- reset(0);enable_volatile=true;mount.mnt_flags=0;sb.s_flags=0;sb.s_magic=TMPFS_MAGIC;
+ reset(0);mount.mnt_flags=0;sb.s_flags=0;sb.s_magic=TMPFS_MAGIC;
  observed.f_type=TMPFS_MAGIC;observed.f_blocks=16384;observed.f_files=4096;
  assert(!mt6797_fs_register_fd(7,true)&&provider_volatile);
  assert(attaches==1&&backing.refs==1&&target.refs==1);
  assert(!mt6797_md1_fs_provider_stats(&stats)&&stats.blocks==16384);
  assert(mt6797_fs_cancel_registration()==-EBUSY);
  sb.s_magic=EXT4_SUPER_MAGIC;assert(mt6797_md1_fs_provider_stats(&stats)==-ENODEV);
- puts("PASS RAM authority: opt-in required, writable ext4 refused, read-only tmpfs refused, zero/oversized capacities refused, bounded tmpfs consumed, backend change invalidates access");
+ puts("PASS RAM authority: writable ext4 refused, read-only tmpfs refused, zero/oversized capacities refused, bounded tmpfs consumed, backend change invalidates access");
 
  /* Execute the real ioctl dispatcher: distinct commands cannot weaken disk policy. */
  struct mt6797_md1_fs_registration reg={.version=1,.directory_fd=7};
@@ -206,11 +206,11 @@ int main(void){
  assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER,0)==-EFAULT);
  reg.flags=1;assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM,(unsigned long)&reg)==-EINVAL);reg.flags=0;
  reg.reserved=1;assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM,(unsigned long)&reg)==-EINVAL);reg.reserved=0;
- assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM,(unsigned long)&reg)==-EPERM);
- assert(!mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER,(unsigned long)&reg)&&!provider_volatile);
- reset(0);enable_volatile=true;mount.mnt_flags=0;sb.s_flags=0;
+ assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM,(unsigned long)&reg)==-EROFS);
+ reset(0);assert(!mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER,(unsigned long)&reg)&&!provider_volatile);
+ reset(0);mount.mnt_flags=0;sb.s_flags=0;
  assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER,(unsigned long)&reg)==-EROFS);
- reset(0);enable_volatile=true;mount.mnt_flags=0;sb.s_flags=0;sb.s_magic=TMPFS_MAGIC;
+ reset(0);mount.mnt_flags=0;sb.s_flags=0;sb.s_magic=TMPFS_MAGIC;
  observed.f_type=TMPFS_MAGIC;observed.f_blocks=16384;observed.f_files=4096;
  assert(!mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM,(unsigned long)&reg)&&provider_volatile);
  /* Execute new atomic ioctl with real registration and FD/VFS adapters. */
@@ -219,7 +219,7 @@ int main(void){
  roots.flags=1;assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM_ROOTS,(unsigned long)&roots)==-EINVAL);roots.flags=0;
  roots.reserved=1;assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM_ROOTS,(unsigned long)&roots)==-EINVAL);roots.reserved=0;
  assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM_ROOTS,0)==-EFAULT);
- enable_volatile=false;assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM_ROOTS,(unsigned long)&roots)==-EPERM);
+ admin=false;assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM_ROOTS,(unsigned long)&roots)==-EPERM);admin=true;
  for(int bad=0;bad<3;bad++){
   reset_roots(0);roots.directory_fd[bad]=-1;
   assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_RAM_ROOTS,(unsigned long)&roots)==-EBADF);
@@ -278,7 +278,7 @@ int main(void){
  observed.f_bfree=77;mode=17;
  assert(mt6797_md1_fs_provider_stats(&stats)==-EROFS&&stats.free_blocks==88&&backing.refs==refs);
  assert(mt6797_md1_fs_provider_stats(NULL)==-EINVAL&&backing.refs==refs);
- reset(0);sb.s_magic=TMPFS_MAGIC;sb.s_flags=0;mount.mnt_flags=0;enable_volatile=true;
+ reset(0);sb.s_magic=TMPFS_MAGIC;sb.s_flags=0;mount.mnt_flags=0;
  observed.f_type=TMPFS_MAGIC;observed.f_blocks=16384;observed.f_bfree=16000;observed.f_files=4096;
  assert(!mt6797_fs_register_fd(7,true));
  observed.f_bfree=3;assert(!mt6797_md1_fs_provider_stats(&stats)&&stats.free_blocks==3);
@@ -286,7 +286,7 @@ int main(void){
  assert(mt6797_md1_fs_provider_stats(&stats)==-EFBIG&&stats.free_blocks==3);
  puts("PASS live statistics: post-registration free-space changes, VFS error, overflow, policy drift, RAM bounds and unchanged output on failure");
  puts("PASS atomic Z/X/Y: all FD failures release refs; disk/alias refusal; cancellation and claim races; all-root preclaim check; exact root selection; unknown/unregistered roots refused");
- puts("PASS actual ioctl: privilege/unknown/copy/shape/opt-in refusals, distinct RO and RAM commands");
+ puts("PASS actual ioctl: privilege/unknown/copy/shape refusals, distinct RO and RAM commands");
  puts("PASS actual FS registration: FD/VFS failures, mount+superblock RO, returned type, refs, single publication, concurrent claim/cancel before attach, cancellation at attach, consumed lifetime");
 }
 '''

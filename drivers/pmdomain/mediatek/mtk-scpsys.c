@@ -28,9 +28,6 @@
 #include "mtk-scpsys-internal.h"
 #include "mt6797-gpuldo-owner.h"
 
-static bool mt6797_gpuldo_owner_enable;
-module_param_named(mt6797_gpuldo_owner, mt6797_gpuldo_owner_enable, bool, 0400);
-MODULE_PARM_DESC(mt6797_gpuldo_owner, "Experimental Gemini exclusive fixed-profile GPULDO supply owner");
 #define MT6797_GPULDO_DOMAIN_MASK GENMASK(13, 8)
 
 #define MTK_POLL_DELAY_US   10
@@ -682,8 +679,7 @@ static int scpsys_gpuldo_validate_dt(struct device *dev)
 
 	if (!of_property_read_bool(np, "mediatek,gemini-gpuldo-owner"))
 		return 0;
-	if (!mt6797_gpuldo_owner_enable ||
-	    !of_machine_is_compatible("planet,gemini-pda") ||
+	if (!of_machine_is_compatible("planet,gemini-pda") ||
 	    !of_machine_is_compatible("mediatek,mt6797") ||
 	    !of_device_is_compatible(np, "mediatek,mt6797-scpsys"))
 		return -EPERM;

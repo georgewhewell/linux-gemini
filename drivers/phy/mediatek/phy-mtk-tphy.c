@@ -1828,10 +1828,8 @@ static int mtk_tphy_probe(struct platform_device *pdev)
 		tphy->phys[port] = instance;
 
 		phy = devm_phy_create(dev, child_np, &mtk_tphy_ops);
-		if (IS_ERR(phy)) {
-			dev_err(dev, "failed to create phy\n");
-			return PTR_ERR(phy);
-		}
+		if (IS_ERR(phy))
+			return dev_err_probe(dev, PTR_ERR(phy), "failed to create phy\n");
 
 		subdev = &phy->dev;
 		retval = of_address_to_resource(child_np, 0, &res);

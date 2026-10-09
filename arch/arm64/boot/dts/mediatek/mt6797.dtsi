@@ -1285,6 +1285,36 @@
 		status = "disabled";
 	};
 
+	vcodec_decoder: video-codec@16020000 {
+		compatible = "mediatek,mt6797-vcodec-dec";
+		reg = <0 0x16020000 0 0x1000>,
+		      <0 0x16021000 0 0x800>,
+		      <0 0x16021800 0 0x800>,
+		      <0 0x16022000 0 0x1000>,
+		      <0 0x16023000 0 0x1000>,
+		      <0 0x16024000 0 0x1000>,
+		      <0 0x16025000 0 0x1000>;
+		reg-names = "misc", "vld", "vld-top", "mc", "avc-vld", "avc-mv", "pp";
+		interrupts = <GIC_SPI 240 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vdecsys CLK_VDEC_CKEN>,
+			 <&vdecsys CLK_VDEC_ACTIVE>,
+			 <&vdecsys CLK_VDEC_CKEN_ENG>;
+		clock-names = "bus", "active", "engine";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VDEC>;
+		mediatek,larbs = <&larb1>;
+		iommus = <&m4u M4U_PORT_VDEC_MC>,
+			 <&m4u M4U_PORT_VDEC_PP>,
+			 <&m4u M4U_PORT_VDEC_UFO>,
+			 <&m4u M4U_PORT_VDEC_VLD>,
+			 <&m4u M4U_PORT_VDEC_VLD2>,
+			 <&m4u M4U_PORT_VDEC_AVC_MV>,
+			 <&m4u M4U_PORT_VDEC_PRED_RD>,
+			 <&m4u M4U_PORT_VDEC_PRED_WR>,
+			 <&m4u M4U_PORT_VDEC_PPWRAP>,
+			 <&m4u M4U_PORT_VDEC_TILE>;
+		status = "disabled";
+	};
+
 	vencsys: syscon@17000000 {
 		compatible = "mediatek,mt6797-vencsys", "syscon";
 		reg = <0 0x17000000 0 0x1000>;

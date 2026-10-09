@@ -1733,9 +1733,28 @@ static void bq25890_shutdown(struct i2c_client *client)
 }
 
 #ifdef CONFIG_PM_SLEEP
+static void bq25890_status_poll_start(struct bq25890_device *bq)
+{
+	if (!bq->status_poll_interval_ms)
+		return;
+	WRITE_ONCE(bq->status_poll_enabled, true);
+	schedule_delayed_work(&bq->status_poll_work,
+			      msecs_to_jiffies(bq->status_poll_interval_ms));
+}
+
 static int bq25890_suspend(struct device *dev)
 {
 	struct bq25890_device *bq = dev_get_drvdata(dev);
+	int ret;
+
+	/*
+	 * The status poll runs on the system workqueue, which is not frozen:
+	 * stop it before the I2C controller suspends.
+	 */
+	if (bq->status_poll_interval_ms) {
+		WRITE_ONCE(bq->status_poll_enabled, false);
+		cancel_delayed_work_sync(&bq->status_poll_work);
+	}
 
 	/*
 	 * If charger is removed, while in suspend, make sure ADC is diabled
@@ -1744,7 +1763,11 @@ static int bq25890_suspend(struct device *dev)
 	if (bq->read_only)
 		return 0;
 
-	return bq25890_field_write(bq, F_CONV_RATE, 0);
+	ret = bq25890_field_write(bq, F_CONV_RATE, 0);
+	if (ret < 0)
+		bq25890_status_poll_start(bq);	/* no resume follows a failed suspend */
+
+	return ret;
 }
 
 static int bq25890_resume(struct device *dev)
@@ -1770,6 +1793,7 @@ static int bq25890_resume(struct device *dev)
 
 unlock:
 	mutex_unlock(&bq->lock);
+	bq25890_status_poll_start(bq);
 
 	return ret;
 }

@@ -61,9 +61,13 @@ typedef uint32_t u32;
 #define ERR_PTR(e) ((void*)(intptr_t)(e))
 #define dev_err_probe(dev,ret,...) (ret)
 #define dev_info(...) ((void)0)
+#define dev_err(...) ((void)0)
 #define dev_err_ratelimited(...) ((void)0)
 #define pm_sleep_ptr(p) (p)
 #define DEFINE_SIMPLE_DEV_PM_OPS(n,s,r) int n
+struct device;
+struct dev_pm_ops { int (*suspend)(struct device *); int (*resume)(struct device *); int (*freeze)(struct device *);
+ int (*thaw)(struct device *); int (*poweroff)(struct device *); int (*restore)(struct device *); };
 #define for_each_possible_cpu(c) for((c)=0;(c)<10;(c)++)
 struct mutex { int held; };
 static int cpu_read,cpu_write;
@@ -105,7 +109,7 @@ struct devfreq_governor { const char *name; unsigned int flags;
  int (*event_handler)(struct devfreq*,unsigned int,void*); };
 struct of_device_id { const char *compatible; };
 struct platform_driver { int (*probe)(struct platform_device*);
- struct { const char *name; const struct of_device_id *of_match_table; int *pm; bool suppress_bind_attrs; } driver; };
+ struct { const char *name; const struct of_device_id *of_match_table; const struct dev_pm_ops *pm; bool suppress_bind_attrs; } driver; };
 static struct clk clocks[4];
 static struct regulator supply;
 static struct device cpudev[10];
@@ -362,6 +366,14 @@ int main(void)
  mt6797_cci_frequency_event(&c->frequency_nb,CPUFREQ_POSTCHANGE,NULL);assert(!c->work.pending);
  assert(!mt6797_cci_resume(&pdev.dev) && c->suspended && df.suspend_count==1);
  devfreq_resume_device(&df);assert(!c->suspended && c->work.pending);work_once(c);
+ /* Hibernation: thaw keeps the cached state; restore adopts changed hardware. */
+ assert(!mt6797_cci_pm.freeze(&pdev.dev) && c->suspended);
+ assert(!mt6797_cci_pm.thaw(&pdev.dev) && !c->suspended);work_once(c);
+ assert(!mt6797_cci_pm.freeze(&pdev.dev));
+ clocks[0].rate=611000000;supply.vote=1000000;
+ assert(!mt6797_cci_pm.restore(&pdev.dev));
+ assert(c->state.ready && c->state.hz==611000000 && df.previous_freq==611000000 && !owner.faulted);
+ assert(!c->suspended);work_once(c);assert(!owner.faulted);
  cpumask_t managed={15};struct cpufreq_policy policy={&managed};
  cpu_write=1;mt6797_cci_policy_event(&c->policy_nb,CPUFREQ_REMOVE_POLICY,&policy);cpu_write=0;
  assert(c->stopping && owner.faulted);queues=0;mt6797_cci_queue(c,0);assert(!queues);

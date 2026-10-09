@@ -82,6 +82,8 @@ static void mt6797_cci_fence(void *context)
 {
 	struct mt6797_cci *cci = context;
 
+	dev_err(cci->dev, "fencing CPU DVFS: CCI state %u Hz/%u uV no longer matches hardware\n",
+		cci->state.hz, cci->state.vote_uv);
 	mt6797_dvfsp_handoff_rail_fault(cci->handoff);
 }
 
@@ -547,7 +549,45 @@ static int mt6797_cci_resume(struct device *dev)
 	/* The final nested resume event reopens notification-driven work. */
 	return devfreq_resume_device(cci->devfreq);
 }
-static DEFINE_SIMPLE_DEV_PM_OPS(mt6797_cci_pm, mt6797_cci_suspend, mt6797_cci_resume);
+
+/*
+ * A restored hibernation image holds the CCI state cached when the snapshot
+ * was taken, but the boot kernel (or this kernel writing the image) has
+ * changed the fabric clock and vote since. Adopt the hardware again, exactly
+ * as at probe, before devfreq resumes.
+ */
+static int mt6797_cci_restore(struct device *dev)
+{
+	struct mt6797_cci *cci = dev_get_drvdata(dev);
+	int ret;
+
+	mutex_lock(&cci->devfreq->lock);
+	if (cci->state.faulted) {
+		ret = -EHOSTDOWN;
+	} else {
+		cci->state.ready = false;
+		ret = mt6797_cci_adopt(&cci->state, &mt6797_cci_io, cci);
+		if (!ret)
+			cci->devfreq->previous_freq = cci->state.hz;
+	}
+	mutex_unlock(&cci->devfreq->lock);
+	if (ret) {
+		dev_err(dev, "CCI re-adoption after restore failed: %d\n", ret);
+		return ret;
+	}
+	dev_info(dev, "re-adopted CCI at %u Hz, vote %u uV after restore\n",
+		 cci->state.hz, cci->state.vote_uv);
+	return devfreq_resume_device(cci->devfreq);
+}
+
+static const struct dev_pm_ops mt6797_cci_pm = {
+	.suspend = mt6797_cci_suspend,
+	.resume = mt6797_cci_resume,
+	.freeze = mt6797_cci_suspend,
+	.thaw = mt6797_cci_resume,
+	.poweroff = mt6797_cci_suspend,
+	.restore = mt6797_cci_restore,
+};
 
 static const struct of_device_id mt6797_cci_match[] = {
 	{ .compatible = "mediatek,mt6797-cci" },

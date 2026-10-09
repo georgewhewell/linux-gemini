@@ -51,6 +51,7 @@ typedef int suspend_state_t;
 #define REGULATOR_CHANGE_VOLTAGE 1
 #define BUG_ON(a) assert(!(a))
 #define rdev_err(...) ((void)0)
+#define pr_err(...) ((void)0)
 #define MODULE_DESCRIPTION(x)
 #define MODULE_LICENSE(x)
 #define arch_initcall(x)

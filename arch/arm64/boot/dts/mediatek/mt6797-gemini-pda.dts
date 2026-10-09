@@ -854,7 +854,8 @@
 				cpu_throttle: cpu-throttle {
 					/* Vendor CPU thermal policy starts cooling at 85 C. */
 					temperature = <85000>;
-					hysteresis = <15000>;
+					/* Keep the qualified 65 C release point. */
+					hysteresis = <20000>;
 					type = "passive";
 				};
 

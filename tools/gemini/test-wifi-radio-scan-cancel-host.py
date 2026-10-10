@@ -18,17 +18,24 @@ base = runpy.run_path(str(Path(__file__).with_name('test-wifi-radio-worker-host.
 driver = base['driver']
 program = base['program'].split('enum stage {')[0]
 program = program.replace('struct ieee80211_channel { int dummy; };',
-    'struct ieee80211_channel { unsigned band,hw_value; };')
+    'struct ieee80211_channel { unsigned band,hw_value,flags; };')
 program = program.replace('struct mt6797_wifi_hif_irq { int lifecycle_lock; bool attached; };',
     'struct mt6797_wifi_hif_irq { int lifecycle_lock,mode; bool attached; };')
 program += r'''
 #define BIT(n) (1U << (n))
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define ALIGN(n,a) (((n)+(a)-1)&~((a)-1))
 #define check_add_overflow(a,b,p) __builtin_add_overflow(a,b,p)
 #define NL80211_BAND_2GHZ 0
 #define MT6797_WIFI_HIF_IRQ_RUNTIME 2
 #define MT6797_WIFI_MCR_WTDR1 0x34
-struct cfg80211_scan_request { unsigned n_channels; struct ieee80211_channel **channels; };
+#define IEEE80211_CHAN_NO_IR 2
+#define IEEE80211_CHAN_RADAR 4
+struct cfg80211_ssid { u8 ssid[32]; unsigned ssid_len; };
+struct cfg80211_scan_request {
+ unsigned n_channels,n_ssids,ie_len; struct ieee80211_channel **channels;
+ struct cfg80211_ssid *ssids; const u8 *ie;
+};
 struct cfg80211_scan_info { bool aborted; };
 static struct mt6797_wifi_radio r;
 static struct mt6797_wifi_hif_irq irq;
@@ -39,6 +46,7 @@ static void *wiphy_priv(struct wiphy *w) { (void)w; return &r; }
 static void reinit_completion(struct completion *c) { c->done=false; }
 static unsigned long msecs_to_jiffies(unsigned n) { return n; }
 static void put_unaligned_le16(u16 n,void *p) { u8 *b=p; b[0]=n; b[1]=n>>8; }
+static void put_unaligned_le32(u32 n,void *p) { u8 *b=p; b[0]=n; b[1]=n>>8; b[2]=n>>16; b[3]=n>>24; }
 static unsigned long wait_for_completion_timeout(struct completion *,unsigned long);
 static int mt6797_wifi_hif_runtime_send(struct mt6797_wifi_hif_irq *,u32,const u8 *,size_t);
 static int mt6797_radio_frame(void *context,const struct mt6797_wifi_rx_view *frame) {
@@ -70,7 +78,8 @@ program += protocol[protocol.index('int mt6797_wifi_command_init('):
                     protocol.index('int mt6797_wifi_basic_config_build(')]
 program += re.sub(r'^#include .*\n', '', (driver / 'scan.c').read_text(), flags=re.M)
 for name in ('mt6797_radio_scan_event', 'mt6797_radio_event', 'mt6797_radio_abort',
-             'mt6797_radio_cancel_scan', 'mt6797_radio_scan_work', 'mt6797_radio_abort_scan'):
+             'mt6797_radio_cancel_scan', 'mt6797_radio_scan_probe',
+             'mt6797_radio_scan_work', 'mt6797_radio_abort_scan'):
     program += base['function'](name)
 program += r'''
 static void deliver_done(bool foreign,bool malformed) {

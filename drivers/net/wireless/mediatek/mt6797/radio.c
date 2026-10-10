@@ -377,6 +377,32 @@ static void mt6797_radio_cancel_scan(struct mt6797_wifi_radio *radio)
 	spin_unlock_irqrestore(&radio->lock, flags);
 }
 
+static int mt6797_radio_scan_probe(struct cfg80211_scan_request *request,
+	struct mt6797_wifi_scan_probe *probe,
+	struct mt6797_wifi_scan_ssid ssids[MT6797_WIFI_SCAN_MAX_SSIDS])
+{
+	unsigned int index;
+
+	if (request->n_ssids > MT6797_WIFI_SCAN_MAX_SSIDS ||
+	    (request->n_ssids && !request->ssids))
+		return -EINVAL;
+	*probe = (struct mt6797_wifi_scan_probe) {
+		.active = request->n_ssids != 0,
+		.ssids = ssids,
+		.ssid_count = request->n_ssids,
+		.ies = request->ie,
+		.ie_length = request->ie_len,
+	};
+	for (index = 0; index < request->n_ssids; index++) {
+		if (request->ssids[index].ssid_len > MT6797_WIFI_SCAN_MAX_SSID_LENGTH)
+			return -EINVAL;
+		ssids[index].length = request->ssids[index].ssid_len;
+		memcpy(ssids[index].bytes, request->ssids[index].ssid,
+		       ssids[index].length);
+	}
+	return mt6797_wifi_scan_probe_validate(probe);
+}
+
 static void mt6797_radio_scan_work(struct work_struct *work)
 {
 	struct mt6797_wifi_radio *radio =
@@ -386,12 +412,16 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 		.abort = mt6797_radio_abort, .context = radio,
 	};
 	struct mt6797_wifi_scan_channel channels[MT6797_WIFI_SCAN_MAX_CHANNELS];
+	struct mt6797_wifi_scan_ssid ssids[MT6797_WIFI_SCAN_MAX_SSIDS];
+	struct mt6797_wifi_scan_probe probe;
 	struct cfg80211_scan_info info = {};
 	struct cfg80211_scan_request *request = radio->request;
-	u8 command[MT6797_WIFI_SCAN_COMMAND_LENGTH];
+	u8 command[MT6797_WIFI_SCAN_MAX_COMMAND_LENGTH];
+	size_t command_length;
 	unsigned long flags;
 	unsigned int offset = 0, count, index;
 	bool attached = false, sent, needs_fence, on_link;
+	bool wildcard = false, specified = false, wildcard_phase = false;
 	int ret = 0;
 
 	spin_lock_irqsave(&radio->lock, flags);
@@ -410,9 +440,33 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 			goto out;
 		attached = true;
 	}
+	ret = mt6797_radio_scan_probe(request, &probe, ssids);
+	if (ret)
+		goto out;
+	for (index = 0; index < probe.ssid_count; index++) {
+		if (ssids[index].length)
+			specified = true;
+		else
+			wildcard = true;
+	}
 	while (offset < request->n_channels) {
+		probe.ssid_count = wildcard_phase ? 0 : request->n_ssids;
+		probe.active = request->n_ssids &&
+			!(request->channels[offset]->flags &
+			  (IEEE80211_CHAN_NO_IR | IEEE80211_CHAN_RADAR));
 		count = min_t(unsigned int, request->n_channels - offset,
 			      ARRAY_SIZE(channels));
+		/* A firmware command has one scan type: retain every channel. */
+		for (index = 1; index < count; index++) {
+			bool active = request->n_ssids &&
+				!(request->channels[offset + index]->flags &
+				  (IEEE80211_CHAN_NO_IR | IEEE80211_CHAN_RADAR));
+
+			if (active != probe.active) {
+				count = index;
+				break;
+			}
+		}
 		for (index = 0; index < count; index++) {
 			struct ieee80211_channel *channel = request->channels[offset + index];
 
@@ -430,9 +484,9 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 		reinit_completion(&radio->scan_done);
 		radio->scan = (struct mt6797_wifi_scan_transaction) {};
 		radio->scan_error = 0;
-		ret = mt6797_wifi_scan_start(&radio->scan, channels, count,
-			++radio->command_sequence, ++radio->scan_sequence,
-			command, sizeof(command));
+		ret = mt6797_wifi_scan_start_probe(&radio->scan, channels, count,
+			&probe, ++radio->command_sequence, ++radio->scan_sequence,
+			command, sizeof(command), &command_length);
 		radio->armed = !ret;
 		spin_unlock_irqrestore(&radio->lock, flags);
 		if (ret)
@@ -440,7 +494,7 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 		if (on_link)
 			mutex_lock(&radio->irq->lifecycle_lock);
 		ret = mt6797_wifi_hif_runtime_send(radio->irq,
-			MT6797_WIFI_MCR_WTDR1, command, sizeof(command));
+			MT6797_WIFI_MCR_WTDR1, command, command_length);
 		if (on_link)
 			mutex_unlock(&radio->irq->lifecycle_lock);
 		sent = !ret;
@@ -480,7 +534,17 @@ static void mt6797_radio_scan_work(struct work_struct *work)
 			}
 			break;
 		}
-		offset += count;
+		/*
+		 * Public GEN3 senders use either wildcard or specified SSIDs.
+		 * A mixed cfg80211 request gets both supported command forms;
+		 * passive channels are visited once without emitting probes.
+		 */
+		if (probe.active && wildcard && specified && !wildcard_phase) {
+			wildcard_phase = true;
+		} else {
+			offset += count;
+			wildcard_phase = false;
+		}
 	}
 out:
 	if (attached)
@@ -499,21 +563,19 @@ static int mt6797_radio_scan(struct wiphy *wiphy,
 			    struct cfg80211_scan_request *request)
 {
 	struct mt6797_wifi_radio *radio = wiphy_priv(wiphy);
+	struct mt6797_wifi_scan_ssid ssids[MT6797_WIFI_SCAN_MAX_SSIDS];
+	struct mt6797_wifi_scan_probe probe;
 	unsigned long flags;
 	unsigned int index;
 	int ret = 0;
 
-	/*
-	 * The firmware scan is passive, so no probe request is sent: a lone
-	 * wildcard SSID (wpa_supplicant always asks for one) finds the same
-	 * beaconing BSSs, and probe request IEs have nothing to go into, while
-	 * a named SSID for a hidden network cannot be served. iw adds
-	 * COLOCATED_6GHZ by default; there is no 6 GHz band.
-	 */
-	if (request->n_ssids > 1 ||
-	    (request->n_ssids && request->ssids[0].ssid_len) ||
-	    (request->flags & ~NL80211_SCAN_FLAG_COLOCATED_6GHZ))
+	/* iw adds COLOCATED_6GHZ by default; there is no 6 GHz band. */
+	if (request->flags & ~(NL80211_SCAN_FLAG_COLOCATED_6GHZ |
+			       NL80211_SCAN_FLAG_FLUSH))
 		return -EOPNOTSUPP;
+	ret = mt6797_radio_scan_probe(request, &probe, ssids);
+	if (ret)
+		return ret;
 	if (!request->n_channels)
 		return -EINVAL;
 	for (index = 0; index < request->n_channels; index++)
@@ -2901,9 +2963,9 @@ struct mt6797_wifi_radio *mt6797_wifi_radio_register(struct device *dev,
 	set_wiphy_dev(wiphy, dev);
 	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
 	wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
-	/* Only the wildcard SSID; IEs are accepted and unused (passive scan). */
-	wiphy->max_scan_ssids = 1;
-	wiphy->max_scan_ie_len = IEEE80211_MAX_DATA_LEN;
+	/* GEN3 V2 probe payload bounds; NO_IR/DFS channels remain passive. */
+	wiphy->max_scan_ssids = MT6797_WIFI_SCAN_MAX_SSIDS;
+	wiphy->max_scan_ie_len = MT6797_WIFI_SCAN_MAX_IE_LENGTH;
 	wiphy->cipher_suites = ciphers;
 	wiphy->n_cipher_suites = ARRAY_SIZE(ciphers);
 	/* WPA3-Personal: user space runs SAE via NL80211_CMD_EXTERNAL_AUTH. */

@@ -115,7 +115,8 @@ def function(name):
         depth += (radio[offset] == '{') - (radio[offset] == '}')
         offset += 1
     return radio[match.start():offset] + '\n'
-for name in ('mt6797_radio_abort','mt6797_radio_disconnect','mt6797_radio_stop',
+for name in ('mt6797_radio_abort','mt6797_radio_cancel_scan',
+             'mt6797_radio_disconnect','mt6797_radio_stop',
              'mt6797_wifi_radio_register','mt6797_wifi_radio_unregister'):
     program += function(name)
 program += r'''

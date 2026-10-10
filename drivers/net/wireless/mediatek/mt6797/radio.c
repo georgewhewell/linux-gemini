@@ -1333,6 +1333,8 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	struct mt6797_wifi_ais_rsn_result negotiated = {};
 	unsigned long flags;
 	size_t offset, rates_length;
+	u32 selected_akm = 0;
+	unsigned int index;
 	int ret = -EOPNOTSUPP;
 	bool secure = sme->privacy;
 	bool have_rsn = false, have_rsnx = false;
@@ -1351,10 +1353,10 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	if (secure) {
 		/* wpa_supplicant 2.11 reports SAE as WPA3, 2.10 as WPA2. */
 		if ((sme->crypto.wpa_versions != NL80211_WPA_VERSION_2 &&
-		     (sme->crypto.wpa_versions != NL80211_WPA_VERSION_3 ||
-		      sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_SAE)) ||
+		     sme->crypto.wpa_versions != NL80211_WPA_VERSION_3) ||
 		    sme->crypto.n_ciphers_pairwise != 1 || sme->crypto.ciphers_pairwise[0] != WLAN_CIPHER_SUITE_CCMP ||
-		    sme->crypto.cipher_group != WLAN_CIPHER_SUITE_CCMP || sme->crypto.n_akm_suites != 1)
+		    sme->crypto.cipher_group != WLAN_CIPHER_SUITE_CCMP ||
+		    !sme->crypto.n_akm_suites || sme->crypto.n_akm_suites > NL80211_MAX_NR_AKM_SUITES)
 			return -EOPNOTSUPP;
 	} else if (sme->crypto.wpa_versions || sme->crypto.n_ciphers_pairwise ||
 		   sme->crypto.cipher_group || sme->crypto.n_akm_suites ||
@@ -1398,15 +1400,29 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	if (secure) {
 		struct mt6797_wifi_ais_rsn own;
 
-		if (sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK &&
-		    sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_PSK_SHA256 &&
-		    sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_SAE)
+		if (mt6797_wifi_ais_rsn_parse(rsn, &own) || own.n_akm != 1)
 			return -EOPNOTSUPP;
-		if (mt6797_wifi_ais_rsn_parse(rsn, &own))
+		/*
+		 * nl80211 supplies allowed AKMs, not just the one selected in the
+		 * station RSN IE. Modern wpa_supplicant offers PSK + PSK-SHA256.
+		 * Keep its on-air selection and require it to belong to the list;
+		 * never silently substitute another authentication method.
+		 */
+		for (index = 0; index < sme->crypto.n_akm_suites; index++) {
+			u32 akm = sme->crypto.akm_suites[index];
+
+			if (akm != WLAN_AKM_SUITE_PSK && akm != WLAN_AKM_SUITE_PSK_SHA256 &&
+			    akm != WLAN_AKM_SUITE_SAE)
+				return -EOPNOTSUPP;
+			if (akm == get_unaligned_be32(own.akm))
+				selected_akm = akm;
+		}
+		if (!selected_akm || (sme->crypto.wpa_versions == NL80211_WPA_VERSION_3 &&
+				     selected_akm != WLAN_AKM_SUITE_SAE))
 			return -EOPNOTSUPP;
 	}
 	policy.sta_ie = rsn;
-	policy.akm = sme->crypto.akm_suites[0];
+	policy.akm = selected_akm;
 	policy.mfp_required = sme->mfp == NL80211_MFP_REQUIRED;
 	policy.sae_auth = sme->auth_type == NL80211_AUTHTYPE_SAE;
 	policy.external_auth = sme->flags & CONNECT_REQ_EXTERNAL_AUTH_SUPPORT;

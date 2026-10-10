@@ -32,7 +32,7 @@ struct mt6797_wifi_ais_rsn {
 struct mt6797_wifi_ais_rsn_request {
 	const u8 *sta_ie;	/* The single RSN element user space will send. */
 	const u8 *ap_ie;	/* The selected BSS's RSN element, or NULL. */
-	u32 akm;		/* cfg80211 crypto.akm_suites[0]. */
+	u32 akm;		/* Station RSN selection, validated against allowed AKMs. */
 	bool mfp_required;	/* NL80211_MFP_REQUIRED. */
 	bool sae_auth;		/* NL80211_AUTHTYPE_SAE. */
 	bool external_auth;	/* CONNECT_REQ_EXTERNAL_AUTH_SUPPORT. */

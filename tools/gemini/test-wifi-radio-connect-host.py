@@ -38,6 +38,7 @@ program += r'''
 #define NL80211_AUTHTYPE_AUTOMATIC 8
 #define NL80211_WPA_VERSION_2 2
 #define NL80211_WPA_VERSION_3 4
+#define NL80211_MAX_NR_AKM_SUITES 2
 #define WLAN_AKM_SUITE_SAE 0x000fac08
 #define WLAN_AKM_SUITE_PSK_SHA256 0x000fac06
 #define WLAN_EID_RSNX 244
@@ -139,6 +140,12 @@ static void wpa3_cases(void) {
  assert(!connect() && !r.connection->pmf_negotiated); release();
  setup(true); ap_ies(true); p.ie=sta; p.ie_len=22; p.mfp=NL80211_MFP_REQUIRED;
  assert(connect()==-EOPNOTSUPP && freed==allocated); ap_rsn[24]=0x80;
+ /* The station selection, rather than allowed-list order, drives policy. */
+ setup(true); ap_rsn[19]=6; ap_ies(true); sta[19]=6;
+ p.ie=sta; p.ie_len=22; p.crypto.n_akm_suites=2;
+ p.crypto.akm_suites[1]=WLAN_AKM_SUITE_PSK_SHA256;
+ assert(!connect() && r.connection->pmf_negotiated && !r.connection->sae); release();
+ ap_rsn[19]=2;
  /* WPA3-SAE: supplicant 2.10 (WPA2 version) and 2.11 (WPA3 version). */
  memcpy(sta,rsn,22); sta[19]=8; sta[20]=0xc0;
  for(unsigned version=0;version<2;version++) {
@@ -148,6 +155,11 @@ static void wpa3_cases(void) {
   assert(!connect() && r.connection->sae && r.connection->pmf_negotiated);
   assert(r.connection->join.negotiated.security==MT6797_WIFI_AIS_SECURITY_WPA2_PSK_CCMP); release();
  }
+ setup(true); ap_ies(true); p.ie=sta; p.ie_len=22; p.mfp=NL80211_MFP_REQUIRED;
+ p.crypto.wpa_versions=NL80211_WPA_VERSION_3; p.crypto.n_akm_suites=2;
+ p.crypto.akm_suites[1]=WLAN_AKM_SUITE_SAE; p.auth_type=NL80211_AUTHTYPE_SAE;
+ p.flags=CONNECT_REQ_EXTERNAL_AUTH_SUPPORT;
+ assert(!connect() && r.connection->sae && r.connection->pmf_negotiated); release();
  setup(true); ap_ies(true); p.ie=sta; p.ie_len=22; p.mfp=NL80211_MFP_REQUIRED;
  p.crypto.akm_suites[0]=WLAN_AKM_SUITE_SAE; p.auth_type=NL80211_AUTHTYPE_SAE;
  assert(connect()==-EOPNOTSUPP && !queued && freed==allocated); /* no external auth owner */
@@ -177,6 +189,25 @@ static void wpa3_cases(void) {
  ap_ies(false);
 }
 int main(void) {
+ /* NetworkManager/wpa_supplicant 2.11 sends allowed PSK + PSK-SHA256
+  * selectors, while the station's RSN IE selects exactly one of them.
+  */
+ setup(true); p.crypto.n_akm_suites=2;
+ p.crypto.akm_suites[1]=WLAN_AKM_SUITE_PSK_SHA256;
+ assert(!connect() && queued==1); release();
+ setup(true); p.crypto.n_akm_suites=2;
+ p.crypto.akm_suites[0]=WLAN_AKM_SUITE_PSK_SHA256;
+ p.crypto.akm_suites[1]=WLAN_AKM_SUITE_PSK;
+ assert(!connect() && queued==1); release();
+ /* No implicit downgrade: the transmitted RSN selection must be allowed. */
+ setup(true); p.crypto.akm_suites[0]=WLAN_AKM_SUITE_PSK_SHA256;
+ assert(connect()==-EOPNOTSUPP && !allocated && !queued);
+ setup(true); p.crypto.n_akm_suites=2; p.crypto.akm_suites[1]=0x000fac01;
+ assert(connect()==-EOPNOTSUPP && !allocated && !queued);
+ setup(true); p.crypto.n_akm_suites=0;
+ assert(connect()==-EOPNOTSUPP && !allocated && !queued);
+ setup(true); p.crypto.n_akm_suites=3;
+ assert(connect()==-EOPNOTSUPP && !allocated && !queued);
  setup(true); p.mfp=2; assert(connect()==-EOPNOTSUPP && !queued && !allocated); /* MFP optional */
  setup(true); p.crypto.akm_suites[0]=0x000fac08; assert(connect()==-EOPNOTSUPP && !queued && freed==allocated);
  wpa3_cases();
@@ -222,7 +253,7 @@ int main(void) {
  setup(false); bss.ies=NULL; assert(connect()==-ENOENT && freed==1 && bss_puts==1);
  setup(false); r.stopping=true; assert(connect()==-ESHUTDOWN && !queued && freed==1 && bss_puts==1);
  setup(false); r.request=(void *)1; assert(connect()==-EBUSY && !queued && freed==1 && bss_puts==1);
- printf("PASS: production connect admission: open/WPA2 construction, WPA2+PMF, WPA3-SAE external auth (2.10/2.11 versions), RSNXE, Supported Operating Classes, control-port support, crypto/IE bounds, MFP/RSN rejection, cached-BSS errors and all allocation/reference cleanup paths\n");
+ printf("PASS: production connect admission: modern NM multi-AKM lists preserve the station RSN selection, open/WPA2 construction, WPA2+PMF, WPA3-SAE external auth (2.10/2.11 versions), RSNXE, Supported Operating Classes, control-port support, crypto/IE bounds, MFP/RSN rejection, cached-BSS errors and all allocation/reference cleanup paths\n");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-radio-connect-') as temporary:

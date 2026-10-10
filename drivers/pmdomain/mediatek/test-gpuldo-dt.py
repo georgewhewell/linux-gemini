@@ -19,6 +19,9 @@ pre = r'''
 #include <errno.h>
 typedef uint32_t u32;
 typedef uint64_t u64;
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define BIT(n) (1U<<(n))
+#define GENMASK(h,l) ((~0U << (l)) & (~0U >> (31-(h))))
 static void *blob;
 struct device_node { int off; } nodes[4096];
 struct device { struct device_node *of_node; };
@@ -117,7 +120,7 @@ int main(int argc,char **argv) {
 def main_test():
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("carrier", type=Path)
+    ap.add_argument("carrier", type=Path, nargs="?")
     ap.add_argument("derivative", type=Path)
     args = ap.parse_args()
     cc = os.environ.get("HOSTCC", "/nix/store/061ybr50r1m2jnvih4vvpgmgwb37df3r-gcc-wrapper-12.2.0/bin/gcc")
@@ -136,8 +139,11 @@ def main_test():
       ("/i2c@11010000/regulator@1c", "regulator-always-on", None, []),
       ("/i2c@11010000", "reg", "x", ["0","11011000","0","1000","0","11000580","0","80"]),
       ("/i2c@11010000", "reg", "x", ["0","11010000","0","1000","0","11000590","0","80"]),
-      ("/gpu-g3-opp-table/opp-238000000", "opp-microvolt", "x", ["ceb6c","ceb6c","cf851"]),
-      ("/gpu-g3-opp-table/opp-238000000", "opp-hz", "x", ["0","e2f9781"]),
+      ("/opp-table-gpu/opp-238000000", "opp-microvolt", "x", ["ceb6c","ceb6c","cf851"]),
+      ("/opp-table-gpu/opp-238000000", "opp-hz", "x", ["0","e2f9781"]),
+      ("/opp-table-gpu/opp-520000000", "opp-microvolt", "u", ["846700","846700","850000"]),
+      ("/opp-table-gpu/opp-900000000", "opp-supported-hw", "x", ["737"]),
+      ("/opp-table-gpu/opp-780000000", "status", "s", ["disabled"]),
       ("/syscon@10001000", "clocks", "x", ["1"]),
       ("/syscon@10001000", "resets", "x", ["1"]),
       ("/syscon@10001000", "reg", "x", ["0","10000000","0","1000"]),
@@ -147,12 +153,19 @@ def main_test():
         path = Path(tmp)
         (path/"test.c").write_text(pre+source[start:end]+main)
         subprocess.run([cc,"-std=gnu11","-Wall","-Wextra","-Werror",
-          "-Wno-misleading-indentation","-I",str(libfdt),str(path/"test.c"),
+          "-Wno-misleading-indentation","-Wno-sign-compare","-I",str(libfdt),str(path/"test.c"),
           str(libfdt/"fdt.c"),str(libfdt/"fdt_ro.c"),
           "-o",str(path/"test")],check=True)
         def run(file, expected):
             subprocess.run([str(path/"test"),str(file),str(expected)],check=True,stdout=subprocess.DEVNULL)
-        run(args.carrier,0)
+        if args.carrier:
+            run(args.carrier,0)
+        else:
+            carrier=path/"carrier.dtb"
+            carrier.write_bytes(args.derivative.read_bytes())
+            subprocess.run([put,"-d",str(carrier),"/power-controller@10006000",
+                            "mediatek,gemini-gpuldo-owner"],check=True)
+            run(carrier,0)
         run(args.derivative,1)
         for index,(node,prop,kind,values) in enumerate(cases):
             target=path/f"bad-{index}.dtb"

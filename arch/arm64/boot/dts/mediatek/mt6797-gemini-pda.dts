@@ -873,6 +873,12 @@
 			};
 
 			cooling-maps {
+				map-gpu-throttle {
+					trip = <&cpu_throttle>;
+					cooling-device =
+						<&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
 				map-cpu-throttle {
 					trip = <&cpu_throttle>;
 					/*
@@ -1012,20 +1018,6 @@
 			mediatek,socket-type = <0>;
 			mediatek,dedicated-enable = <0>;
 			mediatek,source-selector = <0>;
-		};
-	};
-
-	/*
-	 * The GPU currently uses one tested 238 MHz operating point. The async
-	 * power-domain owner controls its shared supply.
-	 */
-	g3_gpu_opp_table: gpu-g3-opp-table {
-		compatible = "operating-points-v2";
-
-		opp-238000000 {
-			opp-hz = /bits/ 64 <238000000>;
-			opp-microvolt = <846700 846700 850000>;
-			opp-supported-hw = <0x1000>;
 		};
 	};
 
@@ -2079,7 +2071,8 @@
 	/delete-property/ mali-supply;
 	nvmem-cells = <&mt6797_cpu_efuse_identity>;
 	nvmem-cell-names = "gpu-efuse";
-	operating-points-v2 = <&g3_gpu_opp_table>;
+	operating-points-v2 = <&gpu_opp_table>;
+	#cooling-cells = <2>;
 	status = "okay";
 	mediatek,gemini-gpuldo-owner;
 };

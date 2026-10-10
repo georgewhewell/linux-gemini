@@ -40,7 +40,7 @@ typedef uint32_t u32;
 #define PWR_ISO_BIT BIT(1)
 #define PWR_RST_B_BIT BIT(0)
 struct clk { int x; };
-struct regulator { int enabled; };
+struct regulator { int enabled, uv; };
 struct generic_pm_domain { const char *name; };
 struct data { u32 sta_mask, bus_prot_group_mask; int ctl_offs;
  int sram_pdn_ctl_offs, sram_pdn_ack_offs; };
@@ -61,7 +61,11 @@ static void writel(u32 v, void *p) { *(u32 *)p=v; }
 static int regmap_write(void *m, unsigned r, unsigned v) {
  (void)m; writes++; if(r==0xfbc) ldo_on=v!=0; return event(); }
 static int regulator_set_voltage(struct regulator *r,int lo,int hi) {
- (void)r; assert(lo==846700 && hi==850000 && ldo_on); return event(); }
+ assert(lo==975000 && hi==975000 && ldo_on);
+ int ret=event(); if(!ret)r->uv=975000; return ret; }
+static int regulator_get_voltage(struct regulator *r) {
+ int ret=event(); return ret?ret:r->uv; }
+static void usleep_range(unsigned lo,unsigned hi) { assert(lo==350 && hi==400); }
 static int regulator_enable(struct regulator *r) {
  int ret=event(); r->enabled=1; return ret; }
 static int regulator_disable(struct regulator *r) {
@@ -87,6 +91,7 @@ static void scpsys_gpuldo_report(struct scp *s,const char *stage,int ret) {
  (void)s;(void)stage; assert(ret<0); }
 '''
 names = ["scpsys_gpuldo_domain", "scpsys_gpuldo_all_off", "scpsys_gpuldo_write",
+         "scpsys_gpuldo_voltage",
          "scpsys_gpuldo_supply_on", "scpsys_gpuldo_supply_off",
          "scpsys_gpuldo_supply_enabled"]
 code = "".join(function(name) for name in names)
@@ -102,7 +107,7 @@ static struct scp scp;
 static struct scp_domain domain;
 static void fresh(bool mode) {
  memset(bank,0,sizeof(bank)); calls=fail_at=supply_cuts=clocks_off=writes=ldo_on=0;
- rail=(struct regulator){0}; data=(struct data){.sta_mask=BIT(13),.ctl_offs=16};
+ rail=(struct regulator){.uv=975000}; data=(struct data){.sta_mask=BIT(13),.ctl_offs=16};
  scp=(struct scp){.domains=&domain,.base=bank,.gpuldo_mode=mode,
   .ctrl_reg={0,4},.gpuldo={.admitted=true}};
  domain=(struct scp_domain){.genpd={"mfg_async"},.scp=&scp,.data=&data,.supply=&rail};

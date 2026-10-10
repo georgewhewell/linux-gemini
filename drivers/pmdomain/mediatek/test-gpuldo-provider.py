@@ -118,7 +118,7 @@ int main(void) {
 }
 '''
 assert "!pfdev->mt6797_gpuldo_domain_supply" in (kernel / "drivers/gpu/drm/panfrost/panfrost_device.c").read_text()
-assert "pfdev->mt6797_gpuldo_domain_supply ? 0 :" in (kernel / "drivers/gpu/drm/panfrost/panfrost_devfreq.c").read_text()
+assert "panfrost_mt6797_config_regulators" in (kernel / "drivers/gpu/drm/panfrost/panfrost_devfreq.c").read_text()
 cc = os.environ.get("HOSTCC", "/nix/store/061ybr50r1m2jnvih4vvpgmgwb37df3r-gcc-wrapper-12.2.0/bin/gcc")
 with tempfile.TemporaryDirectory(prefix="gemini-gpuldo-provider-") as tmp:
     path = Path(tmp)

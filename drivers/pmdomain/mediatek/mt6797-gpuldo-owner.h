@@ -3,7 +3,7 @@
 #define MT6797_GPULDO_OWNER_H
 
 /*
- * Fixed-profile sequencing policy. Caller holds the owner mutex, establishes
+ * Power sequencing policy. Caller holds the owner mutex, establishes
  * exact DT/resource/exclusive-supply admission, and supplies checked callbacks.
  * Any failure consumes this boot's owner: never restore unknown register state
  * or cut a rail after a possibly effective write. Recovery is a separate boot.
@@ -15,6 +15,9 @@ struct mt6797_gpuldo_owner {
 	bool failed;
 	/* One framework vote, possibly adopted before the first GPU activation. */
 	bool supply_vote;
+	/* Last successful OPP vote, restored before clocks on runtime resume. */
+	unsigned int min_uv;
+	unsigned int max_uv;
 };
 
 struct mt6797_gpuldo_ops {

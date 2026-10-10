@@ -3,6 +3,7 @@
  * Copyright (c) 2015 Pengutronix, Sascha Hauer <kernel@pengutronix.de>
  */
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -291,14 +292,79 @@ static int scpsys_gpuldo_write(void *ctx, unsigned int reg, unsigned int value)
 	return regmap_write(scp->infracfg, reg, value);
 }
 
+static int scpsys_gpuldo_voltage(struct scp *scp, unsigned int min_uv,
+			       unsigned int max_uv)
+{
+	struct regulator *supply = scp->domains[MT6797_POWER_DOMAIN_MFG_ASYNC].supply;
+	int old_uv, actual_uv, ret;
+
+	old_uv = regulator_get_voltage(supply);
+	if (old_uv < 0)
+		return old_uv;
+	ret = regulator_set_voltage(supply, min_uv, max_uv);
+	if (ret)
+		return ret;
+	actual_uv = regulator_get_voltage(supply);
+	if (actual_uv < 0)
+		return actual_uv;
+	if ((unsigned int)actual_uv < min_uv || (unsigned int)actual_uv > max_uv)
+		return -ERANGE;
+	/*
+	 * Regulator core waits for the configured RT5735 ramp; MT6797 needs
+	 * the additional 350 us upward settling margin used by its public BSP.
+	 */
+	if (actual_uv > old_uv)
+		usleep_range(350, 400);
+	return 0;
+}
+
+int mtk_scpsys_gpuldo_gpu_set_voltage(struct device_node *gpu,
+				    unsigned int min_uv, unsigned int max_uv)
+{
+	struct scp *scp = smp_load_acquire(&gpuldo_provider);
+	int ret = 0;
+
+	if (!scp)
+		return -EPROBE_DEFER;
+	if (gpu != scp->gpuldo_gpu || min_uv < 846700 || max_uv > 1156250 ||
+	    min_uv > max_uv || max_uv - min_uv > 6250)
+		return -EINVAL;
+	mutex_lock(&scp->gpuldo_lock);
+	if (!scp->gpuldo_mode || !scp->gpuldo.admitted || scp->gpuldo.failed) {
+		ret = -EPERM;
+		goto out;
+	}
+	if (scp->gpuldo.active) {
+		if (!scp->gpuldo.supply_vote)
+			ret = -EPERM;
+		else
+			ret = scpsys_gpuldo_voltage(scp, min_uv, max_uv);
+	} else if (scpsys_gpuldo_all_off(scp) != 1) {
+		ret = -EBUSY;
+	}
+	if (ret) {
+		mt6797_gpuldo_fail(&scp->gpuldo, ret);
+		scpsys_gpuldo_report(scp, "OPP voltage", ret);
+	} else {
+		/* A suspended GPU needs only a vote: apply it before powering on. */
+		scp->gpuldo.min_uv = min_uv;
+		scp->gpuldo.max_uv = max_uv;
+	}
+out:
+	mutex_unlock(&scp->gpuldo_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mtk_scpsys_gpuldo_gpu_set_voltage);
+
 static int scpsys_gpuldo_supply_on(void *ctx)
 {
 	struct scp *scp = ctx;
 	struct regulator *supply = scp->domains[MT6797_POWER_DOMAIN_MFG_ASYNC].supply;
 	int ret;
 
-	/* Existing G3 single-OPP interval; not an inferred internal LDO voltage. */
-	ret = regulator_set_voltage(supply, 846700, 850000);
+	/* Before the first OPP vote, cover LK's inherited ~500 MHz clock. */
+	ret = scpsys_gpuldo_voltage(scp, scp->gpuldo.min_uv ?: 975000,
+				  scp->gpuldo.max_uv ?: 975000);
 	/* Exclusive acquisition already accounts for an inherited enabled rail. */
 	if (!ret && !scp->gpuldo.supply_vote)
 		ret = regulator_enable(supply);
@@ -666,16 +732,32 @@ static void init_clks(struct platform_device *pdev, struct clk **clk)
 
 static int scpsys_gpuldo_validate_dt(struct device *dev)
 {
+	static const struct {
+		u64 hz;
+		u32 uv[3];
+		u32 hw;
+	} points[] = {
+		{ 204000000, { 859500, 859500, 862500 }, 0x80000840 },
+		{ 238000000, { 859500, 859500, 862500 }, 0x737 },
+		{ 238000000, { 846700, 846700, 850000 }, 0x1000 },
+		{ 365000000, { 910800, 910800, 912500 }, 0x1000 },
+		{ 442500000, { 936500, 936500, 937500 }, 0x1000 },
+		{ 520000000, { 975000, 975000, 975000 }, 0x1000 },
+		{ 610000000, { 1013400, 1013400, 1018750 }, 0x1000 },
+		{ 780000000, { 1103200, 1103200, 1106250 }, 0x1000 },
+		{ 900000000, { 1154500, 1154500, 1156250 }, 0x1000 },
+	};
 	struct device_node *np = dev->of_node, *infra, *gpu, *supply, *table, *opp;
 	struct device_node *node;
 	struct property *prop;
 	struct resource res;
 	struct device_node *other, *parent;
 	const char *name;
-	u32 addr;
+	u32 addr, hw, seen = 0;
 	u32 uv[3];
 	u64 hz;
-	int ret = -EINVAL, count = 0;
+	unsigned int i;
+	int ret = -EINVAL;
 
 	if (!of_property_read_bool(np, "mediatek,gemini-gpuldo-owner"))
 		return 0;
@@ -767,22 +849,32 @@ static int scpsys_gpuldo_validate_dt(struct device *dev)
 	table = of_parse_phandle(gpu, "operating-points-v2", 0);
 	if (!table)
 		goto put_gpu;
+	if (!of_device_is_compatible(table, "operating-points-v2"))
+		goto put_table;
 	for_each_available_child_of_node(table, opp) {
-		if (++count != 1 ||
-		    of_property_count_u64_elems(opp, "opp-hz") != 1 ||
+		if (of_property_count_u64_elems(opp, "opp-hz") != 1 ||
 		    of_property_count_u32_elems(opp, "opp-microvolt") != 3 ||
+		    of_property_count_u32_elems(opp, "opp-supported-hw") != 1 ||
 		    of_property_read_u64(opp, "opp-hz", &hz) ||
-		    hz != 238000000 ||
 		    of_property_read_u32_array(opp, "opp-microvolt", uv, 3) ||
-		    uv[0] != 846700 || uv[1] != 846700 || uv[2] != 850000) {
+		    of_property_read_u32(opp, "opp-supported-hw", &hw)) {
 			of_node_put(opp);
-			count = -1;
-			break;
+			goto put_table;
 		}
+		for (i = 0; i < ARRAY_SIZE(points); i++)
+			if (points[i].hz == hz && points[i].hw == hw &&
+			    !memcmp(points[i].uv, uv, sizeof(uv)))
+				break;
+		if (i == ARRAY_SIZE(points) || (seen & BIT(i))) {
+			of_node_put(opp);
+			goto put_table;
+		}
+		seen |= BIT(i);
 	}
-	of_node_put(table);
-	if (count == 1)
+	if (seen == GENMASK(ARRAY_SIZE(points) - 1, 0))
 		ret = 1;
+put_table:
+	of_node_put(table);
 put_gpu:
 	of_node_put(gpu);
 put_supply:

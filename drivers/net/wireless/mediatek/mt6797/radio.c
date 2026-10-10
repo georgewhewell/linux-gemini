@@ -361,6 +361,22 @@ static void mt6797_radio_abort(void *context, int reason)
 	spin_unlock_irqrestore(&radio->lock, flags);
 }
 
+static void mt6797_radio_cancel_scan(struct mt6797_wifi_radio *radio)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&radio->lock, flags);
+	/*
+	 * Administrative cancellation is not a transport fault. Keep an
+	 * in-flight scan armed until its matching SCAN_DONE releases firmware
+	 * ownership; the worker's existing timeout still fences a stuck scan.
+	 * Waking it early would send an unacknowledged cancel, restart WLAN,
+	 * and eventually exhaust the recovery budget during ordinary scans.
+	 */
+	radio->abort_scan = true;
+	spin_unlock_irqrestore(&radio->lock, flags);
+}
+
 static void mt6797_radio_scan_work(struct work_struct *work)
 {
 	struct mt6797_wifi_radio *radio =
@@ -524,7 +540,7 @@ static int mt6797_radio_scan(struct wiphy *wiphy,
 static void mt6797_radio_abort_scan(struct wiphy *wiphy,
 				    struct wireless_dev *wdev)
 {
-	mt6797_radio_abort(wiphy_priv(wiphy), -ECANCELED);
+	mt6797_radio_cancel_scan(wiphy_priv(wiphy));
 }
 
 static bool mt6797_radio_connection_cancelled(struct mt6797_wifi_radio *radio)
@@ -2596,7 +2612,7 @@ static int mt6797_radio_stop(struct net_device *netdev)
 
 	netif_stop_queue(netdev);
 	netif_carrier_off(netdev);
-	mt6797_radio_abort(radio, -ECANCELED);
+	mt6797_radio_cancel_scan(radio);
 	mt6797_radio_disconnect(radio->wdev.wiphy, netdev, WLAN_REASON_DEAUTH_LEAVING);
 	flush_work(&radio->scan_work);
 	flush_work(&radio->connection_work);

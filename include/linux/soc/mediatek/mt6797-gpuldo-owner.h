@@ -6,8 +6,15 @@
 struct device_node;
 #if IS_REACHABLE(CONFIG_MTK_SCPSYS)
 int mtk_scpsys_gpuldo_gpu_admit(struct device_node *gpu);
+int mtk_scpsys_gpuldo_gpu_set_voltage(struct device_node *gpu,
+				    unsigned int min_uv, unsigned int max_uv);
 #else
 static inline int mtk_scpsys_gpuldo_gpu_admit(struct device_node *gpu)
+{
+	return -ENODEV;
+}
+static inline int mtk_scpsys_gpuldo_gpu_set_voltage(struct device_node *gpu,
+				    unsigned int min_uv, unsigned int max_uv)
 {
 	return -ENODEV;
 }

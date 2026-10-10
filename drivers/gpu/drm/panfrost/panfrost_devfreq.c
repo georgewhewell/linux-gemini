@@ -7,6 +7,7 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
+#include <linux/soc/mediatek/mt6797-gpuldo-owner.h>
 
 #include <drm/drm_print.h>
 
@@ -116,6 +117,26 @@ static int panfrost_read_speedbin(struct device *dev)
 	return devm_pm_opp_set_supported_hw(dev, &val, 1);
 }
 
+static int panfrost_mt6797_config_regulators(struct device *dev,
+			struct dev_pm_opp *old_opp, struct dev_pm_opp *new_opp,
+			struct regulator **regulators, unsigned int count)
+{
+	struct dev_pm_opp_supply supply;
+	int ret;
+
+	/*
+	 * Only the power-domain owner holds a regulator handle and enable vote.
+	 * OPP core orders this callback before clock-up and after clock-down.
+	 */
+	if (count != 1 || regulators)
+		return -EINVAL;
+	ret = dev_pm_opp_get_supplies(new_opp, &supply);
+	if (ret)
+		return ret;
+	return mtk_scpsys_gpuldo_gpu_set_voltage(dev->of_node,
+				 supply.u_volt_min, supply.u_volt_max);
+}
+
 int panfrost_devfreq_init(struct panfrost_device *pfdev)
 {
 	int ret;
@@ -140,8 +161,15 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 	if (ret)
 		return ret;
 
-	ret = pfdev->mt6797_gpuldo_domain_supply ? 0 :
-		devm_pm_opp_set_regulators(dev, pfdev->comp->supply_names);
+	if (pfdev->mt6797_gpuldo_domain_supply) {
+		struct dev_pm_opp_config config = {
+			.config_regulators = panfrost_mt6797_config_regulators,
+		};
+
+		ret = devm_pm_opp_set_config(dev, &config);
+	} else {
+		ret = devm_pm_opp_set_regulators(dev, pfdev->comp->supply_names);
+	}
 	if (ret) {
 		/* Continue if the optional regulator is missing */
 		if (ret != -ENODEV) {

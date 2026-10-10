@@ -24,8 +24,8 @@ pre=r'''
 struct device { void *data; };
 struct panfrost_device;
 struct comp { unsigned pm_features; int (*vendor_power_off)(struct panfrost_device *); };
-struct clk { int votes; } clock_gpu,clock_bus;
-struct panfrost_device { struct comp *comp; struct clk *clock,*bus_clock;
+struct clk { int votes; } clock_gpu,clock_bus,clock_ace;
+struct panfrost_device { struct comp *comp; struct clk *clock,*bus_clock,*bus_ace_clock;
  bool mt6797_gpuldo_domain_supply; void *rstc; struct { unsigned long fast_rate; } pfdevfreq; } gpu;
 struct dev_pm_opp { int x; } opp;
 static int calls,fail_at,resets,rail_on,cuts,idle,opp_calls;
@@ -34,8 +34,8 @@ static int event(void) { return ++calls==fail_at?-EIO:0; }
 static void *dev_get_drvdata(struct device *d) { return d->data; }
 static int reset_control_deassert(void *r) { (void)r; resets++; return event(); }
 static void reset_control_assert(void *r) { (void)r; resets++; }
-static int clk_enable(struct clk *c) { assert(rail_on); int ret=event(); if(!ret)c->votes++; return ret; }
-static void clk_disable(struct clk *c) { assert(c->votes==1); c->votes--; }
+static int clk_enable(struct clk *c) { if(!c)return 0; assert(rail_on); int ret=event(); if(!ret)c->votes++; return ret; }
+static void clk_disable(struct clk *c) { if(!c)return; assert(c->votes==1); c->votes--; }
 static int panfrost_device_reset(struct panfrost_device *p,bool e) { (void)p;(void)e; return event(); }
 static int panfrost_devfreq_resume(struct panfrost_device *p) { (void)p; return event(); }
 static int panfrost_devfreq_suspend(struct panfrost_device *p) { (void)p; return event(); }
@@ -58,7 +58,7 @@ static int pm_runtime_force_suspend(struct device *d) {
  if(suspended)return 0;
  int ret=panfrost_device_runtime_suspend(d);
  if(!ret) { suspended=true; if(gpu.mt6797_gpuldo_domain_supply) {
-  assert(!clock_gpu.votes && !clock_bus.votes); rail_on=0; cuts++;
+  assert(!clock_gpu.votes && !clock_bus.votes && !clock_ace.votes); rail_on=0; cuts++;
  }} return ret;
 }
 static int pm_runtime_force_resume(struct device *d) {
@@ -71,34 +71,55 @@ static struct comp comp;
 static struct device dev={&gpu};
 static void fresh(bool mode,bool active) {
  calls=fail_at=resets=cuts=opp_calls=0; idle=1; rail_on=1; suspended=!active;
- clock_gpu.votes=clock_bus.votes=active;
+ clock_gpu.votes=clock_bus.votes=active; clock_ace.votes=mode && active;
  comp=(struct comp){.pm_features=mode?0:BIT(GPU_PM_CLK_DIS)|BIT(GPU_PM_VREG_OFF),.vendor_power_off=vendor_off};
- gpu=(struct panfrost_device){.comp=&comp,.clock=&clock_gpu,.bus_clock=&clock_bus,.mt6797_gpuldo_domain_supply=mode};
+ gpu=(struct panfrost_device){.comp=&comp,.clock=&clock_gpu,.bus_clock=&clock_bus,.bus_ace_clock=mode?&clock_ace:NULL,.mt6797_gpuldo_domain_supply=mode};
 }
 int main(void) {
  fresh(true,true);
  assert(!panfrost_device_suspend(&dev)); assert(cuts==1 && !rail_on && !resets && !opp_calls);
  assert(!panfrost_device_suspend(&dev)); assert(cuts==1);
- assert(!panfrost_device_resume(&dev)); assert(clock_gpu.votes==1 && clock_bus.votes==1 && !resets && !opp_calls);
- assert(!panfrost_device_resume(&dev)); assert(clock_gpu.votes==1 && clock_bus.votes==1);
- for(int n=1;n<=4;n++) {
+ assert(!panfrost_device_resume(&dev)); assert(clock_gpu.votes==1 && clock_bus.votes==1 && clock_ace.votes==1 && !resets && !opp_calls);
+ assert(!panfrost_device_resume(&dev)); assert(clock_gpu.votes==1 && clock_bus.votes==1 && clock_ace.votes==1);
+ for(int n=1;n<=5;n++) {
   fresh(true,false); fail_at=n;
   assert(panfrost_device_resume(&dev)<0);
-  assert(!clock_gpu.votes && !clock_bus.votes && !resets && !opp_calls);
+  assert(!clock_gpu.votes && !clock_bus.votes && !clock_ace.votes && !resets && !opp_calls);
  }
  for(int n=1;n<=2;n++) {
   fresh(true,true); fail_at=n;
   assert(panfrost_device_suspend(&dev)<0);
-  assert(clock_gpu.votes==1 && clock_bus.votes==1 && !cuts && rail_on && !resets && !opp_calls);
+  assert(clock_gpu.votes==1 && clock_bus.votes==1 && clock_ace.votes==1 && !cuts && rail_on && !resets && !opp_calls);
  }
  fresh(true,true); idle=0;
  assert(panfrost_device_suspend(&dev)==-EBUSY && clock_gpu.votes==1 && !cuts);
+
+ /* Optional bus clocks: NULL never acquires a vote; each failing enable,
+  * reset and devfreq boundary unwinds exactly the acquired votes. */
+ for(unsigned mask=0;mask<4;mask++) {
+  fresh(true,false);
+  if(!(mask&1))gpu.bus_clock=NULL;
+  if(!(mask&2))gpu.bus_ace_clock=NULL;
+  assert(!panfrost_device_resume(&dev));
+  int boundaries=calls;
+  assert(clock_gpu.votes==1 && clock_bus.votes==!!(mask&1) && clock_ace.votes==!!(mask&2));
+  assert(!panfrost_device_suspend(&dev));
+  assert(cuts==1 && !rail_on && !clock_gpu.votes && !clock_bus.votes && !clock_ace.votes);
+  for(int n=1;n<=boundaries;n++) {
+   fresh(true,false);
+   if(!(mask&1))gpu.bus_clock=NULL;
+   if(!(mask&2))gpu.bus_ace_clock=NULL;
+   fail_at=n;
+   assert(panfrost_device_resume(&dev)<0);
+   assert(!clock_gpu.votes && !clock_bus.votes && !clock_ace.votes && !cuts && rail_on && !resets && !opp_calls);
+  }
+ }
  /* Ordinary T7 mode keeps runtime clock votes and uses its old system gate. */
  fresh(false,true); assert(!panfrost_device_runtime_suspend(&dev));
  assert(clock_gpu.votes==1 && clock_bus.votes==1 && !resets);
  fresh(false,true); assert(!panfrost_device_suspend(&dev));
  assert(!clock_gpu.votes && !clock_bus.votes && opp_calls==1);
- puts("actual Panfrost PM: runtime/system order, 4 resume+2 suspend failures, busy, no duplicate/reset/OPP calls PASS");
+ puts("actual Panfrost PM: runtime/system order, 5 resume+2 suspend failures, 4 optional clock combinations, busy, no duplicate/reset/OPP calls PASS");
 }
 '''
 cc=os.environ.get("HOSTCC","/nix/store/061ybr50r1m2jnvih4vvpgmgwb37df3r-gcc-wrapper-12.2.0/bin/gcc")

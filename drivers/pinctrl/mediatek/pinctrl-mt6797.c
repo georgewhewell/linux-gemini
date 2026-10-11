@@ -43,6 +43,11 @@ static const struct mtk_pin_field_calc mt6797_pin_smt_range[] = {
 	PIN_FIELD_CALC(122, 122, 2, 0x060, 0x10, 2, 1, 32, 0),
 	PIN_FIELD_CALC(123, 123, 2, 0x060, 0x10, 3, 1, 32, 0),
 	PIN_FIELD_CALC(124, 125, 2, 0x060, 0x10, 2, 1, 32, 1),
+	/* SIM1/2 reset and data pins share one Schmitt field per interface. */
+	PIN_FIELD_CALC(126, 126, 2, 0x060, 0x10, 11, 1, 32, 0),
+	PIN_FIELD_CALC(127, 128, 2, 0x060, 0x10, 12, 1, 32, 1),
+	PIN_FIELD_CALC(155, 155, 2, 0x060, 0x10, 14, 1, 32, 0),
+	PIN_FIELD_CALC(156, 157, 2, 0x060, 0x10, 15, 1, 32, 1),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_tdsel_range[] = {
@@ -61,8 +66,10 @@ static const struct mtk_pin_field_calc mt6797_pin_rdsel_range[] = {
 
 static const struct mtk_pin_field_calc mt6797_pin_ies_range[] = {
 	PIN_FIELD_CALC(114, 125, 2, 0x020, 0x10, 0, 1, 32, 0),
+	PIN_FIELD_CALC(126, 128, 2, 0x020, 0x10, 17, 1, 32, 0),
 	/* MSDC1 CMD, DAT0-3 and CLK input buffers in IOCFG_B. */
 	PIN_FIELD_CALC(129, 134, 2, 0x020, 0x10, 25, 1, 32, 0),
+	PIN_FIELD_CALC(155, 157, 2, 0x020, 0x10, 21, 1, 32, 0),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_drv_range[] = {
@@ -79,17 +86,23 @@ static const struct mtk_pin_field_calc mt6797_pin_drv_range[] = {
 
 static const struct mtk_pin_field_calc mt6797_pin_pupd_range[] = {
 	PIN_FIELD_CALC(114, 125, 2, 0x100, 0x10, 6, 1, 32, 0),
+	PIN_FIELD_CALC(126, 128, 2, 0x100, 0x10, 24, 1, 32, 0),
 	PIN_FIELD_CALC(129, 134, 2, 0x100, 0x10, 18, 1, 32, 0),
+	PIN_FIELD_CALC(155, 157, 2, 0x100, 0x10, 27, 1, 32, 0),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_r0_range[] = {
 	PIN_FIELD_CALC(114, 125, 2, 0x110, 0x10, 6, 1, 32, 0),
+	PIN_FIELD_CALC(126, 128, 2, 0x110, 0x10, 24, 1, 32, 0),
 	PIN_FIELD_CALC(129, 134, 2, 0x110, 0x10, 18, 1, 32, 0),
+	PIN_FIELD_CALC(155, 157, 2, 0x110, 0x10, 27, 1, 32, 0),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_r1_range[] = {
 	PIN_FIELD_CALC(114, 125, 2, 0x120, 0x10, 6, 1, 32, 0),
+	PIN_FIELD_CALC(126, 128, 2, 0x120, 0x10, 24, 1, 32, 0),
 	PIN_FIELD_CALC(129, 134, 2, 0x120, 0x10, 18, 1, 32, 0),
+	PIN_FIELD_CALC(155, 157, 2, 0x120, 0x10, 27, 1, 32, 0),
 };
 
 static const struct mtk_pin_reg_calc mt6797_reg_cals[PINCTRL_PIN_REG_MAX] = {
@@ -113,7 +126,9 @@ static const char * const mt6797_pinctrl_register_base_names[] = {
 
 static const unsigned int mt6797_pull_type[ARRAY_SIZE(mtk_pins_mt6797)] = {
 	[114 ... 125] = MTK_PULL_PUPD_R1R0_TYPE,
+	[126 ... 128] = MTK_PULL_PUPD_R1R0_TYPE,
 	[129 ... 134] = MTK_PULL_PUPD_R1R0_TYPE,
+	[155 ... 157] = MTK_PULL_PUPD_R1R0_TYPE,
 };
 
 static const unsigned int mt6797_debounce_time[] = {

@@ -224,11 +224,60 @@ int main(void)
     expect(2, 0x110, BIT(23), BIT(23));
     expect(2, 0x120, BIT(23), 0);
     assert(!memcmp(banks, expected, sizeof(banks)));
+    /* Exact GPL SIM fields; test all supported encodings, not board strength. */
+    const unsigned sim_pin[] = { 126, 127, 128, 155, 156, 157 };
+    const unsigned sim_ies[] = { 17, 18, 19, 21, 22, 23 };
+    const unsigned sim_smt[] = { 11, 12, 12, 14, 15, 15 };
+    for (unsigned i = 0; i < ARRAY_SIZE(sim_pin); i++) {
+        unsigned n = sim_pin[i], b = 24 + i;
+        unsigned dir_off = n / 32 * 0x10, dir_bit = n % 32;
+        check_field(&h, n, PINCTRL_PIN_REG_IES, 0x020, sim_ies[i], 1);
+        check_field(&h, n, PINCTRL_PIN_REG_SMT, 0x060, sim_smt[i], 1);
+        check_field(&h, n, PINCTRL_PIN_REG_PUPD, 0x100, b, 1);
+        check_field(&h, n, PINCTRL_PIN_REG_R0, 0x110, b, 1);
+        check_field(&h, n, PINCTRL_PIN_REG_R1, 0x120, b, 1);
+        assert(soc.pull_type[n] == MTK_PULL_PUPD_R1R0_TYPE);
+        assert(!mtk_pinconf_set(&p, n, PIN_CONFIG_INPUT_ENABLE, 1));
+        expect(2, 0x020, BIT(sim_ies[i]), BIT(sim_ies[i]));
+        assert(!mtk_pinconf_set(&p, n, PIN_CONFIG_INPUT_SCHMITT_ENABLE, 1));
+        expect(0, dir_off, BIT(dir_bit), 0);
+        expect(2, 0x060, BIT(sim_smt[i]), BIT(sim_smt[i]));
+        assert(!memcmp(banks, expected, sizeof(banks)));
+        assert(!mtk_pinconf_set(&p, n, PIN_CONFIG_BIAS_DISABLE, 0));
+        expect(2, 0x100, BIT(b), BIT(b));
+        expect(2, 0x110, BIT(b), 0);
+        expect(2, 0x120, BIT(b), 0);
+        assert(!memcmp(banks, expected, sizeof(banks)));
+        assert(mtk_pinconf_set(&p, n, PIN_CONFIG_BIAS_PULL_UP, 1) == -EINVAL);
+        assert(!memcmp(banks, expected, sizeof(banks)));
+        for (unsigned arg = MTK_PUPD_SET_R1R0_01;
+             arg <= MTK_PUPD_SET_R1R0_11; arg++) {
+            unsigned bits = arg - MTK_PUPD_SET_R1R0_00;
+            assert(!mtk_pinconf_set(&p, n, PIN_CONFIG_BIAS_PULL_UP, arg));
+            expect(2, 0x100, BIT(b), 0);
+            expect(2, 0x110, BIT(b), (bits & 1) ? BIT(b) : 0);
+            expect(2, 0x120, BIT(b), (bits & 2) ? BIT(b) : 0);
+            assert(!memcmp(banks, expected, sizeof(banks)));
+        }
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        unsigned rst = i ? 156 : 127, sio = rst + 1, bit = i ? 15 : 12;
+        int value;
+        assert(!mtk_hw_set_value(&h, &soc.pins[rst], PINCTRL_PIN_REG_SMT, 0));
+        expect(2, 0x060, BIT(bit), 0);
+        assert(!mtk_hw_get_value(&h, &soc.pins[sio], PINCTRL_PIN_REG_SMT, &value));
+        assert(value == 0);
+        assert(!mtk_hw_set_value(&h, &soc.pins[sio], PINCTRL_PIN_REG_SMT, 1));
+        expect(2, 0x060, BIT(bit), BIT(bit));
+        assert(!mtk_hw_get_value(&h, &soc.pins[rst], PINCTRL_PIN_REG_SMT, &value));
+        assert(value == 1 && !memcmp(banks, expected, sizeof(banks)));
+    }
     /* Unsupported neighbors must neither change pads nor GPIO direction. */
     assert(mtk_pinconf_set(&p, 113, PIN_CONFIG_INPUT_SCHMITT_ENABLE, 1) == -ENOTSUPP);
     assert(mtk_pinconf_set(&p, 126, PIN_CONFIG_DRIVE_STRENGTH, 4) == -ENOTSUPP);
     assert(!memcmp(banks, expected, sizeof(banks)));
     puts("MMC0 native field groups, board electrical contract and MMC1 isolation: PASS");
+    puts("SIM native fields, shared Schmitt and explicit pull encodings: PASS");
     return 0;
 }
 '''

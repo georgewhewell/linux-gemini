@@ -350,7 +350,7 @@ static inline void sg_dma_unmark_bus_address(struct scatterlist *sg)
 /**
  * sg_dma_is_swiotlb - Return whether the scatterlist was marked for SWIOTLB
  *			bouncing
- * @sg:		SG entry
+ * @sg:		First SG entry
  *
  * Description:
  *   Returns true if the scatterlist was marked for SWIOTLB bouncing. Not all
@@ -364,15 +364,24 @@ static inline bool sg_dma_is_swiotlb(struct scatterlist *sg)
 
 /**
  * sg_dma_mark_swiotlb - Mark the scatterlist for SWIOTLB bouncing
- * @sg:		SG entry
+ * @sg:		First SG entry
  *
  * Description:
- *   Marks a a scatterlist for SWIOTLB bounce. Not all SG entries may be
+ *   Marks a scatterlist for SWIOTLB bounce. Not all SG entries may be
  *   bounced.
  */
 static inline void sg_dma_mark_swiotlb(struct scatterlist *sg)
 {
 	sg->dma_flags |= SG_DMA_SWIOTLB;
+}
+
+/**
+ * sg_dma_unmark_swiotlb - Clear the scatterlist's SWIOTLB bounce mark
+ * @sg:	First SG entry
+ */
+static inline void sg_dma_unmark_swiotlb(struct scatterlist *sg)
+{
+	sg->dma_flags &= ~SG_DMA_SWIOTLB;
 }
 
 #else
@@ -392,6 +401,9 @@ static inline bool sg_dma_is_swiotlb(struct scatterlist *sg)
 	return false;
 }
 static inline void sg_dma_mark_swiotlb(struct scatterlist *sg)
+{
+}
+static inline void sg_dma_unmark_swiotlb(struct scatterlist *sg)
 {
 }
 

@@ -85,6 +85,7 @@ config ARCH_DMA_DEFAULT_COHERENT
 config SWIOTLB
 	bool
 	select NEED_DMA_MAP_STATE
+	select NEED_SG_DMA_FLAGS
 
 config SWIOTLB_DYNAMIC
 	bool "Dynamic allocation of DMA bounce buffers"

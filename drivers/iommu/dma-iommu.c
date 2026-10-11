@@ -1377,6 +1377,7 @@ static void iommu_dma_unmap_sg_swiotlb(struct device *dev, struct scatterlist *s
 	for_each_sg(sg, s, nents, i)
 		iommu_dma_unmap_phys(dev, sg_dma_address(s),
 				sg_dma_len(s), dir, attrs);
+	sg_dma_unmark_swiotlb(sg);
 }
 
 static int iommu_dma_map_sg_swiotlb(struct device *dev, struct scatterlist *sg,

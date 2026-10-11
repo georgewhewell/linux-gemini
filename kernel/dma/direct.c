@@ -459,6 +459,7 @@ void dma_direct_unmap_sg(struct device *dev, struct scatterlist *sgl,
 	}
 	if (need_sync && !dev_is_dma_coherent(dev))
 		arch_sync_dma_flush();
+	sg_dma_unmark_swiotlb(sgl);
 }
 #endif
 
@@ -470,6 +471,7 @@ int dma_direct_map_sg(struct device *dev, struct scatterlist *sgl, int nents,
 	int i, ret;
 	bool need_sync = false;
 
+	sg_dma_unmark_swiotlb(sgl);
 	for_each_sg(sgl, sg, nents, i) {
 		switch (pci_p2pdma_state(&p2pdma_state, dev, sg_page(sg))) {
 		case PCI_P2PDMA_MAP_THRU_HOST_BRIDGE:
@@ -487,6 +489,8 @@ int dma_direct_map_sg(struct device *dev, struct scatterlist *sgl, int nents,
 				ret = -EIO;
 				goto out_unmap;
 			}
+			if (swiotlb_find_pool(dev, dma_to_phys(dev, sg->dma_address)))
+				sg_dma_mark_swiotlb(sgl);
 			break;
 		case PCI_P2PDMA_MAP_BUS_ADDR:
 			sg->dma_address = pci_p2pdma_bus_addr_map(

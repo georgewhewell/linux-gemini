@@ -1,5 +1,21 @@
 # C3 handshake boundary and bounded first-fatal evidence
 
+Current bring-up also observes the UMOLY exception report once at first fatal,
+from the transport's existing reserved shared-memory mapping. The public
+MT6797 `eccci/ccci_config.h` places the 8 KiB MDSS report at offset 2048;
+`mdee_dumper_v2.h` defines its overview and PL records. Output contains only
+numeric validity, core/status, exception type, fatal codes and assertion line.
+Untrusted offsets and incomplete records are bounded before dereference.
+No exception-memory dump, file names, stack data or modem addresses are printed.
+Firmware may still be filling the report, so this observation is not atomic.
+It neither acknowledges an exception nor changes watchdog or CCIF handling.
+
+The existing `test-cellular-first-fatal.py` executes the actual decoder with
+ASan/UBSan, covering valid fatal/assert reports, all type values, truncated
+records, core-count bounds and overflowing/overlapping offsets. It remains
+part of the normal kernel build's checks. ARM64 W=1 compilation also passes.
+Hardware decoding and the modem failure's underlying cause are pending.
+
 Source base: `5abceee47842987bc15906f67aa182a3068b3e97`.
 No hardware action or new boot authorization accompanies this change.
 

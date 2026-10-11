@@ -6,6 +6,85 @@
 #define MT6797_CCCI_DIAG_RX_BYTES 1024
 #define MT6797_CCCI_DIAG_RX_WIRE_MAX 3584
 
+/* Public MT6797 eccci/ccci_config.h and mdee_dumper_v2.h UMOLY ABI.
+ * Only decode numeric PL exception fields; never print stack, file names,
+ * memory addresses or the contents of the shared exception region.
+ */
+#define MT6797_CCCI_MDSS_OFFSET 2048U
+#define MT6797_CCCI_MDSS_SIZE 8192U
+#define MT6797_CCCI_EX_OVERVIEW_SIZE 144U
+#define MT6797_CCCI_EX_PL_CONTENT_OFFSET 320U
+#define MT6797_CCCI_EX_PL_ASSERT_LINE_OFFSET 640U
+
+struct mt6797_ccci_pl_exception {
+	bool header_valid, content_valid, offender;
+	u8 type;
+	u32 codes[3], assert_line;
+};
+
+struct mt6797_ccci_md_exception {
+	bool overview_valid;
+	u32 core_count, ect_status, cs_status, md32_status;
+	struct mt6797_ccci_pl_exception pl[2];
+};
+
+static u32 mt6797_ccci_diag_le32(const u8 *p)
+{
+	return p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) |
+		((u32)p[3] << 24);
+}
+
+static void mt6797_ccci_md_exception_decode(const u8 *bytes, size_t length,
+					   struct mt6797_ccci_md_exception *out)
+{
+	unsigned int i;
+
+	memset(out, 0, sizeof(*out));
+	if (!bytes || length < MT6797_CCCI_EX_OVERVIEW_SIZE)
+		return;
+	out->core_count = mt6797_ccci_diag_le32(bytes);
+	if (!out->core_count || out->core_count > 8)
+		return;
+	out->overview_valid = true;
+	out->ect_status = mt6797_ccci_diag_le32(bytes + 132);
+	out->cs_status = mt6797_ccci_diag_le32(bytes + 136);
+	out->md32_status = mt6797_ccci_diag_le32(bytes + 140);
+	for (i = 0; i < ARRAY_SIZE(out->pl) && i < out->core_count; i++) {
+		struct mt6797_ccci_pl_exception *pl = &out->pl[i];
+		u32 offset = mt6797_ccci_diag_le32(bytes + 4 + 16 * i);
+		size_t needed;
+		const u8 *record;
+
+		pl->offender = bytes[8 + 16 * i] != 0;
+		if (offset < MT6797_CCCI_EX_OVERVIEW_SIZE || offset > length - 8)
+			continue;
+		record = bytes + offset;
+		pl->type = record[4];
+		pl->header_valid = true;
+		if (pl->type >= 16 && pl->type <= 18) {
+			needed = MT6797_CCCI_EX_PL_ASSERT_LINE_OFFSET + 4;
+			if (needed > length || offset > length - needed)
+				continue;
+			pl->assert_line = mt6797_ccci_diag_le32(record +
+				MT6797_CCCI_EX_PL_ASSERT_LINE_OFFSET);
+		} else if ((pl->type >= 1 && pl->type <= 7) ||
+			   (pl->type >= 0x20 && pl->type <= 0x26)) {
+			needed = MT6797_CCCI_EX_PL_CONTENT_OFFSET + 12;
+			if (needed > length || offset > length - needed)
+				continue;
+			pl->codes[0] = mt6797_ccci_diag_le32(record +
+				MT6797_CCCI_EX_PL_CONTENT_OFFSET);
+			pl->codes[1] = mt6797_ccci_diag_le32(record +
+				MT6797_CCCI_EX_PL_CONTENT_OFFSET + 4);
+			pl->codes[2] = mt6797_ccci_diag_le32(record +
+				MT6797_CCCI_EX_PL_CONTENT_OFFSET + 8);
+		} else {
+			continue;
+		}
+		pl->content_valid = true;
+	}
+}
+
 enum mt6797_ccci_diag_drop {
 	MT6797_CCCI_DIAG_BAD_HEADER = 1,
 	MT6797_CCCI_DIAG_BAD_CHANNEL,
@@ -38,6 +117,8 @@ struct mt6797_ccci_diag {
 	size_t runtime_len;
 	u32 rx_count;
 	struct mt6797_ccci_diag_rx rx[MT6797_CCCI_DIAG_RX_COUNT];
+	/* First-fatal observation only, retained in driver-owned memory. */
+	u8 md_exception[MT6797_CCCI_MDSS_SIZE];
 };
 
 static void mt6797_ccci_diag_rx_save(struct mt6797_ccci_diag *d,

@@ -240,10 +240,34 @@ static void mt6797_ccci_unregister_wwan(void *data)
 static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 {
 	struct mt6797_ccci_diag *d = &ccci->diag;
+	struct mt6797_ccci_md_exception exception;
 	unsigned int i;
 
 	if (!mt6797_ccci_diag_freeze(d, ccci->queue[0].tx[0].gpd))
 		return;
+	/* The transport owns this reserved SMEM mapping for its whole lifetime.
+	 * Observe once before STOP, without allocating or touching CCIF/MD RGU.
+	 * Firmware may still be filling the report: this is not an atomic snapshot.
+	 */
+	if (ccci->smem_size >= MT6797_CCCI_MDSS_OFFSET + MT6797_CCCI_MDSS_SIZE) {
+		memcpy_fromio(d->md_exception, ccci->smem + MT6797_CCCI_MDSS_OFFSET,
+			      sizeof(d->md_exception));
+		mt6797_ccci_md_exception_decode(d->md_exception,
+					       sizeof(d->md_exception), &exception);
+		dev_err(ccci->dev,
+			"CCCI_MD_EXCEPTION overview_valid=%u cores=%u ect=%08x cs=%08x md32=%08x\n",
+			exception.overview_valid, exception.core_count,
+			exception.ect_status, exception.cs_status, exception.md32_status);
+		for (i = 0; i < ARRAY_SIZE(exception.pl); i++) {
+			const struct mt6797_ccci_pl_exception *pl = &exception.pl[i];
+
+			dev_err(ccci->dev,
+				"CCCI_MD_EXCEPTION pl=%u offender=%u header_valid=%u type=%u content_valid=%u codes=%08x/%08x/%08x assert_line=%u\n",
+				i, pl->offender, pl->header_valid, pl->type,
+				pl->content_valid, pl->codes[0], pl->codes[1],
+				pl->codes[2], pl->assert_line);
+		}
+	}
 	mt6797_fs_diag_freeze(&ccci->fs_diag);
 	dev_err(ccci->dev,
 		"MT6797_CCCI_FIRST_FATAL site=%s ready=%d irqs=%u first_tx=%08x/%08x first_rx=%08x/%08x last_tx=%08x/%08x last_rx=%08x/%08x q0_submitted=%u reclaimed=%u head=%u tail=%u used=%u descriptor_valid=%u payload_valid=%u reply_finalized=%u runtime_len=%zu\n",

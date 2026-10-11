@@ -506,6 +506,14 @@ struct msdc_host {
 	bool src_clk_cg_on;
 	bool needs_hw_init;
 	int clock_error;
+	int reset_error;
+	bool dma_active;
+	bool reset_done;
+	bool recovery_pending;
+	bool recovery_running;
+	bool recovery_attempted;
+	struct mmc_request *recovery_mrq;
+	wait_queue_head_t quiesce_wait;
 	struct mmc_cqe_ops cqe_ops;
 	const struct mmc_cqe_ops *cqe_delegate;
 	u32 mclk;		/* mmc subsystem clock frequency */
@@ -784,19 +792,81 @@ static void sdr_get_field(void __iomem *reg, u32 field, u32 *val)
 	*val = ((tv & field) >> (ffs((unsigned int)field) - 1));
 }
 
-static void msdc_reset_hw(struct msdc_host *host)
+static int msdc_reset_hw(struct msdc_host *host)
 {
 	u32 val;
+	int ret;
 
+	if (!host->clocks_on || !host->src_clk_cg_on)
+		return -EIO;
+
+	host->reset_done = false;
 	sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_RST);
-	readl_poll_timeout_atomic(host->base + MSDC_CFG, val, !(val & MSDC_CFG_RST), 0, 0);
+	ret = readl_poll_timeout_atomic(host->base + MSDC_CFG, val,
+				       !(val & MSDC_CFG_RST), 1, 20000);
+	if (ret)
+		goto fail;
 
 	sdr_set_bits(host->base + MSDC_FIFOCS, MSDC_FIFOCS_CLR);
-	readl_poll_timeout_atomic(host->base + MSDC_FIFOCS, val,
-				  !(val & MSDC_FIFOCS_CLR), 0, 0);
+	ret = readl_poll_timeout_atomic(host->base + MSDC_FIFOCS, val,
+				       !(val & MSDC_FIFOCS_CLR), 1, 20000);
+	if (ret)
+		goto fail;
 
 	val = readl(host->base + MSDC_INT);
 	writel(val, host->base + MSDC_INT);
+	host->reset_done = true;
+	return 0;
+fail:
+	host->reset_error = ret;
+	host->needs_hw_init = true;
+	mmc_debugfs_err_stats_inc(mmc_from_priv(host), MMC_ERR_CTRL_TIMEOUT);
+	return ret;
+}
+
+static int msdc_stop_dma(struct msdc_host *host)
+{
+	u32 val;
+	int ret, idle;
+
+	if (!host->clocks_on || !host->src_clk_cg_on)
+		return -EIO;
+	sdr_set_field(host->base + MSDC_DMA_CTRL, MSDC_DMA_CTRL_STOP, 1);
+	ret = readl_poll_timeout_atomic(host->base + MSDC_DMA_CTRL, val,
+				       !(val & MSDC_DMA_CTRL_STOP), 1, 20000);
+	idle = readl_poll_timeout_atomic(host->base + MSDC_DMA_CFG, val,
+					!(val & MSDC_DMA_CFG_STS), 1, 20000);
+	if (ret || idle) {
+		host->dma_active = true;
+		host->reset_error = ret ?: idle;
+		host->needs_hw_init = true;
+		mmc_debugfs_err_stats_inc(mmc_from_priv(host), MMC_ERR_CTRL_TIMEOUT);
+		return host->reset_error;
+	}
+	/* All producers must stay blocked until this observation is consumed. */
+	host->dma_active = false;
+	return 0;
+}
+
+static void msdc_defer_request(struct msdc_host *host, struct mmc_request *mrq)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&host->lock, flags);
+	if (host->recovery_running || host->recovery_attempted ||
+	    host->recovery_pending) {
+		spin_unlock_irqrestore(&host->lock, flags);
+		return;
+	}
+	host->recovery_mrq = mrq;
+	host->recovery_pending = true;
+	host->cmd = NULL;
+	host->data = NULL;
+	spin_unlock_irqrestore(&host->lock, flags);
+	if (host->clocks_on && host->src_clk_cg_on)
+		writel(0, host->base + MSDC_INTEN);
+	/* One bounded recovery attempt; a permanent fault retains ownership. */
+	mod_delayed_work(system_percpu_wq, &host->req_timeout, DAT_TIMEOUT);
 }
 
 static void msdc_cmd_next(struct msdc_host *host,
@@ -1052,6 +1122,12 @@ fail:
 
 static int msdc_clock_ready(struct msdc_host *host)
 {
+	if (host->reset_error)
+		return host->reset_error;
+	if (host->recovery_pending ||
+	    (host->cq_host && (host->cq_host->quiesce_error ||
+			     host->cq_host->task_error)))
+		return -EBUSY;
 	return host->clock_error ? host->clock_error :
 	       host->clocks_on && host->src_clk_cg_on &&
 	       !host->needs_hw_init ? 0 : -EIO;
@@ -1129,6 +1205,9 @@ static int msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 	bool hs400_clock = false;
 	bool timing_changed;
 
+	if (host->dma_active || host->recovery_pending || host->recovery_mrq ||
+	    (host->cq_host && host->cq_host->quiesce_error))
+		return -EBUSY;
 	if (!hz) {
 		dev_dbg(host->dev, "set mclk to 0\n");
 		host->mclk = 0;
@@ -1343,6 +1422,8 @@ static void msdc_start_data(struct msdc_host *host, struct mmc_command *cmd,
 
 	WARN_ON(host->data);
 	host->data = data;
+	host->reset_done = false;
+	host->dma_active = true;
 	read = data->flags & MMC_DATA_READ;
 
 	mod_delayed_work(system_percpu_wq, &host->req_timeout, DAT_TIMEOUT);
@@ -1431,43 +1512,44 @@ static void msdc_request_done(struct msdc_host *host, struct mmc_request *mrq)
 	struct mmc_host *mmc = mmc_from_priv(host);
 	unsigned long flags;
 	bool hsq_req_done;
+	int ret;
 
 	/*
 	 * No need check the return value of cancel_delayed_work, as only ONE
 	 * path will go here!
 	 */
 	cancel_delayed_work(&host->req_timeout);
-
-	/*
-	 * If the request was handled from Host Software Queue, there's almost
-	 * nothing to do here, and we also don't need to reset mrq as any race
-	 * condition would not have any room to happen, since HSQ stores the
-	 * "scheduled" mrqs in an internal array of mrq slots anyway.
-	 * However, if the controller experienced an error, we still want to
-	 * reset it as soon as possible.
-	 *
-	 * Note that non-HSQ requests will still be happening at times, even
-	 * though it is enabled, and that's what is going to reset host->mrq.
-	 * Also, msdc_unprepare_data() is going to be called by HSQ when needed
-	 * as HSQ request finalization will eventually call the .post_req()
-	 * callback of this driver which, in turn, unprepares the data.
-	 */
-	hsq_req_done = host->hsq_en ? mmc_hsq_finalize_request(mmc, mrq) : false;
-	if (hsq_req_done) {
-		if (host->error)
-			msdc_reset_hw(host);
-		return;
+	if (host->dma_active) {
+		ret = msdc_stop_dma(host);
+		if (ret) {
+			mrq->cmd->error = ret;
+			if (mrq->data) {
+				mrq->data->error = ret;
+				mrq->data->bytes_xfered = 0;
+			}
+			msdc_defer_request(host, mrq);
+			return;
+		}
 	}
-
+	if (host->error && !host->reset_done && !host->reset_error)
+		msdc_reset_hw(host);
+	if (host->reset_error && !mrq->cmd->error)
+		mrq->cmd->error = host->reset_error;
+	/* No callback may observe the old owner after completion is published. */
 	spin_lock_irqsave(&host->lock, flags);
 	host->mrq = NULL;
+	host->cmd = NULL;
+	host->data = NULL;
 	spin_unlock_irqrestore(&host->lock, flags);
+
+	/* Reset precedes publication; HSQ owns asynchronous post_req cleanup. */
+	hsq_req_done = host->hsq_en ? mmc_hsq_finalize_request(mmc, mrq) : false;
+	if (hsq_req_done)
+		return;
 
 	msdc_track_cmd_data(host, mrq->cmd);
 	if (mrq->data)
 		msdc_unprepare_data(host, mrq->data);
-	if (host->error)
-		msdc_reset_hw(host);
 	mmc_request_done(mmc, mrq);
 	if (host->dev_comp->recheck_sdio_irq)
 		msdc_recheck_sdio_irq(host);
@@ -1596,7 +1678,12 @@ static void msdc_start_command(struct msdc_host *host,
 	if ((readl(host->base + MSDC_FIFOCS) & MSDC_FIFOCS_TXCNT) >> 16 ||
 	    readl(host->base + MSDC_FIFOCS) & MSDC_FIFOCS_RXCNT) {
 		dev_err(host->dev, "TX/RX FIFO non-empty before start of IO. Reset\n");
-		msdc_reset_hw(host);
+		cmd->error = msdc_reset_hw(host);
+		if (cmd->error) {
+			host->error |= REQ_CMD_EIO;
+			msdc_request_done(host, mrq);
+			return;
+		}
 	}
 
 	cmd->error = 0;
@@ -1607,12 +1694,18 @@ static void msdc_start_command(struct msdc_host *host,
 	spin_unlock_irqrestore(&host->lock, flags);
 
 	writel(cmd->arg, host->base + SDC_ARG);
+	host->reset_done = false;
 	writel(rawcmd, host->base + SDC_CMD);
 }
 
 static void msdc_cmd_next(struct msdc_host *host,
 		struct mmc_request *mrq, struct mmc_command *cmd)
 {
+	if (host->reset_error) {
+		cmd->error = cmd->error ?: host->reset_error;
+		msdc_request_done(host, mrq);
+		return;
+	}
 	if ((cmd->error && !host->hs400_tuning &&
 	     !(cmd->error == -EILSEQ &&
 	     mmc_op_tuning(cmd->opcode))) ||
@@ -1727,6 +1820,9 @@ static void msdc_post_req(struct mmc_host *mmc, struct mmc_request *mrq,
 
 	if (!data)
 		return;
+	if (host->recovery_mrq == mrq ||
+	    (host->dma_active && host->mrq == mrq))
+		return;
 
 	if (data->host_cookie) {
 		data->host_cookie &= ~MSDC_ASYNC_FLAG;
@@ -1736,6 +1832,10 @@ static void msdc_post_req(struct mmc_host *mmc, struct mmc_request *mrq,
 
 static void msdc_data_xfer_next(struct msdc_host *host, struct mmc_request *mrq)
 {
+	if (host->reset_error) {
+		msdc_request_done(host, mrq);
+		return;
+	}
 	if (mmc_op_multi(mrq->cmd->opcode) && mrq->stop && !mrq->stop->error &&
 	    !mrq->sbc)
 		msdc_start_command(host, mrq, mrq->stop);
@@ -1756,7 +1856,6 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 	u32 errors = events & (MSDC_INT_DATCRCERR | MSDC_INT_DATTMO |
 			       MSDC_INT_DMA_BDCSERR | MSDC_INT_DMA_GPDCSERR |
 			       MSDC_INT_DMA_PROTECT);
-	u32 val;
 	int ret;
 
 	spin_lock_irqsave(&host->lock, flags);
@@ -1772,21 +1871,20 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 	if (check_data || (stop && stop->error)) {
 		dev_dbg(host->dev, "DMA status: 0x%8X\n",
 				readl(host->base + MSDC_DMA_CFG));
-		sdr_set_field(host->base + MSDC_DMA_CTRL, MSDC_DMA_CTRL_STOP,
-				1);
-
-		ret = readl_poll_timeout_atomic(host->base + MSDC_DMA_CTRL, val,
-						!(val & MSDC_DMA_CTRL_STOP), 1, 20000);
+		if (events & MSDC_INT_DATTMO)
+			mmc_debugfs_err_stats_inc(mmc_from_priv(host), MMC_ERR_DAT_TIMEOUT);
+		else if (events & MSDC_INT_DATCRCERR)
+			mmc_debugfs_err_stats_inc(mmc_from_priv(host), MMC_ERR_DAT_CRC);
+		if (events & (MSDC_INT_DMA_BDCSERR | MSDC_INT_DMA_GPDCSERR |
+			      MSDC_INT_DMA_PROTECT))
+			mmc_debugfs_err_stats_inc(mmc_from_priv(host), MMC_ERR_ADMA);
+		ret = msdc_stop_dma(host);
 		if (ret) {
-			dev_dbg(host->dev, "DMA stop timed out\n");
-			mmc_debugfs_err_stats_inc(mmc_from_priv(host), MMC_ERR_CTRL_TIMEOUT);
-		}
-
-		ret = readl_poll_timeout_atomic(host->base + MSDC_DMA_CFG, val,
-						!(val & MSDC_DMA_CFG_STS), 1, 20000);
-		if (ret) {
-			dev_dbg(host->dev, "DMA inactive timed out\n");
-			mmc_debugfs_err_stats_inc(mmc_from_priv(host), MMC_ERR_CTRL_TIMEOUT);
+			host->error |= REQ_DAT_ERR;
+			data->error = ret;
+			data->bytes_xfered = 0;
+			msdc_defer_request(host, mrq);
+			return;
 		}
 
 		sdr_clr_bits(host->base + MSDC_INTEN, data_ints_mask);
@@ -1803,16 +1901,11 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 
 			if (events & MSDC_INT_DATTMO) {
 				data->error = -ETIMEDOUT;
-				mmc_debugfs_err_stats_inc(mmc_from_priv(host), MMC_ERR_DAT_TIMEOUT);
 			} else if (events & MSDC_INT_DATCRCERR) {
 				data->error = -EILSEQ;
-				mmc_debugfs_err_stats_inc(mmc_from_priv(host), MMC_ERR_DAT_CRC);
 			} else if (errors) {
 				data->error = -EIO;
 			}
-			if (events & (MSDC_INT_DMA_BDCSERR | MSDC_INT_DMA_GPDCSERR |
-				      MSDC_INT_DMA_PROTECT))
-				mmc_debugfs_err_stats_inc(mmc_from_priv(host), MMC_ERR_ADMA);
 
 			dev_dbg(host->dev, "%s: cmd=%d; blocks=%d",
 				__func__, mrq->cmd->opcode, data->blocks);
@@ -1891,6 +1984,42 @@ static void msdc_request_timeout(struct work_struct *work)
 {
 	struct msdc_host *host = container_of(work, struct msdc_host,
 			req_timeout.work);
+	struct mmc_request *mrq;
+	unsigned long flags;
+	int ret;
+	bool cqe;
+
+	if (host->recovery_pending) {
+		/* Never take the device or MMC claim held by teardown. */
+		host->recovery_running = true;
+		host->recovery_attempted = true;
+		cqe = host->cq_host && host->cq_host->enabled &&
+		      host->cq_host->quiesce_error;
+		if (!host->clocks_on || !host->src_clk_cg_on)
+			ret = -EIO;
+		else if (cqe)
+			ret = cqhci_deactivate(mmc_from_priv(host));
+		else
+			ret = msdc_stop_dma(host);
+		if (!ret && !cqe)
+			msdc_reset_hw(host);
+		spin_lock_irqsave(&host->lock, flags);
+		mrq = host->recovery_mrq;
+		host->recovery_pending = false;
+		host->recovery_running = false;
+		if (!ret) {
+			host->recovery_mrq = NULL;
+			host->recovery_attempted = false;
+		}
+		spin_unlock_irqrestore(&host->lock, flags);
+		if (!ret && mrq)
+			msdc_request_done(host, mrq);
+		wake_up_all(&host->quiesce_wait);
+		return;
+	}
+
+	if (host->recovery_attempted || !host->mrq)
+		return;
 
 	/* simulate HW timeout status */
 	dev_err(host->dev, "%s: aborting cmd/data/mrq\n", __func__);
@@ -2062,16 +2191,21 @@ static irqreturn_t msdc_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static void msdc_init_hw(struct msdc_host *host)
+static int msdc_init_hw(struct msdc_host *host)
 {
 	u32 val, pb1_val, pb2_val;
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
 	struct mmc_host *mmc = mmc_from_priv(host);
+	int ret;
 
 	if (host->reset) {
-		reset_control_assert(host->reset);
+		ret = reset_control_assert(host->reset);
+		if (ret)
+			goto fail;
 		usleep_range(10, 50);
-		reset_control_deassert(host->reset);
+		ret = reset_control_deassert(host->reset);
+		if (ret)
+			goto fail;
 	}
 
 	/* New tx/rx enable bit need to be 0->1 for hardware check */
@@ -2089,7 +2223,9 @@ static void msdc_init_hw(struct msdc_host *host)
 	sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_MODE | MSDC_CFG_CKPDN);
 
 	/* Reset */
-	msdc_reset_hw(host);
+	ret = msdc_reset_hw(host);
+	if (ret)
+		return ret;
 
 	/* Disable and clear all interrupts */
 	writel(0, host->base + MSDC_INTEN);
@@ -2277,6 +2413,12 @@ static void msdc_init_hw(struct msdc_host *host)
 		host->saved_tune_para.pad_tune = readl(host->base + tune_reg);
 	}
 	dev_dbg(host->dev, "init hardware done!");
+	host->reset_error = 0;
+	return 0;
+fail:
+	host->reset_error = ret;
+	host->needs_hw_init = true;
+	return ret;
 }
 
 static void msdc_deinit_hw(struct msdc_host *host)
@@ -2336,19 +2478,32 @@ static int msdc_set_ios_clock(struct msdc_host *host, struct mmc_ios *ios)
 	unsigned char old_timing = host->timing;
 	int ret;
 
+	if (host->cq_host && host->cq_host->task_error)
+		host->needs_hw_init = true;
 	ret = msdc_set_mclk(host, ios->timing, ios->clock);
 	if (ret || !host->needs_hw_init)
 		return ret;
 	/* A quiet or faulted clock is not enough to run the reset sequence. */
 	if (!ios->clock || host->clock_error || !host->src_clk_cg_on)
 		return host->clock_error ?: -EIO;
-	msdc_init_hw(host);
+	ret = msdc_init_hw(host);
+	if (ret) {
+		host->mclk = old_mclk;
+		host->timing = old_timing;
+		mmc->actual_clock = 0;
+		return ret;
+	}
 	ret = msdc_set_mclk(host, ios->timing, ios->clock);
 	if (ret) {
 		host->mclk = old_mclk;
 		host->timing = old_timing;
 		mmc->actual_clock = 0;
 		return ret;
+	}
+	if (host->cq_host && host->cq_host->task_error) {
+		ret = cqhci_deactivate(mmc);
+		if (ret)
+			return ret;
 	}
 	host->needs_hw_init = false;
 	return 0;
@@ -2358,7 +2513,8 @@ static void msdc_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct msdc_host *host = mmc_priv(mmc);
 	int ret;
-	bool ready = !msdc_clock_ready(host);
+	bool ready = !msdc_clock_ready(host) && !host->dma_active &&
+		     !host->recovery_pending && !host->recovery_mrq;
 
 	if (ready)
 		msdc_set_buswidth(host, ios->bus_width);
@@ -2367,7 +2523,7 @@ static void msdc_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	switch (ios->power_mode) {
 	case MMC_POWER_UP:
 		if (!IS_ERR(mmc->supply.vmmc)) {
-			if (!msdc_clock_ready(host))
+			if (ready)
 				msdc_init_hw(host);
 			else
 				host->needs_hw_init = true;
@@ -2407,7 +2563,10 @@ static void msdc_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			host->clock_error = -EIO;
 		return;
 	}
-	if (host->clock_error || host->needs_hw_init) {
+	if (host->dma_active || host->recovery_pending || host->recovery_mrq)
+		return;
+	if (host->clock_error || host->reset_error || host->needs_hw_init ||
+	    (host->cq_host && host->cq_host->task_error)) {
 		ret = msdc_set_ios_clock(host, ios);
 		if (ret || msdc_clock_ready(host))
 			return;
@@ -2946,6 +3105,8 @@ static void msdc_hw_reset(struct mmc_host *mmc)
 {
 	struct msdc_host *host = mmc_priv(mmc);
 
+	if (msdc_clock_ready(host))
+		return;
 	sdr_set_bits(host->base + EMMC_IOCON, 1);
 	udelay(10); /* 10us is enough */
 	sdr_clr_bits(host->base + EMMC_IOCON, 1);
@@ -3073,18 +3234,40 @@ static void msdc_cqe_disable(struct mmc_host *mmc, bool recovery)
 
 	val = readl(host->base + MSDC_INT);
 	writel(val, host->base + MSDC_INT);
+}
 
-	if (recovery) {
-		sdr_set_field(host->base + MSDC_DMA_CTRL,
-			      MSDC_DMA_CTRL_STOP, 1);
-		if (WARN_ON(readl_poll_timeout(host->base + MSDC_DMA_CTRL, val,
-			!(val & MSDC_DMA_CTRL_STOP), 1, 3000)))
-			return;
-		if (WARN_ON(readl_poll_timeout(host->base + MSDC_DMA_CFG, val,
-			!(val & MSDC_DMA_CFG_STS), 1, 3000)))
-			return;
-		msdc_reset_hw(host);
+static int msdc_cqe_quiesce(struct mmc_host *mmc, bool recovery,
+			    int producer_error)
+{
+	struct msdc_host *host = mmc_priv(mmc);
+	int ret;
+
+	if (producer_error) {
+		/* A queued task can restart DMA until CQHCI disable is accepted. */
+		host->dma_active = true;
+		host->reset_error = producer_error;
+		host->needs_hw_init = true;
+		msdc_defer_request(host, NULL);
+		return producer_error;
 	}
+	/* CQHCI disables its task producer before invoking the native owner. */
+	ret = msdc_stop_dma(host);
+	if (ret) {
+		msdc_defer_request(host, NULL);
+		return ret;
+	}
+	if (recovery || host->recovery_running)
+		msdc_reset_hw(host);
+	if (host->recovery_running) {
+		unsigned long flags;
+
+		/* Standard MMC recovery can reinitialize as soon as CQHCI wakes. */
+		spin_lock_irqsave(&host->lock, flags);
+		host->recovery_pending = false;
+		spin_unlock_irqrestore(&host->lock, flags);
+	}
+	/* Reset failure blocks new I/O, but proved-idle memory is releasable. */
+	return 0;
 }
 
 static void msdc_cqe_pre_enable(struct mmc_host *mmc)
@@ -3128,6 +3311,7 @@ static const struct mmc_host_ops mt_msdc_ops = {
 static const struct cqhci_host_ops msdc_cmdq_ops = {
 	.enable         = msdc_cqe_enable,
 	.disable        = msdc_cqe_disable,
+	.quiesce        = msdc_cqe_quiesce,
 	.pre_enable = msdc_cqe_pre_enable,
 	.post_disable = msdc_cqe_post_disable,
 };
@@ -3372,6 +3556,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	msdc_init_gpd_bd(host, &host->dma);
 	INIT_DELAYED_WORK(&host->req_timeout, msdc_request_timeout);
 	spin_lock_init(&host->lock);
+	init_waitqueue_head(&host->quiesce_wait);
 
 	platform_set_drvdata(pdev, mmc);
 	ret = msdc_ungate_clock(host);
@@ -3379,7 +3564,9 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Cannot ungate clocks!\n");
 		goto release_clk;
 	}
-	msdc_init_hw(host);
+	ret = msdc_init_hw(host);
+	if (ret)
+		goto release_clk;
 
 	if (mmc->caps2 & MMC_CAP2_CQE) {
 		host->cq_host = devm_kzalloc(mmc->parent,
@@ -3452,6 +3639,31 @@ release_mem:
 	return ret;
 }
 
+static void msdc_wait_for_quiescence(struct msdc_host *host)
+{
+	struct mmc_host *mmc = mmc_from_priv(host);
+	int ret = 0;
+
+	if (host->clocks_on && host->cq_host && host->cq_host->enabled)
+		ret = cqhci_deactivate(mmc);
+	else if (host->clocks_on &&
+		 (host->dma_active || host->recovery_pending || host->recovery_mrq))
+		ret = msdc_stop_dma(host);
+	if (!ret && host->dma_active && host->clocks_on)
+		ret = msdc_stop_dma(host);
+	if (ret && !host->recovery_pending)
+		msdc_defer_request(host, host->recovery_mrq);
+	/*
+	 * MT6797 has no described physical isolation fallback. A permanently
+	 * unquiesced owner retains its binding, SGs and descriptors here. This
+	 * sleep may be indefinite; every individual hardware poll is bounded.
+	 */
+	wait_event(host->quiesce_wait, !host->dma_active &&
+		   !host->recovery_pending && !host->recovery_mrq &&
+		   !(host->cq_host && host->cq_host->quiesce_error));
+	cancel_delayed_work_sync(&host->req_timeout);
+}
+
 static void msdc_drv_remove(struct platform_device *pdev)
 {
 	struct mmc_host *mmc;
@@ -3463,8 +3675,8 @@ static void msdc_drv_remove(struct platform_device *pdev)
 
 	ret = pm_runtime_resume_and_get(host->dev);
 
-	platform_set_drvdata(pdev, NULL);
 	mmc_remove_host(mmc);
+	msdc_wait_for_quiescence(host);
 	if (host->clocks_on)
 		msdc_deinit_hw(host);
 	msdc_gate_clock(host);
@@ -3478,6 +3690,7 @@ static void msdc_drv_remove(struct platform_device *pdev)
 	dma_free_coherent(&pdev->dev, MAX_BD_NUM * sizeof(struct mt_bdma_desc),
 			  host->dma.bd, host->dma.bd_addr);
 	device_init_wakeup(&pdev->dev, false);
+	platform_set_drvdata(pdev, NULL);
 }
 
 static void msdc_save_reg(struct msdc_host *host)
@@ -3552,6 +3765,15 @@ static int msdc_runtime_suspend(struct device *dev)
 	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct msdc_host *host = mmc_priv(mmc);
 
+	if (host->dma_active || host->recovery_pending || host->recovery_mrq ||
+	    (host->cq_host && host->cq_host->quiesce_error))
+		return -EBUSY;
+	if (host->cq_host && host->cq_host->enabled) {
+		int ret = cqhci_deactivate(mmc);
+
+		if (ret)
+			return ret;
+	}
 	if (host->hsq_en)
 		mmc_hsq_suspend(mmc);
 	if (!host->clocks_on)
@@ -3581,12 +3803,18 @@ static int msdc_runtime_resume(struct device *dev)
 	struct msdc_host *host = mmc_priv(mmc);
 	int ret;
 
+	/* An unsafe owner retains its existing runtime clock votes. */
+	if (host->dma_active || host->recovery_pending || host->recovery_mrq ||
+	    (host->cq_host && host->cq_host->quiesce_error))
+		return -EBUSY;
+
 	ret = msdc_ungate_clock(host);
 	if (ret)
 		return ret;
 
 	msdc_restore_reg(host);
-	if (host->clock_error || host->needs_hw_init)
+	if (host->clock_error || host->reset_error || host->needs_hw_init ||
+	    (host->cq_host && host->cq_host->task_error))
 		ret = msdc_set_ios_clock(host, &mmc->ios);
 	else
 		ret = msdc_wait_clock(host, host->save_para.msdc_cfg);
@@ -3653,9 +3881,22 @@ static const struct dev_pm_ops msdc_dev_pm_ops = {
 	RUNTIME_PM_OPS(msdc_runtime_suspend, msdc_runtime_resume, NULL)
 };
 
+static void msdc_drv_shutdown(struct platform_device *pdev)
+{
+	struct mmc_host *mmc = platform_get_drvdata(pdev);
+	struct msdc_host *host = mmc_priv(mmc);
+	int ret;
+
+	ret = pm_runtime_resume_and_get(host->dev);
+	msdc_wait_for_quiescence(host);
+	if (ret >= 0)
+		pm_runtime_put_noidle(host->dev);
+}
+
 static struct platform_driver mt_msdc_driver = {
 	.probe = msdc_drv_probe,
 	.remove = msdc_drv_remove,
+	.shutdown = msdc_drv_shutdown,
 	.driver = {
 		.name = "mtk-msdc",
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,

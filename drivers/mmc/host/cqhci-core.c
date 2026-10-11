@@ -316,10 +316,59 @@ static void __cqhci_disable(struct cqhci_host *cq_host)
 	cq_host->activated = false;
 }
 
+/* CQHCI could be expected to clear its internal state pretty quickly. */
+#define CQHCI_CLEAR_TIMEOUT		20
+static bool cqhci_clear_all_tasks(struct mmc_host *mmc, unsigned int timeout);
+
+static int cqhci_quiesce(struct mmc_host *mmc, bool recovery)
+{
+	struct cqhci_host *cq_host = mmc->cqe_private;
+	unsigned long flags;
+	bool halted;
+	int ret, producer_error;
+
+	/* Block new doorbells before testing the native DMA owner. */
+	spin_lock_irqsave(&cq_host->lock, flags);
+	if (!cq_host->quiesce_error)
+		cq_host->quiesce_halt = cq_host->recovery_halt;
+	halted = recovery || cq_host->quiesce_halt;
+	cq_host->recovery_halt = true;
+	cq_host->quiesce_error = -EBUSY;
+	spin_unlock_irqrestore(&cq_host->lock, flags);
+	__cqhci_disable(cq_host);
+	producer_error = cqhci_readl(cq_host, CQHCI_CFG) & CQHCI_ENABLE ?
+			 -EIO : 0;
+	ret = cq_host->ops->quiesce(mmc, recovery, producer_error);
+	if (producer_error)
+		ret = producer_error;
+	spin_lock_irqsave(&cq_host->lock, flags);
+	cq_host->quiesce_error = ret;
+	cq_host->recovery_halt = ret ? true : halted;
+	spin_unlock_irqrestore(&cq_host->lock, flags);
+	wake_up_all(&cq_host->wait_queue);
+	return ret;
+}
+
 int cqhci_deactivate(struct mmc_host *mmc)
 {
 	struct cqhci_host *cq_host = mmc->cqe_private;
+	unsigned long flags;
+	int ret;
 
+	if (cq_host->enabled && cq_host->ops->quiesce &&
+	    (cq_host->activated || cq_host->quiesce_error || cq_host->task_error)) {
+		ret = cqhci_quiesce(mmc, false);
+		if (ret || !cq_host->task_error)
+			return ret;
+		/* A foreground native reinitialization can retry failed task clear. */
+		ret = cqhci_clear_all_tasks(mmc, CQHCI_CLEAR_TIMEOUT) ? 0 : -EIO;
+		spin_lock_irqsave(&cq_host->lock, flags);
+		cq_host->task_error = ret;
+		if (!ret && !cq_host->qcnt)
+			cq_host->recovery_halt = false;
+		spin_unlock_irqrestore(&cq_host->lock, flags);
+		return ret;
+	}
 	if (cq_host->enabled && cq_host->activated)
 		__cqhci_disable(cq_host);
 
@@ -338,7 +387,10 @@ static int cqhci_enable(struct mmc_host *mmc, struct mmc_card *card)
 {
 	struct cqhci_host *cq_host = mmc->cqe_private;
 	int err;
+	unsigned long flags;
 
+	if (cq_host->quiesce_error || cq_host->task_error)
+		return cq_host->quiesce_error ?: cq_host->task_error;
 	if (!card->ext_csd.cmdq_en)
 		return -EINVAL;
 
@@ -354,9 +406,28 @@ static int cqhci_enable(struct mmc_host *mmc, struct mmc_card *card)
 		return err;
 	}
 
+	if (cq_host->ops->quiesce) {
+		spin_lock_irqsave(&cq_host->lock, flags);
+		if (cq_host->quiesce_error || cq_host->task_error ||
+		    cq_host->recovery_halt) {
+			err = cq_host->quiesce_error ?: cq_host->task_error ?: -EBUSY;
+			spin_unlock_irqrestore(&cq_host->lock, flags);
+			/* These newly allocated descriptors were never advertised. */
+			dmam_free_coherent(mmc_dev(mmc), cq_host->data_size,
+					   cq_host->trans_desc_base,
+					   cq_host->trans_desc_dma_base);
+			dmam_free_coherent(mmc_dev(mmc), cq_host->desc_size,
+					   cq_host->desc_base, cq_host->desc_dma_base);
+			cq_host->trans_desc_base = NULL;
+			cq_host->desc_base = NULL;
+			return err;
+		}
+	}
 	__cqhci_enable(cq_host);
 
 	cq_host->enabled = true;
+	if (cq_host->ops->quiesce)
+		spin_unlock_irqrestore(&cq_host->lock, flags);
 
 #ifdef DEBUG
 	cqhci_dumpregs(cq_host);
@@ -378,6 +449,17 @@ static void cqhci_off(struct mmc_host *mmc)
 	u32 reg;
 	int err;
 
+	if (cq_host->enabled && cq_host->ops->quiesce) {
+		if (!cq_host->activated && !cq_host->quiesce_error)
+			return;
+		if (cq_host->ops->disable)
+			cq_host->ops->disable(mmc, false);
+		if (cqhci_quiesce(mmc, false))
+			return;
+		if (cq_host->ops->post_disable)
+			cq_host->ops->post_disable(mmc);
+		return;
+	}
 	if (!cq_host->enabled || !mmc->cqe_on || cq_host->recovery_halt)
 		return;
 
@@ -407,8 +489,11 @@ static void cqhci_disable(struct mmc_host *mmc)
 		return;
 
 	cqhci_off(mmc);
+	if (cq_host->quiesce_error)
+		return;
 
-	__cqhci_disable(cq_host);
+	if (!cq_host->ops->quiesce)
+		__cqhci_disable(cq_host);
 
 	dmam_free_coherent(mmc_dev(mmc), cq_host->data_size,
 			   cq_host->trans_desc_base,
@@ -606,9 +691,18 @@ static int cqhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	struct cqhci_host *cq_host = mmc->cqe_private;
 	unsigned long flags;
 
+	/* Checked hosts serialize every producer-enable write with quiesce. */
+	if (cq_host->ops->quiesce)
+		spin_lock_irqsave(&cq_host->lock, flags);
+	if (cq_host->quiesce_error || cq_host->task_error ||
+	    (cq_host->ops->quiesce && cq_host->recovery_halt)) {
+		err = cq_host->quiesce_error ?: cq_host->task_error ?: -EBUSY;
+		goto out_enable;
+	}
 	if (!cq_host->enabled) {
 		pr_err("%s: cqhci: not enabled\n", mmc_hostname(mmc));
-		return -EINVAL;
+		err = -EINVAL;
+		goto out_enable;
 	}
 
 	/* First request after resume has to re-enable */
@@ -629,6 +723,9 @@ static int cqhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		if (cq_host->ops->enable)
 			cq_host->ops->enable(mmc);
 	}
+
+	if (cq_host->ops->quiesce)
+		spin_unlock_irqrestore(&cq_host->lock, flags);
 
 	if (mrq->data) {
 		cqhci_prep_task_desc(mrq, cq_host, tag);
@@ -666,6 +763,10 @@ out_unlock:
 	if (err)
 		cqhci_post_req(mmc, mrq);
 
+	return err;
+out_enable:
+	if (cq_host->ops->quiesce)
+		spin_unlock_irqrestore(&cq_host->lock, flags);
 	return err;
 }
 
@@ -1006,6 +1107,8 @@ static void cqhci_recovery_start(struct mmc_host *mmc)
 
 	if (cq_host->ops->disable)
 		cq_host->ops->disable(mmc, true);
+	if (cq_host->ops->quiesce && cqhci_quiesce(mmc, true))
+		return;
 
 	mmc->cqe_on = false;
 }
@@ -1064,8 +1167,6 @@ static void cqhci_recover_mrqs(struct cqhci_host *cq_host)
  */
 #define CQHCI_FINISH_HALT_TIMEOUT	20
 
-/* CQHCI could be expected to clear it's internal state pretty quickly */
-#define CQHCI_CLEAR_TIMEOUT		20
 
 static void cqhci_recovery_finish(struct mmc_host *mmc)
 {
@@ -1078,6 +1179,24 @@ static void cqhci_recovery_finish(struct mmc_host *mmc)
 
 	WARN_ON(!cq_host->recovery_halt);
 
+	if (cq_host->ops->quiesce) {
+		/* Never publish completion while the native DMA owner is unsafe. */
+		cqhci_halt(mmc, CQHCI_FINISH_HALT_TIMEOUT);
+		ok = cqhci_clear_all_tasks(mmc, CQHCI_CLEAR_TIMEOUT);
+		if (cqhci_quiesce(mmc, true)) {
+			/* Retain slots and the recovery claim until native proof. */
+			wait_event(cq_host->wait_queue,
+				   !READ_ONCE(cq_host->quiesce_error));
+			ok = cqhci_clear_all_tasks(mmc, CQHCI_CLEAR_TIMEOUT);
+		}
+		cqhci_recover_mrqs(cq_host);
+		spin_lock_irqsave(&cq_host->lock, flags);
+		cq_host->recovery_halt = !ok;
+		cq_host->task_error = ok ? 0 : -EIO;
+		spin_unlock_irqrestore(&cq_host->lock, flags);
+		/* First admitted request will rebuild the disabled CQHCI state. */
+		return;
+	}
 	ok = cqhci_halt(mmc, CQHCI_FINISH_HALT_TIMEOUT);
 
 	/*

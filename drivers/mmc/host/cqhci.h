@@ -247,6 +247,9 @@ struct cqhci_host {
 	bool activated;
 	bool waiting_for_idle;
 	bool recovery_halt;
+	int quiesce_error;
+	bool quiesce_halt;
+	int task_error;
 
 	size_t desc_size;
 	size_t data_size;
@@ -286,6 +289,18 @@ struct cqhci_host_ops {
 	u32 (*read_l)(struct cqhci_host *host, int reg);
 	void (*enable)(struct mmc_host *mmc);
 	void (*disable)(struct mmc_host *mmc, bool recovery);
+	/*
+	 * Optional checked native DMA stop. Zero producer_error means CQHCI
+	 * disable was accepted. Success
+	 * permits releasing request/descriptor memory, not restarting native
+	 * I/O. On failure the owner must reject native producers and retain
+	 * its binding until DMA inactivity is proved. Nonzero producer_error
+	 * means CQHCI disable was not accepted; retain ownership without
+	 * touching native DMA/reset until that producer is stopped. Checked
+	 * hosts must keep enable/pre_enable callbacks non-sleeping: producer
+	 * enable writes are serialized with quiesce by the host spinlock.
+	 */
+	int (*quiesce)(struct mmc_host *mmc, bool recovery, int producer_error);
 	void (*update_dcmd_desc)(struct mmc_host *mmc, struct mmc_request *mrq,
 				 u64 *data);
 	void (*pre_enable)(struct mmc_host *mmc);

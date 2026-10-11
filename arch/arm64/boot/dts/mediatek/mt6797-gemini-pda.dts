@@ -603,6 +603,15 @@
 		};
 	};
 
+	gnss_lna: regulator-gnss-lna {
+		compatible = "regulator-fixed";
+		regulator-name = "gnss-lna";
+		gpios = <&pio 69 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		pinctrl-names = "default";
+		pinctrl-0 = <&gnss_lna_pins>;
+	};
+
 	consys: consys@18070000 {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -632,6 +641,12 @@
 		mediatek,spm = <&scpsys>;
 		mediatek,btif = <&btif>;
 		status = "okay";
+
+		gnss {
+			compatible = "mediatek,mt6797-gnss";
+			lna-supply = <&gnss_lna>;
+			status = "okay";
+		};
 
 		bluetooth: bluetooth {
 			compatible = "mediatek,mt6797-bluetooth";
@@ -1308,6 +1323,12 @@
 };
 
 &pio {
+	gnss_lna_pins: gnss-lna-pins {
+		pins {
+			pinmux = <MT6797_GPIO69__FUNC_GPIO69>;
+		};
+	};
+
 	/*
 	 * MT6797 pinctrl currently supports pinmux only for these pads:
 	 * its descriptor has no pull, IES, or drive-strength register maps.

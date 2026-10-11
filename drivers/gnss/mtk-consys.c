@@ -5,8 +5,9 @@
  * Vendor MT6797 code proves only that GPS uses STP task 2 and that opening the
  * vendor character device brackets that stream with WMT GPS function on/off.
  * It does not prove BTIF transport ownership, firmware protocol, register map,
- * power rails, NMEA dialect, or shared-memory contract. Those responsibilities
- * stay with a future controller owner. This endpoint uses an opaque active
+ * power rails, NMEA dialect, or shared-memory contract. The shared CONSYS owner
+ * manages transport and power; receiver protocol interpretation stays in
+ * userspace. This endpoint uses an opaque active
  * full-STP lease, so it cannot forge sequence/ACK fields or coexist with a
  * generic full-STP encoder.
  */
@@ -15,6 +16,10 @@
 #include <linux/gnss.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/regulator/consumer.h>
+#include <linux/soc/mediatek/mt6797-consys-gnss.h>
 #include <linux/soc/mediatek/mtk-gnss.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
 
@@ -135,7 +140,8 @@ void mtk_gnss_stop(struct mtk_gnss *gnss)
 		return;
 
 	mtk_gnss_wait_for_transition_uninterruptible(gnss);
-	if (gnss->registered && gnss->active) {
+	/* A failed write stops RX, but the owner's power vote still needs cleanup. */
+	if (gnss->registered && (gnss->active || gnss->faulted)) {
 		gnss->transitioning = true;
 		mutex_unlock(&gnss->lock);
 		ret = gnss->transport.set_power(gnss->transport.context, false);
@@ -172,14 +178,13 @@ int mtk_gnss_write(struct mtk_gnss *gnss, const u8 *data, size_t data_len)
 
 	gnss->transitioning = true;
 	mutex_unlock(&gnss->lock);
-	ret = mt6797_consys_stp_session_transmit(gnss->session_lease,
-						 MTK_STP_GNSS, data, data_len);
+	ret = gnss->transport.transmit(gnss->transport.context, data, data_len);
 	mutex_lock(&gnss->lock);
-	if (ret) {
-		/* A failed opaque full-STP submit has no endpoint-local recovery. */
+	if (ret && ret != -EAGAIN && ret != -ERESTARTSYS) {
+		/* A terminal shared-owner submit has no endpoint-local recovery. */
 		gnss->active = false;
 		gnss->faulted = true;
-	} else {
+	} else if (!ret) {
 		ret = data_len;
 	}
 	mtk_gnss_complete_transition(gnss);
@@ -189,19 +194,6 @@ unlock:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mtk_gnss_write);
-
-void mtk_gnss_transport_reset(struct mtk_gnss *gnss)
-{
-	if (!gnss || !READ_ONCE(gnss->initialized))
-		return;
-
-	if (mtk_gnss_wait_for_transition(gnss))
-		return;
-	gnss->active = false;
-	gnss->faulted = false;
-	mutex_unlock(&gnss->lock);
-}
-EXPORT_SYMBOL_GPL(mtk_gnss_transport_reset);
 
 static int mtk_gnss_open(struct gnss_device *gdev)
 {
@@ -233,7 +225,7 @@ int mtk_gnss_register(struct mtk_gnss *gnss, struct device *parent,
 	int ret;
 
 	if (!gnss || !parent || !session_lease || !transport ||
-	    !transport->set_power)
+	    !transport->set_power || !transport->transmit)
 		return -EINVAL;
 
 	if (!gnss->initialized) {
@@ -351,6 +343,138 @@ void mtk_gnss_unregister(struct mtk_gnss *gnss)
 	gnss_put_device(gdev);
 }
 EXPORT_SYMBOL_GPL(mtk_gnss_unregister);
+
+struct mt6797_gnss_device {
+	struct device *dev;
+	struct mtk_gnss endpoint;
+	const struct mt6797_consys_gnss_lease *lease;
+	struct regulator *lna;
+	bool lna_enabled;
+};
+
+static int mt6797_gnss_lna_off(struct mt6797_gnss_device *device)
+{
+	int ret;
+
+	if (!device->lna_enabled)
+		return 0;
+	ret = regulator_disable(device->lna);
+	if (!ret)
+		device->lna_enabled = false;
+	return ret;
+}
+
+static void mt6797_gnss_cleanup_lna(void *context)
+{
+	struct mt6797_gnss_device *device = context;
+	int ret = mt6797_gnss_lna_off(device);
+
+	if (ret)
+		dev_err(device->dev, "failed to release GNSS LNA supply: %d\n", ret);
+}
+
+static int mt6797_gnss_set_power(void *context, bool enable)
+{
+	struct mt6797_gnss_device *device = context;
+	int ret = 0;
+	int power_ret;
+
+	if (enable) {
+		if (device->lna && !device->lna_enabled) {
+			ret = regulator_enable(device->lna);
+			if (ret)
+				return ret;
+			device->lna_enabled = true;
+		}
+		ret = mt6797_consys_gnss_set_power(device->lease, true);
+		if (!ret)
+			return 0;
+	}
+	/* Board's public GPS pre-OFF lowers the LNA before FUNC_CTRL. */
+	power_ret = mt6797_gnss_lna_off(device);
+	if (!ret)
+		ret = power_ret;
+	power_ret = mt6797_consys_gnss_set_power(device->lease, false);
+	if (!ret)
+		ret = power_ret;
+	if (ret)
+		dev_err(device->dev, "GNSS power transition failed: %d\n", ret);
+	return ret;
+}
+
+static int mt6797_gnss_transmit(void *context, const u8 *data, size_t length)
+{
+	struct mt6797_gnss_device *device = context;
+
+	return mt6797_consys_gnss_transmit(device->lease, data, length);
+}
+
+static int mt6797_gnss_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	const struct mt6797_consys_stp_session_lease *session;
+	struct mt6797_gnss_device *device;
+	struct mtk_gnss_transport transport = {
+		.set_power = mt6797_gnss_set_power,
+		.transmit = mt6797_gnss_transmit,
+	};
+	int ret;
+
+	device = devm_kzalloc(dev, sizeof(*device), GFP_KERNEL);
+	if (!device)
+		return -ENOMEM;
+	device->dev = dev;
+	device->lna = devm_regulator_get_optional(dev, "lna");
+	if (IS_ERR(device->lna)) {
+		ret = PTR_ERR(device->lna);
+		if (ret != -ENODEV)
+			return dev_err_probe(dev, ret, "failed to get LNA supply\n");
+		device->lna = NULL;
+	}
+	ret = devm_add_action_or_reset(dev, mt6797_gnss_cleanup_lna, device);
+	if (ret)
+		return ret;
+	device->lease = mt6797_consys_gnss_acquire(dev, &session);
+	if (IS_ERR(device->lease))
+		return dev_err_probe(dev, PTR_ERR(device->lease),
+				     "failed to acquire GNSS session\n");
+	transport.context = device;
+	ret = mtk_gnss_register(&device->endpoint, dev, session, &transport);
+	if (ret) {
+		mt6797_consys_gnss_release(device->lease);
+		return ret;
+	}
+	platform_set_drvdata(pdev, device);
+	return 0;
+}
+
+static void mt6797_gnss_remove(struct platform_device *pdev)
+{
+	struct mt6797_gnss_device *device = platform_get_drvdata(pdev);
+	int ret;
+
+	mtk_gnss_unregister(&device->endpoint);
+	mt6797_gnss_cleanup_lna(device);
+	ret = mt6797_consys_gnss_release(device->lease);
+	if (ret)
+		dev_err(device->dev, "failed to release GNSS session: %d\n", ret);
+}
+
+static const struct of_device_id mt6797_gnss_of_match[] = {
+	{ .compatible = "mediatek,mt6797-gnss" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, mt6797_gnss_of_match);
+
+static struct platform_driver mt6797_gnss_driver = {
+	.probe = mt6797_gnss_probe,
+	.remove = mt6797_gnss_remove,
+	.driver = {
+		.name = "mt6797-gnss",
+		.of_match_table = mt6797_gnss_of_match,
+	},
+};
+module_platform_driver(mt6797_gnss_driver);
 
 MODULE_DESCRIPTION("MediaTek CONSYS GNSS STP endpoint");
 MODULE_LICENSE("GPL");

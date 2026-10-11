@@ -32,17 +32,16 @@ config GNSS_MTK_SERIAL
 config GNSS_MTK_CONSYS
 	tristate "MediaTek CONSYS GNSS full-STP endpoint"
 	depends on MTK_MT6797_CONSYS_STP_SESSION
+	depends on MTK_MT6797_CONSYS_INVENTORY && REGULATOR
 	help
-	  Build the GNSS class endpoint for a MediaTek CONSYS full-STP controller
-	  owner.
-	  Vendor source proves that GPS is STP task 2 and is bracketed by WMT GPS
-	  function control, but does not establish the MT6797 command protocol,
-	  firmware contract, or hardware transport. This option only provides the
-	  client endpoint; it neither probes a device nor accesses hardware.
+	  Build the ordinary Linux GNSS endpoint for STP task 2 of MT6797 CONSYS.
+	  The canonical CONSYS owner supplies the active session, WMT GPS function
+	  control, and shared transport retry handling. The platform child manages
+	  its optional LNA supply and powers GPS only while the endpoint is open.
+	  Receiver bytes are exposed unchanged; interpreting a supported receiver
+	  protocol is a userspace responsibility.
 
-	  A separately reviewed controller must supply an active opaque full-STP
-	  lease plus an exact power callback before it can register /dev/gnssN.
-	  Keep it disabled until that owner exists. If unsure, say N.
+	  If unsure, say N.
 
 config GNSS_MTK_CONSYS_KUNIT_TEST
 	tristate "KUnit tests for the MediaTek CONSYS GNSS endpoint"

@@ -2,11 +2,9 @@
 /*
  * MediaTek CONSYS GNSS client for the STP multiplexer.
  *
- * This is a kernel-internal endpoint, not a hardware driver.  A transport
- * owner that has established the controller-specific WMT GPS transaction may
- * register one instance against an active opaque full-STP session. There is
- * intentionally no platform binding: neither the MT6797 GNSS control command
- * nor its required firmware state has been established for mainline.
+ * A transport owner supplies an active opaque full-STP session and exact
+ * controller power operation. The MT6797 platform binding borrows the canonical
+ * CONSYS owner's current session and WMT function-control operation.
  */
 
 #ifndef __LINUX_SOC_MEDIATEK_MTK_GNSS_H
@@ -29,6 +27,8 @@ struct mt6797_consys_stp_session_lease;
  */
 struct mtk_gnss_transport {
 	int (*set_power)(void *context, bool on);
+	/* The shared owner manages whole-frame backpressure and retry timers. */
+	int (*transmit)(void *context, const u8 *data, size_t length);
 	void *context;
 };
 
@@ -70,12 +70,5 @@ void mtk_gnss_unregister(struct mtk_gnss *gnss);
 int mtk_gnss_start(struct mtk_gnss *gnss);
 void mtk_gnss_stop(struct mtk_gnss *gnss);
 int mtk_gnss_write(struct mtk_gnss *gnss, const u8 *data, size_t data_len);
-
-/*
- * Notify this client that its owner has reset/quiesced the controller. It
- * only clears local GNSS state; the owner remains responsible for resetting
- * its shared STP and WMT layers at their proper transaction boundary.
- */
-void mtk_gnss_transport_reset(struct mtk_gnss *gnss);
 
 #endif /* __LINUX_SOC_MEDIATEK_MTK_GNSS_H */

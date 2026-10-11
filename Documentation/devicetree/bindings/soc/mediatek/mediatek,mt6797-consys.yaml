@@ -177,6 +177,9 @@ properties:
   memory-region-names:
     const: shared
 
+  gnss:
+    $ref: /schemas/gnss/mediatek,mt6797-gnss.yaml#
+
   bluetooth:
     $ref: /schemas/net/bluetooth/mediatek,mt6797-bluetooth.yaml#
 

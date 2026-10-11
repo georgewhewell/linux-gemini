@@ -1339,6 +1339,11 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	bool secure = sme->privacy;
 	bool have_rsn = false, have_rsnx = false;
 
+	/*
+	 * MLO_SUPPORT describes userspace, not a request for multiple links.
+	 * wpa_supplicant 2.11 sets it even for a legacy fullmac connection.
+	 * This wiphy remains a single-link station without HT/VHT/EHT support.
+	 */
 	if (!sme->ssid || !sme->ssid_len || sme->ssid_len > 32 || sme->ie_len > 1024 ||
 	    (sme->ie_len && !sme->ie) ||
 	    (sme->crypto.control_port_ethertype && sme->crypto.control_port_ethertype != htons(ETH_P_PAE)) ||
@@ -1346,7 +1351,7 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 	    (sme->mfp != NL80211_MFP_NO && sme->mfp != NL80211_MFP_REQUIRED) || sme->want_1x ||
 	    (sme->flags & ~(ASSOC_REQ_DISABLE_HT | ASSOC_REQ_DISABLE_VHT |
 		ASSOC_REQ_DISABLE_HE | ASSOC_REQ_DISABLE_EHT | ASSOC_REQ_DISABLE_UHR |
-		CONNECT_REQ_EXTERNAL_AUTH_SUPPORT)) ||
+		CONNECT_REQ_EXTERNAL_AUTH_SUPPORT | CONNECT_REQ_MLO_SUPPORT)) ||
 	    (sme->auth_type != NL80211_AUTHTYPE_OPEN_SYSTEM && sme->auth_type != NL80211_AUTHTYPE_AUTOMATIC &&
 	     sme->auth_type != NL80211_AUTHTYPE_SAE))
 		return -EOPNOTSUPP;
@@ -1441,7 +1446,13 @@ static int mt6797_radio_connect(struct wiphy *wiphy, struct net_device *netdev,
 		ret = -ENOENT;
 		goto free_connection;
 	}
-	if (connection->bss->channel->flags & (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_NO_IR))
+	/*
+	 * Join only an existing infrastructure BSS. NO_IR forbids initiating
+	 * probes/beacons, not station association to an AP already discovered
+	 * by a passive scan. Keep disabled channels rejected; scanning retains
+	 * its independent NO_IR/DFS passive-only restrictions.
+	 */
+	if (connection->bss->channel->flags & IEEE80211_CHAN_DISABLED)
 		goto put_bss;
 	params = &connection->join.negotiated;
 	params->channel.band = connection->bss->channel->band == NL80211_BAND_2GHZ ? 1 : 2;

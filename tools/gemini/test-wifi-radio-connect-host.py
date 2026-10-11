@@ -14,6 +14,13 @@ program = program.replace('struct cfg80211_bss { u8 bssid[6]; };',
  'struct cfg80211_bss_ies { u8 data[64]; size_t len; }; struct cfg80211_bss { u8 bssid[6]; struct ieee80211_channel *channel; struct cfg80211_bss_ies *ies; u16 capability; };')
 program = program.replace('struct ieee80211_channel { int dummy; };',
  'struct ieee80211_channel { unsigned flags,band,center_freq; };')
+# Use this kernel's real enums: hand-copied flags had assigned UHR's bit to
+# MLO_SUPPORT, hiding rejection of wpa_supplicant's userspace capability flag.
+cfg80211_header = (Path(__file__).resolve().parents[2] / 'include/net/cfg80211.h').read_text()
+program += '\n#define BIT(n) (1U << (n))\n'
+for name in ('ieee80211_channel_flags', 'cfg80211_assoc_req_flags'):
+    program += re.search(r'enum ' + name + r'\s*\{.*?^\};',
+                         cfg80211_header, re.S | re.M)[0] + '\n'
 program += r'''
 #define ETH_P_PAE 0x888e
 #define WLAN_CIPHER_SUITE_CCMP 0x000fac04
@@ -25,8 +32,6 @@ program += r'''
 #define WLAN_CAPABILITY_PRIVACY 16
 #define WLAN_CAPABILITY_SHORT_PREAMBLE 32
 #define WLAN_CAPABILITY_SHORT_SLOT_TIME 1024
-#define IEEE80211_CHAN_DISABLED 1
-#define IEEE80211_CHAN_NO_IR 128
 #define IEEE80211_BSS_TYPE_ESS 1
 #define IEEE80211_PRIVACY_ON 1
 #define IEEE80211_PRIVACY_OFF 0
@@ -43,15 +48,9 @@ program += r'''
 #define WLAN_AKM_SUITE_PSK_SHA256 0x000fac06
 #define WLAN_EID_RSNX 244
 #define WLAN_EID_SUPPORTED_REGULATORY_CLASSES 59
-#define CONNECT_REQ_EXTERNAL_AUTH_SUPPORT 8
 static u32 get_unaligned_be32(const void *p) { const u8 *b=p; return (u32)b[0]<<24|(u32)b[1]<<16|(u32)b[2]<<8|b[3]; }
 static void put_unaligned_be32(u32 v,void *p) { u8 *b=p; b[0]=v>>24; b[1]=v>>16; b[2]=v>>8; b[3]=v; }
 static void rsn_put_le16(u16 v,void *p) { u8 *b=p; b[0]=v; b[1]=v>>8; }
-#define ASSOC_REQ_DISABLE_HT 1
-#define ASSOC_REQ_DISABLE_VHT 2
-#define ASSOC_REQ_DISABLE_HE 16
-#define ASSOC_REQ_DISABLE_EHT 32
-#define ASSOC_REQ_DISABLE_UHR 64
 #define rcu_read_lock() do {} while(0)
 #define rcu_read_unlock() do {} while(0)
 #define rcu_dereference(p) (p)
@@ -225,6 +224,16 @@ int main(void) {
  for(unsigned secure=0;secure<2;secure++) {
   setup(secure); p.crypto.control_port_over_nl80211=true; assert(connect()==-EOPNOTSUPP && !allocated);
   setup(secure); p.crypto.control_port_ethertype=htons(0x0800); assert(connect()==-EOPNOTSUPP && !allocated);
+  /* 2.11 fullmac connect always sends this userspace capability flag. */
+  setup(secure); p.flags=CONNECT_REQ_MLO_SUPPORT;
+  assert(!connect() && queued==1 && allocated==1); release();
+  setup(secure); p.flags=CONNECT_REQ_MLO_SUPPORT | ASSOC_REQ_DISABLE_HT |
+   ASSOC_REQ_DISABLE_VHT | ASSOC_REQ_DISABLE_HE | ASSOC_REQ_DISABLE_EHT | ASSOC_REQ_DISABLE_UHR;
+  assert(!connect() && queued==1); release();
+  setup(secure); p.flags=CONNECT_REQ_MLO_SUPPORT | ASSOC_REQ_USE_RRM;
+  assert(connect()==-EOPNOTSUPP && !allocated);
+  setup(secure); p.flags=CONNECT_REQ_MLO_SUPPORT | ASSOC_REQ_SPP_AMSDU;
+  assert(connect()==-EOPNOTSUPP && !allocated);
  }
  for(unsigned which=0;which<16;which++) {
   setup(true);
@@ -248,12 +257,22 @@ int main(void) {
  setup(true); rsn[20]=0x40; assert(connect()==-EINVAL && freed==allocated); rsn[20]=0; /* MFPR w/o MFPC */
  setup(false); no_memory=true; assert(connect()==-ENOMEM && !allocated && !gets);
  setup(false); no_bss=true; assert(connect()==-ENOENT && allocated==1 && freed==1 && !bss_puts);
- setup(false); channel.flags=IEEE80211_CHAN_NO_IR; assert(connect()==-EOPNOTSUPP && freed==1 && bss_puts==1);
+ /* A cached infrastructure AP is permitted on passive/DFS channels. */
+ for(unsigned secure=0;secure<2;secure++) {
+  setup(secure); channel.flags=IEEE80211_CHAN_NO_IR;
+  assert(!connect() && queued==1 && gets==1 && !bss_puts); release();
+  setup(secure); channel.flags=IEEE80211_CHAN_NO_IR | IEEE80211_CHAN_RADAR;
+  assert(!connect() && queued==1); release();
+  setup(secure); channel.flags=IEEE80211_CHAN_DISABLED;
+  assert(connect()==-EOPNOTSUPP && freed==1 && bss_puts==1 && !queued);
+  setup(secure); channel.flags=IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_NO_IR;
+  assert(connect()==-EOPNOTSUPP && freed==1 && bss_puts==1 && !queued);
+ }
  setup(false); rate_error=-EINVAL; assert(connect()==-EINVAL && freed==1 && bss_puts==1);
  setup(false); bss.ies=NULL; assert(connect()==-ENOENT && freed==1 && bss_puts==1);
  setup(false); r.stopping=true; assert(connect()==-ESHUTDOWN && !queued && freed==1 && bss_puts==1);
  setup(false); r.request=(void *)1; assert(connect()==-EBUSY && !queued && freed==1 && bss_puts==1);
- printf("PASS: production connect admission: modern NM multi-AKM lists preserve the station RSN selection, open/WPA2 construction, WPA2+PMF, WPA3-SAE external auth (2.10/2.11 versions), RSNXE, Supported Operating Classes, control-port support, crypto/IE bounds, MFP/RSN rejection, cached-BSS errors and all allocation/reference cleanup paths\n");
+ printf("PASS: production connect admission: native kernel flag enums, userspace MLO capability on a single-link station, cached passive/DFS BSS with disabled-channel rejection, modern NM multi-AKM lists preserve the station RSN selection, open/WPA2 construction, WPA2+PMF, WPA3-SAE external auth (2.10/2.11 versions), RSNXE, Supported Operating Classes, control-port support, crypto/IE bounds, MFP/RSN rejection, cached-BSS errors and all allocation/reference cleanup paths\n");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-radio-connect-') as temporary:

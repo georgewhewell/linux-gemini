@@ -8,6 +8,7 @@
  */
 
 #include <linux/types.h>
+#include <linux/bitmap.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/platform_device.h>
@@ -84,11 +85,6 @@ static void activate_all_cols(struct matrix_keypad *keypad, bool on)
 		fsleep(keypad->all_cols_on_delay_us);
 }
 
-static bool row_asserted(struct matrix_keypad *keypad, int row)
-{
-	return gpiod_get_value_cansleep(keypad->row_gpios[row]);
-}
-
 static void enable_row_irqs(struct matrix_keypad *keypad)
 {
 	int i;
@@ -111,14 +107,18 @@ static void disable_row_irqs(struct matrix_keypad *keypad)
 		disable_irq_nosync(keypad->row_irqs[i]);
 }
 
-static uint32_t read_row_state(struct matrix_keypad *keypad)
+static int read_row_state(struct matrix_keypad *keypad, u32 *row_state)
 {
-	int row;
-	u32 row_state = 0;
+	DECLARE_BITMAP(values, MATRIX_MAX_ROWS);
+	int err;
 
-	for (row = 0; row < keypad->num_row_gpios; row++)
-		row_state |= row_asserted(keypad, row) ? BIT(row) : 0;
-	return row_state;
+	err = gpiod_get_array_value_cansleep(keypad->num_row_gpios,
+					   keypad->row_gpios, NULL, values);
+	if (err)
+		return err;
+
+	bitmap_to_arr32(row_state, values, keypad->num_row_gpios);
+	return 0;
 }
 
 /*
@@ -132,11 +132,25 @@ static void matrix_keypad_scan(struct work_struct *work)
 	const unsigned short *keycodes = input_dev->keycode;
 	uint32_t new_state[MATRIX_MAX_COLS];
 	int row, col, code;
-	u32 init_row_state, new_row_state;
+	u32 init_row_state = 0, new_row_state = 0;
+	bool scan_failed = false;
 
 	/* read initial row state to detect changes between scan */
-	if (!keypad->poll_interval_ms)
-		init_row_state = read_row_state(keypad);
+	if (read_row_state(keypad, &init_row_state))
+		goto scan_failed;
+
+	/*
+	 * All columns are active between scans. With no asserted rows and no
+	 * previously held keys, polling can leave the matrix idle. A held key
+	 * still needs a full scan so that its release is reported.
+	 */
+	if (keypad->poll_interval_ms && !init_row_state) {
+		for (col = 0; col < keypad->num_col_gpios; col++)
+			if (keypad->last_key_state[col])
+				break;
+		if (col == keypad->num_col_gpios)
+			goto rearm;
+	}
 
 	/* de-activate all columns for scanning */
 	activate_all_cols(keypad, false);
@@ -151,7 +165,8 @@ static void matrix_keypad_scan(struct work_struct *work)
 
 		activate_col(keypad, col, true);
 
-		new_state[col] = read_row_state(keypad);
+		if (read_row_state(keypad, &new_state[col]))
+			goto scan_failed;
 
 		activate_col(keypad, col, false);
 	}
@@ -171,15 +186,21 @@ static void matrix_keypad_scan(struct work_struct *work)
 			input_event(input_dev, EV_MSC, MSC_SCAN, code);
 			input_report_key(input_dev,
 					 keycodes[code],
-					 new_state[col] & (1 << row));
+					 new_state[col] & BIT(row));
 		}
 	}
 	input_sync(input_dev);
 
 	memcpy(keypad->last_key_state, new_state, sizeof(new_state));
+	goto restore_cols;
 
+scan_failed:
+	/* Keep the previous key state when the GPIO provider cannot be read. */
+	scan_failed = true;
+restore_cols:
 	activate_all_cols(keypad, true);
 
+rearm:
 	if (keypad->poll_interval_ms) {
 		scoped_guard(spinlock_irq, &keypad->lock) {
 			keypad->scan_pending = false;
@@ -198,15 +219,18 @@ static void matrix_keypad_scan(struct work_struct *work)
 	}
 
 	/* read new row state and detect if value has changed */
-	new_row_state = read_row_state(keypad);
-	if (init_row_state != new_row_state) {
+	if (read_row_state(keypad, &new_row_state))
+		scan_failed = true;
+	if (scan_failed || init_row_state != new_row_state) {
 		guard(spinlock_irq)(&keypad->lock);
 		if (unlikely(keypad->scan_pending || keypad->stopped))
 			return;
 		disable_row_irqs(keypad);
 		keypad->scan_pending = true;
 		schedule_delayed_work(&keypad->work,
-				      msecs_to_jiffies(keypad->debounce_ms));
+				      msecs_to_jiffies(scan_failed ?
+					max(keypad->debounce_ms, 1U) :
+					keypad->debounce_ms));
 	}
 }
 

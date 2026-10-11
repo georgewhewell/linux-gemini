@@ -392,6 +392,7 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 	const void *tag_data;
 	void *table;
 	u32 raw_tag_size, tag_size, header_count, raw_image_size;
+	u64 md_smem;
 	int chosen_len;
 	int ret;
 
@@ -513,6 +514,7 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 		.md_size = md1.size,
 		.ap_md_smem_base = smem.base_phys + smem.ap_md1_offset,
 		.ap_md_smem_size = smem.ap_md1_size,
+		.md_mpu_smem_size = smem.md1_mpu_smem_size,
 		.lk_reported_load_complete = true,
 	};
 	ret = mt6797_md1_mpu_remap_plan_build(tag_data, tag_size, &contract,
@@ -521,6 +523,18 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 		dev_err(dev,
 			"source-derived MD1 RMPU/remap diagnostic plan rejected: %d; no hardware state changed\n",
 			ret);
+		goto out_unmap;
+	}
+
+	/* Refuse an unrepresentable v1 range before publishing any layout. */
+	if (plan_layout.ap_md_smem_base < plan.smem_offset_ap_to_md) {
+		ret = -ERANGE;
+		goto out_unmap;
+	}
+	md_smem = plan_layout.ap_md_smem_base - plan.smem_offset_ap_to_md;
+	if (md_smem > U32_MAX ||
+	    md_smem + plan_layout.md_mpu_smem_size - 1 > U32_MAX) {
+		ret = -ERANGE;
 		goto out_unmap;
 	}
 

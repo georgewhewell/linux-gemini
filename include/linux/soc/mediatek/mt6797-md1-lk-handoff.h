@@ -67,6 +67,8 @@ struct mt6797_md1_lk_smem_layout {
 	u32 md1_md3_offset;
 	u32 md1_md3_size;
 	u32 total_size;
+	/* Derived contiguous AP1 + MD1/MD3 span, not another LK wire field. */
+	u32 md1_mpu_smem_size;
 };
 
 /* Public MD_LOAD_TYPE: legacy 1..7, UBIN 8..21. */

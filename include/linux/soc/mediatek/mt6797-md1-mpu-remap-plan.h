@@ -39,6 +39,8 @@ struct mt6797_md1_mpu_remap_layout {
 	u32 md_size;
 	u64 ap_md_smem_base;
 	u32 ap_md_smem_size;
+	/* Runtime v1 reservation extent only; grants no MD3 execution authority. */
+	u32 md_mpu_smem_size;
 
 	/*
 	 * This is copied into diagnostics only.  It must never be interpreted as

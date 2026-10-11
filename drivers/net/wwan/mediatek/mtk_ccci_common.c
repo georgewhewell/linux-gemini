@@ -361,12 +361,14 @@ int mtk_ccci_runtime_v2_response(const struct mtk_ccci_runtime_config *config,
 	if (!config || !response || !response_len ||
 	    response_size < sizeof(*ap) ||
 	    config->smem_size < MTK_CCCI_RUNTIME_OFFSET +
-				MTK_CCCI_RUNTIME_AP_SIZE + MTK_CCCI_RUNTIME_MD_SIZE)
+				MTK_CCCI_RUNTIME_AP_SIZE + MTK_CCCI_RUNTIME_MD_SIZE ||
+	    config->md_mpu_smem_size < config->smem_size)
 		return -EINVAL;
 	ap_runtime_addr = (u64)config->smem_md_addr + MTK_CCCI_RUNTIME_OFFSET;
 	md_runtime_addr = ap_runtime_addr +
 			  MTK_CCCI_RUNTIME_AP_SIZE;
-	if (ap_runtime_addr > U32_MAX || md_runtime_addr > U32_MAX)
+	if (ap_runtime_addr > U32_MAX || md_runtime_addr > U32_MAX ||
+	    (u64)config->smem_md_addr + config->md_mpu_smem_size - 1 > U32_MAX)
 		return -ERANGE;
 
 	memset(ap, 0, sizeof(*ap));
@@ -379,7 +381,7 @@ int mtk_ccci_runtime_v2_response(const struct mtk_ccci_runtime_config *config,
 	ap->md_runtime_data_addr = cpu_to_le32(md_runtime_addr);
 	ap->md_runtime_data_size = cpu_to_le32(MTK_CCCI_RUNTIME_MD_SIZE);
 	ap->set_md_mpu_start_addr = cpu_to_le32(config->smem_md_addr);
-	ap->set_md_mpu_total_size = cpu_to_le32(config->smem_size);
+	ap->set_md_mpu_total_size = cpu_to_le32(config->md_mpu_smem_size);
 	ap->tail_pattern = cpu_to_le32(MTK_CCCI_AP_FEATURE_PATTERN);
 	*response_len = sizeof(*ap);
 	return 0;

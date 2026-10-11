@@ -2012,7 +2012,9 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	if (layout.ap_md_smem_base < plan.smem_offset_ap_to_md)
 		return -ERANGE;
 	md_smem = layout.ap_md_smem_base - plan.smem_offset_ap_to_md;
-	if (md_smem > U32_MAX)
+	if (layout.md_mpu_smem_size < layout.ap_md_smem_size)
+		return -ERANGE;
+	if (md_smem > U32_MAX || md_smem + layout.md_mpu_smem_size - 1 > U32_MAX)
 		return -ERANGE;
 	ret = mt6797_md1_lk_handoff_runtime_get(&metadata);
 	if (ret)
@@ -2035,7 +2037,8 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 		.flags = IORESOURCE_MEM,
 	};
 	ccci->runtime_config.smem_md_addr = md_smem;
-	ccci->runtime_config.smem_size = SZ_1M;
+	ccci->runtime_config.smem_size = layout.ap_md_smem_size;
+	ccci->runtime_config.md_mpu_smem_size = layout.md_mpu_smem_size;
 	ccci->runtime_config.random_seed = get_random_u32();
 	ccci->runtime_config.ccmni_mtu = MTK_CCCI_NET_RX_SIZE;
 	ccci->runtime_config.load_type = metadata.load_type;

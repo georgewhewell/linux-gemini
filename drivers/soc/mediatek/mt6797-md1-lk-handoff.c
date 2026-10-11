@@ -197,6 +197,8 @@ int mt6797_md1_lk_smem_layout_parse(const void *data, size_t size,
 {
 	const u8 *raw = data;
 	struct mt6797_md1_lk_smem_layout candidate;
+	u32 ap1_end, ap3_end, mpu_end;
+	u64 physical_end;
 
 	if (!raw || !layout)
 		return -EINVAL;
@@ -212,13 +214,29 @@ int mt6797_md1_lk_smem_layout_parse(const void *data, size_t size,
 	candidate.md1_md3_offset = get_unaligned_le32(raw + MT6797_MD1_LK_SMEM_MD1_MD3_OFFSET);
 	candidate.md1_md3_size = get_unaligned_le32(raw + MT6797_MD1_LK_SMEM_MD1_MD3_SIZE);
 	candidate.total_size = get_unaligned_le32(raw + MT6797_MD1_LK_SMEM_TOTAL_SIZE);
-	if (!candidate.base_phys || !candidate.total_size ||
+	if (!candidate.base_phys || !candidate.total_size || !candidate.ap_md1_size ||
+	    check_add_overflow(candidate.base_phys, (u64)candidate.total_size,
+			       &physical_end) ||
 	    !mt6797_md1_lk_range_valid(candidate.ap_md1_offset,
 					 candidate.ap_md1_size, candidate.total_size) ||
 	    !mt6797_md1_lk_range_valid(candidate.ap_md3_offset,
 					 candidate.ap_md3_size, candidate.total_size) ||
 	    !mt6797_md1_lk_range_valid(candidate.md1_md3_offset,
 					 candidate.md1_md3_size, candidate.total_size))
+		return -ERANGE;
+
+	/* Public runtime v1 covers AP1 followed by MD1/MD3, never AP3. */
+	if (check_add_overflow(candidate.ap_md1_offset, candidate.ap_md1_size,
+			       &ap1_end) ||
+	    check_add_overflow(candidate.ap_md3_offset, candidate.ap_md3_size,
+			       &ap3_end) ||
+	    (candidate.md1_md3_size && candidate.md1_md3_offset != ap1_end) ||
+	    check_add_overflow(candidate.ap_md1_size, candidate.md1_md3_size,
+			       &candidate.md1_mpu_smem_size) ||
+	    check_add_overflow(candidate.ap_md1_offset, candidate.md1_mpu_smem_size,
+			       &mpu_end) || mpu_end > candidate.total_size ||
+	    (candidate.ap_md3_size && candidate.ap_md3_offset < mpu_end &&
+	     candidate.ap_md1_offset < ap3_end))
 		return -ERANGE;
 
 	*layout = candidate;

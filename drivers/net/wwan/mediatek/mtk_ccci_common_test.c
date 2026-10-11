@@ -70,6 +70,7 @@ static void mtk_ccci_runtime_v2_minimal(struct kunit *test)
 	struct mtk_ccci_runtime_config config = {
 		.smem_md_addr = 0x40000000,
 		.smem_size = 0x100000,
+		.md_mpu_smem_size = 0x100000,
 		.random_seed = 0x12345678,
 		.ccmni_mtu = MTK_CCCI_NET_RX_SIZE,
 	};
@@ -113,6 +114,7 @@ static void mtk_ccci_runtime_rejects_unsupported_must(struct kunit *test)
 	struct mtk_ccci_runtime_config config = {
 		.smem_md_addr = 0x40000000,
 		.smem_size = 0x100000,
+		.md_mpu_smem_size = 0x100000,
 		.ccmni_mtu = MTK_CCCI_NET_RX_SIZE,
 	};
 	u8 query[MTK_CCCI_FEATURE_QUERY_SIZE];
@@ -138,6 +140,7 @@ static void mtk_ccci_builds_complete_hs1_v2_reply(struct kunit *test)
 	struct mtk_ccci_runtime_config config = {
 		.smem_md_addr = 0x40000000,
 		.smem_size = 0x100000,
+		.md_mpu_smem_size = 0x100000,
 		.ccmni_mtu = MTK_CCCI_NET_RX_SIZE,
 	};
 	u8 hs1[MTK_CCCI_HEADER_SIZE + MTK_CCCI_FEATURE_QUERY_SIZE] = {};

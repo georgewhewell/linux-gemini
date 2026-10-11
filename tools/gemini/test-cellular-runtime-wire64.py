@@ -80,7 +80,7 @@ static u32 get_unaligned_le32(const void *p) { u32 x; memcpy(&x, p, 4); return x
 tests = r'''
 static u8 query[72], runtime[2048], reply[116], hs1[88];
 static struct mtk_ccci_runtime_config config = {
- .smem_md_addr=0x40000000, .smem_size=0x100000,
+ .smem_md_addr=0x40000000, .smem_size=0x100000, .md_mpu_smem_size=0x100000,
  .random_seed=0x12345678, .ccmni_mtu=3568,
  .load_type=9, .modem_capability=8, .modem_capability_known=true,
 };

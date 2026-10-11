@@ -12,6 +12,8 @@ import tempfile
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--reference-source', type=Path,
                     help='compile original native admission and require configured-policy runtime rejection')
+parser.add_argument('--reference-extent-root', type=Path,
+                    help='compile original parser/admission/response and require v1 extent runtime rejection')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[2]
 source = (root / 'drivers/net/wwan/mediatek/mtk_mt6797_ccci.c').read_text()
@@ -31,12 +33,22 @@ constants += '\n' + '\n'.join(re.findall(
     (root / 'drivers/net/wwan/mediatek/mtk_ccci_common.h').read_text(), re.M))
 runtime_header=(root / 'drivers/net/wwan/mediatek/mtk_ccci_common.h').read_text()
 metadata_header=(root / 'include/linux/soc/mediatek/mt6797-md1-lk-handoff.h').read_text()
+constants += '\n' + re.search(r'^#define MT6797_MD1_LK_SMEM_LAYOUT_SIZE\s+.*$', metadata_header, re.M).group(0)
 common = (root / 'drivers/net/wwan/mediatek/mtk_ccci_common.c').read_text()
+lk_source = (root / 'drivers/soc/mediatek/mt6797-md1-lk-handoff.c').read_text()
+handoff = (root / 'drivers/soc/mediatek/mt6797-md1-lk-handoff-probe.c').read_text()
+publication = re.search(r'plan_layout = \(struct mt6797_md1_mpu_remap_layout\) \{.*?\n\t};', handoff, re.S).group(0)
+constants += '\n' + '\n'.join(re.findall(r'^#define MT6797_MD1_LK_SMEM_.*$', lk_source, re.M))
+constants += '\n' + '\n'.join(re.findall(r'^#define MTK_CCCI_(?:FEATURE_COUNT|RUNTIME_V2_RESPONSE_SIZE|AP_FEATURE_PATTERN)\s+.*$', runtime_header, re.M))
+constants += '\n#define MTK_CCCI_FEATURE_NOT_EXIST 0\n'
 conversion = common[common.index('/*\n * Public MT6797 ccci_util_lib_fo.c'):]
 configured = int(re.search(r'^CONFIG_MTK_MT6797_MD1_SUPPORT=(\d+)$',
     (root / 'arch/arm64/configs/gemini_defconfig').read_text(), re.M).group(1))
 runtime_config=re.search(r'struct mtk_ccci_runtime_config \{.*?\n};',runtime_header,re.S).group(0)
 metadata_structs='\n'.join(re.search(r'struct '+name+r' \{.*?\n};',metadata_header,re.S).group(0) for name in ['mt6797_md1_lk_runtime_options','mt6797_md1_lk_runtime_metadata'])
+smem_struct=re.search(r'struct mt6797_md1_lk_smem_layout \{.*?\n};',metadata_header,re.S).group(0)
+modem_struct=re.search(r'struct mt6797_md1_lk_modem_info \{.*?\n};',metadata_header,re.S).group(0).replace('s8 load_error;', 'int8_t load_error;')
+response_struct=re.search(r'struct mtk_ccci_feature_response \{.*?\n} __packed;',common,re.S).group(0)
 layout = re.search(r'struct mt6797_md1_mpu_remap_layout \{.*?\n};', header, re.S).group(0)
 shim = r'''
 #include <assert.h>
@@ -47,6 +59,14 @@ shim = r'''
 #include <stdio.h>
 typedef uint64_t u64;
 typedef uint32_t u32; typedef int32_t s32; typedef uint8_t u8;
+typedef uint32_t __le32;
+#define __packed __attribute__((packed))
+#define cpu_to_le32(x) ((u32)(x))
+#define check_add_overflow(a,b,c) __builtin_add_overflow(a,b,c)
+static u32 get_unaligned_le32(const void *p) { u32 n; memcpy(&n,p,4); return n; }
+static u64 get_unaligned_le64(const void *p) { u64 n; memcpy(&n,p,8); return n; }
+static void put_unaligned_le32(u32 n, void *p) { memcpy(p,&n,4); }
+static void put_unaligned_le64(u64 n, void *p) { memcpy(p,&n,8); }
 #define BIT(x) (1U << (x))
 #define EXPORT_SYMBOL_GPL(x)
 #define dev_info(dev, ...) ((void)(dev))
@@ -65,7 +85,7 @@ struct mt6797_ccci {
  void *dev;struct mtk_ccci_runtime_config runtime_config;
 };
 '''
-shim += constants + '\n' + layout + r'''
+shim += constants + '\n' + layout + '\n' + smem_struct + '\n' + modem_struct + '\n' + response_struct + r'''
 static int wait_error, layout_error, plan_error, metadata_error, step, token, random_calls;
 static struct mt6797_md1_lk_runtime_metadata metadata;
 static bool complete;
@@ -86,7 +106,68 @@ shim += function(core, 'int mt6797_md1_cldma_lk_carveout_validate(')
 shim += '\n#define CONFIG_MTK_MT6797_MD1_SUPPORT '+str(configured)+'\n'
 shim += '\n'.join(re.findall(r'^#define MTK_CCCI_(?:UBIN_FIRST_TYPE|MAX_LOAD_TYPE)\s+.*$', runtime_header,re.M))+'\n'
 shim += conversion+'\n'
+shim += function(common, 'static u8 mtk_ccci_feature(')+'\n'
+shim += r'''
+static void publish_geometry(const struct mt6797_md1_lk_smem_layout *parsed)
+{
+ struct mt6797_md1_lk_smem_layout smem=*parsed;
+ struct mt6797_md1_lk_modem_info md1={.base_phys=MT6797_MD1_CLDMA_LK_MD_BASE,
+  .size=MT6797_MD1_CLDMA_LK_MD_SIZE};
+ struct mt6797_md1_mpu_remap_layout plan_layout;
+''' + publication + r'''
+ saved=plan_layout;
+}
+'''
 tests = r'''
+static u8 raw_smem[40];
+static void smem_reset(void)
+{
+ memset(raw_smem,0,sizeof(raw_smem));
+ put_unaligned_le64(0x88000000,raw_smem);
+ put_unaligned_le32(0x200000,raw_smem+12);
+ put_unaligned_le32(0x400000,raw_smem+16);
+ put_unaligned_le32(0x200000,raw_smem+20);
+ put_unaligned_le32(0x200000,raw_smem+24);
+ put_unaligned_le32(0x200000,raw_smem+28);
+ put_unaligned_le32(0x600000,raw_smem+32);
+}
+static void rejected_geometry(void)
+{
+ struct mt6797_md1_lk_smem_layout parsed,old;
+ memset(&parsed,0xa5,sizeof(parsed));old=parsed;
+ assert(mt6797_md1_lk_smem_layout_parse(raw_smem,sizeof(raw_smem),&parsed)==-ERANGE);
+ assert(!memcmp(&parsed,&old,sizeof(parsed)));
+}
+static void check_geometry(void)
+{
+ struct mt6797_md1_lk_smem_layout parsed;
+ smem_reset();
+ assert(!mt6797_md1_lk_smem_layout_parse(raw_smem,sizeof(raw_smem),&parsed));
+ assert(parsed.ap_md1_size==0x200000 && parsed.md1_mpu_smem_size==0x400000);
+ publish_geometry(&parsed);
+ assert(saved.ap_md_smem_size==0x200000 && saved.md_mpu_smem_size==0x400000);
+ /* Empty companion memory adds zero, regardless of its unused offset. */
+ put_unaligned_le32(0x500000,raw_smem+24);put_unaligned_le32(0,raw_smem+28);
+ assert(!mt6797_md1_lk_smem_layout_parse(raw_smem,sizeof(raw_smem),&parsed));
+ assert(parsed.md1_mpu_smem_size==parsed.ap_md1_size);
+ smem_reset();put_unaligned_le32(0,raw_smem+20);
+ assert(!mt6797_md1_lk_smem_layout_parse(raw_smem,sizeof(raw_smem),&parsed));
+ const u32 offsets[]={0,0x100000,0x300000};
+ for(unsigned i=0;i<3;i++) {smem_reset();put_unaligned_le32(offsets[i],raw_smem+24);rejected_geometry();}
+ const u32 ap3[]={0,0x100000,0x200000,0x300000};
+ for(unsigned i=0;i<4;i++) {smem_reset();put_unaligned_le32(ap3[i],raw_smem+16);rejected_geometry();}
+ smem_reset();put_unaligned_le32(0,raw_smem+12);rejected_geometry();
+ smem_reset();put_unaligned_le32(0x500000,raw_smem+28);rejected_geometry();
+ smem_reset();put_unaligned_le32(UINT32_MAX,raw_smem+12);rejected_geometry();
+ smem_reset();put_unaligned_le32(UINT32_MAX,raw_smem+24);rejected_geometry();
+ smem_reset();put_unaligned_le64(UINT64_MAX-0x100000,raw_smem);rejected_geometry();
+ /* A nonzero AP1 offset is valid when all slices remain contiguous/disjoint. */
+ smem_reset();put_unaligned_le32(0x100000,raw_smem+8);
+ put_unaligned_le32(0x300000,raw_smem+24);put_unaligned_le32(0x500000,raw_smem+16);
+ put_unaligned_le32(0x100000,raw_smem+20);
+ assert(!mt6797_md1_lk_smem_layout_parse(raw_smem,sizeof(raw_smem),&parsed));
+ assert(parsed.md1_mpu_smem_size==0x400000);
+}
 static void reset(void)
 {
  wait_error=layout_error=plan_error=metadata_error=step=random_calls=0;
@@ -98,7 +179,8 @@ static void reset(void)
  .md_base=MT6797_MD1_CLDMA_LK_MD_BASE, .md_size=MT6797_MD1_CLDMA_LK_MD_SIZE,
  .ap_md_smem_base=MT6797_MD1_CLDMA_LK_SMEM_BASE,
  /* Independent live C2 RMPU slice, not the validator's constant. */
- .ap_md_smem_size=0x00200000, .lk_reported_load_complete=true };
+ .ap_md_smem_size=0x00200000, .md_mpu_smem_size=0x00400000,
+ .lk_reported_load_complete=true };
 }
 static void rejected(int expected)
 {
@@ -110,16 +192,50 @@ static void rejected(int expected)
  assert(!memcmp(&r,&old,sizeof(r)) && !memcmp(&c,&previous,sizeof(c)));
  assert(!random_calls);
 }
-int main(void)
+static void rejected_response(struct mtk_ccci_runtime_config config,int error)
+{
+ u8 response[100],old[100];size_t length=999;
+ memset(response,0xa5,sizeof(response));memcpy(old,response,sizeof(old));
+ assert(mtk_ccci_runtime_v2_response(&config,response,sizeof(response),&length)==error);
+ assert(length==999&&!memcmp(response,old,sizeof(response)));
+}
+int main(int argc,char **argv)
 {
  struct resource r;
  struct mt6797_ccci c={0};
- reset(); assert(!mt6797_ccci_validate_handoff(&c,&r));
+ if(argc==2&&!strcmp(argv[1],"policy")) {
+  reset();metadata.options=(struct mt6797_md1_lk_runtime_options){0};
+  metadata.capability_available=false;
+  assert(!mt6797_ccci_validate_handoff(&c,&r));
+  assert(c.runtime_config.modem_capability==12&&c.runtime_config.modem_capability_known);
+  return 0;
+ }
+ check_geometry();
+ reset();smem_reset();struct mt6797_md1_lk_smem_layout parsed;
+ assert(!mt6797_md1_lk_smem_layout_parse(raw_smem,sizeof(raw_smem),&parsed));
+ publish_geometry(&parsed);
+ assert(!mt6797_ccci_validate_handoff(&c,&r));
  assert(r.start==0x88000000 && r.end==0x881fffff && r.flags==IORESOURCE_MEM);
- assert(c.runtime_config.smem_md_addr==0x40000000 && c.runtime_config.smem_size==SZ_1M);
+ assert(c.runtime_config.smem_md_addr==0x40000000 && c.runtime_config.smem_size==0x200000);
+ assert(c.runtime_config.md_mpu_smem_size==0x400000);
  assert(MTK_CCCI_RUNTIME_OFFSET + MTK_CCCI_RUNTIME_AP_SIZE +
         MTK_CCCI_RUNTIME_MD_SIZE <= c.runtime_config.smem_size);
  assert(c.runtime_config.smem_size <= r.end-r.start+1);
+ u8 response[100];size_t response_len=999;
+ assert(!mtk_ccci_runtime_v2_response(&c.runtime_config,response,sizeof(response),&response_len));
+ assert(response_len==100&&response[5]==0x10);
+ assert(get_unaligned_le32(response+88)==0x40000000);
+ assert(get_unaligned_le32(response+92)==0x400000);
+ assert(get_unaligned_le32(response+72)==0x40010000&&get_unaligned_le32(response+76)==0x800);
+ assert(get_unaligned_le32(response+80)==0x40010800&&get_unaligned_le32(response+84)==0x800);
+ struct mtk_ccci_runtime_config altered=c.runtime_config;
+ altered.md_mpu_smem_size=0;rejected_response(altered,-EINVAL);
+ altered.md_mpu_smem_size=0x100000;rejected_response(altered,-EINVAL);
+ altered=c.runtime_config;altered.smem_size=MTK_CCCI_RUNTIME_OFFSET+0x1000-1;
+ rejected_response(altered,-EINVAL);
+ altered=c.runtime_config;altered.smem_md_addr=UINT32_MAX-0x400000+1;
+ assert(!mtk_ccci_runtime_v2_response(&altered,response,sizeof(response),&response_len));
+ altered.smem_md_addr++;rejected_response(altered,-ERANGE);
  assert(step==4 && random_calls==1);
  assert(c.runtime_config.load_type==9&&c.runtime_config.modem_capability==8&&c.runtime_config.modem_capability_known);
  /* Actual native admission must use configured12 when LK has no override. */
@@ -159,31 +275,46 @@ int main(void)
  reset(); saved.ap_md_smem_size++; rejected(-ERANGE);
  reset(); saved.ap_md_smem_size=0x00600000; rejected(-ERANGE);
  reset(); saved.ap_md_smem_size=0x00100000; rejected(-ERANGE);
+ reset(); saved.md_mpu_smem_size=0; rejected(-ERANGE);
+ reset(); saved.md_mpu_smem_size=0x00100000; rejected(-ERANGE);
  reset(); offset=UINT64_MAX; rejected(-ERANGE);
  reset(); offset=saved.ap_md_smem_base+1; rejected(-ERANGE);
- puts("PASS actual CCCI live smem: exact 2 MiB AP-MD1 slice, 32 refusal paths including unpublished runtime metadata/whole 6 MiB mblock, configured12/LK override precedence, invalid policy/parser refusal, distinct scalar propagation, output untouched");
+ reset();offset=saved.ap_md_smem_base-(UINT32_MAX-0x200000+1ULL);rejected(-ERANGE);
+ puts("PASS actual CCCI live smem: parser/publication/admission/response preserve 2MiB AP1 mapping and distinct 4MiB v1 MPU span; zero companion, gaps/overlaps/wrap/address-end refusal; configured12/LK precedence and untouched failure outputs");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='cellular-live-smem-') as directory:
     path = Path(directory)
-    sources = [('current', source)]
+    sources = [('current', source, common, lk_source)]
     if args.reference_source:
-        sources.append(('original', args.reference_source.read_text()))
-    for label, native in sources:
+        sources.append(('original', args.reference_source.read_text(), common, lk_source))
+    if args.reference_extent_root:
+        reference=args.reference_extent_root
+        sources.extend([
+            ('original-native', (reference/'drivers/net/wwan/mediatek/mtk_mt6797_ccci.c').read_text(), common, lk_source),
+            ('original-response', source, (reference/'drivers/net/wwan/mediatek/mtk_ccci_common.c').read_text(), lk_source),
+            ('original-parser', source, common, (reference/'drivers/soc/mediatek/mt6797-md1-lk-handoff.c').read_text())])
+    for label, native, wire, selected_lk in sources:
         admission = function(native, 'static int mt6797_ccci_validate_handoff(')
         helper = (function(native, 'static int mt6797_ccci_runtime_policy(')
                   if 'static int mt6797_ccci_runtime_policy(' in native else '')
         test = path / (label+'.c')
         output = path / label
-        test.write_text(shim + helper + admission + tests)
+        geometry=function(selected_lk,'static bool mt6797_md1_lk_range_valid(')+'\n'+function(selected_lk,'int mt6797_md1_lk_smem_layout_parse(')
+        response=function(wire,'int mtk_ccci_runtime_v2_response(')
+        test.write_text(shim + geometry + response + helper + admission + tests)
         subprocess.run(shlex.split(os.environ.get('HOSTCC', 'cc')) + ['-std=gnu11', '-Wall', '-Wextra',
                         '-Werror','-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-pie','-no-pie'] +
                        shlex.split(os.environ.get('HOSTCFLAGS','')) + [str(test), '-o', str(output)], check=True)
         if label == 'current':
             subprocess.run([str(output)], check=True, timeout=5)
         else:
-            result = subprocess.run([str(output)], capture_output=True, text=True, timeout=5)
-            assert result.returncode != 0, 'original admission unexpectedly supplied configured policy'
-            assert 'c.runtime_config.modem_capability==12&&c.runtime_config.modem_capability_known' in result.stderr, result.stderr
+            result = subprocess.run([str(output)]+(['policy'] if label=='original' else []), capture_output=True, text=True, timeout=5)
+            assert result.returncode != 0, f'{label} unexpectedly satisfied corrected owner contract'
+            expected={'original':'c.runtime_config.modem_capability==12&&c.runtime_config.modem_capability_known',
+                      'original-native':'c.runtime_config.smem_size==0x200000',
+                      'original-response':'get_unaligned_le32(response+92)==0x400000',
+                      'original-parser':'parsed.md1_mpu_smem_size==0x400000'}[label]
+            assert expected in result.stderr, result.stderr
             assert 'AddressSanitizer' not in result.stderr and 'runtime error:' not in result.stderr
-            print(f'PASS original native admission compile0 then configured-policy runtime rejection: exit={result.returncode}')
+            print(f'PASS {label} compile0 then actual owner runtime rejection: exit={result.returncode}')

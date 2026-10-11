@@ -50,6 +50,8 @@
 #define MT6797_CCCI_NAPI_WEIGHT		64
 #define MT6797_CCCI_CHANNEL_COUNT	256U
 #define MT6797_CCCI_HANDSHAKE_TIMEOUT	(30 * HZ)
+#define MT6797_CCCI_DBM_SIZE		56U
+#define MT6797_CCCI_DBM_OFFSET		(MTK_CCCI_RUNTIME_OFFSET - MT6797_CCCI_DBM_SIZE)
 #define MT6797_CCCI_ACTIVE_IRQS \
 	(MT6797_MD1_CLDMA_ACTIVE_QUEUES | \
 	 (MT6797_MD1_CLDMA_ACTIVE_QUEUES << 16))
@@ -959,6 +961,28 @@ static const struct wwan_ops mt6797_ccci_wwan_ops = {
 	.dellink = mt6797_ccci_net_dellink,
 };
 
+/* The public MT6797 runtime-v2 sender initializes DBM before the HS1
+ * response. There is no native PBM provider, so use its PBM-disabled
+ * contract: two guard words, ten disabled words, then two guard words.
+ * Do not clear the rest of exception SMEM or advertise an active meter.
+ */
+static int mt6797_ccci_init_dbm(struct mt6797_ccci *ccci)
+{
+	__le32 dbm[MT6797_CCCI_DBM_SIZE / sizeof(__le32)];
+
+	if (atomic_read(&ccci->failed) || atomic_read(&ccci->teardown))
+		return -ESHUTDOWN;
+	if (!ccci->smem)
+		return -ENODEV;
+	if (ccci->smem_size < MTK_CCCI_RUNTIME_OFFSET)
+		return -ENOSPC;
+
+	memset(dbm, 0xff, sizeof(dbm));
+	dbm[0] = dbm[1] = dbm[12] = dbm[13] = cpu_to_le32(0x44444444);
+	memcpy_toio(ccci->smem + MT6797_CCCI_DBM_OFFSET, dbm, sizeof(dbm));
+	return 0;
+}
+
 static void mt6797_ccci_hs1_work(struct work_struct *work)
 {
 	struct mt6797_ccci *ccci = container_of(work, struct mt6797_ccci, hs1_work);
@@ -1006,6 +1030,9 @@ static void mt6797_ccci_hs1_work(struct work_struct *work)
 	}
 	/* Vendor port_proxy_md_hs1_msg_notify() finalizes region 13 here. */
 	ret = mt6797_md1_cold_owner_hs1_stage2();
+	if (ret)
+		goto free_reply;
+	ret = mt6797_ccci_init_dbm(ccci);
 	if (ret)
 		goto free_reply;
 	memcpy_toio(ccci->smem + MTK_CCCI_RUNTIME_OFFSET,

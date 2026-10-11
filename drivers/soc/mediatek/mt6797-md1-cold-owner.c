@@ -95,7 +95,6 @@
 /* Active vendor clk-mt6797-pg.c C2K power-off contract; read-only here. */
 #define MT6797_MD1_SPM_C2K_PWR_CON		0x328
 #define MT6797_MD1_SPM_PWR_STATUS_C2K		BIT(28)
-#define MT6797_MD1_INFRA_C2K_PROT_MASK		(BIT(13) | BIT(14) | BIT(15))
 #define MT6797_MD1_SPM_MD_EXT_BUCK_ISO		0x390
 #define MT6797_MD1_SPM_PWR_STATUS_MD1		BIT(0)
 #define MT6797_MD1_SPM_POWERON_CONFIG_EN_BIT	BIT(0)
@@ -867,10 +866,15 @@ static int mt6797_md1_cold_verify_c2k_off(struct mt6797_md1_cold_owner_backend *
 	protect = readl(backend->base[MT6797_MD1_RES_INFRA] + MT6797_MD1_INFRA_PROTECT_EN);
 	acknowledged = readl(backend->base[MT6797_MD1_RES_INFRA] +
 			     MT6797_MD1_INFRA_PROTECT_STA1);
+	/* The BSP asserts bus protection while powering C2K down, then waits
+	 * for both SPM power acknowledgements to clear. Here no power transition
+	 * is requested: LK has already left C2K off, reset, isolated and clock
+	 * disabled. Those conditions exclude C2K memory access even when LK did
+	 * not leave the transition's bus-protection requests asserted. Observe
+	 * EN/STA for diagnostics; they are not another off-state prerequisite.
+	 */
 	if ((control & mask) != (MT6797_MD1_SPM_PWR_ISO | MT6797_MD1_SPM_PWR_CLK_DIS) ||
-	    (status | status2) & MT6797_MD1_SPM_PWR_STATUS_C2K ||
-	    (protect & MT6797_MD1_INFRA_C2K_PROT_MASK) != MT6797_MD1_INFRA_C2K_PROT_MASK ||
-	    (acknowledged & MT6797_MD1_INFRA_C2K_PROT_MASK) != MT6797_MD1_INFRA_C2K_PROT_MASK) {
+	    (status | status2) & MT6797_MD1_SPM_PWR_STATUS_C2K) {
 		dev_err(backend->dev,
 			"C2K must be off before intermodem memory initialization: control=%#x status=%#x/%#x protect=%#x/%#x\n",
 			control, status, status2, protect, acknowledged);

@@ -29,7 +29,7 @@ c = r'''
 typedef uint32_t u32;
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(*(x)))
 #define dev_info(...) do {} while (0)
-#define dev_err(...) do {} while (0)
+#define dev_err(dev, ...) do { (void)(dev); if (0) printf(__VA_ARGS__); } while (0)
 #define BIT(n) (1U<<(n))
 #define MT6797_MD1_RES_INFRA 0
 struct regmap { u32 values[256]; };
@@ -131,7 +131,7 @@ int main(void)
  gets=puts_count=0; fail_get=0;
  assert(!__reset_control_bulk_get(NULL,2,b.cldma_resets,EXCLUSIVE));
  assert(gets==2 && !puts_count);
- /* Actual read-only C2K guard rejects power, reset, isolation and protection
+ /* Actual read-only C2K guard rejects power, reset and isolation
   * mismatches before either shared-memory reservation can be cleared. */
  struct regmap spm={0};b.spm=&spm;b.base[0]=infra;
  spm.values[0x328/4]=0x12;
@@ -148,10 +148,16 @@ int main(void)
   spm.values[(0x180+4*which)/4]=0;
   for(unsigned bit=13;bit<=15;bit++) {
    u32 altered=protection^(1U<<bit);memcpy(infra+0x220+8*which,&altered,4);
-   assert(mt6797_md1_cold_verify_c2k_off(&b)==-EBUSY);
+   assert(!mt6797_md1_cold_verify_c2k_off(&b));
    memcpy(infra+0x220+8*which,&protection,4);
   }
  }
+ /* Trial126 LK state: both C2K acknowledgements off, control0x12, bus
+  * protection unset. No request/transition is needed for an already-off master. */
+ u32 lk_en=0x104b8,lk_sta=0xe04944b8;
+ memcpy(infra+0x220,&lk_en,4);memcpy(infra+0x228,&lk_sta,4);
+ spm.values[0x180/4]=0x2b3000fc;spm.values[0x184/4]=0x2b3000ec;
+ assert(!mt6797_md1_cold_verify_c2k_off(&b));
  unsigned char intermodem[72];memset(intermodem,0xa5,sizeof(intermodem));
  b.md1_md3_smem=intermodem+4;b.md1_md3_smem_size=64;
  /* Guard words model the AP-MD3 region that must remain untouched. */

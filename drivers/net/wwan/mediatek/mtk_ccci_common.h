@@ -80,11 +80,22 @@ struct mtk_ccci_frame {
 	bool assert_bit;
 };
 
+/* Public MD_LOAD_TYPE enum; capability remains independent of load type. */
+#define MTK_CCCI_UBIN_FIRST_TYPE	8
+#define MTK_CCCI_MAX_LOAD_TYPE	21
+
+/* No default capability is inferred; unsupported encodings return an error. */
+int mtk_ccci_ubin_wm_bitmap(s32 capability, u32 *bitmap);
+
 struct mtk_ccci_runtime_config {
 	u32 smem_md_addr;
 	u32 smem_size;
 	u32 random_seed;
 	u32 ccmni_mtu;
+	/* LK load type and configured RAT capability are distinct inputs. */
+	u32 load_type;
+	s32 modem_capability;
+	bool modem_capability_known;
 };
 
 void mtk_ccci_header_init(struct mtk_ccci_header *header, u16 channel,

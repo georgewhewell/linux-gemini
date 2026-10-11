@@ -4,6 +4,7 @@
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import tempfile
 
@@ -23,6 +24,10 @@ constants = '\n'.join(re.findall(r'^#define MT6797_MD1_CLDMA_LK_.*$', core, re.M
 constants += '\n' + '\n'.join(re.findall(
     r'^#define MTK_CCCI_RUNTIME_(?:AP_SIZE|MD_SIZE|OFFSET)\s+.*$',
     (root / 'drivers/net/wwan/mediatek/mtk_ccci_common.h').read_text(), re.M))
+runtime_header=(root / 'drivers/net/wwan/mediatek/mtk_ccci_common.h').read_text()
+metadata_header=(root / 'include/linux/soc/mediatek/mt6797-md1-lk-handoff.h').read_text()
+runtime_config=re.search(r'struct mtk_ccci_runtime_config \{.*?\n};',runtime_header,re.S).group(0)
+metadata_structs='\n'.join(re.search(r'struct '+name+r' \{.*?\n};',metadata_header,re.S).group(0) for name in ['mt6797_md1_lk_runtime_options','mt6797_md1_lk_runtime_metadata'])
 layout = re.search(r'struct mt6797_md1_mpu_remap_layout \{.*?\n};', header, re.S).group(0)
 shim = r'''
 #include <assert.h>
@@ -32,7 +37,7 @@ shim = r'''
 #include <string.h>
 #include <stdio.h>
 typedef uint64_t u64;
-typedef uint32_t u32;
+typedef uint32_t u32; typedef int32_t s32;
 #define EPROBE_DEFER 517
 #define U32_MAX UINT32_MAX
 #define SZ_1M 0x100000
@@ -42,13 +47,15 @@ typedef uint32_t u32;
 struct resource { u64 start, end; unsigned long flags; };
 struct mt6797_md1_post_vector_evidence { int token; bool passive_complete; };
 struct mt6797_md1_mpu_remap_plan { u64 smem_offset_ap_to_md; };
+'''
+shim += runtime_config+'\n'+metadata_structs+r'''
 struct mt6797_ccci {
- void *dev;
- struct { u32 smem_md_addr, smem_size, random_seed, ccmni_mtu; } runtime_config;
+ void *dev;struct mtk_ccci_runtime_config runtime_config;
 };
 '''
 shim += constants + '\n' + layout + r'''
-static int wait_error, layout_error, plan_error, step, token, random_calls;
+static int wait_error, layout_error, plan_error, metadata_error, step, token, random_calls;
+static struct mt6797_md1_lk_runtime_metadata metadata;
 static bool complete;
 static struct mt6797_md1_mpu_remap_layout saved;
 static u64 offset;
@@ -59,6 +66,8 @@ static int mt6797_md1_lk_handoff_layout_get(struct mt6797_md1_mpu_remap_layout *
 { assert(step++ == 1); *l=saved; return layout_error; }
 static int mt6797_md1_lk_handoff_plan_get(struct mt6797_md1_mpu_remap_plan *p)
 { assert(step++ == 2); p->smem_offset_ap_to_md=offset; return plan_error; }
+static int mt6797_md1_lk_handoff_runtime_get(struct mt6797_md1_lk_runtime_metadata *m)
+{ assert(step++ == 3);if(metadata_error)return metadata_error;*m=metadata;return 0; }
 static u32 get_random_u32(void) { random_calls++; return 123; }
 '''
 shim += function(core, 'int mt6797_md1_cldma_lk_carveout_validate(')
@@ -66,7 +75,9 @@ shim += function(source, 'static int mt6797_ccci_validate_handoff(')
 tests = r'''
 static void reset(void)
 {
- wait_error=layout_error=plan_error=step=random_calls=0;
+ wait_error=layout_error=plan_error=metadata_error=step=random_calls=0;
+ metadata=(struct mt6797_md1_lk_runtime_metadata){.load_type=9,.image_type=12,
+ .load_type_valid=true,.capability_available=true,.options={.support=8}};
  token=MT6797_MD1_POST_VECTOR_GO; complete=true; offset=0x48000000;
  saved=(struct mt6797_md1_mpu_remap_layout){
  .md_base=MT6797_MD1_CLDMA_LK_MD_BASE, .md_size=MT6797_MD1_CLDMA_LK_MD_SIZE,
@@ -94,12 +105,19 @@ int main(void)
  assert(MTK_CCCI_RUNTIME_OFFSET + MTK_CCCI_RUNTIME_AP_SIZE +
         MTK_CCCI_RUNTIME_MD_SIZE <= c.runtime_config.smem_size);
  assert(c.runtime_config.smem_size <= r.end-r.start+1);
- assert(step==3 && random_calls==1);
+ assert(step==4 && random_calls==1);
+ assert(c.runtime_config.load_type==9&&c.runtime_config.modem_capability==8&&c.runtime_config.modem_capability_known);
+ reset();metadata.capability_available=false;
+ assert(!mt6797_ccci_validate_handoff(&c,&r));
+ assert(c.runtime_config.load_type==9&&!c.runtime_config.modem_capability_known);
+ reset();metadata.load_type=0;metadata.load_type_valid=false;
+ assert(!mt6797_ccci_validate_handoff(&c,&r));assert(!c.runtime_config.load_type);
  const int errors[]={-ENODATA,-EPROBE_DEFER,-ETIMEDOUT,-ESHUTDOWN,-EIO};
  for (unsigned i=0;i<sizeof(errors)/sizeof(errors[0]);i++) {
   reset(); wait_error=errors[i]; rejected(errors[i]==-ENODATA ? -EPROBE_DEFER : errors[i]);
   reset(); layout_error=errors[i]; rejected(errors[i]==-ENODATA ? -EPROBE_DEFER : errors[i]);
   reset(); plan_error=errors[i]; rejected(errors[i]);
+  reset(); metadata_error=errors[i]; rejected(errors[i]==-ENODATA ? -EPROBE_DEFER : errors[i]);
  }
  reset(); token=0; rejected(-EPERM);
  reset(); complete=false; rejected(-EPERM);
@@ -113,12 +131,13 @@ int main(void)
  reset(); saved.ap_md_smem_size=0x00100000; rejected(-ERANGE);
  reset(); offset=UINT64_MAX; rejected(-ERANGE);
  reset(); offset=saved.ap_md_smem_base+1; rejected(-ERANGE);
- puts("PASS actual CCCI live smem: exact 2 MiB AP-MD1 slice, 27 refusal paths including whole 6 MiB mblock, output untouched");
+ puts("PASS actual CCCI live smem: exact 2 MiB AP-MD1 slice, 32 refusal paths including unpublished runtime metadata/whole 6 MiB mblock, distinct scalar propagation, output untouched");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='cellular-live-smem-') as directory:
     path = Path(directory)
     (path / 'test.c').write_text(shim + tests)
-    subprocess.run([os.environ.get('HOSTCC', 'cc'), '-std=gnu11', '-Wall', '-Wextra',
-                    '-Werror', str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+    subprocess.run(shlex.split(os.environ.get('HOSTCC', 'cc')) + ['-std=gnu11', '-Wall', '-Wextra',
+                    '-Werror','-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-pie','-no-pie'] +
+                   shlex.split(os.environ.get('HOSTCFLAGS','')) + [str(path / 'test.c'), '-o', str(path / 'test')], check=True)
     subprocess.run([str(path / 'test')], check=True, timeout=5)

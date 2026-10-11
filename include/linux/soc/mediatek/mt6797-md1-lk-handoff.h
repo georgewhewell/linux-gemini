@@ -127,6 +127,10 @@ int mt6797_md1_lk_handoff_plan_get(struct mt6797_md1_mpu_remap_plan *plan);
  */
 int mt6797_md1_lk_handoff_layout_get(struct mt6797_md1_mpu_remap_layout *layout);
 
+/* Copy scalar runtime inputs under the same validated-plan publication lock. */
+int mt6797_md1_lk_handoff_runtime_get(
+	struct mt6797_md1_lk_runtime_metadata *metadata);
+
 /*
  * LK exposes ccci,modem_info_v2 as native little-endian bytes, not standard
  * Device Tree cells. The 3.18 MT6797 consumer memcpy()s this exact wire

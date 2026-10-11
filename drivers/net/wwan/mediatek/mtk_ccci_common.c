@@ -300,11 +300,30 @@ int mtk_ccci_runtime_v2_build(const void *query, size_t query_len,
 				fallthrough;
 			case MTK_CCCI_RT_HIF_DMA_REMAP:
 			case MTK_CCCI_RT_GPS_COCLOCK:
-			case MTK_CCCI_RT_SBP_ID:
 			case MTK_CCCI_RT_EE_AFTER_EPOF:
 				data = misc;
 				len = sizeof(misc);
 				break;
+			case MTK_CCCI_RT_SBP_ID: {
+				u32 bitmap = 0;
+
+				if (!config->load_type ||
+				    config->load_type > MTK_CCCI_MAX_LOAD_TYPE)
+					return -ENODATA;
+				if (config->load_type >= MTK_CCCI_UBIN_FIRST_TYPE) {
+					if (!config->modem_capability_known)
+						return -ENODATA;
+					ret = mtk_ccci_ubin_wm_bitmap(
+						config->modem_capability, &bitmap);
+					if (ret)
+						return ret;
+				}
+				/* SBP defaults to zero; only UBIN publishes the WM word. */
+				put_unaligned_le32(bitmap, misc + sizeof(u32));
+				data = misc;
+				len = sizeof(misc);
+				break;
+			}
 			case MTK_CCCI_RT_CCCI:
 				put_unaligned_le32(BIT(0), misc);
 				data = misc;
@@ -408,3 +427,78 @@ int mtk_ccci_runtime_v2_reply(const void *hs1, size_t hs1_len,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mtk_ccci_runtime_v2_reply);
+
+/*
+ * Public MT6797 ccci_util_lib_fo.c, 8cfe6596: capability is an option,
+ * independent of hdr_tbl_inf.md_type and md1_chk.image_type. AP RAT bits
+ * differ from the MD bitmap sent in MISC_INFO_SBP_ID.
+ */
+enum mtk_ccci_ap_rat {
+	MD1_RAT_GSM = BIT(0),
+	MD1_RAT_TDS = BIT(1),
+	MD1_RAT_WCDMA = BIT(2),
+	MD1_RAT_TDD_LTE = BIT(3),
+	MD1_RAT_FDD_LTE = BIT(4),
+	MD1_RAT_CDMA2000 = BIT(5),
+};
+
+static const u8 mtk_ccci_legacy_ubin_rat[] = {
+	MD1_RAT_GSM | MD1_RAT_TDS | MD1_RAT_TDD_LTE | MD1_RAT_FDD_LTE,
+	MD1_RAT_GSM | MD1_RAT_WCDMA | MD1_RAT_TDD_LTE | MD1_RAT_FDD_LTE,
+	MD1_RAT_GSM | MD1_RAT_TDS | MD1_RAT_WCDMA |
+		MD1_RAT_TDD_LTE | MD1_RAT_FDD_LTE,
+	MD1_RAT_GSM | MD1_RAT_WCDMA | MD1_RAT_TDD_LTE |
+		MD1_RAT_FDD_LTE | MD1_RAT_CDMA2000,
+	MD1_RAT_GSM | MD1_RAT_TDS | MD1_RAT_WCDMA |
+		MD1_RAT_TDD_LTE | MD1_RAT_FDD_LTE | MD1_RAT_CDMA2000,
+	MD1_RAT_GSM | MD1_RAT_TDS | MD1_RAT_TDD_LTE,
+	MD1_RAT_GSM | MD1_RAT_WCDMA | MD1_RAT_FDD_LTE,
+	MD1_RAT_GSM | MD1_RAT_WCDMA | MD1_RAT_FDD_LTE | MD1_RAT_CDMA2000,
+	MD1_RAT_GSM | MD1_RAT_TDS | MD1_RAT_FDD_LTE | MD1_RAT_CDMA2000,
+	MD1_RAT_GSM | MD1_RAT_TDS | MD1_RAT_TDD_LTE | MD1_RAT_CDMA2000,
+	MD1_RAT_GSM | MD1_RAT_WCDMA | MD1_RAT_TDD_LTE,
+	MD1_RAT_GSM | MD1_RAT_WCDMA | MD1_RAT_TDD_LTE | MD1_RAT_CDMA2000,
+	MD1_RAT_GSM | MD1_RAT_TDS | MD1_RAT_FDD_LTE,
+	MD1_RAT_GSM | MD1_RAT_TDS | MD1_RAT_FDD_LTE | MD1_RAT_CDMA2000,
+};
+
+int mtk_ccci_ubin_wm_bitmap(s32 capability, u32 *bitmap)
+{
+	u32 rat, result = 0;
+
+	if (!bitmap)
+		return -EINVAL;
+	if (capability <= 0)
+		return -ENODATA;
+	if ((capability & 0x5a000000U) == 0x5a000000U)
+		rat = capability & 0x3f;
+	else if (capability < MTK_CCCI_UBIN_FIRST_TYPE)
+		rat = 0;
+	else if (capability <= MTK_CCCI_MAX_LOAD_TYPE)
+		rat = mtk_ccci_legacy_ubin_rat[
+			capability - MTK_CCCI_UBIN_FIRST_TYPE];
+	else
+		return -EOPNOTSUPP;
+
+	if (rat == (MD1_RAT_GSM | MD1_RAT_TDD_LTE | MD1_RAT_FDD_LTE |
+		    MD1_RAT_CDMA2000) ||
+	    rat == (MD1_RAT_GSM | MD1_RAT_WCDMA | MD1_RAT_CDMA2000))
+		rat |= MD1_RAT_WCDMA | MD1_RAT_TDD_LTE | MD1_RAT_FDD_LTE;
+
+	if (rat & MD1_RAT_GSM)
+		result |= BIT(0);
+	if (rat & MD1_RAT_TDS)
+		result |= BIT(1);
+	if (rat & MD1_RAT_CDMA2000)
+		result |= BIT(2);
+	if (rat & MD1_RAT_WCDMA)
+		result |= BIT(3);
+	if (rat & MD1_RAT_TDD_LTE)
+		result |= BIT(4);
+	if (rat & MD1_RAT_FDD_LTE)
+		result |= BIT(5);
+	*bitmap = result;
+	return 0;
+}
+
+EXPORT_SYMBOL_GPL(mtk_ccci_ubin_wm_bitmap);

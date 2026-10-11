@@ -1958,6 +1958,7 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 {
 	struct mt6797_md1_post_vector_evidence evidence;
 	struct mt6797_md1_mpu_remap_plan plan;
+	struct mt6797_md1_lk_runtime_metadata metadata;
 	struct mt6797_md1_mpu_remap_layout layout;
 	u64 md_smem;
 	int ret;
@@ -1982,6 +1983,9 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	md_smem = layout.ap_md_smem_base - plan.smem_offset_ap_to_md;
 	if (md_smem > U32_MAX)
 		return -ERANGE;
+	ret = mt6797_md1_lk_handoff_runtime_get(&metadata);
+	if (ret)
+		return ret == -ENODATA ? -EPROBE_DEFER : ret;
 	/*
 	 * LK deletes the pre-boot dynamic reservation nodes and installs its
 	 * live CCCI mblocks, leaving memory-region phandles dangling. The
@@ -1998,6 +2002,9 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	ccci->runtime_config.smem_size = SZ_1M;
 	ccci->runtime_config.random_seed = get_random_u32();
 	ccci->runtime_config.ccmni_mtu = MTK_CCCI_NET_RX_SIZE;
+	ccci->runtime_config.load_type = metadata.load_type;
+	ccci->runtime_config.modem_capability = metadata.options.support;
+	ccci->runtime_config.modem_capability_known = metadata.capability_available;
 	return 0;
 }
 

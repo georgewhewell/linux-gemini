@@ -28,7 +28,6 @@
 #include <linux/overflow.h>
 #include <linux/platform_device.h>
 #include <linux/seq_file.h>
-#include <linux/slab.h>
 #include <linux/soc/mediatek/mt6797-md1-firmware.h>
 #include <linux/soc/mediatek/mt6797-md1-lk-handoff.h>
 #include <linux/soc/mediatek/mt6797-md1-mpu-remap-plan.h>
@@ -62,6 +61,7 @@ static DEFINE_MUTEX(mt6797_md1_lk_handoff_plan_lock);
 static struct mt6797_md1_mpu_remap_plan mt6797_md1_lk_handoff_plan;
 static struct mt6797_md1_mpu_remap_layout mt6797_md1_lk_handoff_layout;
 static bool mt6797_md1_lk_handoff_plan_attested;
+static struct mt6797_md1_lk_runtime_metadata mt6797_md1_lk_handoff_runtime;
 
 bool mt6797_md1_lk_handoff_image_loaded(void)
 {
@@ -101,6 +101,23 @@ int mt6797_md1_lk_handoff_layout_get(
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_lk_handoff_layout_get);
+
+int mt6797_md1_lk_handoff_runtime_get(
+	struct mt6797_md1_lk_runtime_metadata *metadata)
+{
+	if (!metadata)
+		return -EINVAL;
+
+	mutex_lock(&mt6797_md1_lk_handoff_plan_lock);
+	if (!mt6797_md1_lk_handoff_plan_attested) {
+		mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
+		return -ENODATA;
+	}
+	*metadata = mt6797_md1_lk_handoff_runtime;
+	mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_lk_handoff_runtime_get);
 
 static bool mt6797_md1_phys_range_valid(u64 start, u64 size, u64 limit_start,
 					u64 limit_size)
@@ -318,19 +335,23 @@ static int mt6797_md1_get_tag(const void *table, size_t table_size,
 
 static int runtime_metadata_show(struct seq_file *s, void *unused)
 {
-	const struct mt6797_md1_lk_runtime_metadata *metadata = s->private;
+	struct mt6797_md1_lk_runtime_metadata metadata;
+	int ret;
 	const struct mt6797_md1_lk_runtime_options *options;
 
-	options = &metadata->options;
+	ret = mt6797_md1_lk_handoff_runtime_get(&metadata);
+	if (ret)
+		return ret;
+	options = &metadata.options;
 	seq_printf(s,
 		"schema=1 load_type=%u load_type_valid=%u image_type=%u "
 		"option_parse_errno=%d lk_option_gate_present=%u lk_option_gate=%d "
 		"support_option_present=%u support_option=%d capability_available=%u "
 		"capability_provenance=%s\n",
-		metadata->load_type, metadata->load_type_valid, metadata->image_type,
-		metadata->option_parse_errno, options->gate_present, options->gate,
-		options->support_present, options->support, metadata->capability_available,
-		metadata->capability_available ? "lk_override" : "unknown");
+		metadata.load_type, metadata.load_type_valid, metadata.image_type,
+		metadata.option_parse_errno, options->gate_present, options->gate,
+		options->support_present, options->support, metadata.capability_available,
+		metadata.capability_available ? "lk_override" : "unknown");
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(runtime_metadata);
@@ -340,18 +361,17 @@ static void mt6797_md1_lk_debugfs_remove(void *data)
 	debugfs_remove(data);
 }
 
-static void mt6797_md1_lk_debugfs_init(struct device *dev,
-		struct mt6797_md1_lk_runtime_metadata *metadata)
+static void mt6797_md1_lk_debugfs_init(struct device *dev)
 {
 	struct dentry *root;
 
 	root = debugfs_create_dir("mt6797-md1-lk-handoff", NULL);
 	if (IS_ERR(root))
 		return;
-	/* Registered after the scalar allocation, so removal precedes its free. */
+	/* Protected debugfs removal precedes driver/module teardown. */
 	if (devm_add_action_or_reset(dev, mt6797_md1_lk_debugfs_remove, root))
 		return;
-	debugfs_create_file("runtime_metadata", 0400, root, metadata,
+	debugfs_create_file("runtime_metadata", 0400, root, NULL,
 			    &runtime_metadata_fops);
 }
 
@@ -367,7 +387,7 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 	struct mt6797_md1_firmware_info firmware;
 	struct mt6797_md1_mpu_remap_layout plan_layout;
 	struct mt6797_md1_mpu_remap_plan plan;
-	struct mt6797_md1_lk_runtime_metadata *metadata;
+	struct mt6797_md1_lk_runtime_metadata metadata = {};
 	const void *chosen_data;
 	const void *tag_data;
 	void *table;
@@ -504,20 +524,17 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 		goto out_unmap;
 	}
 
-	metadata = devm_kzalloc(dev, sizeof(*metadata), GFP_KERNEL);
-	if (metadata) {
-		metadata->load_type = md1.md_type;
-		metadata->load_type_valid = md1.md_type > 0 &&
-			md1.md_type <= MT6797_MD1_LK_MAX_LOAD_TYPE;
-		metadata->image_type = firmware.image_type;
-		metadata->option_parse_errno = mt6797_md1_lk_runtime_options_parse(
-			table, lk_info.table_size, lk_info.tag_count, &metadata->options);
-		if (!metadata->option_parse_errno && metadata->options.gate_present &&
-		    metadata->options.gate > 0 && metadata->options.support_present &&
-		    metadata->options.support > 0)
-			metadata->capability_available = true;
-	}
-	/* Missing metadata never alters existing plan admission or runtime TX. */
+	metadata.load_type = md1.md_type;
+	metadata.load_type_valid = md1.md_type > 0 &&
+		md1.md_type <= MT6797_MD1_LK_MAX_LOAD_TYPE;
+	metadata.image_type = firmware.image_type;
+	metadata.option_parse_errno = mt6797_md1_lk_runtime_options_parse(
+		table, lk_info.table_size, lk_info.tag_count, &metadata.options);
+	if (!metadata.option_parse_errno && metadata.options.gate_present &&
+	    metadata.options.gate > 0 && metadata.options.support_present &&
+	    metadata.options.support > 0)
+		metadata.capability_available = true;
+	/* An absent or malformed option remains unknown, not a zero capability. */
 
 	dev_info(dev,
 		 "verified LK hand-off: table=%pa/0x%x MD1=%pa/0x%x smem=%pa/0x%x header=v%u platform=%s raw=0x%x; stopping before partition I/O, MPU/remap, power or reset\n",
@@ -554,13 +571,13 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 	mutex_lock(&mt6797_md1_lk_handoff_plan_lock);
 	mt6797_md1_lk_handoff_plan = plan;
 	mt6797_md1_lk_handoff_layout = plan_layout;
+	mt6797_md1_lk_handoff_runtime = metadata;
 	mt6797_md1_lk_handoff_plan_attested = true;
 	mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
 	/* This remains only a verified image-load attestation; execution is unknown. */
 	WRITE_ONCE(mt6797_md1_lk_handoff_image_loaded_attested, true);
 	/* Optional diagnostics cannot change the validated handoff admission. */
-	if (metadata)
-		mt6797_md1_lk_debugfs_init(dev, metadata);
+	mt6797_md1_lk_debugfs_init(dev);
 out_unmap:
 	memunmap(table);
 	return ret;

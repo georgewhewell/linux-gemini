@@ -7,13 +7,15 @@
 #define MT6797_CCCI_DIAG_RX_WIRE_MAX 3584
 
 /* Public MT6797 eccci/ccci_config.h and mdee_dumper_v2.h UMOLY ABI.
- * Only decode numeric PL exception fields; never print stack, file names,
- * memory addresses or the contents of the shared exception region.
+ * Decode fixed PL exception fields and a validated assertion source basename.
+ * Never print paths, stacks or the contents of the shared exception region.
  */
 #define MT6797_CCCI_MDSS_OFFSET 2048U
 #define MT6797_CCCI_MDSS_SIZE 8192U
 #define MT6797_CCCI_EX_OVERVIEW_SIZE 144U
 #define MT6797_CCCI_EX_PL_CONTENT_OFFSET 320U
+#define MT6797_CCCI_EX_PL_ASSERT_PATH_SIZE 256U
+#define MT6797_CCCI_EX_PL_ASSERT_FILE_SIZE 64U
 #define MT6797_CCCI_EX_PL_ASSERT_LINE_OFFSET 640U
 
 struct mt6797_ccci_pl_exception {
@@ -22,6 +24,9 @@ struct mt6797_ccci_pl_exception {
 	u32 core_id;
 	u8 type;
 	u32 codes[3], assert_line;
+	bool assert_parameters_valid, assert_file_valid;
+	u32 assert_parameters[3];
+	char assert_file[MT6797_CCCI_EX_PL_ASSERT_FILE_SIZE];
 };
 
 struct mt6797_ccci_md_exception {
@@ -35,6 +40,35 @@ static u32 mt6797_ccci_diag_le32(const u8 *p)
 {
 	return p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) |
 		((u32)p[3] << 24);
+}
+
+/* Firmware's public ASSERT record has a path and a separate filename. Accept
+ * only a terminated, bounded ASCII basename; no directory or log delimiters
+ * leave the snapshot. Validate first so rejection cannot publish a prefix.
+ */
+static bool mt6797_ccci_assert_basename(const u8 *field, size_t size,
+				       char *name)
+{
+	size_t end, start = 0, i;
+
+	for (end = 0; end < size && field[end]; end++)
+		if (field[end] == '/' || field[end] == '\\')
+			start = end + 1;
+	if (end == size || end == start ||
+	    end - start >= MT6797_CCCI_EX_PL_ASSERT_FILE_SIZE)
+		return false;
+	for (i = start; i < end; i++) {
+		u8 c = field[i];
+
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		      (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'))
+			return false;
+	}
+	if (field[start] == '.' || field[start] == '-')
+		return false;
+	memcpy(name, field + start, end - start);
+	name[end - start] = '\0';
+	return true;
 }
 
 static void mt6797_ccci_md_exception_decode(const u8 *bytes, size_t length,
@@ -85,6 +119,25 @@ static void mt6797_ccci_md_exception_decode(const u8 *bytes, size_t length,
 				continue;
 			pl->assert_line = mt6797_ccci_diag_le32(record +
 				MT6797_CCCI_EX_PL_ASSERT_LINE_OFFSET);
+			pl->assert_file_valid = mt6797_ccci_assert_basename(record +
+				MT6797_CCCI_EX_PL_CONTENT_OFFSET +
+				MT6797_CCCI_EX_PL_ASSERT_PATH_SIZE,
+				MT6797_CCCI_EX_PL_ASSERT_FILE_SIZE, pl->assert_file);
+			if (!pl->assert_file_valid)
+				pl->assert_file_valid = mt6797_ccci_assert_basename(
+					record + MT6797_CCCI_EX_PL_CONTENT_OFFSET,
+					MT6797_CCCI_EX_PL_ASSERT_PATH_SIZE,
+					pl->assert_file);
+			needed += sizeof(pl->assert_parameters);
+			if (needed <= length && offset <= length - needed) {
+				unsigned int j;
+
+				for (j = 0; j < ARRAY_SIZE(pl->assert_parameters); j++)
+					pl->assert_parameters[j] = mt6797_ccci_diag_le32(
+						record + MT6797_CCCI_EX_PL_ASSERT_LINE_OFFSET +
+						4 + 4 * j);
+				pl->assert_parameters_valid = true;
+			}
 		} else if ((pl->type >= 1 && pl->type <= 7) ||
 			   (pl->type >= 0x20 && pl->type <= 0x26)) {
 			needed = MT6797_CCCI_EX_PL_CONTENT_OFFSET + 12;

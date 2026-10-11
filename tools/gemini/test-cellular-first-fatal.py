@@ -134,6 +134,52 @@ static void exception_tests(void)
  puts("PASS count9 bounded PL prefixes: numeric core ids, both records, unknown types, offender/offset/content bounds; no overview/status guesses or v3 substitution");
  puts("PASS public UMOLY numeric exception decoder: fatal/assert, all types, truncation, overlapping/overflowing offsets and core-count bounds");
 }
+static void assertion_detail_tests(void)
+{
+ u8 bytes[8192]={0}; struct mt6797_ccci_md_exception ex;
+ const size_t base=256, path=base+320, file=base+576;
+ put32(bytes,9); put32(bytes+4,base); bytes[8]=1; bytes[base+4]=16;
+ put32(bytes+base+640,929);
+ put32(bytes+base+644,0x12345678); put32(bytes+base+648,0x89abcdef);
+ put32(bytes+base+652,0xffffffff);
+ memcpy(bytes+path,"C:\\build\\modem\\runtime.c",25);
+ mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+ assert(ex.pl_prefix_only&&!ex.overview_valid&&ex.pl[0].content_valid);
+ assert(ex.pl[0].assert_file_valid&&!strcmp(ex.pl[0].assert_file,"runtime.c"));
+ assert(ex.pl[0].assert_parameters_valid&&ex.pl[0].assert_parameters[0]==0x12345678);
+ assert(ex.pl[0].assert_parameters[1]==0x89abcdef&&ex.pl[0].assert_parameters[2]==UINT32_MAX);
+ memcpy(bytes+file,"different.c",12);
+ mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+ assert(!strcmp(ex.pl[0].assert_file,"different.c"));
+ for(size_t n=base+644;n<base+656;n++) {
+  mt6797_ccci_md_exception_decode(bytes,n,&ex);
+  assert(ex.pl[0].content_valid&&ex.pl[0].assert_file_valid);
+  assert(!ex.pl[0].assert_parameters_valid&&!ex.pl[0].assert_parameters[0]);
+ }
+ mt6797_ccci_md_exception_decode(bytes,base+656,&ex);
+ assert(ex.pl[0].assert_parameters_valid);
+ memset(bytes+path,0,320);
+ const char *invalid[]={"", ".", "..", "-", "x y.c", "x\ny.c", "x\ry.c", "x=y.c", "x%p.c", "\xff.c"};
+ for(unsigned i=0;i<ARRAY_SIZE(invalid);i++) {
+  memset(bytes+file,0,64); memcpy(bytes+file,invalid[i],strlen(invalid[i]));
+  mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+  assert(!ex.pl[0].assert_file_valid&&!ex.pl[0].assert_file[0]);
+  assert(ex.pl[0].assert_parameters_valid);
+ }
+ memset(bytes+path,'x',320);
+ mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+ assert(!ex.pl[0].assert_file_valid&&!ex.pl[0].assert_file[0]);
+ bytes[file+63]=0;
+ mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+ assert(ex.pl[0].assert_file_valid&&strlen(ex.pl[0].assert_file)==63);
+ memset(bytes+path,0,320); memcpy(bytes+path,"/firmware/source.c",19);
+ mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+ assert(ex.pl[0].assert_file_valid&&!strcmp(ex.pl[0].assert_file,"source.c"));
+ bytes[base+4]=6;
+ mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+ assert(!ex.pl[0].assert_file_valid&&!ex.pl[0].assert_parameters_valid);
+ puts("PASS public ASSERT basename/parameters: exact offsets, Unix/Windows paths, filename precedence, terminators, character/length rejection, truncation and fatal-type exclusion");
+}
 static void *at_writer(void *opaque)
 {
  struct mt6797_ccci_diag *at=opaque;
@@ -184,6 +230,7 @@ static void *rx_race(void *unused)
 int main(void)
 {
  exception_tests();
+ assertion_detail_tests();
  at_metadata_tests();
  reset();
  mt6797_ccci_diag_payload(&d, hs1, 87, reply, sizeof(reply), runtime, 324);

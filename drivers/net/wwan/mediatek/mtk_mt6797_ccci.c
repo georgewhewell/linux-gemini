@@ -380,6 +380,14 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 				pl->type, pl->type_known,
 				pl->content_valid, pl->codes[0], pl->codes[1],
 				pl->codes[2], pl->assert_line);
+			if (pl->content_valid && pl->type >= 16 && pl->type <= 18)
+				dev_err(ccci->dev,
+					"CCCI_MD_ASSERT pl=%u line=%u file_valid=%u file=%s parameters_valid=%u parameters=%08x/%08x/%08x\n",
+					i, pl->assert_line, pl->assert_file_valid,
+					pl->assert_file_valid ? pl->assert_file : "-",
+					pl->assert_parameters_valid,
+					pl->assert_parameters[0], pl->assert_parameters[1],
+					pl->assert_parameters[2]);
 		}
 	}
 	dev_err(ccci->dev,

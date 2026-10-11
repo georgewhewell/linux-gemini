@@ -12,6 +12,8 @@ import tempfile
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--reference-source", type=Path,
                     help="compile an original common.c and require the WM-word runtime rejection")
+parser.add_argument("--reference-lk-source", type=Path,
+                    help="compile an original LK parser and require unused-option runtime rejection")
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[2]
 directory = root / "drivers/net/wwan/mediatek"
@@ -25,6 +27,25 @@ metadata_structs = "\n".join(re.search(r"struct " + name + r" \{.*?\n};", metada
     for name in ["mt6797_md1_lk_runtime_options", "mt6797_md1_lk_runtime_metadata"])
 configured = int(re.search(r"^CONFIG_MTK_MT6797_MD1_SUPPORT=(\d+)$",
     (root / "arch/arm64/configs/gemini_defconfig").read_text(), re.M).group(1))
+lk_source = (root / "drivers/soc/mediatek/mt6797-md1-lk-handoff.c").read_text()
+lk_tag = re.search(r"struct mt6797_md1_lk_tag \{.*?\n};", metadata_header, re.S).group(0)
+lk_constants = metadata_header[metadata_header.index("#define MT6797_MD1_LK_INFO_V2_VERSION"):
+                               metadata_header.index("struct mt6797_md1_mpu_remap_plan;")]
+lk_constants += "\n" + "\n".join(re.findall(r"^#define MT6797_MD1_LK_TAG_(?:DATA_OFFSET|DATA_SIZE_OFFSET|NEXT_OFFSET)\s+.*$", lk_source, re.M)) + "\n"
+
+def function(text, signature):
+    start = text.index(signature)
+    return text[start:text.index("\n}", start) + 3]
+
+def lk_functions(text):
+    # Match the kernel's pointer-sign compiler convention only for these
+    # unchanged byte-buffer/string helpers; all other warnings remain fatal.
+    return ('#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored "-Wpointer-sign"\n' +
+            "\n".join(function(text, signature) for signature in [
+        "static bool mt6797_md1_lk_range_valid(",
+        "static int mt6797_md1_lk_tag_at(",
+        "int mt6797_md1_lk_runtime_options_parse("]) +
+            '\n#pragma GCC diagnostic pop\n')
 # Exact 72-byte query captured from attributed C4 boot
 # 60a3d930-8045-4933-9c96-1519270a7062, dmesg-first-event.txt.
 c4_query = bytes.fromhex(
@@ -40,6 +61,7 @@ shim = r'''
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef int32_t s32; typedef uint64_t u64;
 typedef uint16_t __le16; typedef uint32_t __le32;
 #define __packed __attribute__((packed))
@@ -51,6 +73,7 @@ typedef uint16_t __le16; typedef uint32_t __le32;
 #define cpu_to_le32(x) ((u32)(x))
 #define le32_to_cpu(x) ((u32)(x))
 #define fallthrough __attribute__((fallthrough))
+#define check_add_overflow(a,b,c) __builtin_add_overflow(a,b,c)
 static void put_unaligned_le32(u32 x, void *p) { memcpy(p, &x, 4); }
 static u32 get_unaligned_le32(const void *p) { u32 x; memcpy(&x, p, 4); return x; }
 '''
@@ -163,8 +186,119 @@ static void check_configured_policy(void)
  config.load_type=9;config.modem_capability=8;config.modem_capability_known=true;
  puts("PASS actual configured-policy/wire path: board12 WM63, option precedence, invalid override/parse refusal, raw metadata immutable, independent load/image types");
 }
-int main(void)
+/* Original tables contain no device values: these are synthetic v2 tag copies. */
+static u8 option_table[1024];
+static unsigned option_count;
+static void option_reset(void)
 {
+ memset(option_table,0,sizeof(option_table)); option_count=0;
+}
+static void option_add(const char *name,u32 bytes,s32 value)
+{
+ unsigned at=76*option_count, data=512+16*option_count;
+ assert(option_count<6 && strlen(name)<64 && bytes<=8);
+ if(option_count)put_unaligned_le32(at,option_table+at-76+72);
+ strcpy((char *)option_table+at,name);
+ put_unaligned_le32(data,option_table+at+64);
+ put_unaligned_le32(bytes,option_table+at+68);
+ put_unaligned_le32((u32)value,option_table+data);
+ option_count++;
+}
+static void option_rejected(int error)
+{
+ struct mt6797_md1_lk_runtime_options options,old;
+ memset(&options,0xa5,sizeof(options));old=options;
+ assert(mt6797_md1_lk_runtime_options_parse(option_table,sizeof(option_table),option_count,&options)==error);
+ assert(!memcmp(&options,&old,sizeof(options)));
+}
+static void option_policy(s32 expected,bool expected_override)
+{
+ struct mt6797_md1_lk_runtime_metadata metadata={.load_type=9,.image_type=21};
+ s32 selected=-99;bool override=!expected_override;size_t len=0;
+ metadata.option_parse_errno=mt6797_md1_lk_runtime_options_parse(option_table,sizeof(option_table),option_count,&metadata.options);
+ assert(metadata.option_parse_errno == 0);
+ assert(!mt6797_ccci_runtime_policy(&metadata,12,&selected,&override));
+ assert(selected==expected&&override==expected_override);
+ config.load_type=metadata.load_type;config.modem_capability=selected;config.modem_capability_known=true;
+ empty_query();query[4+9]=2;
+ assert(!mtk_ccci_runtime_v2_build(query,72,&config,runtime,2048,&len));
+ check_sbp(len,expected==12?63:51);
+}
+static void check_unused_option(unsigned kind)
+{
+ unsigned gate=kind/8, shape=kind/2%4, order=kind%2;
+ const u32 sizes[]={0,3,8,4};
+ assert(kind<24);
+ option_reset();
+ if(order&&gate)option_add("opt_using_lk_val",4,gate==1?0:-1);
+ option_add("opt_md1_support",sizes[shape],8);
+ if(shape==3)option_add("opt_md1_support",4,9);
+ if(!order&&gate)option_add("opt_using_lk_val",4,gate==1?0:-1);
+ option_policy(12,false);
+ struct mt6797_md1_lk_runtime_options options;
+ assert(!mt6797_md1_lk_runtime_options_parse(option_table,sizeof(option_table),option_count,&options));
+ assert(!options.support_present&&!options.support);
+}
+static void check_gated_options(void)
+{
+ for(unsigned kind=0;kind<24;kind++)check_unused_option(kind);
+ const u32 sizes[]={0,3,8};
+ for(unsigned order=0;order<2;order++) {
+  for(unsigned shape=0;shape<3;shape++) {
+   option_reset();
+   if(order)option_add("opt_using_lk_val",4,1);
+   option_add("opt_md1_support",sizes[shape],8);
+   if(!order)option_add("opt_using_lk_val",4,1);
+   option_rejected(-EMSGSIZE);
+  }
+  option_reset();
+  if(order)option_add("opt_using_lk_val",4,1);
+  option_add("opt_md1_support",4,8);option_add("opt_md1_support",4,8);
+  if(!order)option_add("opt_using_lk_val",4,1);
+  option_rejected(-EEXIST);
+ }
+ for(unsigned shape=0;shape<3;shape++) {
+  option_reset();option_add("opt_using_lk_val",sizes[shape],0);
+  option_rejected(-EMSGSIZE);
+ }
+ option_reset();option_add("opt_using_lk_val",4,0);option_add("opt_using_lk_val",4,0);
+ option_rejected(-EEXIST);
+ for(unsigned gate=0;gate<3;gate++) {
+  option_reset();option_add("opt_using_lk_val",4,(s32)gate-1);option_add("opt_md1_support",4,8);
+  option_policy(gate==2?8:12,gate==2);
+  struct mt6797_md1_lk_runtime_options options;
+  assert(!mt6797_md1_lk_runtime_options_parse(option_table,sizeof(option_table),option_count,&options));
+  assert(options.support_present&&options.support==8);
+ }
+ option_reset();option_add("opt_md1_support",4,8);option_policy(12,false);
+ struct mt6797_md1_lk_runtime_options diagnostic;
+ assert(!mt6797_md1_lk_runtime_options_parse(option_table,sizeof(option_table),option_count,&diagnostic));
+ assert(!diagnostic.gate_present&&diagnostic.support_present&&diagnostic.support==8);
+ option_reset();option_add("opt_using_lk_val",4,1);option_policy(12,false);
+ const s32 bad_values[]={0,-1,22};const int bad_errors[]={-ENODATA,-ENODATA,-EOPNOTSUPP};
+ for(unsigned i=0;i<3;i++) {
+  option_reset();option_add("opt_using_lk_val",4,1);option_add("opt_md1_support",4,bad_values[i]);
+  struct mt6797_md1_lk_runtime_metadata metadata={};s32 selected=-99;bool override=false;
+  assert(!mt6797_md1_lk_runtime_options_parse(option_table,sizeof(option_table),option_count,&metadata.options));
+  assert(mt6797_ccci_runtime_policy(&metadata,12,&selected,&override)==bad_errors[i]);
+  assert(selected==-99&&!override);
+ }
+ /* An unused semantic error must never hide structural corruption. */
+ option_reset();option_add("opt_md1_support",3,8);option_add("unused",4,0);
+ put_unaligned_le32(UINT32_MAX,option_table+76+64);option_rejected(-ERANGE);
+ option_reset();option_add("opt_md1_support",3,8);option_add("unused",4,0);
+ put_unaligned_le32(UINT32_MAX,option_table+72);option_rejected(-ERANGE);
+ option_reset();option_add("opt_md1_support",3,8);memset(option_table,'x',64);
+ option_rejected(-EBADMSG);
+ option_reset();option_add("unused",4,0);option_policy(12,false);
+ config.load_type=9;config.modem_capability=8;config.modem_capability_known=true;
+ puts("PASS actual LK parser/policy/wire: 24 unused malformed/duplicate controls, both tag orders, enabled failures, valid scalar diagnostics, structural refusal and immutable outputs");
+}
+int main(int argc,char **argv)
+{
+ if(argc==2){check_unused_option((unsigned)strtoul(argv[1],NULL,10));return 0;}
+ assert(argc==1);
+ check_gated_options();
  size_t len=999, reply_len=999;
  empty_query(); memset(runtime, 0xa5, sizeof(runtime));
  assert(!mtk_ccci_runtime_v2_build(query,72,&config,runtime,2048,&len));
@@ -254,16 +388,21 @@ int main(void)
 with tempfile.TemporaryDirectory(prefix="gemini-ccci-wire64-") as temp:
     path = Path(temp)
     fixture = "static const u8 c4_query[72] = {" + ",".join(map(str, c4_query)) + "};\n"
-    sources = [("current", source)]
+    sources = [("current", source, lk_source)]
     if args.reference_source:
         # Preserve the original complete wire implementation. The new standalone
         # conversion supplies its header-declared symbol but does not alter it.
         conversion = source[source.index("/*\n * Public MT6797 ccci_util_lib_fo.c"):]
-        sources.append(("original", args.reference_source.read_text() + "\n" + conversion))
-    for label, selected in sources:
+        sources.append(("original", args.reference_source.read_text() + "\n" + conversion, lk_source))
+    if args.reference_lk_source:
+        sources.append(("original-lk", source, args.reference_lk_source.read_text()))
+    for label, selected, selected_lk in sources:
         test = path / (label + ".c")
         output = path / label
-        test.write_text(shim + f"\n#define CONFIG_MTK_MT6797_MD1_SUPPORT {configured}\n" + strip_includes(header) + strip_includes(selected) + metadata_structs + "\n" + policy + fixture + tests)
+        test.write_text("\n".join([
+            shim, f"#define CONFIG_MTK_MT6797_MD1_SUPPORT {configured}",
+            strip_includes(header), strip_includes(selected), metadata_structs,
+            lk_constants, lk_tag, lk_functions(selected_lk), policy, fixture, tests]))
         subprocess.run(shlex.split(os.environ.get("HOSTCC", os.environ.get("CC", "cc"))) +
                        ["-std=gnu11", "-Wall", "-Wextra", "-Werror",
                         "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
@@ -271,6 +410,13 @@ with tempfile.TemporaryDirectory(prefix="gemini-ccci-wire64-") as temp:
                        [str(test), "-o", str(output)], check=True)
         if label == "current":
             subprocess.run([str(output)], check=True, timeout=5)
+        elif label == "original-lk":
+            for kind in range(24):
+                result = subprocess.run([str(output), str(kind)], capture_output=True, text=True, timeout=5)
+                assert result.returncode != 0, "original LK parser unexpectedly admitted unused malformed support"
+                assert "metadata.option_parse_errno == 0" in result.stderr, result.stderr
+                assert "AddressSanitizer" not in result.stderr and "runtime error:" not in result.stderr
+            print("PASS original LK parser compile0 then all24 unused-option runtime controls rejected")
         else:
             result = subprocess.run([str(output)], capture_output=True, text=True, timeout=5)
             assert result.returncode != 0, "original wire unexpectedly admitted the WM contract"

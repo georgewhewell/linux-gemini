@@ -266,7 +266,8 @@ int mt6797_md1_lk_runtime_options_parse(const void *data, size_t size,
 	const char *name;
 	const u8 *raw = data;
 	u32 i, offset = 0;
-	int ret;
+	bool support_seen = false;
+	int ret, support_error = 0;
 
 	if (!raw || !options || !tag_count ||
 	    size > MT6797_MD1_LK_INFO_MAX_SIZE ||
@@ -286,15 +287,28 @@ int mt6797_md1_lk_runtime_options_parse(const void *data, size_t size,
 			candidate.gate = (s32)get_unaligned_le32(raw + tag.data_offset);
 			candidate.gate_present = true;
 		} else if (!strcmp(name, "opt_md1_support")) {
-			if (candidate.support_present)
-				return -EEXIST;
-			if (tag.data_size != sizeof(u32))
-				return -EMSGSIZE;
-			candidate.support = (s32)get_unaligned_le32(raw + tag.data_offset);
-			candidate.support_present = true;
+			if (support_seen)
+				support_error = -EEXIST;
+			else if (tag.data_size != sizeof(u32))
+				support_error = -EMSGSIZE;
+			else {
+				candidate.support = (s32)get_unaligned_le32(raw +
+								    tag.data_offset);
+				candidate.support_present = true;
+			}
+			support_seen = true;
 		}
 		if (i + 1 < tag_count)
 			offset = tag.next_tag_offset;
+	}
+
+	/* LK only selects this option after a valid positive override gate. */
+	if (support_error) {
+		if (candidate.gate_present && candidate.gate > 0)
+			return support_error;
+		/* An unused malformed/ambiguous tag supplies no diagnostic scalar. */
+		candidate.support = 0;
+		candidate.support_present = false;
 	}
 
 	*options = candidate;

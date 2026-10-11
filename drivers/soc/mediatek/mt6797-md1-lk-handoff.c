@@ -256,3 +256,47 @@ int mt6797_md1_lk_md1_load_evidence(
 	*evidence = MT6797_MD1_LK_MD1_LOAD_EXECUTION_UNKNOWN;
 	return 0;
 }
+
+int mt6797_md1_lk_runtime_options_parse(const void *data, size_t size,
+				      u32 tag_count,
+				      struct mt6797_md1_lk_runtime_options *options)
+{
+	struct mt6797_md1_lk_runtime_options candidate = {};
+	struct mt6797_md1_lk_tag tag;
+	const char *name;
+	const u8 *raw = data;
+	u32 i, offset = 0;
+	int ret;
+
+	if (!raw || !options || !tag_count ||
+	    size > MT6797_MD1_LK_INFO_MAX_SIZE ||
+	    tag_count > MT6797_MD1_LK_TAG_MAX_COUNT ||
+	    tag_count > size / MT6797_MD1_LK_TAG_V2_SIZE)
+		return -EINVAL;
+
+	for (i = 0; i < tag_count; i++) {
+		ret = mt6797_md1_lk_tag_at(raw, size, offset, &tag, &name);
+		if (ret)
+			return ret;
+		if (!strcmp(name, "opt_using_lk_val")) {
+			if (candidate.gate_present)
+				return -EEXIST;
+			if (tag.data_size != sizeof(u32))
+				return -EMSGSIZE;
+			candidate.gate = (s32)get_unaligned_le32(raw + tag.data_offset);
+			candidate.gate_present = true;
+		} else if (!strcmp(name, "opt_md1_support")) {
+			if (candidate.support_present)
+				return -EEXIST;
+			if (tag.data_size != sizeof(u32))
+				return -EMSGSIZE;
+			candidate.support = (s32)get_unaligned_le32(raw + tag.data_offset);
+			candidate.support_present = true;
+		}
+		if (i + 1 < tag_count)
+			offset = tag.next_tag_offset;
+	}
+
+	*options = candidate;
+	return 0;
+}

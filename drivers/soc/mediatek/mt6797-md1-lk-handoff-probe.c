@@ -16,6 +16,7 @@
  * interrupts, shared-memory writes, SIM, RF, or a modem boot request.
  */
 
+#include <linux/debugfs.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
@@ -26,6 +27,8 @@
 #include <linux/of_address.h>
 #include <linux/overflow.h>
 #include <linux/platform_device.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
 #include <linux/soc/mediatek/mt6797-md1-firmware.h>
 #include <linux/soc/mediatek/mt6797-md1-lk-handoff.h>
 #include <linux/soc/mediatek/mt6797-md1-mpu-remap-plan.h>
@@ -313,6 +316,45 @@ static int mt6797_md1_get_tag(const void *table, size_t table_size,
 	return 0;
 }
 
+static int runtime_metadata_show(struct seq_file *s, void *unused)
+{
+	const struct mt6797_md1_lk_runtime_metadata *metadata = s->private;
+	const struct mt6797_md1_lk_runtime_options *options;
+
+	options = &metadata->options;
+	seq_printf(s,
+		"schema=1 load_type=%u load_type_valid=%u image_type=%u "
+		"option_parse_errno=%d lk_option_gate_present=%u lk_option_gate=%d "
+		"support_option_present=%u support_option=%d capability_available=%u "
+		"capability_provenance=%s\n",
+		metadata->load_type, metadata->load_type_valid, metadata->image_type,
+		metadata->option_parse_errno, options->gate_present, options->gate,
+		options->support_present, options->support, metadata->capability_available,
+		metadata->capability_available ? "lk_override" : "unknown");
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(runtime_metadata);
+
+static void mt6797_md1_lk_debugfs_remove(void *data)
+{
+	debugfs_remove(data);
+}
+
+static void mt6797_md1_lk_debugfs_init(struct device *dev,
+		struct mt6797_md1_lk_runtime_metadata *metadata)
+{
+	struct dentry *root;
+
+	root = debugfs_create_dir("mt6797-md1-lk-handoff", NULL);
+	if (IS_ERR(root))
+		return;
+	/* Registered after the scalar allocation, so removal precedes its free. */
+	if (devm_add_action_or_reset(dev, mt6797_md1_lk_debugfs_remove, root))
+		return;
+	debugfs_create_file("runtime_metadata", 0400, root, metadata,
+			    &runtime_metadata_fops);
+}
+
 static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -325,6 +367,7 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 	struct mt6797_md1_firmware_info firmware;
 	struct mt6797_md1_mpu_remap_layout plan_layout;
 	struct mt6797_md1_mpu_remap_plan plan;
+	struct mt6797_md1_lk_runtime_metadata *metadata;
 	const void *chosen_data;
 	const void *tag_data;
 	void *table;
@@ -461,6 +504,21 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 		goto out_unmap;
 	}
 
+	metadata = devm_kzalloc(dev, sizeof(*metadata), GFP_KERNEL);
+	if (metadata) {
+		metadata->load_type = md1.md_type;
+		metadata->load_type_valid = md1.md_type > 0 &&
+			md1.md_type <= MT6797_MD1_LK_MAX_LOAD_TYPE;
+		metadata->image_type = firmware.image_type;
+		metadata->option_parse_errno = mt6797_md1_lk_runtime_options_parse(
+			table, lk_info.table_size, lk_info.tag_count, &metadata->options);
+		if (!metadata->option_parse_errno && metadata->options.gate_present &&
+		    metadata->options.gate > 0 && metadata->options.support_present &&
+		    metadata->options.support > 0)
+			metadata->capability_available = true;
+	}
+	/* Missing metadata never alters existing plan admission or runtime TX. */
+
 	dev_info(dev,
 		 "verified LK hand-off: table=%pa/0x%x MD1=%pa/0x%x smem=%pa/0x%x header=v%u platform=%s raw=0x%x; stopping before partition I/O, MPU/remap, power or reset\n",
 		 &lk_info.table_phys, lk_info.table_size, &md1.base_phys, md1.size,
@@ -500,6 +558,9 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 	mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
 	/* This remains only a verified image-load attestation; execution is unknown. */
 	WRITE_ONCE(mt6797_md1_lk_handoff_image_loaded_attested, true);
+	/* Optional diagnostics cannot change the validated handoff admission. */
+	if (metadata)
+		mt6797_md1_lk_debugfs_init(dev, metadata);
 out_unmap:
 	memunmap(table);
 	return ret;

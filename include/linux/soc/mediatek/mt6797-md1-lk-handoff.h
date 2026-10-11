@@ -69,6 +69,31 @@ struct mt6797_md1_lk_smem_layout {
 	u32 total_size;
 };
 
+/* Public MD_LOAD_TYPE: legacy 1..7, UBIN 8..21. */
+#define MT6797_MD1_LK_MAX_LOAD_TYPE	21
+
+struct mt6797_md1_lk_runtime_options {
+	s32 gate;
+	s32 support;
+	bool gate_present;
+	bool support_present;
+};
+
+/* Only scalar metadata from the validated table; no table/header lifetime. */
+struct mt6797_md1_lk_runtime_metadata {
+	struct mt6797_md1_lk_runtime_options options;
+	u32 load_type;
+	u32 image_type;
+	int option_parse_errno;
+	bool load_type_valid;
+	bool capability_available;
+};
+
+/* No board default or image-derived capability is selected by these helpers. */
+int mt6797_md1_lk_runtime_options_parse(const void *data, size_t size,
+				      u32 tag_count,
+				      struct mt6797_md1_lk_runtime_options *options);
+
 /*
  * The LK v2 load flag is evidence only that LK completed its MD1 image-load
  * step.  It is not a power, reset, clock, MPU, remap, CCIF, transport, or

@@ -398,6 +398,14 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 		d->at_events[MT6797_CCCI_AT_RX_SEEN],
 		d->at_events[MT6797_CCCI_AT_RX_CLOSED_DROP],
 		d->at_events[MT6797_CCCI_AT_RX_DELIVERED]);
+	for (i = d->at_command_count > MT6797_CCCI_AT_COMMAND_COUNT ?
+		 d->at_command_count - MT6797_CCCI_AT_COMMAND_COUNT : 0;
+	     i < d->at_command_count; i++) {
+		u32 command = d->at_commands[i % MT6797_CCCI_AT_COMMAND_COUNT];
+
+		dev_err(ccci->dev, "CCCI_AT_COMMAND seq=%u kind=%u mode=%u\n",
+			i + 1, command & 0xff, command >> 8);
+	}
 	mt6797_fs_diag_freeze(&ccci->fs_diag);
 	dev_err(ccci->dev,
 		"MT6797_CCCI_FIRST_FATAL site=%s ready=%d irqs=%u first_tx=%08x/%08x first_rx=%08x/%08x last_tx=%08x/%08x last_rx=%08x/%08x q0_submitted=%u reclaimed=%u head=%u tail=%u used=%u descriptor_valid=%u payload_valid=%u reply_finalized=%u runtime_len=%zu\n",
@@ -800,6 +808,7 @@ static int mt6797_ccci_at_tx(struct wwan_port *port, struct sk_buff *skb)
 {
 	struct mt6797_ccci *ccci = wwan_port_get_drvdata(port);
 	struct mtk_ccci_header *header;
+	u32 command;
 	int ret;
 
 	if (!atomic_read(&ccci->ready))
@@ -812,11 +821,13 @@ static int mt6797_ccci_at_tx(struct wwan_port *port, struct sk_buff *skb)
 	ret = skb_cow_head(skb, MTK_CCCI_HEADER_SIZE);
 	if (ret)
 		return ret;
+	command = mt6797_ccci_at_command(skb->data, skb->len);
 	header = (struct mtk_ccci_header *)skb_push(skb, MTK_CCCI_HEADER_SIZE);
 	mtk_ccci_header_init(header, MTK_CCCI_UART2_TX, 0, skb->len);
 	ret = mt6797_ccci_tx(ccci, 1, skb, MTK_CCCI_UART2_TX);
 	if (!ret) {
 		mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_TX_SUBMITTED);
+		mt6797_ccci_diag_at_command(&ccci->diag, command);
 		return 0;
 	}
 	skb_pull(skb, MTK_CCCI_HEADER_SIZE);

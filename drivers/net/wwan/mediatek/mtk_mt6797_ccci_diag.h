@@ -182,6 +182,45 @@ enum mt6797_ccci_at_event {
 	MT6797_CCCI_AT_EVENT_COUNT,
 };
 
+#define MT6797_CCCI_AT_COMMAND_COUNT 16U
+
+/* Classify a submitted packet, not an AT stream or command interpreter. Only
+ * fixed command names become numeric IDs; arguments and responses are never
+ * retained. A split/unknown packet is ID0. IDs follow this immutable list.
+ */
+static u32 mt6797_ccci_at_command(const u8 *bytes, size_t length)
+{
+	static const char * const names[] = {
+		"AT", "ATE0", "ATV1", "AT+CMEE", "AT+CGMI", "AT+CGMM",
+		"AT+CGMR", "AT+CGSN", "ATI", "AT+GCAP", "AT+CPIN",
+		"AT+CLCK", "AT+CFUN", "AT+CIMI", "AT+CCID", "AT+CSQ",
+		"AT+COPS", "AT+CREG", "AT+CGREG", "AT+CEREG", "AT+CGDCONT",
+		"AT+CSCS", "AT+CMGF", "AT+CNMI", "AT+CPMS", "AT+CRSM",
+		"AT+CCHO", "AT+CGLA", "AT+CCHC", "AT+CSIM", "AT+ESIMS",
+	};
+	unsigned int i;
+
+	if (!bytes || !length || length > MT6797_CCCI_DIAG_RX_WIRE_MAX)
+		return 0;
+	for (i = 0; i < ARRAY_SIZE(names); i++) {
+		size_t n = strlen(names[i]);
+		u32 mode;
+
+		if (length <= n || memcmp(bytes, names[i], n))
+			continue;
+		if (bytes[n] == '\r' || bytes[n] == '\n')
+			mode = 0; /* execute */
+		else if (bytes[n] == '?')
+			mode = 1; /* read */
+		else if (bytes[n] == '=')
+			mode = length > n + 1 && bytes[n + 1] == '?' ? 2 : 3;
+		else
+			continue;
+		return (mode << 8) | (i + 1);
+	}
+	return 0;
+}
+
 /* No allocation, MMIO, or descriptor writes. Caller owns this through teardown.
  * TX lock may nest this lock; diagnostic code never takes the TX lock.
  * Freezing makes all saved bytes immutable before any printk or STOP command.
@@ -190,6 +229,7 @@ struct mt6797_ccci_diag {
 	spinlock_t lock;
 	bool frozen, payload_valid, reply_finalized;
 	u32 at_events[MT6797_CCCI_AT_EVENT_COUNT];
+	u32 at_command_count, at_commands[MT6797_CCCI_AT_COMMAND_COUNT];
 	u32 irq_count, first_irq[4], last_irq[4];
 	u32 submitted, reclaimed, head, tail, used;
 	u8 descriptor[16];
@@ -214,6 +254,18 @@ static void mt6797_ccci_diag_at(struct mt6797_ccci_diag *d, unsigned int event)
 	spin_lock_irqsave(&d->lock, flags);
 	if (!d->frozen && d->at_events[event] != U32_MAX)
 		d->at_events[event]++;
+	spin_unlock_irqrestore(&d->lock, flags);
+}
+
+static void mt6797_ccci_diag_at_command(struct mt6797_ccci_diag *d, u32 command)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&d->lock, flags);
+	if (!d->frozen && d->at_command_count != U32_MAX) {
+		d->at_commands[d->at_command_count % MT6797_CCCI_AT_COMMAND_COUNT] = command;
+		d->at_command_count++;
+	}
 	spin_unlock_irqrestore(&d->lock, flags);
 }
 

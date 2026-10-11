@@ -18,6 +18,7 @@ shim = r'''
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
@@ -207,6 +208,36 @@ static void at_metadata_tests(void)
  assert(!memcmp(saved,at.at_events,sizeof(saved)));assert(!pthread_mutex_destroy(&at.lock));
  puts("PASS actual AT metadata helper: seven payload-free counters, saturation, invalid events, 32 concurrent writers and first-fatal freeze");
 }
+static void at_command_tests(void)
+{
+ struct mt6797_ccci_diag at={0};
+ assert(!pthread_mutex_init(&at.lock,NULL));
+ assert(!mt6797_ccci_at_command(NULL,10));
+ assert(!mt6797_ccci_at_command((const u8 *)"AT",2));
+ assert(!mt6797_ccci_at_command((const u8 *)"AT+CPINSECRET\r",14));
+ assert(mt6797_ccci_at_command((const u8 *)"AT\r",3)==1);
+ assert(mt6797_ccci_at_command((const u8 *)"AT+CPIN?\r",9)==(11|256));
+ assert(mt6797_ccci_at_command((const u8 *)"AT+CPIN=?\r",10)==(11|512));
+ /* Changing arbitrary subscriber arguments never changes recorded metadata. */
+ assert(mt6797_ccci_at_command((const u8 *)"AT+CPIN=private-one\r",20)==(11|768));
+ assert(mt6797_ccci_at_command((const u8 *)"AT+CPIN=private-two\r",20)==(11|768));
+ for(size_t n=0;n<9;n++) {
+  u8 *p=malloc(n?n:1); memcpy(p,"AT+CPIN?\r",n);
+  (void)mt6797_ccci_at_command(p,n); free(p);
+ }
+ for(unsigned i=0;i<40;i++)mt6797_ccci_diag_at_command(&at,i);
+ assert(at.at_command_count==40);
+ for(unsigned i=24;i<40;i++)assert(at.at_commands[i%16]==i);
+ u32 saved[16];memcpy(saved,at.at_commands,sizeof(saved));
+ assert(mt6797_ccci_diag_freeze(&at,NULL));
+ mt6797_ccci_diag_at_command(&at,999);
+ assert(at.at_command_count==40&&!memcmp(saved,at.at_commands,sizeof(saved)));
+ at.frozen=false;at.at_command_count=U32_MAX;
+ mt6797_ccci_diag_at_command(&at,999);
+ assert(at.at_command_count==U32_MAX&&!memcmp(saved,at.at_commands,sizeof(saved)));
+ assert(!pthread_mutex_destroy(&at.lock));
+ puts("PASS bounded AT command categories: exact names, read/test/write, private arguments discarded, truncation, ring order, freeze and saturation");
+}
 static void reset(void)
 {
  memset(&d, 0, sizeof(d)); assert(!pthread_mutex_init(&d.lock, NULL));
@@ -232,6 +263,7 @@ int main(void)
  exception_tests();
  assertion_detail_tests();
  at_metadata_tests();
+ at_command_tests();
  reset();
  mt6797_ccci_diag_payload(&d, hs1, 87, reply, sizeof(reply), runtime, 324);
  mt6797_ccci_diag_payload(&d, hs1, 88, reply, 115, runtime, 324);

@@ -65,6 +65,7 @@
 #define CLDMA_L3_TX_MASK_CLEAR1		0x0444
 #define CLDMA_L3_RX_MASK_CLEAR0		0x0480
 #define CLDMA_L3_RX_MASK_CLEAR1		0x0484
+#define CLDMA_IP_BUSY			0x04b4
 
 #define CLDMA_SO_CFG			0x0a04
 #define CLDMA_SO_CHECKSUM_ENABLE		0x0a74
@@ -1633,6 +1634,11 @@ static irqreturn_t mt6797_ccci_cldma_irq(int irq, void *data)
 		spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
 		return IRQ_HANDLED;
 	}
+	/* AP-side vendor RX ACK also clears the observed CPU-wakeup busy bits.
+	 * Do not acknowledge them for masked, TX-only or terminal interrupts.
+	 */
+	if (pending.rx_done)
+		writel(readl(ccci->pdn + CLDMA_IP_BUSY), ccci->pdn + CLDMA_IP_BUSY);
 	ccci->napi_mask_generation++;
 	if (pending.tx_done) {
 		writel(pending.tx_done, ccci->pdn + CLDMA_L2_TX_MASK_SET);
@@ -1670,7 +1676,7 @@ static int mt6797_ccci_clean_reset_check(struct mt6797_ccci *ccci)
 	so = readl(ccci->ao + CLDMA_SO_STATUS);
 	txirq = readl(ccci->pdn + CLDMA_L2_TX_STATUS);
 	rxirq = readl(ccci->pdn + CLDMA_L2_RX_STATUS);
-	busy = readl(ccci->pdn + 0x04b4); /* vendor CLDMA_AP_IP_BUSY */
+	busy = readl(ccci->pdn + CLDMA_IP_BUSY);
 	for (q = 0; q < MT6797_CCCI_QUEUE_COUNT; q++) {
 		heads |= readl(ccci->pdn + CLDMA_UL_START_ADDR(q));
 		heads |= readl(ccci->ao + CLDMA_SO_START_ADDR(q));

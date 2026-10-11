@@ -7,17 +7,18 @@ import tempfile
 
 root=Path(__file__).resolve().parents[2]
 source=(root/'drivers/net/wwan/mediatek/mtk_mt6797_ccci.c').read_text()
+core=(root/'drivers/soc/mediatek/mt6797-md1-cldma-core.c').read_text()
 # Optional local negative-control run; normal/Nix builds do not need git.
 if os.environ.get('NAPI_TEST_REV'):
     source=subprocess.check_output(['git','show',os.environ['NAPI_TEST_REV']+
         ':drivers/net/wwan/mediatek/mtk_mt6797_ccci.c'],cwd=root,text=True)
-def body(name):
-    start=source.index(name);start=source.rfind('\n',0,start)+1
-    pos=source.index('{',start)+1;depth=1
+def body(name,text=source):
+    start=text.index(name);start=text.rfind('\n',0,start)+1
+    pos=text.index('{',start)+1;depth=1
     while depth:
-        depth+=(source[pos]=='{')-(source[pos]=='}');pos+=1
+        depth+=(text[pos]=='{')-(text[pos]=='}');pos+=1
     # Kernel IRQ callback ABI supplies an intentionally unused IRQ number.
-    return source[start:pos].replace('int irq, void *data', 'int irq __attribute__((unused)), void *data')+'\n'
+    return text[start:pos].replace('int irq, void *data', 'int irq __attribute__((unused)), void *data')+'\n'
 shim=r'''
 #include <assert.h>
 #include <errno.h>
@@ -45,6 +46,7 @@ typedef uint32_t u32; typedef uint64_t u64; typedef int irqreturn_t;
 #define CLDMA_L2_TX_MASK_CLEAR 0x420
 #define CLDMA_L2_TX_MASK_SET 0x428
 #define CLDMA_L2_RX_STATUS 0x450
+#define CLDMA_IP_BUSY 0x4b4
 #define CLDMA_L2_RX_MASK 0xc58
 #define CLDMA_L2_RX_MASK_CLEAR 0xc60
 #define CLDMA_L2_RX_MASK_SET 0xc68
@@ -61,13 +63,16 @@ struct mt6797_md1_cldma_irq_pending {u32 tx_done,rx_done,tx_error,rx_error;};
 static struct mt6797_ccci c;static char ao[4096],pdn[4096];static struct mt6797_md1_cldma_rgpd gpd[7];
 static unsigned work[7],reclaimed[7];static u32 txmask,rxmask,txstatus,rxstatus,cleared_tx,cleared_rx;
 static unsigned completes,schedules,stops,scenario;static bool late_tx;
+static unsigned busy_reads,busy_writes,irq_step,first_fatals;
+static u32 ip_busy,busy_observed,busy_written,busy_arrival;
+static u32 captured_rx,captured_rxmask;
 static __thread bool locked;
 #define spin_lock_irqsave(p,f) do{(f)=0;assert(!pthread_mutex_lock(p));locked=true;}while(0)
 #define spin_unlock_irqrestore(p,f) do{(void)(f);locked=false;assert(!pthread_mutex_unlock(p));}while(0)
 static void mt6797_ccci_quiesce(struct mt6797_ccci *,int);
 static int mt6797_ccci_poll(struct napi_struct *,int);
 static irqreturn_t mt6797_ccci_cldma_irq(int,void*);
-static void mt6797_ccci_first_fatal(struct mt6797_ccci *p,const char *s){(void)p;(void)s;assert(!locked);}
+static void mt6797_ccci_first_fatal(struct mt6797_ccci *p,const char *s){(void)p;(void)s;assert(!locked);first_fatals++;}
 #define dev_err(...) assert(!locked)
 static void mt6797_ccci_frontend_ready(struct mt6797_ccci *p,bool r){(void)p;(void)r;assert(!locked);}
 static void mt6797_md1_hs_crash(int *p,int r){(void)p;(void)r;assert(!locked);}
@@ -78,21 +83,31 @@ static void writel(u32 value,char *address){
  else if(address==pdn+CLDMA_L2_TX_MASK_SET){assert(locked);txmask|=value;}
  else if(address==ao+CLDMA_L2_RX_MASK_SET){assert(locked);rxmask|=value;}
  else if(address==pdn+CLDMA_UL_STOP_CMD||address==pdn+CLDMA_SO_STOP_CMD){assert(locked);stops++;}
- else if(address==pdn+CLDMA_L2_TX_STATUS)txstatus&=~value;
- else if(address==pdn+CLDMA_L2_RX_STATUS)rxstatus&=~value;
+ else if(address==pdn+CLDMA_L2_TX_STATUS){assert(irq_step==1);irq_step=2;txstatus&=~value;}
+ else if(address==pdn+CLDMA_L2_RX_STATUS){assert(irq_step==2);irq_step=3;rxstatus&=~value;}
+ else if(address==pdn+CLDMA_IP_BUSY){
+  assert(locked&&!c.failed&&!stops&&irq_step==4&&value==busy_observed);
+  irq_step=5;busy_writes++;busy_written=value;ip_busy&=~value;
+ }
  else assert(0);
 }
 static u32 readl(char *address){
- if(address==pdn+CLDMA_L2_TX_STATUS)return txstatus;
+ if(address==pdn+CLDMA_L2_TX_STATUS){irq_step=0;return txstatus;}
  if(address==pdn+CLDMA_L2_TX_MASK)return txmask;
  if(address==pdn+CLDMA_L2_RX_STATUS)return rxstatus;
  if(address==ao+CLDMA_L2_RX_MASK)return rxmask;
+ if(address==pdn+CLDMA_IP_BUSY){
+  assert(locked&&!c.failed&&!stops&&irq_step==3);
+  assert(captured_rx&~captured_rxmask&127U);
+  irq_step=4;busy_reads++;busy_observed=ip_busy;
+  ip_busy|=busy_arrival;busy_arrival=0;return busy_observed;
+ }
  assert(address==pdn+CLDMA_SO_STOP_CMD);return 0;
 }
 static void mt6797_ccci_diag_irq(void *d,u32 tx,u32 tm,u32 rx,u32 rm)
-{(void)d;(void)tx;(void)tm;(void)rx;(void)rm;assert(!locked);}
-static void mt6797_md1_cldma_irq_decode(u32 tx,u32 tm,u32 rx,u32 rm,struct mt6797_md1_cldma_irq_pending *p)
-{p->tx_done=tx&~tm&127;p->rx_done=rx&~rm&127;p->tx_error=p->rx_error=0;}
+{(void)d;assert(!locked&&irq_step==0&&tx==txstatus&&tm==txmask&&rx==rxstatus&&rm==rxmask);
+ captured_rx=rx;captured_rxmask=rm;irq_step=1;}
+'''+body('mt6797_md1_cldma_irq_decode(',core)+r'''
 static void napi_schedule_irqoff(struct napi_struct *n){(void)n;assert(!locked);schedules++;}
 static void irq(u32 tx,u32 rx){txstatus=tx;rxstatus=rx;assert(mt6797_ccci_cldma_irq(0,&c)==IRQ_HANDLED);}
 static void mt6797_ccci_tx_poll(struct mt6797_ccci *p,unsigned q){(void)p;assert(!locked);reclaimed[q]++;}
@@ -123,12 +138,52 @@ static bool napi_complete_done(struct napi_struct *n,int done){(void)n;(void)don
  return true;
 }
 '''
+# Use the production register definition; the fallback permits the old-source
+# negative control to reach the missing-ack assertion.
+busy_define=next((line for line in source.splitlines()
+                 if line.startswith('#define CLDMA_IP_BUSY')),
+                '#define CLDMA_IP_BUSY 0x4b4')
+assert int(busy_define.split()[2],0)==0x4b4
+shim=shim.replace('#define CLDMA_IP_BUSY 0x4b4',busy_define)
 tests=r'''
 static void reset(void){memset(&c,0,sizeof(c));assert(!pthread_mutex_init(&c.tx_stop_lock,NULL));c.ao=ao;c.pdn=pdn;
  memset(work,0,sizeof(work));memset(reclaimed,0,sizeof(reclaimed));for(unsigned q=0;q<7;q++){gpd[q].gpd_flags=1;c.queue[q].rx[0].gpd=&gpd[q];}
- txmask=rxmask=txstatus=rxstatus=cleared_tx=cleared_rx=0;completes=schedules=stops=scenario=0;late_tx=false;}
+ txmask=rxmask=txstatus=rxstatus=cleared_tx=cleared_rx=0;completes=schedules=stops=scenario=0;late_tx=false;
+ busy_reads=busy_writes=irq_step=first_fatals=0;
+ ip_busy=busy_observed=busy_written=busy_arrival=captured_rx=captured_rxmask=0;}
 static void clean(void){assert(!pthread_mutex_destroy(&c.tx_stop_lock));}
 int main(void){
+ /* Actual decoder+IRQ: no busy access unless nonfatal RX_DONE is claimed. */
+ reset();ip_busy=~0U;
+ assert(mt6797_ccci_cldma_irq(0,&c)==IRQ_NONE&&irq_step==1);
+ assert(!busy_reads&&!busy_writes&&ip_busy==~0U&&!schedules);clean();
+ reset();ip_busy=~0U;txmask=rxmask=MT6797_CCCI_ACTIVE_IRQS;
+ txstatus=rxstatus=MT6797_CCCI_ACTIVE_IRQS;
+ assert(mt6797_ccci_cldma_irq(0,&c)==IRQ_NONE&&irq_step==1);
+ assert(!busy_reads&&!busy_writes&&txstatus==txmask&&rxstatus==rxmask&&!stops);clean();
+ reset();ip_busy=~0U;txstatus=rxstatus=0x80000080U; /* inactive queue/unknown bits */
+ assert(mt6797_ccci_cldma_irq(0,&c)==IRQ_NONE&&!busy_reads&&!busy_writes);clean();
+ reset();ip_busy=~0U;irq(2,0);
+ assert(!busy_reads&&!busy_writes&&ip_busy==~0U&&schedules==1);clean();
+ reset();ip_busy=~0U;rxmask=2;irq(4,2);
+ assert(!busy_reads&&!busy_writes&&rxstatus==2&&c.tx_pending==4&&!c.rx_pending);clean();
+ const u32 values[]={0,1,0x80000001U,~0U};
+ for(unsigned i=0;i<sizeof(values)/sizeof(values[0]);i++){
+  reset();ip_busy=values[i];irq(2,2);
+  assert(busy_reads==1&&busy_writes==1&&busy_written==values[i]&&!ip_busy&&irq_step==5);
+  assert(c.tx_pending==2&&c.rx_pending==2&&schedules==1&&!first_fatals);clean();
+ }
+ reset();ip_busy=1;busy_arrival=0x80000000U;irq(0,2);
+ assert(busy_written==1&&ip_busy==0x80000000U);clean(); /* acknowledge only observed bits */
+ const u32 errors[][2]={{BIT(16),0},{0,BIT(17)},{2,BIT(17)|2},{BIT(16),2}};
+ for(unsigned i=0;i<sizeof(errors)/sizeof(errors[0]);i++){
+  reset();ip_busy=~0U;irq(errors[i][0],errors[i][1]);
+  assert(c.failed&&first_fatals==1&&stops==2&&!schedules&&!c.napi_mask_generation);
+  assert(!busy_reads&&!busy_writes&&ip_busy==~0U&&!c.tx_pending&&!c.rx_pending);clean();
+ }
+ reset();ip_busy=~0U;c.failed=1;irq(0,2);
+ assert(!busy_reads&&!busy_writes&&!schedules&&!stops&&!first_fatals);clean();
+ puts("PASS actual decoder/IRQ IP_BUSY: capture before L2 W1C, 32-bit observed value after RX ACK under STOP lock, no unclaimed/masked/TX-only/error/terminal access");
  /* Exact C7: nine RX packets, late TX IRQ while polling, then TX-only repoll. */
  reset();work[1]=9;irq(0,2);late_tx=true;
  assert(mt6797_ccci_poll(&c.napi,64)==64&&completes==0&&rxmask==2&&c.rx_mask_owned==2);
@@ -166,5 +221,6 @@ int main(void){
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-napi-mask-') as d:
     p=Path(d);(p/'test.c').write_text(shim+body('mt6797_ccci_quiesce_from(')+body('mt6797_ccci_quiesce(')+body('mt6797_ccci_poll(')+body('mt6797_ccci_cldma_irq(')+tests)
-    subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror','-pthread',str(p/'test.c'),'-o',str(p/'test')],check=True)
+    subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror',
+                    '-fsanitize=address,undefined','-fno-omit-frame-pointer','-pthread',str(p/'test.c'),'-o',str(p/'test')],check=True)
     subprocess.run([str(p/'test')],check=True,timeout=10)

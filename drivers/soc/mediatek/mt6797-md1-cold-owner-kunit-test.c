@@ -7,6 +7,7 @@
 
 enum mt6797_md1_cold_owner_test_op {
 	MD1_COLD_TEST_COLD,
+	MD1_COLD_TEST_SIM_PINS,
 	MD1_COLD_TEST_CCIF_BEFORE,
 	MD1_COLD_TEST_CCIF_CLEAR,
 	MD1_COLD_TEST_CCIF_AFTER,
@@ -23,6 +24,7 @@ struct mt6797_md1_cold_owner_test_backend {
 	u32 count;
 	u32 pll_pending;
 	bool fail;
+	int fail_error;
 	enum mt6797_md1_cold_owner_test_op fail_op;
 };
 
@@ -34,7 +36,8 @@ static int mt6797_md1_cold_owner_test_record(
 	if (backend->count < ARRAY_SIZE(backend->calls))
 		backend->calls[backend->count] = op;
 	backend->count++;
-	return backend->fail && backend->fail_op == op ? -EIO : 0;
+	return backend->fail && backend->fail_op == op ?
+		(backend->fail_error ?: -EIO) : 0;
 }
 
 static int mt6797_md1_cold_owner_test_cold(void *context,
@@ -42,6 +45,11 @@ static int mt6797_md1_cold_owner_test_cold(void *context,
 {
 	memset(state, 0, sizeof(*state));
 	return mt6797_md1_cold_owner_test_record(context, MD1_COLD_TEST_COLD);
+}
+
+static int mt6797_md1_cold_owner_test_sim_pins(void *context)
+{
+	return mt6797_md1_cold_owner_test_record(context, MD1_COLD_TEST_SIM_PINS);
 }
 
 static int mt6797_md1_cold_owner_test_ccif_observe(void *context,
@@ -113,6 +121,7 @@ static void mt6797_md1_cold_owner_test_pll_dump(void *context)
 static const struct mt6797_md1_cold_owner_ops mt6797_md1_cold_owner_test_ops = {
 	.abi = MT6797_MD1_COLD_OWNER_ABI,
 	.verify_cold_reset_held = mt6797_md1_cold_owner_test_cold,
+	.select_sim_pins = mt6797_md1_cold_owner_test_sim_pins,
 	.ccif_observe = mt6797_md1_cold_owner_test_ccif_observe,
 	.ccif_clear = mt6797_md1_cold_owner_test_ccif_clear,
 	.ccif_verify_cleared = mt6797_md1_cold_owner_test_ccif_verify,
@@ -133,6 +142,7 @@ static const struct mt6797_md1_boot_status_preflight mt6797_md1_cold_owner_ok = 
 static const enum mt6797_md1_cold_owner_test_op
 	mt6797_md1_cold_owner_transaction_ops[] = {
 	MD1_COLD_TEST_COLD,
+	MD1_COLD_TEST_SIM_PINS,
 	MD1_COLD_TEST_CCIF_BEFORE,
 	MD1_COLD_TEST_CCIF_CLEAR,
 	MD1_COLD_TEST_CCIF_AFTER,
@@ -157,7 +167,8 @@ static void mt6797_md1_cold_owner_expect_calls(struct kunit *test,
 static void mt6797_md1_cold_owner_success_stops_before_boot_vector(struct kunit *test)
 {
 	static const enum mt6797_md1_cold_owner_test_op expected[] = {
-		MD1_COLD_TEST_COLD, MD1_COLD_TEST_CCIF_BEFORE,
+		MD1_COLD_TEST_COLD, MD1_COLD_TEST_SIM_PINS,
+		MD1_COLD_TEST_CCIF_BEFORE,
 		MD1_COLD_TEST_CCIF_CLEAR, MD1_COLD_TEST_CCIF_AFTER,
 		MD1_COLD_TEST_CCIF_VERIFY, MD1_COLD_TEST_POWER,
 		MD1_COLD_TEST_SRC_CLK, MD1_COLD_TEST_PLL_START,
@@ -176,6 +187,48 @@ static void mt6797_md1_cold_owner_success_stops_before_boot_vector(struct kunit 
 						       &mt6797_md1_cold_owner_ok), -EALREADY);
 	mt6797_md1_cold_owner_expect_calls(test, &backend, expected,
 					    ARRAY_SIZE(expected));
+}
+
+static void mt6797_md1_cold_owner_requires_sim_callback(struct kunit *test)
+{
+	struct mt6797_md1_cold_owner_ops ops = mt6797_md1_cold_owner_test_ops;
+	struct mt6797_md1_cold_owner_test_backend backend = { };
+	struct mt6797_md1_cold_owner owner;
+
+	ops.select_sim_pins = NULL;
+	KUNIT_EXPECT_EQ(test, mt6797_md1_cold_owner_init(&owner, &ops, &backend),
+			-EINVAL);
+	KUNIT_EXPECT_EQ(test, backend.count, 0U);
+}
+
+static void mt6797_md1_cold_owner_sim_failure_consumes_transaction(struct kunit *test)
+{
+	static const int errors[] = { -EIO, -EPROBE_DEFER, -EINVAL };
+	static const enum mt6797_md1_cold_owner_test_op expected[] = {
+		MD1_COLD_TEST_COLD, MD1_COLD_TEST_SIM_PINS,
+	};
+	u32 i;
+
+	for (i = 0; i < ARRAY_SIZE(errors); i++) {
+		struct mt6797_md1_cold_owner_test_backend backend = {
+			.fail = true,
+			.fail_op = MD1_COLD_TEST_SIM_PINS,
+			.fail_error = errors[i],
+		};
+		struct mt6797_md1_cold_owner owner;
+
+		KUNIT_ASSERT_EQ(test, mt6797_md1_cold_owner_init(&owner,
+			&mt6797_md1_cold_owner_test_ops, &backend), 0);
+		KUNIT_EXPECT_EQ(test, mt6797_md1_cold_owner_run(&owner,
+			&mt6797_md1_cold_owner_ok), errors[i]);
+		KUNIT_EXPECT_EQ(test, owner.last_error, errors[i]);
+		KUNIT_EXPECT_EQ(test, mt6797_md1_cold_owner_state(&owner),
+			MT6797_MD1_COLD_OWNER_FATAL);
+		KUNIT_EXPECT_EQ(test, mt6797_md1_cold_owner_run(&owner,
+			&mt6797_md1_cold_owner_ok), -EIO);
+		mt6797_md1_cold_owner_expect_calls(test, &backend, expected,
+			ARRAY_SIZE(expected));
+	}
 }
 
 static void mt6797_md1_cold_owner_refuses_missing_observation_without_touching_hw(
@@ -262,7 +315,7 @@ static void mt6797_md1_cold_owner_pll_timeout_is_fatal(
 	KUNIT_EXPECT_EQ(test, owner.last_pll.mask, 0x80800000U);
 	KUNIT_EXPECT_EQ(test, owner.last_pll.last_value, 0U);
 	KUNIT_EXPECT_EQ(test, backend.count,
-		8U + MT6797_MD1_COLD_OWNER_MAX_PLL_POLLS + 1U);
+		9U + MT6797_MD1_COLD_OWNER_MAX_PLL_POLLS + 1U);
 }
 
 static void mt6797_md1_cold_owner_post_vector_activity_requires_delta(
@@ -317,6 +370,8 @@ mt6797_md1_cold_owner_cldma_activity_ignores_identity_and_mask(
 
 static struct kunit_case mt6797_md1_cold_owner_test_cases[] = {
 	KUNIT_CASE(mt6797_md1_cold_owner_success_stops_before_boot_vector),
+	KUNIT_CASE(mt6797_md1_cold_owner_requires_sim_callback),
+	KUNIT_CASE(mt6797_md1_cold_owner_sim_failure_consumes_transaction),
 	KUNIT_CASE(mt6797_md1_cold_owner_refuses_missing_observation_without_touching_hw),
 	KUNIT_CASE(mt6797_md1_cold_owner_cold_rejection_is_non_destructive),
 	KUNIT_CASE(mt6797_md1_cold_owner_every_post_observation_failure_is_fatal),

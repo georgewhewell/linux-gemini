@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-md1-cold-owner.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 MD1 protected cold-start owner
+
+maintainers:
+  - George Whewell <georgerw@gmail.com>
+
+description: |
+  One-shot AP ownership of the MD1 cold-start sequence. The recovery watchdog
+  and reset-held preflight must be accepted before the named sim pin state is
+  selected, then CCIF, power, clocks and the boot-vector release are attempted.
+  No default or init pin state is permitted: driver-core selection of either
+  would precede the protected cold preflight. Pin selection errors may have
+  partially changed hardware and consume the one-shot transaction.
+  This state configures both MD1 SIM interfaces; it does not select a SIM slot
+  or define the modem-owned VSIM supply voltage.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-md1-cold-owner
+
+  reg:
+    maxItems: 16
+
+  reg-names:
+    items:
+      - const: infracfg
+      - const: ap-ccif
+      - const: md-ccif
+      - const: ap-cldma-ao
+      - const: ap-cldma-pdn
+      - const: apmixed
+      - const: md-clksw
+      - const: md-dcm
+      - const: md-peri-misc
+      - const: md-l1-a0
+      - const: md-top-pll
+      - const: md-sys-clk
+      - const: md-rgu
+      - const: l1-rgu
+      - const: boot-vector
+      - const: boot-status
+
+  pinctrl-names:
+    items:
+      - const: sim
+
+  pinctrl-0:
+    maxItems: 1
+
+  resets:
+    maxItems: 2
+
+  reset-names:
+    items:
+      - const: cldma-ao
+      - const: cldma-pdn
+
+  mediatek,pmic:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: MT6351 PMIC supplier.
+
+  mediatek,boot-watchdog:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Boot recovery watchdog supplier.
+
+  mediatek,spm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: SPM power-control supplier.
+
+  mediatek,emi-mpu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: One-shot MD1 EMI MPU supplier.
+
+  mediatek,experimental-md1-cold-owner:
+    type: boolean
+    description: Permit the protected one-shot cold-start owner.
+
+  mediatek,stage-cold-reset-held:
+    type: boolean
+    description: Require the independently observed reset-held preflight.
+
+  mediatek,stage-md1-boot-vector-release:
+    type: boolean
+    description: Permit the separately guarded boot-vector release.
+
+  mediatek,stage-mainline-firmware-load:
+    type: boolean
+    description: Request the separately gated native firmware-loading path.
+
+  firmware-name:
+    minItems: 1
+    maxItems: 3
+    description: MD image, followed by optional DSP and ARM7 images in order.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - pinctrl-names
+  - pinctrl-0
+  - resets
+  - reset-names
+  - mediatek,pmic
+  - mediatek,boot-watchdog
+  - mediatek,spm
+  - mediatek,emi-mpu
+  - mediatek,experimental-md1-cold-owner
+  - mediatek,stage-cold-reset-held
+  - mediatek,stage-md1-boot-vector-release
+
+allOf:
+  - if:
+      required:
+        - mediatek,stage-mainline-firmware-load
+    then:
+      required:
+        - firmware-name
+
+additionalProperties: false
+...

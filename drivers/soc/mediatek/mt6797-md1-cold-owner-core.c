@@ -3,8 +3,8 @@
  * Hardware-neutral fail-closed transaction for a single MD1 cold start.
  *
  * The backend makes all writes.  This core deliberately has no cleanup path:
- * after CCIF clear or a power/clock operation has been attempted, neither
- * vendor source supplies a generally-owned inverse transaction.  Failure
+ * after SIM pin selection, CCIF clear or a power/clock operation has been
+ * attempted, the sources supply no generally-owned inverse transaction.  Failure
  * permanently latches this object and requires reset/reboot before review of
  * any further MD1 action.
  */
@@ -27,7 +27,8 @@ int mt6797_md1_cold_owner_init(struct mt6797_md1_cold_owner *owner,
 	const struct mt6797_md1_cold_owner_ops *ops, void *context)
 {
 	if (!owner || !ops || ops->abi != MT6797_MD1_COLD_OWNER_ABI ||
-	    !ops->verify_cold_reset_held || !ops->ccif_observe ||
+	    !ops->verify_cold_reset_held || !ops->select_sim_pins ||
+	    !ops->ccif_observe ||
 	    !ops->ccif_clear || !ops->ccif_verify_cleared || !ops->power_on ||
 	    !ops->enable_srcclk || !ops->pll_start || !ops->pll_poll ||
 	    !ops->pll_timeout_dump)
@@ -78,6 +79,11 @@ int mt6797_md1_cold_owner_run(struct mt6797_md1_cold_owner *owner,
 	if (ret)
 		goto out_unlock;
 	owner->state = MT6797_MD1_COLD_OWNER_PREFLIGHT_ACCEPTED;
+
+	/* Pin selection can partially apply; failure consumes this cold transaction. */
+	ret = owner->ops->select_sim_pins(owner->context);
+	if (ret)
+		goto out_fatal;
 
 	/* Every operation below may have changed hardware even when it returns an error. */
 	ret = owner->ops->ccif_observe(owner->context, &owner->ccif_before);

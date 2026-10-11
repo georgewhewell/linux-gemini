@@ -954,6 +954,9 @@
 
 	md1_cold_owner: modem-cold-owner@10001000 {
 		compatible = "mediatek,mt6797-md1-cold-owner";
+		/* Only the cold owner selects this state after recovery preflight. */
+		pinctrl-names = "sim";
+		pinctrl-0 = <&md1_sim_pins>;
 		reg = <0 0x10001000 0 0x1000>,
 		      <0 0x10209000 0 0x1000>,
 		      <0 0x1020a000 0 0x1000>,
@@ -1323,6 +1326,27 @@
 };
 
 &pio {
+	md1_sim_pins: md1-sim-pins {
+		pins-clk-rst {
+			pinmux = <MT6797_GPIO126__FUNC_MD1_SIM1_SCLK>,
+				 <MT6797_GPIO127__FUNC_MD1_SIM1_SRST>,
+				 <MT6797_GPIO155__FUNC_MD1_SIM2_SCLK>,
+				 <MT6797_GPIO156__FUNC_MD1_SIM2_SRST>;
+			bias-disable;
+			input-enable;
+			input-schmitt-enable;
+			output-enable;
+		};
+
+		pins-data {
+			pinmux = <MT6797_GPIO128__FUNC_MD1_SIM1_SIO>,
+				 <MT6797_GPIO157__FUNC_MD1_SIM2_SIO>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			input-enable;
+			input-schmitt-enable;
+		};
+	};
+
 	gnss_lna_pins: gnss-lna-pins {
 		pins {
 			pinmux = <MT6797_GPIO69__FUNC_GPIO69>;

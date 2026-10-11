@@ -16,7 +16,7 @@
 #include <linux/mutex.h>
 #include <linux/types.h>
 
-#define MT6797_MD1_COLD_OWNER_ABI		1
+#define MT6797_MD1_COLD_OWNER_ABI		2
 /*
  * Shared across all PLL stages: the core's attempt counter never resets
  * between stages.  Vendor cldma_platform.c spins unbounded per stage;
@@ -146,6 +146,8 @@ struct mt6797_md1_cold_owner_ops {
 	u32 abi;
 	int (*verify_cold_reset_held)(void *context,
 				       struct mt6797_md1_cold_state *state);
+	/* Select named SIM pads only after the verified, one-shot cold preflight. */
+	int (*select_sim_pins)(void *context);
 	int (*ccif_observe)(void *context, struct mt6797_md1_cold_owner_ccif *state);
 	int (*ccif_clear)(void *context);
 	int (*ccif_verify_cleared)(void *context,

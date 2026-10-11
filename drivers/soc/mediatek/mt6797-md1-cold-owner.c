@@ -30,6 +30,7 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/regmap.h>
 #include <linux/soc/mediatek/mt6797-md1-boot-status-observe.h>
 #include <linux/soc/mediatek/mt6797-md1-cold-owner.h>
@@ -217,6 +218,8 @@ static const struct mt6797_md1_cold_owner_resource mt6797_md1_cold_resources[] =
 
 struct mt6797_md1_cold_owner_backend {
 	struct device *dev;
+	struct pinctrl *sim_pinctrl;
+	struct pinctrl_state *sim_pins;
 	struct reset_control_bulk_data cldma_resets[2];
 	bool cldma_reset_completed;
 	void __iomem *base[MT6797_MD1_RES_COUNT];
@@ -1168,9 +1171,32 @@ static void mt6797_md1_cold_pll_timeout_dump(void *context)
 		 readl(infra + MT6797_MD1_INFRA_SRC_CLKENA));
 }
 
+static int mt6797_md1_cold_sim_pins_get(
+	struct mt6797_md1_cold_owner_backend *backend)
+{
+	/* No default/init state: acquire only; select after protected cold preflight. */
+	backend->sim_pinctrl = devm_pinctrl_get(backend->dev);
+	if (IS_ERR(backend->sim_pinctrl))
+		return dev_err_probe(backend->dev, PTR_ERR(backend->sim_pinctrl),
+			"SIM pin controller unavailable\n");
+	backend->sim_pins = pinctrl_lookup_state(backend->sim_pinctrl, "sim");
+	if (IS_ERR(backend->sim_pins))
+		return dev_err_probe(backend->dev, PTR_ERR(backend->sim_pins),
+			"named SIM pin state unavailable\n");
+	return 0;
+}
+
+static int mt6797_md1_cold_select_sim_pins(void *context)
+{
+	struct mt6797_md1_cold_owner_backend *backend = context;
+
+	return pinctrl_select_state(backend->sim_pinctrl, backend->sim_pins);
+}
+
 static const struct mt6797_md1_cold_owner_ops mt6797_md1_cold_owner_ops = {
 	.abi = MT6797_MD1_COLD_OWNER_ABI,
 	.verify_cold_reset_held = mt6797_md1_cold_verify,
+	.select_sim_pins = mt6797_md1_cold_select_sim_pins,
 	.ccif_observe = mt6797_md1_cold_ccif_observe,
 	.ccif_clear = mt6797_md1_cold_ccif_clear,
 	.ccif_verify_cleared = mt6797_md1_cold_ccif_verify,
@@ -1651,6 +1677,9 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	if (!backend || !owner)
 		return -ENOMEM;
 	backend->dev = &pdev->dev;
+	ret = mt6797_md1_cold_sim_pins_get(backend);
+	if (ret)
+		return ret;
 	backend->cldma_resets[0].id = "cldma-ao";
 	backend->cldma_resets[1].id = "cldma-pdn";
 	ret = devm_reset_control_bulk_get_exclusive(&pdev->dev,

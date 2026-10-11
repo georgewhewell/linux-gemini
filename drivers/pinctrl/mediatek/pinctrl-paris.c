@@ -169,6 +169,11 @@ static int mtk_pinconf_get(struct pinctrl_dev *pctldev,
 		if (!ret)
 			err = -EINVAL;
 		break;
+	case PIN_CONFIG_OUTPUT_ENABLE:
+		err = mtk_hw_get_value(hw, desc, PINCTRL_PIN_REG_DIR, &ret);
+		if (!err && !ret)
+			err = -EINVAL;
+		break;
 	case PIN_CONFIG_LEVEL:
 		err = mtk_hw_get_value(hw, desc, PINCTRL_PIN_REG_DIR, &ret);
 		if (err)
@@ -292,6 +297,10 @@ static int mtk_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 	case PIN_CONFIG_SLEW_RATE:
 		/* regard all non-zero value as enable */
 		err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_SR, !!arg);
+		break;
+	case PIN_CONFIG_OUTPUT_ENABLE:
+		/* Select output mode without changing the output data or input buffer. */
+		err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_DIR, !!arg);
 		break;
 	case PIN_CONFIG_LEVEL:
 		err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_DO,

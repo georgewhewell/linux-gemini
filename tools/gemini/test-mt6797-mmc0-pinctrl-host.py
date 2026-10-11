@@ -44,6 +44,7 @@ typedef uint32_t u32;
 #define MTK_DISABLE 0
 #define MTK_OUTPUT 1
 #define MTK_PULLUP 1
+#define WARN_ON_ONCE(x) (x)
 #define dev_dbg(...) ((void)0)
 #define dev_err(...) ((void)0)
 #define spin_lock_irqsave(lock, flags) ((void)(lock), (flags) = 0)
@@ -59,6 +60,10 @@ code += "\n".join(re.findall(r"^#define MTK_(?:PUPD_SET|PULL_SET)[^\n]+", (root 
 code += fragment(header, r"^enum \{\n\s+PINCTRL_PIN_REG_MODE,.*?^};\n")
 code += fragment(header, r"^enum \{\n\s+DRV_FIXED,.*?^};\n")
 code += fragment((root / "include/linux/pinctrl/pinconf-generic.h").read_text(), r"^enum pin_config_param \{.*?^};\n")
+generic_header = (root / "include/linux/pinctrl/pinconf-generic.h").read_text()
+code += fragment(generic_header, r"^#define PIN_CONF_PACKED[^\n]+\n")
+for name in ("param", "argument", "packed"):
+    code += fragment(generic_header, rf"^static inline [^\n]+ pinconf_to_config_{name}\(.*?^}}\n")
 code += "\n".join(re.findall(r"^#define MTK_PIN_CONFIG_[^\n]+", paris, re.M)) + "\n"
 for name in ("mtk_pin_field", "mtk_pin_field_calc", "mtk_pin_reg_calc", "mtk_func_desc", "mtk_eint_desc", "mtk_pin_desc"):
     code += fragment(header, rf"^struct {name} \{{.*?^}};\n")
@@ -76,6 +81,10 @@ struct mtk_pin_soc {
     int (*bias_set_combo)(struct mtk_pinctrl *, const struct mtk_pin_desc *, u32, u32);
     int (*adv_drive_set)(struct mtk_pinctrl *, const struct mtk_pin_desc *, u32);
     int (*adv_pull_set)(struct mtk_pinctrl *, const struct mtk_pin_desc *, bool, u32);
+    int (*drive_get)(struct mtk_pinctrl *, const struct mtk_pin_desc *, int *);
+    int (*adv_drive_get)(struct mtk_pinctrl *, const struct mtk_pin_desc *, u32 *);
+    int (*bias_get_combo)(struct mtk_pinctrl *, const struct mtk_pin_desc *, u32 *, u32 *);
+    int (*adv_pull_get)(struct mtk_pinctrl *, const struct mtk_pin_desc *, bool, u32 *);
 };
 struct mtk_pinctrl {
     const struct mtk_pin_soc *soc;
@@ -111,6 +120,9 @@ static int mtk_pinconf_bias_set_pullsel_pullen(struct mtk_pinctrl *h,
 '''
 code += fragment(core, r"^int mtk_pinconf_bias_set_combo\(.*?^}\n")
 code += fragment(paris, r"^static int mtk_drv_uA_to_adv\(.*?^}\n")
+code += fragment(paris, r"^static const int mtk_drv_adv_uA\[\][^\n]+\n")
+code += fragment(paris, r"^static int mtk_drv_adv_to_uA\(.*?^}\n")
+code += fragment(paris, r"^static int mtk_pinconf_get\(.*?^}\n")
 code += fragment(paris, r"^static int mtk_pinconf_set\(.*?^}\n")
 code += r'''
 static const struct mtk_pin_soc soc = {
@@ -150,6 +162,32 @@ for group in re.findall(r"\t\tpins-[^\n]+ \{(.*?)\n\t\t};", board, re.S):
             for number in numbers:
                 code += f"    assert(!mtk_pinconf_set(p, {number}, {param}, {arg}));\n"
 assert sorted(board_pins) == list(range(114, 126))
+code += r'''
+}
+static void apply_sim_board(struct pinctrl_dev *p)
+{
+'''
+# Apply this declared state in the real generic parser's parameter order.
+sim_board = fragment(dts, r"\tmd1_sim_pins:.*?(?=\n\t};)")
+generic = (root / "drivers/pinctrl/pinconf-generic.c").read_text()
+params = re.findall(r'\{ "([^"]+)", (PIN_CONFIG_\w+), (\d+)\s*[,}]',
+                    fragment(generic, r"^static const struct pinconf_generic_params dt_params\[\].*?^};\n"))
+pinfuncs = (root / "include/dt-bindings/pinctrl/mt6797-pinfunc.h").read_text()
+sim_pins = []
+for group in re.findall(r"\t\tpins-[^\n]+ \{(.*?)\n\t\t};", sim_board, re.S):
+    functions = re.findall(r"MT6797_GPIO(\d+)__FUNC_MD1_SIM[12]_\w+", group)
+    numbers = [int(n) for n in functions]
+    sim_pins += numbers
+    for symbol in re.findall(r"MT6797_GPIO\d+__FUNC_MD1_SIM[12]_\w+", group):
+        match = re.search(rf"^#define {symbol} \(MTK_PIN_NO\((\d+)\) \| 1\)$", pinfuncs, re.M)
+        assert match, symbol
+        code += f"    assert(!mtk_hw_set_value(p->hw, &soc.pins[{match[1]}], PINCTRL_PIN_REG_MODE, 1));\n"
+    for prop, param, default in params:
+        match = re.search(rf"\b{re.escape(prop)}(?:\s*=\s*<([^>]+)>)?;", group)
+        if match:
+            for n in numbers:
+                code += f"    assert(!mtk_pinconf_set(p, {n}, {param}, {match[1] or default}));\n"
+assert sorted(sim_pins) == [126, 127, 128, 155, 156, 157]
 code += r'''
 }
 int main(void)
@@ -276,8 +314,66 @@ int main(void)
     assert(mtk_pinconf_set(&p, 113, PIN_CONFIG_INPUT_SCHMITT_ENABLE, 1) == -ENOTSUPP);
     assert(mtk_pinconf_set(&p, 126, PIN_CONFIG_DRIVE_STRENGTH, 4) == -ENOTSUPP);
     assert(!memcmp(banks, expected, sizeof(banks)));
+    /* Generic output-enable/disable changes only DIR, never DO or pad state. */
+    for (unsigned n = 0; n <= 261; n++) {
+        unsigned off = n / 32 * 0x10, bit = n % 32;
+        unsigned long config = pinconf_to_config_packed(PIN_CONFIG_OUTPUT_ENABLE, 99);
+        for (unsigned arg = 0; arg < 3; arg++) {
+            assert(!mtk_pinconf_set(&p, n, PIN_CONFIG_OUTPUT_ENABLE, arg));
+            expect(0, off, BIT(bit), arg ? BIT(bit) : 0);
+            assert(!memcmp(banks, expected, sizeof(banks)));
+            int err = mtk_pinconf_get(&p, n, &config);
+            assert(err == (arg ? 0 : -EINVAL));
+            if (arg) assert(pinconf_to_config_argument(config) == 1);
+        }
+    }
+    unsigned long config = pinconf_to_config_packed(PIN_CONFIG_OUTPUT_ENABLE, 0);
+    /* Pseudo-input and virtual EINT descriptors have no direction field. */
+    for (unsigned n = 262; n < soc.npins; n++) {
+        assert(mtk_pinconf_set(&p, n, PIN_CONFIG_OUTPUT_ENABLE, 1) == -ENOTSUPP);
+        assert(mtk_pinconf_get(&p, n, &config) == -ENOTSUPP);
+        assert(!memcmp(banks, expected, sizeof(banks)));
+    }
+    assert(mtk_pinconf_get(&p, soc.npins, &config) == -EINVAL);
+    assert(mtk_pinconf_set(&p, soc.npins, PIN_CONFIG_OUTPUT_ENABLE, 1) == -EINVAL);
+    struct mtk_pin_reg_calc no_dir[PINCTRL_PIN_REG_MAX];
+    memcpy(no_dir, soc.reg_cal, sizeof(no_dir));
+    no_dir[PINCTRL_PIN_REG_DIR] = (struct mtk_pin_reg_calc){0};
+    struct mtk_pin_soc missing = soc;
+    missing.reg_cal = no_dir;
+    h.soc = &missing;
+    assert(mtk_pinconf_set(&p, 126, PIN_CONFIG_OUTPUT_ENABLE, 1) == -ENOTSUPP);
+    assert(mtk_pinconf_get(&p, 126, &config) == -ENOTSUPP);
+    assert(!memcmp(banks, expected, sizeof(banks)));
+    h.soc = &soc;
+    /* Existing Schmitt semantics remain intact in either direction order. */
+    assert(!mtk_pinconf_set(&p, 126, PIN_CONFIG_INPUT_SCHMITT_ENABLE, 0));
+    expect(0, 0x030, BIT(30), BIT(30));
+    expect(2, 0x060, BIT(11), 0);
+    assert(!mtk_pinconf_set(&p, 126, PIN_CONFIG_OUTPUT_ENABLE, 0));
+    expect(0, 0x030, BIT(30), 0);
+    assert(!memcmp(banks, expected, sizeof(banks)));
+    assert(!mtk_pinconf_set(&p, 126, PIN_CONFIG_INPUT_SCHMITT_ENABLE, 1));
+    expect(2, 0x060, BIT(11), BIT(11));
+    assert(!memcmp(banks, expected, sizeof(banks)));
+    apply_sim_board(&p);
+    for (unsigned i = 0; i < ARRAY_SIZE(sim_pin); i++) {
+        unsigned n = sim_pin[i], b = 24 + i;
+        bool input = n == 128 || n == 157;
+        expect(0, n / 8 * 0x10 + 0x300, 15U << (n % 8 * 4), 1U << (n % 8 * 4));
+        expect(0, n / 32 * 0x10, BIT(n % 32), input ? 0 : BIT(n % 32));
+        expect(2, 0x020, BIT(sim_ies[i]), BIT(sim_ies[i]));
+        expect(2, 0x060, BIT(sim_smt[i]), BIT(sim_smt[i]));
+        expect(2, 0x100, BIT(b), input ? 0 : BIT(b));
+        expect(2, 0x110, BIT(b), 0);
+        expect(2, 0x120, BIT(b), input ? BIT(b) : 0);
+        config = pinconf_to_config_packed(PIN_CONFIG_INPUT_SCHMITT_ENABLE, 0);
+        assert(mtk_pinconf_get(&p, n, &config) == (input ? 0 : -EINVAL));
+    }
+    assert(!memcmp(banks, expected, sizeof(banks)));
     puts("MMC0 native field groups, board electrical contract and MMC1 isolation: PASS");
     puts("SIM native fields, shared Schmitt and explicit pull encodings: PASS");
+    puts("Paris output direction only and declared SIM state in generic property order: PASS");
     return 0;
 }
 '''
@@ -285,7 +381,7 @@ with tempfile.TemporaryDirectory(prefix="mt6797-mmc0-pinctrl-") as tmp:
     src, binary = Path(tmp) / "test.c", Path(tmp) / "test"
     src.write_text(code)
     subprocess.run(shlex.split(os.environ.get("HOSTCC", "cc")) + [
-        "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-sign-compare",
+        "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-sign-compare", "-Wno-pointer-sign",
         *shlex.split(os.environ.get("CFLAGS", "")), str(src), "-o", str(binary),
     ], check=True)
     subprocess.run([str(binary)], check=True)

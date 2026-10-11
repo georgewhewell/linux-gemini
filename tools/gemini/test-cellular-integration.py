@@ -143,3 +143,102 @@ kconfig = (root / "drivers/soc/mediatek/Kconfig.cellular").read_text()
 assert "depends on MTK_MT6797_MD1=n" in kconfig
 assert "depends on MTK_MT6797_MD1_CLOCKED_OBSERVER=n" in kconfig
 print("PASS watchdog ordering, PLL timeouts and exclusive modem driver configuration")
+
+# Execute the actual cold-owner core and its KUnit cases with host adapters.
+# Provider stubs model acquisition failure, not electrical hardware behavior.
+def without_includes(source):
+    return re.sub(r"^#include[^\n]*\n", "", source, flags=re.M)
+
+cold_header = (root / "include/linux/soc/mediatek/mt6797-md1-cold-owner.h").read_text()
+cold_tests = (root / "drivers/soc/mediatek/mt6797-md1-cold-owner-kunit-test.c").read_text()
+acquire = re.search(r"^static int mt6797_md1_cold_sim_pins_get\(.*?^}\n", owner, re.M | re.S).group()
+select = re.search(r"^static int mt6797_md1_cold_select_sim_pins\(.*?^}\n", owner, re.M | re.S).group()
+cold = r'''
+#include <assert.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+typedef uint8_t u8;
+typedef uint32_t u32;
+typedef uint64_t u64;
+#define __iomem
+#define EPROBE_DEFER 517
+#define BIT(x) (1U << (x))
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define pr_warn(...) ((void)0)
+struct mutex { bool held; };
+static void mutex_init(struct mutex *m) { m->held = false; }
+static void mutex_lock(struct mutex *m) { assert(!m->held); m->held = true; }
+static void mutex_unlock(struct mutex *m) { assert(m->held); m->held = false; }
+struct kunit { unsigned checks; };
+#define KUNIT_ASSERT_EQ(t,a,b) do { (t)->checks++; assert((a) == (b)); } while (0)
+#define KUNIT_EXPECT_EQ KUNIT_ASSERT_EQ
+#define KUNIT_EXPECT_TRUE(t,a) do { (t)->checks++; assert(a); } while (0)
+#define KUNIT_EXPECT_FALSE(t,a) KUNIT_EXPECT_TRUE(t, !(a))
+struct kunit_case { void (*run)(struct kunit *); };
+struct kunit_suite { const char *name; struct kunit_case *test_cases; };
+#define KUNIT_CASE(fn) { .run = fn }
+#define kunit_test_suite(s)
+#define MODULE_LICENSE(s)
+''' + without_includes(cold_header) + without_includes(core) + without_includes(cold_tests) + r'''
+struct device { unsigned unused; };
+struct pinctrl { unsigned unused; };
+struct pinctrl_state { unsigned unused; };
+struct mt6797_md1_cold_owner_backend {
+ struct device *dev;
+ struct pinctrl *sim_pinctrl;
+ struct pinctrl_state *sim_pins;
+};
+static struct pinctrl controller;
+static struct pinctrl_state state;
+static int get_error, lookup_error, select_error;
+static unsigned get_calls, lookup_calls, select_calls;
+#define ERR_PTR(n) ((void *)(intptr_t)(n))
+#define IS_ERR(p) ((uintptr_t)(p) >= (uintptr_t)-4095)
+#define PTR_ERR(p) ((int)(intptr_t)(p))
+static int dev_err_probe(struct device *d, int err, const char *message)
+{ (void)d; (void)message; return err; }
+static struct pinctrl *devm_pinctrl_get(struct device *d)
+{ assert(d); get_calls++; return get_error ? ERR_PTR(get_error) : &controller; }
+static struct pinctrl_state *pinctrl_lookup_state(struct pinctrl *p, const char *name)
+{ assert(p == &controller && !strcmp(name, "sim")); lookup_calls++;
+  return lookup_error ? ERR_PTR(lookup_error) : &state; }
+static int pinctrl_select_state(struct pinctrl *p, struct pinctrl_state *s)
+{ assert(p == &controller && s == &state); select_calls++; return select_error; }
+''' + acquire + select + r'''
+int main(void)
+{
+ struct device device = {0};
+ struct mt6797_md1_cold_owner_backend backend = { .dev = &device };
+ const int errors[] = {-EPROBE_DEFER, -EINVAL, -ENOENT};
+ for (unsigned i = 0; i < ARRAY_SIZE(errors); i++) {
+  get_calls = lookup_calls = select_calls = 0;
+  get_error = errors[i]; lookup_error = 0;
+  assert(mt6797_md1_cold_sim_pins_get(&backend) == errors[i]);
+  assert(get_calls == 1 && !lookup_calls && !select_calls);
+  get_calls = 0; get_error = 0; lookup_error = errors[i];
+  assert(mt6797_md1_cold_sim_pins_get(&backend) == errors[i]);
+  assert(get_calls == 1 && lookup_calls == 1 && !select_calls);
+ }
+ get_error = lookup_error = 0;
+ assert(!mt6797_md1_cold_sim_pins_get(&backend) && !select_calls);
+ assert(!mt6797_md1_cold_select_sim_pins(&backend) && select_calls == 1);
+ select_error = -EIO;
+ assert(mt6797_md1_cold_select_sim_pins(&backend) == -EIO && select_calls == 2);
+ struct kunit test = {0};
+ unsigned cases = 0;
+ for (struct kunit_case *c = mt6797_md1_cold_owner_test_suite.test_cases; c->run; c++) {
+  c->run(&test); cases++;
+ }
+ printf("PASS actual SIM acquisition without selection, selection error, cold core and %u KUnit cases/%u assertions\n", cases, test.checks);
+}
+'''
+with tempfile.TemporaryDirectory(prefix="gemini-cellular-sim-owner-") as directory:
+    path = Path(directory)
+    (path / "cold.c").write_text(cold)
+    subprocess.run([os.environ.get("CC", "cc"), "-std=gnu11", "-Wall", "-Wextra", "-Werror",
+                    "-Wno-sign-compare", "-fsanitize=address,undefined", "-fno-pie", "-no-pie",
+                    "-fno-omit-frame-pointer", str(path / "cold.c"), "-o", str(path / "cold")], check=True)
+    subprocess.run([str(path / "cold")], check=True, timeout=5)

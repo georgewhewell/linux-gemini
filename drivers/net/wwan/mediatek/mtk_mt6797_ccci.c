@@ -165,7 +165,9 @@ struct mt6797_ccci {
 	struct delayed_work handshake_timeout_work;
 	struct sk_buff *hs1_skb;
 	struct mtk_ccci_runtime_config runtime_config;
-	struct wwan_port *at_port;
+	struct wwan_port *at_port; /* at_rx_queue.lock */
+	struct work_struct at_terminal_work;
+	bool at_work_stopped; /* at_rx_queue.lock; closes work admission */
 	/* Serializes native RX ownership through wwan_port_rx and last close. */
 	struct sk_buff_head at_rx_queue;
 	unsigned int at_rx_bytes;
@@ -199,9 +201,12 @@ static u16 mt6797_ccci_next_sequence(struct mt6797_ccci *ccci, u16 channel)
 
 static void mt6797_ccci_frontend_ready(struct mt6797_ccci *ccci, bool ready)
 {
-	struct wwan_port *port = READ_ONCE(ccci->at_port);
+	struct wwan_port *port;
+	unsigned long flags;
 	unsigned int i;
 
+	spin_lock_irqsave(&ccci->at_rx_queue.lock, flags);
+	port = ccci->at_port;
 	atomic_set(&ccci->ready, ready);
 	if (ready && atomic_read(&ccci->failed)) {
 		atomic_set(&ccci->ready, 0);
@@ -213,6 +218,7 @@ static void mt6797_ccci_frontend_ready(struct mt6797_ccci *ccci, bool ready)
 		else
 			wwan_port_txoff(port);
 	}
+	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
 	rcu_read_lock();
 	for (i = 0; i < MTK_CCCI_MAX_NET_LINKS; i++) {
 		struct mt6797_ccci_link *link;
@@ -263,13 +269,77 @@ static void mt6797_ccci_at_rx_close(struct mt6797_ccci *ccci, bool terminal)
 	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
 }
 
+static int mt6797_ccci_publish_port(struct mt6797_ccci *ccci,
+				  struct wwan_port *port)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&ccci->at_rx_queue.lock, flags);
+	if (ccci->at_rx_stopped || atomic_read(&ccci->failed) ||
+	    atomic_read(&ccci->teardown)) {
+		ret = -ESHUTDOWN;
+	} else {
+		ccci->at_port = port;
+		ccci->at_work_stopped = false;
+	}
+	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
+	return ret;
+}
+
 static void mt6797_ccci_remove_port(void *data)
 {
 	struct mt6797_ccci *ccci = data;
+	struct wwan_port *port;
+	unsigned long flags;
 
-	/* Also runs on probe failure and for a port that was never opened. */
+	/* Detach after fencing RX; no producer can retain this pointer. */
 	mt6797_ccci_at_rx_close(ccci, true);
-	wwan_remove_port(ccci->at_port);
+	spin_lock_irqsave(&ccci->at_rx_queue.lock, flags);
+	port = ccci->at_port;
+	ccci->at_port = NULL;
+	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
+	/* The core stop callback takes at_rx_queue.lock under ops_lock. */
+	if (port)
+		wwan_remove_port(port);
+}
+
+static void mt6797_ccci_at_terminal_work(struct work_struct *work)
+{
+	struct mt6797_ccci *ccci = container_of(work, struct mt6797_ccci,
+					     at_terminal_work);
+
+	mt6797_ccci_remove_port(ccci);
+}
+
+static void mt6797_ccci_at_terminal_queue(struct mt6797_ccci *ccci)
+{
+	unsigned long flags;
+
+	/* Close and enqueue share the lock, including the scheduling call. */
+	spin_lock_irqsave(&ccci->at_rx_queue.lock, flags);
+	if (!ccci->at_work_stopped)
+		schedule_work(&ccci->at_terminal_work);
+	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
+}
+
+static void mt6797_ccci_at_terminal_close(struct mt6797_ccci *ccci)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ccci->at_rx_queue.lock, flags);
+	ccci->at_work_stopped = true;
+	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
+}
+
+static void mt6797_ccci_cleanup_port(void *data)
+{
+	struct mt6797_ccci *ccci = data;
+
+	/* No IRQ/NAPI fatal can requeue after this cancellation boundary. */
+	mt6797_ccci_at_terminal_close(ccci);
+	cancel_work_sync(&ccci->at_terminal_work);
+	mt6797_ccci_remove_port(ccci);
 }
 
 static void mt6797_ccci_unregister_wwan(void *data)
@@ -397,8 +467,10 @@ static void mt6797_ccci_quiesce_from(struct mt6797_ccci *ccci, int reason,
 	readl(ccci->pdn + CLDMA_SO_STOP_CMD);
 	spin_unlock_irqrestore(&ccci->tx_stop_lock, flags);
 	mt6797_md1_hs_crash(&ccci->hs, reason);
-	if (reason != -ESHUTDOWN)
+	if (reason != -ESHUTDOWN) {
 		mt6797_md1_cold_owner_transport_fatal(reason);
+		mt6797_ccci_at_terminal_queue(ccci);
+	}
 }
 
 static void mt6797_ccci_quiesce(struct mt6797_ccci *ccci, int reason)
@@ -624,12 +696,17 @@ static bool mt6797_ccci_tx_has_room(struct mt6797_ccci *ccci, unsigned int q)
 
 static void mt6797_ccci_tx_wake(struct mt6797_ccci *ccci, unsigned int q)
 {
+	unsigned long flags;
 	unsigned int i;
 
-	if (!atomic_read(&ccci->ready))
+	spin_lock_irqsave(&ccci->at_rx_queue.lock, flags);
+	if (!atomic_read(&ccci->ready) || atomic_read(&ccci->failed)) {
+		spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
 		return;
+	}
 	if (q == 1 && ccci->at_port)
 		wwan_port_txon(ccci->at_port);
+	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
 	rcu_read_lock();
 	for (i = 0; i < MTK_CCCI_MAX_NET_LINKS; i++) {
 		struct mt6797_ccci_link *link;
@@ -2001,6 +2078,7 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 		.headroom_len = MTK_CCCI_HEADER_SIZE,
 	};
 	struct mt6797_ccci *ccci;
+	struct wwan_port *port;
 	struct resource smem_res;
 	int ret;
 
@@ -2017,6 +2095,7 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	spin_lock_init(&ccci->rx_rejected.lock);
 	spin_lock_init(&ccci->tx_stop_lock);
 	skb_queue_head_init(&ccci->at_rx_queue);
+	ccci->at_work_stopped = true;
 	atomic_set(&ccci->rpc_logs, 0);
 	atomic_set(&ccci->rpc_pending, 0);
 	mt6797_ccci_read_rf_clock(ccci);
@@ -2030,6 +2109,7 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	atomic_set(&ccci->at_open, 0);
 	atomic_set(&ccci->hs1_pending, 0);
 	atomic_set(&ccci->teardown, 0);
+	INIT_WORK(&ccci->at_terminal_work, mt6797_ccci_at_terminal_work);
 	INIT_WORK(&ccci->hs1_work, mt6797_ccci_hs1_work);
 	INIT_DELAYED_WORK(&ccci->handshake_timeout_work,
 			  mt6797_ccci_handshake_timeout_work);
@@ -2091,15 +2171,20 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 			       dev_name(&pdev->dev), ccci);
 	if (ret)
 		return ret;
-	ccci->at_port = wwan_create_port(&pdev->dev, WWAN_PORT_AT,
-					 &mt6797_ccci_at_ops, &at_caps, ccci);
-	if (IS_ERR(ccci->at_port))
-		return PTR_ERR(ccci->at_port);
-	ret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_remove_port,
+	port = wwan_create_port(&pdev->dev, WWAN_PORT_AT,
+				&mt6797_ccci_at_ops, &at_caps, ccci);
+	if (IS_ERR(port))
+		return PTR_ERR(port);
+	wwan_port_txoff(port);
+	ret = mt6797_ccci_publish_port(ccci, port);
+	if (ret) {
+		wwan_remove_port(port);
+		return ret;
+	}
+	ret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_cleanup_port,
 				       ccci);
 	if (ret)
 		return ret;
-	wwan_port_txoff(ccci->at_port);
 	ret = wwan_register_ops(&pdev->dev, &mt6797_ccci_wwan_ops, ccci, 0);
 	if (ret)
 		return ret;
@@ -2142,6 +2227,7 @@ static void mt6797_ccci_remove(struct platform_device *pdev)
 
 	if (atomic_xchg(&ccci->teardown, 1))
 		return;
+	mt6797_ccci_at_terminal_close(ccci);
 	disable_irq(ccci->cldma_irq);
 	disable_irq(ccci->wdt_irq);
 	napi_disable(&ccci->napi);
@@ -2153,6 +2239,7 @@ static void mt6797_ccci_remove(struct platform_device *pdev)
 	cancel_work_sync(&ccci->hs1_work);
 	kfree_skb(xchg(&ccci->hs1_skb, NULL));
 	mt6797_ccci_quiesce(ccci, -ESHUTDOWN);
+	mt6797_ccci_cleanup_port(ccci);
 }
 
 /* Read-only numeric evidence for responsive but stalled modem initialization.

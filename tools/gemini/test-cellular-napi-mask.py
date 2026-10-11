@@ -80,6 +80,8 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *p,const char *s){(void)p
 static void mt6797_ccci_frontend_ready(struct mt6797_ccci *p,bool r){(void)p;(void)r;assert(!locked);}
 static void mt6797_md1_hs_crash(int *p,int r){(void)p;(void)r;assert(!locked);}
 static void mt6797_md1_cold_owner_transport_fatal(int r){(void)r;assert(!locked);}
+/* The actual WWAN terminal-work lifetime is exercised by at-terminal. */
+static void mt6797_ccci_at_terminal_queue(struct mt6797_ccci *p){(void)p;assert(!locked);}
 static void writel(u32 value,char *address){
  if(address==pdn+CLDMA_L2_TX_MASK_CLEAR){assert(locked&&!stops);txmask&=~value;cleared_tx|=value;}
  else if(address==ao+CLDMA_L2_RX_MASK_CLEAR){assert(locked&&!stops);rxmask&=~value;cleared_rx|=value;}

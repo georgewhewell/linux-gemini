@@ -1530,6 +1530,13 @@
 	};
 
 	microsd_mmc1_pins: microsd-mmc1-pins {
+		pins-card-detect {
+			pinmux = <MT6797_GPIO67__FUNC_GPIO67>;
+			input-enable;
+			input-schmitt-enable;
+			bias-disable;
+		};
+
 		pins-cmd-dat {
 			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>,
 				 <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
@@ -2698,7 +2705,8 @@
 	bus-width = <4>;
 	/* Legacy SD default speed: below the unmodelled high-speed pad contract. */
 	max-frequency = <25000000>;
-	broken-cd;
+	/* Stock board wiring asserts GPIO67 high when a card is inserted. */
+	cd-gpios = <&pio 67 GPIO_ACTIVE_HIGH>;
 	no-1-8-v;
 	vmmc-supply = <&mt6351_vmch_reg>;
 	vqmmc-supply = <&mt6351_vmc_reg>;

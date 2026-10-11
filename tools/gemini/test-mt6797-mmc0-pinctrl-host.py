@@ -188,6 +188,23 @@ for group in re.findall(r"\t\tpins-[^\n]+ \{(.*?)\n\t\t};", sim_board, re.S):
 assert sorted(sim_pins) == [112, 113, 126, 127, 128, 155, 156, 157]
 code += r'''
 }
+static void apply_sd_detect_board(struct pinctrl_dev *p)
+{
+'''
+sd_board = fragment(dts, r"\tmicrosd_mmc1_pins:.*?(?=\n\t};)")
+sd_detect = fragment(sd_board, r"\t\tpins-card-detect \{.*?\n\t\t};")
+assert re.findall(r"MT6797_GPIO(\d+)__FUNC_GPIO\d+", sd_detect) == ["67"]
+code += "    assert(!mtk_hw_set_value(p->hw, &soc.pins[67], PINCTRL_PIN_REG_MODE, 0));\n"
+for prop, param, default in params:
+    match = re.search(rf"\b{re.escape(prop)}(?:\s*=\s*<([^>]+)>)?;", sd_detect)
+    if match:
+        code += f"    assert(!mtk_pinconf_set(p, 67, {param}, {match[1] or default}));\n"
+mmc1 = fragment(dts, r"^&mmc1 \{.*?^};\n")
+assert "broken-cd;" not in mmc1
+assert re.search(r"cd-gpios\s*=\s*<&pio 67 GPIO_ACTIVE_HIGH>;", mmc1)
+assert "cd-inverted;" not in mmc1
+code += r'''
+}
 int main(void)
 {
     struct mtk_pinctrl h = { .soc = &soc, .nbase = 5 };
@@ -407,6 +424,31 @@ int main(void)
         assert(mtk_pinconf_get(&p, n, &config) == (input ? 0 : -EINVAL));
     }
     assert(!memcmp(banks, expected, sizeof(banks)));
+    /* Independent public GPL GPIO67 fields; preserve every unrelated bit. */
+    const unsigned sd_regs[] = { PINCTRL_PIN_REG_IES, PINCTRL_PIN_REG_SMT,
+                                 PINCTRL_PIN_REG_PU, PINCTRL_PIN_REG_PD };
+    const unsigned sd_off[] = { 0x010, 0x030, 0x0e0, 0x0c0 };
+    const unsigned sd_bit[] = { 14, 27, 14, 14 };
+    for (unsigned i = 0; i < ARRAY_SIZE(sd_regs); i++) {
+        struct mtk_pin_field f;
+        assert(!mtk_hw_pin_field_get(&h, &soc.pins[67], sd_regs[i], &f));
+        assert(f.index == 3 && f.offset == sd_off[i] && f.bitpos == sd_bit[i]);
+        assert(f.mask == 1 && !f.next);
+    }
+    assert(soc.pull_type[67] == MTK_PULL_PU_PD_TYPE);
+    assert(soc.pins[67].eint.eint_m == 1 && soc.pins[67].eint.eint_n == 6);
+    apply_sd_detect_board(&p);
+    expect(0, 0x380, 15U << 12, 0);
+    expect(0, 0x020, BIT(3), 0);
+    expect(3, 0x010, BIT(14), BIT(14));
+    expect(3, 0x030, BIT(27), BIT(27));
+    expect(3, 0x0e0, BIT(14), 0);
+    expect(3, 0x0c0, BIT(14), 0);
+    assert(!memcmp(banks, expected, sizeof(banks)));
+    /* Neighbors remain unsupported without modifying any GPIO or pad. */
+    assert(mtk_pinconf_set(&p, 68, PIN_CONFIG_INPUT_SCHMITT_ENABLE, 1) == -ENOTSUPP);
+    assert(!memcmp(banks, expected, sizeof(banks)));
+    puts("MicroSD native detect fields, board input/no-pull state and active-high CD: PASS");
     puts("MMC0 native field groups, board electrical contract and MMC1 isolation: PASS");
     puts("SIM native fields, shared Schmitt and explicit pull encodings: PASS");
     puts("SIM detect sparse fields, PU/PD and declared input/pull-up state: PASS");

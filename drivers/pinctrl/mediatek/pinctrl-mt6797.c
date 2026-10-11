@@ -37,6 +37,8 @@ static const struct mtk_pin_field_calc mt6797_pin_do_range[] = {
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_smt_range[] = {
+	/* MicroSD insertion input in IOCFG_R. */
+	PIN_FIELD_CALC(67, 67, 3, 0x030, 0x10, 27, 1, 32, 0),
 	/* SIM hot-plug inputs have independent IOCFG_B Schmitt fields. */
 	PIN_FIELD_CALC(112, 112, 2, 0x060, 0x10, 13, 1, 32, 0),
 	PIN_FIELD_CALC(113, 113, 2, 0x060, 0x10, 16, 1, 32, 0),
@@ -68,6 +70,7 @@ static const struct mtk_pin_field_calc mt6797_pin_rdsel_range[] = {
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_ies_range[] = {
+	PIN_FIELD_CALC(67, 67, 3, 0x010, 0x10, 14, 1, 32, 0),
 	PIN_FIELD_CALC(112, 112, 2, 0x020, 0x10, 20, 1, 32, 0),
 	PIN_FIELD_CALC(113, 113, 2, 0x020, 0x10, 24, 1, 32, 0),
 	PIN_FIELD_CALC(114, 125, 2, 0x020, 0x10, 0, 1, 32, 0),
@@ -89,13 +92,15 @@ static const struct mtk_pin_field_calc mt6797_pin_drv_range[] = {
 	PIN_FIELD_CALC(134, 134, 2, 0x1b0, 0x10, 27, 3, 32, 0),
 };
 
-/* Hot-plug pads use separate PU/PD enables, unlike the six SIM signals. */
+/* Detect pads use separate PU/PD enables, unlike the six SIM signals. */
 static const struct mtk_pin_field_calc mt6797_pin_pu_range[] = {
+	PIN_FIELD_CALC(67, 67, 3, 0x0e0, 0x10, 14, 1, 32, 0),
 	PIN_FIELD_CALC(112, 112, 2, 0x180, 0x10, 3, 1, 32, 0),
 	PIN_FIELD_CALC(113, 113, 2, 0x180, 0x10, 7, 1, 32, 0),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_pd_range[] = {
+	PIN_FIELD_CALC(67, 67, 3, 0x0c0, 0x10, 14, 1, 32, 0),
 	PIN_FIELD_CALC(112, 113, 2, 0x150, 0x10, 0, 1, 32, 0),
 };
 
@@ -142,6 +147,7 @@ static const char * const mt6797_pinctrl_register_base_names[] = {
 };
 
 static const unsigned int mt6797_pull_type[ARRAY_SIZE(mtk_pins_mt6797)] = {
+	[67] = MTK_PULL_PU_PD_TYPE,
 	[112 ... 113] = MTK_PULL_PU_PD_TYPE,
 	[114 ... 125] = MTK_PULL_PUPD_R1R0_TYPE,
 	[126 ... 128] = MTK_PULL_PUPD_R1R0_TYPE,

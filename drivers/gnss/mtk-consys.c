@@ -29,13 +29,18 @@ static int mtk_gnss_receive(void *context, const u8 *payload, size_t length)
 
 	mutex_lock(&gnss->lock);
 	accepting = gnss->registered && gnss->active;
-	if (accepting)
-		ret = gnss_insert_raw(gnss->gdev, payload, length);
+	if (accepting) {
+		/* STP retries the entire frame after an enqueue error. */
+		if (length > kfifo_avail(&gnss->gdev->read_fifo))
+			ret = -ENOSPC;
+		else
+			ret = gnss_insert_raw(gnss->gdev, payload, length);
+	}
 	mutex_unlock(&gnss->lock);
 
 	if (!accepting)
 		return 0;
-	/* STP has already consumed this frame; make FIFO loss visible to its owner. */
+	/* The sole producer is serialized; readers can only free FIFO space. */
 	if (ret < 0)
 		return ret;
 	if (ret != length)

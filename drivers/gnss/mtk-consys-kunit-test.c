@@ -253,9 +253,12 @@ static void mtk_gnss_test_fifo_overflow_is_reported(struct kunit *test)
 	static const u8 filler[4095];
 	struct mtk_gnss_test *ctx = test->priv;
 	u8 frame[MTK_STP_HEADER_SIZE + sizeof(inbound) + MTK_STP_TRAILER_SIZE];
+	u8 *received;
 	size_t frame_length;
 	unsigned int filled;
 
+	received = kunit_kmalloc(test, sizeof(filler), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, received);
 	KUNIT_ASSERT_EQ(test, mtk_gnss_start(&ctx->gnss), 0);
 	filled = kfifo_in(&ctx->gnss.gdev->read_fifo, filler, sizeof(filler));
 	KUNIT_ASSERT_EQ(test, filled, (unsigned int)sizeof(filler));
@@ -263,7 +266,30 @@ static void mtk_gnss_test_fifo_overflow_is_reported(struct kunit *test)
 						     inbound, sizeof(inbound));
 	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(ctx->session, frame,
 								  frame_length), -ENOSPC);
-	KUNIT_EXPECT_EQ(test, kfifo_len(&ctx->gnss.gdev->read_fifo), 4096U);
+	/* Refusing this whole frame must publish no prefix and send no ACK. */
+	KUNIT_EXPECT_EQ(test, kfifo_len(&ctx->gnss.gdev->read_fifo),
+				(unsigned int)sizeof(filler));
+	KUNIT_EXPECT_EQ(test, ctx->backend.frame_len, (size_t)0);
+	KUNIT_EXPECT_EQ(test, kfifo_out(&ctx->gnss.gdev->read_fifo, received,
+				  sizeof(filler)), (unsigned int)sizeof(filler));
+	KUNIT_EXPECT_MEMEQ(test, received, filler, sizeof(filler));
+
+	/* The peer retries the same sequence after the reader frees space. */
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(ctx->session, frame,
+								  frame_length), 0);
+	KUNIT_EXPECT_EQ(test, kfifo_len(&ctx->gnss.gdev->read_fifo),
+				(unsigned int)sizeof(inbound));
+	KUNIT_EXPECT_EQ(test, ctx->backend.frame_len, (size_t)MTK_STP_HEADER_SIZE);
+	KUNIT_EXPECT_EQ(test, ctx->backend.frame[0] & 7, 0);
+	/* A lost ACK causes another retry, which must not enqueue again. */
+	KUNIT_EXPECT_EQ(test, mt6797_consys_stp_session_receive(ctx->session, frame,
+								  frame_length), 0);
+	KUNIT_EXPECT_EQ(test, kfifo_len(&ctx->gnss.gdev->read_fifo),
+				(unsigned int)sizeof(inbound));
+	KUNIT_EXPECT_EQ(test, ctx->backend.frame[0] & 7, 0);
+	KUNIT_EXPECT_EQ(test, kfifo_out(&ctx->gnss.gdev->read_fifo, received,
+				  sizeof(inbound)), (unsigned int)sizeof(inbound));
+	KUNIT_EXPECT_MEMEQ(test, received, inbound, sizeof(inbound));
 }
 
 static void mtk_gnss_test_power_off_failure_requires_reset(struct kunit *test)

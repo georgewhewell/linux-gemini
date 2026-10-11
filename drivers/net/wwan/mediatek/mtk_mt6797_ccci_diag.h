@@ -18,12 +18,15 @@
 
 struct mt6797_ccci_pl_exception {
 	bool header_valid, content_valid, offender;
+	bool type_known;
+	u32 core_id;
 	u8 type;
 	u32 codes[3], assert_line;
 };
 
 struct mt6797_ccci_md_exception {
 	bool overview_valid;
+	bool pl_prefix_only;
 	u32 core_count, ect_status, cs_status, md32_status;
 	struct mt6797_ccci_pl_exception pl[2];
 };
@@ -43,24 +46,39 @@ static void mt6797_ccci_md_exception_decode(const u8 *bytes, size_t length,
 	if (!bytes || length < MT6797_CCCI_EX_OVERVIEW_SIZE)
 		return;
 	out->core_count = mt6797_ccci_diag_le32(bytes);
-	if (!out->core_count || out->core_count > 8)
+	if (!out->core_count || out->core_count > 9)
 		return;
-	out->overview_valid = true;
-	out->ect_status = mt6797_ccci_diag_le32(bytes + 132);
-	out->cs_status = mt6797_ccci_diag_le32(bytes + 136);
-	out->md32_status = mt6797_ccci_diag_le32(bytes + 140);
+	/* Public v2 consumers inspect a fixed eight-entry table regardless of
+	 * core_num. The observed count 9 is not a qualified overview layout:
+	 * inspect only independently bounded leading PL records, without guessing
+	 * a ninth entry or shifted status offsets. core_id is numeric metadata;
+	 * its wire-value mapping is not established by the public header.
+	 */
+	out->pl_prefix_only = out->core_count == 9;
+	if (!out->pl_prefix_only) {
+		out->overview_valid = true;
+		out->ect_status = mt6797_ccci_diag_le32(bytes + 132);
+		out->cs_status = mt6797_ccci_diag_le32(bytes + 136);
+		out->md32_status = mt6797_ccci_diag_le32(bytes + 140);
+	}
 	for (i = 0; i < ARRAY_SIZE(out->pl) && i < out->core_count; i++) {
 		struct mt6797_ccci_pl_exception *pl = &out->pl[i];
 		u32 offset = mt6797_ccci_diag_le32(bytes + 4 + 16 * i);
 		size_t needed;
 		const u8 *record;
 
+		if (out->pl_prefix_only && bytes[8 + 16 * i] > 1)
+			continue;
 		pl->offender = bytes[8 + 16 * i] != 0;
 		if (offset < MT6797_CCCI_EX_OVERVIEW_SIZE || offset > length - 8)
 			continue;
 		record = bytes + offset;
+		pl->core_id = mt6797_ccci_diag_le32(record);
 		pl->type = record[4];
 		pl->header_valid = true;
+		pl->type_known = (pl->type >= 1 && pl->type <= 7) ||
+			(pl->type >= 16 && pl->type <= 18) ||
+			(pl->type >= 0x20 && pl->type <= 0x26);
 		if (pl->type >= 16 && pl->type <= 18) {
 			needed = MT6797_CCCI_EX_PL_ASSERT_LINE_OFFSET + 4;
 			if (needed > length || offset > length - needed)
@@ -100,6 +118,17 @@ struct mt6797_ccci_diag_rx {
 	u8 bytes[MT6797_CCCI_DIAG_RX_BYTES];
 };
 
+enum mt6797_ccci_at_event {
+	MT6797_CCCI_AT_OPEN,
+	MT6797_CCCI_AT_CLOSE,
+	MT6797_CCCI_AT_TX_SUBMITTED,
+	MT6797_CCCI_AT_Q1_RECLAIMED,
+	MT6797_CCCI_AT_RX_SEEN,
+	MT6797_CCCI_AT_RX_CLOSED_DROP,
+	MT6797_CCCI_AT_RX_DELIVERED,
+	MT6797_CCCI_AT_EVENT_COUNT,
+};
+
 /* No allocation, MMIO, or descriptor writes. Caller owns this through teardown.
  * TX lock may nest this lock; diagnostic code never takes the TX lock.
  * Freezing makes all saved bytes immutable before any printk or STOP command.
@@ -107,6 +136,7 @@ struct mt6797_ccci_diag_rx {
 struct mt6797_ccci_diag {
 	spinlock_t lock;
 	bool frozen, payload_valid, reply_finalized;
+	u32 at_events[MT6797_CCCI_AT_EVENT_COUNT];
 	u32 irq_count, first_irq[4], last_irq[4];
 	u32 submitted, reclaimed, head, tail, used;
 	u8 descriptor[16];
@@ -120,6 +150,19 @@ struct mt6797_ccci_diag {
 	/* First-fatal observation only, retained in driver-owned memory. */
 	u8 md_exception[MT6797_CCCI_MDSS_SIZE];
 };
+
+/* Payload-free counters, frozen with the existing first-fatal snapshot. */
+static void mt6797_ccci_diag_at(struct mt6797_ccci_diag *d, unsigned int event)
+{
+	unsigned long flags;
+
+	if (event >= MT6797_CCCI_AT_EVENT_COUNT)
+		return;
+	spin_lock_irqsave(&d->lock, flags);
+	if (!d->frozen && d->at_events[event] != U32_MAX)
+		d->at_events[event]++;
+	spin_unlock_irqrestore(&d->lock, flags);
+}
 
 static void mt6797_ccci_diag_rx_save(struct mt6797_ccci_diag *d,
 		const void *data, size_t length, u32 queue, u32 cause,

@@ -68,20 +68,48 @@ int main(void){
  }
  assert(!pthread_join(thread,NULL));assert(old.total==23&&old.entry[13].op==0x1234);
  mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);assert(snap.total==5023);
- for(unsigned i=0;i<16;i++)c.rx_rejected.entry[i]=(struct mt6797_rx_rejected_entry){UINT64_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,SIZE_MAX,INT32_MIN,true};
+ for(unsigned i=0;i<16;i++)c.rx_rejected.entry[i]=(struct mt6797_rx_rejected_entry){
+  .sequence=UINT64_MAX,.channel=UINT32_MAX,.queue=UINT32_MAX,.op=UINT32_MAX,
+  .bytes=SIZE_MAX,.error=INT32_MIN,.op_valid=true,.message_valid=true,.message=UINT32_MAX};
  ssize_t n=rx_rejected_show(NULL,NULL,page);assert(n>0&&n<4096&&page[n-1]=='\n');
  unsigned rows=0;for(char *p=page;*p;p++)if(*p=='\n')rows++;assert(rows==17&&strstr(page,"op_valid=1 op=ffffffff"));
  fail_alloc=1;assert(rx_rejected_show(NULL,NULL,page)==-ENOMEM&&!allocations);
+ fail_alloc=0;
+ for(unsigned n=0;n<16;n++){
+  mt6797_rx_rejected_record(&c.rx_rejected,0,0,f,n,-EALREADY);
+  mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+  assert(!snap.entry[snap.count-1].message_valid&&!snap.entry[snap.count-1].message);
+ }
+ memset(f,0,sizeof(f));f[4]=4;f[16]=0xff;
+ mt6797_rx_rejected_record(&c.rx_rejected,0,0,f,16,-EALREADY);
+ mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+ assert(snap.entry[15].message_valid&&snap.entry[15].message==4&&!snap.entry[15].op_valid);
+ f[4]=5;f[5]=1;
+ mt6797_rx_rejected_record(&c.rx_rejected,2,0,f,16,-EOPNOTSUPP);
+ mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+ assert(snap.entry[15].message_valid&&snap.entry[15].message==0x105&&!snap.entry[15].op_valid);
+ for(unsigned ch=0;ch<256;ch++){
+  mt6797_rx_rejected_record(&c.rx_rejected,ch,0,f,24,-EOPNOTSUPP);
+  mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+  assert(snap.entry[15].message_valid==(ch==0||ch==2));
+  if(ch!=0&&ch!=2)assert(!snap.entry[15].message);
+ }
+ mt6797_rx_rejected_record(&c.rx_rejected,0,0,NULL,SIZE_MAX,-EALREADY);
+ mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+ assert(!snap.entry[15].message_valid&&!snap.entry[15].message);
+ puts("PASS header-only control/system IDs: short/null bounds, channel restriction and no AT/payload retention");
  puts("PASS rejected RX: bounded/truncated/unknown-op metadata, immutable copies, concurrent snapshots, wrap ordering, actual sysfs output bounds and allocation failure");
 }
 '''
 assert 'DEVICE_ATTR(rx_rejected, 0400, rx_rejected_show, NULL)' in source
 start=source.index('static void mt6797_ccci_dispatch_rx(');end=source.index('static int mt6797_ccci_rx_poll(',start);dispatch=source[start:end]
-assert dispatch.count('mt6797_rx_rejected_record(')==3
+assert dispatch.count('mt6797_rx_rejected_record(')==4
+assert 'ret = mt6797_ccci_control_rx(ccci, skb, &frame);\n\t\tif (ret)\n\t\t\tmt6797_rx_rejected_record' in dispatch
 assert dispatch.index('if (frame.channel != MTK_CCCI_UART2_RX && if_id < 0)')<dispatch.index('if (frame.data1 != skb->len')
 for family in ['rpc','fs']:
  assert f'ret = mt6797_ccci_{family}_rx(ccci, skb, q);\n\t\tif (ret)\n\t\t\tmt6797_rx_rejected_record' in dispatch
 with tempfile.TemporaryDirectory(prefix='gemini-rx-rejected-') as d:
  p=Path(d);(p/'test.c').write_text(shim+header+adapters+show+tests)
- subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror','-pthread',str(p/'test.c'),'-o',str(p/'test')],check=True)
+ subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror',
+                 '-fsanitize=address,undefined','-fno-omit-frame-pointer','-pthread',str(p/'test.c'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')],check=True,timeout=15)

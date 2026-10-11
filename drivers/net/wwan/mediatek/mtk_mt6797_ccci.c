@@ -255,19 +255,29 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 		mt6797_ccci_md_exception_decode(d->md_exception,
 					       sizeof(d->md_exception), &exception);
 		dev_err(ccci->dev,
-			"CCCI_MD_EXCEPTION overview_valid=%u cores=%u ect=%08x cs=%08x md32=%08x\n",
+			"CCCI_MD_EXCEPTION overview_valid=%u cores=%u pl_prefix_only=%u ect=%08x cs=%08x md32=%08x\n",
 			exception.overview_valid, exception.core_count,
+			exception.pl_prefix_only,
 			exception.ect_status, exception.cs_status, exception.md32_status);
 		for (i = 0; i < ARRAY_SIZE(exception.pl); i++) {
 			const struct mt6797_ccci_pl_exception *pl = &exception.pl[i];
 
 			dev_err(ccci->dev,
-				"CCCI_MD_EXCEPTION pl=%u offender=%u header_valid=%u type=%u content_valid=%u codes=%08x/%08x/%08x assert_line=%u\n",
-				i, pl->offender, pl->header_valid, pl->type,
+				"CCCI_MD_EXCEPTION pl=%u offender=%u header_valid=%u core_id=%u type=%u type_known=%u content_valid=%u codes=%08x/%08x/%08x assert_line=%u\n",
+				i, pl->offender, pl->header_valid, pl->core_id,
+				pl->type, pl->type_known,
 				pl->content_valid, pl->codes[0], pl->codes[1],
 				pl->codes[2], pl->assert_line);
 		}
 	}
+	dev_err(ccci->dev,
+		"CCCI_AT_METADATA opens=%u closes=%u tx_submitted=%u q1_reclaimed=%u rx_seen=%u rx_closed_drop=%u rx_delivered=%u\n",
+		d->at_events[MT6797_CCCI_AT_OPEN], d->at_events[MT6797_CCCI_AT_CLOSE],
+		d->at_events[MT6797_CCCI_AT_TX_SUBMITTED],
+		d->at_events[MT6797_CCCI_AT_Q1_RECLAIMED],
+		d->at_events[MT6797_CCCI_AT_RX_SEEN],
+		d->at_events[MT6797_CCCI_AT_RX_CLOSED_DROP],
+		d->at_events[MT6797_CCCI_AT_RX_DELIVERED]);
 	mt6797_fs_diag_freeze(&ccci->fs_diag);
 	dev_err(ccci->dev,
 		"MT6797_CCCI_FIRST_FATAL site=%s ready=%d irqs=%u first_tx=%08x/%08x first_rx=%08x/%08x last_tx=%08x/%08x last_rx=%08x/%08x q0_submitted=%u reclaimed=%u head=%u tail=%u used=%u descriptor_valid=%u payload_valid=%u reply_finalized=%u runtime_len=%zu\n",
@@ -594,6 +604,7 @@ static int mt6797_ccci_at_start(struct wwan_port *port)
 	struct mt6797_ccci *ccci = wwan_port_get_drvdata(port);
 
 	atomic_set(&ccci->at_open, 1);
+	mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_OPEN);
 	if (atomic_read(&ccci->ready))
 		wwan_port_txon(port);
 	else
@@ -606,6 +617,7 @@ static void mt6797_ccci_at_stop(struct wwan_port *port)
 	struct mt6797_ccci *ccci = wwan_port_get_drvdata(port);
 
 	atomic_set(&ccci->at_open, 0);
+	mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_CLOSE);
 	wwan_port_txoff(port);
 }
 
@@ -628,8 +640,10 @@ static int mt6797_ccci_at_tx(struct wwan_port *port, struct sk_buff *skb)
 	header = (struct mtk_ccci_header *)skb_push(skb, MTK_CCCI_HEADER_SIZE);
 	mtk_ccci_header_init(header, MTK_CCCI_UART2_TX, 0, skb->len);
 	ret = mt6797_ccci_tx(ccci, 1, skb, MTK_CCCI_UART2_TX);
-	if (!ret)
+	if (!ret) {
+		mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_TX_SUBMITTED);
 		return 0;
+	}
 	skb_pull(skb, MTK_CCCI_HEADER_SIZE);
 	if (ret == -EBUSY) {
 		wwan_port_txoff(port);
@@ -1329,6 +1343,8 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 		diag_drop = MT6797_CCCI_DIAG_BAD_CHANNEL;
 		goto drop;
 	}
+	if (frame.channel == MTK_CCCI_UART2_RX)
+		mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_RX_SEEN);
 	if (frame.assert_bit && ccci->rx_sequence[frame.channel] != 0 &&
 	    ((frame.sequence - ccci->rx_sequence[frame.channel]) & 0x7fff) != 1) {
 		if (!atomic_read(&ccci->ready) && frame.channel != MTK_CCCI_CONTROL_RX)
@@ -1339,7 +1355,10 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 	}
 	ccci->rx_sequence[frame.channel] = frame.sequence;
 	if (frame.channel == MTK_CCCI_CONTROL_RX) {
-		mt6797_ccci_control_rx(ccci, skb, &frame);
+		ret = mt6797_ccci_control_rx(ccci, skb, &frame);
+		if (ret)
+			mt6797_rx_rejected_record(&ccci->rx_rejected, frame.channel,
+				q, skb->data, skb->len, ret);
 		goto drop;
 	}
 	if (frame.channel == MT6797_RPC_RX) {
@@ -1379,9 +1398,12 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 	if (frame.data1 != skb->len || skb->len <= MTK_CCCI_HEADER_SIZE)
 		goto drop;
 	if (frame.channel == MTK_CCCI_UART2_RX) {
-		if (!atomic_read(&ccci->at_open))
+		if (!atomic_read(&ccci->at_open)) {
+			mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_RX_CLOSED_DROP);
 			goto drop;
+		}
 		skb_pull(skb, MTK_CCCI_HEADER_SIZE);
+		mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_RX_DELIVERED);
 		wwan_port_rx(ccci->at_port, skb);
 		return;
 	}
@@ -1501,6 +1523,8 @@ static void mt6797_ccci_tx_poll(struct mt6797_ccci *ccci, unsigned int q)
 		if (!q)
 			mt6797_ccci_diag_tx(&ccci->diag, true, queue->tx_head,
 					     queue->tx_tail, queue->tx_used);
+		else if (q == 1)
+			mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_Q1_RECLAIMED);
 		reclaimed = true;
 	}
 	spin_unlock_irqrestore(&queue->tx_lock, flags);
@@ -2094,9 +2118,10 @@ static ssize_t rx_rejected_show(struct device *dev, struct device_attribute *att
 		const struct mt6797_rx_rejected_entry *e = &snapshot->entry[i];
 
 		length += sysfs_emit_at(buf, length,
-			"seq=%llu channel=%u queue=%u op_valid=%u op=%x bytes=%zu error=%d\n",
+			"seq=%llu channel=%u queue=%u op_valid=%u op=%x bytes=%zu error=%d message_valid=%u message=%x\n",
 			(unsigned long long)e->sequence, e->channel, e->queue,
-			e->op_valid, e->op, e->bytes, e->error);
+			e->op_valid, e->op, e->bytes, e->error,
+			e->message_valid, e->message);
 	}
 	kfree(snapshot);
 	return length;

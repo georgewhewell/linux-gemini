@@ -77,7 +77,7 @@ static void exception_tests(void)
   bytes[256+4]=type;
   mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
   bool known=(type>=1&&type<=7)||(type>=16&&type<=18)||(type>=0x20&&type<=0x26);
-  assert(ex.pl[0].header_valid&&ex.pl[0].content_valid==known);
+  assert(ex.pl[0].header_valid&&ex.pl[0].type_known==known&&ex.pl[0].content_valid==known);
  }
  const u32 bad[]={0,143,8192-7,8192,UINT32_MAX};
  for(unsigned i=0;i<ARRAY_SIZE(bad);i++) {
@@ -89,7 +89,76 @@ static void exception_tests(void)
  assert(ex.pl[0].header_valid&&!ex.pl[0].content_valid);
  put32(bytes,1); mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
  assert(!ex.pl[1].header_valid);
+ /* Count 9 qualifies only bounded PL prefixes, never the whole overview.
+  * Core ids are copied numerically without assuming a zero/one-based map.
+  */
+ put32(bytes,9); put32(bytes+4,256); put32(bytes+20,2048);
+ put32(bytes+256,0x12345678); put32(bytes+2048,UINT32_MAX);
+ bytes[8]=1; bytes[24]=0; bytes[256+4]=6; bytes[2048+4]=16;
+ put32(bytes+132,UINT32_MAX); put32(bytes+136,UINT32_MAX); put32(bytes+140,UINT32_MAX);
+ mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+ assert(!ex.overview_valid&&ex.pl_prefix_only&&ex.core_count==9);
+ assert(!ex.ect_status&&!ex.cs_status&&!ex.md32_status);
+ assert(ex.pl[0].header_valid&&ex.pl[0].type_known&&ex.pl[0].content_valid);
+ assert(ex.pl[0].core_id==0x12345678&&ex.pl[0].codes[0]==0x12345678);
+ assert(ex.pl[1].header_valid&&ex.pl[1].type_known&&ex.pl[1].content_valid);
+ assert(ex.pl[1].core_id==UINT32_MAX&&ex.pl[1].assert_line==1234);
+ for(unsigned type=0;type<256;type++) {
+  bytes[256+4]=type;
+  mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+  bool known=(type>=1&&type<=7)||(type>=16&&type<=18)||(type>=0x20&&type<=0x26);
+  assert(!ex.overview_valid&&ex.pl_prefix_only&&!ex.ect_status);
+  assert(ex.pl[0].header_valid&&ex.pl[0].type_known==known&&ex.pl[0].content_valid==known);
+ }
+ bytes[256+4]=6;
+ for(unsigned flag=2;flag<256;flag++) {
+  bytes[8]=flag; mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+  assert(!ex.pl[0].header_valid&&!ex.pl[0].content_valid&&!ex.pl[0].core_id);
+  assert(ex.pl[1].content_valid);
+ }
+ bytes[8]=1;
+ for(unsigned i=0;i<ARRAY_SIZE(bad);i++) {
+  put32(bytes+4,bad[i]); mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+  assert(!ex.overview_valid&&ex.pl_prefix_only&&!ex.pl[0].header_valid);
+ }
+ put32(bytes+4,256);
+ mt6797_ccci_md_exception_decode(bytes,256+331,&ex);
+ assert(ex.pl_prefix_only&&ex.pl[0].header_valid&&!ex.pl[0].content_valid);
+ const u32 invalid_counts[]={0,10,UINT32_MAX,0xab000009};
+ for(unsigned i=0;i<ARRAY_SIZE(invalid_counts);i++) {
+  put32(bytes,invalid_counts[i]); mt6797_ccci_md_exception_decode(bytes,sizeof(bytes),&ex);
+  assert(!ex.overview_valid&&!ex.pl_prefix_only&&!ex.pl[0].header_valid&&!ex.pl[1].header_valid);
+  assert(!ex.ect_status&&!ex.cs_status&&!ex.md32_status);
+ }
+ puts("PASS count9 bounded PL prefixes: numeric core ids, both records, unknown types, offender/offset/content bounds; no overview/status guesses or v3 substitution");
  puts("PASS public UMOLY numeric exception decoder: fatal/assert, all types, truncation, overlapping/overflowing offsets and core-count bounds");
+}
+static void *at_writer(void *opaque)
+{
+ struct mt6797_ccci_diag *at=opaque;
+ for(unsigned i=0;i<1000;i++)mt6797_ccci_diag_at(at,MT6797_CCCI_AT_OPEN);
+ return NULL;
+}
+static void at_metadata_tests(void)
+{
+ struct mt6797_ccci_diag at={.lock=PTHREAD_MUTEX_INITIALIZER};
+ for(unsigned i=0;i<MT6797_CCCI_AT_EVENT_COUNT;i++){
+  mt6797_ccci_diag_at(&at,i);assert(at.at_events[i]==1);
+  at.at_events[i]=U32_MAX;mt6797_ccci_diag_at(&at,i);assert(at.at_events[i]==U32_MAX);
+ }
+ u32 saved[MT6797_CCCI_AT_EVENT_COUNT];memcpy(saved,at.at_events,sizeof(saved));
+ mt6797_ccci_diag_at(&at,MT6797_CCCI_AT_EVENT_COUNT);mt6797_ccci_diag_at(&at,U32_MAX);
+ assert(!memcmp(saved,at.at_events,sizeof(saved)));
+ memset(at.at_events,0,sizeof(at.at_events));
+ pthread_t threads[32];
+ for(unsigned i=0;i<32;i++)assert(!pthread_create(&threads[i],NULL,at_writer,&at));
+ for(unsigned i=0;i<32;i++)assert(!pthread_join(threads[i],NULL));
+ assert(at.at_events[MT6797_CCCI_AT_OPEN]==32000);
+ for(unsigned i=1;i<MT6797_CCCI_AT_EVENT_COUNT;i++)assert(!at.at_events[i]);
+ memcpy(saved,at.at_events,sizeof(saved));assert(mt6797_ccci_diag_freeze(&at,NULL));
+ for(unsigned i=0;i<MT6797_CCCI_AT_EVENT_COUNT;i++)mt6797_ccci_diag_at(&at,i);
+ assert(!memcmp(saved,at.at_events,sizeof(saved)));assert(!pthread_mutex_destroy(&at.lock));
+ puts("PASS actual AT metadata helper: seven payload-free counters, saturation, invalid events, 32 concurrent writers and first-fatal freeze");
 }
 static void reset(void)
 {
@@ -114,6 +183,7 @@ static void *rx_race(void *unused)
 int main(void)
 {
  exception_tests();
+ at_metadata_tests();
  reset();
  mt6797_ccci_diag_payload(&d, hs1, 87, reply, sizeof(reply), runtime, 324);
  mt6797_ccci_diag_payload(&d, hs1, 88, reply, 115, runtime, 324);
@@ -222,13 +292,13 @@ assert dispatch.index("MT6797_CCCI_DIAG_BAD_SEQUENCE") < dispatch.index("mt6797_
 assert "mt6797_ccci_dispatch_rx(ccci, skb, q)" in source
 print("PASS actual pre-ready RX capture:4x1KiB bound, lengths/truncation, malformed/short/opcode guards, immutable/frozen/full,32-way cap and save-before-drop")
 
-# Compile the actual dispatch path through the pre-ready branch and its actual
-# drop epilogue. Only the post-ready network-delivery branch is excluded.
+# Compile actual dispatch through UART2 delivery and the actual drop epilogue.
+# Only the network-delivery branch is excluded.
 common = header.with_name("mtk_ccci_common.c").read_text()
 begin = common.index("int mtk_ccci_header_decode(")
 decoder = common[begin:common.index("\n}\n", begin) + 3]
-pre_ready = dispatch[:dispatch.index("\tif_id = mtk_ccci_net_rx_link")]
-pre_ready += '\tassert(!"post-ready branch outside this test");\n' + dispatch[dispatch.index("drop:\n"):]
+pre_ready = dispatch[:dispatch.index("\n\tskb_pull(skb, MTK_CCCI_HEADER_SIZE);\n\tversion =")]
+pre_ready += '\tassert(!"network branch outside this test");\n' + dispatch[dispatch.index("drop:\n"):]
 dispatch_shim = r'''
 #include <errno.h>
 typedef uint16_t u16;
@@ -239,22 +309,27 @@ typedef uint16_t __be16;
 #define MTK_CCCI_STATUS_ASSERT 0x80000000U
 #define MT6797_CCCI_CHANNEL_COUNT 256
 #define MTK_CCCI_CONTROL_RX 0
+#define MTK_CCCI_UART2_RX 10
 #define le32_to_cpu(x) (x)
 #define atomic_read(p) (*(p))
 struct mtk_ccci_header { u32 data0,data1,status,reserved; };
 struct mtk_ccci_frame { u32 data0,data1,reserved; u16 channel,sequence; bool assert_bit; };
 struct sk_buff { u8 *data; size_t len; };
-struct mt6797_ccci { struct mt6797_ccci_diag diag; struct mt6797_rx_rejected rx_rejected; int ready; int rx_sequence[256]; };
+struct mt6797_ccci { struct mt6797_ccci_diag diag; struct mt6797_rx_rejected rx_rejected; int ready,at_open; void *at_port; int rx_sequence[256]; };
+static int deliveries;
+static int mtk_ccci_net_rx_link(u16 ch){(void)ch;return -1;}
+static void skb_pull(struct sk_buff *skb,size_t n){assert(skb->len>=n);skb->data+=n;skb->len-=n;}
+static void wwan_port_rx(void *port,struct sk_buff *skb){(void)port;assert(skb->len==4);deliveries++;}
 #define MT6797_RPC_RX 32
 #define MT6797_FS_RX 14
 static int mt6797_ccci_rpc_rx(struct mt6797_ccci *c, struct sk_buff *s, unsigned q)
 { (void)c; (void)s; (void)q; return -EOPNOTSUPP; }
 static int mt6797_ccci_fs_rx(struct mt6797_ccci *c, struct sk_buff *s, unsigned q)
 { (void)c; (void)s; (void)q; return -EOPNOTSUPP; }
-static int frees, controls, crashes;
+static int frees, controls, crashes, control_result;
 static void kfree_skb(struct sk_buff *skb) { (void)skb; frees++; }
-static void mt6797_ccci_control_rx(struct mt6797_ccci *c, struct sk_buff *s,
- const struct mtk_ccci_frame *f) { (void)c; (void)s; assert(f->channel==0); controls++; }
+static int mt6797_ccci_control_rx(struct mt6797_ccci *c, struct sk_buff *s,
+ const struct mtk_ccci_frame *f) { (void)c; (void)s; assert(f->channel==0); controls++; return control_result; }
 static void mt6797_ccci_quiesce(struct mt6797_ccci *c,int why)
 { assert(why==-EILSEQ && c->diag.rx_count==1); mt6797_ccci_diag_freeze(&c->diag,NULL); crashes++; }
 '''
@@ -276,6 +351,13 @@ int main(void)
  assert(c.diag.rx[1].cause==MT6797_CCCI_DIAG_BEFORE_READY);
  assert(c.rx_rejected.count==1&&c.rx_rejected.entry[0].channel==32);
  assert(c.rx_rejected.entry[0].op_valid&&c.rx_rejected.entry[0].op==0x4006);
+ c.ready=1; control_result=-EALREADY; words[1]=4; words[2]=0; skb.len=16;
+ mt6797_ccci_dispatch_rx(&c,&skb,0);
+ assert(controls==2&&frees==4&&c.diag.rx_count==2);
+ assert(c.rx_rejected.count==2&&c.rx_rejected.entry[1].channel==0);
+ assert(c.rx_rejected.entry[1].message_valid&&c.rx_rejected.entry[1].message==4);
+ assert(!c.rx_rejected.entry[1].op_valid&&c.rx_rejected.entry[1].error==-EALREADY);
+ c.ready=0; skb.len=20;
  words[2]=300; mt6797_ccci_dispatch_rx(&c,&skb,1);
  assert(c.diag.rx_count==3 && c.diag.rx[2].cause==MT6797_CCCI_DIAG_BAD_CHANNEL);
  pthread_mutex_destroy(&c.diag.lock); pthread_mutex_destroy(&c.rx_rejected.lock);
@@ -283,9 +365,24 @@ int main(void)
  words[2]=0x80030020; c.rx_sequence[32]=1;
  mt6797_ccci_dispatch_rx(&c,&skb,1);
  assert(crashes==1 && c.diag.frozen && c.diag.rx[0].cause==MT6797_CCCI_DIAG_BAD_SEQUENCE);
+ pthread_mutex_destroy(&c.diag.lock);pthread_mutex_destroy(&c.rx_rejected.lock);
+ memset(&c,0,sizeof(c));pthread_mutex_init(&c.diag.lock,NULL);pthread_mutex_init(&c.rx_rejected.lock,NULL);
+ words[1]=20;words[2]=10;skb.data=(u8 *)words;skb.len=20;
+ mt6797_ccci_dispatch_rx(&c,&skb,1);
+ assert(c.diag.at_events[MT6797_CCCI_AT_RX_SEEN]==1);
+ assert(!deliveries&&!c.diag.at_events[MT6797_CCCI_AT_RX_CLOSED_DROP]);
+ c.ready=1;mt6797_ccci_dispatch_rx(&c,&skb,1);
+ assert(c.diag.at_events[MT6797_CCCI_AT_RX_SEEN]==2);
+ assert(c.diag.at_events[MT6797_CCCI_AT_RX_CLOSED_DROP]==1&&!deliveries);
+ c.at_open=1;mt6797_ccci_dispatch_rx(&c,&skb,1);
+ assert(c.diag.at_events[MT6797_CCCI_AT_RX_SEEN]==3);
+ assert(c.diag.at_events[MT6797_CCCI_AT_RX_DELIVERED]==1&&deliveries==1);
+ skb.data=(u8 *)words;skb.len=16;words[1]=16;
+ mt6797_ccci_dispatch_rx(&c,&skb,1);
+ assert(c.diag.at_events[MT6797_CCCI_AT_RX_SEEN]==4&&deliveries==1);
  pthread_mutex_destroy(&c.diag.lock);
  pthread_mutex_destroy(&c.rx_rejected.lock);
- puts("PASS actual pre-ready dispatch+decoder: malformed header has no channel/opcode, control excluded, RPC retained, invalid-channel and bad-sequence before freeze");
+ puts("PASS actual dispatch+decoder: malformed/bad-sequence guards, rejected header-only control ID/return, RPC metadata and UART2 pre-ready/closed/delivered/short counters");
 }
 '''
 with tempfile.TemporaryDirectory(prefix="gemini-cellular-preready-dispatch-") as tmp:
@@ -294,5 +391,6 @@ with tempfile.TemporaryDirectory(prefix="gemini-cellular-preready-dispatch-") as
     (path / "test.c").write_text(shim + header.read_text() + rejected + dispatch_shim + decoder + pre_ready + dispatch_tests)
     subprocess.run([os.environ.get("CC", "cc"), "-O2", "-std=gnu11", "-Wall", "-Wextra",
                     "-Werror", "-Wno-unused-variable", "-Wno-unused-function", "-pthread",
+                    "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
                     str(path / "test.c"), "-o", str(path / "test")], check=True)
     subprocess.run([str(path / "test")], check=True, timeout=5)

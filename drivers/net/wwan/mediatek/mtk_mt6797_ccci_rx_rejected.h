@@ -12,6 +12,8 @@ struct mt6797_rx_rejected_entry {
 	size_t bytes;
 	int error;
 	bool op_valid;
+	bool message_valid;
+	u32 message;
 };
 struct mt6797_rx_rejected {
 	spinlock_t lock;
@@ -38,6 +40,14 @@ static inline void mt6797_rx_rejected_record(struct mt6797_rx_rejected *d,
 		e.op_valid = true;
 		e.op = frame[16] | ((u32)frame[17] << 8) |
 			((u32)frame[18] << 16) | ((u32)frame[19] << 24);
+	}
+	/* Control/system IDs are header data1, including header-only messages.
+	 * Do not retain reserved values or any AT/subscriber payload bytes.
+	 */
+	if (frame && bytes >= 16 && (channel == 0 || channel == 2)) {
+		e.message_valid = true;
+		e.message = frame[4] | ((u32)frame[5] << 8) |
+			((u32)frame[6] << 16) | ((u32)frame[7] << 24);
 	}
 	spin_lock_irqsave(&d->lock, flags);
 	e.sequence = ++d->total;

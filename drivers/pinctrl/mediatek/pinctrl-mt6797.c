@@ -37,6 +37,9 @@ static const struct mtk_pin_field_calc mt6797_pin_do_range[] = {
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_smt_range[] = {
+	/* SIM hot-plug inputs have independent IOCFG_B Schmitt fields. */
+	PIN_FIELD_CALC(112, 112, 2, 0x060, 0x10, 13, 1, 32, 0),
+	PIN_FIELD_CALC(113, 113, 2, 0x060, 0x10, 16, 1, 32, 0),
 	/* MSDC0 shared DAT0-3, DAT4-7, CMD/DSL/RST and CLK fields. */
 	PIN_FIELD_CALC(114, 117, 2, 0x060, 0x10, 0, 1, 32, 1),
 	PIN_FIELD_CALC(118, 121, 2, 0x060, 0x10, 1, 1, 32, 1),
@@ -65,6 +68,8 @@ static const struct mtk_pin_field_calc mt6797_pin_rdsel_range[] = {
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_ies_range[] = {
+	PIN_FIELD_CALC(112, 112, 2, 0x020, 0x10, 20, 1, 32, 0),
+	PIN_FIELD_CALC(113, 113, 2, 0x020, 0x10, 24, 1, 32, 0),
 	PIN_FIELD_CALC(114, 125, 2, 0x020, 0x10, 0, 1, 32, 0),
 	PIN_FIELD_CALC(126, 128, 2, 0x020, 0x10, 17, 1, 32, 0),
 	/* MSDC1 CMD, DAT0-3 and CLK input buffers in IOCFG_B. */
@@ -82,6 +87,16 @@ static const struct mtk_pin_field_calc mt6797_pin_drv_range[] = {
 	/* DAT0 through DAT3 share one drive-strength selector. */
 	PIN_FIELD_CALC(130, 133, 2, 0x1b0, 0x10, 24, 3, 32, 1),
 	PIN_FIELD_CALC(134, 134, 2, 0x1b0, 0x10, 27, 3, 32, 0),
+};
+
+/* Hot-plug pads use separate PU/PD enables, unlike the six SIM signals. */
+static const struct mtk_pin_field_calc mt6797_pin_pu_range[] = {
+	PIN_FIELD_CALC(112, 112, 2, 0x180, 0x10, 3, 1, 32, 0),
+	PIN_FIELD_CALC(113, 113, 2, 0x180, 0x10, 7, 1, 32, 0),
+};
+
+static const struct mtk_pin_field_calc mt6797_pin_pd_range[] = {
+	PIN_FIELD_CALC(112, 113, 2, 0x150, 0x10, 0, 1, 32, 0),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_pupd_range[] = {
@@ -115,6 +130,8 @@ static const struct mtk_pin_reg_calc mt6797_reg_cals[PINCTRL_PIN_REG_MAX] = {
 	[PINCTRL_PIN_REG_RDSEL] = MTK_RANGE(mt6797_pin_rdsel_range),
 	[PINCTRL_PIN_REG_IES] = MTK_RANGE(mt6797_pin_ies_range),
 	[PINCTRL_PIN_REG_DRV] = MTK_RANGE(mt6797_pin_drv_range),
+	[PINCTRL_PIN_REG_PU] = MTK_RANGE(mt6797_pin_pu_range),
+	[PINCTRL_PIN_REG_PD] = MTK_RANGE(mt6797_pin_pd_range),
 	[PINCTRL_PIN_REG_PUPD] = MTK_RANGE(mt6797_pin_pupd_range),
 	[PINCTRL_PIN_REG_R0] = MTK_RANGE(mt6797_pin_r0_range),
 	[PINCTRL_PIN_REG_R1] = MTK_RANGE(mt6797_pin_r1_range),
@@ -125,6 +142,7 @@ static const char * const mt6797_pinctrl_register_base_names[] = {
 };
 
 static const unsigned int mt6797_pull_type[ARRAY_SIZE(mtk_pins_mt6797)] = {
+	[112 ... 113] = MTK_PULL_PU_PD_TYPE,
 	[114 ... 125] = MTK_PULL_PUPD_R1R0_TYPE,
 	[126 ... 128] = MTK_PULL_PUPD_R1R0_TYPE,
 	[129 ... 134] = MTK_PULL_PUPD_R1R0_TYPE,

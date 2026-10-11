@@ -104,16 +104,14 @@ for name, ret in (("mtk_w32", "static void"), ("mtk_r32", "static u32"), ("mtk_r
                   ("mtk_hw_bits_part", "static void"), ("mtk_hw_write_cross_field", "static void"),
                   ("mtk_hw_read_cross_field", "static void"), ("mtk_hw_set_value", "int"),
                   ("mtk_hw_get_value", "int"), ("mtk_pinconf_drive_set_rev1", "int"),
-                  ("mtk_pinconf_drive_get_rev1", "int"), ("mtk_pinconf_bias_set_pupd_r1_r0", "static int")):
+                  ("mtk_pinconf_drive_get_rev1", "int"), ("mtk_pinconf_bias_set_pupd_r1_r0", "static int"),
+                  ("mtk_pinconf_bias_set_pu_pd", "static int")):
     code += fragment(core, rf"^{ret} {name}\(.*?^}}\n")
 code += r'''
 /* These unselected pull formats must never receive an MMC0/1 request. */
 static int mtk_pinconf_bias_set_pu_pd_rsel(struct mtk_pinctrl *h,
     const struct mtk_pin_desc *d, u32 p, u32 a)
 { (void)h; (void)d; (void)p; (void)a; assert(false); return -ENOTSUPP; }
-static int mtk_pinconf_bias_set_pu_pd(struct mtk_pinctrl *h,
-    const struct mtk_pin_desc *d, u32 p, u32 a, bool only)
-{ (void)h; (void)d; (void)p; (void)a; (void)only; assert(false); return -ENOTSUPP; }
 static int mtk_pinconf_bias_set_pullsel_pullen(struct mtk_pinctrl *h,
     const struct mtk_pin_desc *d, u32 p, u32 a)
 { (void)h; (void)d; (void)p; (void)a; assert(false); return -ENOTSUPP; }
@@ -175,10 +173,10 @@ params = re.findall(r'\{ "([^"]+)", (PIN_CONFIG_\w+), (\d+)\s*[,}]',
 pinfuncs = (root / "include/dt-bindings/pinctrl/mt6797-pinfunc.h").read_text()
 sim_pins = []
 for group in re.findall(r"\t\tpins-[^\n]+ \{(.*?)\n\t\t};", sim_board, re.S):
-    functions = re.findall(r"MT6797_GPIO(\d+)__FUNC_MD1_SIM[12]_\w+", group)
+    functions = re.findall(r"MT6797_GPIO(\d+)__FUNC_(?:MD1_SIM[12]|MD_INT[01]_C2K_UIM[01])_\w+", group)
     numbers = [int(n) for n in functions]
     sim_pins += numbers
-    for symbol in re.findall(r"MT6797_GPIO\d+__FUNC_MD1_SIM[12]_\w+", group):
+    for symbol in re.findall(r"MT6797_GPIO\d+__FUNC_(?:MD1_SIM[12]|MD_INT[01]_C2K_UIM[01])_\w+", group):
         match = re.search(rf"^#define {symbol} \(MTK_PIN_NO\((\d+)\) \| 1\)$", pinfuncs, re.M)
         assert match, symbol
         code += f"    assert(!mtk_hw_set_value(p->hw, &soc.pins[{match[1]}], PINCTRL_PIN_REG_MODE, 1));\n"
@@ -187,7 +185,7 @@ for group in re.findall(r"\t\tpins-[^\n]+ \{(.*?)\n\t\t};", sim_board, re.S):
         if match:
             for n in numbers:
                 code += f"    assert(!mtk_pinconf_set(p, {n}, {param}, {match[1] or default}));\n"
-assert sorted(sim_pins) == [126, 127, 128, 155, 156, 157]
+assert sorted(sim_pins) == [112, 113, 126, 127, 128, 155, 156, 157]
 code += r'''
 }
 int main(void)
@@ -310,8 +308,39 @@ int main(void)
         assert(!mtk_hw_get_value(&h, &soc.pins[rst], PINCTRL_PIN_REG_SMT, &value));
         assert(value == 1 && !memcmp(banks, expected, sizeof(banks)));
     }
+    /* Separate SIM detect enables from signal R1/R0 and adjacent MMC fields. */
+    for (unsigned i = 0; i < 2; i++) {
+        unsigned n = 112 + i, ies = 20 + 4 * i, smt = 13 + 3 * i;
+        unsigned pu = 3 + 4 * i;
+        check_field(&h, n, PINCTRL_PIN_REG_IES, 0x020, ies, 1);
+        check_field(&h, n, PINCTRL_PIN_REG_SMT, 0x060, smt, 1);
+        check_field(&h, n, PINCTRL_PIN_REG_PU, 0x180, pu, 1);
+        check_field(&h, n, PINCTRL_PIN_REG_PD, 0x150, i, 1);
+        assert(soc.pull_type[n] == MTK_PULL_PU_PD_TYPE);
+        assert(!mtk_pinconf_set(&p, n, PIN_CONFIG_INPUT_ENABLE, 1));
+        expect(2, 0x020, BIT(ies), BIT(ies));
+        assert(!mtk_pinconf_set(&p, n, PIN_CONFIG_INPUT_SCHMITT_ENABLE, 1));
+        expect(0, 0x030, BIT(16 + i), 0);
+        expect(2, 0x060, BIT(smt), BIT(smt));
+        assert(!memcmp(banks, expected, sizeof(banks)));
+        assert(!mtk_pinconf_set(&p, n, PIN_CONFIG_BIAS_PULL_UP, 1));
+        expect(2, 0x180, BIT(pu), BIT(pu));
+        expect(2, 0x150, BIT(i), 0);
+        assert(!memcmp(banks, expected, sizeof(banks)));
+        assert(!mtk_pinconf_set(&p, n, PIN_CONFIG_BIAS_PULL_DOWN, 1));
+        expect(2, 0x180, BIT(pu), 0);
+        expect(2, 0x150, BIT(i), BIT(i));
+        assert(!memcmp(banks, expected, sizeof(banks)));
+        assert(!mtk_pinconf_set(&p, n, PIN_CONFIG_BIAS_DISABLE, 0));
+        expect(2, 0x180, BIT(pu), 0);
+        expect(2, 0x150, BIT(i), 0);
+        assert(!memcmp(banks, expected, sizeof(banks)));
+        assert(mtk_pinconf_set(&p, n, PIN_CONFIG_BIAS_PULL_UP,
+                              MTK_PUPD_SET_R1R0_10) == -EINVAL);
+        assert(!memcmp(banks, expected, sizeof(banks)));
+    }
     /* Unsupported neighbors must neither change pads nor GPIO direction. */
-    assert(mtk_pinconf_set(&p, 113, PIN_CONFIG_INPUT_SCHMITT_ENABLE, 1) == -ENOTSUPP);
+    assert(mtk_pinconf_set(&p, 111, PIN_CONFIG_INPUT_SCHMITT_ENABLE, 1) == -ENOTSUPP);
     assert(mtk_pinconf_set(&p, 126, PIN_CONFIG_DRIVE_STRENGTH, 4) == -ENOTSUPP);
     assert(!memcmp(banks, expected, sizeof(banks)));
     /* Generic output-enable/disable changes only DIR, never DO or pad state. */
@@ -357,6 +386,13 @@ int main(void)
     expect(2, 0x060, BIT(11), BIT(11));
     assert(!memcmp(banks, expected, sizeof(banks)));
     apply_sim_board(&p);
+    /* Independent board DWS/GPL gpio_cfg.h detect-pad contract. */
+    expect(0, 0x3e0, 0xff, 0x11);
+    expect(0, 0x030, BIT(16) | BIT(17), 0);
+    expect(2, 0x020, BIT(20) | BIT(24), BIT(20) | BIT(24));
+    expect(2, 0x060, BIT(13) | BIT(16), BIT(13) | BIT(16));
+    expect(2, 0x180, BIT(3) | BIT(7), BIT(3) | BIT(7));
+    expect(2, 0x150, 3, 0);
     for (unsigned i = 0; i < ARRAY_SIZE(sim_pin); i++) {
         unsigned n = sim_pin[i], b = 24 + i;
         bool input = n == 128 || n == 157;
@@ -373,6 +409,7 @@ int main(void)
     assert(!memcmp(banks, expected, sizeof(banks)));
     puts("MMC0 native field groups, board electrical contract and MMC1 isolation: PASS");
     puts("SIM native fields, shared Schmitt and explicit pull encodings: PASS");
+    puts("SIM detect sparse fields, PU/PD and declared input/pull-up state: PASS");
     puts("Paris output direction only and declared SIM state in generic property order: PASS");
     return 0;
 }

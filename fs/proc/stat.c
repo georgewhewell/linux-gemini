@@ -44,22 +44,15 @@ static void show_all_irqs(struct seq_file *p)
 	show_irq_gap(p, irq_get_nr_irqs() - next);
 }
 
-static int show_stat(struct seq_file *p, void *v)
+static int show_stat_cpus(struct seq_file *p)
 {
-	int i, j;
+	int i;
 	u64 user, nice, system, idle, iowait, irq, softirq, steal;
 	u64 guest, guest_nice;
-	u64 sum = 0;
-	u64 sum_softirq = 0;
-	unsigned int per_softirq_sums[NR_SOFTIRQS] = {0};
-	struct timespec64 boottime;
 
 	user = nice = system = idle = iowait =
 		irq = softirq = steal = 0;
 	guest = guest_nice = 0;
-	getboottime64(&boottime);
-	/* shift boot timestamp according to the timens offset */
-	timens_sub_boottime(&boottime);
 
 	for_each_possible_cpu(i) {
 		struct kernel_cpustat kcpustat;
@@ -77,15 +70,6 @@ static int show_stat(struct seq_file *p, void *v)
 		steal		+= cpustat[CPUTIME_STEAL];
 		guest		+= cpustat[CPUTIME_GUEST];
 		guest_nice	+= cpustat[CPUTIME_GUEST_NICE];
-		sum		+= kstat_cpu_irqs_sum(i);
-		sum		+= arch_irq_stat_cpu(i);
-
-		for (j = 0; j < NR_SOFTIRQS; j++) {
-			unsigned int softirq_stat = kstat_softirqs_cpu(j, i);
-
-			per_softirq_sums[j] += softirq_stat;
-			sum_softirq += softirq_stat;
-		}
 	}
 
 	seq_put_decimal_ull(p, "cpu  ", nsec_to_clock_t(user));
@@ -130,7 +114,33 @@ static int show_stat(struct seq_file *p, void *v)
 		seq_put_decimal_ull(p, " ", nsec_to_clock_t(guest_nice));
 		seq_putc(p, '\n');
 	}
-	seq_put_decimal_ull(p, "intr ", (unsigned long long)sum);
+	/* The existing field tag also marks the complete CPU prefix for readers. */
+	seq_puts(p, "intr ");
+	return 0;
+}
+
+static int show_stat_tail(struct seq_file *p)
+{
+	u64 sum = 0, sum_softirq = 0;
+	unsigned int per_softirq_sums[NR_SOFTIRQS] = {0};
+	struct timespec64 boottime;
+	int i, j;
+
+	getboottime64(&boottime);
+	/* shift boot timestamp according to the timens offset */
+	timens_sub_boottime(&boottime);
+
+	for_each_possible_cpu(i) {
+		sum += kstat_cpu_irqs_sum(i);
+		sum += arch_irq_stat_cpu(i);
+		for (j = 0; j < NR_SOFTIRQS; j++) {
+			unsigned int softirq_stat = kstat_softirqs_cpu(j, i);
+
+			per_softirq_sums[j] += softirq_stat;
+			sum_softirq += softirq_stat;
+		}
+	}
+	seq_put_decimal_ull(p, NULL, sum);
 
 	show_all_irqs(p);
 
@@ -155,21 +165,44 @@ static int show_stat(struct seq_file *p, void *v)
 	return 0;
 }
 
+static void *stat_start(struct seq_file *p, loff_t *pos)
+{
+	return *pos < 2 ? pos : NULL;
+}
+
+static void *stat_next(struct seq_file *p, void *v, loff_t *pos)
+{
+	++*pos;
+	return stat_start(p, pos);
+}
+
+static void stat_stop(struct seq_file *p, void *v)
+{
+}
+
+static int show_stat(struct seq_file *p, void *v)
+{
+	return *(loff_t *)v == 0 ? show_stat_cpus(p) : show_stat_tail(p);
+}
+
+static const struct seq_operations stat_seq_ops = {
+	.start = stat_start,
+	.next = stat_next,
+	.stop = stat_stop,
+	.show = show_stat,
+};
+
 static int stat_open(struct inode *inode, struct file *file)
 {
-	unsigned int size = 1024 + 128 * num_online_cpus();
-
-	/* minimum size to display an interrupt count : 2 bytes */
-	size += 2 * irq_get_nr_irqs();
-	return single_open_size(file, show_stat, NULL, size);
+	return seq_open(file, &stat_seq_ops);
 }
 
 static const struct proc_ops stat_proc_ops = {
 	.proc_flags	= PROC_ENTRY_PERMANENT,
 	.proc_open	= stat_open,
-	.proc_read_iter	= seq_read_iter,
+	.proc_read_iter	= seq_read_iter_one,
 	.proc_lseek	= seq_lseek,
-	.proc_release	= single_release,
+	.proc_release	= seq_release,
 };
 
 static int __init proc_stat_init(void)

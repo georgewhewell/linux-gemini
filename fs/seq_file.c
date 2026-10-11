@@ -169,7 +169,8 @@ EXPORT_SYMBOL(seq_read);
 /*
  * Ready-made ->f_op->read_iter()
  */
-ssize_t seq_read_iter(struct kiocb *iocb, struct iov_iter *iter)
+static ssize_t seq_read_iter_common(struct kiocb *iocb, struct iov_iter *iter,
+				    bool one_record)
 {
 	struct seq_file *m = iocb->ki_filp->private_data;
 	size_t copied = 0;
@@ -218,7 +219,7 @@ ssize_t seq_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 		m->count -= n;
 		m->from += n;
 		copied += n;
-		if (m->count)	// hadn't managed to copy everything
+		if (m->count || (one_record && copied))
 			goto Done;
 	}
 	// get a non-empty record in the buffer
@@ -268,7 +269,7 @@ Fill:
 		}
 		if (!p || IS_ERR(p))	// no next record for us
 			break;
-		if (m->count >= iov_iter_count(iter))
+		if (one_record || m->count >= iov_iter_count(iter))
 			break;
 		err = m->op->show(m, p);
 		if (err > 0) {		// ->show() says "skip it"
@@ -296,7 +297,27 @@ Enomem:
 	err = -ENOMEM;
 	goto Done;
 }
+
+ssize_t seq_read_iter(struct kiocb *iocb, struct iov_iter *iter)
+{
+	return seq_read_iter_common(iocb, iter, false);
+}
 EXPORT_SYMBOL(seq_read_iter);
+
+/**
+ * seq_read_iter_one - read at most one nonempty sequential-file record
+ * @iocb: file and position to read
+ * @iter: destination iterator
+ *
+ * Like seq_read_iter(), but does not prefetch another record after producing
+ * output. Partial records remain buffered, and seeking uses normal seq_file
+ * positions. A short read is not EOF or a userspace record-boundary guarantee.
+ */
+ssize_t seq_read_iter_one(struct kiocb *iocb, struct iov_iter *iter)
+{
+	return seq_read_iter_common(iocb, iter, true);
+}
+EXPORT_SYMBOL(seq_read_iter_one);
 
 /**
  *	seq_lseek -	->llseek() method for sequential files.

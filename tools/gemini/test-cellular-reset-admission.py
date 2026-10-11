@@ -21,6 +21,10 @@ c = r'''
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include <stddef.h>
+#define __iomem
+typedef uint32_t u32;
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(*(x)))
 #define dev_info(...) do {} while (0)
 struct device { int unused; };
@@ -33,7 +37,10 @@ struct mt6797_md1_cold_owner_backend {
  struct device *dev;
  struct reset_control_bulk_data cldma_resets[2];
  bool cldma_reset_completed;
+ void *ap_md_smem;
+ u32 ap_md_smem_size;
 };
+struct mt6797_md1_cold_state { int unused; };
 static struct mt6797_md1_cold_owner_cldma snapshot;
 static int calls, fail_at, watchdog_error, observe_error, reads;
 static int mtk_wdt_require_boot_recovery(struct device *dev)
@@ -51,6 +58,15 @@ static int mt6797_md1_cold_cldma_registers_observe(void *b,
  struct mt6797_md1_cold_owner_cldma *state)
 { (void)b; assert(calls == 4); reads++; *state=snapshot; return observe_error; }
 ''' + function(owner, "mt6797_md1_cold_cldma_reset") + r'''
+static int cold_error, cold_reads, clears, barriers, smem_reads, corrupt_tail;
+static int mt6797_md1_cold_verify(void *context, struct mt6797_md1_cold_state *state)
+{ (void)context; (void)state; cold_reads++; assert(!clears); return cold_error; }
+static void memset_io(void *memory, int value, size_t size)
+{ assert(cold_reads==1 && !cold_error && !watchdog_error); clears++; memset(memory,value,size); }
+static void wmb(void) { assert(clears==1); barriers++; }
+static u32 readl(void *memory)
+{ u32 word; assert(barriers==1); smem_reads++; memcpy(&word,memory,4); return word|corrupt_tail; }
+''' + function(owner, "mt6797_md1_cold_clear_smem") + r'''
 enum reset_control_flags { EXCLUSIVE };
 static struct reset_control controls[2] = {{0},{1}};
 static int gets, puts_count, fail_get;
@@ -99,7 +115,26 @@ int main(void)
  gets=puts_count=0; fail_get=0;
  assert(!__reset_control_bulk_get(NULL,2,b.cldma_resets,EXCLUSIVE));
  assert(gets==2 && !puts_count);
- puts("PASS actual reset callback: guard, AO/PD order, four failures, fresh status, bulk acquisition unwind");
+ /* The real clear callback touches only the validated AP reservation, after
+  * fresh watchdog and cold-reset checks. Guard words model adjacent MD3 RAM. */
+ unsigned char shared[72]; memset(shared,0xa5,sizeof(shared));
+ b.ap_md_smem=shared+4; b.ap_md_smem_size=64; calls=0;
+ watchdog_error=-EPERM;
+ assert(mt6797_md1_cold_clear_smem(&b)==-EPERM && !cold_reads && !clears);
+ watchdog_error=0; cold_error=-EBUSY;
+ assert(mt6797_md1_cold_clear_smem(&b)==-EBUSY && cold_reads==1 && !clears);
+ cold_error=0; cold_reads=0;
+ b.ap_md_smem_size=0;
+ assert(mt6797_md1_cold_clear_smem(&b)==-EINVAL && !cold_reads && !clears);
+ b.ap_md_smem_size=63;
+ assert(mt6797_md1_cold_clear_smem(&b)==-EINVAL && !cold_reads && !clears);
+ b.ap_md_smem_size=64;
+ assert(!mt6797_md1_cold_clear_smem(&b) && cold_reads==1 && clears==1 && barriers==1 && smem_reads==1);
+ for(unsigned i=0;i<sizeof(shared);i++) assert(shared[i]==(i<4||i>=68?0xa5:0));
+ cold_reads=clears=barriers=smem_reads=0; corrupt_tail=1;
+ assert(mt6797_md1_cold_clear_smem(&b)==-EIO && clears==1 && smem_reads==1);
+ assert(shared[0]==0xa5 && shared[71]==0xa5);
+ puts("PASS actual cold-memory and reset callbacks: guards, reservation bounds, clear/barrier/readback, AO/PD order, failure propagation");
 }
 '''
 with tempfile.TemporaryDirectory(prefix="gemini-cellular-reset-") as directory:
@@ -111,6 +146,7 @@ with tempfile.TemporaryDirectory(prefix="gemini-cellular-reset-") as directory:
 
 power = function(owner, "mt6797_md1_cold_power_on")
 assert power.index("mt6797_md1_cold_cldma_reset(") < power.index("mt6797_md1_pmic_snapshot(")
+assert power.index("mt6797_md1_cold_clear_smem(") < power.index("mt6797_md1_cold_cldma_reset(")
 probe = function(owner, "mt6797_md1_cold_owner_probe")
 assert probe.index("devm_reset_control_bulk_get_exclusive(") < probe.index("mt6797_md1_firmware_load(")
 assert probe.index('cldma_resets[0].id = "cldma-ao"') < probe.index('cldma_resets[1].id = "cldma-pdn"')
@@ -119,7 +155,7 @@ print("PASS reset acquisition before writes and pulse before modem power")
 transport = (root / "drivers/net/wwan/mediatek/mtk_mt6797_ccci.c").read_text()
 defines = "\n".join(line for line in transport.splitlines() if line.startswith((
     "#define CLDMA_UL_STATUS", "#define CLDMA_SO_STATUS", "#define CLDMA_L2_TX_STATUS",
-    "#define CLDMA_L2_RX_STATUS", "#define CLDMA_UL_START_ADDR", "#define CLDMA_SO_START_ADDR",
+    "#define CLDMA_L2_RX_STATUS", "#define CLDMA_IP_BUSY", "#define CLDMA_UL_START_ADDR", "#define CLDMA_SO_START_ADDR",
     "#define MT6797_CCCI_QUEUE_COUNT")))
 clean = r'''
 #include <assert.h>

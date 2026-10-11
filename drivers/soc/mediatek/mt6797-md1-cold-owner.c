@@ -10,7 +10,8 @@
  * The explicitly separately-gated terminal stage follows vendor MD1 WDT
  * writes with an AP-visible status sample, applies the staged secure MPU
  * contract, writes MD_BOOT_VECTOR_EN once, and observes boot-status/CCIF.
- * It intentionally stops before IRQ, CLDMA, shared-memory or CCCI transport.
+ * The cold owner initializes AP-MD1 shared memory before power-on, then
+ * leaves IRQ, CLDMA queues and the running CCCI transport to its consumer.
  */
 
 #include <linux/delay.h>
@@ -222,6 +223,8 @@ struct mt6797_md1_cold_owner_backend {
 	struct pinctrl_state *sim_pins;
 	struct reset_control_bulk_data cldma_resets[2];
 	bool cldma_reset_completed;
+	void __iomem *ap_md_smem;
+	u32 ap_md_smem_size;
 	void __iomem *base[MT6797_MD1_RES_COUNT];
 	struct regmap *pmic;
 	struct regmap *spm;
@@ -814,6 +817,35 @@ static int mt6797_md1_cold_cldma_reset(struct mt6797_md1_cold_owner_backend *bac
 	return 0;
 }
 
+static int mt6797_md1_cold_clear_smem(struct mt6797_md1_cold_owner_backend *backend)
+{
+	struct mt6797_md1_cold_state state;
+	int ret;
+
+	if (!backend || !backend->ap_md_smem || !backend->ap_md_smem_size ||
+	    backend->ap_md_smem_size % sizeof(u32))
+		return -EINVAL;
+	ret = mtk_wdt_require_boot_recovery(backend->dev);
+	if (ret)
+		return ret;
+	ret = mt6797_md1_cold_verify(backend, &state);
+	if (ret)
+		return ret;
+	/* Vendor md_cd_start() clears AP-MD1 SMEM on first boot, before power
+	 * and vector release. Clearing only the HS1 runtime leaves stale boot,
+	 * exception and service state behind. This is the one-shot cold owner;
+	 * never clear this reservation from the already-running transport.
+	 * MD1-MD3 memory needs the separate MD3 cold owner and is not touched.
+	 */
+	memset_io(backend->ap_md_smem, 0, backend->ap_md_smem_size);
+	wmb();
+	if (readl(backend->ap_md_smem + backend->ap_md_smem_size - sizeof(u32)))
+		return -EIO;
+	dev_info(backend->dev, "MD1 cold AP shared-memory initialization: %u bytes\n",
+		 backend->ap_md_smem_size);
+	return 0;
+}
+
 static int mt6797_md1_cold_power_on(void *context)
 {
 	struct mt6797_md1_cold_owner_backend *backend = context;
@@ -821,6 +853,9 @@ static int mt6797_md1_cold_power_on(void *context)
 	u32 value;
 	int ret;
 
+	ret = mt6797_md1_cold_clear_smem(backend);
+	if (ret)
+		return ret;
 	ret = mt6797_md1_cold_cldma_reset(backend);
 	if (ret)
 		return ret;
@@ -1667,6 +1702,12 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret,
 			"waiting for attested LK remap plan/locked snapshot\n");
+	ret = mt6797_md1_lk_handoff_layout_get(&layout);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+			"validated MD1 memory layout unavailable\n");
+	if (!layout.ap_md_smem_size || layout.ap_md_smem_size % sizeof(u32))
+		return -ERANGE;
 	ret = mt6797_md1_boot_status_evidence_get(&boot_status);
 	if (ret)
 		return dev_err_probe(&pdev->dev, -EPROBE_DEFER,
@@ -1677,6 +1718,11 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 	if (!backend || !owner)
 		return -ENOMEM;
 	backend->dev = &pdev->dev;
+	backend->ap_md_smem_size = layout.ap_md_smem_size;
+	backend->ap_md_smem = devm_ioremap_wc(&pdev->dev, layout.ap_md_smem_base,
+					   layout.ap_md_smem_size);
+	if (!backend->ap_md_smem)
+		return -ENOMEM;
 	ret = mt6797_md1_cold_sim_pins_get(backend);
 	if (ret)
 		return ret;
@@ -1723,10 +1769,6 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 		if (ret)
 			return dev_err_probe(&pdev->dev, ret,
 				"firmware-name must contain MD and any required DSP/ARM7 files\n");
-		ret = mt6797_md1_lk_handoff_layout_get(&layout);
-		if (ret)
-			return dev_err_probe(&pdev->dev, ret,
-				"validated MD1 memory layout unavailable\n");
 		ret = mtk_wdt_require_boot_recovery(&pdev->dev);
 		if (ret)
 			return dev_err_probe(&pdev->dev, ret,
@@ -1800,7 +1842,7 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, owner);
 	dev_info(&pdev->dev,
-		 "MD1 boot candidate observed post-vector activity; no IRQ, CLDMA, shared-memory or CCCI transport is installed\n");
+		 "MD1 boot candidate observed post-vector activity; no IRQ, CLDMA queues or CCCI transport is installed\n");
 	return 0;
 
 out_fatal:

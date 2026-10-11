@@ -44,12 +44,19 @@ static int mtk_sysirq_set_type(struct irq_data *data, unsigned int type)
 			type = IRQ_TYPE_LEVEL_HIGH;
 		else
 			type = IRQ_TYPE_EDGE_RISING;
-		value |= (1 << offset);
+		value |= BIT(offset);
 	} else {
-		value &= ~(1 << offset);
+		value &= ~BIT(offset);
 	}
 
 	writel_relaxed(value, base + reg_index * 4);
+	/* Complete the write and verify only this IRQ's polarity field. */
+	if ((readl_relaxed(base + reg_index * 4) ^ value) & BIT(offset)) {
+		raw_spin_unlock_irqrestore(&chip_data->lock, flags);
+		pr_err_ratelimited("mtk_sysirq: polarity write rejected for hwirq %lu\n",
+				   hwirq);
+		return -EIO;
+	}
 
 	data = data->parent_data;
 	ret = data->chip->irq_set_type(data, type);

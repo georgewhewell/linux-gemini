@@ -1300,6 +1300,8 @@ cleanup:
 	connected = connection->connected;
 	peer_disconnect = connection->peer_disconnect;
 	disconnect_reason = connection->reason;
+	/* The next connect may arrive as soon as cfg80211 delivers this event. */
+	radio->connection = NULL;
 	spin_unlock_irqrestore(&radio->lock, flags);
 	if (!connected) {
 		if (connection->ais.join.status_code)
@@ -1312,9 +1314,6 @@ cleanup:
 		cfg80211_disconnected(radio->netdev, disconnect_reason ?: WLAN_REASON_DEAUTH_LEAVING,
 			NULL, 0, !peer_disconnect, GFP_KERNEL);
 	}
-	spin_lock_irqsave(&radio->lock, flags);
-	radio->connection = NULL;
-	spin_unlock_irqrestore(&radio->lock, flags);
 	cfg80211_put_bss(radio->wdev.wiphy, connection->bss);
 	kfree_sensitive(connection);
 unlock:

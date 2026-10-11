@@ -109,6 +109,8 @@ static struct {
  int pm_error;
  unsigned pm_finishes,pm_aborts,igtk_cleanups,sae_runs;
  int stop_error; unsigned fences,scan_flushes;
+ bool admit_at_notify,expected_local;
+ struct mt6797_radio_connection *retired,*admitted;
 } test;
 static int stage(enum stage stage) {
  assert(stage>test.last); test.last=stage; test.stages++;
@@ -189,24 +191,47 @@ int mt6797_wifi_ais_hif_stop(struct mt6797_wifi_ais_hif *ais) {
 static void mt6797_wifi_hif_runtime_fail(struct mt6797_wifi_hif_irq *irq,int reason) {
  assert(irq==test.radio->irq && reason==test.stop_error); test.fences++;
 }
+/* Model userspace activating again as soon as the queued event is delivered.
+ * Production connect admission uses radio->lock and may run while the old
+ * worker still owns connection_lock. The old cleanup must not erase or free it.
+ */
+static void admit_after_notification(void) {
+ unsigned long flags;
+ spin_lock_irqsave(&test.radio->lock,flags);
+ assert(!test.radio->connection);
+ if(test.admit_at_notify) {
+  assert(!test.admitted);
+  test.admitted=calloc(1,sizeof(*test.admitted));
+  assert(test.admitted && test.admitted!=test.retired);
+  test.admitted->reason=0x1234;
+  test.radio->connection=test.admitted;
+ }
+ spin_unlock_irqrestore(&test.radio->lock,flags);
+}
 static void cfg80211_connect_result(struct net_device *netdev,const u8 *bssid,
  const u8 *req,size_t req_len,const u8 *resp,size_t resp_len,u16 status,int allocation) {
  (void)netdev; (void)bssid; (void)allocation;
  if(!status) { assert(test.radio->connection->connected && test.radio->irq->attached);
   assert(req && req_len && resp && resp_len==3); test.success++;
- } else { assert(!req && !req_len && !resp && !resp_len); test.failure++; }
+ } else {
+  assert(!req && !req_len && !resp && !resp_len); test.failure++;
+  admit_after_notification();
+ }
 }
 static void cfg80211_disconnected(struct net_device *netdev,u16 reason,
  const u8 *ie,size_t length,bool local,int allocation) {
  (void)netdev; (void)ie; (void)allocation;
- assert(reason && !length && local && !test.radio->irq->attached); test.disconnected++;
+ assert(reason && !length && local==test.expected_local && !test.radio->irq->attached);
+ test.disconnected++; admit_after_notification();
 }
 static void cfg80211_put_bss(struct wiphy *wiphy,struct cfg80211_bss *bss) {
  (void)wiphy; assert(bss); test.puts++;
 }
 static void kfree_sensitive(void *p) {
  struct mt6797_radio_connection *c=p;
- assert(!test.radio->connection && !c->sa_query_active && !c->sa_query_count && !test.radio->sa_query_work.pending);
+ assert(c==test.retired && c!=test.admitted);
+ assert(test.radio->connection==test.admitted);
+ assert(!c->sa_query_active && !c->sa_query_count && !test.radio->sa_query_work.pending);
  test.frees++; free(p);
 }
 '''
@@ -241,9 +266,10 @@ static struct cfg80211_bss bss={.bssid={2,6,7,8,9,10}};
 static void setup(struct mt6797_wifi_radio *radio,struct mt6797_wifi_hif_irq *irq,
  enum stage fail,enum stage cancel) {
  memset(radio,0,sizeof(*radio)); memset(irq,0,sizeof(*irq)); memset(&test,0,sizeof(test));
- test.radio=radio; test.fail=fail; test.cancel=cancel;
+ test.radio=radio; test.fail=fail; test.cancel=cancel; test.expected_local=true;
  radio->irq=irq; radio->command_sequence=2; radio->management_pid=7;
  radio->connection=calloc(1,sizeof(*radio->connection));
+ test.retired=radio->connection;
  radio->connection->bss=&bss;
  radio->connection->join.negotiated.channel=(struct mt6797_wifi_ais_channel){1,6};
  memcpy(radio->connection->join.negotiated.ssid,"test",4);
@@ -257,8 +283,27 @@ static void check_freed(void) {
  mt6797_radio_connection_work(&test.radio->connection_work); /* Stale queued work is harmless. */
  assert(test.puts==1 && test.frees==1);
 }
+static void check_reactivation(void) {
+ assert(test.admitted && test.radio->connection==test.admitted);
+ assert(test.admitted->reason==0x1234 && test.puts==1 && test.frees==1);
+ assert(test.failure+test.disconnected==1 && !test.radio->irq->attached);
+ assert(!test.radio->connection_lock.held && !test.radio->lock);
+ /* The next worker has not run; release the synthetic admission separately. */
+ free(test.admitted); test.admitted=NULL; test.radio->connection=NULL;
+}
 int main(void) {
  struct mt6797_wifi_radio r; struct mt6797_wifi_hif_irq irq;
+ setup(&r,&irq,SCAN_RUN,NONE); test.admit_at_notify=true;
+ mt6797_radio_connection_work(&r.connection_work);
+ assert(test.failure==1 && !test.disconnected); check_reactivation();
+ for(unsigned peer=0;peer<2;peer++) {
+  setup(&r,&irq,NONE,NONE); mt6797_radio_connection_work(&r.connection_work);
+  assert(test.success==1); test.admit_at_notify=true; test.expected_local=!peer;
+  r.connection->cancel=true; r.connection->peer_disconnect=peer; r.connection->reason=3;
+  mt6797_radio_connection_work(&r.connection_work);
+  assert(test.disconnected==1 && test.detaches==1 && test.stops==1);
+  check_reactivation();
+ }
  for(enum stage fail=SCAN_INIT;fail<=ATTACH;fail++) {
   setup(&r,&irq,fail,NONE); mt6797_radio_connection_work(&r.connection_work);
   assert(!test.success && test.last==fail); check_freed();
@@ -304,7 +349,7 @@ int main(void) {
  mt6797_radio_connection_work(&r.connection_work);
  assert(test.success==1 && test.disconnected==1 && test.pm_finishes==1 && !test.pm_aborts);
  check_freed();
- puts("PASS: production connection worker stage failures/cancellations, SAE authentication stage and sequence continuity, grant expiry, callback ordering, command reservation, retained connection, cleanup, failed BSS leave fencing and exactly-once BSS/free ownership");
+ puts("PASS: production connection worker stage failures/cancellations, SAE authentication stage and sequence continuity, grant expiry, immediate reactivation after failure/local/peer disconnect without stale admission or new-owner destruction, callback ordering, command reservation, retained connection, cleanup, failed BSS leave fencing and exactly-once BSS/free ownership");
 }
 '''
 if __name__ == '__main__':

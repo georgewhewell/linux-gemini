@@ -83,8 +83,9 @@ snd_pcm_uframes_t mtk_afe_pcm_pointer(struct snd_soc_component *component,
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
-	struct mtk_base_afe_memif *memif = &afe->memif[snd_soc_rtd_to_cpu(rtd, 0)->id];
-	const struct mtk_base_memif_data *memif_data = memif->data;
+	int id = snd_soc_rtd_to_cpu(rtd, 0)->id;
+	struct mtk_base_afe_memif *memif;
+	const struct mtk_base_memif_data *memif_data;
 	struct regmap *regmap = afe->regmap;
 	struct device *dev = afe->dev;
 	unsigned int hw_ptr_lower32 = 0, hw_ptr_upper32 = 0;
@@ -92,6 +93,12 @@ snd_pcm_uframes_t mtk_afe_pcm_pointer(struct snd_soc_component *component,
 	unsigned long long hw_ptr = 0, hw_base = 0;
 	int ret;
 	unsigned long long pcm_ptr_bytes = 0;
+
+	/* Hostless DAIs route between backends without a memory interface. */
+	if (id < 0 || id >= afe->memif_size)
+		return 0;
+	memif = &afe->memif[id];
+	memif_data = memif->data;
 
 	ret = regmap_read(regmap, memif_data->reg_ofs_cur, &hw_ptr_lower32);
 	if (ret) {

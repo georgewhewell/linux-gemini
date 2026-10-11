@@ -72,6 +72,9 @@ static __thread bool locked;
 static void mt6797_ccci_quiesce(struct mt6797_ccci *,int);
 static int mt6797_ccci_poll(struct napi_struct *,int);
 static irqreturn_t mt6797_ccci_cldma_irq(int,void*);
+/* RX queue ownership is executed by the first-fatal dispatch fixture. */
+static void mt6797_ccci_at_rx_close(struct mt6797_ccci *p,bool terminal)
+{(void)p;assert(terminal&&!locked);}
 static void mt6797_ccci_first_fatal(struct mt6797_ccci *p,const char *s){(void)p;(void)s;assert(!locked);first_fatals++;}
 #define dev_err(...) assert(!locked)
 static void mt6797_ccci_frontend_ready(struct mt6797_ccci *p,bool r){(void)p;(void)r;assert(!locked);}

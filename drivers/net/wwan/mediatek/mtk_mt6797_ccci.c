@@ -39,6 +39,14 @@
 #define MT6797_CCCI_QUEUE_COUNT		7U
 #define MT6797_CCCI_RING_SIZE		16U
 #define MT6797_CCCI_RX_SIZE		3584U
+#define MT6797_CCCI_AT_RX_FRAMES		32U
+#define MT6797_CCCI_AT_RX_PAYLOAD		(MT6797_CCCI_RX_SIZE - MTK_CCCI_HEADER_SIZE)
+#define MT6797_CCCI_AT_RX_BYTES		(MT6797_CCCI_AT_RX_FRAMES * MT6797_CCCI_AT_RX_PAYLOAD)
+/* The fixed 3584-byte RX allocation also needs NET_IP_ALIGN, NET_SKB_PAD,
+ * shared-info/skb overhead and allocator rounding. Budget a generous 8 KiB
+ * per retained frame; charge actual truesize, independently of payload bytes.
+ */
+#define MT6797_CCCI_AT_RX_MEMORY		(MT6797_CCCI_AT_RX_FRAMES * 8192U)
 #define MT6797_CCCI_NAPI_WEIGHT		64
 #define MT6797_CCCI_CHANNEL_COUNT	256U
 #define MT6797_CCCI_HANDSHAKE_TIMEOUT	(30 * HZ)
@@ -158,6 +166,11 @@ struct mt6797_ccci {
 	struct sk_buff *hs1_skb;
 	struct mtk_ccci_runtime_config runtime_config;
 	struct wwan_port *at_port;
+	/* Serializes native RX ownership through wwan_port_rx and last close. */
+	struct sk_buff_head at_rx_queue;
+	unsigned int at_rx_bytes;
+	unsigned int at_rx_memory;
+	bool at_rx_stopped; /* at_rx_queue.lock; permanent terminal/remove gate */
 	struct mt6797_ccci_link __rcu *link[MTK_CCCI_MAX_NET_LINKS];
 	u8 *runtime;
 	atomic_t tx_pending;
@@ -228,9 +241,35 @@ static void mt6797_ccci_napi_del(void *data)
 	netif_napi_del(data);
 }
 
+/* No command generation or payload copy: retain already-unmapped UART2 SKBs.
+ * The lock stays held through WWAN delivery; its last-close callback precedes
+ * the core RX purge. Delivering after unlock could race that purge/reopen.
+ */
+static void mt6797_ccci_at_rx_close(struct mt6797_ccci *ccci, bool terminal)
+{
+	unsigned long flags;
+	struct sk_buff *skb;
+
+	spin_lock_irqsave(&ccci->at_rx_queue.lock, flags);
+	if (terminal)
+		ccci->at_rx_stopped = true;
+	atomic_set(&ccci->at_open, 0);
+	while ((skb = __skb_dequeue(&ccci->at_rx_queue))) {
+		mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_RX_CLOSED_DROP);
+		kfree_skb(skb);
+	}
+	ccci->at_rx_bytes = 0;
+	ccci->at_rx_memory = 0;
+	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
+}
+
 static void mt6797_ccci_remove_port(void *data)
 {
-	wwan_remove_port(data);
+	struct mt6797_ccci *ccci = data;
+
+	/* Also runs on probe failure and for a port that was never opened. */
+	mt6797_ccci_at_rx_close(ccci, true);
+	wwan_remove_port(ccci->at_port);
 }
 
 static void mt6797_ccci_unregister_wwan(void *data)
@@ -339,6 +378,8 @@ static void mt6797_ccci_quiesce_from(struct mt6797_ccci *ccci, int reason,
 {
 	unsigned long flags;
 
+	/* Close RX ownership before the first-fatal snapshot or STOP. */
+	mt6797_ccci_at_rx_close(ccci, true);
 	if (atomic_xchg(&ccci->failed, 1))
 		return;
 
@@ -603,13 +644,28 @@ static void mt6797_ccci_tx_wake(struct mt6797_ccci *ccci, unsigned int q)
 static int mt6797_ccci_at_start(struct wwan_port *port)
 {
 	struct mt6797_ccci *ccci = wwan_port_get_drvdata(port);
+	struct sk_buff *skb;
+	unsigned long flags;
 
+	spin_lock_irqsave(&ccci->at_rx_queue.lock, flags);
+	if (ccci->at_rx_stopped || atomic_read(&ccci->failed) ||
+	    atomic_read(&ccci->teardown)) {
+		spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
+		return -ESHUTDOWN;
+	}
 	atomic_set(&ccci->at_open, 1);
 	mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_OPEN);
+	while ((skb = __skb_dequeue(&ccci->at_rx_queue))) {
+		ccci->at_rx_bytes -= skb->len;
+		ccci->at_rx_memory -= skb->truesize;
+		mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_RX_DELIVERED);
+		wwan_port_rx(port, skb);
+	}
 	if (atomic_read(&ccci->ready))
 		wwan_port_txon(port);
 	else
 		wwan_port_txoff(port);
+	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
 	return 0;
 }
 
@@ -617,9 +673,40 @@ static void mt6797_ccci_at_stop(struct wwan_port *port)
 {
 	struct mt6797_ccci *ccci = wwan_port_get_drvdata(port);
 
-	atomic_set(&ccci->at_open, 0);
+	mt6797_ccci_at_rx_close(ccci, false);
 	mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_CLOSE);
 	wwan_port_txoff(port);
+}
+
+static void mt6797_ccci_at_rx(struct mt6797_ccci *ccci, struct sk_buff *skb)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ccci->at_rx_queue.lock, flags);
+	/* Dispatch's earlier READY check can race terminal teardown. */
+	if (ccci->at_rx_stopped || atomic_read(&ccci->failed) ||
+	    atomic_read(&ccci->teardown) || !atomic_read(&ccci->ready))
+		goto drop;
+	if (atomic_read(&ccci->at_open)) {
+		mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_RX_DELIVERED);
+		wwan_port_rx(ccci->at_port, skb);
+	} else {
+		if (!skb->len || skb->len > MT6797_CCCI_AT_RX_PAYLOAD ||
+		    ccci->at_rx_queue.qlen >= MT6797_CCCI_AT_RX_FRAMES ||
+		    skb->len > MT6797_CCCI_AT_RX_BYTES - ccci->at_rx_bytes ||
+		    skb->truesize > MT6797_CCCI_AT_RX_MEMORY - ccci->at_rx_memory) {
+			mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_RX_CLOSED_DROP);
+			goto drop;
+		}
+		ccci->at_rx_bytes += skb->len;
+		ccci->at_rx_memory += skb->truesize;
+		__skb_queue_tail(&ccci->at_rx_queue, skb);
+	}
+	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
+	return;
+drop:
+	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
+	kfree_skb(skb);
 }
 
 static int mt6797_ccci_at_tx(struct wwan_port *port, struct sk_buff *skb)
@@ -1399,13 +1486,8 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 	if (frame.data1 != skb->len || skb->len <= MTK_CCCI_HEADER_SIZE)
 		goto drop;
 	if (frame.channel == MTK_CCCI_UART2_RX) {
-		if (!atomic_read(&ccci->at_open)) {
-			mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_RX_CLOSED_DROP);
-			goto drop;
-		}
 		skb_pull(skb, MTK_CCCI_HEADER_SIZE);
-		mt6797_ccci_diag_at(&ccci->diag, MT6797_CCCI_AT_RX_DELIVERED);
-		wwan_port_rx(ccci->at_port, skb);
+		mt6797_ccci_at_rx(ccci, skb);
 		return;
 	}
 	skb_pull(skb, MTK_CCCI_HEADER_SIZE);
@@ -1934,6 +2016,7 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	spin_lock_init(&ccci->fs_diag.lock);
 	spin_lock_init(&ccci->rx_rejected.lock);
 	spin_lock_init(&ccci->tx_stop_lock);
+	skb_queue_head_init(&ccci->at_rx_queue);
 	atomic_set(&ccci->rpc_logs, 0);
 	atomic_set(&ccci->rpc_pending, 0);
 	mt6797_ccci_read_rf_clock(ccci);
@@ -2013,7 +2096,7 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 	if (IS_ERR(ccci->at_port))
 		return PTR_ERR(ccci->at_port);
 	ret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_remove_port,
-				       ccci->at_port);
+				       ccci);
 	if (ret)
 		return ret;
 	wwan_port_txoff(ccci->at_port);

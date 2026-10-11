@@ -3,6 +3,7 @@
 """Compile actual diagnostic helpers with IRQ-lock/READ_ONCE host adapters."""
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -272,7 +273,9 @@ for name, site in (("mt6797_ccci_handshake_timeout_work", "ap-handshake-timer"),
                    ("mt6797_ccci_wdt_irq", "md-wdt-irq")):
     assert f'"{site}"' in body(name)
 q = body("mt6797_ccci_quiesce_from")
-assert q.index("atomic_xchg") < q.index("mt6797_ccci_first_fatal") < q.index("writel")
+assert q.index("mt6797_ccci_at_rx_close") < q.index("atomic_xchg") < q.index("mt6797_ccci_first_fatal") < q.index("writel")
+assert source.index("skb_queue_head_init(&ccci->at_rx_queue)") < source.index("wwan_create_port")
+assert body("mt6797_ccci_remove_port").index("mt6797_ccci_at_rx_close") < body("mt6797_ccci_remove_port").index("wwan_remove_port")
 assert q.index("mt6797_ccci_first_fatal") < q.index("dev_err")
 tx = body("mt6797_ccci_tx(")
 assert tx.index("mtk_ccci_header_init") < tx.index("mt6797_ccci_diag_final_reply") < tx.index("dma_map_single")
@@ -299,8 +302,17 @@ begin = common.index("int mtk_ccci_header_decode(")
 decoder = common[begin:common.index("\n}\n", begin) + 3]
 pre_ready = dispatch[:dispatch.index("\n\tskb_pull(skb, MTK_CCCI_HEADER_SIZE);\n\tversion =")]
 pre_ready += '\tassert(!"network branch outside this test");\n' + dispatch[dispatch.index("drop:\n"):]
+# Use the actual native ownership helpers with a small skb/WWAN-core adapter.
+# WWAN's first-start/last-stop ordering is modeled below; no RX algorithm is
+# duplicated. Opaque numeric frames contain no command/subscriber text.
+at_limits = "\n".join(re.findall(r"^#define MT6797_CCCI_(?:RX_SIZE|AT_RX_\w+)[^\n]*", source, re.M))
+at_helpers = "\n".join(body(name) for name in (
+    "mt6797_ccci_at_rx_close", "mt6797_ccci_remove_port",
+    "mt6797_ccci_at_start", "mt6797_ccci_at_stop", "mt6797_ccci_at_rx("))
 dispatch_shim = r'''
 #include <errno.h>
+#include <stdlib.h>
+#include <sched.h>
 typedef uint16_t u16;
 typedef uint16_t __be16;
 #define MTK_CCCI_STATUS_CHANNEL_MASK 0xffffU
@@ -311,86 +323,195 @@ typedef uint16_t __be16;
 #define MTK_CCCI_CONTROL_RX 0
 #define MTK_CCCI_UART2_RX 10
 #define le32_to_cpu(x) (x)
-#define atomic_read(p) (*(p))
+#define atomic_read(p) __atomic_load_n(p,__ATOMIC_SEQ_CST)
+#define atomic_set(p,v) __atomic_store_n(p,v,__ATOMIC_SEQ_CST)
 struct mtk_ccci_header { u32 data0,data1,status,reserved; };
 struct mtk_ccci_frame { u32 data0,data1,reserved; u16 channel,sequence; bool assert_bit; };
-struct sk_buff { u8 *data; size_t len; };
-struct mt6797_ccci { struct mt6797_ccci_diag diag; struct mt6797_rx_rejected rx_rejected; int ready,at_open; void *at_port; int rx_sequence[256]; };
-static int deliveries;
+struct sk_buff { u8 *data,*base; size_t len; unsigned truesize; struct sk_buff *next; bool heap; };
+struct sk_buff_head { pthread_mutex_t lock; struct sk_buff *head,*tail; unsigned qlen; };
+struct mt6797_ccci;
+struct wwan_port { struct mt6797_ccci *ccci; struct sk_buff_head rxq; pthread_mutex_t ops_lock; unsigned start_count; bool removed,txoff; };
+struct mt6797_ccci {
+ struct mt6797_ccci_diag diag; struct mt6797_rx_rejected rx_rejected;
+ int ready,at_open,failed,teardown; struct wwan_port *at_port;
+ struct sk_buff_head at_rx_queue; unsigned at_rx_bytes,at_rx_memory; bool at_rx_stopped;
+ int rx_sequence[256];
+};
+static pthread_mutex_t *at_lock;
+static __thread bool at_locked;
+#undef spin_lock_irqsave
+#undef spin_unlock_irqrestore
+#define spin_lock_irqsave(p,f) do{(f)=0;assert(!pthread_mutex_lock(p));if((p)==at_lock){assert(!at_locked);at_locked=true;}}while(0)
+#define spin_unlock_irqrestore(p,f) do{(void)(f);if((p)==at_lock){assert(at_locked);at_locked=false;}assert(!pthread_mutex_unlock(p));}while(0)
+static int deliveries,frees,live,controls,crashes,control_result;
+static void queue_init(struct sk_buff_head *q){memset(q,0,sizeof(*q));assert(!pthread_mutex_init(&q->lock,NULL));}
+static void __skb_queue_tail(struct sk_buff_head *q,struct sk_buff *s){
+ assert(s&&!s->next);if(q->tail)q->tail->next=s;else q->head=s;q->tail=s;q->qlen++;
+}
+static struct sk_buff *__skb_dequeue(struct sk_buff_head *q){
+ struct sk_buff *s=q->head;if(!s)return NULL;q->head=s->next;s->next=NULL;if(!q->head)q->tail=NULL;assert(q->qlen);q->qlen--;return s;
+}
+static void kfree_skb(struct sk_buff *s){
+ __atomic_add_fetch(&frees,1,__ATOMIC_SEQ_CST);if(s->heap){__atomic_sub_fetch(&live,1,__ATOMIC_SEQ_CST);free(s->base);free(s);}
+}
+static void skb_queue_purge(struct sk_buff_head *q){
+ assert(!pthread_mutex_lock(&q->lock));struct sk_buff *s;while((s=__skb_dequeue(q)))kfree_skb(s);assert(!pthread_mutex_unlock(&q->lock));
+}
 static int mtk_ccci_net_rx_link(u16 ch){(void)ch;return -1;}
-static void skb_pull(struct sk_buff *skb,size_t n){assert(skb->len>=n);skb->data+=n;skb->len-=n;}
-static void wwan_port_rx(void *port,struct sk_buff *skb){(void)port;assert(skb->len==4);deliveries++;}
+static void skb_pull(struct sk_buff *s,size_t n){assert(s->len>=n);s->data+=n;s->len-=n;}
+static void *wwan_port_get_drvdata(struct wwan_port *p){return p->ccci;}
+static void wwan_port_txon(struct wwan_port *p){p->txoff=false;}
+static void wwan_port_txoff(struct wwan_port *p){p->txoff=true;}
+static pthread_barrier_t entered,release_delivery,close_entered,release_close;
+static bool pause_delivery,pause_close;
+static void barrier(pthread_barrier_t *b){int r=pthread_barrier_wait(b);assert(!r||r==PTHREAD_BARRIER_SERIAL_THREAD);}
+static void wwan_port_rx(struct wwan_port *p,struct sk_buff *s){
+ assert(at_locked&&!p->removed&&s->len>=4);
+ if(pause_delivery){pause_delivery=false;barrier(&entered);barrier(&release_delivery);}
+ assert(!pthread_mutex_lock(&p->rxq.lock));__skb_queue_tail(&p->rxq,s);assert(!pthread_mutex_unlock(&p->rxq.lock));deliveries++;
+}
+static void mt6797_ccci_at_stop(struct wwan_port *);
+/* Core removal prevents new ops, invokes stop only when started, then purges. */
+static void wwan_remove_port(struct wwan_port *p){
+ assert(!at_locked);assert(!pthread_mutex_lock(&p->ops_lock));
+ if(p->start_count){mt6797_ccci_at_stop(p);p->start_count=0;}
+ p->removed=true;assert(!pthread_mutex_unlock(&p->ops_lock));skb_queue_purge(&p->rxq);
+}
 #define MT6797_RPC_RX 32
 #define MT6797_FS_RX 14
-static int mt6797_ccci_rpc_rx(struct mt6797_ccci *c, struct sk_buff *s, unsigned q)
-{ (void)c; (void)s; (void)q; return -EOPNOTSUPP; }
-static int mt6797_ccci_fs_rx(struct mt6797_ccci *c, struct sk_buff *s, unsigned q)
-{ (void)c; (void)s; (void)q; return -EOPNOTSUPP; }
-static int frees, controls, crashes, control_result;
-static void kfree_skb(struct sk_buff *skb) { (void)skb; frees++; }
-static int mt6797_ccci_control_rx(struct mt6797_ccci *c, struct sk_buff *s,
- const struct mtk_ccci_frame *f) { (void)c; (void)s; assert(f->channel==0); controls++; return control_result; }
-static void mt6797_ccci_quiesce(struct mt6797_ccci *c,int why)
-{ assert(why==-EILSEQ && c->diag.rx_count==1); mt6797_ccci_diag_freeze(&c->diag,NULL); crashes++; }
+static int mt6797_ccci_rpc_rx(struct mt6797_ccci *c,struct sk_buff *s,unsigned q){(void)c;(void)s;(void)q;return -EOPNOTSUPP;}
+static int mt6797_ccci_fs_rx(struct mt6797_ccci *c,struct sk_buff *s,unsigned q){(void)c;(void)s;(void)q;return -EOPNOTSUPP;}
+static int mt6797_ccci_control_rx(struct mt6797_ccci *c,struct sk_buff *s,const struct mtk_ccci_frame *f){(void)c;(void)s;assert(f->channel==0);controls++;return control_result;}
+static void mt6797_ccci_quiesce(struct mt6797_ccci *c,int why){assert(why==-EILSEQ&&c->diag.rx_count==1);mt6797_ccci_diag_freeze(&c->diag,NULL);crashes++;}
 '''
 dispatch_tests = r'''
-int main(void)
-{
- struct mt6797_ccci c={0}; u32 words[8]={0};
- struct sk_buff skb={.data=(u8 *)words,.len=15};
- pthread_mutex_init(&c.diag.lock,NULL);
- pthread_mutex_init(&c.rx_rejected.lock,NULL);
- mt6797_ccci_dispatch_rx(&c,&skb,1);
- assert(frees==1 && c.diag.rx_count==1 && !c.diag.rx[0].header_valid && !c.diag.rx[0].channel);
- assert(c.diag.rx[0].decode_error==-EMSGSIZE && !c.diag.rx[0].payload_word0_valid);
- skb.len=16; mt6797_ccci_dispatch_rx(&c,&skb,0);
- assert(controls==1 && frees==2 && c.diag.rx_count==1);
- words[2]=32; words[4]=0x4006; skb.len=20;
- mt6797_ccci_dispatch_rx(&c,&skb,1);
- assert(c.diag.rx_count==2 && c.diag.rx[1].channel==32 && c.diag.rx[1].payload_word0==0x4006);
- assert(c.diag.rx[1].cause==MT6797_CCCI_DIAG_BEFORE_READY);
- assert(c.rx_rejected.count==1&&c.rx_rejected.entry[0].channel==32);
+static void init(struct mt6797_ccci *c,struct wwan_port *p){
+ memset(c,0,sizeof(*c));memset(p,0,sizeof(*p));
+ assert(!pthread_mutex_init(&c->diag.lock,NULL));assert(!pthread_mutex_init(&c->rx_rejected.lock,NULL));
+ queue_init(&c->at_rx_queue);queue_init(&p->rxq);assert(!pthread_mutex_init(&p->ops_lock,NULL));
+ c->at_port=p;p->ccci=c;at_lock=&c->at_rx_queue.lock;
+}
+static void destroy(struct mt6797_ccci *c,struct wwan_port *p){
+ assert(!c->at_rx_queue.qlen&&!c->at_rx_bytes&&!c->at_rx_memory&&!p->rxq.qlen);
+ assert(!pthread_mutex_destroy(&c->diag.lock));assert(!pthread_mutex_destroy(&c->rx_rejected.lock));
+ assert(!pthread_mutex_destroy(&c->at_rx_queue.lock));assert(!pthread_mutex_destroy(&p->rxq.lock));assert(!pthread_mutex_destroy(&p->ops_lock));
+}
+static struct sk_buff *frame(u32 id,unsigned len,unsigned memory,bool header){
+ assert(len>=4);struct sk_buff *s=calloc(1,sizeof(*s));assert(s);
+ s->base=calloc(1,len+(header?16:0));assert(s->base);s->data=s->base;s->len=len+(header?16:0);s->truesize=memory;s->heap=true;
+ if(header){u32 *h=(u32 *)s->data;h[1]=s->len;h[2]=10;memcpy(s->data+16,&id,4);}else memcpy(s->data,&id,4);
+ __atomic_add_fetch(&live,1,__ATOMIC_SEQ_CST);return s;
+}
+static u32 pop(struct wwan_port *p){
+ assert(!pthread_mutex_lock(&p->rxq.lock));struct sk_buff *s=__skb_dequeue(&p->rxq);assert(!pthread_mutex_unlock(&p->rxq.lock));
+ assert(s);u32 id;memcpy(&id,s->data,4);kfree_skb(s);return id;
+}
+/* Core callbacks run only at first open/last close under ops_lock. */
+static int core_start(struct wwan_port *p){
+ assert(!pthread_mutex_lock(&p->ops_lock));int ret=p->removed?-ENODEV:0;
+ if(!ret&&!p->start_count)ret=mt6797_ccci_at_start(p);
+ if(!ret)p->start_count++;
+ assert(!pthread_mutex_unlock(&p->ops_lock));return ret;
+}
+static void core_stop(struct wwan_port *p){
+ assert(!pthread_mutex_lock(&p->ops_lock));assert(p->start_count);
+ if(!--p->start_count){mt6797_ccci_at_stop(p);if(pause_close){barrier(&close_entered);barrier(&release_close);}skb_queue_purge(&p->rxq);}
+ assert(!pthread_mutex_unlock(&p->ops_lock));
+}
+static void *start_thread(void *p){assert(!core_start(p));return NULL;}
+static void *stop_thread(void *p){core_stop(p);return NULL;}
+struct incoming {struct mt6797_ccci *c;struct sk_buff *s;};
+static void *rx_thread(void *arg){struct incoming *i=arg;mt6797_ccci_at_rx(i->c,i->s);return NULL;}
+static void *terminal_thread(void *p){mt6797_ccci_at_rx_close(p,true);return NULL;}
+static void *remove_thread(void *p){mt6797_ccci_remove_port(p);return NULL;}
+static void begin_pause(void){assert(!pthread_barrier_init(&entered,NULL,2));assert(!pthread_barrier_init(&release_delivery,NULL,2));pause_delivery=true;}
+static void end_pause(void){assert(!pthread_barrier_destroy(&entered));assert(!pthread_barrier_destroy(&release_delivery));}
+static void diagnostic_tests(void){
+ struct mt6797_ccci c;struct wwan_port p;init(&c,&p);u32 words[8]={0};struct sk_buff skb={.data=(u8 *)words,.len=15};
+ mt6797_ccci_dispatch_rx(&c,&skb,1);assert(frees==1&&c.diag.rx_count==1&&!c.diag.rx[0].header_valid&&!c.diag.rx[0].channel);
+ assert(c.diag.rx[0].decode_error==-EMSGSIZE&&!c.diag.rx[0].payload_word0_valid);
+ skb.len=16;mt6797_ccci_dispatch_rx(&c,&skb,0);assert(controls==1&&frees==2&&c.diag.rx_count==1);
+ words[2]=32;words[4]=0x4006;skb.len=20;mt6797_ccci_dispatch_rx(&c,&skb,1);
+ assert(c.diag.rx_count==2&&c.diag.rx[1].channel==32&&c.diag.rx[1].payload_word0==0x4006);
+ assert(c.diag.rx[1].cause==MT6797_CCCI_DIAG_BEFORE_READY&&c.rx_rejected.count==1&&c.rx_rejected.entry[0].channel==32);
  assert(c.rx_rejected.entry[0].op_valid&&c.rx_rejected.entry[0].op==0x4006);
- c.ready=1; control_result=-EALREADY; words[1]=4; words[2]=0; skb.len=16;
- mt6797_ccci_dispatch_rx(&c,&skb,0);
- assert(controls==2&&frees==4&&c.diag.rx_count==2);
- assert(c.rx_rejected.count==2&&c.rx_rejected.entry[1].channel==0);
- assert(c.rx_rejected.entry[1].message_valid&&c.rx_rejected.entry[1].message==4);
- assert(!c.rx_rejected.entry[1].op_valid&&c.rx_rejected.entry[1].error==-EALREADY);
- c.ready=0; skb.len=20;
- words[2]=300; mt6797_ccci_dispatch_rx(&c,&skb,1);
- assert(c.diag.rx_count==3 && c.diag.rx[2].cause==MT6797_CCCI_DIAG_BAD_CHANNEL);
- pthread_mutex_destroy(&c.diag.lock); pthread_mutex_destroy(&c.rx_rejected.lock);
- memset(&c,0,sizeof(c)); pthread_mutex_init(&c.diag.lock,NULL); pthread_mutex_init(&c.rx_rejected.lock,NULL);
- words[2]=0x80030020; c.rx_sequence[32]=1;
- mt6797_ccci_dispatch_rx(&c,&skb,1);
- assert(crashes==1 && c.diag.frozen && c.diag.rx[0].cause==MT6797_CCCI_DIAG_BAD_SEQUENCE);
- pthread_mutex_destroy(&c.diag.lock);pthread_mutex_destroy(&c.rx_rejected.lock);
- memset(&c,0,sizeof(c));pthread_mutex_init(&c.diag.lock,NULL);pthread_mutex_init(&c.rx_rejected.lock,NULL);
- words[1]=20;words[2]=10;skb.data=(u8 *)words;skb.len=20;
- mt6797_ccci_dispatch_rx(&c,&skb,1);
- assert(c.diag.at_events[MT6797_CCCI_AT_RX_SEEN]==1);
- assert(!deliveries&&!c.diag.at_events[MT6797_CCCI_AT_RX_CLOSED_DROP]);
- c.ready=1;mt6797_ccci_dispatch_rx(&c,&skb,1);
- assert(c.diag.at_events[MT6797_CCCI_AT_RX_SEEN]==2);
- assert(c.diag.at_events[MT6797_CCCI_AT_RX_CLOSED_DROP]==1&&!deliveries);
- c.at_open=1;mt6797_ccci_dispatch_rx(&c,&skb,1);
- assert(c.diag.at_events[MT6797_CCCI_AT_RX_SEEN]==3);
- assert(c.diag.at_events[MT6797_CCCI_AT_RX_DELIVERED]==1&&deliveries==1);
- skb.data=(u8 *)words;skb.len=16;words[1]=16;
- mt6797_ccci_dispatch_rx(&c,&skb,1);
- assert(c.diag.at_events[MT6797_CCCI_AT_RX_SEEN]==4&&deliveries==1);
- pthread_mutex_destroy(&c.diag.lock);
- pthread_mutex_destroy(&c.rx_rejected.lock);
- puts("PASS actual dispatch+decoder: malformed/bad-sequence guards, rejected header-only control ID/return, RPC metadata and UART2 pre-ready/closed/delivered/short counters");
+ c.ready=1;control_result=-EALREADY;words[1]=4;words[2]=0;skb.len=16;mt6797_ccci_dispatch_rx(&c,&skb,0);
+ assert(controls==2&&frees==4&&c.diag.rx_count==2&&c.rx_rejected.count==2&&c.rx_rejected.entry[1].channel==0);
+ assert(c.rx_rejected.entry[1].message_valid&&c.rx_rejected.entry[1].message==4&&!c.rx_rejected.entry[1].op_valid&&c.rx_rejected.entry[1].error==-EALREADY);
+ c.ready=0;skb.len=20;words[2]=300;mt6797_ccci_dispatch_rx(&c,&skb,1);assert(c.diag.rx_count==3&&c.diag.rx[2].cause==MT6797_CCCI_DIAG_BAD_CHANNEL);destroy(&c,&p);
+ init(&c,&p);words[2]=0x80030020;c.rx_sequence[32]=1;mt6797_ccci_dispatch_rx(&c,&skb,1);assert(crashes==1&&c.diag.frozen&&c.diag.rx[0].cause==MT6797_CCCI_DIAG_BAD_SEQUENCE);destroy(&c,&p);
+}
+static void retention_tests(void){
+ struct mt6797_ccci c;struct wwan_port p;init(&c,&p);
+ assert(!core_start(&p)&&c.at_open&&p.txoff);core_stop(&p); /* preserve pre-HS2 discovery */
+ mt6797_ccci_dispatch_rx(&c,frame(1,4,4096,true),1);assert(!c.at_rx_queue.qlen&&!p.rxq.qlen);
+ c.ready=1;mt6797_ccci_dispatch_rx(&c,frame(2,4,4096,true),1);
+ assert(c.at_rx_queue.qlen==1&&c.at_rx_bytes==4&&c.at_rx_memory==4096);
+ assert(!c.diag.at_events[MT6797_CCCI_AT_RX_CLOSED_DROP]&&!p.rxq.qlen);
+ mt6797_ccci_dispatch_rx(&c,frame(3,4,4096,true),1);assert(!core_start(&p)&&!p.txoff);
+ assert(!c.at_rx_queue.qlen&&!c.at_rx_bytes&&!c.at_rx_memory&&pop(&p)==2&&pop(&p)==3);
+ mt6797_ccci_dispatch_rx(&c,frame(4,4,4096,true),1);assert(pop(&p)==4);
+ assert(!core_start(&p));core_stop(&p);assert(c.at_open&&p.start_count==1);core_stop(&p);assert(!c.at_open);
+ unsigned before=c.diag.at_events[MT6797_CCCI_AT_RX_DELIVERED];u32 short_header[4]={0,16,10,0};struct sk_buff short_skb={.data=(u8 *)short_header,.len=16};
+ mt6797_ccci_dispatch_rx(&c,&short_skb,1);assert(!c.at_rx_queue.qlen&&c.diag.at_events[MT6797_CCCI_AT_RX_DELIVERED]==before);
+ for(unsigned i=0;i<32;i++)mt6797_ccci_at_rx(&c,frame(100+i,MT6797_CCCI_AT_RX_PAYLOAD,8192,false));
+ assert(c.at_rx_queue.qlen==32&&c.at_rx_bytes==MT6797_CCCI_AT_RX_BYTES&&c.at_rx_memory==MT6797_CCCI_AT_RX_MEMORY);
+ mt6797_ccci_at_rx(&c,frame(200,4,4096,false));assert(c.at_rx_queue.qlen==32&&c.diag.at_events[MT6797_CCCI_AT_RX_CLOSED_DROP]==1);
+ assert(!core_start(&p));for(unsigned i=0;i<32;i++)assert(pop(&p)==100+i);core_stop(&p);
+ mt6797_ccci_at_rx(&c,frame(201,MT6797_CCCI_AT_RX_PAYLOAD+1,4096,false));assert(!c.at_rx_queue.qlen);
+ mt6797_ccci_at_rx(&c,frame(202,4,UINT32_MAX,false));assert(!c.at_rx_queue.qlen&&!c.at_rx_memory);
+ /* Tiny payloads cannot evade the separate allocation-accounting budget. */
+ mt6797_ccci_at_rx(&c,frame(203,4,MT6797_CCCI_AT_RX_MEMORY,false));assert(c.at_rx_queue.qlen==1&&c.at_rx_bytes==4);
+ mt6797_ccci_at_rx(&c,frame(204,4,1,false));assert(c.at_rx_queue.qlen==1&&c.at_rx_memory==MT6797_CCCI_AT_RX_MEMORY);
+ mt6797_ccci_at_rx_close(&c,true);assert(!c.at_rx_queue.qlen&&!c.at_rx_bytes&&!c.at_rx_memory&&c.at_rx_stopped);
+ assert(core_start(&p)==-ESHUTDOWN);mt6797_ccci_at_rx(&c,frame(205,4,4096,false));assert(!p.rxq.qlen&&!c.at_rx_queue.qlen);
+ mt6797_ccci_at_rx_close(&c,true);mt6797_ccci_remove_port(&c);destroy(&c,&p);
+ init(&c,&p);c.ready=1;mt6797_ccci_at_rx(&c,frame(206,4,4096,false));mt6797_ccci_remove_port(&c); /* never-opened probe cleanup */
+ assert(p.removed&&core_start(&p)==-ENODEV);mt6797_ccci_at_rx(&c,frame(207,4,4096,false));destroy(&c,&p);
+ for(unsigned which=0;which<3;which++){init(&c,&p);c.ready=1;if(which==0)c.failed=1;else if(which==1)c.teardown=1;else c.ready=0;
+ mt6797_ccci_at_rx(&c,frame(208,4,4096,false));assert(!c.at_rx_queue.qlen&&!p.rxq.qlen);if(which<2)assert(core_start(&p)==-ESHUTDOWN);destroy(&c,&p);}
+}
+static void concurrency_tests(void){
+ for(unsigned iteration=0;iteration<32;iteration++){
+  struct mt6797_ccci c;struct wwan_port p;pthread_t a,b;init(&c,&p);c.ready=1;
+  mt6797_ccci_at_rx(&c,frame(300,4,4096,false));mt6797_ccci_at_rx(&c,frame(301,4,4096,false));
+  begin_pause();assert(!pthread_create(&a,NULL,start_thread,&p));barrier(&entered);
+  struct incoming incoming={&c,frame(302,4,4096,false)};assert(!pthread_create(&b,NULL,rx_thread,&incoming));
+  barrier(&release_delivery);assert(!pthread_join(a,NULL));assert(!pthread_join(b,NULL));end_pause();
+  assert(pop(&p)==300&&pop(&p)==301&&pop(&p)==302&&!c.at_rx_queue.qlen&&!c.at_rx_bytes&&!c.at_rx_memory);
+  /* A delivery holding RX ownership fences last close. A later arrival across
+   * stop -> core purge goes to the native FIFO and survives that core purge. */
+  begin_pause();incoming=(struct incoming){&c,frame(303,4,4096,false)};assert(!pthread_create(&a,NULL,rx_thread,&incoming));barrier(&entered);
+  assert(!pthread_barrier_init(&close_entered,NULL,2));assert(!pthread_barrier_init(&release_close,NULL,2));pause_close=true;
+  assert(!pthread_create(&b,NULL,stop_thread,&p));barrier(&release_delivery);barrier(&close_entered);
+  assert(!c.at_open&&p.rxq.qlen==1);mt6797_ccci_at_rx(&c,frame(304,4,4096,false));assert(c.at_rx_queue.qlen==1);
+  barrier(&release_close);assert(!pthread_join(a,NULL));assert(!pthread_join(b,NULL));end_pause();pause_close=false;
+  assert(!pthread_barrier_destroy(&close_entered));assert(!pthread_barrier_destroy(&release_close));
+  assert(!p.rxq.qlen&&!core_start(&p)&&pop(&p)==304);core_stop(&p);
+  /* Fatal purge serializes with a start already draining; no frame can arrive
+   * after its terminal gate. Test removal through the same race on alternating runs. */
+  mt6797_ccci_at_rx(&c,frame(305,4,4096,false));mt6797_ccci_at_rx(&c,frame(306,4,4096,false));
+  begin_pause();assert(!pthread_create(&a,NULL,start_thread,&p));barrier(&entered);
+  assert(!pthread_create(&b,NULL,iteration&1?remove_thread:terminal_thread,&c));barrier(&release_delivery);
+  assert(!pthread_join(a,NULL));assert(!pthread_join(b,NULL));end_pause();
+  assert(c.at_rx_stopped&&!c.at_rx_queue.qlen&&!c.at_rx_bytes&&!c.at_rx_memory);
+  mt6797_ccci_at_rx(&c,frame(307,4,4096,false));assert(!c.at_rx_queue.qlen);
+  if(!(iteration&1)){assert(pop(&p)==305&&pop(&p)==306);mt6797_ccci_remove_port(&c);}
+  else assert(!p.rxq.qlen&&p.removed);
+  destroy(&c,&p);
+ }
+}
+int main(void){
+ diagnostic_tests();retention_tests();concurrency_tests();assert(!live);
+ puts("PASS actual dispatch/AT owners: pre-HS2 open, bounded opaque preopen FIFO, count/payload/truesize caps, multiple opens, stop/core-purge boundary,32 start/RX/fatal/remove races, terminal idempotence and never-opened removal");
 }
 '''
 with tempfile.TemporaryDirectory(prefix="gemini-cellular-preready-dispatch-") as tmp:
     path = Path(tmp)
     rejected = header.with_name("mtk_mt6797_ccci_rx_rejected.h").read_text()
-    (path / "test.c").write_text(shim + header.read_text() + rejected + dispatch_shim + decoder + pre_ready + dispatch_tests)
+    (path / "test.c").write_text(shim + header.read_text() + rejected + dispatch_shim + at_limits + "\n" + at_helpers + decoder + pre_ready + dispatch_tests)
     subprocess.run([os.environ.get("CC", "cc"), "-O2", "-std=gnu11", "-Wall", "-Wextra",
                     "-Werror", "-Wno-unused-variable", "-Wno-unused-function", "-pthread",
                     "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
                     str(path / "test.c"), "-o", str(path / "test")], check=True)
-    subprocess.run([str(path / "test")], check=True, timeout=5)
+    subprocess.run([str(path / "test")], check=True, timeout=10)

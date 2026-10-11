@@ -1953,6 +1953,35 @@ static int mt6797_ccci_start(struct mt6797_ccci *ccci)
 	return 0;
 }
 
+/*
+ * Public ccci_util_lib_fo.c (8cfe6596) starts with the board-build policy and
+ * overrides it only for a positive LK gate and a present support option.
+ * Keep that policy distinct from LK image/load metadata and hardware discovery.
+ */
+static int mt6797_ccci_runtime_policy(
+	const struct mt6797_md1_lk_runtime_metadata *metadata, s32 configured,
+	s32 *policy, bool *lk_override)
+{
+	const struct mt6797_md1_lk_runtime_options *options = &metadata->options;
+	bool override = options->gate_present && options->gate > 0 &&
+		options->support_present;
+	s32 selected = override ? options->support : configured;
+	u32 bitmap;
+	int ret;
+
+	if (metadata->option_parse_errno)
+		return metadata->option_parse_errno;
+	/* Configured zero remains unknown; an enabled zero override is invalid. */
+	if (override || selected) {
+		ret = mtk_ccci_ubin_wm_bitmap(selected, &bitmap);
+		if (ret)
+			return ret;
+	}
+	*policy = selected;
+	*lk_override = override;
+	return 0;
+}
+
 static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 					struct resource *smem_res)
 {
@@ -1961,6 +1990,8 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	struct mt6797_md1_lk_runtime_metadata metadata;
 	struct mt6797_md1_mpu_remap_layout layout;
 	u64 md_smem;
+	s32 policy;
+	bool lk_override;
 	int ret;
 
 	ret = mt6797_md1_cold_owner_wait_handoff(ccci->dev, &evidence);
@@ -1986,6 +2017,11 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	ret = mt6797_md1_lk_handoff_runtime_get(&metadata);
 	if (ret)
 		return ret == -ENODATA ? -EPROBE_DEFER : ret;
+	ret = mt6797_ccci_runtime_policy(&metadata,
+					 CONFIG_MTK_MT6797_MD1_SUPPORT,
+					 &policy, &lk_override);
+	if (ret)
+		return ret;
 	/*
 	 * LK deletes the pre-boot dynamic reservation nodes and installs its
 	 * live CCCI mblocks, leaving memory-region phandles dangling. The
@@ -2003,8 +2039,10 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	ccci->runtime_config.random_seed = get_random_u32();
 	ccci->runtime_config.ccmni_mtu = MTK_CCCI_NET_RX_SIZE;
 	ccci->runtime_config.load_type = metadata.load_type;
-	ccci->runtime_config.modem_capability = metadata.options.support;
-	ccci->runtime_config.modem_capability_known = metadata.capability_available;
+	ccci->runtime_config.modem_capability = policy;
+	ccci->runtime_config.modem_capability_known = policy > 0;
+	dev_info(ccci->dev, "MD1 runtime policy=%d source=%s; configured policy, not hardware capability\n",
+		 policy, lk_override ? "lk_override" : policy ? "board_config" : "unknown");
 	return 0;
 }
 

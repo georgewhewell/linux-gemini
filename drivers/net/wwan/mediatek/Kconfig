@@ -26,6 +26,18 @@ config MTK_MT6797_CCCI
 	  UART2 control channel as a standard WWAN AT port and CCMNI contexts as WWAN
 	  raw-IP links. It remains additionally gated by a read-only module parameter.
 
+config MTK_MT6797_MD1_SUPPORT
+	int "MT6797 MD1 configured radio policy"
+	depends on MTK_MT6797_CCCI
+	default 0
+	help
+	  Board-build MD1 policy used when LK does not enable an option override
+	  or omits opt_md1_support. Zero leaves the policy unknown. Positive
+	  values use the public MD1 support IDs or enhanced AP RAT encoding,
+	  validated by the CCCI wire helper before admission. This is requested
+	  configuration, not discovery of modem or board radio capabilities.
+	  An enabled invalid LK override is rejected, never replaced by this value.
+
 config MTK_CCCI_KUNIT_TEST
 	bool "KUnit tests for MediaTek CCCI helpers"
 	depends on KUNIT=y

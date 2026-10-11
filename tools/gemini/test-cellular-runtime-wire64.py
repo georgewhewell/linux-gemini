@@ -17,6 +17,14 @@ root = Path(__file__).resolve().parents[2]
 directory = root / "drivers/net/wwan/mediatek"
 header = (directory / "mtk_ccci_common.h").read_text()
 source = (directory / "mtk_ccci_common.c").read_text()
+native = (directory / "mtk_mt6797_ccci.c").read_text()
+policy_start = native.index("static int mt6797_ccci_runtime_policy(")
+policy = native[policy_start:native.index("\n}", policy_start) + 3]
+metadata_header = (root / "include/linux/soc/mediatek/mt6797-md1-lk-handoff.h").read_text()
+metadata_structs = "\n".join(re.search(r"struct " + name + r" \{.*?\n};", metadata_header, re.S).group(0)
+    for name in ["mt6797_md1_lk_runtime_options", "mt6797_md1_lk_runtime_metadata"])
+configured = int(re.search(r"^CONFIG_MTK_MT6797_MD1_SUPPORT=(\d+)$",
+    (root / "arch/arm64/configs/gemini_defconfig").read_text(), re.M).group(1))
 # Exact 72-byte query captured from attributed C4 boot
 # 60a3d930-8045-4933-9c96-1519270a7062, dmesg-first-event.txt.
 c4_query = bytes.fromhex(
@@ -96,6 +104,64 @@ static void refused_sbp(int error)
  memcpy(hs1+16,query,72);
  assert(mtk_ccci_runtime_v2_reply(hs1,88,&config,0,runtime,2048,&length,reply,116,&response_length)==error);
  assert(length==999&&response_length==998);
+}
+static void check_configured_policy(void)
+{
+ struct mt6797_md1_lk_runtime_metadata metadata = {.load_type=9,.image_type=8};
+ struct mt6797_md1_lk_runtime_metadata old;
+ s32 selected=-99; bool override=true; size_t len=0;
+ assert(CONFIG_MTK_MT6797_MD1_SUPPORT==12);
+ empty_query(); query[4+9]=2;
+ /* Missing gate, disabled/negative gate, or missing support uses board policy;
+  * contradictory LK-only availability must not replace actual option rules. */
+ for (unsigned kind=0;kind<4;kind++) {
+  metadata.options=(struct mt6797_md1_lk_runtime_options){
+   .gate=kind==3?1:kind==2?-1:0, .gate_present=kind!=0,
+   .support=-1,.support_present=kind!=3};
+  metadata.capability_available=true; old=metadata;
+  assert(!mt6797_ccci_runtime_policy(&metadata,CONFIG_MTK_MT6797_MD1_SUPPORT,&selected,&override));
+  assert(selected==12&&!override&&!memcmp(&metadata,&old,sizeof(metadata)));
+  config.load_type=metadata.load_type;config.modem_capability=selected;
+  config.modem_capability_known=selected>0;
+  assert(!mtk_ccci_runtime_v2_build(query,72,&config,runtime,2048,&len));check_sbp(len,63);
+ }
+ metadata.options=(struct mt6797_md1_lk_runtime_options){
+  .gate=2,.gate_present=true,.support=8,.support_present=true};
+ metadata.capability_available=false;old=metadata;
+ assert(!mt6797_ccci_runtime_policy(&metadata,12,&selected,&override));
+ assert(selected==8&&override&&!memcmp(&metadata,&old,sizeof(metadata)));
+ config.modem_capability=selected;
+ assert(!mtk_ccci_runtime_v2_build(query,72,&config,runtime,2048,&len));check_sbp(len,51);
+ /* Image type is neither selected policy nor the independent load-type gate. */
+ metadata.image_type=21;metadata.load_type=1;
+ assert(!mt6797_ccci_runtime_policy(&metadata,12,&selected,&override));
+ config.load_type=metadata.load_type;config.modem_capability=selected;
+ assert(!mtk_ccci_runtime_v2_build(query,72,&config,runtime,2048,&len));check_sbp(len,0);
+ const s32 invalid[]={0,-1,22};const int errors[]={-ENODATA,-ENODATA,-EOPNOTSUPP};
+ for(unsigned i=0;i<3;i++) {
+  metadata.options.support=invalid[i];selected=-99;override=false;
+  assert(mt6797_ccci_runtime_policy(&metadata,12,&selected,&override)==errors[i]);
+  assert(selected==-99&&!override);
+ }
+ metadata.options.support=0x5a000025;
+ assert(!mt6797_ccci_runtime_policy(&metadata,12,&selected,&override));
+ config.load_type=9;config.modem_capability=selected;
+ assert(!mtk_ccci_runtime_v2_build(query,72,&config,runtime,2048,&len));check_sbp(len,61);
+ metadata.options=(struct mt6797_md1_lk_runtime_options){0};
+ assert(!mt6797_ccci_runtime_policy(&metadata,0,&selected,&override));
+ assert(selected==0&&!override);
+ config.modem_capability=selected;config.modem_capability_known=false;refused_sbp(-ENODATA);
+ for(unsigned i=0;i<3;i++) {
+  const int failures[]={-EMSGSIZE,-EEXIST,-ERANGE};
+  metadata.option_parse_errno=failures[i];selected=-99;override=true;
+  assert(mt6797_ccci_runtime_policy(&metadata,12,&selected,&override)==failures[i]);
+  assert(selected==-99&&override);
+ }
+ metadata.option_parse_errno=0;
+ assert(mt6797_ccci_runtime_policy(&metadata,22,&selected,&override)==-EOPNOTSUPP);
+ assert(mt6797_ccci_runtime_policy(&metadata,-1,&selected,&override)==-ENODATA);
+ config.load_type=9;config.modem_capability=8;config.modem_capability_known=true;
+ puts("PASS actual configured-policy/wire path: board12 WM63, option precedence, invalid override/parse refusal, raw metadata immutable, independent load/image types");
 }
 int main(void)
 {
@@ -178,6 +244,7 @@ int main(void)
  u8 *cursor=runtime+2044;
  assert(mtk_ccci_runtime_append(&cursor,runtime+2048,63,0,NULL,0)==-ENOSPC);
  assert(cursor==runtime+2044 && runtime[2044]==0xa5);
+ check_configured_policy();
  config.smem_md_addr=UINT32_MAX; reply_len=999;
  assert(mtk_ccci_runtime_v2_response(&config,reply,116,&reply_len)==-ERANGE);
  assert(reply_len==999);
@@ -196,7 +263,7 @@ with tempfile.TemporaryDirectory(prefix="gemini-ccci-wire64-") as temp:
     for label, selected in sources:
         test = path / (label + ".c")
         output = path / label
-        test.write_text(shim + strip_includes(header) + strip_includes(selected) + fixture + tests)
+        test.write_text(shim + f"\n#define CONFIG_MTK_MT6797_MD1_SUPPORT {configured}\n" + strip_includes(header) + strip_includes(selected) + metadata_structs + "\n" + policy + fixture + tests)
         subprocess.run(shlex.split(os.environ.get("HOSTCC", os.environ.get("CC", "cc"))) +
                        ["-std=gnu11", "-Wall", "-Wextra", "-Werror",
                         "-fsanitize=address,undefined", "-fno-omit-frame-pointer",

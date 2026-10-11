@@ -46,6 +46,10 @@ struct mtk_gnss {
 	bool registered;
 	bool active;
 	bool faulted;
+	/* Nonempty RX frame outcomes, preserved for this endpoint's lifetime. */
+	u64 rx_admitted_frames;
+	u64 rx_inactive_frames;
+	u64 rx_rejected_frames;
 };
 
 /*

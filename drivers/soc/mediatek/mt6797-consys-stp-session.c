@@ -99,6 +99,8 @@ struct mt6797_consys_stp_session {
 	bool last_rx_ok;
 	bool bootstrap_verified;
 	u8 resync_count;
+	/* CRC-valid nonempty task-2 frames, including retries and out-of-order RX. */
+	u64 gnss_rx_frames;
 	u8 payload[MTK_STP_MAX_PAYLOAD];
 };
 
@@ -269,6 +271,8 @@ static int mt6797_consys_stp_finish_frame_locked(
 	crc = crc16(0, session->payload, session->payload_length);
 	if (session->crc[0] != (u8)crc || session->crc[1] != (u8)(crc >> 8))
 		return -EBADMSG;
+	if (session->channel == MTK_STP_GNSS && session->payload_length)
+		session->gnss_rx_frames++;
 
 	sequence = (session->header[0] >> 3) & 0x7;
 	ack = session->header[0] & 0x7;
@@ -547,6 +551,21 @@ bool mt6797_consys_stp_session_lease_active(
 	return active;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_lease_active);
+
+u64 mt6797_consys_stp_session_gnss_rx_frames(
+				struct mt6797_consys_stp_session *session)
+{
+	u64 frames;
+
+	if (!session)
+		return 0;
+
+	mutex_lock(&session->lock);
+	frames = session->gnss_rx_frames;
+	mutex_unlock(&session->lock);
+	return frames;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_session_gnss_rx_frames);
 
 bool mt6797_consys_stp_session_tx_pending(
 			const struct mt6797_consys_stp_session_lease *lease)

@@ -19,6 +19,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
+#include <linux/sysfs.h>
 #include <linux/soc/mediatek/mt6797-consys-gnss.h>
 #include <linux/soc/mediatek/mtk-gnss.h>
 #include <linux/soc/mediatek/mt6797-consys-stp-session.h>
@@ -40,6 +41,14 @@ static int mtk_gnss_receive(void *context, const u8 *payload, size_t length)
 			ret = -ENOSPC;
 		else
 			ret = gnss_insert_raw(gnss->gdev, payload, length);
+	}
+	if (length) {
+		if (!accepting)
+			gnss->rx_inactive_frames++;
+		else if (ret < 0 || ret != length)
+			gnss->rx_rejected_frames++;
+		else
+			gnss->rx_admitted_frames++;
 	}
 	mutex_unlock(&gnss->lock);
 
@@ -352,6 +361,29 @@ struct mt6797_gnss_device {
 	bool lna_enabled;
 };
 
+static ssize_t rx_delivery_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct mt6797_gnss_device *device = dev_get_drvdata(dev);
+	struct mtk_gnss *gnss = &device->endpoint;
+	ssize_t ret;
+
+	mutex_lock(&gnss->lock);
+	ret = sysfs_emit(buf, "admitted=%llu inactive=%llu rejected=%llu\n",
+			 (unsigned long long)gnss->rx_admitted_frames,
+			 (unsigned long long)gnss->rx_inactive_frames,
+			 (unsigned long long)gnss->rx_rejected_frames);
+	mutex_unlock(&gnss->lock);
+	return ret;
+}
+static DEVICE_ATTR_RO(rx_delivery);
+
+static struct attribute *mt6797_gnss_attrs[] = {
+	&dev_attr_rx_delivery.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(mt6797_gnss);
+
 static int mt6797_gnss_lna_off(struct mt6797_gnss_device *device)
 {
 	int ret;
@@ -472,6 +504,7 @@ static struct platform_driver mt6797_gnss_driver = {
 	.driver = {
 		.name = "mt6797-gnss",
 		.of_match_table = mt6797_gnss_of_match,
+		.dev_groups = mt6797_gnss_groups,
 	},
 };
 module_platform_driver(mt6797_gnss_driver);

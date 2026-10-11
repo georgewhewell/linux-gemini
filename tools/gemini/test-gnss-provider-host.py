@@ -54,6 +54,7 @@ code = r'''
 #include <string.h>
 #include <errno.h>
 typedef uint8_t u8;
+typedef uint64_t u64;
 #define EPROBE_DEFER 517
 #define ERESTARTSYS 512
 #define GFP_KERNEL 0
@@ -67,6 +68,7 @@ typedef uint8_t u8;
 DEFINES
 static unsigned long jiffies;
 struct mutex { bool held; };
+static void mutex_init(struct mutex *m) { m->held = false; }
 static void mutex_lock(struct mutex *m) { assert(!m->held); m->held = true; }
 static void mutex_unlock(struct mutex *m) { assert(m->held); m->held = false; }
 static unsigned live_allocations;
@@ -147,7 +149,10 @@ struct mtk_gnss {
  struct mutex lock; bool initialized, registered, unregistering, transitioning, active, faulted;
  struct gnss_device *gdev; const struct mt6797_consys_stp_session_lease *session_lease;
  int transition_queue;
- struct { int (*set_power)(void *, bool); int (*transmit)(void *, const u8 *, size_t); void *context; } transport;
+ struct mtk_gnss_transport {
+  int (*set_power)(void *, bool); int (*transmit)(void *, const u8 *, size_t); void *context;
+ } transport;
+ u64 rx_admitted_frames, rx_inactive_frames, rx_rejected_frames;
 };
 static int mtk_gnss_wait_for_transition(struct mtk_gnss *g)
 { assert(!g->transitioning); mutex_lock(&g->lock); return 0; }
@@ -161,14 +166,33 @@ struct mt6797_gnss_device {
 };
 struct platform_device { struct mt6797_gnss_device *data; };
 static void *platform_get_drvdata(struct platform_device *p) { return p->data; }
-struct gnss_device { struct mtk_gnss *data; };
+struct gnss_device { struct mtk_gnss *data; unsigned type; const int *ops; bool allocated; };
+static const int mtk_gnss_ops;
+#define GNSS_TYPE_MTK 3
+#define init_waitqueue_head(q) (*(q) = 0)
+static struct gnss_device *gnss_allocate_device(struct device *parent)
+{ assert(parent); struct gnss_device *g = calloc(1, sizeof(*g)); assert(g); g->allocated = true; return g; }
+static void gnss_set_drvdata(struct gnss_device *g, void *data) { g->data = data; }
+static int gnss_register_device(struct gnss_device *g)
+{ assert(g->data->registered && g->type == GNSS_TYPE_MTK && g->ops == &mtk_gnss_ops); return 0; }
 static void mtk_gnss_stop(struct mtk_gnss *g);
 static void gnss_deregister_device(struct gnss_device *g)
 { event('U'); mtk_gnss_stop(g->data); }
 static void gnss_put_device(struct gnss_device *g)
-{ assert(!g->data->registered && !g->data->gdev); event('P'); consumer_detached = true; }
+{
+ assert(!g->data->registered && !g->data->gdev); event('P'); consumer_detached = true;
+ if (g->allocated) free(g);
+}
 static int mtk_gnss_receive(void *ctx, const u8 *payload, size_t n)
 { (void)ctx; (void)payload; (void)n; return 0; }
+static int mt6797_consys_stp_session_bind_gnss(
+ const struct mt6797_consys_stp_session_lease *s,
+ int (*receive)(void *, const u8 *, size_t), void *ctx)
+{
+ struct mtk_gnss *g = ctx;
+ assert(s == &session && s->valid && receive == mtk_gnss_receive && g->lock.held);
+ return 0;
+}
 static int mt6797_consys_stp_session_unbind_gnss(
  const struct mt6797_consys_stp_session_lease *s,
  int (*receive)(void *, const u8 *, size_t), void *ctx)
@@ -190,7 +214,8 @@ for name in ['static int mt6797_consys_func_wmt(', 'static bool mt6797_consys_ra
     code += extracted + '\n'
 for name in ['static int mt6797_gnss_lna_off(', 'static void mt6797_gnss_cleanup_lna(',
              'static int mt6797_gnss_set_power(', 'static int mt6797_gnss_transmit(',
-             'int mtk_gnss_write(', 'void mtk_gnss_stop(', 'void mtk_gnss_unregister(',
+             'int mtk_gnss_start(', 'int mtk_gnss_write(', 'void mtk_gnss_stop(',
+             'int mtk_gnss_register(', 'void mtk_gnss_unregister(',
              'static void mt6797_gnss_remove(']:
     code += function(endpoint, name) + '\n'
 code += r'''
@@ -281,6 +306,27 @@ int main(void)
  reset(); acquire(); session.valid = false; consys.state = MT6797_CONSYS_OWNER_ERROR; consys.stp_lease = NULL;
  assert(mt6797_consys_gnss_transmit(device.lease, payload, 3) == -ESHUTDOWN && tx_calls == 0);
  assert(mt6797_consys_bt_transmit(&bt, payload, 3) == -ESHUTDOWN); release();
+ /* Actual open/close/unregister/re-register retain the same endpoint counts. */
+ reset(); acquire();
+ device.endpoint.rx_admitted_frames = 11;
+ device.endpoint.rx_inactive_frames = 22;
+ device.endpoint.rx_rejected_frames = 33;
+ for (unsigned i = 0; i < 2; i++) {
+  assert(mtk_gnss_start(&device.endpoint) == 0);
+  mtk_gnss_stop(&device.endpoint);
+  assert(device.endpoint.rx_admitted_frames == 11 && device.endpoint.rx_inactive_frames == 22);
+  assert(device.endpoint.rx_rejected_frames == 33 && !lna.votes);
+ }
+ mtk_gnss_unregister(&device.endpoint);
+ struct mtk_gnss_transport transport = {mt6797_gnss_set_power, mt6797_gnss_transmit, &device};
+ assert(mtk_gnss_register(&device.endpoint, &child, &session, &transport) == 0);
+ consumer_detached = false;
+ assert(mtk_gnss_start(&device.endpoint) == 0);
+ assert(device.endpoint.rx_admitted_frames == 11 && device.endpoint.rx_inactive_frames == 22);
+ assert(device.endpoint.rx_rejected_frames == 33);
+ release();
+ assert(device.endpoint.rx_admitted_frames == 11 && device.endpoint.rx_inactive_frames == 22);
+ assert(device.endpoint.rx_rejected_frames == 33);
  return 0;
 }
 '''

@@ -32,6 +32,7 @@
 #include <linux/soc/mediatek/mt6797-consys-fw.h>
 #include <linux/reset.h>
 #include <linux/sizes.h>
+#include <linux/sysfs.h>
 
 #include <linux/soc/mediatek/mt6797-consys-emi-mpu.h>
 #include <linux/soc/mediatek/mt6797-consys-bt.h>
@@ -147,6 +148,27 @@ struct mt6797_consys {
 	int bgf_irq;
 	int wdt_irq;
 };
+
+static ssize_t gnss_rx_frames_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct mt6797_consys *consys = dev_get_drvdata(dev);
+	ssize_t ret = -ENODEV;
+
+	mutex_lock(&consys->lifecycle_lock);
+	if (consys->stp_session)
+		ret = sysfs_emit(buf, "%llu\n", (unsigned long long)
+			mt6797_consys_stp_session_gnss_rx_frames(consys->stp_session));
+	mutex_unlock(&consys->lifecycle_lock);
+	return ret;
+}
+static DEVICE_ATTR_RO(gnss_rx_frames);
+
+static struct attribute *mt6797_consys_attrs[] = {
+	&dev_attr_gnss_rx_frames.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(mt6797_consys);
 
 struct mt6797_consys_bt_lease {
 	struct mt6797_consys *consys;
@@ -1683,6 +1705,7 @@ static struct platform_driver mt6797_consys_driver = {
 	.driver = {
 		.name = "mt6797-consys",
 		.of_match_table = mt6797_consys_of_match,
+		.dev_groups = mt6797_consys_groups,
 		.pm = pm_sleep_ptr(&mt6797_consys_pm_ops),
 		.suppress_bind_attrs = true,
 	},

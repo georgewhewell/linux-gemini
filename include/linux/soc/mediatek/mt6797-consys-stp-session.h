@@ -119,6 +119,14 @@ bool mt6797_consys_stp_session_tx_pending(
 			const struct mt6797_consys_stp_session_lease *lease);
 
 /*
+ * Read the lifetime count of CRC-valid nonempty task-2 frames, before sequence
+ * selection or endpoint admission. Parser resets and fencing preserve it.
+ * This does not require an active lease; the caller retains session lifetime.
+ */
+u64 mt6797_consys_stp_session_gnss_rx_frames(
+				struct mt6797_consys_stp_session *session);
+
+/*
  * Verify that a capability belongs to the specified session owner. The caller
  * must serialize this check with session teardown. This does not make an
  * inactive or provisional capability active.

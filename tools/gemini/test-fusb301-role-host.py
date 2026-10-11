@@ -50,7 +50,7 @@ enum typec_pwr_opmode { TYPEC_PWR_MODE_USB, TYPEC_PWR_MODE_1_5A,
 enum usb_role { USB_ROLE_NONE, USB_ROLE_HOST, USB_ROLE_DEVICE };
 enum { TYPEC_ACCESSORY_NONE, TYPEC_ACCESSORY_AUDIO, TYPEC_ACCESSORY_DEBUG };
 struct device { int unused; };
-struct regmap { unsigned int status, type, mode, control, mask; int error; };
+struct regmap { unsigned int status, type, mode, control, mask; int error, type_error; };
 struct regulator { bool on; int enable_error; };
 struct typec_capability { enum typec_port_type type; int prefer_role; };
 struct typec_port {
@@ -65,7 +65,8 @@ struct typec_partner_desc { int accessory; };
 struct usb_role_switch { enum usb_role role; int error; };
 struct i2c_client { struct device dev; int irq; void *data; };
 static struct typec_partner partner;
-static int partners, orientation_error, partner_error;
+static int partners, orientation_error, orientation_none_error, partner_error;
+static unsigned role_calls, orientation_calls, status_reads, type_reads;
 static bool removing, irq_live, port_live, switch_released;
 static bool poll_pending;
 '''
@@ -75,7 +76,10 @@ code += r'''
 static int regmap_read(struct regmap *map, unsigned reg, unsigned *value)
 {
     assert(reg == FUSB301_REG_STATUS || reg == FUSB301_REG_TYPE);
+    if (reg == FUSB301_REG_STATUS) status_reads++;
+    else type_reads++;
     if (map->error) return map->error;
+    if (reg == FUSB301_REG_TYPE && map->type_error) return map->type_error;
     *value = reg == FUSB301_REG_STATUS ? map->status : map->type;
     return 0;
 }
@@ -109,6 +113,7 @@ static int regulator_disable(struct regulator *r)
 }
 static int usb_role_switch_set_role(struct usb_role_switch *sw, enum usb_role role)
 {
+    role_calls++;
     if (removing) assert(!irq_live && !poll_pending);
     if (!sw) return 0;
     if (sw->error) return sw->error;
@@ -117,10 +122,14 @@ static int usb_role_switch_set_role(struct usb_role_switch *sw, enum usb_role ro
 }
 static int typec_set_orientation(struct typec_port *p, enum typec_orientation o)
 {
+    orientation_calls++;
     assert(port_live);
+    if (o == TYPEC_ORIENTATION_NONE && orientation_none_error)
+        return orientation_none_error;
+    /* A failing provider can already have changed its hardware. */
+    p->orientation = o;
     if (orientation_error && o != TYPEC_ORIENTATION_NONE)
         return orientation_error;
-    p->orientation = o;
     return 0;
 }
 static void typec_set_data_role(struct typec_port *p, enum typec_data_role role)
@@ -166,6 +175,18 @@ for name in ("fusb301_set_vbus", "fusb301_mode_for_port_type", "fusb301_host_cur
     code += fragment(r"^static [\w ]+ " + name + r"\(.*?^}\n")
 
 code += r'''
+static void unchanged_samples(struct fusb301 *fusb, unsigned count)
+{
+    unsigned roles = role_calls, orientations = orientation_calls;
+    unsigned statuses = status_reads, types = type_reads;
+
+    for (unsigned i = 0; i < count; i++)
+        assert(!fusb301_update_status(fusb));
+    /* Poll hardware, without reporting successful unchanged state again. */
+    assert(status_reads == statuses + count && type_reads == types + count);
+    assert(role_calls == roles && orientation_calls == orientations);
+}
+
 int main(void)
 {
     struct regmap map = {0};
@@ -181,6 +202,8 @@ int main(void)
     port_live = true;
     assert(!fusb301_update_status(&fusb));
     assert(sw.role == USB_ROLE_NONE && !vbus.on && !partners);
+    assert(role_calls == 1 && orientation_calls == 1);
+    unchanged_samples(&fusb, 4096);
 
     for (unsigned orientation = 0x10; orientation <= 0x20; orientation += 0x10) {
         /* A downstream device requires host data role and source power. */
@@ -192,10 +215,12 @@ int main(void)
         assert(port.orientation == (orientation == 0x10 ?
                TYPEC_ORIENTATION_NORMAL : TYPEC_ORIENTATION_REVERSE));
         assert(!fusb301_update_status(&fusb) && partners == 1);
+        unchanged_samples(&fusb, 32);
         map.status = 0;
         assert(!fusb301_update_status(&fusb));
         assert(sw.role == USB_ROLE_NONE && !vbus.on && !partners);
         assert(port.orientation == TYPEC_ORIENTATION_NONE);
+        unchanged_samples(&fusb, 32);
     }
 
     /* An upstream host supplies power; we must not drive VBUS ourselves. */
@@ -205,6 +230,20 @@ int main(void)
     assert(sw.role == USB_ROLE_DEVICE && !vbus.on && partners == 1);
     assert(port.data == TYPEC_DEVICE && port.power == TYPEC_SINK);
     assert(port.opmode == TYPEC_PWR_MODE_3_0A);
+    unchanged_samples(&fusb, 32);
+
+    /* Current advertisement changes even when attachment/type do not. */
+    map.status = (map.status & ~FUSB301_STATUS_BC_LVL) | FUSB301_BC_1_5A;
+    assert(!fusb301_update_status(&fusb));
+    assert(port.opmode == TYPEC_PWR_MODE_1_5A);
+    unchanged_samples(&fusb, 32);
+
+    /* A failing TYPE read cannot be hidden by a previously good sample. */
+    map.type_error = -EIO;
+    assert(fusb301_update_status(&fusb) == -EIO);
+    assert(sw.role == USB_ROLE_NONE && !partners);
+    map.type_error = 0;
+    assert(!fusb301_update_status(&fusb) && sw.role == USB_ROLE_DEVICE);
 
     /* CC attachment alone must not assert a peripheral's VBUS session. */
     map.status &= ~FUSB301_STATUS_VBUSOK;
@@ -234,10 +273,14 @@ int main(void)
     for (unsigned i = 0; i < sizeof(faults) / sizeof(faults[0]); i++) {
         *faults[i] = -EIO;
         assert(fusb301_update_status(&fusb) == -EIO);
+        assert(fusb301_update_status(&fusb) == -EIO);
         assert(!vbus.on && !fusb.vbus_on && !partners);
         assert(!fusb.partner_type && sw.role == USB_ROLE_NONE);
         assert(port.orientation == TYPEC_ORIENTATION_NONE);
         *faults[i] = 0;
+        assert(!fusb301_update_status(&fusb));
+        assert(sw.role == USB_ROLE_HOST && vbus.on && partners == 1);
+        assert(!fusb301_disconnect(&fusb));
     }
 
     /* A failed data disconnect must still remove VBUS and the partner. */
@@ -248,6 +291,20 @@ int main(void)
     assert(!vbus.on && !partners && !fusb.partner_type);
     sw.error = 0;
     assert(!fusb301_update_status(&fusb) && sw.role == USB_ROLE_NONE);
+    unchanged_samples(&fusb, 32);
+
+    /* Failed detached orientation must retry the identical detached sample. */
+    map.status = FUSB301_STATUS_ATTACH | FUSB301_ORIENT_CC1;
+    assert(!fusb301_update_status(&fusb));
+    orientation_none_error = -EIO;
+    map.status = 0;
+    assert(fusb301_update_status(&fusb) == -EIO);
+    assert(fusb301_update_status(&fusb) == -EIO);
+    assert(!vbus.on && !partners && sw.role == USB_ROLE_NONE);
+    orientation_none_error = 0;
+    assert(!fusb301_update_status(&fusb));
+    assert(port.orientation == TYPEC_ORIENTATION_NONE);
+    unchanged_samples(&fusb, 32);
 
     /* Fixed-role boards continue working without a role-switch provider. */
     fusb.role_sw = NULL;
@@ -294,6 +351,7 @@ int main(void)
     fusb301_remove(&client);
     assert(!poll_pending && !port_live && switch_released);
     puts("PASS: FUSB301 roles, orientations, errors, polling and IRQ/work teardown");
+    puts("PASS: FUSB301 unchanged samples, real state changes and provider retries");
     return 0;
 }
 '''

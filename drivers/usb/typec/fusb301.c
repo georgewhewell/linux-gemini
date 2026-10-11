@@ -65,6 +65,9 @@ struct fusb301 {
 	struct fwnode_handle *connector;
 	enum typec_pwr_opmode pwr_opmode;
 	unsigned int partner_type;
+	unsigned int cached_status;
+	unsigned int cached_type;
+	bool status_valid;
 	struct regulator *vbus;
 	bool vbus_on;
 	bool polling;
@@ -186,6 +189,7 @@ static int fusb301_disconnect(struct fusb301 *fusb)
 {
 	int ret, err;
 
+	fusb->status_valid = false;
 	ret = usb_role_switch_set_role(fusb->role_sw, USB_ROLE_NONE);
 	/* Remove source power even if the data controller failed to stop. */
 	err = fusb301_set_vbus(fusb, false);
@@ -216,6 +220,14 @@ static int fusb301_update_status(struct fusb301 *fusb)
 	if (ret)
 		goto err_disconnect;
 
+	/* A successful sample has already been applied to every provider. */
+	if (fusb->status_valid && fusb->cached_status == status &&
+	    fusb->cached_type == type)
+		return 0;
+
+	/* A failing provider may have partially applied the new state. */
+	fusb->status_valid = false;
+
 	if (!(status & FUSB301_STATUS_ATTACH)) {
 		ret = fusb301_disconnect(fusb);
 		pwr_role = fusb301_default_role(fusb);
@@ -224,7 +236,9 @@ static int fusb301_update_status(struct fusb301 *fusb)
 		typec_set_pwr_role(fusb->port, pwr_role);
 		typec_set_vconn_role(fusb->port, pwr_role);
 		typec_set_pwr_opmode(fusb->port, fusb->pwr_opmode);
-		return ret;
+		if (ret)
+			return ret;
+		goto cache_status;
 	}
 
 	partner_type = type & (FUSB301_TYPE_SINK | FUSB301_TYPE_SOURCE |
@@ -288,6 +302,10 @@ static int fusb301_update_status(struct fusb301 *fusb)
 
 	fusb->partner_type = partner_type;
 
+cache_status:
+	fusb->cached_status = status;
+	fusb->cached_type = type;
+	fusb->status_valid = true;
 	return 0;
 
 err_disconnect:

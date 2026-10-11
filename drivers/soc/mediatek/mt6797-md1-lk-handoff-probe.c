@@ -515,6 +515,8 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 		.ap_md_smem_base = smem.base_phys + smem.ap_md1_offset,
 		.ap_md_smem_size = smem.ap_md1_size,
 		.md_mpu_smem_size = smem.md1_mpu_smem_size,
+		.md1_md3_smem_base = smem.base_phys + smem.md1_md3_offset,
+		.md1_md3_smem_size = smem.md1_md3_size,
 		.lk_reported_load_complete = true,
 	};
 	ret = mt6797_md1_mpu_remap_plan_build(tag_data, tag_size, &contract,

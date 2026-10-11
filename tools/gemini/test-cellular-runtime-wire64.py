@@ -326,6 +326,39 @@ int main(int argc,char **argv)
   at+=8+bytes;
  }
  assert(at==636);
+ /* Feature4 is owned memory, independently of unsupported C2K execution12. */
+ struct mtk_ccci_runtime_config original=config;
+ config.smem_size=0x200000;config.md_mpu_smem_size=0x400000;
+ config.md1_md3_smem_md_addr=0x40200000;config.md1_md3_smem_size=0x200000;
+ assert(!mtk_ccci_runtime_v2_reply(hs1,88,&config,0,runtime,2048,&len,reply,116,&reply_len));
+ assert(len==644 && reply_len==116);at=0;
+ for(unsigned id=0;id<64;id++) {
+  u32 bytes=get_unaligned_le32(runtime+at+4);
+  if(id==4) {assert(runtime[at+1]==2&&bytes==8);
+   assert(get_unaligned_le32(runtime+at+8)==0x40200000);
+   assert(get_unaligned_le32(runtime+at+12)==0x200000);}
+  if(id==12)assert(runtime[at+1]==1&&!bytes);
+  at+=8+bytes;
+ }
+ assert(at==644);
+ struct mtk_ccci_runtime_config owned=config;
+ for(unsigned bad=0;bad<6;bad++) {
+  config=owned;
+  switch(bad) {
+   case 0:config.md1_md3_smem_md_addr=0;break;
+   case 1:config.md1_md3_smem_md_addr++;break;
+   case 2:config.md1_md3_smem_size--;break;
+   case 3:config.md1_md3_smem_md_addr+=4;break;
+   case 4:config.md_mpu_smem_size-=4;break;
+   case 5:config.smem_md_addr=0xffe00000;config.md1_md3_smem_md_addr=0;break;
+  }
+  size_t rejected=999;
+  assert(mtk_ccci_runtime_v2_build(hs1+16,72,&config,runtime,2048,&rejected)==-ERANGE&&rejected==999);
+ }
+ config=owned;config.md1_md3_smem_size=0;len=999;
+ assert(mtk_ccci_runtime_v2_build(hs1+16,72,&config,runtime,2048,&len)==-EINVAL&&len==999);
+ config=original;
+
  /* Literal public WM values, independent of LK load type9 and image type. */
  const u32 legacy[]={51,57,59,61,63,19,41,45,39,23,25,29,35,39};
  empty_query(); query[4+9]=2;

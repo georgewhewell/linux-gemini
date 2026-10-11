@@ -198,6 +198,36 @@ int mt6797_md1_mpu_remap_plan_build(const void *data, size_t header_size,
 	result.mpu[MT6797_MD1_MPU_SHARED_ENTRY].access_permission =
 		mt6797_md1_pack_permissions((const u8[]) { 0, 0, 5, 0, 5, 5, 5, 5 });
 
+	/* Public ccci_platform.c: region 9 admits AP clearing and MD1/MD3.
+	 * Unlike AP-MD1 region 7, vendor programs this even with LK loading.
+	 * Publish only the exact contiguous, granule-aligned reservation.
+	 */
+	if (layout->md1_md3_smem_size) {
+		u64 ap_end, shared_end;
+
+		if (layout->md1_md3_smem_size != contract->md_to_md_shared_reserved_size ||
+		    (layout->md1_md3_smem_size & (MT6797_MD1_MPU_GRANULE - 1)) ||
+		    (layout->md1_md3_smem_base & (MT6797_MD1_MPU_GRANULE - 1)) ||
+		    check_add_overflow(layout->ap_md_smem_base,
+			(u64)layout->ap_md_smem_size, &ap_end) ||
+		    ap_end != layout->md1_md3_smem_base ||
+		    check_add_overflow(ap_end, (u64)layout->md1_md3_smem_size,
+			&shared_end) ||
+		    shared_end - layout->ap_md_smem_base != layout->md_mpu_smem_size)
+			return -ERANGE;
+		ret = mt6797_md1_plan_region(layout->md1_md3_smem_base,
+			layout->md1_md3_smem_size, 0, layout->md1_md3_smem_size,
+			&result.md1_md3_smem);
+		if (ret)
+			return ret;
+		result.md1_md3_smem.emi_mpu_region = 9;
+		result.md1_md3_smem.check_header_region = U8_MAX;
+		result.md1_md3_smem.access_permission =
+			mt6797_md1_pack_permissions((const u8[]) { 0, 0, 5, 5, 5, 0, 5, 5 });
+	} else if (layout->md1_md3_smem_base) {
+		return -EINVAL;
+	}
+
 	bank4_base = round_down(layout->ap_md_smem_base, MT6797_MD1_REMAP_SLOT_SIZE);
 	if (bank4_base < MT6797_MD1_KERNEL_EMI_BASE)
 		return -ERANGE;

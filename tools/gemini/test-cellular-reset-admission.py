@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import re
 
 root = Path(__file__).resolve().parents[2]
 owner = (root / "drivers/soc/mediatek/mt6797-md1-cold-owner.c").read_text()
@@ -15,6 +16,7 @@ def function(source, name):
     end = source.index("\n}\n", start) + 3
     return source[start:end]
 
+defines = '\n'.join(re.findall(r'^#define MT6797_MD1_(?:SPM_(?:C2K_PWR_CON|PWR_STATUS(?:_2ND|_C2K)?|PWR_RST_B|PWR_ISO|PWR_ON|PWR_ON_2ND|PWR_CLK_DIS)|INFRA_(?:C2K_PROT_MASK|PROTECT_EN|PROTECT_STA1))\s+.*$', owner, re.M))
 c = r'''
 #include <assert.h>
 #include <errno.h>
@@ -27,6 +29,10 @@ c = r'''
 typedef uint32_t u32;
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(*(x)))
 #define dev_info(...) do {} while (0)
+#define dev_err(...) do {} while (0)
+#define BIT(n) (1U<<(n))
+#define MT6797_MD1_RES_INFRA 0
+struct regmap { u32 values[256]; };
 struct device { int unused; };
 struct reset_control { int id; };
 struct reset_control_bulk_data { const char *id; struct reset_control *rstc; };
@@ -39,6 +45,10 @@ struct mt6797_md1_cold_owner_backend {
  bool cldma_reset_completed;
  void *ap_md_smem;
  u32 ap_md_smem_size;
+ void *md1_md3_smem;
+ u32 md1_md3_smem_size;
+ bool md1_md3_smem_initialized;
+ struct regmap *spm;void *base[1];
 };
 struct mt6797_md1_cold_state { int unused; };
 static struct mt6797_md1_cold_owner_cldma snapshot;
@@ -59,14 +69,20 @@ static int mt6797_md1_cold_cldma_registers_observe(void *b,
 { (void)b; assert(calls == 4); reads++; *state=snapshot; return observe_error; }
 ''' + function(owner, "mt6797_md1_cold_cldma_reset") + r'''
 static int cold_error, cold_reads, clears, barriers, smem_reads, corrupt_tail;
+static unsigned char infra[1024];
+static int register_error, register_reads;
+static int regmap_read(struct regmap *map, unsigned offset, u32 *value)
+{ register_reads++; if(register_error)return register_error;*value=map->values[offset/4];return 0; }
 static int mt6797_md1_cold_verify(void *context, struct mt6797_md1_cold_state *state)
 { (void)context; (void)state; cold_reads++; assert(!clears); return cold_error; }
 static void memset_io(void *memory, int value, size_t size)
 { assert(cold_reads==1 && !cold_error && !watchdog_error); clears++; memset(memory,value,size); }
-static void wmb(void) { assert(clears==1); barriers++; }
+static void wmb(void) { assert(clears==2); barriers++; }
 static u32 readl(void *memory)
-{ u32 word; assert(barriers==1); smem_reads++; memcpy(&word,memory,4); return word|corrupt_tail; }
-''' + function(owner, "mt6797_md1_cold_clear_smem") + r'''
+{ u32 word; memcpy(&word,memory,4);
+ if(memory==infra+0x220 || memory==infra+0x228)return word;
+ assert(barriers==1);smem_reads++;return word|corrupt_tail; }
+''' + defines + '\n' + function(owner, "mt6797_md1_cold_verify_c2k_off") + '\n' + function(owner, "mt6797_md1_cold_clear_smem") + r'''
 enum reset_control_flags { EXCLUSIVE };
 static struct reset_control controls[2] = {{0},{1}};
 static int gets, puts_count, fail_get;
@@ -115,8 +131,30 @@ int main(void)
  gets=puts_count=0; fail_get=0;
  assert(!__reset_control_bulk_get(NULL,2,b.cldma_resets,EXCLUSIVE));
  assert(gets==2 && !puts_count);
- /* The real clear callback touches only the validated AP reservation, after
-  * fresh watchdog and cold-reset checks. Guard words model adjacent MD3 RAM. */
+ /* Actual read-only C2K guard rejects power, reset, isolation and protection
+  * mismatches before either shared-memory reservation can be cleared. */
+ struct regmap spm={0};b.spm=&spm;b.base[0]=infra;
+ spm.values[0x328/4]=0x12;
+ u32 protection=0xe000;memcpy(infra+0x220,&protection,4);memcpy(infra+0x228,&protection,4);
+ assert(!mt6797_md1_cold_verify_c2k_off(&b));
+ for(unsigned bit=0;bit<5;bit++) {
+  spm.values[0x328/4]^=1U<<bit;
+  assert(mt6797_md1_cold_verify_c2k_off(&b)==-EBUSY);
+  spm.values[0x328/4]^=1U<<bit;
+ }
+ for(unsigned which=0;which<2;which++) {
+  spm.values[(0x180+4*which)/4]=1U<<28;
+  assert(mt6797_md1_cold_verify_c2k_off(&b)==-EBUSY);
+  spm.values[(0x180+4*which)/4]=0;
+  for(unsigned bit=13;bit<=15;bit++) {
+   u32 altered=protection^(1U<<bit);memcpy(infra+0x220+8*which,&altered,4);
+   assert(mt6797_md1_cold_verify_c2k_off(&b)==-EBUSY);
+   memcpy(infra+0x220+8*which,&protection,4);
+  }
+ }
+ unsigned char intermodem[72];memset(intermodem,0xa5,sizeof(intermodem));
+ b.md1_md3_smem=intermodem+4;b.md1_md3_smem_size=64;
+ /* Guard words model the AP-MD3 region that must remain untouched. */
  unsigned char shared[72]; memset(shared,0xa5,sizeof(shared));
  b.ap_md_smem=shared+4; b.ap_md_smem_size=64; calls=0;
  watchdog_error=-EPERM;
@@ -129,11 +167,19 @@ int main(void)
  b.ap_md_smem_size=63;
  assert(mt6797_md1_cold_clear_smem(&b)==-EINVAL && !cold_reads && !clears);
  b.ap_md_smem_size=64;
- assert(!mt6797_md1_cold_clear_smem(&b) && cold_reads==1 && clears==1 && barriers==1 && smem_reads==1);
+ register_error=-EIO;
+ assert(mt6797_md1_cold_clear_smem(&b)==-EIO&&!clears&&!b.md1_md3_smem_initialized);
+ register_error=0;cold_reads=0;spm.values[0x328/4]=0x1d;
+ assert(mt6797_md1_cold_clear_smem(&b)==-EBUSY&&!clears&&!b.md1_md3_smem_initialized);
+ spm.values[0x328/4]=0x12;cold_reads=0;
+ assert(!mt6797_md1_cold_clear_smem(&b) && cold_reads==1 && clears==2 && barriers==1 && smem_reads==2);
+ assert(b.md1_md3_smem_initialized);
+ assert(mt6797_md1_cold_clear_smem(&b)==-EINVAL&&clears==2);
+ for(unsigned i=0;i<sizeof(intermodem);i++) assert(intermodem[i]==(i<4||i>=68?0xa5:0));
  for(unsigned i=0;i<sizeof(shared);i++) assert(shared[i]==(i<4||i>=68?0xa5:0));
- cold_reads=clears=barriers=smem_reads=0; corrupt_tail=1;
- assert(mt6797_md1_cold_clear_smem(&b)==-EIO && clears==1 && smem_reads==1);
- assert(shared[0]==0xa5 && shared[71]==0xa5);
+ cold_reads=clears=barriers=smem_reads=0; corrupt_tail=1;b.md1_md3_smem_initialized=false;
+ assert(mt6797_md1_cold_clear_smem(&b)==-EIO && clears==2 && smem_reads==1);
+ assert(!b.md1_md3_smem_initialized && shared[0]==0xa5 && shared[71]==0xa5);
  puts("PASS actual cold-memory and reset callbacks: guards, reservation bounds, clear/barrier/readback, AO/PD order, failure propagation");
 }
 '''

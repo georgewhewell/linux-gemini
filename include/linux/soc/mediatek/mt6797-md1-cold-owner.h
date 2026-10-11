@@ -228,6 +228,9 @@ int mt6797_md1_cold_owner_acquire_cldma(struct device *consumer,
 /* Sleepable RF AFC update; requires the live, exclusive CLDMA consumer lease. */
 int mt6797_md1_cold_owner_rf_clock(struct device *consumer, u32 afc, u8 sw[4]);
 
+/* Exact intermodem reservation, only after cold initialization and handoff. */
+int mt6797_md1_cold_owner_md1_md3_smem_get(u64 *base, u32 *size);
+
 /* Finalize vendor region 13 after HS1 and before publishing runtime data. */
 int mt6797_md1_cold_owner_hs1_stage2(void);
 

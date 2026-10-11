@@ -48,6 +48,20 @@ static bool mt6797_md1_emi_mpu_plan_valid(
 		    entry->access_permission & ~MT6797_MD1_EMI_MPU_PERMISSION_MASK)
 			return false;
 	}
+	if (plan->md1_md3_smem.start) {
+		const struct mt6797_md1_mpu_plan_entry *entry = &plan->md1_md3_smem;
+
+		if (entry->emi_mpu_region != 9 || entry->check_header_region != U8_MAX ||
+		    entry->start != plan->mpu[MT6797_MD1_MPU_SHARED_ENTRY].end + 1 ||
+		    entry->start > entry->end || (entry->start & (SZ_64K - 1)) ||
+		    (entry->end & (SZ_64K - 1)) != SZ_64K - 1 ||
+		    entry->access_permission != 0x00b45b40)
+			return false;
+	} else if (plan->md1_md3_smem.end || plan->md1_md3_smem.access_permission ||
+		   plan->md1_md3_smem.emi_mpu_region ||
+		   plan->md1_md3_smem.check_header_region) {
+		return false;
+	}
 	return true;
 }
 
@@ -62,11 +76,12 @@ static bool mt6797_md1_emi_mpu_entries_valid(
 	if (!mt6797_md1_emi_mpu_plan_valid(plan) || !entries)
 		return false;
 	if (phase == MT6797_MD1_EMI_MPU_INITIAL) {
-		if (count != MT6797_MD1_BRINGUP_INITIAL_MPU_ENTRIES)
+		if (count != MT6797_MD1_BRINGUP_INITIAL_MPU_ENTRIES +
+		    !!plan->md1_md3_smem.start)
 			return false;
 		for (i = 0; i < count; i++) {
-			expected = i ? &plan->mpu[MT6797_MD1_MPU_SHARED_ENTRY] :
-				&plan->mpu[0];
+			expected = i == 2 ? &plan->md1_md3_smem :
+				i ? &plan->mpu[MT6797_MD1_MPU_SHARED_ENTRY] : &plan->mpu[0];
 			if (memcmp(&entries[i], expected, sizeof(*entries)))
 				return false;
 		}

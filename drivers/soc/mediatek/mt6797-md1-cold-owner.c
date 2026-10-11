@@ -92,6 +92,10 @@
 #define MT6797_MD1_SPM_PWR_STATUS		0x180
 #define MT6797_MD1_SPM_PWR_STATUS_2ND		0x184
 #define MT6797_MD1_SPM_MD1_PWR_CON		0x320
+/* Active vendor clk-mt6797-pg.c C2K power-off contract; read-only here. */
+#define MT6797_MD1_SPM_C2K_PWR_CON		0x328
+#define MT6797_MD1_SPM_PWR_STATUS_C2K		BIT(28)
+#define MT6797_MD1_INFRA_C2K_PROT_MASK		(BIT(13) | BIT(14) | BIT(15))
 #define MT6797_MD1_SPM_MD_EXT_BUCK_ISO		0x390
 #define MT6797_MD1_SPM_PWR_STATUS_MD1		BIT(0)
 #define MT6797_MD1_SPM_POWERON_CONFIG_EN_BIT	BIT(0)
@@ -225,6 +229,10 @@ struct mt6797_md1_cold_owner_backend {
 	bool cldma_reset_completed;
 	void __iomem *ap_md_smem;
 	u32 ap_md_smem_size;
+	void __iomem *md1_md3_smem;
+	u64 md1_md3_smem_base;
+	u32 md1_md3_smem_size;
+	bool md1_md3_smem_initialized;
 	void __iomem *base[MT6797_MD1_RES_COUNT];
 	struct regmap *pmic;
 	struct regmap *spm;
@@ -322,6 +330,28 @@ unlock:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_wait_handoff);
+
+int mt6797_md1_cold_owner_md1_md3_smem_get(u64 *base, u32 *size)
+{
+	struct mt6797_md1_cold_owner_backend *backend;
+	int ret;
+
+	if (!base || !size)
+		return -EINVAL;
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	backend = mt6797_md1_handoff_backend;
+	ret = mt6797_md1_handoff_status;
+	if (!ret && (atomic_read(&mt6797_md1_cold_owner_fatal_latch) ||
+		     !backend || !backend->md1_md3_smem_initialized))
+		ret = -ENODATA;
+	if (!ret) {
+		*base = backend->md1_md3_smem_base;
+		*size = backend->md1_md3_smem_size;
+	}
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_md1_md3_smem_get);
 
 static void mt6797_md1_cold_release_cldma(void *data)
 {
@@ -817,13 +847,48 @@ static int mt6797_md1_cold_cldma_reset(struct mt6797_md1_cold_owner_backend *bac
 	return 0;
 }
 
+static int mt6797_md1_cold_verify_c2k_off(struct mt6797_md1_cold_owner_backend *backend)
+{
+	u32 control, status, status2, protect, acknowledged;
+	u32 mask = MT6797_MD1_SPM_PWR_RST_B | MT6797_MD1_SPM_PWR_ISO |
+		MT6797_MD1_SPM_PWR_ON | MT6797_MD1_SPM_PWR_ON_2ND |
+		MT6797_MD1_SPM_PWR_CLK_DIS;
+	int ret;
+
+	ret = regmap_read(backend->spm, MT6797_MD1_SPM_C2K_PWR_CON, &control);
+	if (ret)
+		return ret;
+	ret = regmap_read(backend->spm, MT6797_MD1_SPM_PWR_STATUS, &status);
+	if (ret)
+		return ret;
+	ret = regmap_read(backend->spm, MT6797_MD1_SPM_PWR_STATUS_2ND, &status2);
+	if (ret)
+		return ret;
+	protect = readl(backend->base[MT6797_MD1_RES_INFRA] + MT6797_MD1_INFRA_PROTECT_EN);
+	acknowledged = readl(backend->base[MT6797_MD1_RES_INFRA] +
+			     MT6797_MD1_INFRA_PROTECT_STA1);
+	if ((control & mask) != (MT6797_MD1_SPM_PWR_ISO | MT6797_MD1_SPM_PWR_CLK_DIS) ||
+	    (status | status2) & MT6797_MD1_SPM_PWR_STATUS_C2K ||
+	    (protect & MT6797_MD1_INFRA_C2K_PROT_MASK) != MT6797_MD1_INFRA_C2K_PROT_MASK ||
+	    (acknowledged & MT6797_MD1_INFRA_C2K_PROT_MASK) != MT6797_MD1_INFRA_C2K_PROT_MASK) {
+		dev_err(backend->dev,
+			"C2K must be off before intermodem memory initialization: control=%#x status=%#x/%#x protect=%#x/%#x\n",
+			control, status, status2, protect, acknowledged);
+		return -EBUSY;
+	}
+	return 0;
+}
+
 static int mt6797_md1_cold_clear_smem(struct mt6797_md1_cold_owner_backend *backend)
 {
 	struct mt6797_md1_cold_state state;
 	int ret;
 
 	if (!backend || !backend->ap_md_smem || !backend->ap_md_smem_size ||
-	    backend->ap_md_smem_size % sizeof(u32))
+	    backend->ap_md_smem_size % sizeof(u32) ||
+	    !backend->md1_md3_smem || !backend->md1_md3_smem_size ||
+	    backend->md1_md3_smem_size % sizeof(u32) ||
+	    backend->md1_md3_smem_initialized)
 		return -EINVAL;
 	ret = mtk_wdt_require_boot_recovery(backend->dev);
 	if (ret)
@@ -831,18 +896,25 @@ static int mt6797_md1_cold_clear_smem(struct mt6797_md1_cold_owner_backend *back
 	ret = mt6797_md1_cold_verify(backend, &state);
 	if (ret)
 		return ret;
-	/* Vendor md_cd_start() clears AP-MD1 SMEM on first boot, before power
+	ret = mt6797_md1_cold_verify_c2k_off(backend);
+	if (ret)
+		return ret;
+	/* Vendor md_cd_start() clears AP-MD1 and MD1-MD3 on first boot, before power
 	 * and vector release. Clearing only the HS1 runtime leaves stale boot,
 	 * exception and service state behind. This is the one-shot cold owner;
 	 * never clear this reservation from the already-running transport.
-	 * MD1-MD3 memory needs the separate MD3 cold owner and is not touched.
+	 * C2K is verified off/reset/isolated; this grants no C2K execution authority.
 	 */
 	memset_io(backend->ap_md_smem, 0, backend->ap_md_smem_size);
+	memset_io(backend->md1_md3_smem, 0, backend->md1_md3_smem_size);
 	wmb();
-	if (readl(backend->ap_md_smem + backend->ap_md_smem_size - sizeof(u32)))
+	if (readl(backend->ap_md_smem + backend->ap_md_smem_size - sizeof(u32)) ||
+	    readl(backend->md1_md3_smem + backend->md1_md3_smem_size - sizeof(u32)))
 		return -EIO;
-	dev_info(backend->dev, "MD1 cold AP shared-memory initialization: %u bytes\n",
-		 backend->ap_md_smem_size);
+	backend->md1_md3_smem_initialized = true;
+	dev_info(backend->dev,
+		 "MD1 cold shared-memory initialization: AP=%u intermodem=%u bytes; C2K off\n",
+		 backend->ap_md_smem_size, backend->md1_md3_smem_size);
 	return 0;
 }
 
@@ -1303,9 +1375,10 @@ static int mt6797_md1_cold_firmware_verify(void *context)
 static int mt6797_md1_cold_apply_initial_mpu(struct device *dev,
 	const struct mt6797_md1_mpu_remap_plan *plan)
 {
-	struct mt6797_md1_mpu_plan_entry entries[2] = {
+	struct mt6797_md1_mpu_plan_entry entries[3] = {
 		plan->mpu[0],
 		plan->mpu[MT6797_MD1_MPU_SHARED_ENTRY],
+		plan->md1_md3_smem,
 	};
 
 	return mt6797_md1_emi_mpu_apply(dev, plan, MT6797_MD1_EMI_MPU_INITIAL,
@@ -1723,6 +1796,16 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 					   layout.ap_md_smem_size);
 	if (!backend->ap_md_smem)
 		return -ENOMEM;
+	if (!layout.md1_md3_smem_size ||
+	    plan.md1_md3_smem.start != layout.md1_md3_smem_base ||
+	    plan.md1_md3_smem.end - plan.md1_md3_smem.start + 1 != layout.md1_md3_smem_size)
+		return -ERANGE;
+	backend->md1_md3_smem_base = layout.md1_md3_smem_base;
+	backend->md1_md3_smem_size = layout.md1_md3_smem_size;
+	backend->md1_md3_smem = devm_ioremap_wc(&pdev->dev, layout.md1_md3_smem_base,
+					    layout.md1_md3_smem_size);
+	if (!backend->md1_md3_smem)
+		return -ENOMEM;
 	ret = mt6797_md1_cold_sim_pins_get(backend);
 	if (ret)
 		return ret;
@@ -1805,6 +1888,9 @@ static int mt6797_md1_cold_owner_probe(struct platform_device *pdev)
 		if (ret)
 			return ret;
 	}
+	ret = mt6797_md1_cold_verify_c2k_off(backend);
+	if (ret)
+		goto out_fatal;
 	ret = mt6797_md1_cold_apply_initial_mpu(&pdev->dev, &plan);
 	if (ret)
 		goto out_fatal;

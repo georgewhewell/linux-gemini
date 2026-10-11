@@ -92,6 +92,9 @@ struct mtk_ccci_runtime_config {
 	u32 smem_size;
 	/* Contiguous runtime-v1 MPU extent; may exceed the AP1 CPU mapping. */
 	u32 md_mpu_smem_size;
+	/* Nonzero only for the cold owner's initialized, protected reservation. */
+	u32 md1_md3_smem_md_addr;
+	u32 md1_md3_smem_size;
 	u32 random_seed;
 	u32 ccmni_mtu;
 	/* LK load type and configured RAT capability are distinct inputs. */

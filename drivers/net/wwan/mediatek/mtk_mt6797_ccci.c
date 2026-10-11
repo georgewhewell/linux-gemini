@@ -1997,7 +1997,8 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	struct mt6797_md1_mpu_remap_plan plan;
 	struct mt6797_md1_lk_runtime_metadata metadata;
 	struct mt6797_md1_mpu_remap_layout layout;
-	u64 md_smem;
+	u64 md_smem, md1_md3_base;
+	u32 md1_md3_size;
 	s32 policy;
 	bool lk_override;
 	int ret;
@@ -2024,6 +2025,14 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 		return -ERANGE;
 	if (md_smem > U32_MAX || md_smem + layout.md_mpu_smem_size - 1 > U32_MAX)
 		return -ERANGE;
+	ret = mt6797_md1_cold_owner_md1_md3_smem_get(&md1_md3_base, &md1_md3_size);
+	if (ret)
+		return ret;
+	if (!md1_md3_size || md1_md3_base != layout.md1_md3_smem_base ||
+	    md1_md3_size != layout.md1_md3_smem_size ||
+	    md1_md3_base != layout.ap_md_smem_base + layout.ap_md_smem_size ||
+	    (u64)layout.ap_md_smem_size + md1_md3_size != layout.md_mpu_smem_size)
+		return -ERANGE;
 	ret = mt6797_md1_lk_handoff_runtime_get(&metadata);
 	if (ret)
 		return ret == -ENODATA ? -EPROBE_DEFER : ret;
@@ -2047,6 +2056,8 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	ccci->runtime_config.smem_md_addr = md_smem;
 	ccci->runtime_config.smem_size = layout.ap_md_smem_size;
 	ccci->runtime_config.md_mpu_smem_size = layout.md_mpu_smem_size;
+	ccci->runtime_config.md1_md3_smem_md_addr = md1_md3_base - plan.smem_offset_ap_to_md;
+	ccci->runtime_config.md1_md3_smem_size = md1_md3_size;
 	ccci->runtime_config.random_seed = get_random_u32();
 	ccci->runtime_config.ccmni_mtu = MTK_CCCI_NET_RX_SIZE;
 	ccci->runtime_config.load_type = metadata.load_type;

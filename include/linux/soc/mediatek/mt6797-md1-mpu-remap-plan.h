@@ -41,6 +41,8 @@ struct mt6797_md1_mpu_remap_layout {
 	u32 ap_md_smem_size;
 	/* Runtime v1 reservation extent only; grants no MD3 execution authority. */
 	u32 md_mpu_smem_size;
+	u64 md1_md3_smem_base;
+	u32 md1_md3_smem_size;
 
 	/*
 	 * This is copied into diagnostics only.  It must never be interpreted as
@@ -67,6 +69,8 @@ struct mt6797_md1_remap_values {
 struct mt6797_md1_mpu_remap_plan {
 	struct mt6797_md1_firmware_info firmware;
 	struct mt6797_md1_mpu_plan_entry mpu[MT6797_MD1_MPU_PLAN_ENTRIES];
+	/* Separate region 9; never covered by the MD1 LK-lock skip. */
+	struct mt6797_md1_mpu_plan_entry md1_md3_smem;
 	struct mt6797_md1_remap_values remap[MT6797_MD1_REMAP_MODE_COUNT];
 	u64 md_bank4_base;
 	u64 smem_offset_ap_to_md;

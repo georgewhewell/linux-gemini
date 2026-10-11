@@ -271,11 +271,25 @@ int mtk_ccci_runtime_v2_build(const void *query, size_t query_len,
 	    le32_to_cpu(modem->tail_pattern) != MTK_CCCI_MD_FEATURE_PATTERN)
 		return -EBADMSG;
 
+	if (config->md1_md3_smem_size) {
+		if (!config->md1_md3_smem_md_addr ||
+		    config->md1_md3_smem_md_addr % sizeof(u32) ||
+		    config->md1_md3_smem_size % sizeof(u32) ||
+		    (u64)config->smem_md_addr + config->smem_size != config->md1_md3_smem_md_addr ||
+		    (u64)config->smem_size + config->md1_md3_smem_size != config->md_mpu_smem_size ||
+		    (u64)config->md1_md3_smem_md_addr + config->md1_md3_smem_size - 1 > U32_MAX)
+			return -ERANGE;
+	} else if (config->md1_md3_smem_md_addr) {
+		return -EINVAL;
+	}
+
 	for (id = 0; id < MTK_CCCI_FEATURE_COUNT; id++) {
 		u8 ap = mtk_ccci_feature(mtk_ccci_ap_features[id], 0);
 		const void *data = NULL;
 		u32 len = 0;
 
+		if (id == MTK_CCCI_RT_MD1_MD3_SHM && config->md1_md3_smem_size)
+			ap = mtk_ccci_feature(MTK_CCCI_FEATURE_MUST_SUPPORT, 0);
 		ret = mtk_ccci_select_feature(modem->feature[id], ap, &selected);
 		if (ret)
 			return ret;
@@ -292,6 +306,12 @@ int mtk_ccci_runtime_v2_build(const void *query, size_t query_len,
 				put_unaligned_le32(config->smem_md_addr, shm);
 				put_unaligned_le32(MTK_CCCI_EXCEPTION_SIZE,
 						   shm + sizeof(u32));
+				data = shm;
+				len = sizeof(shm);
+				break;
+			case MTK_CCCI_RT_MD1_MD3_SHM:
+				put_unaligned_le32(config->md1_md3_smem_md_addr, shm);
+				put_unaligned_le32(config->md1_md3_smem_size, shm + sizeof(u32));
 				data = shm;
 				len = sizeof(shm);
 				break;

@@ -86,7 +86,7 @@ struct mt6797_ccci {
 };
 '''
 shim += constants + '\n' + layout + '\n' + smem_struct + '\n' + modem_struct + '\n' + response_struct + r'''
-static int wait_error, layout_error, plan_error, metadata_error, step, token, random_calls;
+static int wait_error, layout_error, plan_error, metadata_error, memory_error, step, token, random_calls;
 static struct mt6797_md1_lk_runtime_metadata metadata;
 static bool complete;
 static struct mt6797_md1_mpu_remap_layout saved;
@@ -98,8 +98,10 @@ static int mt6797_md1_lk_handoff_layout_get(struct mt6797_md1_mpu_remap_layout *
 { assert(step++ == 1); *l=saved; return layout_error; }
 static int mt6797_md1_lk_handoff_plan_get(struct mt6797_md1_mpu_remap_plan *p)
 { assert(step++ == 2); p->smem_offset_ap_to_md=offset; return plan_error; }
+static int mt6797_md1_cold_owner_md1_md3_smem_get(u64 *base,u32 *size)
+{ assert(step++ == 3); if(memory_error)return memory_error;*base=0x88200000;*size=0x200000;return 0; }
 static int mt6797_md1_lk_handoff_runtime_get(struct mt6797_md1_lk_runtime_metadata *m)
-{ assert(step++ == 3);if(metadata_error)return metadata_error;*m=metadata;return 0; }
+{ assert(step++ == 4);if(metadata_error)return metadata_error;*m=metadata;return 0; }
 static u32 get_random_u32(void) { random_calls++; return 123; }
 '''
 shim += function(core, 'int mt6797_md1_cldma_lk_carveout_validate(')
@@ -170,7 +172,7 @@ static void check_geometry(void)
 }
 static void reset(void)
 {
- wait_error=layout_error=plan_error=metadata_error=step=random_calls=0;
+ wait_error=layout_error=plan_error=metadata_error=memory_error=step=random_calls=0;
  metadata=(struct mt6797_md1_lk_runtime_metadata){.load_type=9,.image_type=12,
  .load_type_valid=true,.capability_available=true,
  .options={.gate=1,.gate_present=true,.support=8,.support_present=true}};
@@ -180,6 +182,7 @@ static void reset(void)
  .ap_md_smem_base=MT6797_MD1_CLDMA_LK_SMEM_BASE,
  /* Independent live C2 RMPU slice, not the validator's constant. */
  .ap_md_smem_size=0x00200000, .md_mpu_smem_size=0x00400000,
+ .md1_md3_smem_base=0x88200000,.md1_md3_smem_size=0x200000,
  .lk_reported_load_complete=true };
 }
 static void rejected(int expected)
@@ -218,6 +221,7 @@ int main(int argc,char **argv)
  assert(r.start==0x88000000 && r.end==0x881fffff && r.flags==IORESOURCE_MEM);
  assert(c.runtime_config.smem_md_addr==0x40000000 && c.runtime_config.smem_size==0x200000);
  assert(c.runtime_config.md_mpu_smem_size==0x400000);
+ assert(c.runtime_config.md1_md3_smem_md_addr==0x40200000&&c.runtime_config.md1_md3_smem_size==0x200000);
  assert(MTK_CCCI_RUNTIME_OFFSET + MTK_CCCI_RUNTIME_AP_SIZE +
         MTK_CCCI_RUNTIME_MD_SIZE <= c.runtime_config.smem_size);
  assert(c.runtime_config.smem_size <= r.end-r.start+1);
@@ -236,7 +240,7 @@ int main(int argc,char **argv)
  altered=c.runtime_config;altered.smem_md_addr=UINT32_MAX-0x400000+1;
  assert(!mtk_ccci_runtime_v2_response(&altered,response,sizeof(response),&response_len));
  altered.smem_md_addr++;rejected_response(altered,-ERANGE);
- assert(step==4 && random_calls==1);
+ assert(step==5 && random_calls==1);
  assert(c.runtime_config.load_type==9&&c.runtime_config.modem_capability==8&&c.runtime_config.modem_capability_known);
  /* Actual native admission must use configured12 when LK has no override. */
  reset();metadata.options=(struct mt6797_md1_lk_runtime_options){0};
@@ -263,6 +267,7 @@ int main(int argc,char **argv)
   reset(); wait_error=errors[i]; rejected(errors[i]==-ENODATA ? -EPROBE_DEFER : errors[i]);
   reset(); layout_error=errors[i]; rejected(errors[i]==-ENODATA ? -EPROBE_DEFER : errors[i]);
   reset(); plan_error=errors[i]; rejected(errors[i]);
+  reset(); memory_error=errors[i]; rejected(errors[i]);
   reset(); metadata_error=errors[i]; rejected(errors[i]==-ENODATA ? -EPROBE_DEFER : errors[i]);
  }
  reset(); token=0; rejected(-EPERM);
@@ -277,6 +282,8 @@ int main(int argc,char **argv)
  reset(); saved.ap_md_smem_size=0x00100000; rejected(-ERANGE);
  reset(); saved.md_mpu_smem_size=0; rejected(-ERANGE);
  reset(); saved.md_mpu_smem_size=0x00100000; rejected(-ERANGE);
+ reset();saved.md1_md3_smem_base++;rejected(-ERANGE);
+ reset();saved.md1_md3_smem_size--;rejected(-ERANGE);
  reset(); offset=UINT64_MAX; rejected(-ERANGE);
  reset(); offset=saved.ap_md_smem_base+1; rejected(-ERANGE);
  reset();offset=saved.ap_md_smem_base-(UINT32_MAX-0x200000+1ULL);rejected(-ERANGE);

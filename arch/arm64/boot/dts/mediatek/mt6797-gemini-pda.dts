@@ -1331,18 +1331,42 @@
 				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
 				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
 				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
+			drive-strength = <4>;
+			mediatek,tdsel = <12>;
+			mediatek,rdsel = <0>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
 		};
 
 		pins-clk {
 			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
+			drive-strength = <4>;
+			mediatek,tdsel = <12>;
+			mediatek,rdsel = <0>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_01>;
 		};
 
 		pins-ds {
 			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
+			drive-strength = <4>;
+			mediatek,tdsel = <12>;
+			mediatek,rdsel = <0>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_01>;
 		};
 
 		pins-rst {
 			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
+			drive-strength = <4>;
+			mediatek,tdsel = <12>;
+			mediatek,rdsel = <0>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
 		};
 	};
 

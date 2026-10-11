@@ -93,10 +93,19 @@ struct mt6797_ccci { atomic_int ready,at_open,failed,teardown;
 static _Thread_local unsigned spin_depth;
 static pthread_mutex_t *rx_lock;
 static _Thread_local bool rx_locked;
+static pthread_mutex_t *watched_ops;
+static _Thread_local bool trace_ops, held_ops;
+static pthread_mutex_t attempt_lock=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t attempt_cond=PTHREAD_COND_INITIALIZER;
+static unsigned ops_attempts;
+static void trace_ops_lock(pthread_mutex_t *p){
+ if(trace_ops&&p==watched_ops){assert(!pthread_mutex_lock(&attempt_lock));ops_attempts++;
+ assert(!pthread_cond_broadcast(&attempt_cond));assert(!pthread_mutex_unlock(&attempt_lock));}
+}
 #define spin_lock_irqsave(p,f) do{(f)=0;assert(!pthread_mutex_lock(p));spin_depth++;if((p)==rx_lock){assert(!rx_locked);rx_locked=true;}}while(0)
 #define spin_unlock_irqrestore(p,f) do{(void)(f);if((p)==rx_lock){assert(rx_locked);rx_locked=false;}assert(spin_depth);spin_depth--;assert(!pthread_mutex_unlock(p));}while(0)
-#define mutex_lock(p) do{assert(!spin_depth);assert(!pthread_mutex_lock(p));}while(0)
-#define mutex_unlock(p) assert(!pthread_mutex_unlock(p))
+#define mutex_lock(p) do{assert(!spin_depth);trace_ops_lock(p);assert(!pthread_mutex_lock(p));if((p)==watched_ops)held_ops=true;}while(0)
+#define mutex_unlock(p) do{if((p)==watched_ops){assert(held_ops);held_ops=false;}assert(!pthread_mutex_unlock(p));}while(0)
 #define rcu_read_lock() ((void)0)
 #define rcu_read_unlock() ((void)0)
 #define rcu_dereference(p) (p)
@@ -134,7 +143,10 @@ static bool pause_unregister;
 static void barrier(pthread_barrier_t *);
 static void wwan_port_unregister_wwan(struct wwan_port *p){assert(!spin_depth);assert(!p->unregistered++);if(pause_unregister){pause_unregister=false;barrier(&unregister_enter);barrier(&unregister_release);}}
 static void wwan_port_unregister_gnss(struct wwan_port *p){(void)p;assert(false);}
-static void *wwan_port_get_drvdata(struct wwan_port *p){assert(p->owner->owner_alive);return p->owner;}
+static pthread_barrier_t stop_enter,stop_release;
+static bool pause_stop;
+static void *wwan_port_get_drvdata(struct wwan_port *p){assert(p->owner->owner_alive);
+ if(pause_stop){assert(held_ops);pause_stop=false;barrier(&stop_enter);barrier(&stop_release);}return p->owner;}
 static void mt6797_ccci_first_fatal(struct mt6797_ccci *c,const char *site){(void)site;c->fatal++;}
 static void mt6797_md1_hs_crash(int *hs,int reason){(void)reason;(*hs)++;}
 static unsigned cold_count;
@@ -174,6 +186,10 @@ static void destroy(struct mt6797_ccci *c,struct wwan_port *p){
 }
 static void open_port(struct wwan_port *p){get_device(&p->dev);assert(!wwan_port_op_start(p));}
 static void close_port(struct wwan_port *p){struct file f={.private_data=p};assert(!wwan_port_fops_release(NULL,&f));}
+static void expect_count(struct wwan_port *p,unsigned expected){
+ mutex_lock(&p->ops_lock);unsigned actual=p->start_count;mutex_unlock(&p->ops_lock);
+ if(actual!=expected){fprintf(stderr,"OLD_CORE_RELEASE_ACCOUNTING: expected=%u actual=%u\n",expected,actual);exit(1);}
+}
 static struct sk_buff *frame(void){struct sk_buff *s=calloc(1,sizeof(*s));assert(s);s->len=4;s->truesize=64;return s;}
 struct waiter { struct wwan_port *p; bool tx; int ret; };
 static void *wait_thread(void *arg){struct waiter *w=arg;w->ret=w->tx?wwan_wait_tx(w->p,false):wwan_wait_rx(w->p,false);return NULL;}
@@ -205,9 +221,64 @@ static void fatal_waiters(void){
 #if CURRENT
  mt6797_ccci_cleanup_port(&c);mt6797_ccci_cleanup_port(&c);assert(p.unregistered==1&&!c.at_terminal_work.pending);
 #endif
- c.owner_alive=false;struct sk_buff s={0};assert(wwan_port_op_tx(&p,&s,false)==-ENODEV);close_port(&p);assert(p.dev.released);destroy(&c,&p);
+ c.owner_alive=false;struct sk_buff s={0};assert(wwan_port_op_tx(&p,&s,false)==-ENODEV);close_port(&p);expect_count(&p,0);assert(p.dev.released);destroy(&c,&p);
 }
 #if CURRENT
+static void multiple_opens(void){
+ for(unsigned early=0;early<=4;early++){
+  struct mt6797_ccci c;struct wwan_port p;struct wwan_device dev;init(&c,&p,&dev);
+  for(unsigned i=0;i<4;i++)open_port(&p);
+  expect_count(&p,4);assert(c.at_events[MT6797_CCCI_AT_OPEN]==1);
+  for(unsigned i=0;i<early;i++){close_port(&p);expect_count(&p,3-i);}
+  assert(c.at_events[MT6797_CCCI_AT_CLOSE]==(early==4));
+  mt6797_ccci_cleanup_port(&c);expect_count(&p,0);
+  assert(c.at_events[MT6797_CCCI_AT_CLOSE]==1&&!p.ops&&p.unregistered==1);
+  c.owner_alive=false;
+  for(unsigned i=early;i<4;i++){close_port(&p);expect_count(&p,0);}
+  assert(c.at_events[MT6797_CCCI_AT_CLOSE]==1&&p.dev.released&&dev.removals==1);destroy(&c,&p);
+ }
+ /* A live last close may start a fresh epoch; removal still stops once. */
+ struct mt6797_ccci c;struct wwan_port p;struct wwan_device dev;init(&c,&p,&dev);
+ open_port(&p);close_port(&p);expect_count(&p,0);open_port(&p);open_port(&p);
+ expect_count(&p,2);assert(c.at_events[MT6797_CCCI_AT_OPEN]==2);
+ close_port(&p);expect_count(&p,1);mt6797_ccci_cleanup_port(&c);close_port(&p);
+ expect_count(&p,0);assert(c.at_events[MT6797_CCCI_AT_CLOSE]==2);destroy(&c,&p);
+}
+static void *core_close_thread(void *arg){trace_ops=true;close_port(arg);trace_ops=false;return NULL;}
+static void *core_remove_thread(void *arg){trace_ops=true;mt6797_ccci_cleanup_port(arg);trace_ops=false;return NULL;}
+static void wait_ops_attempts(unsigned count){
+ assert(!pthread_mutex_lock(&attempt_lock));while(ops_attempts<count)assert(!pthread_cond_wait(&attempt_cond,&attempt_lock));
+ assert(!pthread_mutex_unlock(&attempt_lock));
+}
+static void close_remove_order(bool close_first){
+ struct mt6797_ccci c;struct wwan_port p;struct wwan_device dev;init(&c,&p,&dev);
+ unsigned opens=close_first?1:4;for(unsigned i=0;i<opens;i++)open_port(&p);
+ watched_ops=&p.ops_lock;ops_attempts=0;pause_stop=true;
+ assert(!pthread_barrier_init(&stop_enter,NULL,2));assert(!pthread_barrier_init(&stop_release,NULL,2));
+ pthread_t first,others[4];
+ assert(!pthread_create(&first,NULL,close_first?core_close_thread:core_remove_thread,close_first?(void *)&p:(void *)&c));
+ barrier(&stop_enter); /* Actual stop callback holds ops_lock here. */
+ if(close_first)assert(!pthread_create(&others[0],NULL,core_remove_thread,&c));
+ else for(unsigned i=0;i<opens;i++)assert(!pthread_create(&others[i],NULL,core_close_thread,&p));
+ wait_ops_attempts(1+(close_first?1:opens));
+ assert(p.start_count==(close_first?0:opens)&&p.ops&&c.at_events[MT6797_CCCI_AT_CLOSE]==0);
+ barrier(&stop_release);assert(!pthread_join(first,NULL));
+ for(unsigned i=0;i<(close_first?1:opens);i++)assert(!pthread_join(others[i],NULL));
+ watched_ops=NULL;expect_count(&p,0);
+ assert(c.at_events[MT6797_CCCI_AT_OPEN]==1&&c.at_events[MT6797_CCCI_AT_CLOSE]==1);
+ assert(!p.ops&&p.unregistered==1&&dev.removals==1&&p.dev.released);
+ assert(!pthread_barrier_destroy(&stop_enter));assert(!pthread_barrier_destroy(&stop_release));destroy(&c,&p);
+}
+static void concurrent_closes(void){
+ struct mt6797_ccci c;struct wwan_port p;struct wwan_device dev;init(&c,&p,&dev);
+ for(unsigned i=0;i<4;i++)open_port(&p);
+ watched_ops=&p.ops_lock;ops_attempts=0;mutex_lock(&p.ops_lock);
+ pthread_t threads[5];for(unsigned i=0;i<4;i++)assert(!pthread_create(&threads[i],NULL,core_close_thread,&p));
+ assert(!pthread_create(&threads[4],NULL,core_remove_thread,&c));wait_ops_attempts(5);mutex_unlock(&p.ops_lock);
+ for(unsigned i=0;i<5;i++)assert(!pthread_join(threads[i],NULL));
+ watched_ops=NULL;expect_count(&p,0);
+ assert(c.at_events[MT6797_CCCI_AT_CLOSE]==1&&p.unregistered==1&&p.dev.released);destroy(&c,&p);
+}
 static void cancelled_queue_race(void){
  struct mt6797_ccci c;struct wwan_port p;struct wwan_device dev;init(&c,&p,&dev);
  assert(!pthread_barrier_init(&schedule_enter,NULL,2));assert(!pthread_barrier_init(&schedule_release,NULL,2));pause_schedule=true;
@@ -244,7 +315,8 @@ static void running_work_cleanup(void){
 #endif
 int main(void){fatal_waiters();
 #if CURRENT
- for(unsigned i=0;i<32;i++){cancelled_queue_race();late_tx_and_purge();running_work_cleanup();}normal_close();probe_publication();
+ multiple_opens();for(unsigned i=0;i<32;i++){close_remove_order(false);close_remove_order(true);concurrent_closes();cancelled_queue_race();late_tx_and_purge();running_work_cleanup();}normal_close();probe_publication();
+ puts("PASS actual WWAN release: multiple opens, mixed closes, removal, locked stop order and concurrent FD release without count wrap or double stop");
 #endif
  puts("PASS actual native fatal/core withdrawal: RX/TX wake, HUP, retained FD, purge, idempotence, queue-cancel admission and late-tx lifetime");}
 '''
@@ -292,7 +364,7 @@ static void probe_publication(void){
 }
 '''
 
-def build_and_run(path, name, driver, current):
+def build_and_run(path, name, driver, current, core_source=CORE):
     owners = ['mt6797_ccci_frontend_ready', 'mt6797_ccci_at_rx_close',
               'mt6797_ccci_remove_port']
     if current:
@@ -308,7 +380,7 @@ def build_and_run(path, name, driver, current):
     # The diagnostic counters are not the lifetime mechanism under test.
     native = '\n'.join(body(driver, n).replace('&ccci->diag', 'ccci') for n in owners)
     c = f'#define CURRENT {int(current)}\n' + SHIM + limits + '\n' + native + '\n'
-    c += '\n'.join(body(CORE, n) for n in core)
+    c += '\n'.join(body(core_source, n) for n in core)
     if current:
         probe_body = body(driver, 'mt6797_ccci_probe')
         assert probe_body.index('ccci->at_work_stopped = true') < probe_body.index('devm_request_irq')
@@ -341,13 +413,16 @@ def build_and_run(path, name, driver, current):
                 compile_output=comp.stdout + comp.stderr,
                 run_output='' if run is None else run.stdout + run.stderr,
                 started=start, ended=time.time(),
-                driver_sha256=hashlib.sha256(driver.encode()).hexdigest())
+                driver_sha256=hashlib.sha256(driver.encode()).hexdigest(),
+                core_sha256=hashlib.sha256(core_source.encode()).hexdigest())
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--old-source', type=Path,
                         help='also compile and reject a saved pre-withdrawal native owner')
+    parser.add_argument('--old-core', type=Path,
+                        help='also compile and reject a saved core with release underflow')
     args = parser.parse_args()
     driver = (root / 'drivers/net/wwan/mediatek/mtk_mt6797_ccci.c').read_text()
     with tempfile.TemporaryDirectory(prefix='gemini-cellular-at-terminal-') as tmp:
@@ -361,6 +436,11 @@ def main():
             result['old'] = old
             passed = (passed and old['compile_exit'] == 0 and old['run_exit'] == 1 and
                       'OLD_FATAL_RETAINED_OPS: no hangup; RX/TX still blocked' in old['run_output'])
+        if args.old_core:
+            old_core = build_and_run(Path(tmp), 'old-core', driver, True, args.old_core.read_text())
+            result['old_core'] = old_core
+            passed = (passed and old_core['compile_exit'] == 0 and old_core['run_exit'] == 1 and
+                      'OLD_CORE_RELEASE_ACCOUNTING:' in old_core['run_output'])
         print(json.dumps(result, indent=2))
         return 0 if passed else 1
 

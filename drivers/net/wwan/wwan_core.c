@@ -764,8 +764,8 @@ out_unlock:
 static void wwan_port_op_stop(struct wwan_port *port)
 {
 	mutex_lock(&port->ops_lock);
-	port->start_count--;
-	if (!port->start_count) {
+	/* Removal has already stopped the port and cleared its start count. */
+	if (port->start_count && !--port->start_count) {
 		if (port->ops)
 			port->ops->stop(port);
 		skb_queue_purge(&port->rxq);

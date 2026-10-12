@@ -20,6 +20,10 @@ shim += full[a:b]
 shim=shim.replace('static int got_op;', 'static int got_op, root_calls, fail_root, allocation_calls, fail_allocation, walk_calls, fail_walk;\nstatic bool cross_mount;\nstatic struct file otherroot;')
 a=shim.index('static struct file *mt6797_fs_root_get(');b=shim.index('static void fput',a)
 shim=shim[:a]+'''static struct file *mt6797_fs_root_get(u8 drive){got_drive=drive;root_calls++;if(!available||root_calls==fail_root)return NULL;rootrefs++;return cross_mount&&root_calls==2?&otherroot:&rootfile;}
+
+#define MT6797_FS_MODEM_MD1 0U
+#define EXPORT_SYMBOL_GPL(x)
+#define mt6797_fs_root_get_for(modem, drive) (assert((modem)==0), mt6797_fs_root_get(drive))
 '''+shim[b:]
 shim=shim.replace('f==&rootfile&&rootrefs==1','(f==&rootfile||f==&otherroot)&&rootrefs>0').replace('assert(f==&rootfile);return writable','assert(f==&rootfile||f==&otherroot);return writable')
 shim=shim.replace('if(alloc_fail)return NULL;', 'allocation_calls++;if(alloc_fail||allocation_calls==fail_allocation)return NULL;').replace('allocs==1','allocs>0')

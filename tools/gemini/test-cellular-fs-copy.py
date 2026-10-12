@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 root=Path(__file__).resolve().parents[2]
 s=(root/'drivers/soc/mediatek/mt6797-md1-fs-provider.c').read_text()
-s=s[s.index('int mt6797_md1_fs_provider_copy_drive('):s.index('EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_copy_drive)')]
+s=s[s.index('int mt6797_fs_provider_copy_drive('):s.index('EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_copy_drive)')]
 shim=r'''
 #include <assert.h>
 #include <errno.h>
@@ -49,6 +49,10 @@ static int vfs_truncate(void *p,loff_t size){assert(p==&destination.f_path&&size
 static ssize_t mt6797_md1_fs_provider_read(struct file *f,void *data,size_t n,loff_t *pos){assert(f==&source&&n<=65536);reads++;if(reads==read_fault)return read_result;if(read_chunk&&n>read_chunk)n=read_chunk;for(size_t i=0;i<n;i++)((u8 *)data)[i]=(u8)((*pos+i)%251);*pos+=n;return n;}
 static ssize_t mt6797_md1_fs_provider_write(struct file *f,const void *data,size_t n,loff_t *pos){assert(f==&destination&&n<=65536&&truncates==1);writes++;if(writes==write_fault)return write_result;if(write_chunk&&n>write_chunk)n=write_chunk;for(size_t i=0;i<n;i++)assert(((const u8 *)data)[i]==(u8)((*pos+i)%251));*pos+=n;copied+=n;return n;}
 static void reset(void){assert(!refs&&!allocs);provider_volatile=writable=true;allocation_fail=alias=false;opens=reads=writes=truncates=fstat_error=source_error=destination_error=truncate_error=read_fault=write_fault=0;read_result=write_result=0;length=100;read_chunk=write_chunk=copied=0;}
+
+#define MT6797_FS_MODEM_MD1 0U
+#define EXPORT_SYMBOL_GPL(x)
+#define mt6797_fs_provider_open_ram_drive(modem, ...) (assert((modem)==0), mt6797_md1_fs_provider_open_ram_drive(__VA_ARGS__))
 '''
 tests=r'''
 static void check(int expected){assert(mt6797_md1_fs_provider_copy_drive('Z',"source",'Y',"destination")==expected);assert(!refs&&!allocs);}

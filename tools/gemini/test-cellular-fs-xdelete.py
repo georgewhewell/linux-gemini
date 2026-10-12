@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 r=Path(__file__).resolve().parents[2]
-s=(r/'drivers/soc/mediatek/mt6797-md1-fs-provider.c').read_text();s=s[s.index('int mt6797_md1_fs_provider_xdelete_drive('):s.index('EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_xdelete_drive)')]
+s=(r/'drivers/soc/mediatek/mt6797-md1-fs-provider.c').read_text();s=s[s.index('int mt6797_fs_provider_xdelete_drive('):s.index('EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_xdelete_drive)')]
 shim=r'''
 #include <assert.h>
 #include <errno.h>
@@ -44,6 +44,12 @@ static struct file *mt6797_md1_fs_provider_open_drive(u8 drive,const char *path,
 static int mt6797_md1_fs_provider_next_entry(struct file *f,struct mt6797_md1_fs_entry *e){assert(f->live);iterations++;if(iterations==fail_iter)return -EIO;if(mode!=2&&f->cursor++)return -ENOENT;strcpy(e->name,"a");e->attr.mode=mode==1?1:2;return 0;}
 static int mt6797_md1_fs_provider_mutate_drive(u8 drive,const char *path,int op){assert(drive=='X'&&strlen(path)<=1024&&(op==1||op==2));mutations++;return mutations==fail_mutation?-EACCES:0;}
 static void reset(void){assert(!refs&&!allocs);provider_volatile=available=writable=true;allocation_calls=fail_allocation=opens=fail_open=iterations=fail_iter=mutations=fail_mutation=mode=0;}
+
+#define MT6797_FS_MODEM_MD1 0U
+#define EXPORT_SYMBOL_GPL(x)
+#define mt6797_fs_root_get_for(modem, drive) (assert((modem)==0), mt6797_fs_root_get(drive))
+#define mt6797_fs_provider_open_drive(modem, ...) (assert((modem)==0), mt6797_md1_fs_provider_open_drive(__VA_ARGS__))
+#define mt6797_fs_provider_mutate_drive(modem, ...) (assert((modem)==0), mt6797_md1_fs_provider_mutate_drive(__VA_ARGS__))
 '''
 tests=r'''
 static void check(const char *name,u32 flags,int result){assert(mt6797_md1_fs_provider_xdelete_drive('X',name,flags)==result);assert(!refs&&!allocs);}

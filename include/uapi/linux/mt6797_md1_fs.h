@@ -43,6 +43,14 @@ struct mt6797_md1_fs_nv_roots {
 	__u32 reserved; /* zero */
 };
 #define MT6797_MD1_FS_REGISTER_NV_ROOTS _IOW('M', 0xf5, struct mt6797_md1_fs_nv_roots)
+/* Optional companion authority, not MD1 registration or a start command.
+ * The same fixed partitions must already be consumed by the MD1 provider.
+ * Each fd identifies its existing md3 sibling, never md or a partition root.
+ * No W/V or restore archive is granted. Registration never creates files.
+ */
+#define MT6797_MD3_FS_REGISTER_NV_ROOTS \
+	_IOW('M', 0xf6, struct mt6797_md1_fs_nv_roots)
+#define MT6797_MD3_FS_CANCEL _IO('M', 0xf7)
 /* Provider backing selector; zero/one preserve the historical RO/RAM values. */
 #define MT6797_MD1_FS_BACKING_INTERNAL 2
 #define MT6797_MD1_FS_CANCEL _IO('M', 0xf1)

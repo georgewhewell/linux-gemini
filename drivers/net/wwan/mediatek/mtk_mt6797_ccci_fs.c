@@ -17,6 +17,19 @@
 #include <linux/soc/mediatek/mt6797-md1-fs-provider.h>
 #include "mtk_mt6797_ccci_fs.h"
 
+int mt6797_fs_service_init_md3(struct mt6797_fs_service *service)
+{
+	int ret;
+
+	if (!service || service->open_count || service->modem)
+		return -EINVAL;
+	ret = mt6797_md3_fs_provider_claim();
+	if (ret)
+		return ret;
+	service->modem = MT6797_FS_MODEM_MD3;
+	return 0;
+}
+
 bool mt6797_fs_service_supports(u32 op)
 {
 	switch (op) {
@@ -103,8 +116,10 @@ static bool mt6797_fs_arg_u32(const struct mt6797_fs_request *request,
 	return true;
 }
 
-static s32 mt6797_fs_arg_path(const struct mt6797_fs_request *request,
-			      unsigned int n, char *path, size_t size, u8 *drive)
+static s32 mt6797_fs_arg_path(struct mt6797_fs_service *service,
+			      const struct mt6797_fs_request *request,
+			      unsigned int n, char *path, size_t size,
+			      u8 *drive)
 {
 	struct mt6797_md1_fs_stats stats;
 	int ret;
@@ -113,7 +128,8 @@ static s32 mt6797_fs_arg_path(const struct mt6797_fs_request *request,
 		return MT6797_FS_PARAM_ERROR;
 	ret = mt6797_fs_path_decode_drive(request->arg[n], request->len[n], path, size, drive);
 	/* A syntactically supported root must also have been registered. */
-	if (!ret && *drive != 'Z' && mt6797_md1_fs_provider_stats_drive(*drive, &stats))
+	if (!ret && *drive != 'Z' &&
+	    mt6797_fs_provider_stats_drive(service->modem, *drive, &stats))
 		ret = -ENXIO;
 	return ret ? mt6797_fs_path_status(ret) : MT6797_FS_NO_ERROR;
 }
@@ -142,22 +158,27 @@ static s32 mt6797_fs_open(struct mt6797_fs_service *service,
 
 	if (!mt6797_fs_arg_u32(request, 1, &flags))
 		return MT6797_FS_PARAM_ERROR;
-	status = mt6797_fs_arg_path(request, 0, path, MT6797_MD1_FS_PATH_MAX + 1, &drive);
+	status = mt6797_fs_arg_path(service, request, 0, path,
+				    MT6797_MD1_FS_PATH_MAX + 1, &drive);
 	if (status)
 		return status;
 	if (service->open_count >= MT6797_FS_HANDLES - 1)
 		return MT6797_FS_TOO_MANY_FILES;
 	if (!(flags & MT6797_FS_OPEN_READ_ONLY) ||
 	    (flags & (MT6797_FS_OPEN_CREATE | MT6797_FS_OPEN_CREATE_ALWAYS))) {
-		file = mt6797_md1_fs_provider_open_ram_drive(drive, path,
+		file = mt6797_fs_provider_open_ram_drive(
+			service->modem, drive, path,
 			!(flags & MT6797_FS_OPEN_READ_ONLY),
-			flags & (MT6797_FS_OPEN_CREATE | MT6797_FS_OPEN_CREATE_ALWAYS),
+			flags & (MT6797_FS_OPEN_CREATE |
+				 MT6797_FS_OPEN_CREATE_ALWAYS),
 			flags & MT6797_FS_OPEN_CREATE_ALWAYS);
 	} else {
-		ret = mt6797_md1_fs_provider_getattr_drive(drive, path, &attr);
+		ret = mt6797_fs_provider_getattr_drive(service->modem, drive,
+						       path, &attr);
 		if (ret)
 			return mt6797_fs_status(ret);
-		file = mt6797_md1_fs_provider_open_drive(drive, path, S_ISDIR(attr.mode));
+		file = mt6797_fs_provider_open_drive(service->modem, drive,
+						     path, S_ISDIR(attr.mode));
 	}
 	if (IS_ERR(file))
 		return mt6797_fs_status(PTR_ERR(file));
@@ -368,7 +389,8 @@ static int mt6797_fs_getfilesize(struct mt6797_fs_service *service,
 	return ret ? ret : mt6797_fs_reply_add_u32(reply, size);
 }
 
-static s32 mt6797_fs_getattributes(const struct mt6797_fs_request *request,
+static s32 mt6797_fs_getattributes(struct mt6797_fs_service *service,
+				   const struct mt6797_fs_request *request,
 				   char *path)
 {
 	u8 drive;
@@ -376,10 +398,12 @@ static s32 mt6797_fs_getattributes(const struct mt6797_fs_request *request,
 	s32 status;
 	int ret;
 
-	status = mt6797_fs_arg_path(request, 0, path, MT6797_MD1_FS_PATH_MAX + 1, &drive);
+	status = mt6797_fs_arg_path(service, request, 0, path,
+				    MT6797_MD1_FS_PATH_MAX + 1, &drive);
 	if (status)
 		return status;
-	ret = mt6797_md1_fs_provider_getattr_drive(drive, path, &attr);
+	ret = mt6797_fs_provider_getattr_drive(service->modem, drive, path,
+					       &attr);
 	return ret ? mt6797_fs_status(ret) : (s32)mt6797_fs_attributes(attr.mode);
 }
 
@@ -447,7 +471,8 @@ static int mt6797_fs_findfirst(struct mt6797_fs_service *service,
 	*status = MT6797_FS_PARAM_ERROR;
 	if (request->argc != 4 || !mt6797_fs_arg_u32(request, 3, &max_chars))
 		goto reply;
-	*status = mt6797_fs_arg_path(request, 0, path, MT6797_MD1_FS_PATH_MAX + 1, &drive);
+	*status = mt6797_fs_arg_path(service, request, 0, path,
+				     MT6797_MD1_FS_PATH_MAX + 1, &drive);
 	if (*status)
 		goto reply;
 	separator = strrchr(path, '/');
@@ -469,7 +494,7 @@ static int mt6797_fs_findfirst(struct mt6797_fs_service *service,
 	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (!entry)
 		return -ENOMEM;
-	dir = mt6797_md1_fs_provider_open_drive(drive, path, true);
+	dir = mt6797_fs_provider_open_drive(service->modem, drive, path, true);
 	if (IS_ERR(dir)) {
 		*status = mt6797_fs_status(PTR_ERR(dir));
 		goto reply;
@@ -531,7 +556,8 @@ static int mt6797_fs_findnext(struct mt6797_fs_service *service,
 	return ret;
 }
 
-static s32 mt6797_fs_getclustersize(const struct mt6797_fs_request *request)
+static s32 mt6797_fs_getclustersize(struct mt6797_fs_service *service,
+				    const struct mt6797_fs_request *request)
 {
 	struct mt6797_md1_fs_stats stats;
 	u32 drive;
@@ -541,30 +567,32 @@ static s32 mt6797_fs_getclustersize(const struct mt6797_fs_request *request)
 		return MT6797_FS_PARAM_ERROR;
 	if (drive != 'Z' && drive != 'X' && drive != 'Y')
 		return MT6797_FS_DRIVE_NOT_FOUND;
-	ret = mt6797_md1_fs_provider_stats_drive(drive, &stats);
+	ret = mt6797_fs_provider_stats_drive(service->modem, drive, &stats);
 	if (ret)
 		return drive == 'Z' ? mt6797_fs_status(ret) : MT6797_FS_DRIVE_NOT_FOUND;
 	return stats.block_size > S32_MAX ? MT6797_FS_GENERAL_FAILURE :
 		(s32)stats.block_size;
 }
 
-static s32 mt6797_fs_mutate(const struct mt6797_fs_request *request,
-			    char *path, enum mt6797_md1_fs_mutation operation)
+static s32 mt6797_fs_mutate(struct mt6797_fs_service *service,
+			    const struct mt6797_fs_request *request, char *path,
+			    enum mt6797_md1_fs_mutation operation)
 {
 	u8 drive;
 	s32 status;
 
 	if (request->argc != 1)
 		return MT6797_FS_PARAM_ERROR;
-	status = mt6797_fs_arg_path(request, 0, path,
+	status = mt6797_fs_arg_path(service, request, 0, path,
 				    MT6797_MD1_FS_PATH_MAX + 1, &drive);
 	if (status)
 		return status;
-	return mt6797_fs_status(mt6797_md1_fs_provider_mutate_drive(drive, path,
-								 operation));
+	return mt6797_fs_status(mt6797_fs_provider_mutate_drive(
+		service->modem, drive, path, operation));
 }
 
-static s32 mt6797_fs_rename(const struct mt6797_fs_request *request, char *path)
+static s32 mt6797_fs_rename(struct mt6797_fs_service *service,
+			    const struct mt6797_fs_request *request, char *path)
 {
 	char *new_path = path + MT6797_MD1_FS_PATH_MAX + 1;
 	u8 old_drive, new_drive;
@@ -572,19 +600,21 @@ static s32 mt6797_fs_rename(const struct mt6797_fs_request *request, char *path)
 
 	if (request->argc != 2)
 		return MT6797_FS_PARAM_ERROR;
-	status = mt6797_fs_arg_path(request, 0, path,
+	status = mt6797_fs_arg_path(service, request, 0, path,
 				    MT6797_MD1_FS_PATH_MAX + 1, &old_drive);
 	if (status)
 		return status;
-	status = mt6797_fs_arg_path(request, 1, new_path,
+	status = mt6797_fs_arg_path(service, request, 1, new_path,
 				    MT6797_MD1_FS_PATH_MAX + 1, &new_drive);
 	if (status)
 		return status;
-	return mt6797_fs_status(mt6797_md1_fs_provider_rename_drive(old_drive, path,
-								 new_drive, new_path));
+	return mt6797_fs_status(mt6797_fs_provider_rename_drive(
+		service->modem, old_drive, path, new_drive, new_path));
 }
 
-static s32 mt6797_fs_xdelete(const struct mt6797_fs_request *request, char *path)
+static s32 mt6797_fs_xdelete(struct mt6797_fs_service *service,
+			     const struct mt6797_fs_request *request,
+			     char *path)
 {
 	u32 flags;
 	u8 drive;
@@ -594,11 +624,12 @@ static s32 mt6797_fs_xdelete(const struct mt6797_fs_request *request, char *path
 	if (request->argc != 2 || !mt6797_fs_arg_u32(request, 1, &flags) ||
 	    !flags || (flags & ~0x1cU))
 		return MT6797_FS_PARAM_ERROR;
-	status = mt6797_fs_arg_path(request, 0, path,
+	status = mt6797_fs_arg_path(service, request, 0, path,
 				    MT6797_MD1_FS_PATH_MAX + 1, &drive);
 	if (status)
 		return status;
-	ret = mt6797_md1_fs_provider_xdelete_drive(drive, path, flags);
+	ret = mt6797_fs_provider_xdelete_drive(service->modem, drive, path,
+					       flags);
 	if (ret == -ENOTDIR)
 		return MT6797_FS_PARAM_ERROR;
 	return ret >= 0 ? ret : mt6797_fs_status(ret);
@@ -610,7 +641,8 @@ static s32 mt6797_fs_xdelete(const struct mt6797_fs_request *request, char *path
  * Each provider operation rechecks the consumed RAM authority. This is not
  * an atomic transaction: a subsequent copy failure can leave no destination.
  */
-static s32 mt6797_fs_move(const struct mt6797_fs_request *request, char *path)
+static s32 mt6797_fs_move(struct mt6797_fs_service *service,
+			  const struct mt6797_fs_request *request, char *path)
 {
 	char *new_path = path + MT6797_MD1_FS_PATH_MAX + 1;
 	struct mt6797_md1_fs_attr attr;
@@ -623,18 +655,19 @@ static s32 mt6797_fs_move(const struct mt6797_fs_request *request, char *path)
 	if (request->argc != 3 || !mt6797_fs_arg_u32(request, 2, &flags) ||
 	    !(flags & 3) || (flags & ~0x10003U))
 		return MT6797_FS_PARAM_ERROR;
-	ret = mt6797_fs_arg_path(request, 0, path,
+	ret = mt6797_fs_arg_path(service, request, 0, path,
 				 MT6797_MD1_FS_PATH_MAX + 1, &old_drive);
 	if (ret)
 		return ret;
-	ret = mt6797_fs_arg_path(request, 1, new_path,
+	ret = mt6797_fs_arg_path(service, request, 1, new_path,
 				 MT6797_MD1_FS_PATH_MAX + 1, &new_drive);
 	if (ret)
 		return ret;
 	if (old_drive == new_drive && !strcmp(path, new_path))
 		return MT6797_FS_PARAM_ERROR;
 	if (flags & 2) {
-		ret = mt6797_md1_fs_provider_getattr_drive(old_drive, path, &attr);
+		ret = mt6797_fs_provider_getattr_drive(service->modem,
+						       old_drive, path, &attr);
 		if (ret && ret != -ENOENT)
 			return mt6797_fs_status(ret);
 		if (!ret && (mt6797_fs_attributes(attr.mode) & MT6797_FS_ATTR_READ_ONLY))
@@ -648,44 +681,51 @@ static s32 mt6797_fs_move(const struct mt6797_fs_request *request, char *path)
 		if (!length || (old_drive == new_drive &&
 		    !strncmp(path, new_path, length) && path[length] == '/'))
 			return MT6797_FS_PARAM_ERROR;
-		ret = mt6797_md1_fs_provider_getattr_drive(new_drive, new_path, &attr);
+		ret = mt6797_fs_provider_getattr_drive(
+			service->modem, new_drive, new_path, &attr);
 		if (ret && ret != -ENOENT)
 			return mt6797_fs_status(ret);
 		if (!ret) {
 			if (mt6797_fs_attributes(attr.mode) & MT6797_FS_ATTR_READ_ONLY)
 				return MT6797_FS_READ_ONLY_ERROR;
 			if (S_ISDIR(attr.mode))
-				ret = mt6797_md1_fs_provider_xdelete_drive(new_drive, new_path, 0x1c);
+				ret = mt6797_fs_provider_xdelete_drive(
+					service->modem, new_drive, new_path,
+					0x1c);
 			else
-				ret = mt6797_md1_fs_provider_mutate_drive(new_drive, new_path,
-								 MT6797_MD1_FS_UNLINK);
+				ret = mt6797_fs_provider_mutate_drive(
+					service->modem, new_drive, new_path,
+					MT6797_MD1_FS_UNLINK);
 			if (ret < 0)
 				return mt6797_fs_status(ret);
 			status = ret;
 		}
 	}
 	if (flags & 1)
-		return mt6797_fs_status(mt6797_md1_fs_provider_copy_drive(old_drive, path,
-								new_drive, new_path));
+		return mt6797_fs_status(mt6797_fs_provider_copy_drive(
+			service->modem, old_drive, path, new_drive, new_path));
 	return status;
 }
 
 /* Installed NVM restore has a boolean result: all provider failures become
  * vendor general failure. Path decoding still preserves its normal errors.
  */
-static s32 mt6797_fs_restore(const struct mt6797_fs_request *request, char *path)
+static s32 mt6797_fs_restore(struct mt6797_fs_service *service,
+			     const struct mt6797_fs_request *request,
+			     char *path)
 {
 	u8 drive;
 	s32 status;
 
 	if (request->argc != 1)
 		return MT6797_FS_PARAM_ERROR;
-	status = mt6797_fs_arg_path(request, 0, path,
+	status = mt6797_fs_arg_path(service, request, 0, path,
 				    MT6797_MD1_FS_PATH_MAX + 1, &drive);
 	if (status)
 		return status;
-	return mt6797_md1_fs_provider_restore_drive(drive, path) ?
-		MT6797_FS_GENERAL_FAILURE : MT6797_FS_NO_ERROR;
+	return mt6797_fs_provider_restore_drive(service->modem, drive, path) ?
+		       MT6797_FS_GENERAL_FAILURE :
+		       MT6797_FS_NO_ERROR;
 }
 
 
@@ -719,7 +759,8 @@ reply:
 	return ret ? ret : mt6797_fs_reply_add_u32(reply, count);
 }
 
-static int mt6797_fs_diskinfo_reply(const struct mt6797_fs_request *request,
+static int mt6797_fs_diskinfo_reply(struct mt6797_fs_service *service,
+				    const struct mt6797_fs_request *request,
 				    struct mt6797_fs_reply *reply, s32 *status)
 {
 	struct mt6797_md1_fs_stats stats;
@@ -727,7 +768,7 @@ static int mt6797_fs_diskinfo_reply(const struct mt6797_fs_request *request,
 	u8 drive = request->argc && request->len[0] ? request->arg[0][0] : 0;
 	int ret;
 
-	ret = mt6797_md1_fs_provider_stats_drive(drive, &stats);
+	ret = mt6797_fs_provider_stats_drive(service->modem, drive, &stats);
 	*status = mt6797_fs_diskinfo_drive(request, ret ? NULL : &stats, info,
 					   ret && drive != 'Z' ? 0 : drive);
 	ret = mt6797_fs_reply_add_u32(reply, (u32)*status);
@@ -746,7 +787,13 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 	char *path;
 	int ret;
 
-	ret = mt6797_fs_request_parse(data, len, &request);
+	if (!service || (service->modem != MT6797_FS_MODEM_MD1 &&
+			 service->modem != MT6797_FS_MODEM_MD3))
+		return -EINVAL;
+
+	ret = service->modem == MT6797_FS_MODEM_MD3 ?
+		      mt6797_fs_request_parse_md3(data, len, &request) :
+		      mt6797_fs_request_parse(data, len, &request);
 	if (ret)
 		return ret;
 	if (!mt6797_fs_service_supports(request.op))
@@ -806,10 +853,11 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 		ret = mt6797_fs_getfilesize(service, &request, reply, status);
 		goto out;
 	case MT6797_FS_GETDISKINFO:
-		ret = mt6797_fs_diskinfo_reply(&request, reply, status);
+		ret = mt6797_fs_diskinfo_reply(service, &request, reply,
+					       status);
 		goto out;
 	case MT6797_FS_GETATTRIBUTES:
-		*status = mt6797_fs_getattributes(&request, path);
+		*status = mt6797_fs_getattributes(service, &request, path);
 		break;
 	case MT6797_FS_FINDFIRST:
 		ret = mt6797_fs_findfirst(service, &request, reply, status, path);
@@ -826,28 +874,31 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 		*status = 1; /* vendor 0x6738 literally answers 1 */
 		break;
 	case MT6797_FS_GETCLUSTERSIZE:
-		*status = mt6797_fs_getclustersize(&request);
+		*status = mt6797_fs_getclustersize(service, &request);
 		break;
 	case MT6797_FS_CREATEDIR:
-		*status = mt6797_fs_mutate(&request, path, MT6797_MD1_FS_MKDIR);
+		*status = mt6797_fs_mutate(service, &request, path,
+					   MT6797_MD1_FS_MKDIR);
 		break;
 	case MT6797_FS_REMOVEDIR:
-		*status = mt6797_fs_mutate(&request, path, MT6797_MD1_FS_RMDIR);
+		*status = mt6797_fs_mutate(service, &request, path,
+					   MT6797_MD1_FS_RMDIR);
 		break;
 	case MT6797_FS_DELETE:
-		*status = mt6797_fs_mutate(&request, path, MT6797_MD1_FS_UNLINK);
+		*status = mt6797_fs_mutate(service, &request, path,
+					   MT6797_MD1_FS_UNLINK);
 		break;
 	case MT6797_FS_XDELETE:
-		*status = mt6797_fs_xdelete(&request, path);
+		*status = mt6797_fs_xdelete(service, &request, path);
 		break;
 	case MT6797_FS_RESTORE:
-		*status = mt6797_fs_restore(&request, path);
+		*status = mt6797_fs_restore(service, &request, path);
 		break;
 	case MT6797_FS_RENAME:
-		*status = mt6797_fs_rename(&request, path);
+		*status = mt6797_fs_rename(service, &request, path);
 		break;
 	case MT6797_FS_MOVE:
-		*status = mt6797_fs_move(&request, path);
+		*status = mt6797_fs_move(service, &request, path);
 		break;
 	default:
 		ret = -EOPNOTSUPP;

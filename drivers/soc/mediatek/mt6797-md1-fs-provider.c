@@ -36,6 +36,9 @@ static unsigned int provider_volatile; /* 0=RO, 1=RAM, 2=internal NV */
 static bool archive_installing;
 static struct mt6797_fs_archive provider_archive;
 static struct device *provider_cold;
+/* Optional MD3 authority is separately published and consumed once. */
+static struct mt6797_fs_state md3_state;
+static struct file *md3_roots[3];
 
 bool mt6797_md1_fs_provider_enabled(void)
 {
@@ -200,6 +203,30 @@ static struct file *mt6797_fs_root_get(u8 drive)
 	return file;
 }
 
+/* Per-modem directory authority. MD3 never falls back to MD1. */
+static struct file *mt6797_fs_root_get_for(unsigned int modem, u8 drive)
+{
+	struct file *file = NULL;
+	unsigned long flags;
+	int index;
+
+	if (modem == MT6797_FS_MODEM_MD1)
+		return mt6797_fs_root_get(drive);
+	if (modem != MT6797_FS_MODEM_MD3)
+		return NULL;
+	index = drive == 'Z' ? 0 : drive == 'X' ? 1 : drive == 'Y' ? 2 : -1;
+	if (index < 0)
+		return NULL;
+	spin_lock_irqsave(&provider_lock, flags);
+	if (md3_state.stage == MT6797_FS_CONSUMED &&
+	    provider_state.stage == MT6797_FS_CONSUMED &&
+	    provider_volatile == MT6797_MD1_FS_BACKING_INTERNAL &&
+	    mt6797_fs_internal_writable(md3_roots[index]))
+		file = get_file(md3_roots[index]);
+	spin_unlock_irqrestore(&provider_lock, flags);
+	return file;
+}
+
 /* One component below @base. lookup_one never traverses a mount or follows a
  * symlink; covered mountpoints, special inodes and other superblocks are
  * refused rather than resolved.
@@ -278,8 +305,9 @@ static int mt6797_fs_stat(const struct file *root, struct dentry *dentry,
 	return 0;
 }
 
-int mt6797_md1_fs_provider_getattr_drive(u8 drive, const char *path,
-				   struct mt6797_md1_fs_attr *attr)
+int mt6797_fs_provider_getattr_drive(unsigned int modem, u8 drive,
+				     const char *path,
+				     struct mt6797_md1_fs_attr *attr)
 {
 	struct dentry *dentry;
 	struct file *root;
@@ -288,7 +316,7 @@ int mt6797_md1_fs_provider_getattr_drive(u8 drive, const char *path,
 	might_sleep();
 	if (!attr)
 		return -EINVAL;
-	root = mt6797_fs_root_get(drive);
+	root = mt6797_fs_root_get_for(modem, drive);
 	if (!root)
 		return -ENODEV;
 	dentry = mt6797_fs_walk(root, path);
@@ -302,6 +330,14 @@ put_root:
 	fput(root);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mt6797_fs_provider_getattr_drive);
+
+int mt6797_md1_fs_provider_getattr_drive(u8 drive, const char *path,
+					 struct mt6797_md1_fs_attr *attr)
+{
+	return mt6797_fs_provider_getattr_drive(MT6797_FS_MODEM_MD1, drive,
+						path, attr);
+}
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_getattr_drive);
 
 int mt6797_md1_fs_provider_getattr(const char *path, struct mt6797_md1_fs_attr *attr)
@@ -310,7 +346,8 @@ int mt6797_md1_fs_provider_getattr(const char *path, struct mt6797_md1_fs_attr *
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_getattr);
 
-struct file *mt6797_md1_fs_provider_open_drive(u8 drive, const char *path, bool directory)
+struct file *mt6797_fs_provider_open_drive(unsigned int modem, u8 drive,
+					   const char *path, bool directory)
 {
 	struct dentry *dentry;
 	struct file *root, *file;
@@ -318,7 +355,7 @@ struct file *mt6797_md1_fs_provider_open_drive(u8 drive, const char *path, bool 
 	int flags = O_RDONLY | O_LARGEFILE;
 
 	might_sleep();
-	root = mt6797_fs_root_get(drive);
+	root = mt6797_fs_root_get_for(modem, drive);
 	if (!root)
 		return ERR_PTR(-ENODEV);
 	dentry = mt6797_fs_walk(root, path);
@@ -346,6 +383,14 @@ put_root:
 	fput(root);
 	return file;
 }
+EXPORT_SYMBOL_GPL(mt6797_fs_provider_open_drive);
+
+struct file *mt6797_md1_fs_provider_open_drive(u8 drive, const char *path,
+					       bool directory)
+{
+	return mt6797_fs_provider_open_drive(MT6797_FS_MODEM_MD1, drive, path,
+					     directory);
+}
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open_drive);
 
 struct file *mt6797_md1_fs_provider_open(const char *path, bool directory)
@@ -358,8 +403,9 @@ EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open);
  * never follows symlinks or mountpoints; final lookup uses that exact mount.
  * O_TRUNC is deliberately not passed to name lookup or dentry_open.
  */
-struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive, const char *path, bool writable,
-					  bool create, bool truncate)
+struct file *mt6797_fs_provider_open_ram_drive(unsigned int modem, u8 drive,
+					       const char *path, bool writable,
+					       bool create, bool truncate)
 {
 	struct file *root, *file;
 	struct dentry *parent, *child;
@@ -371,7 +417,7 @@ struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive, const char *path, b
 	might_sleep();
 	if (!path || strnlen(path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX)
 		return ERR_PTR(-ENAMETOOLONG);
-	root = mt6797_fs_root_get(drive);
+	root = mt6797_fs_root_get_for(modem, drive);
 	if (!root)
 		return ERR_PTR(-ENODEV);
 	file = ERR_PTR(-EROFS);
@@ -465,14 +511,24 @@ put_root:
 	fput(root);
 	return file;
 }
+EXPORT_SYMBOL_GPL(mt6797_fs_provider_open_ram_drive);
+
+struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive, const char *path,
+						   bool writable, bool create,
+						   bool truncate)
+{
+	return mt6797_fs_provider_open_ram_drive(
+		MT6797_FS_MODEM_MD1, drive, path, writable, create, truncate);
+}
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open_ram_drive);
 
 /* Namespace operations never target the root itself and never recurse. Keep
  * the parent locked from final-component lookup through the VFS operation.
  * Legacy read-only authorities cannot reach any mutation callback.
  */
-int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
-				      enum mt6797_md1_fs_mutation operation)
+int mt6797_fs_provider_mutate_drive(unsigned int modem, u8 drive,
+				    const char *path,
+				    enum mt6797_md1_fs_mutation operation)
 {
 	struct file *root;
 	struct dentry *parent, *child;
@@ -487,7 +543,7 @@ int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
 		return -EINVAL;
 	if (!path || strnlen(path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX)
 		return -ENAMETOOLONG;
-	root = mt6797_fs_root_get(drive);
+	root = mt6797_fs_root_get_for(modem, drive);
 	if (!root)
 		return -ENODEV;
 	ret = -EROFS;
@@ -567,6 +623,14 @@ put_root:
 	fput(root);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mt6797_fs_provider_mutate_drive);
+
+int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
+					enum mt6797_md1_fs_mutation operation)
+{
+	return mt6797_fs_provider_mutate_drive(MT6797_FS_MODEM_MD1, drive, path,
+					       operation);
+}
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_mutate_drive);
 
 /* Split a relative non-root path without following its final component.
@@ -587,8 +651,9 @@ static struct dentry *mt6797_fs_rename_parent(struct file *root, char *copy,
 	return mt6797_fs_walk(root, slash ? copy : "");
 }
 
-int mt6797_md1_fs_provider_rename_drive(u8 old_drive, const char *old_path,
-				      u8 new_drive, const char *new_path)
+int mt6797_fs_provider_rename_drive(unsigned int modem, u8 old_drive,
+				    const char *old_path, u8 new_drive,
+				    const char *new_path)
 {
 	struct file *old_root, *new_root;
 	struct renamedata rd = {};
@@ -601,10 +666,10 @@ int mt6797_md1_fs_provider_rename_drive(u8 old_drive, const char *old_path,
 	    strnlen(old_path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX ||
 	    strnlen(new_path, MT6797_MD1_FS_PATH_MAX + 1) > MT6797_MD1_FS_PATH_MAX)
 		return -ENAMETOOLONG;
-	old_root = mt6797_fs_root_get(old_drive);
+	old_root = mt6797_fs_root_get_for(modem, old_drive);
 	if (!old_root)
 		return -ENODEV;
-	new_root = mt6797_fs_root_get(new_drive);
+	new_root = mt6797_fs_root_get_for(modem, new_drive);
 	ret = -ENODEV;
 	if (!new_root)
 		goto put_old_root;
@@ -679,6 +744,14 @@ put_old_root:
 	fput(old_root);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mt6797_fs_provider_rename_drive);
+
+int mt6797_md1_fs_provider_rename_drive(u8 old_drive, const char *old_path,
+					u8 new_drive, const char *new_path)
+{
+	return mt6797_fs_provider_rename_drive(MT6797_FS_MODEM_MD1, old_drive,
+					       old_path, new_drive, new_path);
+}
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_rename_drive);
 
 struct file *mt6797_md1_fs_provider_open_ram(const char *path, bool writable, bool create, bool truncate)
@@ -735,8 +808,9 @@ EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_read);
  * primitive, not MOVE's vendor flag/recursive-overwrite policy. It never
  * unlinks the source, including when both names resolve to the same inode.
  */
-int mt6797_md1_fs_provider_copy_drive(u8 old_drive, const char *old_path,
-				    u8 new_drive, const char *new_path)
+int mt6797_fs_provider_copy_drive(unsigned int modem, u8 old_drive,
+				  const char *old_path, u8 new_drive,
+				  const char *new_path)
 {
 	struct mt6797_md1_fs_attr attr;
 	struct file *source, *destination;
@@ -753,8 +827,8 @@ int mt6797_md1_fs_provider_copy_drive(u8 old_drive, const char *old_path,
 		return -ENAMETOOLONG;
 	if (old_drive == new_drive && !strcmp(old_path, new_path))
 		return -EINVAL;
-	source = mt6797_md1_fs_provider_open_ram_drive(old_drive, old_path,
-						    false, false, false);
+	source = mt6797_fs_provider_open_ram_drive(modem, old_drive, old_path,
+						   false, false, false);
 	if (IS_ERR(source))
 		return PTR_ERR(source);
 	ret = mt6797_md1_fs_provider_fstat(source, &attr);
@@ -781,8 +855,8 @@ int mt6797_md1_fs_provider_copy_drive(u8 old_drive, const char *old_path,
 	/* Avoid truncating an existing destination before same-inode checking.
 	 * Path creation is confined by the admitted writable-root implementation.
 	 */
-	destination = mt6797_md1_fs_provider_open_ram_drive(new_drive, new_path,
-							 true, true, false);
+	destination = mt6797_fs_provider_open_ram_drive(
+		modem, new_drive, new_path, true, true, false);
 	if (IS_ERR(destination)) {
 		ret = PTR_ERR(destination);
 		goto free_buffer;
@@ -813,6 +887,14 @@ free_buffer:
 put_source:
 	fput(source);
 	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_fs_provider_copy_drive);
+
+int mt6797_md1_fs_provider_copy_drive(u8 old_drive, const char *old_path,
+				      u8 new_drive, const char *new_path)
+{
+	return mt6797_fs_provider_copy_drive(MT6797_FS_MODEM_MD1, old_drive,
+					     old_path, new_drive, new_path);
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_copy_drive);
 
@@ -900,6 +982,16 @@ free:
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_restore_drive);
 
+int mt6797_fs_provider_restore_drive(unsigned int modem, u8 drive,
+				     const char *path)
+{
+	/* The sealed MD1 archive is never an MD3 fallback. */
+	if (modem != MT6797_FS_MODEM_MD1)
+		return -EOPNOTSUPP;
+	return mt6797_md1_fs_provider_restore_drive(drive, path);
+}
+EXPORT_SYMBOL_GPL(mt6797_fs_provider_restore_drive);
+
 loff_t mt6797_md1_fs_provider_llseek(struct file *file, loff_t offset,
 				     int whence)
 {
@@ -986,7 +1078,8 @@ EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_next_entry);
  * the maximum number of nonempty components in a provider path. Errors can
  * follow partial deletion; return the error, never an invented full count.
  */
-int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *name, u32 flags)
+int mt6797_fs_provider_xdelete_drive(unsigned int modem, u8 drive,
+				     const char *name, u32 flags)
 {
 	struct delete_frame {
 		struct file *dir;
@@ -1010,7 +1103,7 @@ int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *name, u32 flags)
 	 */
 	if (!*name && (flags & 0x18) == 0x18)
 		return -EINVAL;
-	root = mt6797_fs_root_get(drive);
+	root = mt6797_fs_root_get_for(modem, drive);
 	if (!root)
 		return -ENODEV;
 	ret = -EROFS;
@@ -1027,7 +1120,7 @@ int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *name, u32 flags)
 		goto free_memory;
 	strcpy(path, name);
 	stack[0].length = strlen(path);
-	stack[0].dir = mt6797_md1_fs_provider_open_drive(drive, path, true);
+	stack[0].dir = mt6797_fs_provider_open_drive(modem, drive, path, true);
 	if (IS_ERR(stack[0].dir)) {
 		ret = PTR_ERR(stack[0].dir);
 		stack[0].dir = NULL;
@@ -1039,8 +1132,9 @@ int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *name, u32 flags)
 			fput(stack[depth].dir);
 			stack[depth].dir = NULL;
 			if ((flags & 8) && (depth || (flags & 16))) {
-				ret = mt6797_md1_fs_provider_mutate_drive(drive, path,
-								MT6797_MD1_FS_RMDIR);
+				ret = mt6797_fs_provider_mutate_drive(
+					modem, drive, path,
+					MT6797_MD1_FS_RMDIR);
 				if (ret)
 					goto close_dirs;
 				deleted++;
@@ -1073,7 +1167,8 @@ int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *name, u32 flags)
 				ret = -E2BIG;
 				goto close_dirs;
 			}
-			root = mt6797_md1_fs_provider_open_drive(drive, path, true);
+			root = mt6797_fs_provider_open_drive(modem, drive, path,
+							     true);
 			if (IS_ERR(root)) {
 				ret = PTR_ERR(root);
 				goto close_dirs;
@@ -1083,11 +1178,13 @@ int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *name, u32 flags)
 			stack[depth].length = strlen(path);
 		} else {
 			if (S_ISDIR(entry->attr.mode) && (flags & 8))
-				ret = mt6797_md1_fs_provider_mutate_drive(drive, path,
-								MT6797_MD1_FS_RMDIR);
+				ret = mt6797_fs_provider_mutate_drive(
+					modem, drive, path,
+					MT6797_MD1_FS_RMDIR);
 			else if (S_ISREG(entry->attr.mode) && (flags & 4))
-				ret = mt6797_md1_fs_provider_mutate_drive(drive, path,
-								MT6797_MD1_FS_UNLINK);
+				ret = mt6797_fs_provider_mutate_drive(
+					modem, drive, path,
+					MT6797_MD1_FS_UNLINK);
 			else {
 				path[base] = '\0';
 				cond_resched();
@@ -1113,6 +1210,13 @@ free_memory:
 	kfree(entry);
 	kfree(stack);
 	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_fs_provider_xdelete_drive);
+
+int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *name, u32 flags)
+{
+	return mt6797_fs_provider_xdelete_drive(MT6797_FS_MODEM_MD1, drive,
+						name, flags);
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_xdelete_drive);
 
@@ -1223,7 +1327,8 @@ static int mt6797_fs_validate_root(struct file *file, unsigned int ram,
 /* Query live geometry in process context. Cached registration-time free
  * space becomes stale after RAM writes, truncation or namespace mutations.
  */
-int mt6797_md1_fs_provider_stats_drive(u8 drive, struct mt6797_md1_fs_stats *stats)
+int mt6797_fs_provider_stats_drive(unsigned int modem, u8 drive,
+				   struct mt6797_md1_fs_stats *stats)
 {
 	struct mt6797_md1_fs_stats snapshot;
 	struct file *root;
@@ -1232,7 +1337,7 @@ int mt6797_md1_fs_provider_stats_drive(u8 drive, struct mt6797_md1_fs_stats *sta
 	might_sleep();
 	if (!stats)
 		return -EINVAL;
-	root = mt6797_fs_root_get(drive);
+	root = mt6797_fs_root_get_for(modem, drive);
 	if (!root)
 		return -ENODEV;
 	ret = mt6797_fs_validate_root(root, READ_ONCE(provider_volatile), &snapshot);
@@ -1245,6 +1350,14 @@ int mt6797_md1_fs_provider_stats_drive(u8 drive, struct mt6797_md1_fs_stats *sta
 		*stats = snapshot;
 	fput(root);
 	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_fs_provider_stats_drive);
+
+int mt6797_md1_fs_provider_stats_drive(u8 drive,
+				       struct mt6797_md1_fs_stats *stats)
+{
+	return mt6797_fs_provider_stats_drive(MT6797_FS_MODEM_MD1, drive,
+					      stats);
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_stats_drive);
 
@@ -1434,6 +1547,147 @@ static int mt6797_fs_register_fd(int fd, bool ram)
 	return mt6797_fs_register_fds(&fd, 1, ram);
 }
 
+/* Existing sibling directories on the already owned mounts. Take the parent
+ * inode lock so a rename cannot change either name/parent during validation.
+ * No lookup above the registered MD1 root is exposed to modem requests.
+ */
+static int mt6797_fs_validate_md3_root(struct file *file, struct file *md1)
+{
+	struct mt6797_md1_fs_stats stats;
+	struct dentry *parent, *sibling;
+	int ret;
+
+	ret = mt6797_fs_validate_root(file, MT6797_MD1_FS_BACKING_INTERNAL,
+				      &stats);
+	if (ret)
+		return ret;
+	if (file->f_path.mnt != md1->f_path.mnt ||
+	    file_inode(file)->i_sb != file_inode(md1)->i_sb)
+		return -EXDEV;
+	parent = dget_parent(md1->f_path.dentry);
+	if (parent != file_inode(md1)->i_sb->s_root) {
+		dput(parent);
+		return -EXDEV;
+	}
+	inode_lock(d_inode(parent));
+	sibling = dget_parent(file->f_path.dentry);
+	ret = -EXDEV;
+	if (sibling == parent && md1->f_path.dentry->d_parent == parent &&
+	    !d_mountpoint(file->f_path.dentry) &&
+	    md1->f_path.dentry->d_name.len == 2 &&
+	    !memcmp(md1->f_path.dentry->d_name.name, "md", 2) &&
+	    file->f_path.dentry->d_name.len == 3 &&
+	    !memcmp(file->f_path.dentry->d_name.name, "md3", 3))
+		ret = 0;
+	dput(sibling);
+	inode_unlock(d_inode(parent));
+	dput(parent);
+	return ret;
+}
+
+static bool mt6797_fs_md3_roots_accessible(void)
+{
+	unsigned int i;
+
+	if (provider_state.stage != MT6797_FS_CONSUMED ||
+	    provider_volatile != MT6797_MD1_FS_BACKING_INTERNAL)
+		return false;
+	for (i = 0; i < ARRAY_SIZE(md3_roots); i++)
+		if (!mt6797_fs_internal_writable(md3_roots[i]))
+			return false;
+	return true;
+}
+
+/* Called only by the future MD3 ordered service owner before admitting RX.
+ * Once claimed, no second owner or same-boot restart can reuse stale handles.
+ */
+int mt6797_md3_fs_provider_claim(void)
+{
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&provider_lock, flags);
+	ret = mt6797_fs_md3_roots_accessible() ? mt6797_fs_claim(&md3_state) :
+						 -ENODEV;
+	spin_unlock_irqrestore(&provider_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md3_fs_provider_claim);
+
+static int mt6797_fs_md3_cancel(void)
+{
+	struct file *files[3] = {};
+	unsigned long flags;
+	unsigned int i;
+	int ret;
+
+	spin_lock_irqsave(&provider_lock, flags);
+	ret = mt6797_fs_cancel(&md3_state);
+	if (!ret)
+		for (i = 0; i < ARRAY_SIZE(files); i++) {
+			files[i] = md3_roots[i];
+			md3_roots[i] = NULL;
+		}
+	spin_unlock_irqrestore(&provider_lock, flags);
+	for (i = 0; i < ARRAY_SIZE(files); i++)
+		if (files[i])
+			fput(files[i]);
+	return ret;
+}
+
+static int mt6797_fs_md3_register(const int *fds)
+{
+	struct file *files[3] = {}, *md1[3] = {};
+	unsigned long flags;
+	unsigned int i;
+	int ret;
+
+	spin_lock_irqsave(&provider_lock, flags);
+	ret = provider_state.stage == MT6797_FS_CONSUMED &&
+			      provider_volatile ==
+				      MT6797_MD1_FS_BACKING_INTERNAL &&
+			      mt6797_fs_roots_accessible() &&
+			      provider_extra[0] && provider_extra[1] ?
+		      mt6797_fs_begin(&md3_state) :
+		      -ENODEV;
+	if (!ret) {
+		md1[0] = get_file(provider_file);
+		md1[1] = get_file(provider_extra[0]);
+		md1[2] = get_file(provider_extra[1]);
+	}
+	spin_unlock_irqrestore(&provider_lock, flags);
+	if (ret)
+		return ret;
+	for (i = 0; i < ARRAY_SIZE(files); i++) {
+		files[i] = fget(fds[i]);
+		ret = files[i] ? mt6797_fs_validate_md3_root(files[i], md1[i]) :
+				 -EBADF;
+		if (ret)
+			goto out;
+	}
+	spin_lock_irqsave(&provider_lock, flags);
+	for (i = 0; i < ARRAY_SIZE(files); i++)
+		if (!mt6797_fs_internal_writable(files[i]))
+			ret = -EROFS;
+	if (!ret)
+		ret = mt6797_fs_publish(&md3_state);
+	if (!ret)
+		for (i = 0; i < ARRAY_SIZE(files); i++) {
+			md3_roots[i] = files[i];
+			files[i] = NULL;
+		}
+	spin_unlock_irqrestore(&provider_lock, flags);
+out:
+	for (i = 0; i < ARRAY_SIZE(files); i++) {
+		if (files[i])
+			fput(files[i]);
+		fput(md1[i]);
+	}
+	if (ret)
+		mt6797_fs_md3_cancel();
+	return ret;
+}
+
 static long mt6797_fs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct mt6797_md1_fs_registration registration;
@@ -1442,6 +1696,15 @@ static long mt6797_fs_ioctl(struct file *file, unsigned int cmd, unsigned long a
 
 	if (!ns_capable(&init_user_ns, CAP_SYS_ADMIN))
 		return -EPERM;
+	if (cmd == MT6797_MD3_FS_CANCEL)
+		return mt6797_fs_md3_cancel();
+	if (cmd == MT6797_MD3_FS_REGISTER_NV_ROOTS) {
+		if (copy_from_user(&nv, (void __user *)arg, sizeof(nv)))
+			return -EFAULT;
+		if (nv.version != 1 || nv.flags || nv.reserved)
+			return -EINVAL;
+		return mt6797_fs_md3_register(nv.directory_fd);
+	}
 	if (cmd == MT6797_MD1_FS_CANCEL)
 		return mt6797_fs_cancel_registration();
 	if (cmd == MT6797_MD1_FS_REGISTER_NV_ROOTS) {

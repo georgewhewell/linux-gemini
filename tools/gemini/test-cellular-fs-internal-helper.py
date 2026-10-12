@@ -14,6 +14,8 @@ pieces = {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body
 shim = pieces['shim']
 tests = pieces['tests']
 tests = tests[:tests.index('int main(void)')]
+tests = 'static bool companion;\n' + tests
+tests = tests.replace('!strcmp(path,"md")', '!strcmp(path,companion?"md3":"md")')
 tests = tests.replace('MT6797_MD1_FS_REGISTER_RAM_ROOTS', 'MT6797_MD1_FS_REGISTER_NV_ROOTS')
 tests = tests.replace('struct mt6797_md1_fs_ram_roots *r', 'struct mt6797_md1_fs_nv_roots *r')
 tests = tests.replace('dir->kind==RAMMD', 'dir->kind==MD')
@@ -36,19 +38,21 @@ tests = tests.replace('if(f->kind==BLOCK){assert(cmd==BLKGETSIZE64);', '''if(cmd
  if(mode==13){errno=EBUSY;return -1;}
  if(mode==14){errno=EINTR;return -1;}return 0;}
  if(f->kind==BLOCK){assert(cmd==BLKGETSIZE64);''')
+tests = tests.replace('cmd==MT6797_MD1_FS_REGISTER_NV_ROOTS',
+                      'cmd==(companion?MT6797_MD3_FS_REGISTER_NV_ROOTS:MT6797_MD1_FS_REGISTER_NV_ROOTS)')
 tests += r'''
-int main(void){
+static void exercise(void){
  char *paths[]={"/rwZ","/rwX","/rwY"};
- reset(0,0,0);assert(!register_internal_roots(paths)&&registered==1&&provider_opens==1);drained();int count=calls;
- for(int i=1;i<=count;i++){reset(0,0,i);assert(register_internal_roots(paths)<0&&registered<=1);drained();}
+ reset(0,0,0);assert(!register_internal_roots_for(paths,companion)&&registered==1&&provider_opens==1);drained();int count=calls;
+ for(int i=1;i<=count;i++){reset(0,0,i);assert(register_internal_roots_for(paths,companion)<0&&registered<=1);drained();}
  int bad_modes[]={1,3,4,5,6,7,8,10,11};
  for(unsigned m=0;m<sizeof(bad_modes)/sizeof(*bad_modes);m++)for(int bad=0;bad<3;bad++){
-  reset(bad_modes[m],bad,0);assert(register_internal_roots(paths)<0&&!registered&&!provider_opens);drained();
+  reset(bad_modes[m],bad,0);assert(register_internal_roots_for(paths,companion)<0&&!registered&&!provider_opens);drained();
  }
- reset(2,0,0);assert(!register_internal_roots(paths)&&registered==1);drained(); /* mounted ext4 can carry journal-recovery marker */
- reset(9,0,0);assert(register_internal_roots(paths)==-EINTR&&registered==1);drained();
+ reset(2,0,0);assert(!register_internal_roots_for(paths,companion)&&registered==1);drained(); /* mounted ext4 can carry journal-recovery marker */
+ reset(9,0,0);assert(register_internal_roots_for(paths,companion)==-EINTR&&registered==1);drained();
  char *tmp=paths[1];paths[1]=paths[2];paths[2]=tmp;
- reset(0,0,0);assert(register_internal_roots(paths)<0&&!registered);drained();
+ reset(0,0,0);assert(register_internal_roots_for(paths,companion)<0&&!registered);drained();
  for(int i=0;i<3;i++){
   reset(2,0,0);assert(!source_authority_mode(&sources[i],NULL,0,NULL,NULL,1)&&!provider_opens&&super_reads==1);drained();
  }
@@ -58,6 +62,10 @@ int main(void){
  reset(14,0,0);assert(cancel_authority()==-EINTR&&registered==1);drained();
  puts("PASS actual rescue cancellation: one ioctl, consumed EBUSY/error/EINTR refusal, FD cleanup, no block reads/writes or retry");
  puts("PASS actual internal helper: fixed devices/order/type/size, RW ext4 mount/root/md confinement, dirty journal admission, damaged-filesystem refusal, all fault unwinds, one ioctl including EINTR, no block writes or re-seed");
+}
+int main(void){
+ companion=false;exercise();companion=true;exercise();
+ puts("PASS MD3 helper: only existing md3 siblings, exact dedicated ioctl, no MD1 fallback, no creation or seeding");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-internal-nv-helper-') as directory:

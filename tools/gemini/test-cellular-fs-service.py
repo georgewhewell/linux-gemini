@@ -42,7 +42,7 @@ typedef int64_t loff_t; typedef long ssize_t;
 #define S_ISDIR(m) (((m) & 0170000) == 0040000)
 #define min_t(t, a, b) ((t)(a) < (t)(b) ? (t)(a) : (t)(b))
 static void cond_resched(void) {}
-struct file { int node; loff_t f_pos; int cursor; bool directory, writable; };
+struct file { unsigned int modem; int node; loff_t f_pos; int cursor; bool directory, writable; };
 struct timezone { int tz_minuteswest, tz_dsttime; };
 static struct timezone sys_tz;
 static int allocations, frees;
@@ -55,6 +55,8 @@ static void time64_to_tm(s64 t, int offset, struct tm *tm) { time_t v = t + offs
 fake = r'''
 /* Fixture tree: Z:\ = { FATC62610C1.log? no; NVRAM/ { MD_A.bin, MD_B.bin, sub/ }, ro.txt, big.bin } */
 struct node { const char *path; unsigned mode; const char *data; u64 size; int parent; };
+static unsigned int selected_modem;
+static bool md3_registered, md3_claimed;
 static char big[5000];
 static struct node nodes[] = {
  {"", 0040755, NULL, 4096, -1},
@@ -82,7 +84,7 @@ static int mt6797_md1_fs_provider_getattr(const char *path, struct mt6797_md1_fs
 static struct file *mt6797_md1_fs_provider_open(const char *path, bool directory) {
  int n = find(path); struct file *f; if (!provider_available) return ERR_PTR(-ENODEV); if (n < 0) return ERR_PTR(-ENOENT);
  if (directory != S_ISDIR(nodes[n].mode)) return ERR_PTR(directory ? -ENOTDIR : -EISDIR);
- f = calloc(1, sizeof(*f)); f->node = n; f->directory = directory; open_files++; return f; }
+ f = calloc(1, sizeof(*f)); f->node = n; f->modem=selected_modem; f->directory = directory; open_files++; return f; }
 
 static bool ram_enabled;static int ram_create_count,ram_truncate_count,root_creates[2];static char ram_data[64],root_data[2][64];
 static struct file *mt6797_md1_fs_provider_open_ram(const char *path,bool writable,bool create,bool truncate){
@@ -112,7 +114,7 @@ static ssize_t mt6797_md1_fs_provider_read(struct file *f, void *buf, size_t cou
  struct node *n = &nodes[f->node]; assert(!f->directory && pos == &f->f_pos);
  if (*pos >= (loff_t)n->size) return 0;
  if (count > n->size - *pos) count = n->size - *pos;
- memcpy(buf, n->data + *pos, count); *pos += count; return count; }
+ memcpy(buf, n->data + *pos, count); if(f->modem==2)memset(buf,'3',count); *pos += count; return count; }
 static loff_t mt6797_md1_fs_provider_llseek(struct file *f, loff_t offset, int whence) {
  loff_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? f->f_pos : (loff_t)nodes[f->node].size;
  if (base + offset < 0) return -EINVAL;
@@ -190,9 +192,23 @@ static int mt6797_md1_fs_provider_restore_drive(u8 drive,const char *path){
 }
 
 '''
+namespace = r'''
+static int mt6797_md3_fs_provider_claim(void) { if(!md3_registered)return -ENODEV;if(md3_claimed)return -EALREADY;md3_claimed=true;return 0; }
+static void select_modem(unsigned int m) { assert(m==0||m==2);assert(m==0||md3_claimed);selected_modem=m; }
+#define mt6797_fs_provider_getattr_drive(modem, ...) (select_modem(modem), mt6797_md1_fs_provider_getattr_drive(__VA_ARGS__))
+#define mt6797_fs_provider_open_drive(modem, ...) (select_modem(modem), mt6797_md1_fs_provider_open_drive(__VA_ARGS__))
+#define mt6797_fs_provider_open_ram_drive(modem, ...) (select_modem(modem), mt6797_md1_fs_provider_open_ram_drive(__VA_ARGS__))
+#define mt6797_fs_provider_mutate_drive(modem, ...) (select_modem(modem), mt6797_md1_fs_provider_mutate_drive(__VA_ARGS__))
+#define mt6797_fs_provider_rename_drive(modem, ...) (select_modem(modem), mt6797_md1_fs_provider_rename_drive(__VA_ARGS__))
+#define mt6797_fs_provider_copy_drive(modem, ...) (select_modem(modem), mt6797_md1_fs_provider_copy_drive(__VA_ARGS__))
+#define mt6797_fs_provider_restore_drive(modem, ...) (select_modem(modem), mt6797_md1_fs_provider_restore_drive(__VA_ARGS__))
+#define mt6797_fs_provider_xdelete_drive(modem, ...) (select_modem(modem), mt6797_md1_fs_provider_xdelete_drive(__VA_ARGS__))
+#define mt6797_fs_provider_stats_drive(modem, ...) (select_modem(modem), mt6797_md1_fs_provider_stats_drive(__VA_ARGS__))
+'''
 tests = r'''
 static u8 frame[3584], payload[MT6797_FS_REPLY_MAX];
 static struct mt6797_fs_service svc;
+static struct mt6797_fs_service *current_service=&svc;
 static struct mt6797_fs_reply reply;
 static s32 status;
 /* Build a channel-14 request: args given as (ptr,len) pairs. */
@@ -205,7 +221,7 @@ static u32 utf16(const char *ascii, u8 *out) { u32 n = 0; for (; *ascii; ascii++
 static u8 pathbuf[600];
 static int run(u32 index, u32 op, unsigned argc, const void *const *args, const u32 *lens) {
  size_t n = build(index, op, argc, args, lens); reply = (struct mt6797_fs_reply){.payload = payload, .capacity = sizeof(payload)};
- status = 12345; return mt6797_fs_service_request(&svc, frame, n, &reply, &status); }
+ status = 12345; return mt6797_fs_service_request(current_service, frame, n, &reply, &status); }
 static int run_path(u32 op, const char *path, u32 extra, bool with_extra) {
  u32 n = utf16(path, pathbuf); u8 e[4]; mt6797_fs_write32(e, extra); const void *a[2] = {pathbuf, e}; u32 l[2] = {n, 4};
  return run(0, op, with_extra ? 2 : 1, a, l); }
@@ -691,6 +707,49 @@ int main(void) {
  mt6797_fs_service_release(&svc);assert(!open_files&&!svc.open_count);ram_enabled=false;
  puts("PASS actual Z/X/Y routing: distinct compact reads, metadata, search, disk identity/capacity, simultaneous create/write/readback handles, absent and traversal refusals");
  puts("PASS actual RAM service: captured CREATE flags, write count, malformed length, seek/readback, partial/full writes, truncate and handle cleanup");
+
+ /* Companion namespace and handle lifetime: same numeric handle must never
+  * select the other modem's provider or be closed by its SHUTDOWN. */
+ {
+  struct mt6797_fs_service md3={0}, duplicate={0}, invalid={.modem=1};
+  assert(mt6797_fs_service_init_md3(&md3)==-ENODEV&&!md3.modem);
+  md3_registered=true;assert(!mt6797_fs_service_init_md3(&md3)&&md3.modem==2);
+  assert(mt6797_fs_service_init_md3(&duplicate)==-EALREADY&&!duplicate.modem);
+  assert(mt6797_fs_service_init_md3(&md3)==-EINVAL);
+  current_service=&svc;
+  assert(!run_path(MT6797_FS_OPEN,"Z:\\ro.txt",0x100,true)&&status==1&&selected_modem==0);
+  current_service=&md3;
+  assert(!run_path(MT6797_FS_OPEN,"Z:\\ro.txt",0x100,true)&&status==1&&selected_modem==2);
+  assert(open_files==2&&svc.handle[1].file!=md3.handle[1].file);
+  assert(!run_u32(MT6797_FS_READ,2,1,8,0)&&!status&&arg(2,&d)==8&&!memcmp(d,"33333333",8));
+  current_service=&svc;
+  assert(!run_u32(MT6797_FS_READ,2,1,8,0)&&!status&&arg(2,&d)==8&&!memcmp(d,"readonly",8));
+  current_service=&md3;
+  assert(!run_path(MT6797_FS_GETATTRIBUTES,"X:\\common",0,false)&&selected_modem==2);
+  assert(!run_path(MT6797_FS_GETATTRIBUTES,"Y:\\common",0,false)&&selected_modem==2);
+  assert(!run_path(MT6797_FS_OPEN,"V:\\test",0x100,true)&&status==-19);
+  assert(!run_path(MT6797_FS_OPEN,"W:\\test",0x100,true)&&status==-19);
+  assert(!run(0,MT6797_FS_SHUTDOWN,0,NULL,NULL)&&!md3.open_count&&svc.open_count==1&&open_files==1);
+  current_service=&invalid;assert(run(0,MT6797_FS_CLOSEALL,0,NULL,NULL)==-EINVAL&&open_files==1);
+  current_service=&svc;mt6797_fs_service_release(&svc);assert(!open_files);
+ }
+ /* Exact modern ECCCI argument/workspace boundary, legacy bounds unchanged. */
+ {
+  u8 value[4]={0};const void *args[7]={value,value,value,value,value,value,value};u32 lens[7]={4,4,4,4,4,4,4};
+  size_t n=build(4,0x1023,6,args,lens),used=0;
+  u8 assembled[MT6797_FS_MD3_REQUEST_MAX];
+  assert(mt6797_fs_request_parse(frame,n,&req)==-EPROTO);
+  assert(!mt6797_fs_request_parse_md3(frame,n,&req)&&req.argc==6&&req.len[5]==4);
+  assert(mt6797_fs_request_append_md3(assembled,&used,frame,n)==1&&used==n);
+  n=build(4,0x1023,7,args,lens);assert(mt6797_fs_request_parse_md3(frame,n,&req)==-EPROTO);
+  memset(assembled,0,sizeof(assembled));mt6797_fs_write32(assembled+4,sizeof(assembled));
+  mt6797_fs_write32(assembled+8,14);mt6797_fs_write32(assembled+16,0x1004);
+  mt6797_fs_write32(assembled+20,1);mt6797_fs_write32(assembled+24,sizeof(assembled)-28);
+  assert(!mt6797_fs_request_parse_md3(assembled,sizeof(assembled),&req));
+  assert(mt6797_fs_request_parse(assembled,sizeof(assembled),&req)==-EMSGSIZE);
+  assert(mt6797_fs_request_parse_md3(assembled,sizeof(assembled)+1,&req)==-EMSGSIZE);
+ }
+ puts("PASS MD3 exact namespace/independent handles/shutdown, unavailable W/V, one-time initialization, unknown modem rejection, modern six-argument and0x40c8 bounds");
  assert(allocations == frees);
  puts("PASS actual FS service: C8/C10/C11 literal frames, every answered vendor op, error mapping, UTF-16/path/pattern rules, handles 1..128, 0xd80 fragmentation, read-only refusals, leak-free");
  return 0;
@@ -698,6 +757,6 @@ int main(void) {
 '''
 with tempfile.TemporaryDirectory(prefix='gemini-fs-service-') as directory:
     path = Path(directory)
-    (path / 'test.c').write_text(shim + provider + codec + fake + service + tests)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+    (path / 'test.c').write_text(shim + provider + codec + fake + namespace + service + tests)
+    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-fsanitize=address,undefined', '-g', str(path / 'test.c'), '-o', str(path / 'test')], check=True)
     subprocess.run([str(path / 'test')], check=True, timeout=30)

@@ -10,6 +10,8 @@
 #define MT6797_FS_TX 15U
 #define MT6797_FS_INDEX_COUNT 5U
 #define MT6797_FS_MAX_ARGS 5U
+#define MT6797_FS_MD3_MAX_ARGS 6U
+#define MT6797_FS_MD3_REQUEST_MAX (MT6797_FS_PREFIX + 0x40c8U)
 #define MT6797_FS_HEADER 16U
 #define MT6797_FS_PREFIX 20U /* header plus operation word, repeated per fragment */
 #define MT6797_FS_FRAGMENT 0xd80U /* vendor CCCI_MTU: payload bytes per frame */
@@ -88,8 +90,8 @@ struct mt6797_fs_request {
 	u32 index;
 	u32 op;
 	u32 argc;
-	const u8 *arg[MT6797_FS_MAX_ARGS];
-	u32 len[MT6797_FS_MAX_ARGS];
+	const u8 *arg[MT6797_FS_MD3_MAX_ARGS];
+	u32 len[MT6797_FS_MD3_MAX_ARGS];
 };
 
 /* Argument stream of one reply: [argc][len,data,pad]... */
@@ -112,6 +114,7 @@ struct mt6797_fs_handle {
 
 /* Owned by one ordered worker; no internal locking. */
 struct mt6797_fs_service {
+	unsigned int modem; /* zero MD1, explicit one-time MD3 initialization */
 	struct mt6797_fs_handle handle[MT6797_FS_HANDLES];
 	unsigned int open_count;
 };
@@ -132,13 +135,16 @@ static inline void mt6797_fs_write32(u8 *p, u32 value)
 /* Complete, unfragmented channel-14 request with 4-byte padded arguments.
  * Zero-length arguments are refused like the vendor GetPackInfo does.
  */
-static inline int mt6797_fs_request_parse(const u8 *data, size_t len,
-					  struct mt6797_fs_request *request)
+static inline int
+mt6797_fs_request_parse_limit(const u8 *data, size_t len,
+			      struct mt6797_fs_request *request, bool companion)
 {
 	size_t cursor = 24, padded;
 	unsigned int i;
 
-	if (!data || !request || len < 24 || len > MT6797_FS_REQUEST_MAX)
+	if (!data || !request || len < 24 ||
+	    len > (companion ? MT6797_FS_MD3_REQUEST_MAX :
+			       MT6797_FS_REQUEST_MAX))
 		return -EMSGSIZE;
 	if (mt6797_fs_read32(data) || mt6797_fs_read32(data + 4) != len ||
 	    (mt6797_fs_read32(data + 8) & 0xffff) != MT6797_FS_RX)
@@ -147,7 +153,8 @@ static inline int mt6797_fs_request_parse(const u8 *data, size_t len,
 	request->op = mt6797_fs_read32(data + 16);
 	request->argc = mt6797_fs_read32(data + 20);
 	if (request->index >= MT6797_FS_INDEX_COUNT ||
-	    request->argc > MT6797_FS_MAX_ARGS)
+	    request->argc >
+		    (companion ? MT6797_FS_MD3_MAX_ARGS : MT6797_FS_MAX_ARGS))
 		return -EPROTO;
 	for (i = 0; i < request->argc; i++) {
 		if (len - cursor < 4)
@@ -165,17 +172,35 @@ static inline int mt6797_fs_request_parse(const u8 *data, size_t len,
 	return cursor == len ? 0 : -EPROTO;
 }
 
+/* Current ECCCI daemon read/write mode allows six args and 0x40c8 bytes.
+ * Preserve the older, hardware-qualified MD1 admission bounds unchanged.
+ */
+static inline int mt6797_fs_request_parse(const u8 *data, size_t len,
+					  struct mt6797_fs_request *request)
+{
+	return mt6797_fs_request_parse_limit(data, len, request, false);
+}
+
+static inline int mt6797_fs_request_parse_md3(const u8 *data, size_t len,
+					      struct mt6797_fs_request *request)
+{
+	return mt6797_fs_request_parse_limit(data, len, request, true);
+}
+
 /* NAPI-owned assembly buffer. Each continuation repeats only the 20-byte
  * header/op prefix; argc and argument bytes belong to the combined stream.
  * No service effects occur here. A negative return invalidates the assembly.
  * Return 0 for more fragments, 1 for a complete, strictly parsed request.
  */
-static inline int mt6797_fs_request_append(u8 *buffer, size_t *used,
-					   const u8 *frame, size_t len)
+static inline int mt6797_fs_request_append_limit(u8 *buffer, size_t *used,
+						 const u8 *frame, size_t len,
+						 bool companion)
 {
 	struct mt6797_fs_request request;
 	size_t skip = *used ? MT6797_FS_PREFIX : 0;
 	u32 data0;
+	size_t maximum = companion ? MT6797_FS_MD3_REQUEST_MAX :
+				     MT6797_FS_REQUEST_MAX;
 	int ret;
 
 	if (len < (skip ? MT6797_FS_PREFIX + 1 : 24) ||
@@ -192,8 +217,7 @@ static inline int mt6797_fs_request_append(u8 *buffer, size_t *used,
 		     mt6797_fs_read32(buffer + 16) !=
 		     mt6797_fs_read32(frame + 16)))
 		return -EPROTO;
-	if (*used > MT6797_FS_REQUEST_MAX ||
-	    len - skip > MT6797_FS_REQUEST_MAX - *used)
+	if (*used > maximum || len - skip > maximum - *used)
 		return -EMSGSIZE;
 	memcpy(buffer + *used, frame + skip, len - skip);
 	*used += len - skip;
@@ -202,8 +226,23 @@ static inline int mt6797_fs_request_append(u8 *buffer, size_t *used,
 	/* Internal canonical header describes the complete argument stream. */
 	mt6797_fs_write32(buffer, 0);
 	mt6797_fs_write32(buffer + 4, *used);
-	ret = mt6797_fs_request_parse(buffer, *used, &request);
+	ret = mt6797_fs_request_parse_limit(buffer, *used, &request, companion);
 	return ret ?: 1;
+}
+
+static inline int mt6797_fs_request_append(u8 *buffer, size_t *used,
+					   const u8 *frame, size_t len)
+{
+	return mt6797_fs_request_append_limit(buffer, used, frame, len, false);
+}
+
+/* MD3 transport validates queue 4/wire 4/sequence first and normalizes channel
+ * to 14, as the active GPL C2K mapper does. Caller allocates MD3_REQUEST_MAX.
+ */
+static inline int mt6797_fs_request_append_md3(u8 *buffer, size_t *used,
+					       const u8 *frame, size_t len)
+{
+	return mt6797_fs_request_append_limit(buffer, used, frame, len, true);
 }
 
 static inline void mt6797_fs_reply_init(struct mt6797_fs_reply *reply,
@@ -577,6 +616,11 @@ static inline void mt6797_fs_dirent(u32 attributes, bool fitted, u32 atime,
 	mt6797_fs_write32(entry + 28, size);
 }
 
+/* Caller supplies a fresh zeroed instance and owns its ordered worker.
+ * MD3 consumes its separately registered roots exactly once. No request/TX,
+ * worker, reset release or runtime capability is created by this operation.
+ */
+int mt6797_fs_service_init_md3(struct mt6797_fs_service *service);
 int mt6797_fs_service_request(struct mt6797_fs_service *service,
 			      const u8 *data, size_t len,
 			      struct mt6797_fs_reply *reply, s32 *status);

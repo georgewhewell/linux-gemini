@@ -243,7 +243,8 @@ static int source_authority_mode(const struct fs_source *source, const char *mou
 		goto out;
 	}
 	failure_stage = "nvdata-md-directory-open";
-	md = no_symlink_dir(root, "md", RESOLVE_BENEATH | RESOLVE_NO_XDEV);
+	md = no_symlink_dir(root, internal == 2 ? "md3" : "md",
+			    RESOLVE_BENEATH | RESOLVE_NO_XDEV);
 	if (md < 0) {
 		ret = md;
 		goto out;
@@ -340,7 +341,7 @@ static int source_authority(const struct fs_source *source, const char *mountpoi
 /* All fixed internal roots are pinned before a single irreversible-to-this-
  * boot publication. No registration, including EINTR, is ever retried.
  */
-static int register_internal_roots(char **paths)
+static int register_internal_roots_for(char **paths, int companion)
 {
  struct mt6797_md1_fs_nv_roots roots = {
   .version = 1, .directory_fd = { -1, -1, -1 },
@@ -350,7 +351,7 @@ static int register_internal_roots(char **paths)
 
  for (i = 0; i < 3; i++) {
   ret = source_authority_mode(&sources[i], paths[i], 1, NULL,
-                              &roots.directory_fd[i], 1);
+                              &roots.directory_fd[i], companion ? 2 : 1);
   if (ret)
    goto out;
   failure_stage = "internal-roots-distinct";
@@ -368,7 +369,8 @@ static int register_internal_roots(char **paths)
  provider = open("/dev/mt6797-md1-fs-provider", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
  if (provider < 0) { ret = -errno; goto out; }
  failure_stage = "provider-register-internal-once";
- ret = ioctl(provider, MT6797_MD1_FS_REGISTER_NV_ROOTS, &roots) ? -errno : 0;
+ ret = ioctl(provider, companion ? MT6797_MD3_FS_REGISTER_NV_ROOTS :
+             MT6797_MD1_FS_REGISTER_NV_ROOTS, &roots) ? -errno : 0;
 out:
  if (provider >= 0)
   close(provider);
@@ -376,6 +378,11 @@ out:
   if (roots.directory_fd[i] >= 0)
    close(roots.directory_fd[i]);
  return ret;
+}
+
+static int register_internal_roots(char **paths)
+{
+ return register_internal_roots_for(paths, 0);
 }
 
 static int nvdata_authority(const char *mountpoint, int publish, const char *ramdir)
@@ -479,6 +486,12 @@ int main(int argc, char **argv)
 				goto usage;
 		ret = register_ram_roots(argv + 2);
 		published = 1;
+ } else if (argc == 5 && !strcmp(argv[1], "--md3-internal-roots")) {
+  for (int i = 2; i < 5; i++)
+   if (argv[i][0] != '/')
+    goto usage;
+  ret = register_internal_roots_for(argv + 2, 1);
+  published = 1;
  } else if (argc == 5 && !strcmp(argv[1], "--internal-roots")) {
   for (int i = 2; i < 5; i++)
    if (argv[i][0] != '/')
@@ -511,6 +524,6 @@ int main(int argc, char **argv)
 	     "MD1 filesystem metadata precheck passed; no provider registration");
 	return 0;
 usage:
-	fprintf(stderr, "usage (root only): mt6797-fs-register --cancel | --check-internal-devices | --internal-roots /rwZ /rwX /rwY | --check-device | /absolute/ro-mount | --check-mount /absolute/ro-mount | --ram /absolute/ro-mount /absolute/ram-mount | --check-roots-device | --check-root-mount Z/X/Y /absolute/ro-mount | --ram-roots /sourceZ /ramZ /sourceX /ramX /sourceY /ramY\n");
+	fprintf(stderr, "usage (root only): mt6797-fs-register --cancel | --check-internal-devices | --internal-roots /rwZ /rwX /rwY | --md3-internal-roots /rwZ /rwX /rwY | --check-device | /absolute/ro-mount | --check-mount /absolute/ro-mount | --ram /absolute/ro-mount /absolute/ram-mount | --check-roots-device | --check-root-mount Z/X/Y /absolute/ro-mount | --ram-roots /sourceZ /ramZ /sourceX /ramX /sourceY /ramY\n");
 	return 2;
 }

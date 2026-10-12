@@ -331,10 +331,16 @@ int main(void){
  puts("PASS actual FS registration: FD/VFS failures, mount+superblock RO, returned type, refs, single publication, concurrent claim/cancel before attach, cancellation at attach, consumed lifetime");
 }
 '''
-parts=[shim,(root/'include/uapi/linux/mt6797_md1_fs.h').read_text(),(root/'drivers/soc/mediatek/mt6797-md1-fs-state.h').read_text(),adapter]
+namespace = r'''
+#define MT6797_FS_MODEM_MD1 0U
+#define mt6797_fs_root_get_for(modem, drive) (assert((modem)==0), mt6797_fs_root_get(drive))
+static int mt6797_fs_md3_cancel(void) { assert(!"unexpected MD3 request in MD1 fixture"); return -1; }
+static int mt6797_fs_md3_register(const int *fds) { (void)fds; assert(!"unexpected MD3 request in MD1 fixture"); return -1; }
+'''
+parts=[shim,namespace,(root/'include/uapi/linux/mt6797_md1_fs.h').read_text(),(root/'drivers/soc/mediatek/mt6797-md1-fs-state.h').read_text(),adapter]
 parts += [function(n) for n in ('mt6797_md1_fs_provider_enabled','mt6797_fs_readonly','mt6797_fs_tmpfs_writable','mt6797_fs_internal_writable','mt6797_fs_backing_matches','mt6797_fs_accessible','mt6797_fs_roots_accessible','mt6797_fs_drive_file',
           'mt6797_md1_fs_provider_require','mt6797_md1_fs_provider_claim',
-          'mt6797_fs_root_get','mt6797_fs_cancel_registration','mt6797_fs_validate_root','mt6797_md1_fs_provider_stats_drive','mt6797_md1_fs_provider_stats','mt6797_fs_register_fds','mt6797_fs_register_fd','mt6797_fs_ioctl')]
+          'mt6797_fs_root_get','mt6797_fs_cancel_registration','mt6797_fs_validate_root','mt6797_fs_provider_stats_drive','mt6797_md1_fs_provider_stats_drive','mt6797_md1_fs_provider_stats','mt6797_fs_register_fds','mt6797_fs_register_fd','mt6797_fs_ioctl')]
 parts += [tests]
 with tempfile.TemporaryDirectory(prefix='gemini-fs-registration-') as d:
     p=Path(d);(p/'test.c').write_text('\n'.join(parts))

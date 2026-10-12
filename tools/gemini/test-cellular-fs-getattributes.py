@@ -286,10 +286,13 @@ int main(void){
  puts("PASS actual provider VFS layer: confined multi-component walk, dot/dot-dot/absolute/symlink/mountpoint/special/foreign refusals, RO rechecks, open flags, read/seek/fstat, entry enumeration skipping refused children, complete reference cleanup");
 }
 '''
-parts = [shim, provider, function('mt6797_fs_readonly'), function('mt6797_fs_tmpfs_writable'), function('mt6797_fs_backing_matches'), function('mt6797_fs_accessible'), function('mt6797_fs_drive_file'), function('mt6797_fs_root_get'),
+namespace = r'''
+#define mt6797_fs_root_get_for(modem, drive) (assert((modem)==0), mt6797_fs_root_get(drive))
+'''
+parts = [shim, namespace, provider, function('mt6797_fs_readonly'), function('mt6797_fs_tmpfs_writable'), function('mt6797_fs_backing_matches'), function('mt6797_fs_accessible'), function('mt6797_fs_drive_file'), function('mt6797_fs_root_get'),
          function('mt6797_fs_walk_component'), function('mt6797_fs_walk'), function('mt6797_fs_stat'),
-         function('mt6797_md1_fs_provider_getattr_drive'), function('mt6797_md1_fs_provider_getattr'), function('mt6797_md1_fs_provider_open_drive'), function('mt6797_md1_fs_provider_open'),
-         function('mt6797_md1_fs_provider_open_ram_drive'), function('mt6797_md1_fs_provider_open_ram'), function('mt6797_md1_fs_provider_write'), function('mt6797_md1_fs_provider_fstat'), function('mt6797_md1_fs_provider_read'),
+         function('mt6797_fs_provider_getattr_drive'), function('mt6797_md1_fs_provider_getattr_drive'), function('mt6797_md1_fs_provider_getattr'), function('mt6797_fs_provider_open_drive'), function('mt6797_md1_fs_provider_open_drive'), function('mt6797_md1_fs_provider_open'),
+         function('mt6797_fs_provider_open_ram_drive'), function('mt6797_md1_fs_provider_open_ram_drive'), function('mt6797_md1_fs_provider_open_ram'), function('mt6797_md1_fs_provider_write'), function('mt6797_md1_fs_provider_fstat'), function('mt6797_md1_fs_provider_read'),
          function('mt6797_md1_fs_provider_llseek'), walk_struct, function('mt6797_fs_dir_actor'),
          function('mt6797_md1_fs_provider_next_entry'), function('mt6797_md1_fs_provider_close'), tests]
 with tempfile.TemporaryDirectory(prefix='gemini-fs-getattr-') as directory:

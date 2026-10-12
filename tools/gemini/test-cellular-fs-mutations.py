@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 root = Path(__file__).resolve().parents[2]
 source = (root/'drivers/soc/mediatek/mt6797-md1-fs-provider.c').read_text()
-source = source[source.index('int mt6797_md1_fs_provider_mutate_drive('):source.index('EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_mutate_drive)')]
+source = source[source.index('int mt6797_fs_provider_mutate_drive('):source.index('EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_mutate_drive)')]
 header = (root/'include/linux/soc/mediatek/mt6797-md1-fs-provider.h').read_text()
 enum = header[header.index('enum mt6797_md1_fs_mutation {'):header.index('#if IS_ENABLED')]
 shim = r'''
@@ -78,6 +78,10 @@ static struct dentry *vfs_mkdir(void *map,struct inode *p,struct dentry *d,unsig
 static int vfs_rmdir(void *map,struct inode *p,struct dentry *d,void *deleg){(void)map;callback(1,p,d,deleg);return operation_error;}
 static int vfs_unlink(void *map,struct inode *p,struct dentry *d,void *deleg){(void)map;callback(2,p,d,deleg);return operation_error;}
 static void reset(void){assert(!sb_readers&&!rootrefs&&!allocs&&!writers&&!locked&&!parent.refs&&!child.refs&&!alternate.refs);parent=(struct dentry){.type=1};child=(struct dentry){.d_sb=&root_sb};rootfile.inode.i_sb=&root_sb;rootfile.f_sb_err=0;available=writable=true;provider_volatile=1;alloc_fail=drift=splice=false;walk_error=lookup_error=write_error=operation_error=calls=lookup_calls=0;got_parent[0]=got_leaf[0]=0;sync_calls=sync_error=errseq_error=errseq_calls=0;}
+
+#define MT6797_FS_MODEM_MD1 0U
+#define EXPORT_SYMBOL_GPL(x)
+#define mt6797_fs_root_get_for(modem, drive) (assert((modem)==0), mt6797_fs_root_get(drive))
 '''
 full=(root/'drivers/soc/mediatek/mt6797-md1-fs-provider.c').read_text()
 a=full.index('static int mt6797_fs_sync_mutation(')

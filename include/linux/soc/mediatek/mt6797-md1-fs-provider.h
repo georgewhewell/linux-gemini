@@ -38,7 +38,35 @@ enum mt6797_md1_fs_mutation {
 	MT6797_MD1_FS_UNLINK,
 };
 
+/* The existing zero-initialized service is MD1; only exact MD3 is added. */
+#define MT6797_FS_MODEM_MD1 0U
+#define MT6797_FS_MODEM_MD3 2U
+
 #if IS_ENABLED(CONFIG_MTK_MT6797_MD1_FS_PROVIDER)
+int mt6797_fs_provider_getattr_drive(unsigned int modem, u8 drive,
+				     const char *path,
+				     struct mt6797_md1_fs_attr *attr);
+struct file *mt6797_fs_provider_open_drive(unsigned int modem, u8 drive,
+					   const char *path, bool directory);
+struct file *mt6797_fs_provider_open_ram_drive(unsigned int modem, u8 drive,
+					       const char *path, bool writable,
+					       bool create, bool truncate);
+int mt6797_fs_provider_mutate_drive(unsigned int modem, u8 drive,
+				    const char *path,
+				    enum mt6797_md1_fs_mutation operation);
+int mt6797_fs_provider_rename_drive(unsigned int modem, u8 old_drive,
+				    const char *old_path, u8 new_drive,
+				    const char *new_path);
+int mt6797_fs_provider_copy_drive(unsigned int modem, u8 old_drive,
+				  const char *old_path, u8 new_drive,
+				  const char *new_path);
+int mt6797_fs_provider_restore_drive(unsigned int modem, u8 drive,
+				     const char *path);
+int mt6797_fs_provider_xdelete_drive(unsigned int modem, u8 drive,
+				     const char *name, u32 flags);
+int mt6797_fs_provider_stats_drive(unsigned int modem, u8 drive,
+				   struct mt6797_md1_fs_stats *stats);
+int mt6797_md3_fs_provider_claim(void);
 int mt6797_md1_fs_provider_restore_drive(u8 drive, const char *path);
 /* Returns a nonnegative deletion count or negative errno. */
 int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *path, u32 flags);
@@ -84,6 +112,69 @@ int mt6797_md1_fs_provider_next_entry(struct file *dir,
 				      struct mt6797_md1_fs_entry *entry);
 void mt6797_md1_fs_provider_close(struct file *file);
 #else
+static inline int mt6797_md3_fs_provider_claim(void)
+{
+	return -ENODEV;
+}
+static inline int
+mt6797_fs_provider_getattr_drive(unsigned int modem, u8 drive, const char *path,
+				 struct mt6797_md1_fs_attr *attr)
+{
+	return -ENODEV;
+}
+static inline struct file *mt6797_fs_provider_open_drive(unsigned int modem,
+							 u8 drive,
+							 const char *path,
+							 bool directory)
+{
+	return ERR_PTR(-ENODEV);
+}
+static inline struct file *
+mt6797_fs_provider_open_ram_drive(unsigned int modem, u8 drive,
+				  const char *path, bool writable, bool create,
+				  bool truncate)
+{
+	return ERR_PTR(-ENODEV);
+}
+static inline int
+mt6797_fs_provider_mutate_drive(unsigned int modem, u8 drive, const char *path,
+				enum mt6797_md1_fs_mutation operation)
+{
+	return -ENODEV;
+}
+static inline int mt6797_fs_provider_rename_drive(unsigned int modem,
+						  u8 old_drive,
+						  const char *old_path,
+						  u8 new_drive,
+						  const char *new_path)
+{
+	return -ENODEV;
+}
+static inline int mt6797_fs_provider_copy_drive(unsigned int modem,
+						u8 old_drive,
+						const char *old_path,
+						u8 new_drive,
+						const char *new_path)
+{
+	return -ENODEV;
+}
+static inline int mt6797_fs_provider_restore_drive(unsigned int modem, u8 drive,
+						   const char *path)
+{
+	return -ENODEV;
+}
+static inline int mt6797_fs_provider_xdelete_drive(unsigned int modem, u8 drive,
+						   const char *name, u32 flags)
+{
+	return -ENODEV;
+}
+static inline int
+mt6797_fs_provider_stats_drive(unsigned int modem, u8 drive,
+			       struct mt6797_md1_fs_stats *stats)
+{
+	return -ENODEV;
+}
+
 static inline int mt6797_md1_fs_provider_restore_drive(u8 drive, const char *path)
 {
 	return -ENODEV;

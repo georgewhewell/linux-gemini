@@ -3,8 +3,8 @@
 #define _MTK_MT6797_CCCI_SPEECH_H
 
 /* Pure wire helpers. The caller supplies Linux types, errno and string APIs.
- * Contract: stock audio.primary.mt6797 ARM64 SHA256 d086eab26f9dbfa8...,
- * InitCcciMailbox e825c, SendMessage e8528, GetMessageID e82f8;
+ * Contract: current Android audio.primary.mt6797 ARM64 SHA256 875214d3585bf7f4...,
+ * InitCcciMailbox 10a990, SendMessage 10ac58, GetMessageID 10aa2c;
  * GPL vendor port_char.c supplies the final data-frame byte count.
  * No modem pointers, startup responses or calibration defaults are inferred.
  */
@@ -100,7 +100,7 @@ static inline int mt6797_speech_build_power(u8 *frame, size_t capacity,
 
 /* Wrap actual board parameters; never substitute zeros or canned defaults.
  * The six-byte prefix is the retained SetVariousKindsOfSpeechParameters
- * e6f80 contract: LE u16 sync a2a2, type19, original parameter byte count.
+ * 109438 contract: LE u16 sync a2a2, type19, original parameter byte count.
  */
 static inline int mt6797_speech_build_parameters(u8 *frame, size_t capacity,
 						const void *parameters,
@@ -135,7 +135,9 @@ static inline int mt6797_speech_build_parameters(u8 *frame, size_t capacity,
 	return total;
 }
 
-/* JudgeAckOfMsg e8cf8's actual whitelist. AF70 is a request, not an ACK.
+/* JudgeAckOfMsg 10b610/table19702c's actual 25-ID whitelist.
+ * The older Gemian HAL additionally waits for 2f34..37; the current Android
+ * HAL matching the retained W1630 modem does not. AF70 is a request, not an ACK.
  * An owner must also enforce its call/reset generation before accepting this.
  */
 static inline bool mt6797_speech_expects_ack(u16 waiting_id)
@@ -144,7 +146,7 @@ static inline bool mt6797_speech_expects_ack(u16 waiting_id)
 	bool expected = false;
 
 	if (delta <= 0x24)
-		expected = !!(0x1b3ff30227ULL & (1ULL << delta));
+		expected = !!(0x1b3f030227ULL & (1ULL << delta));
 	delta = waiting_id - 0x2f71U;
 	if (delta <= 0x10)
 		expected |= !!(0x1814fU & (1U << delta));

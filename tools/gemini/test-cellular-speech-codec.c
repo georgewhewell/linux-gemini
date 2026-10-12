@@ -78,6 +78,13 @@ int main(int argc, char **argv)
 		if (mt6797_speech_ack_matches(&message, i & 0x7fff))
 			assert((i & 0xff00) == 0xaf00 && i != 0xaf70);
 	}
+	/* These four IDs changed between the older Gemian and current Android
+	 * HAL. The exact-current isolated oracle checks every ID below. */
+	for (i = 0x2f34; i <= 0x2f37; ++i) {
+		message.id = i | 0x8000;
+		assert(!mt6797_speech_expects_ack(i));
+		assert(!mt6797_speech_ack_matches(&message, i));
+	}
 	rx_mailbox(frame, 0xaf79, 0);
 	assert(mt6797_speech_parse(frame, 16, &message) == 0);
 	assert(mt6797_speech_ack_matches(&message, 0x2f79));

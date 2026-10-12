@@ -34,6 +34,8 @@ static void might_sleep(void){}
 static void cond_resched(void){}
 static struct file *mt6797_fs_root_get(u8 drive){assert(drive=='X');if(!available)return NULL;assert(!authority.live);authority.live=true;refs++;return &authority;}
 static bool mt6797_fs_tmpfs_writable(struct file *f){assert(f==&authority);return writable;}
+static bool mt6797_fs_backing_matches(struct file *f,unsigned int mode){assert(mode==1);return mt6797_fs_tmpfs_writable(f);}
+
 static void fput(struct file *f){assert(f&&f->live&&refs>0);f->live=false;refs--;}
 static void *kmalloc(size_t n,int flag){(void)flag;allocation_calls++;if(allocation_calls==fail_allocation)return NULL;void *p=malloc(n);assert(p);allocs++;return p;}
 static void *kcalloc(size_t n,size_t size,int flag){void *p=kmalloc(n*size,flag);if(p)memset(p,0,n*size);return p;}

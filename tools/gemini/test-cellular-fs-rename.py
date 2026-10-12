@@ -11,6 +11,10 @@ import tempfile
 root=Path(__file__).resolve().parents[2]
 tree=ast.parse((root/'tools/gemini/test-cellular-fs-mutations.py').read_text())
 shim=next(ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='shim' for t in n.targets))
+full=(root/'drivers/soc/mediatek/mt6797-md1-fs-provider.c').read_text()
+a=full.index('static int mt6797_fs_sync_mutation(');b=full.index('\nstatic int mt6797_fs_sync_file',a)
+shim += full[a:b]
+
 # Reuse instrumentation of existing VFS boundaries, allowing two retained roots
 # and independently faulting the second parent/allocation acquisition.
 shim=shim.replace('static int got_op;', 'static int got_op, root_calls, fail_root, allocation_calls, fail_allocation, walk_calls, fail_walk;\nstatic bool cross_mount;\nstatic struct file otherroot;')
@@ -58,6 +62,8 @@ int main(void){
  }
  setup();fail_root=1;check("old","new",-ENODEV,0);
  setup();fail_root=2;check("old","new",-ENODEV,0);
+ setup();provider_volatile=2;check("old","new",0,1);assert(sync_calls==1);
+ setup();provider_volatile=2;sync_error=-EIO;check("old","new",-EIO,1);assert(sync_calls==1);
  setup();provider_volatile=false;check("old","new",-EROFS,0);
  setup();writable=false;check("old","new",-EROFS,0);
  setup();cross_mount=true;check("old","new",-EXDEV,0);

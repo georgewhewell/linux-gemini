@@ -27,6 +27,7 @@ struct mt6797_md1_fs_attr {u64 size;};
 struct file {int inode;struct {int unused;} f_path;};
 static struct file source,destination;
 static bool provider_volatile,writable,allocation_fail,alias;
+static int mt6797_fs_sync_file(struct file *f){assert(f==&destination);return 0;}
 static int refs,allocs,opens,reads,writes,truncates,fstat_error,source_error,destination_error,truncate_error;
 static int read_fault,write_fault;static ssize_t read_result,write_result;
 static size_t length,read_chunk,write_chunk,copied;
@@ -42,6 +43,8 @@ static int mt6797_md1_fs_provider_fstat(struct file *f,struct mt6797_md1_fs_attr
 static void *file_inode(struct file *f){return alias?&source.inode:&f->inode;}
 static void fput(struct file *f){assert((f==&source||f==&destination)&&refs>0);refs--;}
 static bool mt6797_fs_tmpfs_writable(struct file *f){assert(f==&destination);return writable;}
+static bool mt6797_fs_backing_matches(struct file *f,unsigned int mode){assert(mode==1);return mt6797_fs_tmpfs_writable(f);}
+
 static int vfs_truncate(void *p,loff_t size){assert(p==&destination.f_path&&size==0);truncates++;return truncate_error;}
 static ssize_t mt6797_md1_fs_provider_read(struct file *f,void *data,size_t n,loff_t *pos){assert(f==&source&&n<=65536);reads++;if(reads==read_fault)return read_result;if(read_chunk&&n>read_chunk)n=read_chunk;for(size_t i=0;i<n;i++)((u8 *)data)[i]=(u8)((*pos+i)%251);*pos+=n;return n;}
 static ssize_t mt6797_md1_fs_provider_write(struct file *f,const void *data,size_t n,loff_t *pos){assert(f==&destination&&n<=65536&&truncates==1);writes++;if(writes==write_fault)return write_result;if(write_chunk&&n>write_chunk)n=write_chunk;for(size_t i=0;i<n;i++)assert(((const u8 *)data)[i]==(u8)((*pos+i)%251));*pos+=n;copied+=n;return n;}

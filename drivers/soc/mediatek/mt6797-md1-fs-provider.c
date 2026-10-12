@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Boot-lifetime MD1 filesystem authority. Legacy Z is read-only
- * ext4 or bounded tmpfs; atomic Z/X/Y mode retains three distinct tmpfs roots.
+ * ext4; explicit Z/X/Y authority retains bounded tmpfs or fixed internal NV roots.
  */
 #include <linux/capability.h>
+#include <linux/blkdev.h>
 #include <linux/compat.h>
 #include <linux/file.h>
 #include <linux/fs.h>
@@ -23,6 +24,7 @@
 #include <linux/user_namespace.h>
 #include <linux/soc/mediatek/mt6797-md1-fs-provider.h>
 #include <uapi/linux/mt6797_md1_fs.h>
+#include <uapi/linux/major.h>
 #include "mt6797-md1-fs-state.h"
 #include "mt6797-md1-fs-archive.h"
 
@@ -30,7 +32,7 @@ static DEFINE_SPINLOCK(provider_lock);
 static struct mt6797_fs_state provider_state;
 static struct file *provider_file; /* Z, including legacy registration */
 static struct file *provider_extra[2]; /* X, Y; NULL in legacy mode */
-static bool provider_volatile;
+static unsigned int provider_volatile; /* 0=RO, 1=RAM, 2=internal NV */
 static bool archive_installing;
 static struct mt6797_fs_archive provider_archive;
 static struct device *provider_cold;
@@ -58,14 +60,72 @@ static bool mt6797_fs_tmpfs_writable(struct file *file)
 		!(READ_ONCE(file_inode(file)->i_sb->s_flags) & SB_RDONLY);
 }
 
-static bool mt6797_fs_backing_matches(struct file *file, bool ram)
+/* No VFS callbacks: this can run while the state lock is held. */
+static bool mt6797_fs_internal_writable(struct file *file)
 {
+	struct super_block *sb;
+	struct block_device *bdev;
+	sector_t sectors;
+	unsigned int part;
+
+	if (!file)
+		return false;
+	sb = file_inode(file)->i_sb;
+	bdev = sb->s_bdev;
+	if (sb->s_magic != EXT4_SUPER_MAGIC || !bdev ||
+	    MAJOR(bdev->bd_dev) != MMC_BLOCK_MAJOR ||
+	    (READ_ONCE(sb->s_flags) & SB_RDONLY) ||
+	    (READ_ONCE(file->f_path.mnt->mnt_flags) & MNT_READONLY))
+		return false;
+	/* Never grant writes to the Linux data partition, SD, backup, boot,
+	 * loop devices, or another caller-selected filesystem.
+	 */
+	part = MINOR(bdev->bd_dev);
+	sectors = bdev_nr_sectors(bdev);
+	return (part == 6 && sectors == 65536) ||
+	       (part == 8 && sectors == 16384) ||
+	       (part == 9 && sectors == 25536);
+}
+
+static bool mt6797_fs_backing_matches(struct file *file, unsigned int ram)
+{
+	if (ram == MT6797_MD1_FS_BACKING_INTERNAL)
+		return mt6797_fs_internal_writable(file);
 	return ram ? mt6797_fs_tmpfs_writable(file) : mt6797_fs_readonly(file);
 }
 
 static bool mt6797_fs_accessible(struct file *file)
 {
 	return mt6797_fs_backing_matches(file, READ_ONCE(provider_volatile));
+}
+
+/* Persistent success is reported only after data/journal writeback succeeds.
+ * Call after inode/rename locks are released, with the mount still pinned.
+ */
+static int mt6797_fs_sync_mutation(struct file *file, int result)
+{
+	struct super_block *sb;
+	int ret;
+
+	if (result || READ_ONCE(provider_volatile) != MT6797_MD1_FS_BACKING_INTERNAL)
+		return result;
+	sb = file_inode(file)->i_sb;
+	/* sync_filesystem requires s_umount held, as in syncfs(2). Recheck
+	 * authority under that lock: a remount-ro must not become a false
+	 * successful no-op after an error or forced shutdown remount.
+	 */
+	down_read(&sb->s_umount);
+	ret = mt6797_fs_backing_matches(file, MT6797_MD1_FS_BACKING_INTERNAL) ?
+		sync_filesystem(sb) : -EROFS;
+	up_read(&sb->s_umount);
+	return ret;
+}
+
+static int mt6797_fs_sync_file(struct file *file)
+{
+	if (READ_ONCE(provider_volatile) != MT6797_MD1_FS_BACKING_INTERNAL)
+		return 0;
+	return vfs_fsync(file, 0);
 }
 
 /* Called under provider_lock. Three-root mode remains all-or-nothing even
@@ -290,7 +350,7 @@ struct file *mt6797_md1_fs_provider_open(const char *path, bool directory)
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open);
 
-/* Only a retained tmpfs root can reach creation or truncation. Parent lookup
+/* Only an explicitly admitted writable root can reach creation/truncation. Parent lookup
  * never follows symlinks or mountpoints; final lookup uses that exact mount.
  * O_TRUNC is deliberately not passed to name lookup or dentry_open.
  */
@@ -311,7 +371,7 @@ struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive, const char *path, b
 	if (!root)
 		return ERR_PTR(-ENODEV);
 	file = ERR_PTR(-EROFS);
-	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(root))
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_backing_matches(root, READ_ONCE(provider_volatile)))
 		goto put_root;
 	copy = kstrdup(path, GFP_KERNEL);
 	if (!copy) {
@@ -349,7 +409,7 @@ struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive, const char *path, b
 		goto unlock;
 	}
 	file = ERR_PTR(-EACCES);
-	if (!mt6797_fs_tmpfs_writable(root) || d_mountpoint(child) ||
+	if (!mt6797_fs_backing_matches(root, READ_ONCE(provider_volatile)) || d_mountpoint(child) ||
 	    d_is_symlink(child) || child->d_sb != file_inode(root)->i_sb)
 		goto put_child;
 	if (d_is_negative(child)) {
@@ -373,6 +433,13 @@ struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive, const char *path, b
 	inode_unlock(d_inode(parent));
 	if (!IS_ERR(file) && truncate) {
 		ret = vfs_truncate(&target, 0);
+		if (ret) {
+			fput(file);
+			file = ERR_PTR(ret);
+		}
+	}
+	if (!IS_ERR(file) && (create || truncate)) {
+		ret = mt6797_fs_sync_mutation(root, 0);
 		if (ret) {
 			fput(file);
 			file = ERR_PTR(ret);
@@ -420,7 +487,7 @@ int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
 	if (!root)
 		return -ENODEV;
 	ret = -EROFS;
-	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(root))
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_backing_matches(root, READ_ONCE(provider_volatile)))
 		goto put_root;
 	copy = kstrdup(path, GFP_KERNEL);
 	if (!copy) {
@@ -454,7 +521,7 @@ int mt6797_md1_fs_provider_mutate_drive(u8 drive, const char *path,
 		goto unlock;
 	}
 	ret = -EACCES;
-	if (!mt6797_fs_tmpfs_writable(root) || d_mountpoint(child) ||
+	if (!mt6797_fs_backing_matches(root, READ_ONCE(provider_volatile)) || d_mountpoint(child) ||
 	    d_is_symlink(child) || child->d_sb != file_inode(root)->i_sb)
 		goto put_child;
 	if (operation == MT6797_MD1_FS_MKDIR) {
@@ -486,6 +553,7 @@ put_child:
 	dput(child);
 unlock:
 	inode_unlock(d_inode(parent));
+	ret = mt6797_fs_sync_mutation(root, ret);
 	mnt_drop_write(root->f_path.mnt);
 put_parent:
 	dput(parent);
@@ -537,8 +605,8 @@ int mt6797_md1_fs_provider_rename_drive(u8 old_drive, const char *old_path,
 	if (!new_root)
 		goto put_old_root;
 	ret = -EROFS;
-	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(old_root) ||
-	    !mt6797_fs_tmpfs_writable(new_root))
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_backing_matches(old_root, READ_ONCE(provider_volatile)) ||
+	    !mt6797_fs_backing_matches(new_root, READ_ONCE(provider_volatile)))
 		goto put_new_root;
 	ret = -EXDEV;
 	if (old_root->f_path.mnt != new_root->f_path.mnt)
@@ -574,7 +642,7 @@ int mt6797_md1_fs_provider_rename_drive(u8 old_drive, const char *old_path,
 	if (ret)
 		goto drop_write;
 	ret = -EACCES;
-	if (!mt6797_fs_tmpfs_writable(old_root) || !mt6797_fs_tmpfs_writable(new_root) ||
+	if (!mt6797_fs_backing_matches(old_root, READ_ONCE(provider_volatile)) || !mt6797_fs_backing_matches(new_root, READ_ONCE(provider_volatile)) ||
 	    d_mountpoint(rd.old_dentry) || d_mountpoint(rd.new_dentry) ||
 	    rd.old_dentry->d_sb != file_inode(old_root)->i_sb ||
 	    rd.new_dentry->d_sb != file_inode(new_root)->i_sb)
@@ -590,6 +658,7 @@ int mt6797_md1_fs_provider_rename_drive(u8 old_drive, const char *old_path,
 	ret = vfs_rename(&rd);
 end_rename:
 	end_renaming(&rd);
+	ret = mt6797_fs_sync_mutation(old_root, ret);
 drop_write:
 	mnt_drop_write(old_root->f_path.mnt);
 put_new_parent:
@@ -617,15 +686,24 @@ EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_open_ram);
 ssize_t mt6797_md1_fs_provider_write(struct file *file, const void *buf,
 				     size_t count, loff_t *pos)
 {
+	ssize_t written;
+	int ret;
+
 	might_sleep();
-	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(file) ||
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_backing_matches(file, READ_ONCE(provider_volatile)) ||
 	    !(file->f_mode & FMODE_WRITE))
 		return -EROFS;
-	/* Per-file bound in addition to the registered tmpfs byte/inode quota. */
+	/* Per-file bound in addition to the bounded backing filesystem. */
 	if (!pos || *pos < 0 || *pos > 16 * 1024 * 1024 ||
 	    count > 16ULL * 1024 * 1024 - (u64)*pos)
 		return -EFBIG;
-	return kernel_write(file, buf, count, pos);
+	written = kernel_write(file, buf, count, pos);
+	if (written > 0) {
+		ret = mt6797_fs_sync_file(file);
+		if (ret)
+			return ret;
+	}
+	return written;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_fs_provider_write);
 
@@ -697,7 +775,7 @@ int mt6797_md1_fs_provider_copy_drive(u8 old_drive, const char *old_path,
 		cond_resched();
 	}
 	/* Avoid truncating an existing destination before same-inode checking.
-	 * Path creation is confined by the existing RAM open implementation.
+	 * Path creation is confined by the admitted writable-root implementation.
 	 */
 	destination = mt6797_md1_fs_provider_open_ram_drive(new_drive, new_path,
 							 true, true, false);
@@ -709,7 +787,7 @@ int mt6797_md1_fs_provider_copy_drive(u8 old_drive, const char *old_path,
 	if (file_inode(source) == file_inode(destination))
 		goto put_destination;
 	ret = -EROFS;
-	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(destination))
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_backing_matches(destination, READ_ONCE(provider_volatile)))
 		goto put_destination;
 	ret = vfs_truncate(&destination->f_path, 0);
 	if (ret)
@@ -723,7 +801,7 @@ int mt6797_md1_fs_provider_copy_drive(u8 old_drive, const char *old_path,
 			goto put_destination;
 		cond_resched();
 	}
-	ret = 0;
+	ret = mt6797_fs_sync_file(destination);
 put_destination:
 	fput(destination);
 free_buffer:
@@ -932,7 +1010,7 @@ int mt6797_md1_fs_provider_xdelete_drive(u8 drive, const char *name, u32 flags)
 	if (!root)
 		return -ENODEV;
 	ret = -EROFS;
-	if (!READ_ONCE(provider_volatile) || !mt6797_fs_tmpfs_writable(root)) {
+	if (!READ_ONCE(provider_volatile) || !mt6797_fs_backing_matches(root, READ_ONCE(provider_volatile))) {
 		fput(root);
 		return ret;
 	}
@@ -1097,7 +1175,7 @@ static struct device *mt6797_fs_find_cold(void)
 	return pdev ? &pdev->dev : ERR_PTR(-ENODEV);
 }
 
-static int mt6797_fs_validate_root(struct file *file, bool ram,
+static int mt6797_fs_validate_root(struct file *file, unsigned int ram,
 				   struct mt6797_md1_fs_stats *stats)
 {
 	struct kstatfs fs;
@@ -1111,21 +1189,27 @@ static int mt6797_fs_validate_root(struct file *file, bool ram,
 		return ret;
 	/* Local ext4 only: no unbounded network statfs or arbitrary backing type. */
 	ret = -EINVAL;
-	if (file_inode(file)->i_sb->s_magic != (ram ? TMPFS_MAGIC : EXT4_SUPER_MAGIC))
+	if (file_inode(file)->i_sb->s_magic != (ram == 1 ? TMPFS_MAGIC : EXT4_SUPER_MAGIC))
 		return ret;
 	ret = vfs_statfs(&file->f_path, &fs);
 	if (ret)
 		return ret;
 	ret = -EINVAL;
-	if (fs.f_type != (ram ? TMPFS_MAGIC : EXT4_SUPER_MAGIC))
+	if (fs.f_type != (ram == 1 ? TMPFS_MAGIC : EXT4_SUPER_MAGIC))
 		return ret;
 	/* Require finite tmpfs limits: at most 64 MiB and 4096 inodes. */
-	if (ram && (fs.f_bsize <= 0 || !fs.f_blocks ||
+	if (ram == 1 && (fs.f_bsize <= 0 || !fs.f_blocks ||
 		    fs.f_blocks > (64ULL * 1024 * 1024) / fs.f_bsize ||
 		    !fs.f_files || fs.f_files > 4096)) {
 		ret = -EFBIG;
 		return ret;
 	}
+	if (ram == MT6797_MD1_FS_BACKING_INTERNAL &&
+	    (fs.f_bsize <= 0 || !fs.f_blocks || !fs.f_files ||
+	     fs.f_files > 65536 ||
+	     fs.f_blocks > (bdev_nr_sectors(file_inode(file)->i_sb->s_bdev) * 512ULL) /
+			   fs.f_bsize))
+		return -EFBIG;
 	ret = mt6797_fs_stats_convert(&fs, stats);
 	if (ret)
 		return ret;
@@ -1243,7 +1327,7 @@ finish:
 	return ret;
 }
 
-static int mt6797_fs_register_fds(const int *fds, unsigned int count, bool ram)
+static int mt6797_fs_register_fds(const int *fds, unsigned int count, unsigned int ram)
 {
 	struct mt6797_md1_fs_stats stats[3];
 	struct file *files[3] = {};
@@ -1253,6 +1337,9 @@ static int mt6797_fs_register_fds(const int *fds, unsigned int count, bool ram)
 	int ret;
 
 	if (count != 1 && (count != 3 || !ram))
+		return -EINVAL;
+	if (ram > MT6797_MD1_FS_BACKING_INTERNAL ||
+	    (ram == MT6797_MD1_FS_BACKING_INTERNAL && count != 3))
 		return -EINVAL;
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = archive_installing ? -EBUSY :
@@ -1269,6 +1356,13 @@ static int mt6797_fs_register_fds(const int *fds, unsigned int count, bool ram)
 		ret = mt6797_fs_validate_root(files[i], ram, &stats[i]);
 		if (ret)
 			goto fail;
+		if (ram == MT6797_MD1_FS_BACKING_INTERNAL) {
+			static const unsigned int parts[] = { 6, 8, 9 };
+
+			ret = -EXDEV;
+			if (MINOR(file_inode(files[i])->i_sb->s_bdev->bd_dev) != parts[i])
+				goto fail;
+		}
 		/* Separate superblocks prevent aliases and ancestor roots from
 		 * sharing authority or exhausting another drive's quota.
 		 */
@@ -1340,11 +1434,20 @@ static long mt6797_fs_ioctl(struct file *file, unsigned int cmd, unsigned long a
 {
 	struct mt6797_md1_fs_registration registration;
 	struct mt6797_md1_fs_ram_roots roots;
+	struct mt6797_md1_fs_nv_roots nv;
 
 	if (!ns_capable(&init_user_ns, CAP_SYS_ADMIN))
 		return -EPERM;
 	if (cmd == MT6797_MD1_FS_CANCEL)
 		return mt6797_fs_cancel_registration();
+	if (cmd == MT6797_MD1_FS_REGISTER_NV_ROOTS) {
+		if (copy_from_user(&nv, (void __user *)arg, sizeof(nv)))
+			return -EFAULT;
+		if (nv.version != 1 || nv.flags || nv.reserved)
+			return -EINVAL;
+		return mt6797_fs_register_fds(nv.directory_fd, 3,
+					    MT6797_MD1_FS_BACKING_INTERNAL);
+	}
 	if (cmd == MT6797_MD1_FS_REGISTER_RAM_ROOTS) {
 		if (copy_from_user(&roots, (void __user *)arg, sizeof(roots)))
 			return -EFAULT;

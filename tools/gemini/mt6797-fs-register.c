@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* One-shot registration of verified stock filesystem roots.
+/* One-shot registration of verified modem filesystem roots.
  * Never mounts, repairs, enumerates provision files, or executes Android code.
  */
 #define _GNU_SOURCE
@@ -8,6 +8,7 @@
 #include <linux/fs.h>
 #include <linux/magic.h>
 #include <linux/openat2.h>
+#include <linux/major.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,6 +94,24 @@ static int clean_ext4_for(const unsigned char sb[1024], uint64_t bytes, uint64_t
 	return 0;
 }
 
+/* Validate a known internal ext4 device without interpreting mutable files.
+ * Journal/orphan recovery belongs to the normal ext4 mount, not a re-seed.
+ */
+static int internal_ext4_shape(const unsigned char sb[1024], uint64_t bytes,
+                               uint64_t expected)
+{
+ uint32_t log_block = get32(sb + 24), incompat = get32(sb + 96);
+ uint64_t blocks = get32(sb + 4);
+
+ if (bytes != expected || get16(sb + 56) != EXT4_SUPER_MAGIC)
+  return -ENODEV;
+ if (incompat & 0x80)
+  blocks |= (uint64_t)get32(sb + 0x150) << 32;
+ if (log_block > 6 || !blocks || blocks > (bytes >> (10 + log_block)))
+  return -EINVAL;
+ return 0;
+}
+
 static inline int partition_identity(const char *uevent, const char *sectors)
 {
 	return partition_identity_for(uevent, sectors, &sources[0]);
@@ -133,8 +152,8 @@ static int no_symlink_dir(int dirfd, const char *path, uint64_t resolve)
 	return fd < 0 ? -errno : fd;
 }
 
-static int source_authority(const struct fs_source *source, const char *mountpoint,
-			    int publish, const char *ramdir, int *retained)
+static int source_authority_mode(const struct fs_source *source, const char *mountpoint,
+			    int publish, const char *ramdir, int *retained, int internal)
 {
 	struct mt6797_md1_fs_registration registration = { .version = 1 };
 	struct stat block_stat, root_stat, md_stat;
@@ -159,6 +178,10 @@ static int source_authority(const struct fs_source *source, const char *mountpoi
 	ret = -ENODEV;
 	if (!S_ISBLK(block_stat.st_mode))
 		goto out;
+ if (internal && (major(block_stat.st_rdev) != MMC_BLOCK_MAJOR ||
+                  minor(block_stat.st_rdev) != (unsigned int)strtoul(source->partn + 6, NULL, 10)))
+  goto out;
+
 	snprintf(path, sizeof(path), "/sys/dev/block/%u:%u/uevent",
 		 major(block_stat.st_rdev), minor(block_stat.st_rdev));
 	failure_stage = "nvdata-sysfs-uevent";
@@ -187,7 +210,8 @@ static int source_authority(const struct fs_source *source, const char *mountpoi
 		goto out;
 	}
 	failure_stage = "nvdata-superblock-validation";
-	ret = clean_ext4_for(super, bytes, source->bytes);
+	ret = internal ? internal_ext4_shape(super, bytes, source->bytes) :
+		clean_ext4_for(super, bytes, source->bytes);
 	if (ret)
 		goto out;
 	/* Pre-mount mode shares every block metadata check, but opens neither
@@ -209,8 +233,15 @@ static int source_authority(const struct fs_source *source, const char *mountpoi
 	failure_stage = "nvdata-mount-root-validation";
 	ret = -EROFS;
 	if (root_stat.st_dev != block_stat.st_rdev || root_stat.st_ino != 2 ||
-	    fs.f_type != EXT4_SUPER_MAGIC || !(vfs.f_flag & ST_RDONLY))
+	    fs.f_type != EXT4_SUPER_MAGIC ||
+	    (internal ? !!(vfs.f_flag & ST_RDONLY) : !(vfs.f_flag & ST_RDONLY)))
 		goto out;
+	if (internal && (fs.f_bsize <= 0 || !fs.f_blocks ||
+	    fs.f_blocks > source->bytes / (uint64_t)fs.f_bsize ||
+	    !fs.f_files || fs.f_files > 65536)) {
+		ret = -EINVAL;
+		goto out;
+	}
 	failure_stage = "nvdata-md-directory-open";
 	md = no_symlink_dir(root, "md", RESOLVE_BENEATH | RESOLVE_NO_XDEV);
 	if (md < 0) {
@@ -225,6 +256,10 @@ static int source_authority(const struct fs_source *source, const char *mountpoi
 	ret = -ENODEV;
 	if (!S_ISDIR(md_stat.st_mode) || md_stat.st_dev != block_stat.st_rdev)
 		goto out;
+ if (internal && (get16(super + 58) & 2)) {
+  ret = -EUCLEAN;
+  goto out;
+ }
 	if (!publish) {
 		ret = 0;
 		goto out;
@@ -255,6 +290,12 @@ static int source_authority(const struct fs_source *source, const char *mountpoi
 		if (!S_ISDIR(md_stat.st_mode) || md_stat.st_dev != root_stat.st_dev)
 			goto out;
 	}
+ if (internal && retained) {
+  *retained = md;
+  md = -1;
+  ret = 0;
+  goto out;
+ }
 	if (retained) {
 		ret = -EINVAL;
 		if (ram_md < 0)
@@ -288,6 +329,53 @@ out:
 		close(root);
 	close(block);
 	return ret;
+}
+
+static int source_authority(const struct fs_source *source, const char *mountpoint,
+                            int publish, const char *ramdir, int *retained)
+{
+ return source_authority_mode(source, mountpoint, publish, ramdir, retained, 0);
+}
+
+/* All fixed internal roots are pinned before a single irreversible-to-this-
+ * boot publication. No registration, including EINTR, is ever retried.
+ */
+static int register_internal_roots(char **paths)
+{
+ struct mt6797_md1_fs_nv_roots roots = {
+  .version = 1, .directory_fd = { -1, -1, -1 },
+ };
+ struct stat st[3];
+ int provider = -1, ret, i, j;
+
+ for (i = 0; i < 3; i++) {
+  ret = source_authority_mode(&sources[i], paths[i], 1, NULL,
+                              &roots.directory_fd[i], 1);
+  if (ret)
+   goto out;
+  failure_stage = "internal-roots-distinct";
+  if (fstat(roots.directory_fd[i], &st[i])) {
+   ret = -errno;
+   goto out;
+  }
+  for (j = 0; j < i; j++) {
+   ret = -EXDEV;
+   if (st[i].st_dev == st[j].st_dev)
+    goto out;
+  }
+ }
+ failure_stage = "provider-device-open";
+ provider = open("/dev/mt6797-md1-fs-provider", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+ if (provider < 0) { ret = -errno; goto out; }
+ failure_stage = "provider-register-internal-once";
+ ret = ioctl(provider, MT6797_MD1_FS_REGISTER_NV_ROOTS, &roots) ? -errno : 0;
+out:
+ if (provider >= 0)
+  close(provider);
+ for (i = 0; i < 3; i++)
+  if (roots.directory_fd[i] >= 0)
+   close(roots.directory_fd[i]);
+ return ret;
 }
 
 static int nvdata_authority(const char *mountpoint, int publish, const char *ramdir)
@@ -341,12 +429,39 @@ static int register_nvdata(const char *mountpoint)
 	return nvdata_authority(mountpoint, 1, NULL);
 }
 
+/* One-way rescue gate. A consumed authority returns EBUSY: no hot stop.
+ * On success no deferred probe may claim roots during journal recovery.
+ */
+static int cancel_authority(void)
+{
+	int provider, ret;
+
+	failure_stage = "provider-device-open";
+	provider = open("/dev/mt6797-md1-fs-provider", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+	if (provider < 0)
+		return -errno;
+	failure_stage = "provider-cancel-once";
+	ret = ioctl(provider, MT6797_MD1_FS_CANCEL, NULL) ? -errno : 0;
+	close(provider);
+	return ret;
+}
+
 int main(int argc, char **argv)
 {
 	int ret, published = 0;
 
 	if (geteuid())
 		goto usage;
+	if (argc == 2 && !strcmp(argv[1], "--cancel")) {
+		ret = cancel_authority();
+		if (ret) {
+			fprintf(stderr, "MD1 FS cancellation failed stage=%s error=%s; no retry\n",
+				failure_stage, strerror(-ret));
+			return 1;
+		}
+		puts("MD1 filesystem authority cancelled for this boot; no cold start permitted");
+		return 0;
+	}
 	if (argc == 2 && !strcmp(argv[1], "--check-device"))
 		ret = register_nvdata(NULL);
 	else if (argc == 2 && argv[1][0] == '/') {
@@ -364,6 +479,16 @@ int main(int argc, char **argv)
 				goto usage;
 		ret = register_ram_roots(argv + 2);
 		published = 1;
+ } else if (argc == 5 && !strcmp(argv[1], "--internal-roots")) {
+  for (int i = 2; i < 5; i++)
+   if (argv[i][0] != '/')
+    goto usage;
+  ret = register_internal_roots(argv + 2);
+  published = 1;
+ } else if (argc == 2 && !strcmp(argv[1], "--check-internal-devices")) {
+  ret = 0;
+  for (int i = 0; i < 3 && !ret; i++)
+   ret = source_authority_mode(&sources[i], NULL, 0, NULL, NULL, 1);
 	} else if (argc == 2 && !strcmp(argv[1], "--check-roots-device")) {
 		ret = 0;
 		for (int i = 0; i < 3 && !ret; i++)
@@ -386,6 +511,6 @@ int main(int argc, char **argv)
 	     "MD1 filesystem metadata precheck passed; no provider registration");
 	return 0;
 usage:
-	fprintf(stderr, "usage (root only): mt6797-fs-register --check-device | /absolute/ro-mount | --check-mount /absolute/ro-mount | --ram /absolute/ro-mount /absolute/ram-mount | --check-roots-device | --check-root-mount Z/X/Y /absolute/ro-mount | --ram-roots /sourceZ /ramZ /sourceX /ramX /sourceY /ramY\n");
+	fprintf(stderr, "usage (root only): mt6797-fs-register --cancel | --check-internal-devices | --internal-roots /rwZ /rwX /rwY | --check-device | /absolute/ro-mount | --check-mount /absolute/ro-mount | --ram /absolute/ro-mount /absolute/ram-mount | --check-roots-device | --check-root-mount Z/X/Y /absolute/ro-mount | --ram-roots /sourceZ /ramZ /sourceX /ramX /sourceY /ramY\n");
 	return 2;
 }

@@ -32,6 +32,19 @@ struct mt6797_md1_fs_ram_roots {
  * directory_fd field carries the archive memfd. Register before RAM roots.
  */
 #define MT6797_MD1_FS_REGISTER_ARCHIVE _IOW('M', 0xf4, struct mt6797_md1_fs_registration)
+/* Explicit persistent authority for the fixed internal modem partitions.
+ * Fixed Z/X/Y order; writable ext4 on mmcblk0p6/p8/p9 only. This does not
+ * change the write refusal of REGISTER or REGISTER_RAM_ROOTS.
+ */
+struct mt6797_md1_fs_nv_roots {
+	__u32 version; /* 1 */
+	__s32 directory_fd[3]; /* Z=nvdata, X=protect1, Y=protect2 */
+	__u32 flags; /* zero */
+	__u32 reserved; /* zero */
+};
+#define MT6797_MD1_FS_REGISTER_NV_ROOTS _IOW('M', 0xf5, struct mt6797_md1_fs_nv_roots)
+/* Provider backing selector; zero/one preserve the historical RO/RAM values. */
+#define MT6797_MD1_FS_BACKING_INTERNAL 2
 #define MT6797_MD1_FS_CANCEL _IO('M', 0xf1)
 
 #endif

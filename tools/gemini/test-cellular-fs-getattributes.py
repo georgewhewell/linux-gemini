@@ -79,6 +79,10 @@ static struct super_block sb, other;
 static struct vfsmount mount;
 static struct file backing, *provider_file, *provider_extra[2];
 static bool provider_volatile;
+#define MT6797_MD1_FS_BACKING_INTERNAL 2
+static bool mt6797_fs_internal_writable(struct file *f){(void)f;return false;}
+static int mt6797_fs_sync_mutation(struct file *f,int result){(void)f;return result;}
+static int mt6797_fs_sync_file(struct file *f){(void)f;return 0;}
 static struct dentry rootd = {&sb, "", 2, 1, false, NULL, NULL, 4096};
 static struct dentry nvram = {&sb, "NVRAM", 2, 0, false, &rootd, NULL, 4096};
 static struct dentry filea = {&sb, "a.bin", 1, 0, false, &nvram, "alphaomega", 10};

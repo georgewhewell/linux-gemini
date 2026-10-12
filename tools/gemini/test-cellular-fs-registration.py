@@ -20,7 +20,13 @@ shim=r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-typedef uint32_t u32; typedef uint8_t u8;
+typedef uint32_t u32; typedef uint8_t u8; typedef uint64_t sector_t;
+#define MAJOR(v) ((v)>>20)
+#define MINOR(v) ((v)&((1U<<20)-1))
+#define MKDEV(a,b) (((a)<<20)|(b))
+#define MMC_BLOCK_MAJOR 179
+struct block_device {unsigned int bd_dev;sector_t sectors;};
+static sector_t bdev_nr_sectors(struct block_device *d){return d->sectors;}
 #define __user
 static int init_user_ns;
 #define CAP_SYS_ADMIN 21
@@ -40,12 +46,13 @@ static int copy_from_user(void *dst,const void *src,size_t n){if(!src)return 1;m
 #define dev_warn(...) ((void)0)
 struct kstatfs {long f_bsize;uint64_t f_blocks,f_bfree;long f_frsize,f_type;uint64_t f_files;};
 struct mt6797_md1_fs_stats {u32 block_size,blocks,free_blocks;};
-struct vfsmount {int mnt_flags;};struct super_block {int s_flags,s_magic;};
+struct vfsmount {int mnt_flags;};struct super_block {int s_flags,s_magic;struct block_device *s_bdev;};
 struct inode {struct super_block *i_sb;};struct dentry {bool dir;};
 struct path {struct vfsmount *mnt;struct dentry *dentry;};
 struct file {struct path f_path;int f_mode,refs;struct inode inode;};
 struct device {int refs;};
-static bool locked,provider_volatile;
+static bool locked,nv_geometry;
+static unsigned int provider_volatile;
 static void might_sleep(void){assert(!locked);}
 static int mode,attaches,stats_calls,file_puts,unlock_count;
 static struct device target;
@@ -80,6 +87,7 @@ static void put_device(struct device *d){assert(!locked);if(d){assert(d->refs>0)
 static int mt6797_fs_cancel_registration(void);
 static int vfs_statfs(struct path *p,struct kstatfs *out)
 {(void)p;assert(!locked);stats_calls++;*out=observed;
+ if(nv_geometry){struct super_block *which=p->mnt==&mount?&sb:p->mnt==&extra_mount[0]?&extra_sb[0]:&extra_sb[1];out->f_blocks=which->s_bdev->sectors/8;out->f_bfree=7;}
  if(stats_calls==3 && mode>=14 && mode<=16){
   assert(!provider_file&&!provider_extra[0]&&!provider_extra[1]);
   if(mode==14)assert(!mt6797_fs_cancel_registration());
@@ -114,8 +122,8 @@ static int device_attach(struct device *d){
  assert(!mt6797_md1_fs_provider_require(d));assert(!mt6797_md1_fs_provider_claim(d));return 1;
 }
 static void reset(int m){
- assert(!locked);archive_installing=false;provider_archive=(struct mt6797_fs_archive){0};archive_frees=0;provider_volatile=false;mode=m;attaches=stats_calls=file_puts=unlock_count=0;
- mount=(struct vfsmount){MNT_READONLY};sb=(struct super_block){SB_RDONLY,EXT4_SUPER_MAGIC};dent.dir=true;
+ assert(!locked);archive_installing=false;provider_archive=(struct mt6797_fs_archive){0};archive_frees=0;provider_volatile=false;nv_geometry=false;mode=m;attaches=stats_calls=file_puts=unlock_count=0;
+ mount=(struct vfsmount){MNT_READONLY};sb=(struct super_block){.s_flags=SB_RDONLY,.s_magic=EXT4_SUPER_MAGIC};dent.dir=true;
  backing=(struct file){.f_path={&mount,&dent},.inode={&sb}};target.refs=0;
  observed=(struct kstatfs){4096,12345,6789,4096,EXT4_SUPER_MAGIC,4096};
  provider_state=(struct mt6797_fs_state){0};provider_file=NULL;provider_cold=NULL;
@@ -284,6 +292,39 @@ int main(void){
  observed.f_bfree=3;assert(!mt6797_md1_fs_provider_stats(&stats)&&stats.free_blocks==3);
  observed.f_blocks=16385;
  assert(mt6797_md1_fs_provider_stats(&stats)==-EFBIG&&stats.free_blocks==3);
+
+ /* Actual new ioctl: fixed internal drives, RO/RAM refusal, exact geometry,
+  * all-or-nothing failure and immutable consumed authority. */
+ for(int scenario=0;scenario<10;scenario++){
+  reset_roots(0);nv_geometry=true;
+  struct block_device devices[3]={{MKDEV(179,6),65536},{MKDEV(179,8),16384},{MKDEV(179,9),25536}};
+  sb.s_magic=EXT4_SUPER_MAGIC;sb.s_bdev=&devices[0];
+  for(int i=0;i<2;i++){extra_sb[i].s_magic=EXT4_SUPER_MAGIC;extra_sb[i].s_bdev=&devices[i+1];}
+  observed.f_type=EXT4_SUPER_MAGIC;
+  struct mt6797_md1_fs_nv_roots nv={.version=1,.directory_fd={7,8,9}};
+  if(scenario==1)devices[1].bd_dev=MKDEV(179,96); /* SD */
+  if(scenario==2)devices[0].bd_dev=MKDEV(179,32); /* primary Linux data */
+  if(scenario==3)devices[0].bd_dev=MKDEV(7,6); /* loop */
+  if(scenario==4)devices[0].sectors++;
+  if(scenario==5)extra_mount[1].mnt_flags=MNT_READONLY;
+  if(scenario==6){nv.directory_fd[0]=8;nv.directory_fd[1]=7;}
+  if(scenario==7)nv.directory_fd[1]=-1;
+  if(scenario==8)observed.f_files=65537;
+  if(scenario==9)extra_sb[0].s_magic=TMPFS_MAGIC;
+  int result=mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_NV_ROOTS,(unsigned long)&nv);
+  if(!scenario){
+   assert(!result&&provider_volatile==2&&attaches==1&&provider_state.stage==MT6797_FS_CONSUMED);
+   assert(!mt6797_md1_fs_provider_stats_drive('X',&stats)&&stats.blocks==2048&&stats.free_blocks==7);
+   assert(mt6797_fs_cancel_registration()==-EBUSY);
+   assert(mt6797_fs_register_fds(nv.directory_fd,3,2)==-EALREADY);
+  }else{assert(result<0);roots_released();assert(provider_state.stage==MT6797_FS_CANCELLED);}
+ }
+ reset(0);struct mt6797_md1_fs_nv_roots nv={.version=1,.directory_fd={7,8,9},.flags=1};
+ assert(mt6797_fs_ioctl(NULL,MT6797_MD1_FS_REGISTER_NV_ROOTS,(unsigned long)&nv)==-EINVAL);
+ assert(provider_state.stage==MT6797_FS_EMPTY);
+ assert(mt6797_fs_register_fds(nv.directory_fd,1,2)==-EINVAL);
+ assert(mt6797_fs_register_fds(nv.directory_fd,3,3)==-EINVAL);
+ puts("PASS internal NV authority: fixed partition/order/type/size and inode quota; SD/p32/loop/RO refusals; all refs released on failure; one consumed publication");
  puts("PASS live statistics: post-registration free-space changes, VFS error, overflow, policy drift, RAM bounds and unchanged output on failure");
  puts("PASS atomic Z/X/Y: all FD failures release refs; disk/alias refusal; cancellation and claim races; all-root preclaim check; exact root selection; unknown/unregistered roots refused");
  puts("PASS actual ioctl: privilege/unknown/copy/shape refusals, distinct RO and RAM commands");
@@ -291,7 +332,7 @@ int main(void){
 }
 '''
 parts=[shim,(root/'include/uapi/linux/mt6797_md1_fs.h').read_text(),(root/'drivers/soc/mediatek/mt6797-md1-fs-state.h').read_text(),adapter]
-parts += [function(n) for n in ('mt6797_md1_fs_provider_enabled','mt6797_fs_readonly','mt6797_fs_tmpfs_writable','mt6797_fs_backing_matches','mt6797_fs_accessible','mt6797_fs_roots_accessible','mt6797_fs_drive_file',
+parts += [function(n) for n in ('mt6797_md1_fs_provider_enabled','mt6797_fs_readonly','mt6797_fs_tmpfs_writable','mt6797_fs_internal_writable','mt6797_fs_backing_matches','mt6797_fs_accessible','mt6797_fs_roots_accessible','mt6797_fs_drive_file',
           'mt6797_md1_fs_provider_require','mt6797_md1_fs_provider_claim',
           'mt6797_fs_root_get','mt6797_fs_cancel_registration','mt6797_fs_validate_root','mt6797_md1_fs_provider_stats_drive','mt6797_md1_fs_provider_stats','mt6797_fs_register_fds','mt6797_fs_register_fd','mt6797_fs_ioctl')]
 parts += [tests]

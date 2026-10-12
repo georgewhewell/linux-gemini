@@ -32,12 +32,47 @@ struct mt6797_speech_port {
 	unsigned int rx_memory;
 	bool opened;
 	bool ready;
-	bool tx_ready;
+	bool tx_room;
 	bool stopped;
 	bool speech_active;
+	bool read_inflight;
+	/* Counts include queued, detached and delivered requests until a real
+	 * response submission. Credits cover successful current-owner reads only.
+	 * Their total is bounded by RX_FRAMES, including reserved TX credits. */
+	unsigned int requests[MT6797_SPEECH_REPLY_TYPES];
+	unsigned int credits[MT6797_SPEECH_REPLY_TYPES];
 	u16 waiting_id;
 	int error;
 };
+
+/* Caller holds rx.lock. */
+static unsigned int mt6797_speech_requests(struct mt6797_speech_port *port)
+{
+	return port->requests[MT6797_SPEECH_REPLY_RF] +
+		port->requests[MT6797_SPEECH_REPLY_CODEC];
+}
+
+static bool mt6797_speech_has_credit(struct mt6797_speech_port *port)
+{
+	return port->credits[MT6797_SPEECH_REPLY_RF] ||
+		port->credits[MT6797_SPEECH_REPLY_CODEC];
+}
+
+/* Each blocked writer waits for its own record's eligibility. POLLOUT may
+ * advertise a credited reply while an unrelated command still waits for ACK. */
+static bool mt6797_speech_write_waitable(struct mt6797_speech_port *port,
+				       int reply)
+{
+	unsigned long flags;
+	bool ready;
+
+	spin_lock_irqsave(&port->rx.lock, flags);
+	ready = port->stopped || !port->ready ||
+		(reply >= 0 && !port->credits[reply]) ||
+		(port->tx_room && (reply >= 0 || !port->waiting_id));
+	spin_unlock_irqrestore(&port->rx.lock, flags);
+	return ready;
+}
 
 static void mt6797_speech_port_free(struct kref *reference)
 {
@@ -67,8 +102,10 @@ static void mt6797_speech_stop_locked(struct mt6797_speech_port *port, int error
 		return;
 	port->stopped = true;
 	port->ready = false;
-	port->tx_ready = false;
+	port->tx_room = false;
 	port->error = error < 0 ? error : -ESHUTDOWN;
+	memset(port->requests, 0, sizeof(port->requests));
+	memset(port->credits, 0, sizeof(port->credits));
 	mt6797_speech_purge_locked(port);
 }
 
@@ -93,7 +130,7 @@ void mt6797_speech_port_ready(struct mt6797_speech_port *port, bool ready)
 	spin_lock_irqsave(&port->rx.lock, flags);
 	if (!port->stopped) {
 		port->ready = ready;
-		port->tx_ready = ready && !port->waiting_id;
+		port->tx_room = ready;
 	}
 	spin_unlock_irqrestore(&port->rx.lock, flags);
 	wake_up_interruptible(&port->wait);
@@ -106,8 +143,8 @@ void mt6797_speech_port_tx_wake(struct mt6797_speech_port *port)
 	if (!port)
 		return;
 	spin_lock_irqsave(&port->rx.lock, flags);
-	if (port->ready && !port->stopped && !port->waiting_id)
-		port->tx_ready = true;
+	if (port->ready && !port->stopped)
+		port->tx_room = true;
 	spin_unlock_irqrestore(&port->rx.lock, flags);
 	wake_up_interruptible(&port->wait);
 }
@@ -148,7 +185,7 @@ static int mt6797_speech_release(struct inode *inode, struct file *file)
 	/* A new owner must never receive an old owner's still-pending ACK or
  * inherit a live speech engine. Recovery needs an actual modem reset;
  * closing a file does not manufacture the missing speech-off completion. */
-	if (port->waiting_id || port->speech_active)
+	if (port->waiting_id || port->speech_active || mt6797_speech_requests(port))
 		mt6797_speech_stop_locked(port, -ECANCELED);
 	port->opened = false;
 	mt6797_speech_purge_locked(port);
@@ -162,7 +199,9 @@ static ssize_t mt6797_speech_read(struct file *file, char __user *buffer,
 {
 	struct mt6797_speech_port *port = file->private_data;
 	struct sk_buff *skb;
+	struct mt6797_speech_message message;
 	unsigned long flags;
+	int request = -ENOENT;
 	ssize_t ret;
 	bool copied;
 
@@ -185,6 +224,17 @@ static ssize_t mt6797_speech_read(struct file *file, char __user *buffer,
 				spin_unlock_irqrestore(&port->rx.lock, flags);
 				goto unlock;
 			}
+			ret = mt6797_speech_parse(skb->data, skb->len, &message);
+			if (!ret)
+				request = mt6797_speech_request_index(&message);
+			if (ret || request == -EPROTO) {
+				ret = ret ? ret : -EPROTO;
+				mt6797_speech_stop_locked(port, ret);
+				spin_unlock_irqrestore(&port->rx.lock, flags);
+				wake_up_interruptible(&port->wait);
+				goto unlock;
+			}
+			port->read_inflight = true;
 			__skb_unlink(skb, &port->rx);
 			spin_unlock_irqrestore(&port->rx.lock, flags);
 			break;
@@ -201,18 +251,22 @@ static ssize_t mt6797_speech_read(struct file *file, char __user *buffer,
 	}
 	copied = !copy_to_user(buffer, skb->data, skb->len);
 	spin_lock_irqsave(&port->rx.lock, flags);
+	port->read_inflight = false;
 	if (!copied && !port->stopped) {
 		/* Its existing charge reserves room even if RX filled meanwhile. */
 		__skb_queue_head(&port->rx, skb);
 		ret = -EFAULT;
 		skb = NULL;
 	} else {
+		if (!port->stopped && request >= 0)
+			port->credits[request]++;
 		port->rx_count--;
 		port->rx_memory -= skb->truesize;
 		ret = port->stopped ? (ssize_t)port->error : (ssize_t)skb->len;
 	}
 	spin_unlock_irqrestore(&port->rx.lock, flags);
 	kfree_skb(skb);
+	wake_up_interruptible(&port->wait);
 unlock:
 	mutex_unlock(&port->read_mutex);
 	return ret;
@@ -233,6 +287,9 @@ static int mt6797_speech_validate_tx(const u8 *frame, size_t bytes)
 			return -EPROTO;
 		packed = mt6797_speech_read32(frame + 4);
 		id = packed >> 16;
+		if (mt6797_speech_reply_index(id) >= 0 &&
+		    ((packed & 0xffff) || mt6797_speech_read32(frame + 12)))
+			return -EPROTO;
 		return (id & 0xff00) == 0x2f00 ? 0 : -EPROTO;
 	}
 	if (first || mt6797_speech_read32(frame + 4) != bytes)
@@ -258,8 +315,8 @@ static ssize_t mt6797_speech_write(struct file *file, const char __user *buffer,
 	unsigned long flags;
 	u8 *frame;
 	u16 id;
-	bool expects_ack, held_by_pending, armed;
-	int ret;
+	bool expects_ack, armed, credited, attempted;
+	int reply, ret;
 
 	if (bytes < MT6797_SPEECH_HEADER || bytes > MT6797_SPEECH_FRAME_MAX)
 		return -EMSGSIZE;
@@ -271,57 +328,66 @@ static ssize_t mt6797_speech_write(struct file *file, const char __user *buffer,
 		goto free;
 	id = mt6797_speech_read32(frame +
 		(bytes == MT6797_SPEECH_HEADER ? 4 : 12)) >> 16;
+	reply = mt6797_speech_reply_index(id);
 	expects_ack = mt6797_speech_expects_ack(id);
 	for (;;) {
 		ret = mutex_lock_interruptible(&port->tx_mutex);
 		if (ret)
 			break;
 		spin_lock_irqsave(&port->rx.lock, flags);
-		held_by_pending = false;
-		armed = false;
+		armed = credited = attempted = false;
 		ret = port->stopped ? port->error :
 			(!port->ready ? -EAGAIN : 0);
-		/* A pending ACK fences every subsequent command, including ones
-		 * that do not themselves require an ACK. */
-		if (!ret && port->waiting_id) {
+		if (!ret && reply >= 0) {
+			/* Only a request successfully copied to this exclusive owner
+			 * authorizes its exact direct response. Never change ACK state. */
+			if (!port->credits[reply])
+				ret = -EPERM;
+			else {
+				port->credits[reply]--;
+				credited = true;
+			}
+		} else if (!ret && port->waiting_id) {
 			ret = -EBUSY;
-			held_by_pending = true;
 		} else if (!ret && expects_ack) {
 			port->waiting_id = id;
-			port->tx_ready = false;
 			armed = true;
 		}
 		spin_unlock_irqrestore(&port->rx.lock, flags);
-		if (!ret && port->context)
+		if (!ret && port->context) {
+			attempted = true;
 			ret = port->backend.send(port->context, frame, bytes);
-		else if (!ret)
+		} else if (!ret) {
 			ret = -ESHUTDOWN;
-		if (ret && armed) {
-			spin_lock_irqsave(&port->rx.lock, flags);
-			if (port->waiting_id == id)
-				port->waiting_id = 0;
-			if (port->ready && !port->stopped && !port->waiting_id)
-				port->tx_ready = true;
-			spin_unlock_irqrestore(&port->rx.lock, flags);
 		}
-		if (ret == -EBUSY && !held_by_pending) {
-			spin_lock_irqsave(&port->rx.lock, flags);
-			port->tx_ready = false;
-			spin_unlock_irqrestore(&port->rx.lock, flags);
-			/* Close the busy/completion missed-wakeup window while context
-			 * is pinned. A later real completion also wakes the waiter. */
-			if (port->backend.room(port->context))
-				mt6797_speech_port_tx_wake(port);
+		spin_lock_irqsave(&port->rx.lock, flags);
+		if (credited && !port->stopped) {
+			if (ret)
+				port->credits[reply]++; /* unpublished; original request remains */
+			else
+				port->requests[reply]--;
 		}
+		if (ret && armed && port->waiting_id == id)
+			port->waiting_id = 0;
+		if (ret && port->stopped)
+			ret = port->error;
+		/* Clear before testing the ring, not after: completion between a
+		 * busy return and room() must not be overwritten by a stale false. */
+		if (attempted)
+			port->tx_room = false;
+		spin_unlock_irqrestore(&port->rx.lock, flags);
+		if (attempted && port->backend.room(port->context))
+			mt6797_speech_port_tx_wake(port);
 		mutex_unlock(&port->tx_mutex);
+		wake_up_interruptible(&port->wait);
 		if (ret != -EBUSY)
 			break;
 		if (file->f_flags & O_NONBLOCK) {
 			ret = -EAGAIN;
 			break;
 		}
-		ret = wait_event_interruptible(port->wait, READ_ONCE(port->stopped) ||
-					      READ_ONCE(port->tx_ready));
+		ret = wait_event_interruptible(port->wait,
+				mt6797_speech_write_waitable(port, reply));
 		if (ret)
 			break;
 	}
@@ -343,7 +409,8 @@ static __poll_t mt6797_speech_poll(struct file *file, poll_table *wait)
 	else {
 		if (!skb_queue_empty(&port->rx))
 			mask |= EPOLLIN | EPOLLRDNORM;
-		if (port->ready && port->tx_ready)
+		if (port->ready && port->tx_room &&
+		    (!port->waiting_id || mt6797_speech_has_credit(port)))
 			mask |= EPOLLOUT | EPOLLWRNORM;
 	}
 	spin_unlock_irqrestore(&port->rx.lock, flags);
@@ -394,7 +461,7 @@ int mt6797_speech_port_rx(struct mt6797_speech_port *port, struct sk_buff *skb)
 {
 	struct mt6797_speech_message message;
 	unsigned long flags;
-	int ret;
+	int request, ret;
 
 	if (!port || !skb)
 		return -EINVAL;
@@ -403,6 +470,9 @@ int mt6797_speech_port_rx(struct mt6797_speech_port *port, struct sk_buff *skb)
 		return -EPROTO;
 	}
 	ret = mt6797_speech_parse(skb->data, skb->len, &message);
+	request = ret ? -ENOENT : mt6797_speech_request_index(&message);
+	if (request == -EPROTO)
+		ret = -EPROTO;
 	if (ret) {
 		/* A dropped completion would otherwise leave an apparently live
 		 * owner waiting forever. Fence only speech on a corrupt record. */
@@ -412,23 +482,30 @@ int mt6797_speech_port_rx(struct mt6797_speech_port *port, struct sk_buff *skb)
 	spin_lock_irqsave(&port->rx.lock, flags);
 	if (port->stopped)
 		ret = port->error;
-	else if (port->rx_count >= MT6797_SPEECH_RX_FRAMES ||
+	else if ((request >= 0 && mt6797_speech_requests(port) >= MT6797_SPEECH_RX_FRAMES) ||
+		 port->rx_count >= MT6797_SPEECH_RX_FRAMES ||
 		 skb->truesize > MT6797_SPEECH_RX_MEMORY - port->rx_memory)
 		ret = -ENOBUFS;
 	else if (mt6797_speech_expects_ack(message.id & 0x7fff) &&
 		 !mt6797_speech_ack_matches(&message, port->waiting_id))
 		ret = -EPROTO;
 	else if (message.id == MT6797_SPEECH_RESET_REQUEST &&
-		 (port->waiting_id || port->speech_active))
+		 (port->waiting_id || port->speech_active || port->read_inflight ||
+		  mt6797_speech_requests(port)))
 		ret = -EPIPE;
 	else {
+		/* An idle real reset starts a new generation. Do not deliver queued
+		 * pre-reset ACKs or notifications after its reset indication. */
+		if (message.id == MT6797_SPEECH_RESET_REQUEST)
+			mt6797_speech_purge_locked(port);
+		if (request >= 0)
+			port->requests[request]++;
 		if (mt6797_speech_ack_matches(&message, port->waiting_id)) {
 			if (port->waiting_id == MT6797_SPEECH_ON)
 				port->speech_active = true;
 			else if (port->waiting_id == MT6797_SPEECH_OFF)
 				port->speech_active = false;
 			port->waiting_id = 0;
-			port->tx_ready = port->ready;
 		}
 		port->rx_count++;
 		port->rx_memory += skb->truesize;

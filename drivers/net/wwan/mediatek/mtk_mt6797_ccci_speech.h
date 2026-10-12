@@ -21,6 +21,14 @@
 #define MT6797_SPEECH_OFF 0x2f21U
 #define MT6797_SPEECH_DYNAMIC_PARAMETERS 0x2f79U
 #define MT6797_SPEECH_RESET_REQUEST 0xaf70U
+#define MT6797_SPEECH_RF_REQUEST 0xaf75U
+#define MT6797_SPEECH_RF_REPLY 0x2f75U
+#define MT6797_SPEECH_CODEC_REQUEST 0xaf90U
+#define MT6797_SPEECH_CODEC_REPLY 0x2f90U
+#define MT6797_SPEECH_CODEC_BYTES 194U
+#define MT6797_SPEECH_REPLY_RF 0U
+#define MT6797_SPEECH_REPLY_CODEC 1U
+#define MT6797_SPEECH_REPLY_TYPES 2U
 
 struct mt6797_speech_message {
 	u16 id;
@@ -79,6 +87,37 @@ static inline int mt6797_speech_parse(const u8 *frame, size_t bytes,
 		return -EPROTO;
 	*message = decoded;
 	return 0;
+}
+
+/* Exact current RX handlers 10cdb8/10cee0 send direct 2F75/2F90 replies.
+ * RF parameter interpretation and bounded codec-string handling belong to the
+ * call owner. The kernel grants no response credit for an unproved wire form.
+ * -ENOENT means an ordinary notification/ACK, -EPROTO a malformed request. */
+static inline int mt6797_speech_request_index(
+		const struct mt6797_speech_message *message)
+{
+	if (message->id == MT6797_SPEECH_RF_REQUEST) {
+		if (!message->mailbox || message->payload_len)
+			return -EPROTO;
+		return MT6797_SPEECH_REPLY_RF;
+	}
+	if (message->id != MT6797_SPEECH_CODEC_REQUEST)
+		return -ENOENT;
+	if (message->mailbox || message->parameter != MT6797_SPEECH_CODEC_BYTES ||
+	    message->payload_len != MT6797_SPEECH_CODEC_BYTES ||
+	    !message->payload || message->payload[0] != 0x34 ||
+	    message->payload[1] != 0x12)
+		return -EPROTO;
+	return MT6797_SPEECH_REPLY_CODEC;
+}
+
+static inline int mt6797_speech_reply_index(u16 id)
+{
+	if (id == MT6797_SPEECH_RF_REPLY)
+		return MT6797_SPEECH_REPLY_RF;
+	if (id == MT6797_SPEECH_CODEC_REPLY)
+		return MT6797_SPEECH_REPLY_CODEC;
+	return -ENOENT;
 }
 
 /* No on/off command is sent by these helpers. The call owner supplies policy,

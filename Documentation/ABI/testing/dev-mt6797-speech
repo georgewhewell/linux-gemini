@@ -20,13 +20,35 @@ Description:
 		All payload bytes must be supplied by the real board/call owner;
 		there are no default calibration bytes or startup responses.
 
-		After a stock-listed ACK command, every subsequent command waits
-		for its real matching RX acknowledgement. A successful write
+		After a stock-listed ACK command, subsequent ordinary commands
+		wait for its real matching RX acknowledgement. The only exceptions
+		are exact mailbox replies 2f75/parameter0/reserved0 and
+		2f90/parameter0/reserved0. Each requires one credit granted by a
+		successful read of the corresponding valid AF75/AF90 request by
+		the current owner. AF75 is a mailbox with a u16 network parameter;
+		AF90 is a data record with parameter194, exactly194 payload bytes
+		and little-endian magic1234 at payload offset0. RF policy and codec
+		string handling remain userspace responsibilities.
+
+		Requests are bounded to32 outstanding, including queued/unread,
+		copied and in-flight replies. EFAULT/EMSGSIZE grants no credit and
+		preserves the record. A reply without credit fails EPERM; malformed
+		reply parameters fail EPROTO. An unpublished TX error restores its
+		credit, except after terminal reset/detach. Replies never clear the
+		pending command ID or change speech-active state. POLLOUT can
+		therefore report a writable credited reply while an ordinary
+		command is still blocked by its ACK; callers must dispatch pending
+		requests rather than retry unrelated commands on that readiness.
+
+		A successful write
 		reports submission, not modem completion. The call owner must use
 		poll and a bounded completion deadline; the kernel sends no fake
 		ACK, timeout retry or automatic speech-off. Closing with a pending
-		command or active speech engine makes the endpoint terminal until
+		command, active speech engine or unanswered request (even unread)
+		makes the endpoint terminal until
 		native modem reset, preventing stale ACK reuse by a subsequent owner.
+		An idle reset purges earlier queued records. A reset racing a read
+		or an outstanding request fences the endpoint and clears credits.
 		Malformed RX, overflow, reset during a transaction and unmatched
 		ACKs also make this endpoint terminal. Cellular AT/data remain
 		independent.

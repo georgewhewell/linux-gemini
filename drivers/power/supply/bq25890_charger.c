@@ -464,7 +464,7 @@ static bool bq25890_is_adc_property(enum power_supply_property psp)
 	}
 }
 
-static irqreturn_t __bq25890_handle_irq(struct bq25890_device *bq);
+static irqreturn_t __bq25890_handle_irq(struct bq25890_device *bq, int *error);
 
 static int bq25890_get_vbus_voltage(struct bq25890_device *bq)
 {
@@ -477,7 +477,7 @@ static int bq25890_get_vbus_voltage(struct bq25890_device *bq)
 	return bq25890_find_val(ret, TBL_VBUSV);
 }
 
-static void bq25890_update_state(struct bq25890_device *bq,
+static int bq25890_update_state(struct bq25890_device *bq,
 				 enum power_supply_property psp,
 				 struct bq25890_state *state)
 {
@@ -486,17 +486,24 @@ static void bq25890_update_state(struct bq25890_device *bq,
 
 	mutex_lock(&bq->lock);
 	/* update state in case we lost an interrupt */
-	__bq25890_handle_irq(bq);
+	__bq25890_handle_irq(bq, &ret);
+	if (ret) {
+		mutex_unlock(&bq->lock);
+		return ret;
+	}
 	*state = bq->state;
 	do_adc_conv = !bq->read_only && (!state->online || state->hiz) &&
 		bq25890_is_adc_property(psp);
 	if (do_adc_conv)
-		bq25890_field_write(bq, F_CONV_START, 1);
+		ret = bq25890_field_write(bq, F_CONV_START, 1);
 	mutex_unlock(&bq->lock);
+	if (ret)
+		return ret;
 
 	if (do_adc_conv)
-		regmap_field_read_poll_timeout(bq->rmap_fields[F_CONV_START],
+		return regmap_field_read_poll_timeout(bq->rmap_fields[F_CONV_START],
 			ret, !ret, 25000, 1000000);
+	return 0;
 }
 
 static int bq25890_power_supply_get_property(struct power_supply *psy,
@@ -507,7 +514,9 @@ static int bq25890_power_supply_get_property(struct power_supply *psy,
 	struct bq25890_state state;
 	int ret;
 
-	bq25890_update_state(bq, psp, &state);
+	ret = bq25890_update_state(bq, psp, &state);
+	if (ret)
+		return ret;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
@@ -738,8 +747,7 @@ static int bq25890_power_supply_set_property(struct power_supply *psy,
 		ret = bq25890_field_write(bq, F_EN_HIZ, !val->intval);
 		if (!ret)
 			bq->force_hiz = !val->intval;
-		bq25890_update_state(bq, psp, &state);
-		return ret;
+		return ret ? ret : bq25890_update_state(bq, psp, &state);
 	default:
 		return -EINVAL;
 	}
@@ -861,15 +869,20 @@ static int bq25890_get_chip_state(struct bq25890_device *bq,
 	return 0;
 }
 
-static irqreturn_t __bq25890_handle_irq(struct bq25890_device *bq)
+static irqreturn_t __bq25890_handle_irq(struct bq25890_device *bq, int *error)
 {
 	bool adc_conv_rate, new_adc_conv_rate;
 	struct bq25890_state new_state;
 	int ret;
 
+	if (error)
+		*error = 0;
 	ret = bq25890_get_chip_state(bq, &new_state);
-	if (ret < 0)
+	if (ret < 0) {
+		if (error)
+			*error = ret;
 		return IRQ_NONE;
+	}
 
 	if (!memcmp(&bq->state, &new_state, sizeof(new_state)))
 		return IRQ_NONE;
@@ -901,6 +914,8 @@ static irqreturn_t __bq25890_handle_irq(struct bq25890_device *bq)
 
 	return IRQ_HANDLED;
 error:
+	if (error)
+		*error = ret;
 	dev_err(bq->dev, "Error communicating with the chip: %pe\n",
 		ERR_PTR(ret));
 	return IRQ_HANDLED;
@@ -912,7 +927,7 @@ static irqreturn_t bq25890_irq_handler_thread(int irq, void *private)
 	irqreturn_t ret;
 
 	mutex_lock(&bq->lock);
-	ret = __bq25890_handle_irq(bq);
+	ret = __bq25890_handle_irq(bq, NULL);
 	mutex_unlock(&bq->lock);
 
 	return ret;
@@ -930,7 +945,7 @@ static void bq25890_status_poll_work(struct work_struct *work)
 			     status_poll_work.work);
 
 	mutex_lock(&bq->lock);
-	__bq25890_handle_irq(bq);
+	__bq25890_handle_irq(bq, NULL);
 	mutex_unlock(&bq->lock);
 
 	if (READ_ONCE(bq->status_poll_enabled))

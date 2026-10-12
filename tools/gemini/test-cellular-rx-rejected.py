@@ -135,7 +135,10 @@ int main(void){
 '''
 assert 'DEVICE_ATTR(rx_rejected, 0400, rx_rejected_show, NULL)' in source
 start=source.index('static void mt6797_ccci_dispatch_rx(');end=source.index('static int mt6797_ccci_rx_poll(',start);dispatch=source[start:end]
-assert dispatch.count('mt6797_rx_rejected_record(')==4
+assert dispatch.count('mt6797_rx_rejected_record(')==5
+speech=dispatch[dispatch.index('if (frame.channel == MT6797_SPEECH_RX)'):dispatch.index('if (!atomic_read(&ccci->ready))')]
+assert 'ret = q ? -EPROTO : mt6797_speech_port_rx(ccci->speech, skb);' in speech
+assert 'mt6797_rx_rejected_record(&ccci->rx_rejected, frame.channel,' in speech
 assert 'ret = mt6797_ccci_control_rx(ccci, skb, &frame);\n\t\tif (ret)\n\t\t\tmt6797_rx_rejected_record' in dispatch
 assert dispatch.index('if (frame.channel != MTK_CCCI_UART2_RX && if_id < 0)')<dispatch.index('if (frame.data1 != skb->len')
 for family in ['rpc','fs']:

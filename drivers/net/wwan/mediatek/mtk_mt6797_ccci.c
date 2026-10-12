@@ -90,6 +90,13 @@
 #define CLDMA_L2_RX_MASK_SET		0x0c68
 #define CLDMA_BUS_CFG			0x0c90
 
+/* Cold-boot policy selection only; the running firmware caches its WM word. */
+static int mt6797_ccci_requested_radio_policy;
+module_param_named(requested_radio_policy, mt6797_ccci_requested_radio_policy,
+		   int, 0444);
+MODULE_PARM_DESC(requested_radio_policy,
+	"Requested non-C2K UBIN radio policy subset (0 keeps LK/board policy)");
+
 static const char * const mt6797_ccci_region_names[] = {
 	"ap-cldma-ao", "md-cldma-ao", "ap-cldma-pdn", "md-cldma-pdn",
 	"ap-ccif", "md-ccif",
@@ -2132,6 +2139,51 @@ static int mt6797_ccci_runtime_policy(
 	return 0;
 }
 
+/*
+ * A Linux request narrows the admitted LK/board RAT policy, not the loaded
+ * unified image identity. Public CCCI supports selecting a requested RAT
+ * policy independently of that identity. Never mask a wire word in place.
+ *
+ * Current W1630 GMSS treats WM bit 2 as an executable CSS_MD3 dependency:
+ * NWSEL RAT completion waits for its real MD3 confirmation. This driver has
+ * no MD3 execution owner, so explicit C2K requests are not implemented.
+ */
+static int mt6797_ccci_apply_policy_request(
+	const struct mt6797_md1_lk_runtime_metadata *metadata, s32 raw_policy,
+	s32 requested, s32 *selected)
+{
+	u32 raw_bitmap, requested_bitmap;
+	int ret;
+
+	if (!requested) {
+		*selected = raw_policy;
+		return 0;
+	}
+	if (requested < MTK_CCCI_UBIN_FIRST_TYPE ||
+	    requested > MTK_CCCI_MAX_LOAD_TYPE)
+		return -EINVAL;
+	if (!metadata->load_type_valid ||
+	    metadata->load_type < MTK_CCCI_UBIN_FIRST_TYPE ||
+	    metadata->load_type > MTK_CCCI_MAX_LOAD_TYPE ||
+	    metadata->image_type < MTK_CCCI_UBIN_FIRST_TYPE ||
+	    metadata->image_type > MTK_CCCI_MAX_LOAD_TYPE)
+		return -ENODATA;
+	ret = mtk_ccci_ubin_wm_bitmap(raw_policy, &raw_bitmap);
+	if (ret)
+		return ret;
+	if (!raw_bitmap)
+		return -ENODATA;
+	ret = mtk_ccci_ubin_wm_bitmap(requested, &requested_bitmap);
+	if (ret)
+		return ret;
+	if (requested_bitmap & BIT(2))
+		return -EOPNOTSUPP;
+	if (!requested_bitmap || (requested_bitmap & ~raw_bitmap))
+		return -ERANGE;
+	*selected = requested;
+	return 0;
+}
+
 static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 					struct resource *smem_res)
 {
@@ -2141,7 +2193,7 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	struct mt6797_md1_mpu_remap_layout layout;
 	u64 md_smem, md1_md3_base;
 	u32 md1_md3_size;
-	s32 policy;
+	s32 policy, raw_policy;
 	bool lk_override;
 	int ret;
 
@@ -2180,7 +2232,11 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 		return ret == -ENODATA ? -EPROBE_DEFER : ret;
 	ret = mt6797_ccci_runtime_policy(&metadata,
 					 CONFIG_MTK_MT6797_MD1_SUPPORT,
-					 &policy, &lk_override);
+					 &raw_policy, &lk_override);
+	if (ret)
+		return ret;
+	ret = mt6797_ccci_apply_policy_request(&metadata, raw_policy,
+				mt6797_ccci_requested_radio_policy, &policy);
 	if (ret)
 		return ret;
 	/*
@@ -2206,7 +2262,14 @@ static int mt6797_ccci_validate_handoff(struct mt6797_ccci *ccci,
 	ccci->runtime_config.modem_capability = policy;
 	ccci->runtime_config.modem_capability_known = policy > 0;
 	dev_info(ccci->dev, "MD1 runtime policy=%d source=%s; configured policy, not hardware capability\n",
-		 policy, lk_override ? "lk_override" : policy ? "board_config" : "unknown");
+		 policy, mt6797_ccci_requested_radio_policy ? "linux_request" :
+		 lk_override ? "lk_override" : policy ? "board_config" : "unknown");
+	if (mt6797_ccci_requested_radio_policy)
+		dev_info(ccci->dev,
+			 "MD1 requested policy=%d raw_policy=%d raw_source=%s load_type=%u image_type=%u; cold UBIN subset\n",
+			 mt6797_ccci_requested_radio_policy, raw_policy,
+			 lk_override ? "lk_override" : raw_policy ? "board_config" : "unknown",
+			 metadata.load_type, metadata.image_type);
 	return 0;
 }
 

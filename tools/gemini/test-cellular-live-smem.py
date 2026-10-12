@@ -87,6 +87,7 @@ struct mt6797_ccci {
 '''
 shim += constants + '\n' + layout + '\n' + smem_struct + '\n' + modem_struct + '\n' + response_struct + r'''
 static int wait_error, layout_error, plan_error, metadata_error, memory_error, step, token, random_calls;
+static int mt6797_ccci_requested_radio_policy;
 static struct mt6797_md1_lk_runtime_metadata metadata;
 static bool complete;
 static struct mt6797_md1_mpu_remap_layout saved;
@@ -173,6 +174,7 @@ static void check_geometry(void)
 static void reset(void)
 {
  wait_error=layout_error=plan_error=metadata_error=memory_error=step=random_calls=0;
+ mt6797_ccci_requested_radio_policy=0;
  metadata=(struct mt6797_md1_lk_runtime_metadata){.load_type=9,.image_type=12,
  .load_type_valid=true,.capability_available=true,
  .options={.gate=1,.gate_present=true,.support=8,.support_present=true}};
@@ -242,6 +244,18 @@ int main(int argc,char **argv)
  altered.smem_md_addr++;rejected_response(altered,-ERANGE);
  assert(step==5 && random_calls==1);
  assert(c.runtime_config.load_type==9&&c.runtime_config.modem_capability==8&&c.runtime_config.modem_capability_known);
+ /* A cold Linux request is selected before any output/publication mutation. */
+ reset();metadata.options.support=12;metadata.load_type=12;
+ mt6797_ccci_requested_radio_policy=10;
+ struct mt6797_md1_lk_runtime_metadata raw=metadata;
+ assert(!mt6797_ccci_validate_handoff(&c,&r));
+ assert(c.runtime_config.modem_capability==10&&c.runtime_config.load_type==12);
+ assert(!memcmp(&raw,&metadata,sizeof(raw))&&random_calls==1);
+ reset();mt6797_ccci_requested_radio_policy=10;rejected(-ERANGE); /* raw8 lacks WCDMA */
+ reset();metadata.options.support=12;mt6797_ccci_requested_radio_policy=12;rejected(-EOPNOTSUPP);
+ reset();metadata.options.support=12;mt6797_ccci_requested_radio_policy=-1;rejected(-EINVAL);
+ reset();metadata.options.support=12;mt6797_ccci_requested_radio_policy=10;
+ metadata.load_type_valid=false;rejected(-ENODATA);
  /* Actual native admission must use configured12 when LK has no override. */
  reset();metadata.options=(struct mt6797_md1_lk_runtime_options){0};
  metadata.capability_available=false;
@@ -305,6 +319,8 @@ with tempfile.TemporaryDirectory(prefix='cellular-live-smem-') as directory:
         admission = function(native, 'static int mt6797_ccci_validate_handoff(')
         helper = (function(native, 'static int mt6797_ccci_runtime_policy(')
                   if 'static int mt6797_ccci_runtime_policy(' in native else '')
+        if 'static int mt6797_ccci_apply_policy_request(' in native:
+            helper += function(native, 'static int mt6797_ccci_apply_policy_request(')
         test = path / (label+'.c')
         output = path / label
         geometry=function(selected_lk,'static bool mt6797_md1_lk_range_valid(')+'\n'+function(selected_lk,'int mt6797_md1_lk_smem_layout_parse(')

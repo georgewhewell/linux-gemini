@@ -159,6 +159,20 @@
 		};
 	};
 
+	/* MT6797 routes both CPU types' PMUv3 overflow to PPI7. Keep their
+	 * different event mappings and supported CPU masks separate. */
+	pmu-a53 {
+		compatible = "arm,cortex-a53-pmu";
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 7 IRQ_TYPE_LEVEL_LOW &ppi_a53>;
+	};
+
+	pmu-a72 {
+		compatible = "arm,cortex-a72-pmu";
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 7 IRQ_TYPE_LEVEL_LOW &ppi_a72>;
+	};
+
 	clk26m: oscillator-26m {
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
@@ -259,10 +273,10 @@
 	timer {
 		compatible = "arm,armv8-timer";
 		interrupt-parent = <&gic>;
-		interrupts = <GIC_PPI 13 IRQ_TYPE_LEVEL_LOW>,
-			     <GIC_PPI 14 IRQ_TYPE_LEVEL_LOW>,
-			     <GIC_PPI 11 IRQ_TYPE_LEVEL_LOW>,
-			     <GIC_PPI 10 IRQ_TYPE_LEVEL_LOW>;
+		interrupts = <GIC_PPI 13 IRQ_TYPE_LEVEL_LOW 0>,
+			     <GIC_PPI 14 IRQ_TYPE_LEVEL_LOW 0>,
+			     <GIC_PPI 11 IRQ_TYPE_LEVEL_LOW 0>,
+			     <GIC_PPI 10 IRQ_TYPE_LEVEL_LOW 0>;
 	};
 
 	topckgen: topckgen@10000000 {
@@ -1381,13 +1395,24 @@
 
 	gic: interrupt-controller@19000000 {
 		compatible = "arm,gic-v3";
-		#interrupt-cells = <3>;
+		#interrupt-cells = <4>;
 		interrupt-parent = <&gic>;
-		interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH>;
+		interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH 0>;
 		interrupt-controller;
 		reg = <0 0x19000000 0 0x10000>,    /* GICD */
 		      <0 0x19200000 0 0x200000>,   /* GICR */
 		      <0 0x10240000 0 0x2000>;     /* GICC */
+
+		ppi-partitions {
+			ppi_a53: interrupt-partition-0 {
+				affinity = <&cpu0>, <&cpu1>, <&cpu2>, <&cpu3>,
+					   <&cpu4>, <&cpu5>, <&cpu6>, <&cpu7>;
+			};
+
+			ppi_a72: interrupt-partition-1 {
+				affinity = <&cpu8>, <&cpu9>;
+			};
+		};
 	};
 
 	camsys: syscon@1a000000 {

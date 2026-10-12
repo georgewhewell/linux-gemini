@@ -145,7 +145,7 @@ def main():
     md3=(ROOT/'drivers/soc/mediatek/mt6797-md3-lk-handoff.c').read_text()
     probe=(ROOT/'drivers/soc/mediatek/mt6797-md1-lk-handoff-probe.c').read_text()
     assert 'debugfs_create_file("md3_metadata", 0400,' in probe
-    assert 'mt6797_md3_lk_memory_attest' not in md3
+    assert 'mt6797_md3_lk_memory_attest' not in h.function(probe,'md3_metadata_show')
     mutations={
         'mpu-copy':('memcpy(out->mpu, records, sizeof(records));',''),
         'mpu-duplicate':('if (seen & BIT(entry.region))','if (false && (seen & BIT(entry.region)))'),

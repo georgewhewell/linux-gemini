@@ -113,6 +113,60 @@ static int mt6797_md3_mpu_parse(const u8 *data, u32 bytes,
 	return 0;
 }
 
+int mt6797_md3_lk_memory_attest(const struct mt6797_md3_lk_snapshot *s,
+			      const u32 banks[4], u32 lock)
+{
+	struct mt6797_md3_lk_mpu_entry expected[4];
+	u64 bases[2];
+	u32 mode, bank, word, slot, value;
+	bool match;
+	int ret;
+
+	if (!s || !banks)
+		return -EINVAL;
+	if (s->mpu_error)
+		return s->mpu_error;
+	if (!(lock & BIT(17)))
+		return -EUCLEAN;
+	ret = mt6797_md3_mpu_expected(s, expected);
+	if (ret)
+		return ret;
+	if (memcmp(expected, s->mpu, sizeof(expected)))
+		return -EUCLEAN;
+	bases[0] = s->modem.base_phys;
+	bases[1] = s->smem.base_phys + s->smem.md1_md3_offset;
+	/* Exact LK's two DDR branches, both banks must choose the same one.
+	 * Kernel fallback's invalid slots differ and are not adopted as LK.
+	 */
+	for (mode = 0; mode < 2; mode++) {
+		match = true;
+		for (bank = 0; bank < 2; bank++) {
+			u64 base = bases[bank];
+
+			if (mode) {
+				if (base < 0x40000000ULL)
+					return -ERANGE;
+				base -= 0x40000000ULL;
+			}
+			if (base + 0xe000000ULL > U32_MAX)
+				return -ERANGE;
+			for (word = 0; word < 2; word++) {
+				value = 0;
+				for (slot = 0; slot < 4; slot++)
+					value |= ((((base + (word * 4 + slot) *
+						     0x2000000ULL) >> 24) | 1) & 0xff) <<
+						 (slot * 8);
+				if (banks[bank * 2 + word] != value)
+					match = false;
+			}
+		}
+		if (match)
+			return 0;
+	}
+	return -EUCLEAN;
+}
+EXPORT_SYMBOL_GPL(mt6797_md3_lk_memory_attest);
+
 static bool mt6797_md3_range(u32 offset, u32 size, size_t limit)
 {
 	u32 end;

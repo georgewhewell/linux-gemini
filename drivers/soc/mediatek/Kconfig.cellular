@@ -344,6 +344,29 @@ config MTK_MT6797_MD1_BRINGUP_BACKEND_KUNIT_TEST
 	  status progression, and MPU refusal on allocated memory only. No platform
 	  device is instantiated and the suite cannot access Gemini hardware.
 
+config MTK_MT6797_MD3_POWER_OWNER
+	bool "Optional reset-held MT6797 C2K domain owner"
+	depends on OF && MTK_MT6797_MD1_COLD_OWNER=y
+	select MTK_MT6797_MD3_POWER_CORE
+	help
+	  Explicitly gated optional domain-power driver. Requires its own disabled
+	  DT node and read-only allow_domain_power parameter. It adopts exact LK
+	  MPU/remap records, shares the existing MD1 resource owner, and exclusively
+	  holds C2K reset. Optional prepare-ap-md3-ccif plus allow_ccif_prepare
+	  acquires AP-only CCIF resources and initializes SRAM/rings with IRQs
+	  disabled. No C2K execution, running RX/TX, CSS or runtime capability
+	  exists.
+	  Leave disabled during ordinary MD1-only boot.
+
+config MTK_MT6797_MD3_POWER_CORE
+	bool "MT6797 optional C2K MTCMOS transaction core"
+	help
+	  Build the bounded, one-shot C2K domain power transaction. This has no
+	  platform driver, backend, automatic caller or power-off operation. A
+	  future native MD3 owner must supply real shared-resource admission,
+	  validated MPU/remap/reset and clock ownership before invoking it.
+	  Domain power does not establish PLL, CCIF, C2K execution or CSS readiness.
+
 config MTK_MT6797_MD1_LK_HANDOFF
 	bool "MT6797 MD1 LK CCCI hand-off parser"
 	help

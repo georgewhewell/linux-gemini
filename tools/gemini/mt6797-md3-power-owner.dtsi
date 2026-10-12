@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Optional example only: this file is not included by any board DTS.
+ * First qualify copied md3_metadata including mpu_errno=0 after a cold boot.
+ * A deliberate later trial also needs CONFIG_MTK_MT6797_MD3_POWER_OWNER=y,
+ * status="okay" and mt6797_md3_power_owner.allow_domain_power=1.
+ * This powers a domain with reset HELD; it does not start MD3 or CSS.
+ */
+#include <dt-bindings/reset/mt6797-resets.h>
+#include <dt-bindings/clock/mt6797-clk.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+/ {
+	md3_power_owner: modem-c2k-power-owner@1020b000 {
+		compatible = "mediatek,mt6797-md3-power-owner";
+		/* Deliberate transport-preparation trial additionally enables
+		 * mediatek,prepare-ap-md3-ccif and allow_ccif_prepare=1.
+		 * No IRQ enable or reset release exists in this component.
+		 */
+		reg = <0 0x1020b000 0 0x1000>;
+		reg-names = "ap-c2k-ccif";
+		interrupt-parent = <&sysirq>;
+		interrupts = <GIC_SPI 149 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 287 IRQ_TYPE_EDGE_FALLING>;
+		clocks = <&infrasys CLK_INFRA_AP_C2K_CCIF_0>,
+			 <&infrasys CLK_INFRA_AP_C2K_CCIF_1>;
+		clock-names = "ap-c2k-ccif-0", "ap-c2k-ccif-1";
+		mediatek,experimental-md3-domain-power;
+		mediatek,boot-watchdog = <&watchdog>;
+		resets = <&watchdog MT6797_TOPRGU_C2KSYS_SW_RST>;
+		reset-names = "c2k";
+		/* No power-domains: attachment must never power before admission. */
+		status = "disabled";
+	};
+};

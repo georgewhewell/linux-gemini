@@ -231,10 +231,54 @@ int mt6797_md1_cold_owner_rf_clock(struct device *consumer, u32 afc, u8 sw[4]);
 /* Exact intermodem reservation, only after cold initialization and handoff. */
 int mt6797_md1_cold_owner_md1_md3_smem_get(u64 *base, u32 *size);
 
+struct mt6797_md3_lk_snapshot;
+
+/*
+ * Optional, exclusive MD3 cold admission, called from the consumer's probe.
+ * Pins this supplier and serializes against its completed intermodem clear,
+ * handoff, fatal state and shutdown. Copies the detached LK snapshot only
+ * after a fresh C2K SPM off/reset/isolation observation and exact span match.
+ *
+ * This is NOT power/reset/clock/MPU/remap permission. Those providers and the
+ * MD3 execution transaction must be implemented separately. No MMIO mapping,
+ * shared-memory clearing, clock enable or hardware write is performed here.
+ *
+ * Register consumer work/IRQ cleanup AFTER acquisition, so it drains before
+ * the managed lease release. Release is terminal for MD3 in this boot and
+ * does not invalidate the independent MD1 transport. Errors leave @snapshot
+ * untouched. A failed acquisition after reservation also consumes the lease.
+ */
+int mt6797_md1_cold_owner_acquire_md3(struct device *consumer,
+				  struct mt6797_md3_lk_snapshot *snapshot);
+
+/* Same-consumer read-only revalidation while the cold admission is held.
+ * A failed revalidation is terminal for this MD3 admission, not for MD1.
+ * Never authorizes a subsequent unlocked hardware transition by itself.
+ */
+int mt6797_md1_cold_owner_verify_md3_cold(struct device *consumer);
+
+struct reset_control;
+struct mt6797_md3_power_result;
+/* Optional domain-only transaction. The caller owns the real C2KSYS reset,
+ * asserted and held throughout. No reset deassertion or modem execution.
+ * Absent/mismatched pre-clear LK MPU records fail before any SPM write.
+ * No caller-supplied MPU/remap permission or fabricated readiness boolean.
+ */
+int mt6797_md1_cold_owner_power_md3(struct device *consumer,
+				 struct reset_control *reset,
+				 struct mt6797_md3_power_result *result);
+
 /* Finalize vendor region 13 after HS1 and before publishing runtime data. */
 int mt6797_md1_cold_owner_hs1_stage2(void);
 
 /* IRQ-safe terminal latch: no second in-boot ownership attempt is permitted. */
 void mt6797_md1_cold_owner_transport_fatal(int reason);
+
+/* Non-mutating probe ordering; missing real HS1 stage returns EPROBE_DEFER. */
+int mt6797_md1_cold_owner_md3_power_ready(void);
+
+/* Fresh real power/reset/supplier check; not MD3 execution or boot readiness. */
+int mt6797_md1_cold_owner_verify_md3_domain(struct device *consumer,
+					 struct reset_control *reset);
 
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_MD1_COLD_OWNER_H */

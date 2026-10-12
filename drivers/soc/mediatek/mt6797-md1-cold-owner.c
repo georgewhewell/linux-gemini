@@ -28,7 +28,10 @@
 #include <linux/reset.h>
 #include <linux/mediatek-wdt.h>
 #include <linux/mutex.h>
+#include <linux/soc/mediatek/mt6797-md3-lk-handoff.h>
+#include <linux/soc/mediatek/mt6797-md3-power.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pinctrl/consumer.h>
@@ -261,6 +264,11 @@ static struct mt6797_md1_cold_owner_backend *mt6797_md1_handoff_backend;
 /* Protected by the evidence lock; a relinquished lease is never reissued. */
 static struct device *mt6797_md1_cldma_consumer;
 static bool mt6797_md1_cldma_lease_taken;
+/* A separate, optional companion lease; releasing it must not poison MD1. */
+static struct device *mt6797_md1_md3_consumer;
+static bool mt6797_md1_md3_lease_taken;
+static int mt6797_md1_md3_cold_error;
+static struct mt6797_md3_lk_snapshot mt6797_md1_md3_snapshot;
 static DEFINE_MUTEX(mt6797_md1_stage2_lock);
 static struct device *mt6797_md1_stage2_dev;
 static struct mt6797_md1_mpu_remap_plan mt6797_md1_stage2_plan;
@@ -351,6 +359,7 @@ int mt6797_md1_cold_owner_md1_md3_smem_get(u64 *base, u32 *size)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_md1_md3_smem_get);
+
 
 static void mt6797_md1_cold_release_cldma(void *data)
 {
@@ -882,6 +891,375 @@ static int mt6797_md1_cold_verify_c2k_off(struct mt6797_md1_cold_owner_backend *
 	}
 	return 0;
 }
+
+/* Caller holds the supplier evidence lock; no unpinned backend escapes it. */
+static int mt6797_md1_md3_preflight_locked(const struct mt6797_md3_lk_snapshot *snapshot)
+{
+	struct mt6797_md1_cold_owner_backend *backend = mt6797_md1_handoff_backend;
+	int ret = mt6797_md1_handoff_status;
+
+	if (ret)
+		return ret;
+	if (!backend || !mt6797_md1_handoff_supplier ||
+	    backend->dev != mt6797_md1_handoff_supplier ||
+	    atomic_read(&mt6797_md1_cold_owner_fatal_latch))
+		return -ESHUTDOWN;
+	if (mt6797_md1_post_vector_evidence.token != MT6797_MD1_POST_VECTOR_GO ||
+	    !mt6797_md1_post_vector_evidence.passive_complete ||
+	    !backend->md1_md3_smem_initialized)
+		return -EPERM;
+	if (!backend->pmic || !backend->spm || !backend->base[MT6797_MD1_RES_INFRA])
+		return -ENODEV;
+	if (backend->md1_md3_smem_base != snapshot->smem.base_phys +
+	    snapshot->smem.md1_md3_offset ||
+	    backend->md1_md3_smem_size != snapshot->smem.md1_md3_size)
+		return -ERANGE;
+	ret = mt6797_md1_cold_verify_c2k_off(backend);
+	if (!ret && atomic_read(&mt6797_md1_cold_owner_fatal_latch))
+		ret = -ESHUTDOWN;
+	return ret;
+}
+
+static void mt6797_md1_cold_release_md3(void *data)
+{
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	if (mt6797_md1_md3_consumer == data) {
+		mt6797_md1_md3_consumer = NULL;
+		memset(&mt6797_md1_md3_snapshot, 0, sizeof(mt6797_md1_md3_snapshot));
+	}
+	/* Leave lease_taken set: no second cold owner in this boot. */
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+}
+
+int mt6797_md1_cold_owner_acquire_md3(struct device *consumer,
+				  struct mt6797_md3_lk_snapshot *snapshot)
+{
+	struct mt6797_md1_post_vector_evidence evidence;
+	struct mt6797_md3_lk_snapshot candidate;
+	int ret;
+
+	if (!consumer || !snapshot)
+		return -EINVAL;
+	ret = mt6797_md3_lk_handoff_get(&candidate);
+	if (ret)
+		return ret;
+	/* Existing device-link admission also rejects a supplier already unbinding. */
+	ret = mt6797_md1_cold_owner_wait_handoff(consumer, &evidence);
+	if (ret)
+		return ret;
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	if (mt6797_md1_md3_lease_taken) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	ret = mt6797_md1_md3_preflight_locked(&candidate);
+	if (ret)
+		goto unlock;
+	mt6797_md1_md3_consumer = consumer;
+	mt6797_md1_md3_lease_taken = true;
+	mt6797_md1_md3_snapshot = candidate;
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+
+	/* The reset callback takes the evidence lock, so register outside it. */
+	ret = devm_add_action_or_reset(consumer, mt6797_md1_cold_release_md3, consumer);
+	if (ret)
+		return ret;
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	if (mt6797_md1_md3_consumer != consumer)
+		ret = -ESHUTDOWN;
+	else
+		ret = mt6797_md1_md3_preflight_locked(&candidate);
+	if (!ret)
+		*snapshot = candidate;
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	if (ret)
+		devm_release_action(consumer, mt6797_md1_cold_release_md3, consumer);
+	return ret;
+unlock:
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_acquire_md3);
+
+int mt6797_md1_cold_owner_verify_md3_cold(struct device *consumer)
+{
+	int ret;
+
+	if (!consumer)
+		return -EINVAL;
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	if (consumer != mt6797_md1_md3_consumer)
+		ret = -EPERM;
+	else if (mt6797_md1_md3_cold_error)
+		ret = mt6797_md1_md3_cold_error;
+	else {
+		ret = mt6797_md1_md3_preflight_locked(&mt6797_md1_md3_snapshot);
+		/* An unexpected transition/read failure cannot be erased by retry. */
+		if (ret)
+			mt6797_md1_md3_cold_error = ret;
+	}
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_verify_md3_cold);
+
+#if IS_ENABLED(CONFIG_MTK_MT6797_MD3_POWER_OWNER)
+struct mt6797_md3_power_backend {
+	struct device *consumer;
+	struct reset_control *reset;
+	struct mt6797_md1_cold_owner_backend *shared;
+	struct regmap *infra;
+};
+
+/* Boot lifetime; no second attempt even if an optional consumer disappears. */
+static bool mt6797_md3_power_attempted;
+
+static int mt6797_md3_power_live(void *context)
+{
+	struct mt6797_md3_power_backend *b = context;
+	int ret;
+
+	if (mt6797_md1_md3_consumer != b->consumer || mt6797_md1_handoff_status ||
+	    mt6797_md1_handoff_backend != b->shared ||
+	    atomic_read(&mt6797_md1_cold_owner_fatal_latch))
+		return -ESHUTDOWN;
+	ret = reset_control_status(b->reset);
+	return ret < 0 ? ret : ret == 1 ? 0 : -EUCLEAN;
+}
+
+static int mt6797_md3_power_begin(void *context)
+{
+	struct mt6797_md3_power_backend *b = context;
+	const struct mt6797_md3_lk_snapshot *s = &mt6797_md1_md3_snapshot;
+	const struct mt6797_md1_mpu_plan_entry *inter;
+	u32 banks[4], lock;
+	unsigned int i;
+	bool attempted = false;
+	int ret;
+	static const u32 offsets[] = { 0x370, 0x374, 0x380, 0x384 };
+
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	if (mt6797_md1_md3_consumer != b->consumer || mt6797_md3_power_attempted) {
+		ret = -EPERM;
+		goto unlock;
+	}
+	mt6797_md3_power_attempted = true;
+	attempted = true;
+	b->shared = mt6797_md1_handoff_backend;
+	ret = mt6797_md1_md3_cold_error;
+	if (!ret)
+		ret = mt6797_md1_md3_preflight_locked(s);
+	if (!ret)
+		ret = mt6797_md3_power_live(b);
+	if (!ret)
+		ret = s->mpu_error;
+	if (ret)
+		goto unlock;
+	/* Require the genuine MD1 secure transaction, not just matching bytes.
+	 * Its completed HS1 stage cannot subsequently mutate region 9.
+	 */
+	mutex_lock(&mt6797_md1_stage2_lock);
+	inter = &mt6797_md1_stage2_plan.md1_md3_smem;
+	if (!mt6797_md1_stage2_complete || !mt6797_md1_stage2_armed ||
+	    mt6797_md1_stage2_dev != b->shared->dev ||
+	    inter->emi_mpu_region != 9 || inter->start != s->mpu[1].start ||
+	    inter->end != s->mpu[1].end ||
+	    inter->access_permission != s->mpu[1].permission)
+		ret = -EUCLEAN;
+	mutex_unlock(&mt6797_md1_stage2_lock);
+	if (ret)
+		goto unlock;
+	for (i = 0; i < ARRAY_SIZE(offsets); i++) {
+		ret = regmap_read(b->infra, offsets[i], &banks[i]);
+		if (ret)
+			goto unlock;
+	}
+	ret = regmap_read(b->infra, 0xf80, &lock);
+	if (!ret)
+		ret = mt6797_md3_lk_memory_attest(s, banks, lock);
+	if (!ret)
+		ret = mt6797_md3_power_live(b);
+	if (!ret)
+		return 0; /* Exclusion and shared supplier pinned through end(). */
+unlock:
+	if (ret && attempted)
+		mt6797_md1_md3_cold_error = ret;
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+
+static void mt6797_md3_power_end(void *context,
+			       const struct mt6797_md3_power_result *result)
+{
+	/* Optional domain failure never poisons independent MD1 transport. */
+	if (result->error)
+		mt6797_md1_md3_cold_error = result->error;
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+}
+
+static int mt6797_md3_power_read(void *context,
+			       enum mt6797_md3_power_reg reg, u32 *value)
+{
+	struct mt6797_md3_power_backend *b = context;
+
+	switch (reg) {
+	case MT6797_MD3_SPM_CONTROL:
+		return regmap_read(b->shared->spm, 0x328, value);
+	case MT6797_MD3_SPM_STATUS:
+		return regmap_read(b->shared->spm, 0x180, value);
+	case MT6797_MD3_SPM_STATUS_2ND:
+		return regmap_read(b->shared->spm, 0x184, value);
+	case MT6797_MD3_INFRA_PROTECT_EN:
+		return regmap_read(b->infra, 0x220, value);
+	case MT6797_MD3_INFRA_PROTECT_STA:
+		return regmap_read(b->infra, 0x228, value);
+	default:
+		return -EINVAL;
+	}
+}
+
+static int mt6797_md3_power_update(void *context,
+				 enum mt6797_md3_power_reg reg, u32 mask, u32 value)
+{
+	struct mt6797_md3_power_backend *b = context;
+
+	if (value & ~mask)
+		return -EINVAL;
+	if (reg == MT6797_MD3_SPM_CONTROL && mask && !(mask & ~0x1f))
+		return regmap_update_bits(b->shared->spm, 0x328, mask, value);
+	if (reg == MT6797_MD3_INFRA_PROTECT_EN && mask == GENMASK(15, 13))
+		return regmap_update_bits(b->infra, 0x220, mask, value);
+	return -EINVAL;
+}
+
+static int mt6797_md3_enable_spm(void *context)
+{
+	struct mt6797_md3_power_backend *b = context;
+
+	return regmap_write(b->shared->spm, MT6797_MD1_SPM_POWERON_CONFIG_EN,
+			    MT6797_MD1_SPM_POWERON_CONFIG_EN_KEY);
+}
+
+static const struct mt6797_md3_power_ops mt6797_md3_power_backend_ops = {
+	.begin = mt6797_md3_power_begin,
+	.end = mt6797_md3_power_end,
+	.check_live = mt6797_md3_power_live,
+	.read = mt6797_md3_power_read,
+	.update_bits = mt6797_md3_power_update,
+	.enable_spm = mt6797_md3_enable_spm,
+};
+
+int mt6797_md1_cold_owner_power_md3(struct device *consumer,
+				 struct reset_control *reset,
+				 struct mt6797_md3_power_result *result)
+{
+	struct mt6797_md3_power_backend backend = { .consumer = consumer, .reset = reset };
+	struct mt6797_md3_power power;
+	struct device_node *node;
+	struct resource res;
+	int ret;
+
+	if (!consumer || !reset || IS_ERR(reset) || !result)
+		return -EINVAL;
+	/* The same syscon regmap is used by native scpsys bus-protection RMW.
+	 * No private mapping or duplicate resource reservation is made.
+	 */
+	node = of_find_compatible_node(NULL, NULL, "mediatek,mt6797-infracfg");
+	if (!node)
+		return -ENODEV;
+	ret = of_address_to_resource(node, 0, &res);
+	if (!ret && (res.start != MT6797_MD1_INFRA_BASE ||
+		     resource_size(&res) != MT6797_MD1_INFRA_SIZE))
+		ret = -ERANGE;
+	if (!ret) {
+		backend.infra = syscon_node_to_regmap(node);
+		if (IS_ERR(backend.infra))
+			ret = PTR_ERR(backend.infra);
+	}
+	of_node_put(node);
+	if (ret)
+		return ret;
+	ret = mt6797_md3_power_init(&power, &mt6797_md3_power_backend_ops, &backend);
+	if (ret)
+		return ret;
+	ret = mt6797_md3_power_on(&power);
+	mt6797_md3_power_result(&power, result);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_power_md3);
+
+/* Probe ordering only, before the one-boot companion lease or any reset
+ * write. Missing asynchronous MD1 HS1 stage defers without spending the lease;
+ * power admission below still verifies its exact region9 and LK provenance.
+ */
+int mt6797_md1_cold_owner_md3_power_ready(void)
+{
+	int ret;
+
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	ret = mt6797_md1_handoff_status;
+	if (ret == -EAGAIN)
+		ret = -EPROBE_DEFER;
+	if (ret)
+		goto out;
+	if (!mt6797_md1_handoff_backend ||
+	    atomic_read(&mt6797_md1_cold_owner_fatal_latch)) {
+		ret = -ESHUTDOWN;
+		goto out;
+	}
+	mutex_lock(&mt6797_md1_stage2_lock);
+	if (!mt6797_md1_stage2_complete)
+		ret = -EPROBE_DEFER;
+	else if (!mt6797_md1_stage2_armed ||
+		 mt6797_md1_stage2_dev != mt6797_md1_handoff_backend->dev)
+		ret = -EUCLEAN;
+	mutex_unlock(&mt6797_md1_stage2_lock);
+out:
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_md3_power_ready);
+
+/* Native held-reset supplier admission for AP-only transport preparation.
+ * Re-read actual power acknowledgements; the earlier software result is not
+ * enough to authorize shared-memory or peripheral access after a fatal event.
+ */
+int mt6797_md1_cold_owner_verify_md3_domain(struct device *consumer,
+					    struct reset_control *reset)
+{
+	struct mt6797_md3_power_backend backend = { .consumer = consumer,
+						    .reset = reset };
+	u32 control, status, status2;
+	int ret;
+
+	if (!consumer || !reset || IS_ERR(reset))
+		return -EINVAL;
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	backend.shared = mt6797_md1_handoff_backend;
+	if (!backend.shared || !mt6797_md3_power_attempted ||
+	    mt6797_md1_md3_cold_error) {
+		ret = -ESHUTDOWN;
+		goto out;
+	}
+	ret = mt6797_md3_power_live(&backend);
+	if (!ret)
+		ret = regmap_read(backend.shared->spm, 0x328, &control);
+	if (!ret)
+		ret = regmap_read(backend.shared->spm, 0x180, &status);
+	if (!ret)
+		ret = regmap_read(backend.shared->spm, 0x184, &status2);
+	if (!ret && ((control & GENMASK(4, 0)) != (BIT(0) | BIT(2) | BIT(3)) ||
+		     !(status & BIT(28)) || !(status2 & BIT(28))))
+		ret = -EUCLEAN;
+	if (!ret)
+		ret = mt6797_md3_power_live(&backend);
+out:
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_verify_md3_domain);
+#endif
+
 
 static int mt6797_md1_cold_clear_smem(struct mt6797_md1_cold_owner_backend *backend)
 {

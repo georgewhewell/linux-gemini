@@ -28,6 +28,7 @@ struct mt6797_md3_lk_snapshot {
 	struct mt6797_md1_lk_modem_info modem;
 	struct mt6797_md1_lk_smem_layout smem;
 	struct mt6797_md1_lk_runtime_options options;
+	/* Raw md3img tag: LK emits header md_img_size, not container dsize. */
 	u32 raw_image_size;
 	u32 header_version;
 	u32 image_type;
@@ -57,5 +58,13 @@ int mt6797_md3_lk_snapshot_parse(const struct mt6797_md1_lk_info *info,
  * The caller receives an owned copy with no pointer into cleared LK memory.
  */
 int mt6797_md3_lk_handoff_get(struct mt6797_md3_lk_snapshot *snapshot);
+
+/* Real locked remap observation plus detached, exact LK MPU records. This
+ * mirrors LK handoff adoption, not secure-MPU register readback or a SET.
+ * The hardware owner must additionally verify unchanged native region 9.
+ */
+int mt6797_md3_lk_memory_attest(const struct mt6797_md3_lk_snapshot *snapshot,
+			      const u32 banks[4], u32 lock);
+
 
 #endif

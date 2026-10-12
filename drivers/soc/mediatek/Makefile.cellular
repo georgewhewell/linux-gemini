@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
+obj-$(CONFIG_MTK_MT6797_MD3_POWER_CORE) += mt6797-md3-power.o
+obj-$(CONFIG_MTK_MT6797_MD3_POWER_OWNER) += mt6797-md3-power-owner.o mt6797-md3-ccif.o
 obj-$(CONFIG_MTK_MT6797_MD1_BOOT_STATUS_OBSERVE) += mt6797-md1-boot-status-observe.o
 obj-$(CONFIG_MTK_MT6797_MD1_BOOT_STATUS_OBSERVE_KUNIT_TEST) += mt6797-md1-boot-status-observe-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_MD1_FIRMWARE_PREFLIGHT) += mt6797-md1-firmware.o

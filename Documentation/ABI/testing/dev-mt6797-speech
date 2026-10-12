@@ -1,0 +1,36 @@
+What:		/dev/mt6797-speech
+Date:		October 2026
+Contact:	Gemini Linux maintainers
+Description:
+		Root-only MT6797 MD1 speech-control record transport, independent
+		of the ALSA PCM sample interface. One open file owner at a time.
+		Each read returns exactly one complete CCCI speech record, at
+		most 3456 bytes. An undersized buffer returns EMSGSIZE without
+		consuming the record. Records are never concatenated or split.
+
+		The 16-byte little-endian header comprises data0, data1,
+		channel/sequence, reserved. Mailboxes have data0=FFFFFFFF and
+		data1=(message-ID<<16)|parameter. Data records carry the total
+		byte count in data1 and message-ID/parameter in reserved.
+		RX channel is 4; TX channel is 5. The driver assigns TX sequence
+		and channel and checks actual HS2 readiness before admission.
+
+		TX supports AP mailbox IDs 2f00..2fff and in-band dynamic speech
+		parameters 2f79 with the stock six-byte a2a2/type19/length prefix.
+		All payload bytes must be supplied by the real board/call owner;
+		there are no default calibration bytes or startup responses.
+
+		After a stock-listed ACK command, every subsequent command waits
+		for its real matching RX acknowledgement. A successful write
+		reports submission, not modem completion. The call owner must use
+		poll and a bounded completion deadline; the kernel sends no fake
+		ACK, timeout retry or automatic speech-off. Closing with a pending
+		command or active speech engine makes the endpoint terminal until
+		native modem reset, preventing stale ACK reuse by a subsequent owner.
+		Malformed RX, overflow, reset during a transaction and unmatched
+		ACKs also make this endpoint terminal. Cellular AT/data remain
+		independent.
+
+		Fatal/remove/shutdown wakes readers/writers and polls ERR/HUP.
+		An open file pins a terminal object after parent removal; no
+		parent callback remains reachable once detach finishes.

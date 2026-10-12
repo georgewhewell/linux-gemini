@@ -51,6 +51,10 @@ typedef uint32_t __le32; typedef uint16_t __be16; typedef uintptr_t dma_addr_t;
 #define MTK_CCCI_HEADER_SIZE 16
 #define MTK_CCCI_CONTROL_RX 0
 #define MTK_CCCI_CONTROL_TX 1
+#define MTK_CCCI_UART2_RX 10
+#define MT6797_CCCI_AT_RX_SEEN 1
+#define MT6797_SPEECH_RX 4
+#define MT6797_SPEECH_TX 5
 #define MT6797_CCCI_ACTIVE_IRQS 0x007f007fU
 #define MT6797_MD1_CLDMA_ACTIVE_QUEUES 127U
 #define CLDMA_L2_TX_MASK_SET 0x428
@@ -90,7 +94,7 @@ struct workqueue_struct {int jobs;};
 struct mt6797_ccci {struct mt6797_ccci_fs_work *fs_partial[MT6797_FS_INDEX_COUNT];int failed,ready,rpc_logs,fs_logs,hs,diag,teardown,fs_pending;unsigned long fs_indices,rpc_indices;int rpc_pending,rx_rejected;bool rf_clock_present;struct mt6797_rpc_clkbuf_values rf_clock;void *dev;char *ao,*pdn;
  struct workqueue_struct *fs_wq,*rpc_wq;struct mt6797_fs_service fs_service;
  struct mt6797_ccci_queue queue[7];pthread_mutex_t tx_stop_lock;struct mt6797_rpc_eint sim_eint[2];
- int tx_sequence[256],rx_sequence[256];};
+ int tx_sequence[256],rx_sequence[256];void *speech;};
 struct mt6797_ccci_link;
 static struct mt6797_ccci c;static char ao[4096],pdn[4096];static u8 desc[7][16][16];static struct workqueue_struct wq,rpcwq;
 static int mode,allocs,frees,maps,unmaps,publishes,resumes,stops,captures,controls;
@@ -141,6 +145,13 @@ static void mt6797_ccci_first_fatal(struct mt6797_ccci *p,const char *s){(void)p
 #define dev_dbg dev_info
 #define dev_info_ratelimited(...) assert(!stop_locked)
 static void mt6797_ccci_frontend_ready(struct mt6797_ccci *p,bool ready){p->ready=ready;}
+static void mt6797_ccci_at_rx_close(struct mt6797_ccci *p,bool terminal){(void)p;assert(terminal&&!stop_locked);}
+static void mt6797_ccci_at_terminal_queue(struct mt6797_ccci *p){(void)p;assert(!stop_locked);}
+static void mt6797_ccci_diag_at(int *diag,int event){(void)diag;assert(event==MT6797_CCCI_AT_RX_SEEN);}
+/* The actual speech/AT ownership bodies have their own fixtures. Preserve
+ * those boundary calls while testing shared native RPC/FS dispatch/TX. */
+static void mt6797_speech_port_stop(void *p,int reason){(void)p;(void)reason;assert(!stop_locked);}
+static int mt6797_speech_port_rx(void *p,struct sk_buff *s){(void)p;(void)s;return -EOPNOTSUPP;}
 static void mt6797_md1_hs_crash(int *p,int why){(void)p;(void)why;assert(!stop_locked);}
 static void mt6797_md1_cold_owner_transport_fatal(int why){(void)why;assert(!stop_locked);}
 static void writel(u32 value,char *p){assert(stop_locked);
@@ -166,8 +177,8 @@ static int mt6797_md1_cldma_tgpd_publish(void *g){(void)g;assert(stop_locked);if
  if(mode==7){rx_started=0;rx_busy=-1;assert(!pthread_create(&stopper,NULL,rx_thread,NULL));stopper_started=true;
   while(!__atomic_load_n(&rx_started,__ATOMIC_SEQ_CST))sched_yield();}
  publishes++;return 0;}
-static void mt6797_ccci_control_rx(struct mt6797_ccci *p,struct sk_buff *s,const struct mtk_ccci_frame *f)
-{(void)p;(void)s;(void)f;controls++;}
+static int mt6797_ccci_control_rx(struct mt6797_ccci *p,struct sk_buff *s,const struct mtk_ccci_frame *f)
+{(void)p;(void)s;(void)f;controls++;return 0;}
 '''
 tests=r'''
 static void reset(int m){memset(&c,0,sizeof(c));c.ao=ao;c.pdn=pdn;c.dev=&c;

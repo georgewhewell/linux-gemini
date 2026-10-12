@@ -89,7 +89,12 @@ struct mt6797_ccci { atomic_int ready,at_open,failed,teardown;
  struct sk_buff_head at_rx_queue; unsigned at_rx_bytes,at_rx_memory; bool at_rx_stopped;
  struct mt6797_ccci_link *link[1]; pthread_mutex_t tx_stop_lock;
  uint32_t registers[8],*pdn,*ao; unsigned fatal,crash,cold_fatal,at_events[8]; void *dev; int hs;
- bool owner_alive; };
+ bool owner_alive; void *speech; };
+/* Speech ownership is exercised by its actual-source fixture. These hooks
+ * preserve independent frontend calls while testing the WWAN FD lifetime. */
+static void mt6797_speech_port_ready(void *p,bool ready){(void)p;(void)ready;}
+static void mt6797_speech_port_stop(void *p,int reason){(void)p;(void)reason;}
+static void mt6797_speech_port_tx_wake(void *p){(void)p;}
 static _Thread_local unsigned spin_depth;
 static pthread_mutex_t *rx_lock;
 static _Thread_local bool rx_locked;

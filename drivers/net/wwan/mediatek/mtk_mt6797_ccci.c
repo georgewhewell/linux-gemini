@@ -35,6 +35,8 @@
 #include "mtk_mt6797_ccci_fs.h"
 #include "mtk_mt6797_ccci_fs_diag.h"
 #include "mtk_mt6797_ccci_rx_rejected.h"
+#include "mtk_mt6797_ccci_speech.h"
+#include "mtk_mt6797_ccci_speech_port.h"
 
 #define MT6797_CCCI_QUEUE_COUNT		7U
 #define MT6797_CCCI_RING_SIZE		16U
@@ -168,6 +170,7 @@ struct mt6797_ccci {
 	struct sk_buff *hs1_skb;
 	struct mtk_ccci_runtime_config runtime_config;
 	struct wwan_port *at_port; /* at_rx_queue.lock */
+	struct mt6797_speech_port *speech; /* detached after IRQ/NAPI/work drain */
 	struct work_struct at_terminal_work;
 	bool at_work_stopped; /* at_rx_queue.lock; closes work admission */
 	/* Serializes native RX ownership through wwan_port_rx and last close. */
@@ -221,6 +224,7 @@ static void mt6797_ccci_frontend_ready(struct mt6797_ccci *ccci, bool ready)
 			wwan_port_txoff(port);
 	}
 	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
+	mt6797_speech_port_ready(ccci->speech, ready);
 	rcu_read_lock();
 	for (i = 0; i < MTK_CCCI_MAX_NET_LINKS; i++) {
 		struct mt6797_ccci_link *link;
@@ -349,6 +353,16 @@ static void mt6797_ccci_unregister_wwan(void *data)
 	wwan_unregister_ops(data);
 }
 
+static void mt6797_ccci_cleanup_speech(void *data)
+{
+	struct mt6797_ccci *ccci = data;
+
+	/* Remove/shutdown drains IRQ/NAPI/work before detaching. Failed probe
+	 * has not enabled NAPI, or disabled it again. Open files retain only
+	 * the independently refcounted terminal port object. */
+	mt6797_speech_port_destroy(xchg(&ccci->speech, NULL));
+}
+
 static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 {
 	struct mt6797_ccci_diag *d = &ccci->diag;
@@ -468,6 +482,7 @@ static void mt6797_ccci_quiesce_from(struct mt6797_ccci *ccci, int reason,
 
 	/* Close RX ownership before the first-fatal snapshot or STOP. */
 	mt6797_ccci_at_rx_close(ccci, true);
+	mt6797_speech_port_stop(ccci->speech, reason);
 	if (atomic_xchg(&ccci->failed, 1))
 		return;
 
@@ -621,7 +636,7 @@ static int mt6797_ccci_tx(struct mt6797_ccci *ccci, unsigned int q,
 	struct mt6797_ccci_queue *queue = &ccci->queue[q];
 	struct mtk_ccci_header *header;
 	struct mt6797_ccci_slot *slot;
-	__le32 reserved, data0;
+	__le32 reserved, data0, data1;
 	dma_addr_t dma;
 	unsigned long flags;
 	int ret;
@@ -638,12 +653,18 @@ static int mt6797_ccci_tx(struct mt6797_ccci *ccci, unsigned int q,
 	header = (struct mtk_ccci_header *)skb->data;
 	reserved = header->reserved;
 	data0 = header->data0;
+	data1 = header->data1;
 	mtk_ccci_header_init(header, channel,
 			     mt6797_ccci_next_sequence(ccci, channel), skb->len);
 	header->reserved = reserved;
 	/* RPC echoes the request's data0; FS carries the vendor fragment flag. */
 	if (channel == MT6797_RPC_TX || channel == MT6797_FS_TX)
 		header->data0 = data0;
+	/* PCM mailbox data1 is (message-ID<<16)|parameter, not a length. */
+	if (channel == MT6797_SPEECH_TX) {
+		header->data0 = data0;
+		header->data1 = data1;
+	}
 	if (!q && channel == MTK_CCCI_CONTROL_TX)
 		mt6797_ccci_diag_final_reply(&ccci->diag, skb->data, skb->len);
 	dma = dma_map_single(ccci->dev, skb->data, skb->len, DMA_TO_DEVICE);
@@ -725,6 +746,8 @@ static void mt6797_ccci_tx_wake(struct mt6797_ccci *ccci, unsigned int q)
 	if (q == 1 && ccci->at_port)
 		wwan_port_txon(ccci->at_port);
 	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
+	if (!q)
+		mt6797_speech_port_tx_wake(ccci->speech);
 	rcu_read_lock();
 	for (i = 0; i < MTK_CCCI_MAX_NET_LINKS; i++) {
 		struct mt6797_ccci_link *link;
@@ -735,6 +758,38 @@ static void mt6797_ccci_tx_wake(struct mt6797_ccci *ccci, unsigned int q)
 	}
 	rcu_read_unlock();
 }
+
+static int mt6797_ccci_speech_send(void *context, const u8 *frame, size_t bytes)
+{
+	struct mt6797_ccci *ccci = context;
+	struct sk_buff *skb;
+	int ret;
+
+	if (!atomic_read(&ccci->ready) || atomic_read(&ccci->failed) ||
+	    atomic_read(&ccci->teardown))
+		return -ESHUTDOWN;
+	skb = alloc_skb(bytes, GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+	skb_put_data(skb, frame, bytes);
+	ret = mt6797_ccci_tx(ccci, 0, skb, MT6797_SPEECH_TX);
+	if (ret)
+		kfree_skb(skb);
+	return ret;
+}
+
+static bool mt6797_ccci_speech_room(void *context)
+{
+	struct mt6797_ccci *ccci = context;
+
+	return atomic_read(&ccci->ready) && !atomic_read(&ccci->failed) &&
+		!atomic_read(&ccci->teardown) && mt6797_ccci_tx_has_room(ccci, 0);
+}
+
+static const struct mt6797_speech_backend mt6797_ccci_speech_backend = {
+	.send = mt6797_ccci_speech_send,
+	.room = mt6797_ccci_speech_room,
+};
 
 static int mt6797_ccci_at_start(struct wwan_port *port)
 {
@@ -1596,6 +1651,18 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 			mt6797_ccci_quiesce(ccci, ret);
 		goto drop;
 	}
+	/* Retain bounded real speech startup notifications before first open;
+	 * userspace cannot transmit until the transport reaches actual HS2. */
+	if (frame.channel == MT6797_SPEECH_RX) {
+		ret = q ? -EPROTO : mt6797_speech_port_rx(ccci->speech, skb);
+		if (!ret)
+			return;
+		if (q)
+			mt6797_speech_port_stop(ccci->speech, ret);
+		mt6797_rx_rejected_record(&ccci->rx_rejected, frame.channel,
+			q, skb->data, skb->len, ret);
+		goto drop;
+	}
 	if (!atomic_read(&ccci->ready)) {
 		diag_drop = MT6797_CCCI_DIAG_BEFORE_READY;
 		goto drop;
@@ -2297,6 +2364,17 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 				       &pdev->dev);
 	if (ret)
 		return ret;
+	ccci->speech = mt6797_speech_port_create(&pdev->dev,
+				&mt6797_ccci_speech_backend, ccci);
+	if (IS_ERR(ccci->speech)) {
+		ret = PTR_ERR(ccci->speech);
+		ccci->speech = NULL;
+		return ret;
+	}
+	ret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_cleanup_speech,
+				       ccci);
+	if (ret)
+		return ret;
 	ret = mt6797_md1_hs_arm(&ccci->hs, true);
 	if (ret)
 		return ret;
@@ -2345,6 +2423,7 @@ static void mt6797_ccci_remove(struct platform_device *pdev)
 	kfree_skb(xchg(&ccci->hs1_skb, NULL));
 	mt6797_ccci_quiesce(ccci, -ESHUTDOWN);
 	mt6797_ccci_cleanup_port(ccci);
+	mt6797_ccci_cleanup_speech(ccci);
 }
 
 /* Read-only numeric evidence for responsive but stalled modem initialization.

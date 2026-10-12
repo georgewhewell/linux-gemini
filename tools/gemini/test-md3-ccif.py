@@ -28,12 +28,18 @@ typedef uint32_t u32; typedef uint64_t u64;
 #define IRQF_NO_AUTOEN 0x80000
 #define CLK_INFRA_AP_C2K_CCIF_0 1
 #define CLK_INFRA_AP_C2K_CCIF_1 2
+#define smp_load_acquire(p) (*(p))
+#define smp_store_release(p,v) (*(p)=(v))
+#define READ_ONCE(x) (x)
+#define WRITE_ONCE(x,v) ((x)=(v))
+typedef void (*mt6797_md3_ccif_observer)(void*,bool,void*);
 #define wmb() do { barriers++; } while(0)
 typedef int irqreturn_t;
 #define IRQ_HANDLED 1
 typedef int atomic_t;
-static int atomic_read(atomic_t *x){return *x;}
-static void atomic_set(atomic_t *x,int n){*x=n;}
+static int atomic_read(atomic_t *x){return __atomic_load_n(x,__ATOMIC_SEQ_CST);}
+static void atomic_set(atomic_t *x,int n){__atomic_store_n(x,n,__ATOMIC_SEQ_CST);}
+static int atomic_xchg(atomic_t *x,int n){return __atomic_exchange_n(x,n,__ATOMIC_SEQ_CST);}
 struct mutex { pthread_mutex_t v; };
 static void mutex_init(struct mutex *x){assert(!pthread_mutex_init(&x->v,0));}
 static void mutex_lock(struct mutex *x){assert(!pthread_mutex_lock(&x->v));}
@@ -68,6 +74,15 @@ static int reset_control_status(struct reset_control *r){assert(r==&reset);retur
 static int mt6797_md1_cold_owner_verify_md3_domain(struct device*d,struct reset_control*r){
  assert(d==&pdev.dev&&r==&reset);live_calls++;return live_calls==live_fail?-ESHUTDOWN:live_error;
 }
+static unsigned enabled,synced,observations;static bool invoke_enable;
+static pthread_mutex_t irq_guard=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t irq_changed=PTHREAD_COND_INITIALIZER;
+static bool irq_running,observer_entered,release_observer,stop_entered;
+static void drain_fake_irq(void){pthread_mutex_lock(&irq_guard);while(irq_running)pthread_cond_wait(&irq_changed,&irq_guard);pthread_mutex_unlock(&irq_guard);}
+static irqreturn_t md3_ccif_unexpected_irq(int irq,void*data);
+static void enable_irq(int irq){assert(irq==181||irq==319);enabled++;if(invoke_enable)md3_ccif_unexpected_irq(irq,allocation);}
+static void synchronize_irq(int irq){assert(irq==181||irq==319);synced++;drain_fake_irq();}
+static void disable_irq(int irq){assert(irq==181||irq==319);disabled++;drain_fake_irq();}
 static void disable_irq_nosync(int irq){assert(irq==181||irq==319);disabled++;}
 static int of_irq_parse_one(struct device_node*n,int idx,struct of_phandle_args*a){
  assert(n==&node&&idx<2);if(point())return -EIO;node_gets++;
@@ -133,6 +148,7 @@ static void init(void){
  resource=(struct resource){0x1020b000,0x1020bfff};
  snapshot=(struct mt6797_md3_lk_snapshot){.smem={0x88000000,0x400000,0x200000},.mpu={{0x88400000,0x885fffff}}};
  calls=failcall=writes=reads=clears=barriers=clock_gets=clock_enables=clock_disables=0;
+ enabled=synced=observations=0;invoke_enable=false;
  requests=disabled=node_gets=node_puts=actions=live_calls=live_fail=read_corrupt_at=0;
  bad_irq_spec=bad_clock_spec=bad_clock_names=bad_resource=duplicate_irq=live_error=clock_error=0;held=1;irq_count=clock_count=2;
 }
@@ -160,6 +176,13 @@ static void compare_vendor_layout(void){
  for(unsigned j=0;j<0x19000;j++)assert(!shmem[j]);
  for(unsigned j=off+16;j<sizeof(shmem);j++)assert(!shmem[j]);
 }
+static void observe(void*data,bool wdt,void*ap){assert(data==&snapshot&&ap==apbuf);observations+=wdt?10:1;}
+static void blocking_observe(void*data,bool wdt,void*ap){
+ observe(data,wdt,ap);pthread_mutex_lock(&irq_guard);observer_entered=true;pthread_cond_broadcast(&irq_changed);
+ while(!release_observer)pthread_cond_wait(&irq_changed,&irq_guard);pthread_mutex_unlock(&irq_guard);}
+static void*irq_thread(void*p){pthread_mutex_lock(&irq_guard);irq_running=true;pthread_mutex_unlock(&irq_guard);
+ md3_ccif_unexpected_irq(181,p);pthread_mutex_lock(&irq_guard);irq_running=false;pthread_cond_broadcast(&irq_changed);pthread_mutex_unlock(&irq_guard);return 0;}
+static void*stop_thread(void*p){pthread_mutex_lock(&irq_guard);stop_entered=true;pthread_cond_broadcast(&irq_changed);pthread_mutex_unlock(&irq_guard);mt6797_md3_ccif_observe_stop(p);return 0;}
 static void *prepare_thread(void*p){intptr_t e=mt6797_md3_ccif_prepare(p);return(void*)e;}
 int main(void){
  init();struct mt6797_md3_ccif*c=acquire();unsigned n=calls;
@@ -187,6 +210,28 @@ int main(void){
  assert(!pthread_join(a,&x)&&!pthread_join(b,&y));assert((!x&&(intptr_t)y==-EALREADY)||(!y&&(intptr_t)x==-EALREADY));
  assert(clears==1&&clock_enables==1);cases++;
  saved=writes;cleanup();assert(writes==saved&&clock_disables==1);cases++;
+ init();c=acquire();assert(mt6797_md3_ccif_observe_start(c,observe,&snapshot)==-EPERM&&!enabled);cases++;
+ init();c=acquire();assert(!mt6797_md3_ccif_prepare(c));held=0;
+ assert(mt6797_md3_ccif_observe_start(c,observe,&snapshot)==-EBUSY&&!enabled);cases++;
+ init();c=acquire();assert(!mt6797_md3_ccif_prepare(c));writel(128,apbuf+0x10);
+ assert(mt6797_md3_ccif_observe_start(c,observe,&snapshot)==-EUCLEAN&&!enabled);cases++;
+ init();c=acquire();assert(!mt6797_md3_ccif_prepare(c));saved=writes;
+ assert(!mt6797_md3_ccif_observe_start(c,observe,&snapshot)&&enabled==2&&!observations&&writes==saved);
+ assert(mt6797_md3_ccif_observe_start(c,observe,&snapshot)==-EPERM&&enabled==2);
+ md3_ccif_unexpected_irq(181,c);assert(observations==1&&disabled==1&&!c->irq_enabled[0]&&c->irq_enabled[1]);
+ mt6797_md3_ccif_observe_stop(c);assert(disabled==2&&synced==2&&!c->observer&&!c->observer_data);
+ assert(mt6797_md3_ccif_observe_start(c,observe,&snapshot)==-EPERM);cases++;
+ init();c=acquire();assert(!mt6797_md3_ccif_prepare(c));invoke_enable=true;
+ assert(!mt6797_md3_ccif_observe_start(c,observe,&snapshot));
+ assert(observations==11&&disabled==2&&enabled==2);mt6797_md3_ccif_observe_stop(c);
+ assert(disabled==2&&synced==2&&!c->observer&&!c->observer_data);cleanup();cases++;
+ init();c=acquire();assert(!mt6797_md3_ccif_prepare(c));assert(!mt6797_md3_ccif_observe_start(c,blocking_observe,&snapshot));
+ pthread_t irq_worker,stop_worker;assert(!pthread_create(&irq_worker,0,irq_thread,c));
+ pthread_mutex_lock(&irq_guard);while(!observer_entered)pthread_cond_wait(&irq_changed,&irq_guard);pthread_mutex_unlock(&irq_guard);
+ assert(!pthread_create(&stop_worker,0,stop_thread,c));pthread_mutex_lock(&irq_guard);
+ while(!stop_entered)pthread_cond_wait(&irq_changed,&irq_guard);
+ assert(c->observer==blocking_observe&&c->observer_data==&snapshot);release_observer=true;pthread_cond_broadcast(&irq_changed);pthread_mutex_unlock(&irq_guard);
+ assert(!pthread_join(irq_worker,0)&&!pthread_join(stop_worker,0));assert(!c->observer&&!c->observer_data&&disabled==2&&synced==2);cleanup();cases++;
  printf("PASS %u actual-source CCIF resource/lifetime/failure cases\n",cases);return 0;
 }
 """
@@ -206,6 +251,8 @@ def main():
  for name,a,b in (
   ('MD1-memory-wrong-span','MD3_AP3_BASE 0x88400000','MD3_AP3_BASE 0x88000000'),
   ('IRQ-autoenable','IRQF_NO_AUTOEN,', '0,'),
+  ('no-masked-handler-drain','synchronize_irq(c->irq[i]);','/* no drain */'),
+  ('observer-repeat','if (c->observed ||','if (false ||'),
   ('wrong-old-ring-offset','MD3_RING_START 0x19000','MD3_RING_START 0x200000'),
   ('fake-flow-tail','ret = md3_ccif_write_verify(c, offset, MD3_FLOW_HEADER);','ret = md3_ccif_write_verify(c, offset, MD3_FLOW_HEADER); writel(0x4354524c, c->smem + offset + 12);'),
   ('retry-after-partial','if (c->attempted) {','if (false) {'),

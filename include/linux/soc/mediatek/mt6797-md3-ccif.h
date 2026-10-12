@@ -19,4 +19,12 @@ int mt6797_md3_ccif_acquire(struct platform_device *pdev,
  */
 int mt6797_md3_ccif_prepare(struct mt6797_md3_ccif *ccif);
 int mt6797_md3_ccif_status(struct mt6797_md3_ccif *ccif);
+/* Optional first-message observer: no ring consumption or runtime response.
+ * Handler is hard-IRQ, must not sleep. Both IRQs are one-shot masked after
+ * callback. stop() drains both before caller releases callback storage.
+ */
+typedef void (*mt6797_md3_ccif_observer)(void *data, bool wdt, void __iomem *ap);
+int mt6797_md3_ccif_observe_start(struct mt6797_md3_ccif *ccif,
+	mt6797_md3_ccif_observer observer, void *data);
+void mt6797_md3_ccif_observe_stop(struct mt6797_md3_ccif *ccif);
 #endif

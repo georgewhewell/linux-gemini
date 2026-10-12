@@ -1258,6 +1258,121 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_verify_md3_domain);
+
+static bool mt6797_md3_execution_attempted, mt6797_md3_execution_active;
+static struct regmap *mt6797_md3_execution_infra;
+
+static int mt6797_md3_execution_live_locked(struct device *consumer)
+{
+	struct mt6797_md1_cold_owner_backend *b = mt6797_md1_handoff_backend;
+	u32 control, status, status2;
+	int ret;
+
+	if (!mt6797_md3_execution_active || !mt6797_md3_execution_infra ||
+	    !b || mt6797_md1_md3_consumer != consumer ||
+	    mt6797_md1_handoff_status || mt6797_md1_md3_cold_error ||
+	    atomic_read(&mt6797_md1_cold_owner_fatal_latch))
+		return -ESHUTDOWN;
+	ret = regmap_read(b->spm, 0x328, &control);
+	if (!ret)
+		ret = regmap_read(b->spm, 0x180, &status);
+	if (!ret)
+		ret = regmap_read(b->spm, 0x184, &status2);
+	if (!ret && ((control & 0x1f) != 0x0d ||
+		     !(status & BIT(28)) || !(status2 & BIT(28))))
+		ret = -EUCLEAN;
+	return ret;
+}
+
+int mt6797_md1_cold_owner_md3_execution_begin(struct device *consumer,
+	struct reset_control *reset)
+{
+	struct device_node *node;
+	struct resource resource;
+	struct regmap *infra = NULL;
+	int ret;
+
+	ret = mt6797_md1_cold_owner_verify_md3_domain(consumer, reset);
+	if (ret)
+		return ret;
+	node = of_find_compatible_node(NULL, NULL, "mediatek,mt6797-infracfg");
+	if (!node)
+		return -ENODEV;
+	ret = of_address_to_resource(node, 0, &resource);
+	if (!ret && (resource.start != MT6797_MD1_INFRA_BASE ||
+		     resource_size(&resource) != MT6797_MD1_INFRA_SIZE))
+		ret = -ERANGE;
+	if (!ret) {
+		infra = syscon_node_to_regmap(node);
+		if (IS_ERR(infra))
+			ret = PTR_ERR(infra);
+	}
+	of_node_put(node);
+	if (ret)
+		return ret;
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	if (mt6797_md3_execution_attempted) {
+		ret = -EALREADY;
+		goto out;
+	}
+	mt6797_md3_execution_attempted = true;
+	mt6797_md3_execution_active = true;
+	mt6797_md3_execution_infra = infra;
+	ret = mt6797_md3_execution_live_locked(consumer);
+	if (ret)
+		mt6797_md3_execution_active = false;
+out:
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_md3_execution_begin);
+
+int mt6797_md1_cold_owner_md3_execution_live(struct device *consumer,
+	struct reset_control *reset, bool released)
+{
+	int ret;
+
+	if (!consumer || !reset || IS_ERR(reset))
+		return -EINVAL;
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	ret = mt6797_md3_execution_live_locked(consumer);
+	if (!ret) {
+		ret = reset_control_status(reset);
+		ret = ret < 0 ? ret : ret == !released ? 0 : -EUCLEAN;
+	}
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_md3_execution_live);
+
+int mt6797_md1_cold_owner_md3_execution_update(struct device *consumer,
+	u32 offset, u32 mask, u32 value)
+{
+	int ret;
+
+	if ((value & ~mask) ||
+	    !((offset == 0xf18 && mask == 0x44 && value == 0x44) ||
+	      (offset == 0x368 && mask == BIT(1)) ||
+	      (offset == 0x220 && mask == GENMASK(15, 13) && !value)))
+		return -EINVAL;
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	ret = mt6797_md3_execution_live_locked(consumer);
+	if (!ret)
+		ret = regmap_update_bits(mt6797_md3_execution_infra, offset, mask, value);
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_md3_execution_update);
+
+void mt6797_md1_cold_owner_md3_execution_end(struct device *consumer)
+{
+	mutex_lock(&mt6797_md1_post_vector_evidence_lock);
+	if (mt6797_md1_md3_consumer == consumer)
+		mt6797_md3_execution_active = false;
+	mutex_unlock(&mt6797_md1_post_vector_evidence_lock);
+}
+EXPORT_SYMBOL_GPL(mt6797_md1_cold_owner_md3_execution_end);
+
 #endif
 
 

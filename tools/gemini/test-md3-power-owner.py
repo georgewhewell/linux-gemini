@@ -45,7 +45,11 @@ struct platform_device { struct device dev; };
 struct reset_control { int held; };
 struct mt6797_md3_ccif { int unused; };
 static bool allow_ccif_prepare;
-static bool request_ccif;
+static bool request_ccif,request_execution,allow_execution_probe;
+struct mt6797_md3_execution { int unused; };
+static struct mt6797_md3_execution execution;
+static int execution_acquire_error,execution_run_error;
+static unsigned execution_acquires,execution_runs;
 static int ccif_acquire_error,ccif_prepare_error;
 static unsigned ccif_acquires,ccif_prepares;
 static struct mt6797_md3_ccif ccif;
@@ -96,7 +100,7 @@ static int regmap_write(struct regmap *m,u32 offset,u32 v) {
  m->v[0]=v;return writes==fail_write?-EIO:0;
 }
 static int regmap_update_bits(struct regmap *m,u32 offset,u32 mask,u32 v) {
- assert(!(v&~mask));writes++;assert((m==&spm&&offset==0x328)||(m==&infra&&offset==0x220));
+ assert(!(v&~mask));writes++;assert((m==&spm&&offset==0x328)||(m==&infra&&(offset==0x220||offset==0xf18||offset==0x368)));
  m->v[offset/4]=(m->v[offset/4]&~mask)|v;
  if(m==&spm&&(m->v[0x328/4]&12)==12)spm.v[0x180/4]=spm.v[0x184/4]=BIT(28);
  if(m==&infra)infra.v[0x228/4]&=~mask;
@@ -119,7 +123,7 @@ static int of_parse_phandle_with_args(struct device_node *n,const char*a,const c
  out->np=&reset_node;out->args_count=1;out->args[0]=reset_id;return 0;
 }
 static int of_device_is_compatible(struct device_node*n,const char*c){assert(n==&reset_node&&!strcmp(c,"mediatek,mt6797-wdt"));return reset_compatible;}
-static bool device_property_read_bool(struct device*d,const char*p){(void)d;if(!strcmp(p,"mediatek,prepare-ap-md3-ccif"))return request_ccif;assert(!strcmp(p,"mediatek,experimental-md3-domain-power"));return property;}
+static bool device_property_read_bool(struct device*d,const char*p){(void)d;if(!strcmp(p,"mediatek,probe-md3-execution"))return request_execution;if(!strcmp(p,"mediatek,prepare-ap-md3-ccif"))return request_ccif;assert(!strcmp(p,"mediatek,experimental-md3-domain-power"));return property;}
 static bool device_property_present(struct device*d,const char*p){(void)d;assert(!strcmp(p,"power-domains"));return power_domain;}
 static int mtk_wdt_require_boot_recovery(struct device*d){(void)d;return wdt_error;}
 static void *devm_kzalloc(struct device*d,size_t n,int flags){(void)d;assert(flags==0);if(alloc_error)return NULL;assert(!allocated);return allocated=calloc(1,n);}
@@ -133,6 +137,10 @@ static int mt6797_md3_ccif_acquire(struct platform_device*p,const struct mt6797_
  assert(p&&s&&r==&reset&&!writes&&!reset_asserts&&!acquires);ccif_acquires++;if(ccif_acquire_error)return ccif_acquire_error;*out=&ccif;return 0;
 }
 static int mt6797_md3_ccif_prepare(struct mt6797_md3_ccif*c){assert(c==&ccif&&writes==7&&reset.held==1);ccif_prepares++;return ccif_prepare_error;}
+static int mt6797_md3_execution_acquire(struct platform_device*p,struct reset_control*r,struct mt6797_md3_ccif*c,struct mt6797_md3_execution**out){
+ assert(p&&r==&reset&&c==&ccif&&!writes&&!reset_asserts&&!acquires&&ccif_acquires);execution_acquires++;
+ if(execution_acquire_error)return execution_acquire_error;*out=&execution;return 0;}
+static int mt6797_md3_execution_run(struct mt6797_md3_execution*e){assert(e==&execution&&ccif_prepares&&writes==7&&reset.held);execution_runs++;return execution_run_error;}
 static int reset_control_assert(struct reset_control*r){assert(r==&reset);reset_asserts++;r->held=1;return reset_assert_error;}
 '''
 TESTS=r'''
@@ -161,6 +169,8 @@ static void fixture(void) {
  reads=writes=fail_read=fail_write=reset_reads=reset_drop_at=node_puts=0;
  reset_spec_error=reset_get_error=reset_assert_error=wdt_error=group_error=acquire_error=verify_error=0;
  reset_count=1;reset_id=16;reset_compatible=1;allow_domain_power=property=true;power_domain=alloc_error=false;
+ mt6797_md3_execution_active=mt6797_md3_execution_attempted=false;mt6797_md3_execution_infra=NULL;
+ request_execution=false;allow_execution_probe=true;execution_acquire_error=execution_run_error=0;execution_acquires=execution_runs=0;
  reset_asserts=reset_gets=groups=acquires=0;request_ccif=false;allow_ccif_prepare=true;ccif_acquire_error=ccif_prepare_error=0;ccif_acquires=ccif_prepares=0;assert(!allocated);
 }
 static void backend(int expected, bool touched) {
@@ -258,11 +268,47 @@ static void probe_tests(void) {
  fixture();reset_spec_error=99;request_ccif=true;ccif_acquire_error=-EBUSY;probe(-EBUSY,false,false);assert(ccif_acquires==1&&!ccif_prepares);
  fixture();reset_spec_error=99;request_ccif=true;probe(0,false,true);assert(ccif_acquires==1&&ccif_prepares==1);
  fixture();reset_spec_error=99;request_ccif=true;ccif_prepare_error=-EIO;probe(0,true,true);assert(ccif_prepares==1);
+ fixture();reset_spec_error=99;request_execution=true;probe(-EPERM,false,false);assert(!execution_acquires);
+ fixture();reset_spec_error=99;request_execution=request_ccif=true;allow_execution_probe=false;probe(-EPERM,false,false);assert(!execution_acquires);
+ fixture();reset_spec_error=99;request_execution=request_ccif=true;execution_acquire_error=-EBUSY;probe(-EBUSY,false,false);assert(!writes&&!execution_runs);
+ fixture();reset_spec_error=99;request_execution=request_ccif=true;probe(0,false,true);assert(execution_acquires==1&&execution_runs==1);
+ fixture();reset_spec_error=99;request_execution=request_ccif=true;execution_run_error=-EIO;probe(0,true,true);assert(execution_runs==1);
  for(unsigned i=1;i<=7;i++){
   fixture();reset_spec_error=99;fail_write=i;probe(0,true,true);assert(writes==i);
  }
 }
-int main(void){backend_tests();domain_tests();probe_tests();printf("PASS actual MD3 backend/probe cases=%u\n",cases);}
+static void execution_tests(void){
+ struct mt6797_md3_power_result r;
+ fixture();assert(mt6797_md1_cold_owner_md3_execution_begin(&consumer,&reset)==-ESHUTDOWN&&!writes);cases++;
+ fixture();assert(!mt6797_md1_cold_owner_power_md3(&consumer,&reset,&r));
+ assert(!mt6797_md1_cold_owner_md3_execution_begin(&consumer,&reset));
+ assert(!mt6797_md1_cold_owner_md3_execution_live(&consumer,&reset,false));
+ assert(mt6797_md1_cold_owner_md3_execution_live(&consumer,&reset,true)==-EUCLEAN);
+ reset.held=0;assert(!mt6797_md1_cold_owner_md3_execution_live(&consumer,&reset,true));
+ infra.v[0xf18/4]=0xabcdabcd;infra.v[0x368/4]=0xfffffffd;
+ assert(!mt6797_md1_cold_owner_md3_execution_update(&consumer,0xf18,0x44,0x44));
+ assert(infra.v[0xf18/4]==(0xabcdabcd|0x44));
+ assert(!mt6797_md1_cold_owner_md3_execution_update(&consumer,0x368,2,2)&&infra.v[0x368/4]==0xffffffff);
+ assert(!mt6797_md1_cold_owner_md3_execution_update(&consumer,0x368,2,0)&&infra.v[0x368/4]==0xfffffffd);
+ assert(!mt6797_md1_cold_owner_md3_execution_update(&consumer,0x220,0xe000,0));
+ unsigned prior=writes;assert(mt6797_md1_cold_owner_md3_execution_update(&consumer,0xf18,0x92,0x92)==-EINVAL);
+ assert(mt6797_md1_cold_owner_md3_execution_update(&consumer,0x368,2,3)==-EINVAL);
+ assert(mt6797_md1_cold_owner_md3_execution_update(&rival,0x368,2,0)==-ESHUTDOWN&&writes==prior);
+ mt6797_md1_cold_owner_md3_execution_end(&rival);assert(mt6797_md3_execution_active);
+ mt6797_md1_cold_owner_md3_execution_end(&consumer);assert(!mt6797_md3_execution_active);
+ assert(mt6797_md1_cold_owner_md3_execution_live(&consumer,&reset,true)==-ESHUTDOWN);
+ reset.held=1;assert(mt6797_md1_cold_owner_md3_execution_begin(&consumer,&reset)==-EALREADY);cases++;
+ for(unsigned i=0;i<9;i++){
+  fixture();assert(!mt6797_md1_cold_owner_power_md3(&consumer,&reset,&r));assert(!mt6797_md1_cold_owner_md3_execution_begin(&consumer,&reset));
+  switch(i){case 0:mt6797_md1_handoff_backend=NULL;break;case 1:mt6797_md1_md3_consumer=&rival;break;
+   case 2:mt6797_md1_handoff_status=-EIO;break;case 3:mt6797_md1_cold_owner_fatal_latch=1;break;
+   case 4:mt6797_md1_md3_cold_error=-EIO;break;case 5:spm.v[0x328/4]=0;break;
+   case 6:spm.v[0x180/4]=0;break;case 7:spm.v[0x184/4]=0;break;case 8:fail_read=reads+1;break;}
+  prior=writes;assert(mt6797_md1_cold_owner_md3_execution_live(&consumer,&reset,false)<0);fail_read=reads+1;
+  assert(mt6797_md1_cold_owner_md3_execution_update(&consumer,0x368,2,0)<0&&writes==prior);cases++;
+ }
+}
+int main(void){backend_tests();domain_tests();probe_tests();execution_tests();printf("PASS actual MD3 backend/probe cases=%u\n",cases);}
 '''
 
 def main():
@@ -282,6 +328,8 @@ def main():
     negative={
       'early-lease-consumption':('ret = mt6797_md3_lk_handoff_get(&snapshot);','ret = mt6797_md1_cold_owner_acquire_md3(dev, &snapshot);'),
       'missing-HS1-defer':('if (!mt6797_md1_stage2_complete)\n\t\tret = -EPROBE_DEFER;', 'if (false)\n\t\tret = -EPROBE_DEFER;'),
+      'execution-foreign-write':('!b || mt6797_md1_md3_consumer != consumer ||','!b || false ||'),
+      'execution-repeat':('if (mt6797_md3_execution_attempted) {','if (false) {'),
       'region9-bypass':('inter->access_permission != s->mpu[1].permission','false'),
       'foreign-poisons-owner':('if (ret && attempted)','if (ret)'),
       'reset-bypass':('return ret < 0 ? ret : ret == 1 ? 0 : -EUCLEAN;','return 0;'),

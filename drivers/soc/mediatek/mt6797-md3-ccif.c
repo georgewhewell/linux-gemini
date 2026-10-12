@@ -40,6 +40,10 @@ struct mt6797_md3_ccif {
 	bool attempted, clocks_on;
 	int status;
 	atomic_t unexpected_irq;
+	atomic_t irq_enabled[2];
+	mt6797_md3_ccif_observer observer;
+	void *observer_data;
+	bool observed;
 };
 
 static const u32 md3_rx_size[8] = { 10, 100, 100, 150, 50, 10, 10, 10 };
@@ -57,14 +61,23 @@ static int md3_ccif_live(struct mt6797_md3_ccif *c)
 	return mt6797_md1_cold_owner_verify_md3_domain(c->dev, c->reset);
 }
 
-/* IRQs are reserved with NO_AUTOEN and NEVER enabled by this component.
- * If a future caller violates that contract, fence locally without reading a
- * potentially inaccessible peripheral, acknowledging, or inventing a packet.
+/* IRQs are reserved with NO_AUTOEN. Only the optional observer may enable
+ * them after domain/clock/reset admission. Without that observer, fence any
+ * unexpected delivery without accessing a potentially inaccessible device.
  */
 static irqreturn_t md3_ccif_unexpected_irq(int irq, void *data)
 {
 	struct mt6797_md3_ccif *c = data;
+	mt6797_md3_ccif_observer observer = smp_load_acquire(&c->observer);
 
+	if (observer) {
+		unsigned int index = irq == c->irq[1];
+
+		observer(c->observer_data, index, c->ap);
+		if (atomic_xchg(&c->irq_enabled[index], 0))
+			disable_irq_nosync(irq);
+		return IRQ_HANDLED;
+	}
 	atomic_set(&c->unexpected_irq, 1);
 	disable_irq_nosync(irq);
 	return IRQ_HANDLED;
@@ -323,4 +336,62 @@ int mt6797_md3_ccif_status(struct mt6797_md3_ccif *c)
 	ret = atomic_read(&c->unexpected_irq) ? -EIO : c->status;
 	mutex_unlock(&c->lock);
 	return ret;
+}
+
+/* c->lock excludes start/stop; callback never takes it. No resources are
+ * released here. NO_AUTOEN ownership is balanced even if the ISR already
+ * masked itself. synchronize_irq also drains that masked-but-running case.
+ */
+static void md3_ccif_observe_stop_locked(struct mt6797_md3_ccif *c)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(c->irq); i++) {
+		if (atomic_xchg(&c->irq_enabled[i], 0))
+			disable_irq(c->irq[i]);
+		synchronize_irq(c->irq[i]);
+	}
+	WRITE_ONCE(c->observer, NULL);
+	c->observer_data = NULL;
+}
+
+int mt6797_md3_ccif_observe_start(struct mt6797_md3_ccif *c,
+	mt6797_md3_ccif_observer observer, void *data)
+{
+	int ret;
+	unsigned int i;
+
+	if (!c || !observer || !data)
+		return -EINVAL;
+	mutex_lock(&c->lock);
+	ret = -EPERM;
+	if (c->observed || !c->attempted || c->status || !c->clocks_on)
+		goto out;
+	c->observed = true;
+	ret = md3_ccif_live(c);
+	if (ret)
+		goto out;
+	if (readl(c->ap + 0x10)) {
+		ret = -EUCLEAN;
+		goto out;
+	}
+	c->observer_data = data;
+	smp_store_release(&c->observer, observer);
+	for (i = 0; i < ARRAY_SIZE(c->irq); i++) {
+		atomic_set(&c->irq_enabled[i], 1);
+		enable_irq(c->irq[i]);
+	}
+	ret = 0;
+out:
+	mutex_unlock(&c->lock);
+	return ret;
+}
+
+void mt6797_md3_ccif_observe_stop(struct mt6797_md3_ccif *c)
+{
+	if (!c)
+		return;
+	mutex_lock(&c->lock);
+	md3_ccif_observe_stop_locked(c);
+	mutex_unlock(&c->lock);
 }

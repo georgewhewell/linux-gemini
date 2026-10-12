@@ -14,10 +14,18 @@
 		compatible = "mediatek,mt6797-md3-power-owner";
 		/* Deliberate transport-preparation trial additionally enables
 		 * mediatek,prepare-ap-md3-ccif and allow_ccif_prepare=1.
-		 * No IRQ enable or reset release exists in this component.
+		 * The separate execution opt-in below is required for IRQ enable/reset release.
 		 */
-		reg = <0 0x1020b000 0 0x1000>;
-		reg-names = "ap-c2k-ccif";
+		reg = <0 0x1020b000 0 0x1000>,
+		      <0 0x1001b000 0 0x1000>,
+		      <0 0x3a013000 0 0x80>,
+		      <0 0x3a000000 0 0x300>;
+		reg-names = "ap-c2k-ccif", "c2k-misc", "c2k-pll", "c2k-clock";
+		/* Optional NEXT stage: mediatek,probe-md3-execution and
+		 * allow_execution_probe=1 release reset to first CCIF event, then
+		 * stop with reset held. No AP runtime reply/FS/CSS. Requires a
+		 * final cold reboot; do not keep this experimental image.
+		 */
 		interrupt-parent = <&sysirq>;
 		interrupts = <GIC_SPI 149 IRQ_TYPE_LEVEL_LOW>,
 			     <GIC_SPI 287 IRQ_TYPE_EDGE_FALLING>;

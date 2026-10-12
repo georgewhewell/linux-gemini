@@ -281,4 +281,15 @@ int mt6797_md1_cold_owner_md3_power_ready(void);
 int mt6797_md1_cold_owner_verify_md3_domain(struct device *consumer,
 					 struct reset_control *reset);
 
+
+/* Explicit optional MD3 execution lease. Exactly one attempt per cold boot.
+ * Shared register writes remain behind this owner, with narrow masks only.
+ */
+int mt6797_md1_cold_owner_md3_execution_begin(struct device *consumer,
+	struct reset_control *reset);
+int mt6797_md1_cold_owner_md3_execution_live(struct device *consumer,
+	struct reset_control *reset, bool released);
+int mt6797_md1_cold_owner_md3_execution_update(struct device *consumer,
+	u32 offset, u32 mask, u32 value);
+void mt6797_md1_cold_owner_md3_execution_end(struct device *consumer);
 #endif /* __LINUX_SOC_MEDIATEK_MT6797_MD1_COLD_OWNER_H */

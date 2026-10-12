@@ -104,6 +104,8 @@ static int mt6797_wifi_scan_hif_frame(
 	void *context, const struct mt6797_wifi_rx_view *frame)
 {
 	struct mt6797_wifi_scan_hif *scan = context;
+	struct mt6797_wifi_rx_metadata metadata;
+	struct mt6797_wifi_bss_view bss;
 	enum mt6797_wifi_scan_target_update update;
 	unsigned long flags;
 	s64 now_ms;
@@ -120,6 +122,16 @@ static int mt6797_wifi_scan_hif_frame(
 		ret = mt6797_wifi_scan_hif_claim_terminal(scan, -ERANGE);
 		goto out;
 	}
+	/* Air frames are observations, not replies to our scan command. A bad
+	 * beacon or an adjacent-channel observation must not poison that command
+	 * exchange or replace the selected target. The borrowed packet remains
+	 * stable throughout this synchronous sink callback. */
+	if (mt6797_wifi_rx_metadata_decode(frame->packet, frame->packet_length,
+					  &metadata) ||
+	    mt6797_wifi_bss_parse(&metadata, &bss) ||
+	    metadata.band != scan->expected_band ||
+	    metadata.channel != scan->expected_channel)
+		goto out;
 	ret = mt6797_wifi_scan_target_observe(&scan->target_owner,
 		frame->packet, frame->packet_length, now_ms, &update);
 	if (ret) {

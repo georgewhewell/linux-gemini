@@ -216,6 +216,9 @@ static unsigned long mt6797_wifi_scan_hif_test_wait(
 	case MT6797_WIFI_SCAN_HIF_TEST_MALFORMED:
 		context->delivery_error =
 			mt6797_wifi_scan_hif_test_malformed(context);
+		if (!context->delivery_error)
+			context->delivery_error =
+				mt6797_wifi_scan_hif_test_done(context);
 		break;
 	case MT6797_WIFI_SCAN_HIF_TEST_TIMEOUT:
 		return 0;
@@ -232,6 +235,9 @@ static unsigned long mt6797_wifi_scan_hif_test_wait(
 		context->delivery_error = mt6797_wifi_scan_hif_test_frame(
 			context, mt6797_wifi_scan_hif_test_bssid, "test", 4,
 			context->scan->expected_channel + 1, 100);
+		if (!context->delivery_error)
+			context->delivery_error =
+				mt6797_wifi_scan_hif_test_done(context);
 		break;
 	}
 	return completion_done(completion);
@@ -347,7 +353,7 @@ static void mt6797_wifi_scan_hif_foreign_hidden_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, fixture.context.terminals, 0U);
 }
 
-static void mt6797_wifi_scan_hif_malformed_terminal_test(struct kunit *test)
+static void mt6797_wifi_scan_hif_malformed_observation_test(struct kunit *test)
 {
 	struct mt6797_wifi_scan_hif_test_fixture fixture;
 	struct mt6797_wifi_scan_hif_result result;
@@ -355,10 +361,11 @@ static void mt6797_wifi_scan_hif_malformed_terminal_test(struct kunit *test)
 	mt6797_wifi_scan_hif_test_init(test, &fixture,
 		MT6797_WIFI_SCAN_HIF_TEST_MALFORMED);
 	KUNIT_EXPECT_EQ(test, mt6797_wifi_scan_hif_run(&fixture.scan,
-		&fixture.request, &result), -ERANGE);
-	KUNIT_EXPECT_EQ(test, fixture.context.delivery_error, -ERANGE);
-	KUNIT_EXPECT_EQ(test, fixture.context.terminals, 1U);
-	KUNIT_EXPECT_EQ(test, fixture.context.terminal_reason, -ERANGE);
+		&fixture.request, &result), -ENODATA);
+	KUNIT_EXPECT_EQ(test, fixture.context.delivery_error, 0);
+	KUNIT_EXPECT_EQ(test, fixture.context.terminals, 0U);
+	KUNIT_EXPECT_TRUE(test, result.scan_done);
+	KUNIT_EXPECT_FALSE(test, result.target_seen);
 	KUNIT_EXPECT_FALSE(test, result.cancel_sent);
 }
 
@@ -439,9 +446,10 @@ static void mt6797_wifi_scan_hif_wrong_channel_test(struct kunit *test)
 	mt6797_wifi_scan_hif_test_init(test, &fixture,
 		MT6797_WIFI_SCAN_HIF_TEST_WRONG_CHANNEL);
 	KUNIT_EXPECT_EQ(test, mt6797_wifi_scan_hif_run(&fixture.scan,
-		&fixture.request, &result), -EPROTO);
-	KUNIT_EXPECT_EQ(test, fixture.context.delivery_error, -EPROTO);
-	KUNIT_EXPECT_EQ(test, fixture.context.terminals, 1U);
+		&fixture.request, &result), -ENODATA);
+	KUNIT_EXPECT_EQ(test, fixture.context.delivery_error, 0);
+	KUNIT_EXPECT_EQ(test, fixture.context.terminals, 0U);
+	KUNIT_EXPECT_TRUE(test, result.scan_done);
 	KUNIT_EXPECT_FALSE(test, result.target_seen);
 }
 
@@ -449,7 +457,7 @@ static struct kunit_case mt6797_wifi_scan_hif_cases[] = {
 	KUNIT_CASE(mt6797_wifi_scan_hif_success_lifetime_test),
 	KUNIT_CASE(mt6797_wifi_scan_hif_done_before_target_test),
 	KUNIT_CASE(mt6797_wifi_scan_hif_foreign_hidden_test),
-	KUNIT_CASE(mt6797_wifi_scan_hif_malformed_terminal_test),
+	KUNIT_CASE(mt6797_wifi_scan_hif_malformed_observation_test),
 	KUNIT_CASE(mt6797_wifi_scan_hif_timeout_cancel_test),
 	KUNIT_CASE(mt6797_wifi_scan_hif_late_done_wins_test),
 	KUNIT_CASE(mt6797_wifi_scan_hif_abort_spurious_test),

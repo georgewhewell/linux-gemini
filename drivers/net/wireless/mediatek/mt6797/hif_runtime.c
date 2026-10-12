@@ -961,7 +961,14 @@ static int mt6797_wifi_hif_runtime_pump_event(
 static int mt6797_wifi_hif_runtime_pump_frame(
 	void *context, const struct mt6797_wifi_rx_view *frame)
 {
-	return mt6797_wifi_hif_runtime_sink_frame(context, frame);
+	struct mt6797_wifi_hif_irq *irq = context;
+	int ret = mt6797_wifi_hif_runtime_sink_frame(irq, frame);
+
+	if (ret)
+		dev_warn_ratelimited(irq->dev,
+			"HIF frame dispatch failed error=%d kind=%u channel=%u packet_length=%zu\n",
+			ret, frame->kind, frame->channel, frame->packet_length);
+	return ret;
 }
 
 static int mt6797_wifi_hif_runtime_clear_status(void *context)

@@ -1064,7 +1064,12 @@
 	status = "disabled";
 };
 
+/* Gemini Dhrystone2.1/GCC15.3 measures A72/A53 throughput per MHz at1.499.
+ * Normalize both A53 clusters to1000 and A72 to1500; arch_topology also
+ * applies each cpufreq policy maximum, rather than treating all cores equally.
+ */
 &cpu0 {
+	capacity-dmips-mhz = <1000>;
 	clock-frequency = <1391000000>;
 	clocks = <&cpuclk CLK_MCU_MP0>,
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
@@ -1075,6 +1080,7 @@
 };
 
 &cpu1 {
+	capacity-dmips-mhz = <1000>;
 	clock-frequency = <1391000000>;
 	clocks = <&cpuclk CLK_MCU_MP0>,
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
@@ -1085,6 +1091,7 @@
 };
 
 &cpu2 {
+	capacity-dmips-mhz = <1000>;
 	clock-frequency = <1391000000>;
 	clocks = <&cpuclk CLK_MCU_MP0>,
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
@@ -1116,6 +1123,7 @@
 };
 
 &cpu3 {
+	capacity-dmips-mhz = <1000>;
 	clock-frequency = <1391000000>;
 	clocks = <&cpuclk CLK_MCU_MP0>,
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
@@ -1126,6 +1134,7 @@
 };
 
 &cpu4 {
+	capacity-dmips-mhz = <1000>;
 	clock-frequency = <1950000000>;
 	clocks = <&cpuclk CLK_MCU_MP1>,
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
@@ -1136,6 +1145,7 @@
 };
 
 &cpu5 {
+	capacity-dmips-mhz = <1000>;
 	clock-frequency = <1950000000>;
 	clocks = <&cpuclk CLK_MCU_MP1>,
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
@@ -1146,6 +1156,7 @@
 };
 
 &cpu6 {
+	capacity-dmips-mhz = <1000>;
 	clock-frequency = <1950000000>;
 	clocks = <&cpuclk CLK_MCU_MP1>,
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
@@ -1156,6 +1167,7 @@
 };
 
 &cpu7 {
+	capacity-dmips-mhz = <1000>;
 	clock-frequency = <1950000000>;
 	clocks = <&cpuclk CLK_MCU_MP1>,
 		 <&apmixedsys CLK_APMIXED_MAINPLL>;
@@ -1166,6 +1178,7 @@
 };
 
 &cpu8 {
+	capacity-dmips-mhz = <1500>;
 	clock-frequency = <2288000000>;
 	/* Both rails remain exclusively owned by a72-power. */
 	operating-points-v2 = <&cluster2_opp>;
@@ -1174,6 +1187,7 @@
 };
 
 &cpu9 {
+	capacity-dmips-mhz = <1500>;
 	clock-frequency = <2288000000>;
 	/* Both rails remain exclusively owned by a72-power. */
 	operating-points-v2 = <&cluster2_opp>;

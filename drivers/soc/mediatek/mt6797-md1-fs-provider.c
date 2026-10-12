@@ -105,7 +105,7 @@ static bool mt6797_fs_accessible(struct file *file)
 static int mt6797_fs_sync_mutation(struct file *file, int result)
 {
 	struct super_block *sb;
-	int ret;
+	int ret, writeback_error;
 
 	if (result || READ_ONCE(provider_volatile) != MT6797_MD1_FS_BACKING_INTERNAL)
 		return result;
@@ -118,7 +118,11 @@ static int mt6797_fs_sync_mutation(struct file *file, int result)
 	ret = mt6797_fs_backing_matches(file, MT6797_MD1_FS_BACKING_INTERNAL) ?
 		sync_filesystem(sb) : -EROFS;
 	up_read(&sb->s_umount);
-	return ret;
+	/* Inode writeback may record an error even when sync_filesystem returns
+	 * zero. Match syncfs(2)'s per-open error cursor and error precedence.
+	 */
+	writeback_error = errseq_check_and_advance(&sb->s_wb_err, &file->f_sb_err);
+	return ret ? ret : writeback_error;
 }
 
 static int mt6797_fs_sync_file(struct file *file)

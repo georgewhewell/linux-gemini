@@ -31,18 +31,19 @@ typedef uint8_t u8;
 #define ERR_PTR(e) ((void *)(intptr_t)(e))
 #define QSTR_INIT(s,n) {s,n}
 struct qstr {const char *name;size_t len;};
-struct super_block {int s_umount;};
+struct super_block {int s_umount;unsigned int s_wb_err;};
 struct inode {void *i_sb;};
 struct dentry {void *d_sb;struct inode inode;int type,refs;bool mounted;};
-struct file {struct {void *mnt;} f_path;struct inode inode;};
+struct file {struct {void *mnt;} f_path;struct inode inode;unsigned int f_sb_err;};
 static struct file rootfile;
+static struct super_block root_sb;
 static struct dentry parent,child,alternate;
 static int rootrefs,allocs,writers,locked,calls,lookup_calls;
 static int walk_error,lookup_error,write_error,operation_error;
 static bool available,writable,alloc_fail,drift,splice;
 static unsigned int provider_volatile;
 #define MT6797_MD1_FS_BACKING_INTERNAL 2
-static int sync_calls,sync_error,sb_readers;
+static int sync_calls,sync_error,sb_readers,errseq_error,errseq_calls;
 static u8 got_drive;
 static char got_parent[1025],got_leaf[256];
 static int got_op;
@@ -51,9 +52,10 @@ static struct file *mt6797_fs_root_get(u8 drive){got_drive=drive;if(!available)r
 static void fput(struct file *f){assert(f==&rootfile&&rootrefs==1);rootrefs--;}
 static bool mt6797_fs_tmpfs_writable(struct file *f){assert(f==&rootfile);return writable&&!(drift&&locked);}
 static bool mt6797_fs_backing_matches(struct file *f,unsigned int mode){assert(mode==1||mode==2);return mt6797_fs_tmpfs_writable(f);}
-static void down_read(void *lock){assert(lock==&rootfile&&!locked&&!sb_readers);sb_readers++;}
-static void up_read(void *lock){assert(lock==&rootfile&&sb_readers==1);sb_readers--;}
-static int sync_filesystem(void *sb){assert(sb_readers==1&&!locked&&writers==1&&sb==&rootfile);sync_calls++;return sync_error;}
+static void down_read(void *lock){assert(lock==&root_sb.s_umount&&!locked&&!sb_readers);sb_readers++;}
+static void up_read(void *lock){assert(lock==&root_sb.s_umount&&sb_readers==1);sb_readers--;}
+static int sync_filesystem(void *sb){assert(sb_readers==1&&!locked&&writers==1&&sb==&root_sb);sync_calls++;return sync_error;}
+static int errseq_check_and_advance(unsigned int *error,unsigned int *cursor){assert(error==&root_sb.s_wb_err&&cursor==&rootfile.f_sb_err&&!locked&&!sb_readers);errseq_calls++;(*cursor)++;return errseq_error;}
 static char *kstrdup(const char *s,int ignored){(void)ignored;if(alloc_fail)return NULL;allocs++;return strdup(s);}
 static void kfree(void *p){assert(p&&allocs==1);allocs--;free(p);}
 static struct dentry *mt6797_fs_walk(struct file *f,const char *p){assert(f==&rootfile);strcpy(got_parent,p);if(walk_error)return ERR_PTR(walk_error);parent.refs++;return &parent;}
@@ -75,7 +77,7 @@ static void callback(int op,struct inode *p,struct dentry *d,void *deleg){assert
 static struct dentry *vfs_mkdir(void *map,struct inode *p,struct dentry *d,unsigned mode,void *deleg){(void)map;callback(0,p,d,deleg);assert(mode==0770);if(operation_error){dput(d);return ERR_PTR(operation_error);}if(splice){dput(d);alternate.refs++;return &alternate;}d->type=1;return d;}
 static int vfs_rmdir(void *map,struct inode *p,struct dentry *d,void *deleg){(void)map;callback(1,p,d,deleg);return operation_error;}
 static int vfs_unlink(void *map,struct inode *p,struct dentry *d,void *deleg){(void)map;callback(2,p,d,deleg);return operation_error;}
-static void reset(void){assert(!sb_readers&&!rootrefs&&!allocs&&!writers&&!locked&&!parent.refs&&!child.refs&&!alternate.refs);parent=(struct dentry){.type=1};child=(struct dentry){.d_sb=&rootfile};rootfile.inode.i_sb=&rootfile;available=writable=true;provider_volatile=1;alloc_fail=drift=splice=false;walk_error=lookup_error=write_error=operation_error=calls=lookup_calls=0;got_parent[0]=got_leaf[0]=0;sync_calls=sync_error=0;}
+static void reset(void){assert(!sb_readers&&!rootrefs&&!allocs&&!writers&&!locked&&!parent.refs&&!child.refs&&!alternate.refs);parent=(struct dentry){.type=1};child=(struct dentry){.d_sb=&root_sb};rootfile.inode.i_sb=&root_sb;rootfile.f_sb_err=0;available=writable=true;provider_volatile=1;alloc_fail=drift=splice=false;walk_error=lookup_error=write_error=operation_error=calls=lookup_calls=0;got_parent[0]=got_leaf[0]=0;sync_calls=sync_error=errseq_error=errseq_calls=0;}
 '''
 full=(root/'drivers/soc/mediatek/mt6797-md1-fs-provider.c').read_text()
 a=full.index('static int mt6797_fs_sync_mutation(')
@@ -106,6 +108,8 @@ int main(void){
  for(int op=0;op<3;op++){
   reset();provider_volatile=2;child.type=op==0?0:op==1?1:2;check("item",op,0,1);assert(sync_calls==1);
   reset();provider_volatile=2;sync_error=-EIO;child.type=op==0?0:op==1?1:2;check("item",op,-EIO,1);assert(sync_calls==1);
+  reset();provider_volatile=2;errseq_error=-EIO;child.type=op==0?0:op==1?1:2;check("item",op,-EIO,1);assert(sync_calls==1&&errseq_calls==1&&rootfile.f_sb_err==1);
+  reset();provider_volatile=2;sync_error=-ENOSPC;errseq_error=-EIO;child.type=op==0?0:op==1?1:2;check("item",op,-ENOSPC,1);assert(sync_calls==1&&errseq_calls==1);
   reset();provider_volatile=2;operation_error=-ENOSPC;child.type=op==0?0:op==1?1:2;check("item",op,-ENOSPC,1);assert(!sync_calls);
  }
  reset();splice=true;check("item",0,0,1);

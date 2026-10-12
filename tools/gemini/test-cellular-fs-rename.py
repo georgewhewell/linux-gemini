@@ -40,7 +40,7 @@ static int start_renaming(struct renamedata *rd,int flags,struct qstr *old,struc
  locked=1;rd->old_parent->refs++;
  child.type=source_type;alternate.type=target_type;
  child.mounted=source_mount;alternate.mounted=target_mount;
- child.d_sb=source_foreign?NULL:&rootfile;alternate.d_sb=target_foreign?NULL:&rootfile;
+ child.d_sb=source_foreign?NULL:&root_sb;alternate.d_sb=target_foreign?NULL:&root_sb;
  rd->old_dentry=&child;rd->new_dentry=same_name?&child:&alternate;
  rd->old_dentry->refs++;rd->new_dentry->refs++;return 0;
 }
@@ -64,6 +64,8 @@ int main(void){
  setup();fail_root=2;check("old","new",-ENODEV,0);
  setup();provider_volatile=2;check("old","new",0,1);assert(sync_calls==1);
  setup();provider_volatile=2;sync_error=-EIO;check("old","new",-EIO,1);assert(sync_calls==1);
+ setup();provider_volatile=2;errseq_error=-EIO;check("old","new",-EIO,1);assert(sync_calls==1&&errseq_calls==1&&rootfile.f_sb_err==1);
+ setup();provider_volatile=2;sync_error=-ENOSPC;errseq_error=-EIO;check("old","new",-ENOSPC,1);assert(sync_calls==1&&errseq_calls==1);
  setup();provider_volatile=false;check("old","new",-EROFS,0);
  setup();writable=false;check("old","new",-EROFS,0);
  setup();cross_mount=true;check("old","new",-EXDEV,0);

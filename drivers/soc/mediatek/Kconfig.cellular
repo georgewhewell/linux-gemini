@@ -350,7 +350,9 @@ config MTK_MT6797_MD1_LK_HANDOFF
 	  Build a hardware-free parser for the MT6797 CCCI LK hand-off metadata
 	  and linked v2 tag table. It validates acquired bytes only; it has no
 	  Device Tree, physical-memory, firmware, block I/O, MMIO, DMA, power,
-	  reset, clock, interrupt, CCCI, SIM or RF access.
+	  reset, clock, interrupt, CCCI, SIM or RF access. It also validates
+	  optional legacy MD3 metadata for copying before the LK table is cleared;
+	  this does not provide MD3 execution or advertise C2K runtime support.
 
 config MTK_MT6797_MD1_LK_HANDOFF_KUNIT_TEST
 	bool "KUnit tests for MT6797 MD1 LK CCCI hand-off parser"

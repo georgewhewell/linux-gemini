@@ -31,6 +31,7 @@
 #include <linux/soc/mediatek/mt6797-md1-firmware.h>
 #include <linux/soc/mediatek/mt6797-md1-lk-handoff.h>
 #include <linux/soc/mediatek/mt6797-md1-mpu-remap-plan.h>
+#include <linux/soc/mediatek/mt6797-md3-lk-handoff.h>
 #include <linux/unaligned.h>
 
 #define MT6797_MD1_LK_HDR_COUNT_SIZE		4
@@ -62,6 +63,38 @@ static struct mt6797_md1_mpu_remap_plan mt6797_md1_lk_handoff_plan;
 static struct mt6797_md1_mpu_remap_layout mt6797_md1_lk_handoff_layout;
 static bool mt6797_md1_lk_handoff_plan_attested;
 static struct mt6797_md1_lk_runtime_metadata mt6797_md1_lk_handoff_runtime;
+static struct mt6797_md3_lk_snapshot mt6797_md3_lk_handoff_snapshot;
+static struct mt6797_md1_lk_info mt6797_md3_lk_load_info;
+static struct device *mt6797_md3_lk_handoff_owner;
+static int mt6797_md3_lk_handoff_error = -ENODATA;
+
+int mt6797_md3_lk_handoff_get(struct mt6797_md3_lk_snapshot *snapshot)
+{
+	int ret;
+
+	if (!snapshot)
+		return -EINVAL;
+	mutex_lock(&mt6797_md1_lk_handoff_plan_lock);
+	ret = mt6797_md3_lk_handoff_error;
+	if (!ret)
+		*snapshot = mt6797_md3_lk_handoff_snapshot;
+	mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_md3_lk_handoff_get);
+
+static void mt6797_md3_lk_handoff_remove(void *data)
+{
+	mutex_lock(&mt6797_md1_lk_handoff_plan_lock);
+	if (mt6797_md3_lk_handoff_owner == data) {
+		mt6797_md3_lk_handoff_owner = NULL;
+		mt6797_md3_lk_handoff_error = -ENODATA;
+		memset(&mt6797_md3_lk_load_info, 0, sizeof(mt6797_md3_lk_load_info));
+		memset(&mt6797_md3_lk_handoff_snapshot, 0,
+		       sizeof(mt6797_md3_lk_handoff_snapshot));
+	}
+	mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
+}
 
 bool mt6797_md1_lk_handoff_image_loaded(void)
 {
@@ -356,6 +389,68 @@ static int runtime_metadata_show(struct seq_file *s, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(runtime_metadata);
 
+static int md3_metadata_show(struct seq_file *s, void *unused)
+{
+	struct mt6797_md3_lk_snapshot snapshot;
+	struct mt6797_md1_lk_info info;
+	bool captured;
+	int ret;
+	u32 i;
+
+	/* One coherent, detached copy; no pointer into cleared LK memory. */
+	mutex_lock(&mt6797_md1_lk_handoff_plan_lock);
+	captured = !!mt6797_md3_lk_handoff_owner;
+	ret = mt6797_md3_lk_handoff_error;
+	snapshot = mt6797_md3_lk_handoff_snapshot;
+	info = mt6797_md3_lk_load_info;
+	mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
+	seq_printf(s, "schema=2 captured=%u metadata_errno=%d execution_owned=0\n",
+		   captured, ret);
+	if (!captured)
+		return 0;
+	seq_printf(s, "lk_version=%u table_size=%u tag_count=%u load_flags=%u "
+		   "lk_errno=%d md3_load_errno=%d\n", info.version, info.table_size,
+		   info.tag_count, info.load_flags, info.error,
+		   info.md_error[MT6797_MD3_LK_INDEX]);
+	if (ret)
+		return 0;
+	seq_printf(s, "md_id=%u load_type=%u record_version=%u record_load_errno=%d "
+		   "md_base=0x%llx md_size=%u\n", snapshot.modem.md_id,
+		   snapshot.modem.md_type, snapshot.modem.version, snapshot.modem.load_error,
+		   snapshot.modem.base_phys, snapshot.modem.size);
+	seq_printf(s, "header_version=%u product_version=%u image_type=%u bind_sys_id=%u "
+		   "ext_attr=%u header_ap_md_smem_size=%u header_size=%u header_mem_size=%u "
+		   "header_image_size=%u raw_size=%u effective_size=%u\n",
+		   snapshot.header_version, get_unaligned_le32(snapshot.check_header + 16),
+		   snapshot.image_type, snapshot.check_header[168], snapshot.check_header[169],
+		   get_unaligned_le32(snapshot.check_header + 180),
+		   get_unaligned_le32(snapshot.check_header + 184), snapshot.header_mem_size,
+		   snapshot.header_image_size, snapshot.raw_image_size, snapshot.effective_image_size);
+	seq_printf(s, "smem_base=0x%llx smem_total_size=%u ap_md1_offset=%u ap_md1_size=%u "
+		   "md1_md3_offset=%u md1_md3_size=%u ap_md3_offset=%u ap_md3_size=%u\n",
+		   snapshot.smem.base_phys, snapshot.smem.total_size,
+		   snapshot.smem.ap_md1_offset, snapshot.smem.ap_md1_size,
+		   snapshot.smem.md1_md3_offset, snapshot.smem.md1_md3_size,
+		   snapshot.smem.ap_md3_offset, snapshot.smem.ap_md3_size);
+	seq_printf(s, "gate_present=%u gate=%d support_present=%u support=%d "
+		   "c2k_mode_present=%u c2k_mode=%d\n", snapshot.options.gate_present,
+		   snapshot.options.gate, snapshot.options.support_present, snapshot.options.support,
+		   snapshot.c2k_lte_mode_present, snapshot.c2k_lte_mode);
+	seq_printf(s, "mpu_errno=%d mpu_record_count=%u mpu_present_mask=0x%x\n",
+		   snapshot.mpu_error, snapshot.mpu_record_count, snapshot.mpu_present_mask);
+	for (i = 0; i < ARRAY_SIZE(snapshot.mpu); i++) {
+		const struct mt6797_md3_lk_mpu_entry *entry = &snapshot.mpu[i];
+
+		if (!(snapshot.mpu_present_mask & BIT(i)))
+			continue;
+		seq_printf(s, "mpu_region=%u start=0x%x end=0x%x permission=0x%x relate_region=%u\n",
+			   entry->region, entry->start, entry->end, entry->permission,
+			   entry->relate_region);
+	}
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(md3_metadata);
+
 static void mt6797_md1_lk_debugfs_remove(void *data)
 {
 	debugfs_remove(data);
@@ -373,6 +468,94 @@ static void mt6797_md1_lk_debugfs_init(struct device *dev)
 		return;
 	debugfs_create_file("runtime_metadata", 0400, root, NULL,
 			    &runtime_metadata_fops);
+	debugfs_create_file("md3_metadata", 0400, root, NULL, &md3_metadata_fops);
+}
+
+/* MD1 already checks the exact three live LK mblocks. MD3 additionally needs
+ * its own range checked against unrelated reserved-memory nodes. Failure is
+ * optional metadata failure, never an MD1 dependency or hardware transition.
+ */
+static int mt6797_md3_lk_reserved_check(void)
+{
+	struct device_node *reserved, *node;
+	struct resource resource;
+	int cells, stride, i, ret = 0;
+
+	reserved = of_find_node_by_path("/reserved-memory");
+	if (!reserved)
+		return -ENODEV;
+	for_each_child_of_node(reserved, node) {
+		if (!of_property_present(node, "reg"))
+			continue;
+		cells = of_property_count_u32_elems(node, "reg");
+		stride = of_n_addr_cells(node) + of_n_size_cells(node);
+		if (cells <= 0 || stride <= 0 || cells % stride) {
+			ret = -EINVAL;
+			goto put_child;
+		}
+		/* MD1 validated the one exact tuple of each CCCI reservation.
+		 * Never let a second, unchecked tuple hide behind that compatible.
+		 */
+		if (of_device_is_compatible(node, MT6797_MD1_LIVE_CCCI_COMPAT)) {
+			if (cells != stride) {
+				ret = -EINVAL;
+				goto put_child;
+			}
+			continue;
+		}
+		for (i = 0; i < cells / stride; i++) {
+			ret = of_address_to_resource(node, i, &resource);
+			if (ret)
+				goto put_child;
+			if (resource.end < resource.start || resource.end == U64_MAX ||
+			    !resource_size(&resource) ||
+			    mt6797_md1_phys_ranges_overlap(MT6797_MD1_LIVE_MD3_BLOCK_BASE,
+				MT6797_MD1_LIVE_MD3_BLOCK_SIZE, resource.start,
+				resource_size(&resource)) ||
+			    mt6797_md1_phys_ranges_overlap(MT6797_MD1_LIVE_SMEM_BASE,
+				MT6797_MD1_LIVE_SMEM_SIZE, resource.start,
+				resource_size(&resource))) {
+				ret = -ERANGE;
+				goto put_child;
+			}
+		}
+	}
+	goto put_parent;
+put_child:
+	of_node_put(node);
+put_parent:
+	of_node_put(reserved);
+	return ret;
+}
+
+static void mt6797_md3_lk_preserve(struct device *dev,
+		const struct mt6797_md1_lk_info *info, const void *table)
+{
+	const struct mt6797_md3_lk_contract contract = {
+		.md_base = MT6797_MD1_LIVE_MD3_BLOCK_BASE,
+		.md_size = MT6797_MD1_LIVE_MD3_BLOCK_SIZE,
+		.smem_base = MT6797_MD1_LIVE_SMEM_BASE,
+		.smem_size = MT6797_MD1_LIVE_SMEM_SIZE,
+	};
+	struct mt6797_md3_lk_snapshot snapshot = {};
+	int ret;
+
+	ret = devm_add_action_or_reset(dev, mt6797_md3_lk_handoff_remove, dev);
+	if (ret)
+		return;
+	ret = mt6797_md3_lk_snapshot_parse(info, table, info->table_size,
+					 &contract, &snapshot);
+	if (!ret)
+		ret = mt6797_md3_lk_reserved_check();
+	mutex_lock(&mt6797_md1_lk_handoff_plan_lock);
+	/* Never replace another acquisition instance, including an invalid one. */
+	if (!mt6797_md3_lk_handoff_owner) {
+		mt6797_md3_lk_handoff_snapshot = snapshot;
+		mt6797_md3_lk_load_info = *info;
+		mt6797_md3_lk_handoff_error = ret;
+		mt6797_md3_lk_handoff_owner = dev;
+	}
+	mutex_unlock(&mt6797_md1_lk_handoff_plan_lock);
 }
 
 static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
@@ -583,6 +766,10 @@ static int mt6797_md1_lk_handoff_probe(struct platform_device *pdev)
 		 plan.remap[MT6797_MD1_REMAP_KERNEL_EMI_40000000].bank0_map1,
 		 plan.remap[MT6797_MD1_REMAP_KERNEL_EMI_40000000].bank4_map0,
 		 plan.remap[MT6797_MD1_REMAP_KERNEL_EMI_40000000].bank4_map1);
+	/* Optional MD3 metadata must be detached before MD1 publication allows
+	 * cold initialization to clear the LK table. It grants no C2K ownership.
+	 */
+	mt6797_md3_lk_preserve(dev, &lk_info, table);
 	/* Publish only the already-validated diagnostic plan, never an authority. */
 	mutex_lock(&mt6797_md1_lk_handoff_plan_lock);
 	mt6797_md1_lk_handoff_plan = plan;

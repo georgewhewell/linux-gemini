@@ -6,6 +6,7 @@ obj-$(CONFIG_MTK_MT6797_MD1_FIRMWARE_PREFLIGHT_KUNIT_TEST) += mt6797-md1-firmwar
 obj-$(CONFIG_MTK_MT6797_MD1_MPU_REMAP_PLAN) += mt6797-md1-mpu-remap-plan.o
 obj-$(CONFIG_MTK_MT6797_MD1_MPU_REMAP_PLAN_KUNIT_TEST) += mt6797-md1-mpu-remap-plan-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_MD1_LK_HANDOFF) += mt6797-md1-lk-handoff.o
+obj-$(CONFIG_MTK_MT6797_MD1_LK_HANDOFF) += mt6797-md3-lk-handoff.o
 obj-$(CONFIG_MTK_MT6797_MD1_LK_HANDOFF_KUNIT_TEST) += mt6797-md1-lk-handoff-kunit-test.o
 obj-$(CONFIG_MTK_MT6797_MD1_LK_HANDOFF_PROBE) += mt6797-md1-lk-handoff-probe.o
 mt6797-md1-prerelease-driver-y := mt6797-md1-prerelease-core.o \

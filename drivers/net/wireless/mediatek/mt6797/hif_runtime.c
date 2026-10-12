@@ -948,9 +948,14 @@ static int mt6797_wifi_hif_runtime_pump_event(
 	int ret;
 
 	ret = mt6797_wifi_hif_wait_event_offer(&irq->wait_event, event);
+	if (!ret)
+		ret = mt6797_wifi_hif_runtime_sink_event(irq, event);
 	if (ret)
-		return ret;
-	return mt6797_wifi_hif_runtime_sink_event(irq, event);
+		/* Error metadata only; do not log firmware event payloads. */
+		dev_warn_ratelimited(irq->dev,
+			"HIF event dispatch failed error=%d id=%u sequence=%u payload_length=%zu\n",
+			ret, event->id, event->sequence, event->payload_length);
+	return ret;
 }
 
 static int mt6797_wifi_hif_runtime_pump_frame(

@@ -47,7 +47,7 @@ static struct platform_device pdev;static struct reset_control reset;static stru
 static unsigned char misc[4096],pll[128],clk[768],ap[4096];
 static unsigned points,failpoint,livecalls,livefail,starts,stops,releases,asserts,ends,updates,writes16,writes32,cases;
 static int release_error,assert_error,begin_error,arm_error,hs_error,early,timeout_wake,timeout_event,bad_readback,pre_wdt;
-static int reset_status_error,resource_bad,resource_fail,spurious,wdt_event,late_event;
+static int reset_status_error,resource_bad,resource_fail,spurious,wdt_event,late_event,late_wake;
 static bool armed,lease;
 static s64 now;
 static void(*observer)(void*,bool,void*);static void*observer_data;static void*allocated;
@@ -80,7 +80,7 @@ static void mt6797_md3_ccif_observe_stop(struct mt6797_md3_ccif*c){assert(c==&cc
 static unsigned off(void*p,void*b,size_t n){uintptr_t a=(uintptr_t)p,z=(uintptr_t)b;assert(a>=z&&a<z+n);return a-z;}
 static u32 readl(void*p){u32 v;uintptr_t a=(uintptr_t)p;
  if(a>=(uintptr_t)misc&&a<(uintptr_t)misc+sizeof(misc)){
-  unsigned o=off(p,misc,sizeof(misc));assert(o==0x360||o==0x364);if(o==0x364&&!timeout_wake)return 2;}
+  unsigned o=off(p,misc,sizeof(misc));assert(o==0x360||o==0x364);if(o==0x364&&!timeout_wake){if(late_wake)now+=1001;return 2;}}
  else {unsigned o=off(p,ap,sizeof(ap));assert(o==0x10||(o>=0x100&&o<0x158));}
  memcpy(&v,p,4);return v;}
 static void writel(u32 v,void*p){uintptr_t a=(uintptr_t)p;writes32++;
@@ -117,7 +117,7 @@ static struct mt6797_md3_execution*init(void){
  memset(trace16,0,sizeof(trace16));memset(trace_shared,0,sizeof(trace_shared));
  points=failpoint=livecalls=livefail=starts=stops=releases=asserts=ends=updates=writes16=writes32=0;
  release_error=assert_error=begin_error=arm_error=hs_error=early=timeout_wake=timeout_event=bad_readback=pre_wdt=0;
- reset_status_error=resource_bad=resource_fail=spurious=wdt_event=late_event=0;armed=lease=false;reset.held=1;now=0;
+ reset_status_error=resource_bad=resource_fail=spurious=wdt_event=late_event=late_wake=0;armed=lease=false;reset.held=1;now=0;
  struct mt6797_md3_execution*e=0;assert(!mt6797_md3_execution_acquire(&pdev,&reset,&ccif,&e)&&e==allocated);
  assert(!points&&!writes16&&!writes32&&!starts&&!releases);return e;
 }
@@ -142,6 +142,7 @@ int main(void){
  for(int i=1;i<=7;i++){e=init();hs_error=i;assert(mt6797_md3_execution_run(e)==-EPROTO&&!e->hs1);terminal(e);}
  e=init();timeout_wake=1;assert(mt6797_md3_execution_run(e)==-ETIMEDOUT&&now==1000&&!writes16);terminal(e);
  e=init();timeout_event=1;assert(mt6797_md3_execution_run(e)==-ETIMEDOUT&&now==10000&&writes16==10);terminal(e);
+ e=init();late_wake=1;assert(mt6797_md3_execution_run(e)==-ETIMEDOUT&&!writes16);terminal(e);
  e=init();late_event=1;assert(mt6797_md3_execution_run(e)==-ETIMEDOUT&&!e->hs1);terminal(e);
  e=init();begin_error=-EPERM;assert(mt6797_md3_execution_run(e)==-EPERM&&!starts&&!releases&&!asserts);terminal(e);
  e=init();arm_error=-EIO;assert(mt6797_md3_execution_run(e)==-EIO&&!releases&&!writes16);terminal(e);

@@ -241,6 +241,8 @@ static int md3_execution_sequence(struct mt6797_md3_execution *e)
 		if (ktime_to_ms(ktime_get()) >= deadline)
 			return -ETIMEDOUT;
 		e->wake_status = readl(e->misc + MD3_STATUS);
+		if (ktime_to_ms(ktime_get()) >= deadline)
+			return -ETIMEDOUT;
 		if (e->wake_status & BIT(1))
 			break;
 		if (ktime_to_ms(ktime_get()) >= deadline)

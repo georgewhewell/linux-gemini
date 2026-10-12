@@ -97,6 +97,38 @@ int main(void){
  mt6797_rx_rejected_record(&c.rx_rejected,0,0,NULL,SIZE_MAX,-EALREADY);
  mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
  assert(!snap.entry[15].message_valid&&!snap.entry[15].message);
+ memset(f,0xff,sizeof(f));f[6]=0x70;f[7]=0xaf;
+ mt6797_rx_rejected_record(&c.rx_rejected,4,0,f,16,-EOPNOTSUPP);
+ mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+ assert(snap.entry[15].message_valid&&snap.entry[15].message==0xaf70&&!snap.entry[15].op_valid);
+ /* Lower parameter and reserved words must never enter the ID. */
+ f[4]=0x34;f[5]=0x12;memset(f+12,0x5a,4);
+ mt6797_rx_rejected_record(&c.rx_rejected,4,0,f,16,-EOPNOTSUPP);
+ mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+ assert(snap.entry[15].message_valid&&snap.entry[15].message==0xaf70);
+ for(unsigned n=0;n<=24;n++){
+  if(n==16)continue;
+  mt6797_rx_rejected_record(&c.rx_rejected,4,0,f,n,-EPROTO);
+  mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+  assert(!snap.entry[15].message_valid&&!snap.entry[15].message);
+ }
+ for(unsigned i=0;i<4;i++){
+  f[i]=0xfe;
+  mt6797_rx_rejected_record(&c.rx_rejected,4,0,f,16,-EPROTO);
+  mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+  assert(!snap.entry[15].message_valid&&!snap.entry[15].message);
+  f[i]=0xff;
+ }
+ for(unsigned ch=0;ch<256;ch++){
+  mt6797_rx_rejected_record(&c.rx_rejected,ch,0,f,16,-EOPNOTSUPP);
+  mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+  assert(snap.entry[15].message_valid==(ch==0||ch==2||ch==4));
+  if(ch!=0&&ch!=2&&ch!=4)assert(!snap.entry[15].message);
+ }
+ mt6797_rx_rejected_record(&c.rx_rejected,4,0,NULL,16,-EPROTO);
+ mt6797_rx_rejected_snapshot(&c.rx_rejected,&snap);
+ assert(!snap.entry[15].message_valid&&!snap.entry[15].message);
+ puts("PASS PCM mailbox IDs: exact channel/marker/length, no parameter/reserved/data retention");
  puts("PASS header-only control/system IDs: short/null bounds, channel restriction and no AT/payload retention");
  puts("PASS rejected RX: bounded/truncated/unknown-op metadata, immutable copies, concurrent snapshots, wrap ordering, actual sysfs output bounds and allocation failure");
 }

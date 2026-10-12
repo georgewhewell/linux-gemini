@@ -49,6 +49,17 @@ static inline void mt6797_rx_rejected_record(struct mt6797_rx_rejected *d,
 		e.message = frame[4] | ((u32)frame[5] << 8) |
 			((u32)frame[6] << 16) | ((u32)frame[7] << 24);
 	}
+	/* PCM mailbox: data0 is the header-only marker, and data1 contains
+	 * message ID in its upper half. Retain only that ID, never the lower
+	 * parameter, reserved word, shared-memory offset or speech data. A
+	 * data-bearing or malformed frame must not be interpreted as a mailbox.
+	 */
+	if (frame && channel == 4 && bytes == 16 &&
+	    frame[0] == 0xff && frame[1] == 0xff &&
+	    frame[2] == 0xff && frame[3] == 0xff) {
+		e.message_valid = true;
+		e.message = frame[6] | ((u32)frame[7] << 8);
+	}
 	spin_lock_irqsave(&d->lock, flags);
 	e.sequence = ++d->total;
 	d->entry[d->head] = e;

@@ -406,6 +406,7 @@ typedef uint16_t __be16;
 #define MT6797_CCCI_CHANNEL_COUNT 256
 #define MTK_CCCI_CONTROL_RX 0
 #define MTK_CCCI_UART2_RX 10
+#define MT6797_SPEECH_RX 4
 #define le32_to_cpu(x) (x)
 #define atomic_read(p) __atomic_load_n(p,__ATOMIC_SEQ_CST)
 #define atomic_set(p,v) __atomic_store_n(p,v,__ATOMIC_SEQ_CST)
@@ -417,7 +418,7 @@ struct mt6797_ccci;
 struct wwan_port { struct mt6797_ccci *ccci; struct sk_buff_head rxq; pthread_mutex_t ops_lock; unsigned start_count; bool removed,txoff; };
 struct mt6797_ccci {
  struct mt6797_ccci_diag diag; struct mt6797_rx_rejected rx_rejected;
- int ready,at_open,failed,teardown; struct wwan_port *at_port;
+ int ready,at_open,failed,teardown; struct wwan_port *at_port; void *speech;
  struct sk_buff_head at_rx_queue; unsigned at_rx_bytes,at_rx_memory; bool at_rx_stopped;
  int rx_sequence[256];
 };
@@ -438,6 +439,12 @@ static struct sk_buff *__skb_dequeue(struct sk_buff_head *q){
 static void kfree_skb(struct sk_buff *s){
  __atomic_add_fetch(&frees,1,__ATOMIC_SEQ_CST);if(s->heap){__atomic_sub_fetch(&live,1,__ATOMIC_SEQ_CST);free(s->base);free(s);}
 }
+/* Speech-port ownership itself is exercised by the dedicated lifecycle test. */
+static int speech_received,speech_stopped,speech_result;
+static int mt6797_speech_port_rx(void *p,struct sk_buff *s){
+ assert(p);speech_received++;if(!speech_result)kfree_skb(s);return speech_result;
+}
+static void mt6797_speech_port_stop(void *p,int why){assert(p&&why==-EPROTO);speech_stopped++;}
 static void skb_queue_purge(struct sk_buff_head *q){
  assert(!pthread_mutex_lock(&q->lock));struct sk_buff *s;while((s=__skb_dequeue(q)))kfree_skb(s);assert(!pthread_mutex_unlock(&q->lock));
 }
@@ -473,7 +480,7 @@ static void init(struct mt6797_ccci *c,struct wwan_port *p){
  memset(c,0,sizeof(*c));memset(p,0,sizeof(*p));
  assert(!pthread_mutex_init(&c->diag.lock,NULL));assert(!pthread_mutex_init(&c->rx_rejected.lock,NULL));
  queue_init(&c->at_rx_queue);queue_init(&p->rxq);assert(!pthread_mutex_init(&p->ops_lock,NULL));
- c->at_port=p;p->ccci=c;at_lock=&c->at_rx_queue.lock;
+ c->at_port=p;c->speech=c;p->ccci=c;at_lock=&c->at_rx_queue.lock;
 }
 static void destroy(struct mt6797_ccci *c,struct wwan_port *p){
  assert(!c->at_rx_queue.qlen&&!c->at_rx_bytes&&!c->at_rx_memory&&!p->rxq.qlen);
@@ -585,8 +592,23 @@ static void concurrency_tests(void){
   destroy(&c,&p);
  }
 }
+static void speech_dispatch_tests(void){
+ struct mt6797_ccci c;struct wwan_port p;init(&c,&p);
+ u32 words[4]={0xffffffffU,0xaf700000U,MT6797_SPEECH_RX,0};
+ struct sk_buff skb={.data=(u8 *)words,.len=16};
+ int before=frees;
+ /* A real startup notification reaches its owner before READY. */
+ mt6797_ccci_dispatch_rx(&c,&skb,0);
+ assert(speech_received==1&&frees==before+1&&!c.rx_rejected.count&&!c.failed);
+ mt6797_ccci_dispatch_rx(&c,&skb,1);
+ assert(speech_received==1&&speech_stopped==1&&frees==before+2);
+ assert(c.rx_rejected.count==1&&c.rx_rejected.entry[0].error==-EPROTO&&!c.failed);
+ speech_result=-ENOBUFS;mt6797_ccci_dispatch_rx(&c,&skb,0);
+ assert(speech_received==2&&frees==before+3&&c.rx_rejected.count==2&&!c.failed);
+ assert(c.rx_rejected.entry[1].error==-ENOBUFS);destroy(&c,&p);
+}
 int main(void){
- diagnostic_tests();retention_tests();concurrency_tests();assert(!live);
+ diagnostic_tests();retention_tests();concurrency_tests();speech_dispatch_tests();assert(!live);
  puts("PASS actual dispatch/AT owners: pre-HS2 open, bounded opaque preopen FIFO, count/payload/truesize caps, multiple opens, stop/core-purge boundary,32 start/RX/fatal/remove races, terminal idempotence and never-opened removal");
 }
 '''

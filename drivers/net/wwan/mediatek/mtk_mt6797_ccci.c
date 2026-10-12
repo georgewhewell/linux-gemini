@@ -37,6 +37,7 @@
 #include "mtk_mt6797_ccci_rx_rejected.h"
 #include "mtk_mt6797_ccci_speech.h"
 #include "mtk_mt6797_ccci_speech_port.h"
+#include "mtk_mt6797_ccci_imsc_port.h"
 
 #define MT6797_CCCI_QUEUE_COUNT		7U
 #define MT6797_CCCI_RING_SIZE		16U
@@ -171,6 +172,7 @@ struct mt6797_ccci {
 	struct mtk_ccci_runtime_config runtime_config;
 	struct wwan_port *at_port; /* at_rx_queue.lock */
 	struct mt6797_speech_port *speech; /* detached after IRQ/NAPI/work drain */
+	struct mt6797_imsc_port *imsc; /* same parent lifetime boundary */
 	struct work_struct at_terminal_work;
 	bool at_work_stopped; /* at_rx_queue.lock; closes work admission */
 	/* Serializes native RX ownership through wwan_port_rx and last close. */
@@ -225,6 +227,7 @@ static void mt6797_ccci_frontend_ready(struct mt6797_ccci *ccci, bool ready)
 	}
 	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
 	mt6797_speech_port_ready(ccci->speech, ready);
+	mt6797_imsc_port_ready(ccci->imsc, ready);
 	rcu_read_lock();
 	for (i = 0; i < MTK_CCCI_MAX_NET_LINKS; i++) {
 		struct mt6797_ccci_link *link;
@@ -363,6 +366,15 @@ static void mt6797_ccci_cleanup_speech(void *data)
 	mt6797_speech_port_destroy(xchg(&ccci->speech, NULL));
 }
 
+static void mt6797_ccci_cleanup_imsc(void *data)
+{
+	struct mt6797_ccci *ccci = data;
+
+	/* Same IRQ/NAPI/work drain and independently pinned open-file lifetime
+	 * as the speech endpoint. Idempotent across shutdown and devres cleanup. */
+	mt6797_imsc_port_destroy(xchg(&ccci->imsc, NULL));
+}
+
 static void mt6797_ccci_first_fatal(struct mt6797_ccci *ccci, const char *site)
 {
 	struct mt6797_ccci_diag *d = &ccci->diag;
@@ -483,6 +495,7 @@ static void mt6797_ccci_quiesce_from(struct mt6797_ccci *ccci, int reason,
 	/* Close RX ownership before the first-fatal snapshot or STOP. */
 	mt6797_ccci_at_rx_close(ccci, true);
 	mt6797_speech_port_stop(ccci->speech, reason);
+	mt6797_imsc_port_stop(ccci->imsc, reason);
 	if (atomic_xchg(&ccci->failed, 1))
 		return;
 
@@ -748,6 +761,8 @@ static void mt6797_ccci_tx_wake(struct mt6797_ccci *ccci, unsigned int q)
 	spin_unlock_irqrestore(&ccci->at_rx_queue.lock, flags);
 	if (!q)
 		mt6797_speech_port_tx_wake(ccci->speech);
+	if (q == MT6797_IMSC_QUEUE)
+		mt6797_imsc_port_tx_wake(ccci->imsc);
 	rcu_read_lock();
 	for (i = 0; i < MTK_CCCI_MAX_NET_LINKS; i++) {
 		struct mt6797_ccci_link *link;
@@ -789,6 +804,42 @@ static bool mt6797_ccci_speech_room(void *context)
 static const struct mt6797_speech_backend mt6797_ccci_speech_backend = {
 	.send = mt6797_ccci_speech_send,
 	.room = mt6797_ccci_speech_room,
+};
+
+static int mt6797_ccci_imsc_send(void *context, const u8 *payload, size_t bytes)
+{
+	struct mt6797_ccci *ccci = context;
+	struct sk_buff *skb;
+	int ret;
+
+	if (bytes != MT6797_IMSC_PAYLOAD)
+		return -EMSGSIZE;
+	if (!atomic_read(&ccci->ready) || atomic_read(&ccci->failed) ||
+	    atomic_read(&ccci->teardown))
+		return -ESHUTDOWN;
+	skb = alloc_skb(MTK_CCCI_HEADER_SIZE + bytes, GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+	skb_put_zero(skb, MTK_CCCI_HEADER_SIZE);
+	skb_put_data(skb, payload, bytes);
+	ret = mt6797_ccci_tx(ccci, MT6797_IMSC_QUEUE, skb, MT6797_IMSC_TX);
+	if (ret)
+		kfree_skb(skb);
+	return ret;
+}
+
+static bool mt6797_ccci_imsc_room(void *context)
+{
+	struct mt6797_ccci *ccci = context;
+
+	return atomic_read(&ccci->ready) && !atomic_read(&ccci->failed) &&
+		!atomic_read(&ccci->teardown) &&
+		mt6797_ccci_tx_has_room(ccci, MT6797_IMSC_QUEUE);
+}
+
+static const struct mt6797_imsc_backend mt6797_ccci_imsc_backend = {
+	.send = mt6797_ccci_imsc_send,
+	.room = mt6797_ccci_imsc_room,
 };
 
 static int mt6797_ccci_at_start(struct wwan_port *port)
@@ -1663,6 +1714,19 @@ static void mt6797_ccci_dispatch_rx(struct mt6797_ccci *ccci,
 			q, skb->data, skb->len, ret);
 		goto drop;
 	}
+	/* Preserve complete IMSC startup records without inventing responses.
+	 * Wrong-queue or malformed traffic fences only its protocol endpoint. */
+	if (frame.channel == MT6797_IMSC_RX) {
+		ret = q == MT6797_IMSC_QUEUE ?
+			mt6797_imsc_port_rx(ccci->imsc, skb) : -EPROTO;
+		if (!ret)
+			return;
+		if (q != MT6797_IMSC_QUEUE)
+			mt6797_imsc_port_stop(ccci->imsc, ret);
+		mt6797_rx_rejected_record(&ccci->rx_rejected, frame.channel,
+			q, skb->data, skb->len, ret);
+		goto drop;
+	}
 	if (!atomic_read(&ccci->ready)) {
 		diag_drop = MT6797_CCCI_DIAG_BEFORE_READY;
 		goto drop;
@@ -2375,6 +2439,17 @@ static int mt6797_ccci_probe(struct platform_device *pdev)
 				       ccci);
 	if (ret)
 		return ret;
+	ccci->imsc = mt6797_imsc_port_create(&pdev->dev,
+				&mt6797_ccci_imsc_backend, ccci);
+	if (IS_ERR(ccci->imsc)) {
+		ret = PTR_ERR(ccci->imsc);
+		ccci->imsc = NULL;
+		return ret;
+	}
+	ret = devm_add_action_or_reset(&pdev->dev, mt6797_ccci_cleanup_imsc,
+				       ccci);
+	if (ret)
+		return ret;
 	ret = mt6797_md1_hs_arm(&ccci->hs, true);
 	if (ret)
 		return ret;
@@ -2424,6 +2499,7 @@ static void mt6797_ccci_remove(struct platform_device *pdev)
 	mt6797_ccci_quiesce(ccci, -ESHUTDOWN);
 	mt6797_ccci_cleanup_port(ccci);
 	mt6797_ccci_cleanup_speech(ccci);
+	mt6797_ccci_cleanup_imsc(ccci);
 }
 
 /* Read-only numeric evidence for responsive but stalled modem initialization.

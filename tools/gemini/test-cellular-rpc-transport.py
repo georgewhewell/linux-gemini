@@ -54,6 +54,8 @@ typedef uint32_t __le32; typedef uint16_t __be16; typedef uintptr_t dma_addr_t;
 #define MTK_CCCI_UART2_RX 10
 #define MT6797_CCCI_AT_RX_SEEN 1
 #define MT6797_SPEECH_RX 4
+#define MT6797_IMSC_RX 55
+#define MT6797_IMSC_QUEUE 6
 #define MT6797_SPEECH_TX 5
 #define MT6797_CCCI_ACTIVE_IRQS 0x007f007fU
 #define MT6797_MD1_CLDMA_ACTIVE_QUEUES 127U
@@ -94,7 +96,7 @@ struct workqueue_struct {int jobs;};
 struct mt6797_ccci {struct mt6797_ccci_fs_work *fs_partial[MT6797_FS_INDEX_COUNT];int failed,ready,rpc_logs,fs_logs,hs,diag,teardown,fs_pending;unsigned long fs_indices,rpc_indices;int rpc_pending,rx_rejected;bool rf_clock_present;struct mt6797_rpc_clkbuf_values rf_clock;void *dev;char *ao,*pdn;
  struct workqueue_struct *fs_wq,*rpc_wq;struct mt6797_fs_service fs_service;
  struct mt6797_ccci_queue queue[7];pthread_mutex_t tx_stop_lock;struct mt6797_rpc_eint sim_eint[2];
- int tx_sequence[256],rx_sequence[256];void *speech;};
+ int tx_sequence[256],rx_sequence[256];void *speech,*imsc;};
 struct mt6797_ccci_link;
 static struct mt6797_ccci c;static char ao[4096],pdn[4096];static u8 desc[7][16][16];static struct workqueue_struct wq,rpcwq;
 static int mode,allocs,frees,maps,unmaps,publishes,resumes,stops,captures,controls;
@@ -152,6 +154,8 @@ static void mt6797_ccci_diag_at(int *diag,int event){(void)diag;assert(event==MT
  * those boundary calls while testing shared native RPC/FS dispatch/TX. */
 static void mt6797_speech_port_stop(void *p,int reason){(void)p;(void)reason;assert(!stop_locked);}
 static int mt6797_speech_port_rx(void *p,struct sk_buff *s){(void)p;(void)s;return -EOPNOTSUPP;}
+static void mt6797_imsc_port_stop(void *p,int reason){(void)p;(void)reason;assert(!stop_locked);}
+static int mt6797_imsc_port_rx(void *p,struct sk_buff *s){(void)p;(void)s;return -EOPNOTSUPP;}
 static void mt6797_md1_hs_crash(int *p,int why){(void)p;(void)why;assert(!stop_locked);}
 static void mt6797_md1_cold_owner_transport_fatal(int why){(void)why;assert(!stop_locked);}
 static void writel(u32 value,char *p){assert(stop_locked);

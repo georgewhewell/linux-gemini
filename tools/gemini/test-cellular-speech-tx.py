@@ -77,7 +77,7 @@ struct mt6797_ccci_slot {void *gpd;struct sk_buff *skb;dma_addr_t skb_dma;bool m
 struct mt6797_ccci_queue {struct mt6797_ccci_slot tx[16];unsigned tx_head,tx_tail,tx_used;pthread_mutex_t tx_lock;};
 struct mt6797_ccci {
  struct mt6797_ccci_queue queue[7];pthread_mutex_t tx_stop_lock;
- int tx_sequence[256],failed,ready,teardown,diag,hs;void *dev,*speech;char *pdn,*ao;
+ int tx_sequence[256],failed,ready,teardown,diag,hs;void *dev,*speech,*imsc;char *pdn,*ao;
  unsigned long fs_indices,rpc_indices;
 };
 static struct mt6797_ccci c;static char ao[4096],pdn[4096];static u8 descriptors[7][16][16];
@@ -113,6 +113,7 @@ static void writel(u32 value,char *address){assert(stop_locked);
 static u32 readl(char *p){(void)p;assert(stop_locked);return 0;}
 static void mt6797_ccci_at_rx_close(struct mt6797_ccci *p,bool terminal){(void)p;assert(terminal);}
 static void mt6797_speech_port_stop(void *port,int reason){(void)port;(void)reason;speech_stops++;}
+static void mt6797_imsc_port_stop(void *port,int reason){(void)port;(void)reason;}
 static void mt6797_ccci_first_fatal(struct mt6797_ccci *p,const char *site){(void)p;(void)site;assert(!stop_locked);}
 static void mt6797_ccci_frontend_ready(struct mt6797_ccci *p,bool ready){__atomic_store_n(&p->ready,ready,__ATOMIC_SEQ_CST);}
 static void mt6797_md1_hs_crash(int *hs,int reason){(void)hs;(void)reason;assert(!stop_locked);}

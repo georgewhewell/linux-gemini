@@ -1,0 +1,43 @@
+What:           /dev/mt6797-imsc
+Date:           October 2026
+Contact:        Linux WWAN maintainers
+Description:
+                Exclusive MT6797 IMS control transport. The root-only (0600)
+                miscellaneous device carries opaque IMCB records on native
+                CCCI TX54/RX55, queue 6. It implements no IMS policy, automatic
+                response, SIM authentication or registration operation.
+
+                Each write supplies exactly 3456 bytes. The driver adds its
+                own 16-byte CCCI data header and native transport sequence.
+                Each read returns one complete payload, without that header;
+                accepted RX records contain 64 through 3456 payload bytes.
+                A short read buffer returns EMSGSIZE without consuming the
+                record. A failed userspace copy retains the record unless the
+                endpoint has become terminal. Unknown IMCB events remain opaque.
+
+                Only one file owner is allowed (EBUSY for another open).
+                Before modem READY, open returns EAGAIN. Nonblocking reads or
+                writes return EAGAIN when no record or TX descriptor is ready.
+                Blocking operations are interruptible; poll reports record/TX
+                readiness and terminal ERR/HUP. A successful write means the
+                complete record was published, even if STOP raced its return.
+                It does not mean the modem completed the protocol operation.
+
+                RX is limited to 32 records and 256 KiB of charged SKB memory,
+                including a record detached for a userspace copy. Overflow,
+                invalid endpoint framing or an RX55 record on another queue
+                permanently stops this endpoint. Existing common CCCI header,
+                sequence and modem-fatal policies run before endpoint dispatch
+                and retain their wider transport scope.
+
+                Loss of READY, native teardown or protocol abandonment is
+                terminal. Closing after any published TX, delivered RX or
+                queued RX requires a real modem restart before another owner
+                can communicate. Empty untouched open/close remains reusable.
+                There is no ioctl, synthetic reconnect, error-clear or reset
+                command. This prevents a replacement IMCB owner from inheriting
+                an earlier owner's uncertain outstanding operations. A future
+                reusable handover requires the actual firmware disconnect
+                contract, rather than reopening the file to discard state.
+
+                No service is started by opening or registering this device.

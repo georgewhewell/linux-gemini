@@ -58,7 +58,7 @@ struct mt6797_ccci_slot {void *gpd;};
 struct mt6797_ccci_queue {struct mt6797_ccci_slot rx[1];unsigned rx_tail;};
 struct mt6797_ccci {struct napi_struct napi;u32 tx_pending,rx_pending,tx_mask_owned,rx_mask_owned;
 	 u64 napi_mask_generation;
- int failed,hs,diag;void *dev,*speech;char *ao,*pdn;pthread_mutex_t tx_stop_lock;struct mt6797_ccci_queue queue[7];};
+ int failed,hs,diag;void *dev,*speech,*imsc;char *ao,*pdn;pthread_mutex_t tx_stop_lock;struct mt6797_ccci_queue queue[7];};
 struct mt6797_md1_cldma_irq_pending {u32 tx_done,rx_done,tx_error,rx_error;};
 static struct mt6797_ccci c;static char ao[4096],pdn[4096];static struct mt6797_md1_cldma_rgpd gpd[7];
 static unsigned work[7],reclaimed[7];static u32 txmask,rxmask,txstatus,rxstatus,cleared_tx,cleared_rx;
@@ -76,6 +76,8 @@ static irqreturn_t mt6797_ccci_cldma_irq(int,void*);
 static void mt6797_ccci_at_rx_close(struct mt6797_ccci *p,bool terminal)
 {(void)p;assert(terminal&&!locked);}
 static void mt6797_speech_port_stop(void *p,int reason)
+{(void)p;assert(reason<0&&!locked);}
+static void mt6797_imsc_port_stop(void *p,int reason)
 {(void)p;assert(reason<0&&!locked);}
 static void mt6797_ccci_first_fatal(struct mt6797_ccci *p,const char *s){(void)p;(void)s;assert(!locked);first_fatals++;}
 #define dev_err(...) assert(!locked)

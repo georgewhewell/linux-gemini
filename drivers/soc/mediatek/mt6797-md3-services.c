@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Optional real MD3 AP boot services. One ordered owner handles control and
- * FS; unsupported channels/mandatory runtime contracts terminate execution.
+ * FS and unopened logger-control drops; unsupported channels/mandatory runtime contracts terminate execution.
  * No claimed CSS completion, AT endpoint, SCP service, logging or network.
  */
 #include <linux/delay.h>
@@ -20,6 +20,7 @@
 #include "../../net/wwan/mediatek/mtk_mt6797_ccci_fs.h"
 #include "mt6797-md3-ring.h"
 #include "mt6797-md3-runtime.h"
+#include "mt6797-md3-fs-trace.h"
 
 struct mt6797_md3_services {
 	struct device *dev;
@@ -30,12 +31,15 @@ struct mt6797_md3_services {
 	struct delayed_work work;
 	atomic_t stopping, fatal;
 	bool attempted, stream, runtime_sent, hs2, stopped, fs_claimed;
-	u16 rx_sequence[2], tx_fs_sequence, tx_control_sequence;
+	u16 rx_sequence[3], tx_fs_sequence, tx_control_sequence;
 	unsigned int resume_attempts[8], next_queue;
-	u64 flow_resumes;
+	u64 flow_resumes, logger_control_dropped;
+	u32 last_logger_control_length;
 	u32 c2k_mode, ccif_irqs, wdt_irqs, irq_mask;
 	u32 last_queue, last_channel, last_control, last_fs_op;
 	s32 last_fs_status;
+	u32 last_fs_open_drive, last_fs_open_flags;
+	bool last_fs_open_trace_valid;
 	u64 fs_total, fs_replies;
 	u32 fs_pending;
 	s64 boot_deadline;
@@ -196,6 +200,8 @@ static int md3_services_frame(struct mt6797_md3_services *s, unsigned int queue,
 		port = 0;
 	else if (queue == 4 && (channel & 0xffff) == 4)
 		port = 1;
+	else if (!queue && (channel & 0xffff) == 3)
+		port = 2;
 	else
 		return -EOPNOTSUPP;
 	/* Exact active vendor exception: previous seq0 disables the next gap
@@ -205,6 +211,17 @@ static int md3_services_frame(struct mt6797_md3_services *s, unsigned int queue,
 	    ((seq - s->rx_sequence[port]) & 0x7fff) != 1)
 		return -EILSEQ;
 	s->rx_sequence[port] = seq;
+	if (port == 2) {
+		/* Vendor 8cfe6596: wire3 -> UART1_RX, queue0 char_port_ops.
+		 * Unopened UART1 is not a keep-queued exception: char receive
+		 * returns DROP_PACKET and CCIF still consumes/checks sequence.
+		 * This owner has no logger client, emits no ACK and retains no
+		 * payload. Dropping grants neither HS2 nor logging capability.
+		 */
+		s->logger_control_dropped++;
+		s->last_logger_control_length = length;
+		return 0;
+	}
 	if (!port) {
 		s->last_control = control;
 		if (length != 16)
@@ -241,6 +258,9 @@ static int md3_services_frame(struct mt6797_md3_services *s, unsigned int queue,
 	s->fs_pending = 1;
 	s->fs_total++;
 	s->last_fs_op = get_unaligned_le32(s->assembly[index] + 16);
+	s->last_fs_open_trace_valid = md3_fs_open_trace(
+		s->assembly[index], s->used[index],
+		&s->last_fs_open_drive, &s->last_fs_open_flags);
 	ret = mt6797_fs_service_request(&s->fs, s->assembly[index],
 					s->used[index], &reply,
 					&s->last_fs_status);
@@ -495,12 +515,14 @@ ssize_t mt6797_md3_services_show(struct mt6797_md3_services *s, char *buf)
 	mutex_lock(&s->lock);
 	length = sysfs_emit(
 		buf,
-		"requested=1 attempted=%u stopped=%u error=%d runtime_sent=%u hs2=%u css_ready=0 irqs=%u wdt=%u mask=%#x last_queue=%u last_channel=%u last_control=%#x fs_total=%llu fs_pending=%u fs_replies=%llu flow_resumes=%llu fs_op=%#x fs_status=%d\n",
+		"requested=1 attempted=%u stopped=%u error=%d runtime_sent=%u hs2=%u css_ready=0 irqs=%u wdt=%u mask=%#x last_queue=%u last_channel=%u last_control=%#x fs_total=%llu fs_pending=%u fs_replies=%llu flow_resumes=%llu fs_op=%#x fs_status=%d logger_control_dropped=%llu last_logger_control_length=%u logger_consumer=0 fs_open_trace_valid=%u fs_open_drive=%u fs_open_flags=%#x\n",
 		s->attempted, s->stopped, s->error, s->runtime_sent, s->hs2,
 		READ_ONCE(s->ccif_irqs), READ_ONCE(s->wdt_irqs), READ_ONCE(s->irq_mask), s->last_queue,
 		s->last_channel, s->last_control, s->fs_total, s->fs_pending,
 		s->fs_replies, s->flow_resumes, s->last_fs_op,
-		s->last_fs_status);
+		s->last_fs_status, s->logger_control_dropped,
+		s->last_logger_control_length, s->last_fs_open_trace_valid,
+		s->last_fs_open_drive, s->last_fs_open_flags);
 	mutex_unlock(&s->lock);
 	return length;
 }

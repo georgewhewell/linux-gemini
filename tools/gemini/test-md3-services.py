@@ -46,6 +46,12 @@ struct mt6797_md3_lk_snapshot{bool c2k_lte_mode_present;u32 c2k_lte_mode,image_t
 #define MT6797_FS_RX 14
 #define MD3_RING_FRAME_MAX 4096
 #define MD3_RING_BYTES 0xb6950
+#define MT6797_FS_MAX_ARGS 5
+#define MT6797_FS_MD3_MAX_ARGS 6
+#define MT6797_FS_REQUEST_MAX (MT6797_FS_PREFIX+MT6797_FS_FRAGMENT)
+#define MT6797_FS_OPEN 0x1001
+#define MT6797_FS_OPENHINT 0x1011
+struct mt6797_fs_request{u32 index,op,argc;const u8*arg[6];u32 len[6];};
 struct mt6797_fs_service{bool claimed;};
 struct mt6797_fs_reply{u8*payload;size_t capacity;};
 static struct platform_device pdev;static struct mt6797_md3_ccif ccif;static struct mt6797_md3_execution execution;
@@ -161,7 +167,31 @@ int main(void){
  s=start();enqueue(0,0,BIT(31)|(1U<<16),0x201,0,16);enqueue(0,11,BIT(31)|(1U<<16),0x207,0,16);work(s);failed(s,-EILSEQ);
  s=start();enqueue(0,11,BIT(31)|(1U<<16),0x207,0,16);enqueue(0,0,BIT(31)|(3U<<16),0x201,0,16);work(s);failed(s,-EILSEQ);
  s=start();enqueue(0,11,0,0x207,0,16);enqueue(0,0,BIT(31)|(9U<<16),0x201,0,16);work(s);assert(!s->stopped&&s->rx_sequence[0]==9&&!tx_calls);
- for(unsigned wire=1;wire<25;wire++)if(wire!=11){s=start();enqueue(0,wire,0,0x207,0,16);work(s);failed(s,-EOPNOTSUPP);assert(!tx_calls&&!fs_calls);}
+ for(unsigned wire=1;wire<25;wire++)if(wire!=11&&wire!=3){s=start();enqueue(0,wire,0,0x207,0,16);work(s);failed(s,-EOPNOTSUPP);assert(!tx_calls&&!fs_calls);}
+ /* Actual validated parser: scalar diagnostics neither grant drive nor leak path. */
+ {u8 request[48]={0};u32 drive,flags;
+  put_unaligned_le32(48,request+4);put_unaligned_le32(14,request+8);put_unaligned_le32(0x1001,request+16);put_unaligned_le32(2,request+20);
+  put_unaligned_le32(12,request+24);request[28]='W';request[30]=':';request[32]='\\';request[34]='a';
+  put_unaligned_le32(4,request+40);put_unaligned_le32(0x100,request+44);
+  assert(md3_fs_open_trace(request,48,&drive,&flags)&&drive=='W'&&flags==0x100);cases++;
+  request[28]='V';assert(md3_fs_open_trace(request,48,&drive,&flags)&&drive=='V');cases++;
+  request[29]=1;assert(!md3_fs_open_trace(request,48,&drive,&flags)&&!drive&&!flags);cases++;
+  request[29]=0;put_unaligned_le32(0x1003,request+16);assert(!md3_fs_open_trace(request,48,&drive,&flags)&&!drive&&!flags);cases++;
+  put_unaligned_le32(0x1001,request+16);assert(!md3_fs_open_trace(request,47,&drive,&flags)&&!drive&&!flags);cases++;
+ }
+ /* Unopened logger-control follows vendor drop semantics; no payload/TX/HS2. */
+ for(unsigned len=16;len<=4096;len+=4080){
+  s=start();u32 deadline=s->boot_deadline;
+  enqueue(0,3,BIT(31)|(1U<<16),0xdeadbeef,0xcafebabe,len);work(s);
+  assert(!s->stopped&&!s->hs2&&!tx_calls&&!fs_calls&&s->boot_deadline==deadline);
+  assert(s->logger_control_dropped==1&&s->last_logger_control_length==len&&s->rx_sequence[2]==1&&!s->rx_sequence[0]);
+  enqueue(0,0,BIT(31)|(9U<<16),0,0,16);work(s);assert(s->hs2&&!s->stopped&&s->rx_sequence[0]==9);cases++;
+ }
+ s=start();enqueue(0,3,BIT(31)|(1U<<16),0,0,16);enqueue(0,3,BIT(31)|(3U<<16),0,0,16);work(s);failed(s,-EILSEQ);assert(s->logger_control_dropped==1&&!tx_calls);
+ s=start();enqueue(0,3,0,0,0,16);enqueue(0,3,BIT(31)|(9U<<16),0,0,16);work(s);assert(!s->stopped&&s->logger_control_dropped==2&&s->rx_sequence[2]==9);cases++;
+ for(unsigned q=1;q<8;q++){s=start();enqueue(q,3,0,0,0,16);work(s);failed(s,-EOPNOTSUPP);assert(!s->logger_control_dropped&&!tx_calls);}
+ s=start();for(unsigned i=0;i<70;i++)enqueue(0,3,BIT(31)|(i<<16),0,0,16);work(s);assert(consumed==64&&!s->stopped&&s->logger_control_dropped==64);work(s);assert(consumed==70&&s->logger_control_dropped==70&&!s->stopped);cases++;
+ s=start();enqueue(0,3,0,0,0,16);work(s);now=30000;work(s);failed(s,-ETIMEDOUT);assert(!s->hs2&&!tx_calls);
  s=start();enqueue(4,4,BIT(31),0,0,24);frames=3;tx_busy=2;work(s);assert(!s->stopped&&fs_calls==1&&s->fs_total==1&&s->fs_replies==1&&s->tx_fs_sequence==3&&!s->used[0]);assert(sent_channels[2]==(4U|BIT(31))&&sent_channels[3]==(4U|BIT(31)|(1U<<16))&&sent_channels[4]==(4U|BIT(31)|(2U<<16)));cases++;
  s=start();enqueue(0,0,0,0,0,16);enqueue(4,4,BIT(31),0,0,24);work(s);assert(s->hs2&&sent_channels[0]==4);cases++;
 
@@ -189,7 +219,8 @@ int main(void){
 def clean(s):return re.sub(r'^#include[^\n]*\n','',s,flags=re.M)
 def run(s,label,success):
  with tempfile.TemporaryDirectory(prefix='md3-services-') as t:
-  c=Path(t)/'test.c';out=Path(t)/'test';c.write_text(SHIM+clean((ROOT/'drivers/soc/mediatek/mt6797-md3-runtime.h').read_text())+clean(s)+TEST)
+  c=Path(t)/'test.c';out=Path(t)/'test';header=(ROOT/'drivers/net/wwan/mediatek/mtk_mt6797_ccci_fs.h').read_text();parser=header[header.index('static inline u32 mt6797_fs_read32'):header.index('/* NAPI-owned assembly buffer')]
+  c.write_text(SHIM+parser+clean((ROOT/'drivers/soc/mediatek/mt6797-md3-fs-trace.h').read_text())+clean((ROOT/'drivers/soc/mediatek/mt6797-md3-runtime.h').read_text())+clean(s)+TEST)
   subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer','-pthread','-o',str(out),str(c)],check=True)
   r=subprocess.run([str(out)],capture_output=True,timeout=20)
   if success:
@@ -200,6 +231,10 @@ def run(s,label,success):
 def main():
  s=SOURCE.read_text();run(s,'actual',True)
  for name,a,b in [
+  ('logger-spurious-ACK','s->logger_control_dropped++;','s->logger_control_dropped++; mt6797_md3_ccif_transmit(s->ccif, 0, s->rx, 16);'),
+  ('logger-false-HS2','s->logger_control_dropped++;','s->logger_control_dropped++; s->hs2 = true;'),
+  ('logger-wrong-queue','else if (!queue && (channel & 0xffff) == 3)','else if ((channel & 0xffff) == 3)'),
+  ('logger-sequence-domain-shared','port = 2;', 'port = 0;'),
   ('wire11-alias-lost','(!(channel & 0xffff) || (channel & 0xffff) == 11)','!(channel & 0xffff)'),
   ('wire11-wrong-queue','if (!queue && (!(channel & 0xffff) || (channel & 0xffff) == 11))','if (!(channel & 0xffff) || (channel & 0xffff) == 11)'),
   ('heartbeat-refused','|| control == 0x207','|| false'),

@@ -516,11 +516,14 @@ int main(int argc, char **argv)
 	} else
 		goto usage;
 	if (ret) {
-		fprintf(stderr, "MD1 FS authority failed stage=%s error=%s; no retry\n",
+		fprintf(stderr, "%s FS authority failed stage=%s error=%s; no retry\n",
+			argc > 1 && !strcmp(argv[1], "--md3-internal-roots") ? "MD3" : "MD1",
 			failure_stage, strerror(-ret));
 		return 1;
 	}
-	puts(published ? "MD1 FS authority published once; this is not an HS2/AT result" :
+	puts(published && !strcmp(argv[1], "--md3-internal-roots") ?
+	     "MD3 FS authority published once; this is not an HS2/AT result" :
+	     published ? "MD1 FS authority published once; this is not an HS2/AT result" :
 	     "MD1 filesystem metadata precheck passed; no provider registration");
 	return 0;
 usage:

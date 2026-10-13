@@ -85,10 +85,27 @@ int mt6797_wifi_hif_pump_dispatch(
 	}
 	stats->rx_packets = packets;
 	if (ret)
-		return ret;
-	if (deliver && ops && ops->deliver_event)
-		return ops->deliver_event(ops->context, &event);
+		return ret > 0 ? -EPROTO : ret;
+	if (deliver && ops && ops->deliver_event) {
+		ret = ops->deliver_event(ops->context, &event);
+		return ret > 0 ? -EPROTO : ret;
+	}
 	return 0;
+}
+
+static int mt6797_wifi_hif_pump_more(struct mt6797_wifi_hif_pump_stats *stats)
+{
+	u64 yields;
+
+	if (check_add_overflow(stats->rx_budget_yields, 1ULL, &yields))
+		return -EOVERFLOW;
+	/* WRPLR is a non-consuming head-length query; unread FIFO entries
+	 * remain in their ports even when a pass stops between the two ports.
+	 * WHISR is read-clear, so remember the unconsumed RX work explicitly.
+	 */
+	stats->rx_budget_yields = yields;
+	stats->rx_pending = true;
+	return MT6797_WIFI_HIF_PUMP_MORE;
 }
 
 /*
@@ -117,9 +134,9 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 		return -EINVAL;
 	ret = ops->read_status(ops->context, &status);
 	if (ret)
-		return ret;
+		return ret > 0 ? -EPROTO : ret;
 	*acknowledged_status = status;
-	if (!status)
+	if (!status && !stats->rx_pending)
 		return ops->allow_empty_status ? 0 : -ENODATA;
 	if (status & ~MT6797_WIFI_WHIER_DEFAULT)
 		return -EPROTO;
@@ -130,20 +147,24 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 	if (status & MT6797_WIFI_WHISR_TX_DONE) {
 		ret = ops->read_tx_released(ops->context, released);
 		if (ret)
-			return ret;
+			return ret > 0 ? -EPROTO : ret;
 		ret = mt6797_wifi_hif_pump_account_tx(stats, released);
 		if (ret)
-			return ret;
+			return ret > 0 ? -EPROTO : ret;
 	}
-	if (!(status & MT6797_WIFI_WHISR_RX_DONE))
+	if (!(status & MT6797_WIFI_WHISR_RX_DONE) && !stats->rx_pending)
 		return 0;
 
 	while (packets < MT6797_WIFI_HIF_RX_BUDGET) {
 		ret = ops->read_lengths(ops->context, lengths);
 		if (ret)
-			return ret;
-		if (!lengths[0] && !lengths[1])
-			return saw_length ? 0 : -ENODATA;
+			return ret > 0 ? -EPROTO : ret;
+		if (!lengths[0] && !lengths[1]) {
+			bool continued = stats->rx_pending;
+
+			stats->rx_pending = false;
+			return saw_length || continued ? 0 : -ENODATA;
+		}
 		saw_length = true;
 
 		for (port = 0; port < ARRAY_SIZE(lengths); port++) {
@@ -154,11 +175,11 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 			if (lengths[port] > MT6797_WIFI_RUNTIME_MAX_PACKET_LENGTH)
 				return -EMSGSIZE;
 			if (packets == MT6797_WIFI_HIF_RX_BUDGET)
-				return -EOVERFLOW;
+				return mt6797_wifi_hif_pump_more(stats);
 			ret = ops->read_packet(ops->context, port,
 					       lengths[port], &packet);
 			if (ret)
-				return ret;
+				return ret > 0 ? -EPROTO : ret;
 			ret = mt6797_wifi_rx_parse(packet, lengths[port], &frame);
 			if (ret) {
 				if (ops->reject_packet)
@@ -178,13 +199,16 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 			}
 			ret = mt6797_wifi_hif_pump_dispatch(ops, stats, &frame);
 			if (ret)
-				return ret;
+				return ret > 0 ? -EPROTO : ret;
 			packets++;
 		}
 	}
 
 	ret = ops->read_lengths(ops->context, lengths);
 	if (ret)
-		return ret;
-	return lengths[0] || lengths[1] ? -EOVERFLOW : 0;
+		return ret > 0 ? -EPROTO : ret;
+	if (lengths[0] || lengths[1])
+		return mt6797_wifi_hif_pump_more(stats);
+	stats->rx_pending = false;
+	return 0;
 }

@@ -122,7 +122,10 @@ static void pump_latency(void)
 	assert(s.rx_packets == 32 && s.tx_released[15] == 1 && now_ms > 2000);
 	/* The work bound itself is unchanged: a 33rd packet is still refused. */
 	rx_left = 40; memset(&s, 0, sizeof(s));
-	assert(mt6797_wifi_hif_pump_run(&ops, &s, &status) == -EOVERFLOW);
+	assert(mt6797_wifi_hif_pump_run(&ops, &s, &status) == MT6797_WIFI_HIF_PUMP_MORE);
+	assert(s.rx_pending && s.rx_packets == 32);
+	assert(!mt6797_wifi_hif_pump_run(&ops, &s, &status));
+	assert(!s.rx_pending && s.rx_packets == 40);
 }
 
 /* ---- Firmware power-off (GEN3 wlanAdapterStop/wlanPowerOffInt). ---- */

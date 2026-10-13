@@ -36,6 +36,8 @@ struct inode {void *i_sb;};
 struct dentry {void *d_sb;struct inode inode;int type,refs;bool mounted;};
 struct file {struct {void *mnt;} f_path;struct inode inode;unsigned int f_sb_err;};
 static struct file rootfile;
+/* MD1 has no optional V low-space policy; real V tested separately. */
+static int mt6797_fs_md3_data_space(struct file*f,size_t n){(void)f;(void)n;return 0;}
 static struct super_block root_sb;
 static struct dentry parent,child,alternate;
 static int rootrefs,allocs,writers,locked,calls,lookup_calls;

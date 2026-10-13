@@ -38,7 +38,12 @@ static struct mt6797_fs_archive provider_archive;
 static struct device *provider_cold;
 /* Optional MD3 authority is separately published and consumed once. */
 static struct mt6797_fs_state md3_state;
-static struct file *md3_roots[3];
+static struct file *md3_roots[4]; /* optional fourth root V, never W */
+/* Release-published only after the common MD3 claim. CONSUMED cannot be
+ * cancelled, so the V file/mount remains pinned for the rest of this boot.
+ */
+static bool md3_data_live;
+#include "mt6797-md3-data-root.h"
 
 bool mt6797_md1_fs_provider_enabled(void)
 {
@@ -93,7 +98,8 @@ static bool mt6797_fs_internal_writable(struct file *file)
 static bool mt6797_fs_backing_matches(struct file *file, unsigned int ram)
 {
 	if (ram == MT6797_MD1_FS_BACKING_INTERNAL)
-		return mt6797_fs_internal_writable(file);
+		return mt6797_fs_internal_writable(file) ||
+		       mt6797_fs_md3_data_writable(file);
 	return ram ? mt6797_fs_tmpfs_writable(file) : mt6797_fs_readonly(file);
 }
 
@@ -214,14 +220,15 @@ static struct file *mt6797_fs_root_get_for(unsigned int modem, u8 drive)
 		return mt6797_fs_root_get(drive);
 	if (modem != MT6797_FS_MODEM_MD3)
 		return NULL;
-	index = drive == 'Z' ? 0 : drive == 'X' ? 1 : drive == 'Y' ? 2 : -1;
+	index = drive == 'Z' ? 0 : drive == 'X' ? 1 : drive == 'Y' ? 2 : drive == 'V' ? 3 : -1;
 	if (index < 0)
 		return NULL;
 	spin_lock_irqsave(&provider_lock, flags);
 	if (md3_state.stage == MT6797_FS_CONSUMED &&
 	    provider_state.stage == MT6797_FS_CONSUMED &&
 	    provider_volatile == MT6797_MD1_FS_BACKING_INTERNAL &&
-	    mt6797_fs_internal_writable(md3_roots[index]))
+	    mt6797_fs_backing_matches(md3_roots[index],
+				      MT6797_MD1_FS_BACKING_INTERNAL))
 		file = get_file(md3_roots[index]);
 	spin_unlock_irqrestore(&provider_lock, flags);
 	return file;
@@ -244,7 +251,8 @@ static struct dentry *mt6797_fs_walk_component(const struct file *root,
 					     &qname, base);
 	if (IS_ERR(child))
 		return child;
-	if (d_mountpoint(child) || d_is_symlink(child) ||
+	if (!mt6797_fs_md3_data_entry((struct file *)root, child) ||
+	    d_mountpoint(child) || d_is_symlink(child) ||
 	    (!d_is_reg(child) && !d_is_dir(child)) ||
 	    child->d_sb != file_inode(root)->i_sb) {
 		dput(child);
@@ -466,7 +474,9 @@ struct file *mt6797_fs_provider_open_ram_drive(unsigned int modem, u8 drive,
 		file = ERR_PTR(-ENOENT);
 		if (!create)
 			goto put_child;
-		ret = vfs_create(mnt_idmap(root->f_path.mnt), child, 0600, NULL);
+		ret = mt6797_fs_md3_data_space(root, 4096);
+		if (!ret)
+			ret = vfs_create(mnt_idmap(root->f_path.mnt), child, 0600, NULL);
 		if (ret) {
 			file = ERR_PTR(ret);
 			goto put_child;
@@ -474,6 +484,9 @@ struct file *mt6797_fs_provider_open_ram_drive(unsigned int modem, u8 drive,
 	}
 	file = ERR_PTR(-EISDIR);
 	if (!d_is_reg(child))
+		goto put_child;
+	file = ERR_PTR(-EACCES);
+	if (!mt6797_fs_md3_data_entry(root, child))
 		goto put_child;
 	target.mnt = root->f_path.mnt;
 	target.dentry = child;
@@ -591,6 +604,9 @@ int mt6797_fs_provider_mutate_drive(unsigned int modem, u8 drive,
 		/* This kernel's vfs_mkdir consumes the input dentry even on
 		 * error; only its successful returned reference is ours.
 		 */
+		ret = mt6797_fs_md3_data_space(root, 4096);
+		if (ret)
+			goto put_child;
 		child = vfs_mkdir(mnt_idmap(root->f_path.mnt), d_inode(parent),
 				  child, 0770, NULL);
 		if (IS_ERR(child)) {
@@ -700,6 +716,9 @@ int mt6797_fs_provider_rename_drive(unsigned int modem, u8 old_drive,
 	ret = -ENOTDIR;
 	if (!d_is_dir(rd.old_parent) || !d_is_dir(rd.new_parent))
 		goto put_new_parent;
+	ret = mt6797_fs_md3_data_space(new_root, 4096);
+	if (ret)
+		goto put_new_parent;
 	ret = mnt_want_write(old_root->f_path.mnt);
 	if (ret)
 		goto put_new_parent;
@@ -774,6 +793,9 @@ ssize_t mt6797_md1_fs_provider_write(struct file *file, const void *buf,
 	if (!pos || *pos < 0 || *pos > 16 * 1024 * 1024 ||
 	    count > 16ULL * 1024 * 1024 - (u64)*pos)
 		return -EFBIG;
+	ret = count ? mt6797_fs_md3_data_space(file, count) : 0;
+	if (ret)
+		return ret;
 	written = kernel_write(file, buf, count, pos);
 	if (written > 0) {
 		ret = mt6797_fs_sync_file(file);
@@ -1340,7 +1362,9 @@ int mt6797_fs_provider_stats_drive(unsigned int modem, u8 drive,
 	root = mt6797_fs_root_get_for(modem, drive);
 	if (!root)
 		return -ENODEV;
-	ret = mt6797_fs_validate_root(root, READ_ONCE(provider_volatile), &snapshot);
+	ret = modem == MT6797_FS_MODEM_MD3 && drive == 'V' ?
+		mt6797_fs_md3_data_stats(root, &snapshot) :
+		mt6797_fs_validate_root(root, READ_ONCE(provider_volatile), &snapshot);
 	/* A remount during statfs must not publish a result from an authority
 	 * whose backing policy no longer holds.
 	 */
@@ -1592,10 +1616,12 @@ static bool mt6797_fs_md3_roots_accessible(void)
 	if (provider_state.stage != MT6797_FS_CONSUMED ||
 	    provider_volatile != MT6797_MD1_FS_BACKING_INTERNAL)
 		return false;
-	for (i = 0; i < ARRAY_SIZE(md3_roots); i++)
+	for (i = 0; i < 3; i++)
 		if (!mt6797_fs_internal_writable(md3_roots[i]))
 			return false;
-	return true;
+	return !md3_roots[3] ||
+		(mt6797_fs_md3_data_backing(md3_roots[3]) &&
+		 mt6797_fs_md3_private_dir(md3_roots[3]->f_path.dentry));
 }
 
 /* Called only by the future MD3 ordered service owner before admitting RX.
@@ -1609,6 +1635,8 @@ int mt6797_md3_fs_provider_claim(void)
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = mt6797_fs_md3_roots_accessible() ? mt6797_fs_claim(&md3_state) :
 						 -ENODEV;
+	if (!ret && md3_roots[3])
+		smp_store_release(&md3_data_live, true);
 	spin_unlock_irqrestore(&provider_lock, flags);
 	return ret;
 }
@@ -1616,7 +1644,7 @@ EXPORT_SYMBOL_GPL(mt6797_md3_fs_provider_claim);
 
 static int mt6797_fs_md3_cancel(void)
 {
-	struct file *files[3] = {};
+	struct file *files[4] = {};
 	unsigned long flags;
 	unsigned int i;
 	int ret;
@@ -1635,13 +1663,15 @@ static int mt6797_fs_md3_cancel(void)
 	return ret;
 }
 
-static int mt6797_fs_md3_register(const int *fds)
+static int mt6797_fs_md3_register_roots(const int *fds, unsigned int count)
 {
-	struct file *files[3] = {}, *md1[3] = {};
+	struct file *files[4] = {}, *md1[3] = {};
 	unsigned long flags;
 	unsigned int i;
 	int ret;
 
+	if (count != 3 && count != 4)
+		return -EINVAL;
 	spin_lock_irqsave(&provider_lock, flags);
 	ret = provider_state.stage == MT6797_FS_CONSUMED &&
 			      provider_volatile ==
@@ -1658,34 +1688,43 @@ static int mt6797_fs_md3_register(const int *fds)
 	spin_unlock_irqrestore(&provider_lock, flags);
 	if (ret)
 		return ret;
-	for (i = 0; i < ARRAY_SIZE(files); i++) {
+	for (i = 0; i < count; i++) {
 		files[i] = fget(fds[i]);
-		ret = files[i] ? mt6797_fs_validate_md3_root(files[i], md1[i]) :
-				 -EBADF;
+		ret = !files[i] ? -EBADF : i == 3 ?
+			mt6797_fs_validate_md3_data_root(files[i]) :
+			mt6797_fs_validate_md3_root(files[i], md1[i]);
 		if (ret)
 			goto out;
 	}
 	spin_lock_irqsave(&provider_lock, flags);
-	for (i = 0; i < ARRAY_SIZE(files); i++)
-		if (!mt6797_fs_internal_writable(files[i]))
+	for (i = 0; i < count; i++)
+		if (!(i == 3 ? mt6797_fs_md3_data_backing(files[i]) &&
+			      mt6797_fs_md3_private_dir(files[i]->f_path.dentry) :
+		      mt6797_fs_internal_writable(files[i])))
 			ret = -EROFS;
 	if (!ret)
 		ret = mt6797_fs_publish(&md3_state);
 	if (!ret)
-		for (i = 0; i < ARRAY_SIZE(files); i++) {
+		for (i = 0; i < count; i++) {
 			md3_roots[i] = files[i];
 			files[i] = NULL;
 		}
 	spin_unlock_irqrestore(&provider_lock, flags);
 out:
-	for (i = 0; i < ARRAY_SIZE(files); i++) {
+	for (i = 0; i < count; i++) {
 		if (files[i])
 			fput(files[i]);
-		fput(md1[i]);
+		if (i < 3)
+			fput(md1[i]);
 	}
 	if (ret)
 		mt6797_fs_md3_cancel();
 	return ret;
+}
+
+static int mt6797_fs_md3_register(const int *fds)
+{
+	return mt6797_fs_md3_register_roots(fds, 3);
 }
 
 static long mt6797_fs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -1693,9 +1732,17 @@ static long mt6797_fs_ioctl(struct file *file, unsigned int cmd, unsigned long a
 	struct mt6797_md1_fs_registration registration;
 	struct mt6797_md1_fs_ram_roots roots;
 	struct mt6797_md1_fs_nv_roots nv;
+	struct mt6797_md3_fs_roots md3;
 
 	if (!ns_capable(&init_user_ns, CAP_SYS_ADMIN))
 		return -EPERM;
+	if (cmd == MT6797_MD3_FS_REGISTER_ROOTS) {
+		if (copy_from_user(&md3, (void __user *)arg, sizeof(md3)))
+			return -EFAULT;
+		if (md3.version != 1 || md3.flags || md3.reserved)
+			return -EINVAL;
+		return mt6797_fs_md3_register_roots(md3.directory_fd, 4);
+	}
 	if (cmd == MT6797_MD3_FS_CANCEL)
 		return mt6797_fs_md3_cancel();
 	if (cmd == MT6797_MD3_FS_REGISTER_NV_ROOTS) {

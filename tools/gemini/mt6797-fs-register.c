@@ -338,6 +338,8 @@ static int source_authority(const struct fs_source *source, const char *mountpoi
  return source_authority_mode(source, mountpoint, publish, ramdir, retained, 0);
 }
 
+#include "mt6797-fs-md3-data.h"
+
 /* All fixed internal roots are pinned before a single irreversible-to-this-
  * boot publication. No registration, including EINTR, is ever retried.
  */
@@ -347,6 +349,9 @@ static int register_internal_roots_for(char **paths, int companion)
   .version = 1, .directory_fd = { -1, -1, -1 },
  };
  struct stat st[3];
+ struct mt6797_md3_fs_roots md3 = {
+  .version = 1, .directory_fd = { -1, -1, -1, -1 },
+ };
  int provider = -1, ret, i, j;
 
  for (i = 0; i < 3; i++) {
@@ -365,13 +370,26 @@ static int register_internal_roots_for(char **paths, int companion)
     goto out;
   }
  }
+ if (companion == 2) {
+  ret = md3_data_root_open();
+  if (ret < 0)
+   goto out;
+  md3.directory_fd[3] = ret;
+  for (i = 0; i < 3; i++)
+   md3.directory_fd[i] = roots.directory_fd[i];
+ }
  failure_stage = "provider-device-open";
  provider = open("/dev/mt6797-md1-fs-provider", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
  if (provider < 0) { ret = -errno; goto out; }
  failure_stage = "provider-register-internal-once";
+ if (companion == 2)
+  ret = ioctl(provider, MT6797_MD3_FS_REGISTER_ROOTS, &md3) ? -errno : 0;
+ else
  ret = ioctl(provider, companion ? MT6797_MD3_FS_REGISTER_NV_ROOTS :
              MT6797_MD1_FS_REGISTER_NV_ROOTS, &roots) ? -errno : 0;
 out:
+ if (md3.directory_fd[3] >= 0)
+  close(md3.directory_fd[3]);
  if (provider >= 0)
   close(provider);
  for (i = 0; i < 3; i++)
@@ -486,11 +504,13 @@ int main(int argc, char **argv)
 				goto usage;
 		ret = register_ram_roots(argv + 2);
 		published = 1;
- } else if (argc == 5 && !strcmp(argv[1], "--md3-internal-roots")) {
+ } else if (argc == 5 && (!strcmp(argv[1], "--md3-internal-roots") ||
+                          !strcmp(argv[1], "--md3-internal-data-roots"))) {
   for (int i = 2; i < 5; i++)
    if (argv[i][0] != '/')
     goto usage;
-  ret = register_internal_roots_for(argv + 2, 1);
+  ret = register_internal_roots_for(argv + 2,
+      !strcmp(argv[1], "--md3-internal-data-roots") ? 2 : 1);
   published = 1;
  } else if (argc == 5 && !strcmp(argv[1], "--internal-roots")) {
   for (int i = 2; i < 5; i++)
@@ -517,16 +537,18 @@ int main(int argc, char **argv)
 		goto usage;
 	if (ret) {
 		fprintf(stderr, "%s FS authority failed stage=%s error=%s; no retry\n",
-			argc > 1 && !strcmp(argv[1], "--md3-internal-roots") ? "MD3" : "MD1",
+			argc > 1 && (!strcmp(argv[1], "--md3-internal-roots") ||
+                         !strcmp(argv[1], "--md3-internal-data-roots")) ? "MD3" : "MD1",
 			failure_stage, strerror(-ret));
 		return 1;
 	}
-	puts(published && !strcmp(argv[1], "--md3-internal-roots") ?
+	puts(published && (!strcmp(argv[1], "--md3-internal-roots") ||
+                         !strcmp(argv[1], "--md3-internal-data-roots")) ?
 	     "MD3 FS authority published once; this is not an HS2/AT result" :
 	     published ? "MD1 FS authority published once; this is not an HS2/AT result" :
 	     "MD1 filesystem metadata precheck passed; no provider registration");
 	return 0;
 usage:
-	fprintf(stderr, "usage (root only): mt6797-fs-register --cancel | --check-internal-devices | --internal-roots /rwZ /rwX /rwY | --md3-internal-roots /rwZ /rwX /rwY | --check-device | /absolute/ro-mount | --check-mount /absolute/ro-mount | --ram /absolute/ro-mount /absolute/ram-mount | --check-roots-device | --check-root-mount Z/X/Y /absolute/ro-mount | --ram-roots /sourceZ /ramZ /sourceX /ramX /sourceY /ramY\n");
+	fprintf(stderr, "usage (root only): mt6797-fs-register --cancel | --check-internal-devices | --internal-roots /rwZ /rwX /rwY | --md3-internal-roots /rwZ /rwX /rwY | --md3-internal-data-roots /rwZ /rwX /rwY | --check-device | /absolute/ro-mount | --check-mount /absolute/ro-mount | --ram /absolute/ro-mount /absolute/ram-mount | --check-roots-device | --check-root-mount Z/X/Y /absolute/ro-mount | --ram-roots /sourceZ /ramZ /sourceX /ramX /sourceY /ramY\n");
 	return 2;
 }

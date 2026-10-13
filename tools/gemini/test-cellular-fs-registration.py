@@ -333,6 +333,11 @@ int main(void){
 '''
 namespace = r'''
 #define MT6797_FS_MODEM_MD1 0U
+#define MT6797_FS_MODEM_MD3 2U
+/* V is absent in this unchanged MD1 authority fixture. */
+static bool mt6797_fs_md3_data_writable(struct file*f){(void)f;return false;}
+static int mt6797_fs_md3_data_stats(struct file*f,struct mt6797_md1_fs_stats*s){(void)f;(void)s;assert(!"MD3 V in MD1 test");return -ENODEV;}
+static int mt6797_fs_md3_register_roots(const int*f,unsigned n){(void)f;(void)n;assert(!"MD3 V in MD1 test");return -ENODEV;}
 #define mt6797_fs_root_get_for(modem, drive) (assert((modem)==0), mt6797_fs_root_get(drive))
 static int mt6797_fs_md3_cancel(void) { assert(!"unexpected MD3 request in MD1 fixture"); return -1; }
 static int mt6797_fs_md3_register(const int *fds) { (void)fds; assert(!"unexpected MD3 request in MD1 fixture"); return -1; }

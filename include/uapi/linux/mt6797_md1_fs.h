@@ -50,6 +50,19 @@ struct mt6797_md1_fs_nv_roots {
  */
 #define MT6797_MD3_FS_REGISTER_NV_ROOTS \
 	_IOW('M', 0xf6, struct mt6797_md1_fs_nv_roots)
+/* Atomic optional Z/X/Y plus V directory authority. V is the dedicated
+ * root-owned gemini-cellular/md3-data directory on internal userdata p32;
+ * it grants neither the filesystem root nor a W firmware/restore source.
+ * Registration and MD3 consumption are one-shot in the same cold boot.
+ */
+struct mt6797_md3_fs_roots {
+	__u32 version; /* 1 */
+	__s32 directory_fd[4]; /* Z, X, Y, V */
+	__u32 flags; /* zero */
+	__u32 reserved; /* zero */
+};
+#define MT6797_MD3_FS_REGISTER_ROOTS \
+	_IOW('M', 0xf8, struct mt6797_md3_fs_roots)
 #define MT6797_MD3_FS_CANCEL _IO('M', 0xf7)
 /* Provider backing selector; zero/one preserve the historical RO/RAM values. */
 #define MT6797_MD1_FS_BACKING_INTERNAL 2

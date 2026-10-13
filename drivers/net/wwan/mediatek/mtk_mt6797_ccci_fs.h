@@ -549,7 +549,7 @@ static inline int mt6797_fs_path_decode_drive(const u8 *arg, u32 len, char *out,
 	ret = mt6797_fs_utf16_decode(arg, len, out, outsize);
 	if (ret)
 		return ret;
-	if ((out[0] != 'Z' && out[0] != 'X' && out[0] != 'Y') || out[1] != ':')
+	if ((out[0] != 'Z' && out[0] != 'X' && out[0] != 'Y' && out[0] != 'V') || out[1] != ':')
 		return -ENXIO;
 	*drive = out[0];
 	i = 2;
@@ -643,7 +643,7 @@ static inline s32 mt6797_fs_diskinfo_drive(const struct mt6797_fs_request *reque
 	if (request->argc != 2 || request->len[0] != sizeof(z_root) ||
 	    request->len[1] != 4)
 		return MT6797_FS_PARAM_ERROR;
-	if (drive != 'Z' && drive != 'X' && drive != 'Y')
+	if (drive != 'Z' && drive != 'X' && drive != 'Y' && drive != 'V')
 		return MT6797_FS_DRIVE_NOT_FOUND;
 	z_root[0] = drive;
 	if (memcmp(request->arg[0], z_root, sizeof(z_root)))

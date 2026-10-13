@@ -56,7 +56,8 @@ fake = r'''
 /* Fixture tree: Z:\ = { FATC62610C1.log? no; NVRAM/ { MD_A.bin, MD_B.bin, sub/ }, ro.txt, big.bin } */
 struct node { const char *path; unsigned mode; const char *data; u64 size; int parent; };
 static unsigned int selected_modem;
-static bool md3_registered, md3_claimed;
+static bool md3_registered, md3_claimed, md3_data_enabled;
+static char v_data[64];static unsigned v_creates;
 static char big[5000];
 static struct node nodes[] = {
  {"", 0040755, NULL, 4096, -1},
@@ -73,6 +74,8 @@ static struct node nodes[] = {
  {"y/common", 0100444, "protect-s-long", 14, 10},
  {"x/new", 0100644, NULL, 0, 8},
  {"y/new", 0100644, NULL, 0, 10},
+ {"v/", 0040700, NULL, 0, -1},
+ {"v/new", 0100600, v_data, 0, 14},
 };
 #define NODES ((int)(sizeof(nodes) / sizeof(nodes[0])))
 static int open_files, provider_available = 1, fstat_error, read_error;
@@ -89,6 +92,7 @@ static struct file *mt6797_md1_fs_provider_open(const char *path, bool directory
 static bool ram_enabled;static int ram_create_count,ram_truncate_count,root_creates[2];static char ram_data[64],root_data[2][64];
 static struct file *mt6797_md1_fs_provider_open_ram(const char *path,bool writable,bool create,bool truncate){
  if(!ram_enabled)return ERR_PTR(-EROFS);
+ if(!strcmp(path,"v/new")){assert(selected_modem==2&&md3_data_enabled);if(create)v_creates++;if(truncate)nodes[15].size=0;struct file*f=mt6797_md1_fs_provider_open(path,false);f->writable=writable;return f;}
  int index=!strcmp(path,"x/new")?0:!strcmp(path,"y/new")?1:-1;
  if(index>=0){
   if(create)root_creates[index]++;
@@ -101,6 +105,7 @@ static struct file *mt6797_md1_fs_provider_open_ram(const char *path,bool writab
 static ssize_t mt6797_md1_fs_provider_write(struct file *f,const void *data,size_t count,loff_t *pos){
  if(!ram_enabled||!f->writable)return -EROFS;
  assert(pos==&f->f_pos);
+ if(f->node==15){assert(f->modem==2&&*pos<64);if(count>(size_t)(64-*pos))count=64-*pos;memcpy(v_data+*pos,data,count);*pos+=count;if((u64)*pos>nodes[15].size)nodes[15].size=*pos;return count;}
  if(f->node>=12){
   assert(f->node<=13&&*pos<64);if(count>(size_t)(64-*pos))count=64-*pos;
   memcpy(root_data[f->node-12]+*pos,data,count);*pos+=count;if((u64)*pos>nodes[f->node].size)nodes[f->node].size=*pos;return count;
@@ -114,7 +119,7 @@ static ssize_t mt6797_md1_fs_provider_read(struct file *f, void *buf, size_t cou
  struct node *n = &nodes[f->node]; assert(!f->directory && pos == &f->f_pos);
  if (*pos >= (loff_t)n->size) return 0;
  if (count > n->size - *pos) count = n->size - *pos;
- memcpy(buf, n->data + *pos, count); if(f->modem==2)memset(buf,'3',count); *pos += count; return count; }
+ memcpy(buf, n->data + *pos, count); if(f->modem==2&&f->node!=15)memset(buf,'3',count); *pos += count; return count; }
 static loff_t mt6797_md1_fs_provider_llseek(struct file *f, loff_t offset, int whence) {
  loff_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? f->f_pos : (loff_t)nodes[f->node].size;
  if (base + offset < 0) return -EINVAL;
@@ -128,6 +133,7 @@ static int mt6797_md1_fs_provider_stats(struct mt6797_md1_fs_stats *s) { if (!pr
 static bool roots_enabled;
 static int drive_path(u8 drive,const char *path,char *mapped){
  if(drive=='Z'){strcpy(mapped,path);return 0;}
+ if(drive=='V'){if(selected_modem!=2||!md3_data_enabled)return -ENODEV;snprintf(mapped,2048,"v/%s",path);return 0;}
  if(!roots_enabled||(drive!='X'&&drive!='Y'))return -ENODEV;
  snprintf(mapped,2048,"%c/%s",drive=='X'?'x':'y',path);return 0;
 }
@@ -142,6 +148,7 @@ static struct file *mt6797_md1_fs_provider_open_ram_drive(u8 drive,const char *p
 }
 static int mt6797_md1_fs_provider_stats_drive(u8 drive,struct mt6797_md1_fs_stats *s){
  if(drive=='Z')return mt6797_md1_fs_provider_stats(s);
+ if(drive=='V'){if(selected_modem!=2||!md3_data_enabled)return -ENODEV;*s=(struct mt6797_md1_fs_stats){4096,22249472/8,16384};return 0;}
  if(!provider_available||!roots_enabled||(drive!='X'&&drive!='Y'))return -ENODEV;
  *s=(struct mt6797_md1_fs_stats){4096,drive=='X'?2048:3192,drive=='X'?700:900};return 0;
 }
@@ -734,6 +741,37 @@ int main(void) {
   current_service=&svc;mt6797_fs_service_release(&svc);assert(!open_files);
  }
 
+
+ /* Optional V: actual 170 OPEN flags, successful private MD3 roundtrip;
+  * syntax acceptance never grants it to MD1 or the unregistered MD3 root. */
+ {
+  struct mt6797_fs_service md3={.modem=MT6797_FS_MODEM_MD3};
+  current_service=&md3;
+  assert(!run_path(MT6797_FS_OPEN,"V:\\new",0x10400,true)&&status==-19);
+  md3_data_enabled=true;ram_enabled=true;
+  current_service=&svc;
+  assert(!run_path(MT6797_FS_OPEN,"V:\\new",0x10400,true)&&status==-19&&!v_creates);
+  assert(!run_path(MT6797_FS_GETDISKINFO,"V:\\",3,true)&&status==MT6797_FS_DRIVE_NOT_FOUND);
+  assert(!run_u32(MT6797_FS_GETCLUSTERSIZE,1,'V',0,0)&&status==MT6797_FS_DRIVE_NOT_FOUND);
+  current_service=&md3;
+  assert(!run_path(MT6797_FS_OPEN,"W:\\new",0x10400,true)&&status==-19&&!v_creates);
+  assert(!run_path(MT6797_FS_OPEN,"V:\\..\\outside",0x10400,true)&&status==-16&&!v_creates);
+  assert(!run_path(MT6797_FS_GETDISKINFO,"V:\\",3,true)&&!status);
+  assert(arg(1,&d)==84&&d[24]=='V'&&mt6797_fs_read32(d+56)==22249472/8&&mt6797_fs_read32(d+64)==16384);
+  assert(!run_u32(MT6797_FS_GETCLUSTERSIZE,1,'V',0,0)&&status==4096);
+  assert(!run_path(MT6797_FS_OPEN,"V:\\new",0x10400,true)&&status==1&&v_creates==1);
+  u8 handle[4],count[4];mt6797_fs_write32(handle,1);mt6797_fs_write32(count,7);
+  const void*args[]={handle,"current",count};u32 lengths[]={4,7,4};
+  assert(!run(0,MT6797_FS_WRITE,3,args,lengths)&&!status&&arg_s32(1)==7);
+  assert(!run_u32(MT6797_FS_SEEK,3,1,0,0)&&!status);
+  assert(!run_u32(MT6797_FS_READ,2,1,7,0)&&!status&&arg(2,&d)==7&&!memcmp(d,"current",7));
+  assert(!run_u32(MT6797_FS_CLOSE,1,1,0,0)&&!status&&!open_files);
+  assert(!run_path(MT6797_FS_OPEN,"V:\\new",0x100,true)&&status==1&&v_creates==1);
+  assert(!run(0,MT6797_FS_SHUTDOWN,0,NULL,NULL)&&!open_files&&!md3.open_count);
+  md3_data_enabled=false;ram_enabled=false;current_service=&svc;
+  puts("PASS optional V actual codec/service: captured OPEN10400, real create/write/readback/close, disk geometry, default-off and MD1/W/traversal refusals, no handle leaks");
+ }
+
  /* Exact current BIN_REGION_ACCESS: ordinary -2 reply, no backing access. */
  {
   struct mt6797_fs_service md3={.modem=MT6797_FS_MODEM_MD3};
@@ -786,8 +824,19 @@ int main(void) {
  return 0;
 }
 '''
+variants={'current':(codec,service)}
+if '--negative-controls' in os.sys.argv:
+    variants.update({
+        'old-V-path-refusal':(codec.replace(" && out[0] != 'V'", ""),service),
+        'old-V-disk-refusal':(codec.replace(" && drive != 'V'", ""),service),
+        'old-V-cluster-refusal':(codec,service.replace(" && drive != 'V'", "")),
+    })
 with tempfile.TemporaryDirectory(prefix='gemini-fs-service-') as directory:
     path = Path(directory)
-    (path / 'test.c').write_text(shim + provider + codec + fake + namespace + service + tests)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-fsanitize=address,undefined', '-g', str(path / 'test.c'), '-o', str(path / 'test')], check=True)
-    subprocess.run([str(path / 'test')], check=True, timeout=30)
+    for name,(wire,implementation) in variants.items():
+        if name!='current': assert (wire,implementation)!=(codec,service),name
+        (path / 'test.c').write_text(shim + provider + wire + fake + namespace + implementation + tests)
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-fsanitize=address,undefined', '-g', '-fno-pie', '-no-pie', str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+        result=subprocess.run([str(path / 'test')],capture_output=True,text=True,timeout=30)
+        if name=='current': assert not result.returncode,result.stderr;print(result.stdout,end='')
+        else: assert result.returncode,name;print('REJECTED',name)

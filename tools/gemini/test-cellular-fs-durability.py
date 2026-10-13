@@ -38,6 +38,8 @@ struct super_block {int s_umount;unsigned int s_wb_err;};
 struct inode {void *i_sb;};
 struct file {struct inode inode;unsigned int f_mode,f_sb_err;};
 static struct file target;
+/* MD1 has no optional V low-space policy; real V tested separately. */
+static int mt6797_fs_md3_data_space(struct file*f,size_t n){(void)f;(void)n;return 0;}
 static struct super_block target_sb;
 static unsigned int provider_volatile;
 static bool backing;

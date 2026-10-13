@@ -57,10 +57,19 @@ static struct vfsmount mounts[3], alien_mount;
 static struct block_device devices[3];
 static struct super_block super[3];
 static struct dentry parents[3], md[3], md3[3], alien;
-static struct file *provider_file, *provider_extra[2], *md3_roots[3];
+static struct file *provider_file, *provider_extra[2], *md3_roots[4];
+static bool md3_data_live;
+#define smp_store_release(p,v) (*(p)=(v))
 static unsigned provider_volatile;
 static bool spin, inode_held;
 static int mode, stat_calls, checks;
+/* V is deliberately absent in this unchanged three-root regression. Its
+ * real directory/space authority is exercised by test-cellular-md3-data.py.
+ */
+static bool mt6797_fs_md3_data_writable(struct file*f){(void)f;return false;}
+static bool mt6797_fs_md3_data_backing(struct file*f){(void)f;return false;}
+static bool mt6797_fs_md3_private_dir(struct dentry*d){(void)d;return false;}
+static int mt6797_fs_validate_md3_data_root(struct file*f){(void)f;return -EPERM;}
 static int mt6797_fs_md3_cancel(void);
 #define spin_lock_irqsave(p,f) do { (f)=0; assert(!spin&&!inode_held); spin=true; } while(0)
 #define spin_unlock_irqrestore(p,f) do { (void)(f); assert(spin); spin=false; } while(0)
@@ -93,7 +102,7 @@ functions = ('mt6797_fs_readonly', 'mt6797_fs_tmpfs_writable', 'mt6797_fs_intern
              'mt6797_fs_drive_file', 'mt6797_fs_root_get', 'mt6797_fs_root_get_for',
              'mt6797_fs_validate_root', 'mt6797_fs_validate_md3_root',
              'mt6797_fs_md3_roots_accessible', 'mt6797_md3_fs_provider_claim',
-             'mt6797_fs_md3_cancel', 'mt6797_fs_md3_register', 'mt6797_fs_provider_restore_drive')
+             'mt6797_fs_md3_cancel', 'mt6797_fs_md3_register_roots', 'mt6797_fs_md3_register', 'mt6797_fs_provider_restore_drive')
 tests = r'''
 static const int fds[3]={20,21,22};
 static void reset(void) {

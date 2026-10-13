@@ -81,6 +81,10 @@ static struct file backing, *provider_file, *provider_extra[2];
 static bool provider_volatile;
 #define MT6797_MD1_FS_BACKING_INTERNAL 2
 static bool mt6797_fs_internal_writable(struct file *f){(void)f;return false;}
+/* V is absent in the legacy MD1 fixture; actual V authority has its own test. */
+static bool mt6797_fs_md3_data_writable(struct file *f){(void)f;return false;}
+static bool mt6797_fs_md3_data_entry(struct file*f,struct dentry*d){(void)f;(void)d;return true;}
+static int mt6797_fs_md3_data_space(struct file*f,size_t n){(void)f;(void)n;return 0;}
 static int mt6797_fs_sync_mutation(struct file *f,int result){(void)f;return result;}
 static int mt6797_fs_sync_file(struct file *f){(void)f;return 0;}
 static struct dentry rootd = {&sb, "", 2, 1, false, NULL, NULL, 4096};

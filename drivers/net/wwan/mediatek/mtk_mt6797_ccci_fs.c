@@ -566,7 +566,7 @@ static s32 mt6797_fs_getclustersize(struct mt6797_fs_service *service,
 
 	if (!mt6797_fs_arg_u32(request, 0, &drive))
 		return MT6797_FS_PARAM_ERROR;
-	if (drive != 'Z' && drive != 'X' && drive != 'Y')
+	if (drive != 'Z' && drive != 'X' && drive != 'Y' && drive != 'V')
 		return MT6797_FS_DRIVE_NOT_FOUND;
 	ret = mt6797_fs_provider_stats_drive(service->modem, drive, &stats);
 	if (ret)

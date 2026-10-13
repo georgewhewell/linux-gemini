@@ -415,6 +415,15 @@ int mt6797_md3_services_claim(struct mt6797_md3_services *s)
 	return ret;
 }
 
+static int md3_services_pending_error(struct mt6797_md3_services *s)
+{
+	int ret = atomic_read(&s->fatal);
+
+	if (ret)
+		return ret;
+	return atomic_read(&s->stopping) ? -ESHUTDOWN : 0;
+}
+
 int mt6797_md3_services_start(struct mt6797_md3_services *s)
 {
 	u8 query[64];
@@ -450,6 +459,10 @@ int mt6797_md3_services_start(struct mt6797_md3_services *s)
 	if (ret)
 		goto failed;
 	s->stream = true;
+	/* Enabling IRQs can synchronously expose a pending fatal event. */
+	ret = md3_services_pending_error(s);
+	if (ret)
+		goto failed;
 	ret = mt6797_md3_ccif_publish_runtime(s->ccif, s->runtime, length,
 					      s->query, sizeof(s->query));
 	if (ret != 1) {
@@ -457,6 +470,10 @@ int mt6797_md3_services_start(struct mt6797_md3_services *s)
 		goto failed;
 	}
 	s->runtime_sent = true;
+	/* Publication cannot be undone or retried, even when STOP raced it. */
+	ret = md3_services_pending_error(s);
+	if (ret)
+		goto failed;
 	s->boot_deadline = ktime_to_ms(ktime_get()) + 30000;
 	mod_delayed_work(s->wq, &s->work, 0);
 	ret = 0;

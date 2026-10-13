@@ -55,6 +55,8 @@ static void*allocations[20];static unsigned allocations_used,point,fail_point,sc
 static int flow_queue=-1,flow_error;static unsigned flow_calls;
 static int lk_error,claim_error,start_error,query_error,stream_error,publish_result=1,fs_error,append_result=1,frames=1,tx_result,receive_error;
 static unsigned query_mutation,tx_busy,receive_calls,receive_late,send_late;static bool receive_wdt;
+static unsigned start_event,publish_event;
+static void startup_event(unsigned event);
 static bool stream_on,running,worker_running,block_fs,fs_entered,release_fs,shutdown_entered;
 static s64 now;
 static pthread_t worker_thread;
@@ -84,9 +86,9 @@ static void mt6797_fs_service_release(struct mt6797_fs_service*f){assert(!fs_ent
 static int mt6797_md3_execution_start(struct mt6797_md3_execution*e){assert(e==&execution);starts++;if(start_error)return start_error;running=true;return 0;}
 static void mt6797_md3_execution_shutdown(struct mt6797_md3_execution*e){assert(e==&execution&&!stream_on);resets++;running=false;}
 static int mt6797_md3_execution_query(struct mt6797_md3_execution*e,u8*q,u16*seq){assert(e==&execution&&running);const u32 words[16]={50463234,50529026,50528771,196610,0,768,3};memcpy(q,words,64);*seq=0;if(query_mutation)q[14]=2;return query_error;}
-static int mt6797_md3_ccif_stream_start(struct mt6797_md3_ccif*c,void(*fn)(void*,bool,void*),void*d){assert(c==&ccif&&running);if(stream_error)return stream_error;stream_on=true;irq_callback=fn;irq_data=d;return 0;}
+static int mt6797_md3_ccif_stream_start(struct mt6797_md3_ccif*c,void(*fn)(void*,bool,void*),void*d){assert(c==&ccif&&running);if(stream_error)return stream_error;stream_on=true;irq_callback=fn;irq_data=d;startup_event(start_event);return 0;}
 static void mt6797_md3_ccif_stream_stop(struct mt6797_md3_ccif*c){assert(c==&ccif);stops++;stream_on=false;irq_callback=0;irq_data=0;pthread_mutex_lock(&cond_lock);shutdown_entered=true;pthread_cond_broadcast(&changed);pthread_mutex_unlock(&cond_lock);}
-static int mt6797_md3_ccif_publish_runtime(struct mt6797_md3_ccif*c,const void*r,size_t n,const void*q,size_t m){assert(c==&ccif&&stream_on&&running&&n==584&&m==116);assert(get_unaligned_le32((u8*)q+8)==1);assert(((u8*)r)[0]==0);publications++;return publish_result;}
+static int mt6797_md3_ccif_publish_runtime(struct mt6797_md3_ccif*c,const void*r,size_t n,const void*q,size_t m){assert(c==&ccif&&stream_on&&running&&n==584&&m==116);assert(get_unaligned_le32((u8*)q+8)==1);assert(((u8*)r)[0]==0);publications++;startup_event(publish_event);return publish_result;}
 static int mt6797_md3_ccif_receive(struct mt6797_md3_ccif*c,unsigned q,void*f,size_t n){assert(c==&ccif&&stream_on&&running&&q<8&&n==4096);receive_calls++;if(receive_error)return receive_error;if(head[q]==tail[q])return 0;unsigned i=head[q]++;memcpy(f,queued[q][i],lengths[q][i]);consumed++;if(receive_late==consumed)now+=30001;if(receive_wdt)irq_callback(irq_data,true,0);return lengths[q][i];}
 static int mt6797_fs_request_append_md3(u8*a,size_t*u,const void*f,size_t n){assert((get_unaligned_le32((u8*)f+8)&0xffff)==14&&n>=24);if(append_result>0){memcpy(a,f,n);*u=n;}return append_result;}
 static int mt6797_fs_service_request(struct mt6797_fs_service*f,const void*a,size_t n,struct mt6797_fs_reply*r,s32*s){assert(f->claimed&&n>=24&&r->capacity==MT6797_FS_REPLY_MAX);fs_calls++;if(block_fs){pthread_mutex_lock(&cond_lock);fs_entered=true;pthread_cond_broadcast(&changed);while(!release_fs)pthread_cond_wait(&changed,&cond_lock);pthread_mutex_unlock(&cond_lock);}*s=-17;return fs_error;}
@@ -96,8 +98,17 @@ static int mt6797_md3_ccif_transmit(struct mt6797_md3_ccif*c,unsigned q,const vo
 static int mt6797_md3_ccif_rx_resume_needed(struct mt6797_md3_ccif*c,unsigned q,unsigned*a){assert(c==&ccif&&stream_on&&running);flow_calls++;if(flow_error)return flow_error;if(flow_queue==(int)q)return 1;*a=0;return 0;}
 '''
 TEST=r'''
+static void startup_event(unsigned event)
+{
+ if (event==3 || event==4)
+  atomic_set(&((struct mt6797_md3_services *)irq_data)->stopping,1);
+ if (event==1 || event==4) {
+  u8 ap[32]={0};put_unaligned_le32(BIT(7),ap+16);
+  irq_callback(irq_data,false,ap);
+ } else if (event==2) irq_callback(irq_data,true,0);
+}
 static void cleanup(void){if(cleanup_action)cleanup_action(cleanup_data);cleanup_action=0;cleanup_data=0;for(unsigned i=0;i<allocations_used;i++)free(allocations[i]);allocations_used=0;}
-static void init(void){cleanup();flow_queue=-1;flow_error=0;flow_calls=0;point=fail_point=scheduled=delay=stops=releases=resets=starts=publications=tx_calls=fs_calls=claim_calls=consumed=0;lk_error=claim_error=start_error=query_error=stream_error=fs_error=tx_result=receive_error=0;publish_result=append_result=frames=1;query_mutation=tx_busy=receive_calls=receive_late=send_late=0;receive_wdt=false;stream_on=running=worker_running=block_fs=fs_entered=release_fs=shutdown_entered=false;now=0;snapshot=(struct mt6797_md3_lk_snapshot){true,2,2};memset(head,0,sizeof(head));memset(tail,0,sizeof(tail));memset(sent_channels,0,sizeof(sent_channels));}
+static void init(void){cleanup();start_event=publish_event=0;flow_queue=-1;flow_error=0;flow_calls=0;point=fail_point=scheduled=delay=stops=releases=resets=starts=publications=tx_calls=fs_calls=claim_calls=consumed=0;lk_error=claim_error=start_error=query_error=stream_error=fs_error=tx_result=receive_error=0;publish_result=append_result=frames=1;query_mutation=tx_busy=receive_calls=receive_late=send_late=0;receive_wdt=false;stream_on=running=worker_running=block_fs=fs_entered=release_fs=shutdown_entered=false;now=0;snapshot=(struct mt6797_md3_lk_snapshot){true,2,2};memset(head,0,sizeof(head));memset(tail,0,sizeof(tail));memset(sent_channels,0,sizeof(sent_channels));}
 static struct mt6797_md3_services*acquire(void){struct mt6797_md3_services*s=0;assert(!mt6797_md3_services_acquire(&pdev,&ccif,&execution,&s));assert(s&&!starts&&!claim_calls&&!publications);return s;}
 static struct mt6797_md3_services*start(void){init();struct mt6797_md3_services*s=acquire();assert(!mt6797_md3_services_claim(s)&&claim_calls==1);assert(mt6797_md3_services_claim(s)==-EALREADY);assert(!mt6797_md3_services_start(s)&&s->runtime_sent&&running&&stream_on&&publications==1);return s;}
 static void enqueue(unsigned q,unsigned channel,u32 seq,u32 ctrl,u32 res,unsigned len){assert(q<8&&tail[q]<80&&len>=16);u8*p=queued[q][tail[q]];memset(p,0,len);put_unaligned_le32(ctrl,p+4);put_unaligned_le32(channel|seq,p+8);put_unaligned_le32(res,p+12);if(len>=24)put_unaligned_le32(0x1001,p+16);lengths[q][tail[q]++]=len;}
@@ -111,6 +122,19 @@ int main(void){
  for(unsigned i=0;i<3;i++){init();if(i==0)snapshot.c2k_lte_mode_present=false;if(i==1)snapshot.c2k_lte_mode=1;if(i==2)snapshot.image_type=12;s=0;assert(mt6797_md3_services_acquire(&pdev,&ccif,&execution,&s)==-EOPNOTSUPP&&!allocations_used);cases++;}
  init();s=acquire();claim_error=-EACCES;assert(mt6797_md3_services_claim(s)==-EACCES&&!s->fs_claimed&&!starts);cases++;
  for(unsigned i=0;i<6;i++){init();s=acquire();assert(!mt6797_md3_services_claim(s));if(i==0)start_error=-EIO;if(i==1)query_error=-EPIPE;if(i==2)query_mutation=1;if(i==3)stream_error=-EBUSY;if(i==4)publish_result=-EAGAIN;if(i==5)publish_result=0;int e=mt6797_md3_services_start(s);assert(e<0);failed(s,e);assert(mt6797_md3_services_start(s)==-EALREADY);cases++;}
+ /* IRQ enable and positive publication are separate failure boundaries.
+  * A pre-publication fault must publish nothing; a later fault must retain
+  * the published fact and stop/reset before start returns to its caller. */
+ for(unsigned stage=0;stage<2;stage++)for(unsigned event=1;event<=4;event++){
+  init();s=acquire();assert(!mt6797_md3_services_claim(s));
+  if(stage)publish_event=event;else start_event=event;
+  int expected=event==2?-EIO:event==3?-ESHUTDOWN:-EPROTO;
+  assert(mt6797_md3_services_start(s)==expected);
+  assert(publications==stage&&s->runtime_sent==(bool)stage);
+  assert(s->stopped&&s->error==expected&&!running&&!stream_on);
+  assert(!s->boot_deadline&&!s->hs2&&resets==1&&releases==1);
+  failed(s,expected);cases++;
+ }
  s=start();work(s);assert(!s->stopped&&!s->hs2&&delay==20);now=30000;work(s);failed(s,-ETIMEDOUT);
  s=start();enqueue(0,0,BIT(31)|(1U<<16),0,0,16);work(s);assert(s->hs2&&!s->stopped);now=100000;work(s);assert(!s->stopped);enqueue(0,0,BIT(31)|(2U<<16),0,0,16);work(s);failed(s,-EPROTO);
  s=start();enqueue(0,0,BIT(31)|(1U<<16),0,0,16);receive_late=1;work(s);failed(s,-ETIMEDOUT);assert(!s->hs2);
@@ -182,6 +206,10 @@ def main():
   ('heartbeat-false-HS2','if (control == 0x201 ||','if (control == 0x207) s->hs2 = true; if (control == 0x201 ||'),
   ('heartbeat-spurious-TX','if (control == 0x201 ||','if (control == 0x207) mt6797_md3_ccif_transmit(s->ccif, 0, s->rx, 16); if (control == 0x201 ||'),
   ('control-length-unchecked','if (length != 16)','if (false)'),
+  ('publish-after-enable-fatal','s->stream = true;\n\t/* Enabling IRQs can synchronously expose a pending fatal event. */\n\tret = md3_services_pending_error(s);','s->stream = true; ret = 0;'),
+  ('success-after-publication-fatal','/* Publication cannot be undone or retried, even when STOP raced it. */\n\tret = md3_services_pending_error(s);','ret = 0;'),
+  ('erase-published-runtime-on-fault','s->runtime_sent = true;','s->runtime_sent = !md3_services_pending_error(s);'),
+  ('ignore-startup-stop','return atomic_read(&s->stopping) ? -ESHUTDOWN : 0;','return 0;'),
   ('WDT-after-RX-ignored','if (atomic_read(&s->fatal) || atomic_read(&s->stopping)) {','if (false) {'),
   ('flow-sequence-not-consumed','s->tx_control_sequence = (s->tx_control_sequence + 1) & 0x7fff;','/* lost control sequence */'),
   ('queue0-starves-FS','queue = (s->next_queue + n) & 7;','queue = n;'),

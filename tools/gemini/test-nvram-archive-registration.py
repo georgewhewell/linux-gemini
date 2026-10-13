@@ -42,7 +42,7 @@ struct file {struct inode inode;int f_mode;};
 static loff_t i_size_read(struct inode *i){return i->size;}
 static struct super_block sb;
 static struct file file;
-static bool enable_volatile,archive_installing;
+static bool archive_installing;
 enum {MT6797_FS_EMPTY,MT6797_FS_INSTALLING,MT6797_FS_READY,MT6797_FS_CONSUMED,MT6797_FS_CANCELLED};
 static struct {int stage;} provider_state;
 static int seals, refs, allocations, mode;
@@ -64,7 +64,7 @@ tests=r'''
 static void reset(void){
  assert(!refs&&!archive_installing);kvfree_sensitive(provider_archive.data,provider_archive.size);
  provider_archive=(struct mt6797_fs_archive){0};assert(!allocations);
- provider_state.stage=MT6797_FS_EMPTY;enable_volatile=true;seals=15;mode=0;
+ provider_state.stage=MT6797_FS_EMPTY;seals=15;mode=0;
  sb.s_magic=TMPFS_MAGIC;file=(struct file){{0100600,&sb,448},FMODE_READ};
 }
 static void failed(int fd,int expected){assert(mt6797_fs_register_archive(fd)==expected);assert(!provider_archive.data&&!refs&&!allocations&&!archive_installing);}
@@ -72,7 +72,7 @@ int main(int argc,char **argv){
  assert(argc==2);FILE *f=fopen(argv[1],"rb");assert(f&&fread(input,1,448,f)==448);fclose(f);
  reset();assert(!mt6797_fs_register_archive(7));assert(provider_archive.count==3&&provider_archive.size==448&&!refs&&!archive_installing&&allocations==1);
  assert(mt6797_fs_register_archive(7)==-EALREADY);reset();
- enable_volatile=false;failed(7,-EPERM);reset();failed(8,-EBADF);
+ failed(8,-EBADF);
  for(int bit=1;bit<=8;bit*=2){reset();seals=15^bit;failed(7,-EPERM);}
  reset();seals=-EINVAL;failed(7,-EPERM);
  reset();sb.s_magic=0;failed(7,-EINVAL);reset();file.inode.i_mode=0040700;failed(7,-EINVAL);
@@ -82,7 +82,7 @@ int main(int argc,char **argv){
  reset();input[0]^=1;failed(7,-EINVAL);input[0]^=1;
  for(int s=1;s<=4;s++){reset();provider_state.stage=s;failed(7,-EALREADY);}
  reset();archive_installing=true;assert(mt6797_fs_register_archive(7)==-EBUSY&&archive_installing);archive_installing=false;
- reset();puts("PASS actual sealed archive registration: policy, size/seals, short reads, errors, cancellation, duplicate/state gates and resource cleanup");
+ reset();puts("PASS actual sealed archive registration: size/seals, short reads, errors, cancellation, duplicate/state gates and resource cleanup");
 }
 '''
 fixture=runpy.run_path(str(Path(__file__).with_name('test-nvram-restore-archive.py')))

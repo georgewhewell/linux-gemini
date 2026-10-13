@@ -124,10 +124,6 @@ static int mt6797_md3_power_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	mutex_init(&owner->lock);
 	platform_set_drvdata(pdev, owner);
-	/* Allocate fallible diagnostic resources before any hardware mutation. */
-	ret = devm_device_add_group(dev, &mt6797_md3_group);
-	if (ret)
-		return ret;
 	owner->ccif_requested = device_property_read_bool(dev, "mediatek,prepare-ap-md3-ccif");
 	owner->execution_requested = device_property_read_bool(dev, "mediatek,probe-md3-execution");
 	owner->services_requested = device_property_read_bool(dev, "mediatek,run-md3-services");
@@ -164,6 +160,12 @@ static int mt6797_md3_power_probe(struct platform_device *pdev)
 		if (ret)
 			return ret;
 	}
+	/* LIFO devres must remove and drain readers before freeing their backing
+	 * objects. Keep this fallible allocation before authority or power changes.
+	 */
+	ret = devm_device_add_group(dev, &mt6797_md3_group);
+	if (ret)
+		return ret;
 	/* All fallible/deferred provider acquisition precedes the one-boot lease. */
 	ret = mt6797_md1_cold_owner_md3_power_ready();
 	if (ret)

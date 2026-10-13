@@ -15,6 +15,7 @@ SHIM=r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 typedef uint8_t u8;typedef int8_t s8;typedef uint32_t u32;typedef int32_t s32;typedef uint64_t u64;
 #define BIT(n) (1U<<(n))
 #define GENMASK(h,l) ((~0U>>(31-(h)))&(~0U<<(l)))
@@ -61,6 +62,7 @@ struct resource { u64 start,end; };
 struct regmap { u32 v[1024]; };
 struct of_phandle_args { struct device_node *np; unsigned args_count,args[1]; };
 struct attribute_group { int unused; };
+struct device_attribute { int unused; };
 static const struct attribute_group mt6797_md3_group={0};
 struct mt6797_md1_cold_owner_backend { struct device *dev; struct regmap *spm; };
 struct mt6797_md1_mpu_plan_entry { u64 start,end;u32 access_permission;u8 emi_mpu_region; };
@@ -84,6 +86,50 @@ static int wdt_error,group_error,acquire_error,verify_error,resource_wrong,reset
 static unsigned reset_asserts,reset_gets,groups,acquires;
 static bool have_node=true,property=true,power_domain=false,alloc_error=false;
 static void *allocated;
+/* Model devres LIFO and sysfs_remove_group's active-reader drain. Resource
+ * suppliers stay stubbed, but the production probe chooses their real order. */
+enum resource_kind { RES_CCIF, RES_EXECUTION, RES_SERVICES, RES_GROUP };
+static enum resource_kind resource_stack[4];
+static unsigned resource_count, active_readers;
+static bool resource_live[3], group_live, group_draining;
+static bool block_reader, reader_entered, release_reader;
+static pthread_mutex_t lifetime_lock=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t lifetime_changed=PTHREAD_COND_INITIALIZER;
+static void resource_add(enum resource_kind kind)
+{
+ assert(resource_count<ARRAY_SIZE(resource_stack));
+ resource_stack[resource_count++]=kind;
+ if(kind==RES_GROUP)group_live=true;else resource_live[kind]=true;
+}
+static void release_resources(void)
+{
+ pthread_mutex_lock(&lifetime_lock);
+ while(resource_count){
+  enum resource_kind kind=resource_stack[--resource_count];
+  if(kind==RES_GROUP){
+   group_live=false;group_draining=true;
+   pthread_cond_broadcast(&lifetime_changed);
+   while(active_readers)pthread_cond_wait(&lifetime_changed,&lifetime_lock);
+   group_draining=false;
+  }else{
+   assert(!group_live&&!active_readers); /* no stale or active reader at free */
+   resource_live[kind]=false;
+  }
+ }
+ pthread_mutex_unlock(&lifetime_lock);
+}
+static void *dev_get_drvdata(struct device *d){return d->data;}
+static ssize_t mt6797_md3_services_show(struct mt6797_md3_services *s,char *buf)
+{
+ assert(s==&services&&buf);
+ pthread_mutex_lock(&lifetime_lock);
+ assert(resource_live[RES_SERVICES]);reader_entered=true;
+ pthread_cond_broadcast(&lifetime_changed);
+ while(block_reader&&!release_reader)pthread_cond_wait(&lifetime_changed,&lifetime_lock);
+ assert(resource_live[RES_SERVICES]);
+ pthread_mutex_unlock(&lifetime_lock);
+ return 0;
+}
 #define atomic_read(p) (*(p))
 #define MT6797_MD1_INFRA_BASE 0x10001000
 #define MT6797_MD1_INFRA_SIZE 0x1000
@@ -132,20 +178,20 @@ static bool device_property_present(struct device*d,const char*p){(void)d;assert
 static int mtk_wdt_require_boot_recovery(struct device*d){(void)d;return wdt_error;}
 static void *devm_kzalloc(struct device*d,size_t n,int flags){(void)d;assert(flags==0);if(alloc_error)return NULL;assert(!allocated);return allocated=calloc(1,n);}
 static void platform_set_drvdata(struct platform_device*p,void*d){p->dev.data=d;}
-static int devm_device_add_group(struct device*d,const struct attribute_group*g){assert(d->data&&g==&mt6797_md3_group);groups++;return group_error;}
+static int devm_device_add_group(struct device*d,const struct attribute_group*g){assert(d->data&&g==&mt6797_md3_group&&!writes&&!reset_asserts&&!services_claims&&!acquires);groups++;if(group_error)return group_error;resource_add(RES_GROUP);return 0;}
 static struct reset_control *devm_reset_control_get_exclusive(struct device*d,const char*n){(void)d;assert(!strcmp(n,"c2k"));reset_gets++;return reset_get_error?ERR_PTR(reset_get_error):&reset;}
 int mt6797_md3_lk_handoff_get(struct mt6797_md3_lk_snapshot*s){*s=mt6797_md1_md3_snapshot;return 0;}
 static int mt6797_md1_cold_owner_acquire_md3(struct device*d,struct mt6797_md3_lk_snapshot*s){acquires++;if(acquire_error)return acquire_error;mt6797_md1_md3_consumer=d;*s=mt6797_md1_md3_snapshot;return 0;}
 static int mt6797_md1_cold_owner_verify_md3_cold(struct device*d){assert(d==mt6797_md1_md3_consumer);return verify_error;}
 static int mt6797_md3_ccif_acquire(struct platform_device*p,const struct mt6797_md3_lk_snapshot*s,struct reset_control*r,struct mt6797_md3_ccif**out){
- assert(p&&s&&r==&reset&&!writes&&!reset_asserts&&!acquires);ccif_acquires++;if(ccif_acquire_error)return ccif_acquire_error;*out=&ccif;return 0;
+ assert(p&&s&&r==&reset&&!writes&&!reset_asserts&&!acquires);ccif_acquires++;if(ccif_acquire_error)return ccif_acquire_error;resource_add(RES_CCIF);*out=&ccif;return 0;
 }
 static int mt6797_md3_ccif_prepare(struct mt6797_md3_ccif*c){assert(c==&ccif&&writes==7&&reset.held==1);ccif_prepares++;return ccif_prepare_error;}
 static int mt6797_md3_execution_acquire(struct platform_device*p,struct reset_control*r,struct mt6797_md3_ccif*c,struct mt6797_md3_execution**out){
  assert(p&&r==&reset&&c==&ccif&&!writes&&!reset_asserts&&!acquires&&ccif_acquires);execution_acquires++;
- if(execution_acquire_error)return execution_acquire_error;*out=&execution;return 0;}
+ if(execution_acquire_error)return execution_acquire_error;resource_add(RES_EXECUTION);*out=&execution;return 0;}
 static int mt6797_md3_execution_run(struct mt6797_md3_execution*e){assert(e==&execution&&ccif_prepares&&writes==7&&reset.held);execution_runs++;return execution_run_error;}
-static int mt6797_md3_services_acquire(struct platform_device*p,struct mt6797_md3_ccif*c,struct mt6797_md3_execution*e,struct mt6797_md3_services**out){assert(p&&c==&ccif&&e==&execution&&!writes&&!reset_asserts&&!acquires);services_acquires++;if(services_acquire_error)return services_acquire_error;*out=&services;return 0;}
+static int mt6797_md3_services_acquire(struct platform_device*p,struct mt6797_md3_ccif*c,struct mt6797_md3_execution*e,struct mt6797_md3_services**out){assert(p&&c==&ccif&&e==&execution&&!writes&&!reset_asserts&&!acquires);services_acquires++;if(services_acquire_error)return services_acquire_error;resource_add(RES_SERVICES);*out=&services;return 0;}
 static int mt6797_md3_services_claim(struct mt6797_md3_services*s){assert(s==&services&&services_acquires&&!writes&&!reset_asserts&&!acquires);services_claims++;return services_claim_error;}
 static int mt6797_md3_services_start(struct mt6797_md3_services*s){assert(s==&services&&services_claims==1&&ccif_prepares&&writes==7&&reset.held);services_starts++;return services_start_error;}
 static int reset_control_assert(struct reset_control*r){assert(r==&reset);reset_asserts++;r->held=1;return reset_assert_error;}
@@ -153,6 +199,9 @@ static int reset_control_assert(struct reset_control*r){assert(r==&reset);reset_
 TESTS=r'''
 static unsigned cases;
 static void fixture(void) {
+ assert(!resource_count&&!group_live&&!active_readers&&!group_draining);
+ for(unsigned i=0;i<ARRAY_SIZE(resource_live);i++)assert(!resource_live[i]);
+ block_reader=reader_entered=release_reader=false;
  static const struct mt6797_md3_lk_mpu_entry entries[]={
  {0x88400000,0x885fffff,8,0xb45b68,0},{0x88200000,0x883fffff,9,0xb45b40,0},
  {0xbe000000,0xbe40ffff,16,0x4b45b6c,0},{0xbe410000,0xbebfffff,17,0x4b45b6c,0}};
@@ -229,6 +278,7 @@ static void probe(int expected, bool retained, bool mutation) {
  int ret=mt6797_md3_power_probe(&p);assert(ret==expected);
  if(retained)assert(!ret&&p.dev.data&&((struct mt6797_md3_power_owner*)p.dev.data)->result.state==MT6797_MD3_POWER_FAILED);
  if(!mutation)assert(!writes&&!reset_asserts);
+ release_resources();
  if(allocated){pthread_mutex_destroy(&((struct mt6797_md3_power_owner*)allocated)->lock.value);free(allocated);allocated=NULL;}
  cases++;
 }
@@ -285,8 +335,11 @@ static void probe_tests(void) {
  fixture();reset_spec_error=99;request_services=request_ccif=true;allow_runtime_services=false;probe(-EPERM,false,false);assert(!services_acquires);
  fixture();reset_spec_error=99;request_services=request_execution=request_ccif=true;probe(-EPERM,false,false);assert(!services_acquires);
  fixture();reset_spec_error=99;request_services=request_ccif=true;services_acquire_error=-ENOMEM;probe(-ENOMEM,false,false);assert(services_acquires==1&&!services_claims);
+ fixture();reset_spec_error=99;request_services=request_ccif=true;group_error=-ENOMEM;probe(-ENOMEM,false,false);assert(services_acquires==1&&!services_claims&&!acquires&&!services_starts);
  fixture();reset_spec_error=99;request_services=request_ccif=true;mt6797_md1_stage2_complete=false;probe(-EPROBE_DEFER,false,false);assert(services_acquires==1&&!services_claims&&!acquires);
  fixture();reset_spec_error=99;request_services=request_ccif=true;services_claim_error=-ENODEV;probe(-ENODEV,false,false);assert(services_claims==1&&!acquires&&!services_starts);
+ fixture();reset_spec_error=99;request_services=request_ccif=true;acquire_error=-EIO;probe(-EIO,false,false);assert(services_claims==1&&acquires==1&&!services_starts);
+ fixture();reset_spec_error=99;request_services=request_ccif=true;verify_error=-EIO;probe(-EIO,false,false);assert(services_claims==1&&acquires==1&&!services_starts);
  fixture();reset_spec_error=99;request_services=request_ccif=true;probe(0,false,true);assert(services_starts==1&&!execution_runs);
  fixture();reset_spec_error=99;request_services=request_ccif=true;services_start_error=-EPROTO;probe(0,true,true);assert(services_starts==1&&!execution_runs);
  for(unsigned i=1;i<=7;i++){
@@ -324,7 +377,43 @@ static void execution_tests(void){
   assert(mt6797_md1_cold_owner_md3_execution_update(&consumer,0x368,2,0)<0&&writes==prior);cases++;
  }
 }
-int main(void){backend_tests();domain_tests();probe_tests();execution_tests();printf("PASS actual MD3 backend/probe cases=%u\n",cases);}
+static void *sysfs_reader(void *data)
+{
+ char buf[4096];
+ pthread_mutex_lock(&lifetime_lock);assert(group_live);active_readers++;
+ pthread_mutex_unlock(&lifetime_lock);
+ assert(services_show(data,NULL,buf)==0); /* production attribute callback */
+ pthread_mutex_lock(&lifetime_lock);active_readers--;
+ pthread_cond_broadcast(&lifetime_changed);pthread_mutex_unlock(&lifetime_lock);
+ return NULL;
+}
+static void *failed_probe_cleanup(void *unused){(void)unused;release_resources();return NULL;}
+static void reader_lifetime_test(void)
+{
+ fixture();reset_spec_error=99;request_services=request_ccif=true;
+ mt6797_md1_stage2_complete=false;block_reader=true;
+ struct platform_device p={.dev={.of_node=&node,.id=2}};
+ assert(mt6797_md3_power_probe(&p)==-EPROBE_DEFER);
+ assert(!writes&&!reset_asserts&&!services_claims&&!acquires);
+ pthread_t reader,cleanup;
+ assert(!pthread_create(&reader,NULL,sysfs_reader,&p.dev));
+ pthread_mutex_lock(&lifetime_lock);
+ while(!reader_entered)pthread_cond_wait(&lifetime_changed,&lifetime_lock);
+ pthread_mutex_unlock(&lifetime_lock);
+ assert(!pthread_create(&cleanup,NULL,failed_probe_cleanup,NULL));
+ pthread_mutex_lock(&lifetime_lock);
+ while(!group_draining)pthread_cond_wait(&lifetime_changed,&lifetime_lock);
+ assert(!group_live&&active_readers==1&&resource_count==3);
+ for(unsigned i=0;i<ARRAY_SIZE(resource_live);i++)assert(resource_live[i]);
+ release_reader=true;pthread_cond_broadcast(&lifetime_changed);
+ pthread_mutex_unlock(&lifetime_lock);
+ assert(!pthread_join(reader,NULL)&&!pthread_join(cleanup,NULL));
+ assert(!resource_count&&!group_live&&!active_readers);
+ for(unsigned i=0;i<ARRAY_SIZE(resource_live);i++)assert(!resource_live[i]);
+ pthread_mutex_destroy(&((struct mt6797_md3_power_owner*)allocated)->lock.value);
+ free(allocated);allocated=NULL;cases++;
+}
+int main(void){backend_tests();domain_tests();probe_tests();execution_tests();reader_lifetime_test();printf("PASS actual MD3 backend/probe cases=%u\n",cases);}
 '''
 
 def main():
@@ -339,8 +428,16 @@ def main():
     units.append(cold.split('#if IS_ENABLED(CONFIG_MTK_MT6797_MD3_POWER_OWNER)\n',1)[1].split('\n#endif',1)[0])
     units.append('static bool allow_domain_power;\n'+re.search(r'struct mt6797_md3_power_owner \{.*?\n\};',owner,re.S).group())
     units.extend(base.function(owner,n) for n in ['mt6797_md3_reset_spec','mt6797_md3_power_probe'])
+    units.append(re.search(r'^static ssize_t services_show\(.*?^\}',owner,re.M|re.S).group())
     units.append(TESTS)
     actual='\n'.join(units)
+    group_add='\tret = devm_device_add_group(dev, &mt6797_md3_group);\n\tif (ret)\n\t\treturn ret;\n'
+    assert actual.count(group_add)==1
+    without_group=actual.replace(group_add,'')
+    lifetime_controls={
+      'sysfs-before-backing-lifetime':without_group.replace('platform_set_drvdata(pdev, owner);','platform_set_drvdata(pdev, owner);\n'+group_add),
+      'sysfs-after-authority':without_group.replace('\tret = mt6797_md1_cold_owner_acquire_md3(dev, &snapshot);',group_add+'\tret = mt6797_md1_cold_owner_acquire_md3(dev, &snapshot);'),
+    }
     negative={
       'consume-fs-before-ready':('ret = mt6797_md1_cold_owner_md3_power_ready();','if (owner->services_requested) mt6797_md3_services_claim(owner->services); ret = mt6797_md1_cold_owner_md3_power_ready();'),
       'early-lease-consumption':('ret = mt6797_md3_lk_handoff_get(&snapshot);','ret = mt6797_md1_cold_owner_acquire_md3(dev, &snapshot);'),
@@ -354,7 +451,7 @@ def main():
     }
     with tempfile.TemporaryDirectory(prefix='md3-owner-') as d:
       p=Path(d)
-      for label,src in [('positive',actual)]+[(n,actual.replace(a,b)) for n,(a,b) in negative.items()]:
+      for label,src in [('positive',actual)]+[(n,actual.replace(a,b)) for n,(a,b) in negative.items()]+list(lifetime_controls.items()):
         (p/'actual.c').write_text(src)
         c=subprocess.run([os.environ.get('HOSTCC','cc'),'-std=gnu11','-O1','-g','-Wall','-Wextra','-Werror',
           '-Wno-pointer-sign','-Wno-sign-compare','-Wno-misleading-indentation','-Wno-unused-parameter','-Wno-unused-but-set-variable',

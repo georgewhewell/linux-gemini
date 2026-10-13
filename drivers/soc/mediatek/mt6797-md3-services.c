@@ -189,7 +189,10 @@ static int md3_services_frame(struct mt6797_md3_services *s, unsigned int queue,
 
 	s->last_queue = queue;
 	s->last_channel = channel & 0xffff;
-	if (!queue && !(channel & 0xffff))
+	/* Active vendor mapping aliases CTRL0 and STATUS11 to logical
+	 * CCCI_CONTROL_RX before its sequence check. Keep that single domain.
+	 */
+	if (!queue && (!(channel & 0xffff) || (channel & 0xffff) == 11))
 		port = 0;
 	else if (queue == 4 && (channel & 0xffff) == 4)
 		port = 1;
@@ -216,7 +219,12 @@ static int md3_services_frame(struct mt6797_md3_services *s, unsigned int queue,
 		/* Exact vendor control indications have no AP reply. No DTR client
 		 * is owned; retain scalar status without inventing a connected port.
 		 */
-		if (control == 0x201 || control == 0x202 || control == 0x205)
+		/* 0x207 is a heartbeat completion, not an MD-to-AP request.
+		 * We own no poller and advertise no polling feature: consume the
+		 * bounded header passively, without reply or health/HS2 credit.
+		 */
+		if (control == 0x201 || control == 0x202 || control == 0x205 ||
+		    control == 0x207)
 			return 0;
 		return -EOPNOTSUPP;
 	}

@@ -119,6 +119,25 @@ int main(void){
  s=start();enqueue(0,0,BIT(31)|(1U<<16),0x202,0,16);enqueue(0,0,BIT(31)|(3U<<16),0x205,0,16);work(s);failed(s,-EILSEQ);
  s=start();enqueue(0,0,0,0x202,0,16);enqueue(0,0,BIT(31)|(9U<<16),0x205,0,16);work(s);assert(!s->stopped&&s->rx_sequence[0]==9);cases++;
  for(unsigned i=0;i<5;i++){s=start();if(i==0)enqueue(1,0,0,0,0,16);if(i==1)enqueue(4,14,0,0,0,24);if(i==2)enqueue(0,0,0,0,0x5555ffff,16);if(i==3)enqueue(0,0,0,0,0,24);if(i==4)enqueue(4,4,0,0,5,24);work(s);assert(s->stopped&&!fs_calls);cases++;}
+
+ /* Both wire aliases share one sequence domain; heartbeat is passive. */
+ for(unsigned wire=0;wire<=11;wire+=11) {
+  s=start();u32 deadline=s->boot_deadline;
+  enqueue(0,wire,BIT(31)|(1U<<16),0x207,UINT32_MAX,16);work(s);
+  assert(!s->stopped&&!s->hs2&&!tx_calls&&!fs_calls&&!s->tx_control_sequence&&s->boot_deadline==deadline);
+  assert(s->last_channel==wire&&s->last_control==0x207&&s->rx_sequence[0]==1);
+  enqueue(0,wire,BIT(31)|(2U<<16),0,0,16);work(s);assert(s->hs2&&!s->stopped);
+  enqueue(0,wire,BIT(31)|(3U<<16),0x207,17,16);work(s);assert(s->hs2&&!s->stopped&&!tx_calls&&!fs_calls);
+  for(unsigned q=1;q<8;q++){s=start();enqueue(q,wire,0,0x207,0,16);work(s);failed(s,-EOPNOTSUPP);assert(!tx_calls&&!fs_calls);}
+  for(unsigned len=15;len<=20;len++)if(len!=16){s=start();enqueue(0,wire,0,0x207,0,20);lengths[0][0]=len;work(s);failed(s,-EPROTO);assert(!tx_calls&&!fs_calls);}
+  s=start();enqueue(0,wire,0,0x208,0,16);work(s);failed(s,-EOPNOTSUPP);assert(!tx_calls&&!fs_calls);
+  s=start();enqueue(0,wire,0,0x207,0,16);work(s);now=30000;work(s);failed(s,-ETIMEDOUT);assert(!s->hs2&&!tx_calls);
+ }
+ s=start();enqueue(0,0,BIT(31)|(1U<<16),0x201,0,16);enqueue(0,11,BIT(31)|(2U<<16),0x207,0,16);enqueue(0,0,BIT(31)|(3U<<16),0x202,0,16);work(s);assert(!s->stopped&&s->rx_sequence[0]==3&&!tx_calls&&!fs_calls);
+ s=start();enqueue(0,0,BIT(31)|(1U<<16),0x201,0,16);enqueue(0,11,BIT(31)|(1U<<16),0x207,0,16);work(s);failed(s,-EILSEQ);
+ s=start();enqueue(0,11,BIT(31)|(1U<<16),0x207,0,16);enqueue(0,0,BIT(31)|(3U<<16),0x201,0,16);work(s);failed(s,-EILSEQ);
+ s=start();enqueue(0,11,0,0x207,0,16);enqueue(0,0,BIT(31)|(9U<<16),0x201,0,16);work(s);assert(!s->stopped&&s->rx_sequence[0]==9&&!tx_calls);
+ for(unsigned wire=1;wire<25;wire++)if(wire!=11){s=start();enqueue(0,wire,0,0x207,0,16);work(s);failed(s,-EOPNOTSUPP);assert(!tx_calls&&!fs_calls);}
  s=start();enqueue(4,4,BIT(31),0,0,24);frames=3;tx_busy=2;work(s);assert(!s->stopped&&fs_calls==1&&s->fs_total==1&&s->fs_replies==1&&s->tx_fs_sequence==3&&!s->used[0]);assert(sent_channels[2]==(4U|BIT(31))&&sent_channels[3]==(4U|BIT(31)|(1U<<16))&&sent_channels[4]==(4U|BIT(31)|(2U<<16)));cases++;
  s=start();enqueue(0,0,0,0,0,16);enqueue(4,4,BIT(31),0,0,24);work(s);assert(s->hs2&&sent_channels[0]==4);cases++;
 
@@ -157,6 +176,12 @@ def run(s,label,success):
 def main():
  s=SOURCE.read_text();run(s,'actual',True)
  for name,a,b in [
+  ('wire11-alias-lost','(!(channel & 0xffff) || (channel & 0xffff) == 11)','!(channel & 0xffff)'),
+  ('wire11-wrong-queue','if (!queue && (!(channel & 0xffff) || (channel & 0xffff) == 11))','if (!(channel & 0xffff) || (channel & 0xffff) == 11)'),
+  ('heartbeat-refused','|| control == 0x207','|| false'),
+  ('heartbeat-false-HS2','if (control == 0x201 ||','if (control == 0x207) s->hs2 = true; if (control == 0x201 ||'),
+  ('heartbeat-spurious-TX','if (control == 0x201 ||','if (control == 0x207) mt6797_md3_ccif_transmit(s->ccif, 0, s->rx, 16); if (control == 0x201 ||'),
+  ('control-length-unchecked','if (length != 16)','if (false)'),
   ('WDT-after-RX-ignored','if (atomic_read(&s->fatal) || atomic_read(&s->stopping)) {','if (false) {'),
   ('flow-sequence-not-consumed','s->tx_control_sequence = (s->tx_control_sequence + 1) & 0x7fff;','/* lost control sequence */'),
   ('queue0-starves-FS','queue = (s->next_queue + n) & 7;','queue = n;'),

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Optional, explicit C2K owner. Default preparation keeps reset asserted.
  * A separate opt-in execution probe releases it only through the first CCIF
- * event, then asserts reset again. No runtime response, AP boot services or
- * CSS readiness is supplied by either stage.
+ * event, then asserts reset again. A distinct opt-in service owner retains the
+ * execution lease for real runtime/control/FS. Neither path claims CSS readiness.
  */
 #include <linux/device.h>
 #include <linux/err.h>
@@ -17,6 +17,7 @@
 #include <linux/soc/mediatek/mt6797-md3-power.h>
 #include <linux/soc/mediatek/mt6797-md3-ccif.h>
 #include <linux/soc/mediatek/mt6797-md3-execution.h>
+#include <linux/soc/mediatek/mt6797-md3-services.h>
 #include <dt-bindings/reset/mt6797-resets.h>
 
 static bool allow_domain_power;
@@ -32,11 +33,16 @@ static bool allow_execution_probe;
 module_param(allow_execution_probe, bool, 0400);
 MODULE_PARM_DESC(allow_execution_probe, "allow one bounded C2K release/first-message capture followed by terminal reset; no runtime/CSS");
 
+static bool allow_runtime_services;
+module_param(allow_runtime_services, bool, 0400);
+MODULE_PARM_DESC(allow_runtime_services, "allow optional real MD3 runtime/CCIF/FS owner; requires current MD3 roots, no CSS claim");
+
 struct mt6797_md3_power_owner {
 	struct mutex lock;
 	struct reset_control *reset;
 	struct mt6797_md3_ccif *ccif;
-	bool ccif_requested, execution_requested;
+	bool ccif_requested, execution_requested, services_requested;
+	struct mt6797_md3_services *services;
 	struct mt6797_md3_execution *execution;
 	struct mt6797_md3_power_result result;
 	bool reset_verified;
@@ -86,7 +92,14 @@ static ssize_t execution_show(struct device *dev, struct device_attribute *attr,
 	return mt6797_md3_execution_show(owner->execution, buf);
 }
 static DEVICE_ATTR(execution, 0400, execution_show, NULL);
-static struct attribute *mt6797_md3_attrs[] = { &dev_attr_state.attr, &dev_attr_execution.attr, NULL };
+static ssize_t services_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct mt6797_md3_power_owner *owner = dev_get_drvdata(dev);
+
+	return mt6797_md3_services_show(owner->services, buf);
+}
+static DEVICE_ATTR(services, 0400, services_show, NULL);
+static struct attribute *mt6797_md3_attrs[] = { &dev_attr_state.attr, &dev_attr_execution.attr, &dev_attr_services.attr, NULL };
 static const struct attribute_group mt6797_md3_group = { .attrs = mt6797_md3_attrs };
 
 static int mt6797_md3_power_probe(struct platform_device *pdev)
@@ -117,6 +130,10 @@ static int mt6797_md3_power_probe(struct platform_device *pdev)
 		return ret;
 	owner->ccif_requested = device_property_read_bool(dev, "mediatek,prepare-ap-md3-ccif");
 	owner->execution_requested = device_property_read_bool(dev, "mediatek,probe-md3-execution");
+	owner->services_requested = device_property_read_bool(dev, "mediatek,run-md3-services");
+	if (owner->services_requested && (!allow_runtime_services || !owner->ccif_requested ||
+					 owner->execution_requested))
+		return -EPERM;
 	if (owner->execution_requested && (!allow_execution_probe || !owner->ccif_requested))
 		return -EPERM;
 	if (owner->ccif_requested && !allow_ccif_prepare)
@@ -137,8 +154,13 @@ static int mt6797_md3_power_probe(struct platform_device *pdev)
 		if (ret)
 			return ret;
 	}
-	if (owner->execution_requested) {
+	if (owner->execution_requested || owner->services_requested) {
 		ret = mt6797_md3_execution_acquire(pdev, owner->reset, owner->ccif, &owner->execution);
+		if (ret)
+			return ret;
+	}
+	if (owner->services_requested) {
+		ret = mt6797_md3_services_acquire(pdev, owner->ccif, owner->execution, &owner->services);
 		if (ret)
 			return ret;
 	}
@@ -146,6 +168,11 @@ static int mt6797_md3_power_probe(struct platform_device *pdev)
 	ret = mt6797_md1_cold_owner_md3_power_ready();
 	if (ret)
 		return ret;
+	if (owner->services_requested) {
+		ret = mt6797_md3_services_claim(owner->services);
+		if (ret)
+			return ret;
+	}
 	ret = mt6797_md1_cold_owner_acquire_md3(dev, &snapshot);
 	if (ret)
 		return ret;
@@ -154,7 +181,7 @@ static int mt6797_md3_power_probe(struct platform_device *pdev)
 		return ret;
 	/* Acquiring an exclusive reset handle does not change hardware. Holding
 	 * the real reset here precedes the SPM reset release, including failure.
-	 * Only the separately admitted execution probe may deassert; never power down.
+	 * Only separately admitted execution/service ownership may deassert; never power down.
 	 */
 	mutex_lock(&owner->lock);
 	ret = reset_control_assert(owner->reset);
@@ -171,6 +198,8 @@ static int mt6797_md3_power_probe(struct platform_device *pdev)
 		ret = mt6797_md3_ccif_prepare(owner->ccif);
 	if (!ret && owner->execution_requested)
 		ret = mt6797_md3_execution_run(owner->execution);
+	if (!ret && owner->services_requested)
+		ret = mt6797_md3_services_start(owner->services);
 	if (ret) {
 		owner->result.error = ret;
 		owner->result.state = MT6797_MD3_POWER_FAILED;
@@ -195,6 +224,7 @@ static void mt6797_md3_power_shutdown(struct platform_device *pdev)
 {
 	struct mt6797_md3_power_owner *owner = platform_get_drvdata(pdev);
 
+	mt6797_md3_services_shutdown(owner->services);
 	mt6797_md3_execution_shutdown(owner->execution);
 }
 

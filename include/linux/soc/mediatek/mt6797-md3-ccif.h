@@ -27,4 +27,18 @@ typedef void (*mt6797_md3_ccif_observer)(void *data, bool wdt, void __iomem *ap)
 int mt6797_md3_ccif_observe_start(struct mt6797_md3_ccif *ccif,
 	mt6797_md3_ccif_observer observer, void *data);
 void mt6797_md3_ccif_observe_stop(struct mt6797_md3_ccif *ccif);
+/* Optional live transport adopts the already validated HS1 lease after the
+ * one-shot observer has been drained. No reset or SMEM clearing here.
+ */
+int mt6797_md3_ccif_stream_start(struct mt6797_md3_ccif *ccif,
+	mt6797_md3_ccif_observer callback, void *data);
+void mt6797_md3_ccif_stream_stop(struct mt6797_md3_ccif *ccif);
+int mt6797_md3_ccif_receive(struct mt6797_md3_ccif *ccif, unsigned int queue,
+	void *frame, size_t capacity);
+int mt6797_md3_ccif_transmit(struct mt6797_md3_ccif *ccif, unsigned int queue,
+	const void *frame, size_t length);
+int mt6797_md3_ccif_publish_runtime(struct mt6797_md3_ccif *ccif,
+	const void *runtime, size_t length, const void *query, size_t query_length);
+int mt6797_md3_ccif_rx_resume_needed(struct mt6797_md3_ccif *ccif,
+ unsigned int queue, unsigned int *attempts);
 #endif

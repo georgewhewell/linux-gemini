@@ -31,7 +31,7 @@ struct mt6797_md3_execution {
 	spinlock_t rx_lock;
 	wait_queue_head_t wait;
 	bool attempted, lease, released, release_attempted, irqs, handshake, reset_held;
-	bool event, wdt, sram, hs1;
+	bool event, wdt, sram, hs1, runtime_owner;
 	u32 event_mask, ccif_irqs, wdt_irqs, header[4], feature_words[18];
 	u32 phase, wake_status;
 	int error, cleanup_error;
@@ -354,10 +354,11 @@ ssize_t mt6797_md3_execution_show(struct mt6797_md3_execution *e, char *buf)
 	if (!e)
 		return sysfs_emit(buf, "requested=0 execution_owned=0 runtime_sent=0 css_ready=0\n");
 	mutex_lock(&e->lock);
-	len = sysfs_emit(buf, "requested=1 attempted=%u phase=%u error=%d cleanup_error=%d reset_held=%u wake_status=%#x ccif_irqs=%u wdt_irqs=%u event_mask=%#x sram=%u hs1=%u execution_may_be_running=%u runtime_sent=0 css_ready=0 header=%08x,%08x,%08x,%08x features=",
+	len = sysfs_emit(buf, "requested=1 attempted=%u phase=%u error=%d cleanup_error=%d reset_held=%u wake_status=%#x ccif_irqs=%u wdt_irqs=%u event_mask=%#x sram=%u hs1=%u execution_may_be_running=%u %s css_ready=0 header=%08x,%08x,%08x,%08x features=",
 		e->attempted, e->phase, e->error, e->cleanup_error, e->reset_held,
 		e->wake_status, e->ccif_irqs, e->wdt_irqs, e->event_mask, e->sram,
-		e->hs1, e->release_attempted && !e->reset_held, e->header[0], e->header[1], e->header[2], e->header[3]);
+		e->hs1, e->release_attempted && !e->reset_held,
+		e->runtime_owner ? "runtime_scope=services" : "runtime_sent=0", e->header[0], e->header[1], e->header[2], e->header[3]);
 	/* Publish protocol feature descriptors only after a real validated HS1;
 	 * arbitrary SRAM bytes from malformed frames are never exposed.
 	 */
@@ -376,4 +377,56 @@ void mt6797_md3_execution_shutdown(struct mt6797_md3_execution *e)
 	mutex_lock(&e->lock);
 	md3_execution_stop(e);
 	mutex_unlock(&e->lock);
+}
+
+int mt6797_md3_execution_start(struct mt6797_md3_execution *e)
+{
+	int ret;
+
+	if (!e)
+		return -EINVAL;
+	mutex_lock(&e->lock);
+	if (e->attempted) {
+		ret = -EALREADY;
+		goto out;
+	}
+	e->attempted = true;
+	ret = md3_execution_sequence(e);
+	/* Drain the first-event observer while preserving the genuine execution
+	 * lease. The distinct CCIF stream may then adopt pending ring events.
+	 */
+	if (e->irqs) {
+		mt6797_md3_ccif_observe_stop(e->ccif);
+		e->irqs = false;
+	}
+	if (!ret)
+		ret = md3_execution_validate_hs1(e);
+	if (ret)
+		md3_execution_stop(e);
+	else
+		e->runtime_owner = true;
+	e->error = ret;
+out:
+	mutex_unlock(&e->lock);
+	return ret;
+}
+
+int mt6797_md3_execution_query(struct mt6797_md3_execution *e,
+	u8 query[64], u16 *control_sequence)
+{
+	unsigned int i;
+	int ret;
+
+	if (!e || !query || !control_sequence)
+		return -EINVAL;
+	mutex_lock(&e->lock);
+	ret = e->hs1 && e->lease && e->released && !e->error ?
+		md3_execution_live(e) : -ENODEV;
+	if (!ret) {
+		for (i = 0; i < 64; i++)
+			query[i] = (e->feature_words[1 + i / 4] >> ((i % 4) * 8)) & 0xff;
+		*control_sequence = (e->header[2] >> 16) & 0x7fff;
+	}
+	mutex_unlock(&e->lock);
+	return ret;
 }

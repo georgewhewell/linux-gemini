@@ -15,4 +15,11 @@ int mt6797_md3_execution_acquire(struct platform_device *pdev,
 int mt6797_md3_execution_run(struct mt6797_md3_execution *execution);
 ssize_t mt6797_md3_execution_show(struct mt6797_md3_execution *execution, char *buf);
 void mt6797_md3_execution_shutdown(struct mt6797_md3_execution *execution);
+/* Alternative one-shot start: real HS1 validated, IRQ observer drained,
+ * reset remains released under the retained lease for the actual service owner.
+ * Failure always runs terminal reset. Caller MUST own services before calling.
+ */
+int mt6797_md3_execution_start(struct mt6797_md3_execution *execution);
+int mt6797_md3_execution_query(struct mt6797_md3_execution *execution,
+	u8 query[64], u16 *control_sequence);
 #endif

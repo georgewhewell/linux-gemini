@@ -400,3 +400,14 @@ config MTK_MT6797_MD1_LK_HANDOFF_PROBE
 	  CCCI reserved-memory ownership before reading the LK tag table, then
 	  unmaps it and stops before modem partition I/O, MPU/remap, clocks, power,
 	  reset, CCIF, CLDMA, DMA, SIM, RF or a modem boot request.
+
+config MTK_MT6797_MD3_SERVICES
+	bool "Optional native MT6797 MD3 runtime and filesystem services"
+	depends on MTK_MT6797_MD3_POWER_OWNER=y && MTK_MT6797_CCCI=y
+	depends on MTK_MT6797_MD1_FS_PROVIDER=y
+	help
+	  Build the explicit MD3 CCIF/runtime/FS owner. Requires separately
+	  registered existing internal MD3 roots, the allow_runtime_services
+	  parameter and run-md3-services DT property. It does not grant CSS,
+	  SCP, modem logging or an MD3 AT/network endpoint. Leave disabled
+	  until the normal MD1 and optional MD3 service owners are qualified.

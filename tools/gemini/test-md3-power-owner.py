@@ -45,7 +45,11 @@ struct platform_device { struct device dev; };
 struct reset_control { int held; };
 struct mt6797_md3_ccif { int unused; };
 static bool allow_ccif_prepare;
-static bool request_ccif,request_execution,allow_execution_probe;
+static bool request_ccif,request_execution,allow_execution_probe,request_services,allow_runtime_services;
+struct mt6797_md3_services { int unused; };
+static struct mt6797_md3_services services;
+static int services_acquire_error,services_claim_error,services_start_error;
+static unsigned services_acquires,services_claims,services_starts;
 struct mt6797_md3_execution { int unused; };
 static struct mt6797_md3_execution execution;
 static int execution_acquire_error,execution_run_error;
@@ -123,7 +127,7 @@ static int of_parse_phandle_with_args(struct device_node *n,const char*a,const c
  out->np=&reset_node;out->args_count=1;out->args[0]=reset_id;return 0;
 }
 static int of_device_is_compatible(struct device_node*n,const char*c){assert(n==&reset_node&&!strcmp(c,"mediatek,mt6797-wdt"));return reset_compatible;}
-static bool device_property_read_bool(struct device*d,const char*p){(void)d;if(!strcmp(p,"mediatek,probe-md3-execution"))return request_execution;if(!strcmp(p,"mediatek,prepare-ap-md3-ccif"))return request_ccif;assert(!strcmp(p,"mediatek,experimental-md3-domain-power"));return property;}
+static bool device_property_read_bool(struct device*d,const char*p){(void)d;if(!strcmp(p,"mediatek,run-md3-services"))return request_services;if(!strcmp(p,"mediatek,probe-md3-execution"))return request_execution;if(!strcmp(p,"mediatek,prepare-ap-md3-ccif"))return request_ccif;assert(!strcmp(p,"mediatek,experimental-md3-domain-power"));return property;}
 static bool device_property_present(struct device*d,const char*p){(void)d;assert(!strcmp(p,"power-domains"));return power_domain;}
 static int mtk_wdt_require_boot_recovery(struct device*d){(void)d;return wdt_error;}
 static void *devm_kzalloc(struct device*d,size_t n,int flags){(void)d;assert(flags==0);if(alloc_error)return NULL;assert(!allocated);return allocated=calloc(1,n);}
@@ -141,6 +145,9 @@ static int mt6797_md3_execution_acquire(struct platform_device*p,struct reset_co
  assert(p&&r==&reset&&c==&ccif&&!writes&&!reset_asserts&&!acquires&&ccif_acquires);execution_acquires++;
  if(execution_acquire_error)return execution_acquire_error;*out=&execution;return 0;}
 static int mt6797_md3_execution_run(struct mt6797_md3_execution*e){assert(e==&execution&&ccif_prepares&&writes==7&&reset.held);execution_runs++;return execution_run_error;}
+static int mt6797_md3_services_acquire(struct platform_device*p,struct mt6797_md3_ccif*c,struct mt6797_md3_execution*e,struct mt6797_md3_services**out){assert(p&&c==&ccif&&e==&execution&&!writes&&!reset_asserts&&!acquires);services_acquires++;if(services_acquire_error)return services_acquire_error;*out=&services;return 0;}
+static int mt6797_md3_services_claim(struct mt6797_md3_services*s){assert(s==&services&&services_acquires&&!writes&&!reset_asserts&&!acquires);services_claims++;return services_claim_error;}
+static int mt6797_md3_services_start(struct mt6797_md3_services*s){assert(s==&services&&services_claims==1&&ccif_prepares&&writes==7&&reset.held);services_starts++;return services_start_error;}
 static int reset_control_assert(struct reset_control*r){assert(r==&reset);reset_asserts++;r->held=1;return reset_assert_error;}
 '''
 TESTS=r'''
@@ -170,6 +177,7 @@ static void fixture(void) {
  reset_spec_error=reset_get_error=reset_assert_error=wdt_error=group_error=acquire_error=verify_error=0;
  reset_count=1;reset_id=16;reset_compatible=1;allow_domain_power=property=true;power_domain=alloc_error=false;
  mt6797_md3_execution_active=mt6797_md3_execution_attempted=false;mt6797_md3_execution_infra=NULL;
+ request_services=false;allow_runtime_services=true;services_acquire_error=services_claim_error=services_start_error=0;services_acquires=services_claims=services_starts=0;
  request_execution=false;allow_execution_probe=true;execution_acquire_error=execution_run_error=0;execution_acquires=execution_runs=0;
  reset_asserts=reset_gets=groups=acquires=0;request_ccif=false;allow_ccif_prepare=true;ccif_acquire_error=ccif_prepare_error=0;ccif_acquires=ccif_prepares=0;assert(!allocated);
 }
@@ -273,6 +281,14 @@ static void probe_tests(void) {
  fixture();reset_spec_error=99;request_execution=request_ccif=true;execution_acquire_error=-EBUSY;probe(-EBUSY,false,false);assert(!writes&&!execution_runs);
  fixture();reset_spec_error=99;request_execution=request_ccif=true;probe(0,false,true);assert(execution_acquires==1&&execution_runs==1);
  fixture();reset_spec_error=99;request_execution=request_ccif=true;execution_run_error=-EIO;probe(0,true,true);assert(execution_runs==1);
+ fixture();reset_spec_error=99;request_services=true;probe(-EPERM,false,false);assert(!services_acquires);
+ fixture();reset_spec_error=99;request_services=request_ccif=true;allow_runtime_services=false;probe(-EPERM,false,false);assert(!services_acquires);
+ fixture();reset_spec_error=99;request_services=request_execution=request_ccif=true;probe(-EPERM,false,false);assert(!services_acquires);
+ fixture();reset_spec_error=99;request_services=request_ccif=true;services_acquire_error=-ENOMEM;probe(-ENOMEM,false,false);assert(services_acquires==1&&!services_claims);
+ fixture();reset_spec_error=99;request_services=request_ccif=true;mt6797_md1_stage2_complete=false;probe(-EPROBE_DEFER,false,false);assert(services_acquires==1&&!services_claims&&!acquires);
+ fixture();reset_spec_error=99;request_services=request_ccif=true;services_claim_error=-ENODEV;probe(-ENODEV,false,false);assert(services_claims==1&&!acquires&&!services_starts);
+ fixture();reset_spec_error=99;request_services=request_ccif=true;probe(0,false,true);assert(services_starts==1&&!execution_runs);
+ fixture();reset_spec_error=99;request_services=request_ccif=true;services_start_error=-EPROTO;probe(0,true,true);assert(services_starts==1&&!execution_runs);
  for(unsigned i=1;i<=7;i++){
   fixture();reset_spec_error=99;fail_write=i;probe(0,true,true);assert(writes==i);
  }
@@ -326,6 +342,7 @@ def main():
     units.append(TESTS)
     actual='\n'.join(units)
     negative={
+      'consume-fs-before-ready':('ret = mt6797_md1_cold_owner_md3_power_ready();','if (owner->services_requested) mt6797_md3_services_claim(owner->services); ret = mt6797_md1_cold_owner_md3_power_ready();'),
       'early-lease-consumption':('ret = mt6797_md3_lk_handoff_get(&snapshot);','ret = mt6797_md1_cold_owner_acquire_md3(dev, &snapshot);'),
       'missing-HS1-defer':('if (!mt6797_md1_stage2_complete)\n\t\tret = -EPROBE_DEFER;', 'if (false)\n\t\tret = -EPROBE_DEFER;'),
       'execution-foreign-write':('!b || mt6797_md1_md3_consumer != consumer ||','!b || false ||'),

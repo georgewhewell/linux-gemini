@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* MT6797 C2K reset-held AP CCIF preparation. This is not a running transport.
+/* MT6797 C2K AP CCIF resources, reset-held preparation and optional live stream.
  * Exact active modem_ccif_c2k.c layout, not the old modem_ccif.c 2MiB offset.
+ * A stream needs the real execution supplier lease and never reinitializes RAM.
  */
 #include <linux/clk.h>
 #include <linux/err.h>
@@ -12,9 +13,11 @@
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
+#include <linux/unaligned.h>
 #include <linux/soc/mediatek/mt6797-md1-cold-owner.h>
 #include <linux/soc/mediatek/mt6797-md3-ccif.h>
 #include <linux/soc/mediatek/mt6797-md3-lk-handoff.h>
+#include "mt6797-md3-ring.h"
 #include <dt-bindings/clock/mt6797-clk.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
@@ -43,7 +46,7 @@ struct mt6797_md3_ccif {
 	atomic_t irq_enabled[2];
 	mt6797_md3_ccif_observer observer;
 	void *observer_data;
-	bool observed;
+	bool observed, stream_attempted, streaming;
 };
 
 static const u32 md3_rx_size[8] = { 10, 100, 100, 150, 50, 10, 10, 10 };
@@ -73,8 +76,11 @@ static irqreturn_t md3_ccif_unexpected_irq(int irq, void *data)
 	if (observer) {
 		unsigned int index = irq == c->irq[1];
 
+		if (index && READ_ONCE(c->streaming))
+			atomic_set(&c->unexpected_irq, 1);
 		observer(c->observer_data, index, c->ap);
-		if (atomic_xchg(&c->irq_enabled[index], 0))
+		if ((!READ_ONCE(c->streaming) || index) &&
+		    atomic_xchg(&c->irq_enabled[index], 0))
 			disable_irq_nosync(irq);
 		return IRQ_HANDLED;
 	}
@@ -394,4 +400,141 @@ void mt6797_md3_ccif_observe_stop(struct mt6797_md3_ccif *c)
 	mutex_lock(&c->lock);
 	md3_ccif_observe_stop_locked(c);
 	mutex_unlock(&c->lock);
+}
+
+/* Same execution supplier lease, checked before any live shared-memory IO. */
+static int md3_ccif_stream_live(struct mt6797_md3_ccif *c)
+{
+	if (!c->streaming || c->status || !c->clocks_on ||
+	    atomic_read(&c->unexpected_irq))
+		return -ESHUTDOWN;
+	return mt6797_md1_cold_owner_md3_execution_live(c->dev, c->reset, true);
+}
+
+int mt6797_md3_ccif_stream_start(struct mt6797_md3_ccif *c,
+	mt6797_md3_ccif_observer callback, void *data)
+{
+	int ret;
+	unsigned int i;
+
+	if (!c || !callback || !data)
+		return -EINVAL;
+	mutex_lock(&c->lock);
+	ret = -EPERM;
+	if (!c->observed || c->observer || c->stream_attempted ||
+	    !c->attempted || c->status || !c->clocks_on)
+		goto out;
+	c->stream_attempted = true;
+	ret = mt6797_md1_cold_owner_md3_execution_live(c->dev, c->reset, true);
+	if (ret)
+		goto out;
+	c->observer_data = data;
+	WRITE_ONCE(c->streaming, true);
+	smp_store_release(&c->observer, callback);
+	for (i = 0; i < ARRAY_SIZE(c->irq); i++) {
+		atomic_set(&c->irq_enabled[i], 1);
+		enable_irq(c->irq[i]);
+	}
+	ret = 0;
+out:
+	mutex_unlock(&c->lock);
+	return ret;
+}
+
+void mt6797_md3_ccif_stream_stop(struct mt6797_md3_ccif *c)
+{
+	if (!c)
+		return;
+	mutex_lock(&c->lock);
+	/* Block TX/RX before callback drain; all shared IO uses this mutex. */
+	WRITE_ONCE(c->streaming, false);
+	md3_ccif_observe_stop_locked(c);
+	mutex_unlock(&c->lock);
+}
+
+int mt6797_md3_ccif_receive(struct mt6797_md3_ccif *c, unsigned int queue,
+	void *frame, size_t capacity)
+{
+	int ret;
+
+	if (!c)
+		return -EINVAL;
+	mutex_lock(&c->lock);
+	ret = md3_ccif_stream_live(c);
+	if (!ret)
+		ret = md3_ring_receive(c->smem, queue, frame, capacity);
+	mutex_unlock(&c->lock);
+	return ret;
+}
+
+int mt6797_md3_ccif_transmit(struct mt6797_md3_ccif *c, unsigned int queue,
+	const void *frame, size_t length)
+{
+	int ret;
+
+	if (!c || queue >= 8)
+		return -EINVAL;
+	mutex_lock(&c->lock);
+	ret = md3_ccif_stream_live(c);
+	/* Wait BEFORE packet publication. After producer write, success retains
+	 * publication disposition even if STOP/WDT immediately follows it.
+	 */
+	if (!ret && (readl(c->ap + 4) & BIT(queue + 8)))
+		ret = -EAGAIN;
+	if (!ret) {
+		ret = md3_ring_transmit(c->smem, queue, frame, length);
+		if (ret > 0) {
+			wmb();
+			writel(BIT(queue + 8), c->ap + 4);
+			writel(queue + 8, c->ap + 0xc);
+		}
+	}
+	mutex_unlock(&c->lock);
+	return ret;
+}
+
+int mt6797_md3_ccif_publish_runtime(struct mt6797_md3_ccif *c,
+	const void *runtime, size_t length, const void *query, size_t query_length)
+{
+	u32 dbm[14];
+	unsigned int i;
+	int ret;
+
+	if (!c || !runtime || !query || length > 0x800 || query_length != 116)
+		return -EINVAL;
+	mutex_lock(&c->lock);
+	ret = md3_ccif_stream_live(c);
+	if (!ret && (readl(c->ap + 4) & BIT(7)))
+		ret = -EAGAIN;
+	if (!ret) {
+		/* Same GPL PBM-disabled contract already used by native MD1. */
+		for (i = 0; i < ARRAY_SIZE(dbm); i++)
+			dbm[i] = cpu_to_le32(i < 2 || i >= 12 ? 0x44444444 : U32_MAX);
+		memcpy_toio(c->smem + 0xffc8, dbm, sizeof(dbm));
+		memcpy_toio(c->smem + 0x10000, runtime, length);
+		/* APCCIF SRAM only accepts32-bit accesses in the vendor contract. */
+		for (i = 0; i < query_length; i += 4)
+			writel(get_unaligned_le32((const u8 *)query + i), c->ap + 0x158 + i);
+		wmb();
+		writel(BIT(7), c->ap + 4);
+		writel(7, c->ap + 0xc);
+		ret = 1; /* Published, never retry after an uncertain later event. */
+	}
+	mutex_unlock(&c->lock);
+	return ret;
+}
+
+int mt6797_md3_ccif_rx_resume_needed(struct mt6797_md3_ccif *c,
+ unsigned int queue, unsigned int *attempts)
+{
+ int ret;
+
+ if (!c)
+  return -EINVAL;
+ mutex_lock(&c->lock);
+ ret = md3_ccif_stream_live(c);
+ if (!ret)
+  ret = md3_ring_resume_needed(c->smem, queue, attempts);
+ mutex_unlock(&c->lock);
+ return ret;
 }

@@ -15,7 +15,7 @@ SHIM=r'''
 #include <string.h>
 #include <stdarg.h>
 #include <pthread.h>
-typedef uint32_t u32; typedef uint64_t u64; typedef int64_t s64;
+typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64; typedef int64_t s64;
 #define __iomem
 #define BIT(n) (1U<<(n))
 #define GENMASK(h,l) ((~0U<<(l))&(~0U>>(31-(h))))
@@ -160,6 +160,18 @@ int main(void){
  assert(!pthread_join(a,&x)&&!pthread_join(b,&y));assert((!x&&(intptr_t)y==-EALREADY)||(!y&&(intptr_t)x==-EALREADY));assert(releases==1&&asserts==1);terminal(e);
  for(unsigned i=1;i<=2;i++){e=init();resource_fail=i;struct mt6797_md3_execution*out=(void*)1;assert(mt6797_md3_execution_acquire(&pdev,&reset,&ccif,&out)<0&&out==(void*)1);cases++;}
  e=init();resource_bad=1;struct mt6797_md3_execution*out=(void*)1;assert(mt6797_md3_execution_acquire(&pdev,&reset,&ccif,&out)==-EINVAL&&out==(void*)1);cases++;
+
+ /* Stream handoff retains the real lease/reset release only after validated
+  * HS1; query must be unusable after terminal reset or supplier failure. */
+ e=init();assert(!mt6797_md3_execution_start(e));assert(e->hs1&&e->lease&&e->released&&!e->irqs&&e->runtime_owner&&!reset.held&&lease&&!armed&&!asserts);
+ u8 query[64];u16 seq=123;assert(!mt6797_md3_execution_query(e,query,&seq)&&seq==0&&query[0]==1&&query[1]==2&&query[2]==3&&query[3]==4);
+ assert(mt6797_md3_execution_show(e,text)>0&&strstr(text,"runtime_scope=services")&&!strstr(text,"runtime_sent=0"));
+ assert(mt6797_md3_execution_start(e)==-EALREADY);mt6797_md3_execution_shutdown(e);assert(reset.held&&!lease&&!e->released&&asserts==1);
+ assert(mt6797_md3_execution_query(e,query,&seq)==-ENODEV);cases++;
+ e=init();timeout_event=1;assert(mt6797_md3_execution_start(e)==-ETIMEDOUT&&!e->runtime_owner);terminal(e);
+ e=init();hs_error=1;assert(mt6797_md3_execution_start(e)==-EPROTO&&!e->runtime_owner);terminal(e);
+ e=init();assert(!mt6797_md3_execution_start(e));livefail=livecalls+1;memset(query,0xa5,sizeof(query));seq=123;
+ assert(mt6797_md3_execution_query(e,query,&seq)==-ESHUTDOWN&&query[0]==0xa5&&seq==123);mt6797_md3_execution_shutdown(e);cases++;
  free(allocated);printf("PASS %u actual-source execution/IRQ/HS1/failure/lifetime cases\n",cases);return 0;
 }
 '''

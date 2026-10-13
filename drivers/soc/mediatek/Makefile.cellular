@@ -44,3 +44,4 @@ obj-$(CONFIG_MTK_MT6797_MD1_REMAP_OBSERVE) += mt6797-md1-remap-observe.o
 obj-$(CONFIG_MTK_MT6797_MD1_REMAP_OBSERVE_KUNIT_TEST) += mt6797-md1-remap-observe-kunit-test.o
 
 obj-$(CONFIG_MTK_MT6797_MD3_POWER_OWNER) += mt6797-md3-execution.o
+obj-$(CONFIG_MTK_MT6797_MD3_SERVICES) += mt6797-md3-services.o

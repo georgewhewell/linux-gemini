@@ -163,6 +163,11 @@ int mt6797_wifi_hif_pump_run(const struct mt6797_wifi_hif_pump_ops *ops,
 			bool continued = stats->rx_pending;
 
 			stats->rx_pending = false;
+			/* Deferred read-clear work may already be empty. A new
+			 * RX indication still requires a corresponding FIFO item.
+			 */
+			if (!saw_length && (status & MT6797_WIFI_WHISR_RX_DONE))
+				return -ENODATA;
 			return saw_length || continued ? 0 : -ENODATA;
 		}
 		saw_length = true;

@@ -105,7 +105,17 @@ static void pump_cases(void) {
  fill(1,0);memset(&s,0,sizeof(s));fifo.status=BIT(3);assert(mt6797_wifi_hif_pump_run(&ops,&s,&ack)==-EPROTO);
  fill(33,0);memset(&s,0,sizeof(s));s.rx_budget_yields=UINT64_MAX;assert(mt6797_wifi_hif_pump_run(&ops,&s,&ack)==-EOVERFLOW && s.rx_budget_yields==UINT64_MAX);
  fill(1,0);memset(&s,0,sizeof(s));s.rx_packets=UINT64_MAX;assert(mt6797_wifi_hif_pump_run(&ops,&s,&ack)==-EOVERFLOW);
- fill(0,0);memset(&s,0,sizeof(s));s.rx_pending=true;assert(!mt6797_wifi_hif_pump_run(&ops,&s,&ack) && !s.rx_pending);
+ /* Obtain carryover from a real exhausted pass, then empty the FIFO.
+  * No new RX bit is harmless; a fresh RX indication without data is not.
+  */
+ for(unsigned fresh=0;fresh<2;fresh++) {
+  fill(33,0);memset(&s,0,sizeof(s));
+  assert(mt6797_wifi_hif_pump_run(&ops,&s,&ack)==MT6797_WIFI_HIF_PUMP_MORE);
+  assert(s.rx_pending && fifo.left[0]==1 && s.rx_packets==32);
+  fifo.left[0]=0;fifo.status=fresh?MT6797_WIFI_WHISR_RX_DONE:0;
+  assert(mt6797_wifi_hif_pump_run(&ops,&s,&ack)==(fresh?-ENODATA:0));
+  assert(ack==(fresh?MT6797_WIFI_WHISR_RX_DONE:0) && !s.rx_pending && s.rx_packets==32);
+ }
  puts("pump: 10,201 FIFO pairs, odd split, read-clear continuation/TX, 5128 packet backlog and real errors PASS");
 }
 
@@ -206,6 +216,19 @@ static void runtime_cases(void) {
  }
  setup_irq();fill(1,0);fifo.fail=5;mt6797_wifi_hif_runtime_publish(&irq,MT6797_WIFI_HIF_IRQ_RUNTIME);mt6797_wifi_hif_runtime_service(&irq,runtime_cases,true);assert(irq.faults==1 && irq.mode==MT6797_WIFI_HIF_IRQ_TERMINAL && !irq.unmasks && !irq.rx_work.queued);destroy_irq();
  setup_irq();fill(0,0);mt6797_wifi_hif_runtime_publish(&irq,MT6797_WIFI_HIF_IRQ_RUNTIME);mt6797_wifi_hif_runtime_service(&irq,runtime_cases,true);assert(irq.faults==1 && irq.terminal_reason==-ENODATA);destroy_irq();
+ /* The actual queued owner rearms empty carryover, but preserves a fresh
+  * RX_DONE/no-length fault even when that carryover token is still set.
+  */
+ for(unsigned fresh=0;fresh<2;fresh++) {
+  setup_irq();fill(33,0);mt6797_wifi_hif_runtime_publish(&irq,MT6797_WIFI_HIF_IRQ_RUNTIME);
+  mt6797_wifi_hif_runtime_service(&irq,runtime_cases,true);
+  assert(irq.rx_work.queued && irq.pump_stats.rx_pending && fifo.left[0]==1);
+  fifo.left[0]=0;fifo.status=fresh?MT6797_WIFI_WHISR_RX_DONE:0;run_work();
+  assert(!irq.rx_work.queued && !irq.pump_stats.rx_pending && irq.faults==fresh);
+  assert(irq.mode==(fresh?MT6797_WIFI_HIF_IRQ_TERMINAL:MT6797_WIFI_HIF_IRQ_RUNTIME));
+  assert(irq.unmasks==(fresh?0:1) && irq.terminal_reason==(fresh?-ENODATA:0));
+  destroy_irq();
+ }
  setup_irq();fill(33,0);fifo.fail=5;assert(mt6797_wifi_hif_runtime_clear_status(&irq)==-EIO && !irq.rx_work.queued && !irq.unmasks && irq.mode==MT6797_WIFI_HIF_IRQ_QUIESCENT);destroy_irq();
  setup_irq();fill(1,0);irq.pump_stats.interrupts=UINT64_MAX;mt6797_wifi_hif_runtime_publish(&irq,MT6797_WIFI_HIF_IRQ_RUNTIME);mt6797_wifi_hif_runtime_service(&irq,runtime_cases,true);assert(irq.faults==1 && irq.terminal_reason==-EOVERFLOW && !fifo.delivered);destroy_irq();
  puts("runtime: startup continuation, coalesced IRQ, command waiter, stop/terminal races, work drain, poweroff and real faults PASS");

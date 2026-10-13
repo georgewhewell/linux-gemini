@@ -560,7 +560,7 @@ int main(void) {
    roots_enabled=false;
    puts("PASS RESTORE service: three drives, exact one argument, boolean vendor error mapping and signed reply");
  }
- { u32 unsupported[] = {MT6797_FS_GETFOLDERSIZE, MT6797_FS_COUNT, MT6797_FS_GETDRIVE, 0x101d, 0x101e, 0x101f, 0x1020, 0x1023, 0x1000, 0x1024, 0};
+ { u32 unsupported[] = {MT6797_FS_GETFOLDERSIZE, MT6797_FS_COUNT, MT6797_FS_GETDRIVE, 0x101d, 0x101e, 0x101f, 0x1020, 0x1000, 0x1024, 0};
    for (unsigned i = 0; i < sizeof(unsupported) / sizeof(*unsupported); i++) { assert(!mt6797_fs_service_supports(unsupported[i]));
      assert(run_u32(unsupported[i], 1, 0, 0, 0) == -EOPNOTSUPP && status == 12345); } }
  assert(mt6797_fs_service_supports(0x1001) && mt6797_fs_service_supports(0x1021));
@@ -732,6 +732,37 @@ int main(void) {
   assert(!run(0,MT6797_FS_SHUTDOWN,0,NULL,NULL)&&!md3.open_count&&svc.open_count==1&&open_files==1);
   current_service=&invalid;assert(run(0,MT6797_FS_CLOSEALL,0,NULL,NULL)==-EINVAL&&open_files==1);
   current_service=&svc;mt6797_fs_service_release(&svc);assert(!open_files);
+ }
+
+ /* Exact current BIN_REGION_ACCESS: ordinary -2 reply, no backing access. */
+ {
+  struct mt6797_fs_service md3={.modem=MT6797_FS_MODEM_MD3};
+  u32 values[]={0,1,2,3,4,UINT32_MAX};u8 response[64],value[8]={0};
+  const void *args[6]={value,value,value,value,value,value};u32 lens[6]={4,4,4,4,4,4};
+  int before_open=open_files,before_create=ram_create_count,before_truncate=ram_truncate_count;
+  for(unsigned m=0;m<2;m++) {
+   current_service=m?&md3:&svc;
+   for(unsigned i=0;i<sizeof(values)/sizeof(values[0]);i++) {
+    selected_modem=99;provider_available=0;
+    assert(!run_u32(MT6797_FS_BIN_REGION_ACCESS,1,values[i],0,0));
+    assert(status==-2&&reply.argc==1&&arg_s32(0)==-2&&reply.index==0);
+    assert(mt6797_fs_reply_frame(&reply,0,response,sizeof(response))==32);
+    assert(mt6797_fs_read32(response+4)==32&&mt6797_fs_read32(response+8)==15);
+    assert(mt6797_fs_read32(response+16)==0xffff1023U&&mt6797_fs_read32(response+20)==1);
+    assert(mt6797_fs_read32(response+24)==4&&mt6797_fs_read32(response+28)==0xfffffffeU);
+    assert(selected_modem==99&&open_files==before_open&&ram_create_count==before_create&&ram_truncate_count==before_truncate);
+   }
+   assert(run(0,MT6797_FS_BIN_REGION_ACCESS,0,NULL,NULL)==-EINVAL);
+   for(unsigned length=1;length<=8;length++) {
+    lens[0]=length;
+    assert(run(0,MT6797_FS_BIN_REGION_ACCESS,1,args,lens)==(length==4?0:-EINVAL));
+   }
+   lens[0]=4;
+   assert(!run(4,MT6797_FS_BIN_REGION_ACCESS,m?6:5,args,lens)&&status==-2&&reply.argc==1&&reply.index==4);
+   assert(run_u32(0x1024,1,1,0,0)==-EOPNOTSUPP);
+  }
+  provider_available=1;current_service=&svc;
+  puts("PASS BIN_REGION: MD1/MD3 stock error for all selectors, exact32-byte reply/index, bounded consumed field, no provider/open/mutation, unknown op remains refused");
  }
  /* Exact modern ECCCI argument/workspace boundary, legacy bounds unchanged. */
  {

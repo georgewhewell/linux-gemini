@@ -60,6 +60,7 @@ bool mt6797_fs_service_supports(u32 op)
 	case MT6797_FS_SETDISKFLAG:
 	case MT6797_FS_RESTORE:
 	case MT6797_FS_COMPACT_READ:
+	case MT6797_FS_BIN_REGION_ACCESS:
 		return true;
 	default:
 		return false;
@@ -809,6 +810,13 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 	     ((mt6797_fs_read32(request.arg[1]) & 8) &&
 	      mt6797_fs_read32(request.arg[1] + 32) > MT6797_FS_READ_MAX)))
 		return -EINVAL;
+	/* Current ccci_fsd reads only the first u32 selector for 0x1023.
+	 * All selectors return FS_PARAM_ERROR: no region access is supported.
+	 * Validate the consumed field before producing that ordinary reply.
+	 */
+	if (request.op == MT6797_FS_BIN_REGION_ACCESS &&
+	    (!request.argc || request.len[0] != sizeof(u32)))
+		return -EINVAL;
 	if (reply->capacity < MT6797_FS_REPLY_MAX)
 		return -EMSGSIZE;
 	mt6797_fs_reply_init(reply, reply->payload, reply->capacity,
@@ -899,6 +907,13 @@ int mt6797_fs_service_request(struct mt6797_fs_service *service,
 		break;
 	case MT6797_FS_MOVE:
 		*status = mt6797_fs_move(service, &request, path);
+		break;
+	case MT6797_FS_BIN_REGION_ACCESS:
+		/* Exact current daemon 0x13c38 -> 0x11714: backup (1),
+		 * restore (2), erase (3), and unknown selectors all return -2.
+		 * Do not grant any filesystem or raw-partition authority here.
+		 */
+		*status = MT6797_FS_PARAM_ERROR;
 		break;
 	default:
 		ret = -EOPNOTSUPP;

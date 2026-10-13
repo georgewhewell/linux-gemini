@@ -296,17 +296,14 @@ static void mt6797_wifi_hif_runtime_publish(
 	struct mt6797_wifi_hif_irq *irq = context;
 	unsigned long flags;
 
-	/* Release publishes all prepared session state before opening a gate. */
-	if (mode == MT6797_WIFI_HIF_IRQ_TERMINAL) {
-		spin_lock_irqsave(&irq->terminal_lock, flags);
-		if (READ_ONCE(irq->terminal_reason) >= 0)
-			WRITE_ONCE(irq->terminal_reason, -ESHUTDOWN);
-		/* Status readers acquire the reason with this terminal mode. */
-		smp_store_release(&irq->mode, mode);
-		spin_unlock_irqrestore(&irq->terminal_lock, flags);
-		return;
-	}
+	/* Serialize every gate-closing publication with rearm/continuation. */
+	spin_lock_irqsave(&irq->terminal_lock, flags);
+	if (mode == MT6797_WIFI_HIF_IRQ_TERMINAL &&
+	    READ_ONCE(irq->terminal_reason) >= 0)
+		WRITE_ONCE(irq->terminal_reason, -ESHUTDOWN);
+	/* Release publishes prepared state (or the terminal reason). */
 	smp_store_release(&irq->mode, mode);
+	spin_unlock_irqrestore(&irq->terminal_lock, flags);
 }
 
 static int mt6797_wifi_hif_runtime_enable_device(void *context)
@@ -331,11 +328,31 @@ static int mt6797_wifi_hif_runtime_enable_linux(void *context)
 		0 : -EIO;
 }
 
+/* Called with rx_lock held. MMIO gate writes and queue_work do not sleep. */
+static void mt6797_wifi_hif_runtime_rearm(struct mt6797_wifi_hif_irq *irq)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&irq->terminal_lock, flags);
+	if (READ_ONCE(irq->mode) == MT6797_WIFI_HIF_IRQ_RUNTIME) {
+		if (irq->pump_stats.rx_pending)
+			schedule_work(&irq->rx_work);
+		else
+			mt6797_wifi_ahb_irq_unmask(irq->hif);
+	}
+	spin_unlock_irqrestore(&irq->terminal_lock, flags);
+}
+
 static void mt6797_wifi_hif_runtime_unmask(void *context)
 {
 	struct mt6797_wifi_hif_irq *irq = context;
 
-	mt6797_wifi_ahb_irq_unmask(irq->hif);
+	/* Linux IRQ was enabled before this last startup step. Join its FIFO
+	 * owner before deciding whether startup backlog still needs draining.
+	 */
+	mutex_lock(&irq->rx_lock);
+	mt6797_wifi_hif_runtime_rearm(irq);
+	mutex_unlock(&irq->rx_lock);
 }
 
 static int mt6797_wifi_hif_runtime_disable_device(void *context)
@@ -354,6 +371,11 @@ static void mt6797_wifi_hif_runtime_disable_linux(void *context)
 	struct mt6797_wifi_hif_irq *irq = context;
 
 	disable_irq(irq->irq);
+	/* Mode is already QUIESCING/TERMINAL. Drain bounded continuation before
+	 * register restoration, power-off FIFO ownership or devres teardown.
+	 * The worker never takes lifecycle_lock: command waiters hold it.
+	 */
+	cancel_work_sync(&irq->rx_work);
 }
 
 static int mt6797_wifi_hif_runtime_restore(void *context)
@@ -994,12 +1016,16 @@ static int mt6797_wifi_hif_runtime_clear_status(void *context)
 	 */
 	memset(irq->rx_buffer[0], 0, MT6797_WIFI_EVENT_HEADER_LENGTH);
 	memset(irq->rx_buffer[1], 0, MT6797_WIFI_EVENT_HEADER_LENGTH);
+	irq->pump_stats.rx_pending = false;
+	/* Preserve remaining FIFO work across the read-clear status. Runtime
+	 * publication and Linux IRQ enable must precede queuing its continuation.
+	 */
 	ret = mt6797_wifi_hif_pump_run(&ops, &irq->pump_stats,
 				     &irq->acknowledged_status);
 	dev_info(irq->dev, "HIF startup result=%d status=%#x rx=%llu events=%llu rx0_header=%8ph rx1_header=%8ph\n",
 		 ret, irq->acknowledged_status, irq->pump_stats.rx_packets,
 		 irq->pump_stats.events, irq->rx_buffer[0], irq->rx_buffer[1]);
-	return ret;
+	return ret == MT6797_WIFI_HIF_PUMP_MORE ? 0 : ret;
 }
 
 static int mt6797_wifi_hif_power_off_send(void *context)
@@ -1050,8 +1076,8 @@ static int mt6797_wifi_hif_power_off_drain(void *context, bool *pending)
 	int ret;
 
 	ret = mt6797_wifi_hif_pump_run(&ops, &irq->pump_stats, &status);
-	*pending = status;
-	return ret;
+	*pending = status || ret == MT6797_WIFI_HIF_PUMP_MORE;
+	return ret == MT6797_WIFI_HIF_PUMP_MORE ? 0 : ret;
 }
 
 static int mt6797_wifi_hif_power_off_ready(void *context, bool *ready)
@@ -1113,66 +1139,92 @@ static int mt6797_wifi_hif_runtime_power_off(void *context)
 	return ret;
 }
 
-static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
+/*
+ * One bounded FIFO owner, independent of lifecycle_lock so an RX event can
+ * complete a command whose sleeping sender already holds that lock.
+ */
+static void mt6797_wifi_hif_runtime_service(struct mt6797_wifi_hif_irq *irq,
+					 const void *caller, bool from_irq)
 {
-	struct mt6797_wifi_hif_irq *irq = data;
-	irqreturn_t (*thread)(void *context);
 	struct mt6797_wifi_hif_pump_ops ops;
 	u64 interrupts;
-	void *context;
 	ktime_t started;
 	s64 elapsed;
 	int ret;
 
-	(void)linux_irq;
-	/* Pairs with release publication before either IRQ gate is opened. */
-	ret = smp_load_acquire(&irq->mode);
-	if (ret == MT6797_WIFI_HIF_IRQ_RUNTIME) {
-		if (check_add_overflow(irq->pump_stats.interrupts, 1ULL,
-				       &interrupts)) {
-			mt6797_wifi_hif_runtime_terminal(irq, -EOVERFLOW,
-							 mt6797_wifi_hif_irq_thread);
-			return IRQ_HANDLED;
+	mutex_lock(&irq->rx_lock);
+	if (mt6797_wifi_hif_irq_mode(irq) != MT6797_WIFI_HIF_IRQ_RUNTIME)
+		goto unlock;
+	/* A queued continuation may outlive an IRQ pass that drained the FIFO
+	 * and rearmed the wrapper. Reacquire the mask before consuming status.
+	 */
+	mt6797_wifi_ahb_irq_mask(irq->hif);
+	if (from_irq) {
+		if (check_add_overflow(irq->pump_stats.interrupts, 1ULL, &interrupts)) {
+			mt6797_wifi_hif_runtime_terminal(irq, -EOVERFLOW, caller);
+			goto unlock;
 		}
 		irq->pump_stats.interrupts = interrupts;
-		started = ktime_get();
-		ops = (struct mt6797_wifi_hif_pump_ops) {
-			.read_status = mt6797_wifi_hif_runtime_pump_status,
-			.read_tx_released = mt6797_wifi_hif_runtime_pump_tx,
-			.read_lengths = mt6797_wifi_hif_runtime_pump_lengths,
-			.read_packet = mt6797_wifi_hif_runtime_pump_packet,
-			.deliver_event = mt6797_wifi_hif_runtime_pump_event,
-			.deliver_frame = mt6797_wifi_hif_runtime_pump_frame,
-			.reject_packet = mt6797_wifi_hif_runtime_reject_packet,
-			.context = irq,
-		};
-		ret = mt6797_wifi_hif_pump_run(&ops, &irq->pump_stats,
-						&irq->acknowledged_status);
-		elapsed = ktime_to_ns(ktime_sub(ktime_get(), started));
-		if (ret) {
-			dev_err(irq->dev,
-				"HIF pump failed %d status=%#x after %lld us\n",
-				ret, irq->acknowledged_status,
-				elapsed / NSEC_PER_USEC);
-			mt6797_wifi_hif_runtime_terminal(irq, ret,
-							 mt6797_wifi_hif_irq_thread);
-			return IRQ_HANDLED;
-		}
-		if (elapsed > MT6797_WIFI_HIF_PUMP_SLOW_NS)
-			dev_warn_ratelimited(irq->dev,
-				"HIF pump took %lld ms status=%#x\n",
-				elapsed / NSEC_PER_MSEC,
-				irq->acknowledged_status);
-		dev_dbg(irq->dev,
-			"HIF irq status=%#x total=%llu rx=%llu events=%llu\n",
-			irq->acknowledged_status, irq->pump_stats.interrupts,
-			irq->pump_stats.rx_packets, irq->pump_stats.events);
-		if (mt6797_wifi_hif_irq_mode(irq) ==
-		    MT6797_WIFI_HIF_IRQ_RUNTIME)
-			mt6797_wifi_ahb_irq_unmask(irq->hif);
+	}
+	started = ktime_get();
+	ops = (struct mt6797_wifi_hif_pump_ops) {
+		.read_status = mt6797_wifi_hif_runtime_pump_status,
+		.read_tx_released = mt6797_wifi_hif_runtime_pump_tx,
+		.read_lengths = mt6797_wifi_hif_runtime_pump_lengths,
+		.read_packet = mt6797_wifi_hif_runtime_pump_packet,
+		.deliver_event = mt6797_wifi_hif_runtime_pump_event,
+		.deliver_frame = mt6797_wifi_hif_runtime_pump_frame,
+		.reject_packet = mt6797_wifi_hif_runtime_reject_packet,
+		/* IRQ and queued continuation may coalesce after WHISR was read.
+		 * Empty status is then harmless; RX_DONE with no length still fails.
+		 */
+		.allow_empty_status = true,
+		.context = irq,
+	};
+	ret = mt6797_wifi_hif_pump_run(&ops, &irq->pump_stats,
+				     &irq->acknowledged_status);
+	elapsed = ktime_to_ns(ktime_sub(ktime_get(), started));
+	if (ret < 0) {
+		dev_err(irq->dev, "HIF pump failed %d status=%#x after %lld us\n",
+			ret, irq->acknowledged_status, elapsed / NSEC_PER_USEC);
+		mt6797_wifi_hif_runtime_terminal(irq, ret, caller);
+		goto unlock;
+	}
+	if (elapsed > MT6797_WIFI_HIF_PUMP_SLOW_NS)
+		dev_warn_ratelimited(irq->dev, "HIF pump took %lld ms status=%#x\n",
+			elapsed / NSEC_PER_MSEC, irq->acknowledged_status);
+	dev_dbg(irq->dev, "HIF pump status=%#x total=%llu rx=%llu events=%llu yields=%llu pending=%u\n",
+		irq->acknowledged_status, irq->pump_stats.interrupts,
+		irq->pump_stats.rx_packets, irq->pump_stats.events,
+		irq->pump_stats.rx_budget_yields, irq->pump_stats.rx_pending);
+	/* A MORE pass retains the wrapper mask and schedules bounded work. */
+	mt6797_wifi_hif_runtime_rearm(irq);
+unlock:
+	mutex_unlock(&irq->rx_lock);
+}
+
+static void mt6797_wifi_hif_rx_work(struct work_struct *work)
+{
+	struct mt6797_wifi_hif_irq *irq =
+		container_of(work, struct mt6797_wifi_hif_irq, rx_work);
+
+	mt6797_wifi_hif_runtime_service(irq, mt6797_wifi_hif_rx_work, false);
+}
+
+static irqreturn_t mt6797_wifi_hif_irq_thread(int linux_irq, void *data)
+{
+	struct mt6797_wifi_hif_irq *irq = data;
+	irqreturn_t (*thread)(void *context);
+	void *context;
+	int mode;
+
+	(void)linux_irq;
+	mode = smp_load_acquire(&irq->mode);
+	if (mode == MT6797_WIFI_HIF_IRQ_RUNTIME) {
+		mt6797_wifi_hif_runtime_service(irq, mt6797_wifi_hif_irq_thread, true);
 		return IRQ_HANDLED;
 	}
-	if (ret != MT6797_WIFI_HIF_IRQ_CAPABILITY)
+	if (mode != MT6797_WIFI_HIF_IRQ_CAPABILITY)
 		return IRQ_HANDLED;
 	thread = READ_ONCE(irq->capability_thread);
 	context = READ_ONCE(irq->capability_context);
@@ -1201,6 +1253,8 @@ int mt6797_wifi_hif_irq_init(struct mt6797_wifi_hif_irq *irq,
 	if (!irq->rx_buffer[1])
 		return -ENOMEM;
 	mutex_init(&irq->lifecycle_lock);
+	mutex_init(&irq->rx_lock);
+	INIT_WORK(&irq->rx_work, mt6797_wifi_hif_rx_work);
 	spin_lock_init(&irq->sink_lock);
 	spin_lock_init(&irq->terminal_lock);
 	spin_lock_init(&irq->tx_credit_lock);

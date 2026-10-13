@@ -190,7 +190,7 @@ static void mt6797_wifi_hif_pump_malformed_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, stats.rx_packets, 0ULL);
 }
 
-static void mt6797_wifi_hif_pump_overflow_test(struct kunit *test)
+static void mt6797_wifi_hif_pump_backlog_test(struct kunit *test)
 {
 	struct mt6797_wifi_hif_pump_test_context context = {
 		.status = MT6797_WIFI_WHISR_RX0_DONE,
@@ -203,7 +203,9 @@ static void mt6797_wifi_hif_pump_overflow_test(struct kunit *test)
 	mt6797_wifi_hif_pump_test_event(&context);
 	mt6797_wifi_hif_pump_test_ops(&context, &ops);
 	KUNIT_EXPECT_EQ(test,
-		mt6797_wifi_hif_pump_run(&ops, &stats, &status), -EOVERFLOW);
+		mt6797_wifi_hif_pump_run(&ops, &stats, &status), MT6797_WIFI_HIF_PUMP_MORE);
+	KUNIT_EXPECT_TRUE(test, stats.rx_pending);
+	KUNIT_EXPECT_EQ(test, stats.rx_budget_yields, 1ULL);
 	KUNIT_EXPECT_EQ(test, stats.rx_packets,
 			(u64)MT6797_WIFI_HIF_RX_BUDGET);
 }
@@ -344,7 +346,7 @@ static struct kunit_case mt6797_wifi_hif_pump_cases[] = {
 	KUNIT_CASE(mt6797_wifi_hif_pump_success_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_startup_rx_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_malformed_test),
-	KUNIT_CASE(mt6797_wifi_hif_pump_overflow_test),
+	KUNIT_CASE(mt6797_wifi_hif_pump_backlog_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_packet_fault_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_status_fault_test),
 	KUNIT_CASE(mt6797_wifi_hif_pump_tx_overflow_test),

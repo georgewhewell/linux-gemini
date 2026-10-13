@@ -114,10 +114,14 @@ struct mt6797_wifi_hif_irq {
 	struct device *dev;
 	struct mt6797_wifi_ahb_hif *hif;
 	struct mt6797_wifi_boot *boot;
+	struct mutex rx_lock; /* IRQ/continuation FIFO ownership; never lifecycle_lock. */
+	struct work_struct rx_work;
 	struct mutex lifecycle_lock; /* Serializes runtime start/stop/worker. */
 	/* Publishes terminal mode and its reason as one observable state. */
 	spinlock_t terminal_lock;
-	/* Lock order: lifecycle_lock -> terminal_lock -> sink_lock. */
+	/* Lock order: lifecycle_lock -> rx_lock -> terminal_lock -> sink_lock.
+	 * RX owners never acquire lifecycle_lock (command waiters hold it).
+	 */
 	spinlock_t sink_lock;
 	spinlock_t tx_credit_lock;
 	struct mt6797_wifi_tx_credit tx_credit;

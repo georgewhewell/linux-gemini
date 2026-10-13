@@ -7,10 +7,14 @@
 #include "protocol.h"
 
 #define MT6797_WIFI_HIF_RX_BUDGET	32U
+/* Valid bounded progress; unread RX remains owned, never a transport fault. */
+#define MT6797_WIFI_HIF_PUMP_MORE	1
 #define MT6797_WIFI_HIF_TX_QUEUES	16U
 
 struct mt6797_wifi_hif_pump_stats {
 	u64 interrupts;
+	u64 rx_budget_yields;
+	bool rx_pending;
 	u64 tx_released[MT6797_WIFI_HIF_TX_QUEUES];
 	u64 rx_packets;
 	u64 rx_dropped;

@@ -23,6 +23,11 @@ struct device_attribute { struct attribute attr; ssize_t (*show)(struct device *
 struct attribute_group { struct attribute **attrs; };
 #define DEVICE_ATTR_RO(name) struct device_attribute dev_attr_##name={.attr={0444},.show=name##_show}
 ''')
+program += '''
+/* Getter semantics are exercised by test-wifi-hif-diagnostics-host.py. */
+static ssize_t hif_diagnostics_show(struct device *dev,struct device_attribute *attr,char *buf)
+{ (void)dev;(void)attr;(void)buf;return 0; }
+'''
 program += radio[radio.index('static DEVICE_ATTR_RO(tx_diagnostics);'):radio.index('static void mt6797_radio_purge_tx')]
 program += r'''
 #define NL80211_IFTYPE_STATION 2
@@ -75,9 +80,12 @@ static void skb_queue_head_init(struct sk_buff_head *queue) { memset(queue,0,siz
 static int wiphy_register(struct wiphy *wiphy) { assert(wiphy_alive && wiphy==&registered_wiphy); return registration_failure==3?-EIO:0; }
 static int register_netdev(struct net_device *netdev) {
  assert(netdev_alive && netdev==&dev && netdev->sysfs_groups[0]==&mt6797_radio_tx_diag_group);
- assert(mt6797_radio_tx_diag_attrs[0]==&dev_attr_tx_diagnostics.attr && !mt6797_radio_tx_diag_attrs[1]);
+ assert(mt6797_radio_tx_diag_attrs[0]==&dev_attr_tx_diagnostics.attr);
+ assert(mt6797_radio_tx_diag_attrs[1]==&dev_attr_hif_diagnostics.attr && !mt6797_radio_tx_diag_attrs[2]);
  assert(dev_attr_tx_diagnostics.attr.mode==0444 && !dev_attr_tx_diagnostics.store);
  assert(dev_attr_tx_diagnostics.show==tx_diagnostics_show);
+ assert(dev_attr_hif_diagnostics.attr.mode==0444 && !dev_attr_hif_diagnostics.store);
+ assert(dev_attr_hif_diagnostics.show==hif_diagnostics_show);
  sysfs_published=true; check_snapshot();
  if(registration_failure==4) { sysfs_published=false; return -EIO; }
  return 0;

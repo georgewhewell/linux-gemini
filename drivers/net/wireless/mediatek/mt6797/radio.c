@@ -192,6 +192,36 @@ static int mt6797_radio_tx_diag_span_emit(char *buf, int offset, const char *nam
 	return offset + sysfs_emit_at(buf, offset, "\n");
 }
 
+static ssize_t hif_diagnostics_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct net_device *netdev = to_net_dev(dev);
+	struct mt6797_wifi_radio *radio = wiphy_priv(netdev->ieee80211_ptr->wiphy);
+	struct mt6797_wifi_hif_irq *irq = radio->irq;
+	struct mt6797_wifi_hif_pump_stats snapshot;
+
+	/* Netdev sysfs readers keep radio/irq alive through unregister. No RTNL,
+	 * radio lock or register access: lifecycle excludes start/stop/reset;
+	 * rx_lock excludes the IRQ and its bounded continuation worker.
+	 */
+	mutex_lock(&irq->lifecycle_lock);
+	mutex_lock(&irq->rx_lock);
+	snapshot = irq->pump_stats;
+	mutex_unlock(&irq->rx_lock);
+	mutex_unlock(&irq->lifecycle_lock);
+
+	return sysfs_emit(buf,
+		"version=1\nlifetime_start_ns=%llu\ninterrupts=%llu\n"
+		"rx_packets=%llu\nrx_dropped=%llu\nrx_budget_yields=%llu\n"
+		"rx_pending=%u\n",
+		(unsigned long long)radio->tx_diag.lifetime_start_ns,
+		(unsigned long long)snapshot.interrupts,
+		(unsigned long long)snapshot.rx_packets,
+		(unsigned long long)snapshot.rx_dropped,
+		(unsigned long long)snapshot.rx_budget_yields,
+		snapshot.rx_pending);
+}
+
 static ssize_t tx_diagnostics_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
@@ -253,9 +283,11 @@ static ssize_t tx_diagnostics_show(struct device *dev,
 	return mt6797_radio_tx_diag_span_emit(buf, offset, "worker_duration", &snapshot.worker_duration);
 }
 static DEVICE_ATTR_RO(tx_diagnostics);
+static DEVICE_ATTR_RO(hif_diagnostics);
 
 static struct attribute *mt6797_radio_tx_diag_attrs[] = {
 	&dev_attr_tx_diagnostics.attr,
+	&dev_attr_hif_diagnostics.attr,
 	NULL,
 };
 
